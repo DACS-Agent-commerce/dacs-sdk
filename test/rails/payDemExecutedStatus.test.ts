@@ -392,6 +392,124 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
   });
 });
 
+/** Serve `value()` after `ms`, as a real node read does. */
+function after<T>(ms: number, value: () => T): () => Promise<T> {
+  return () => new Promise((resolve) => setTimeout(() => resolve(value()), ms));
+}
+
+function statusReads(): number {
+  return sdk.nodeCall.mock.calls
+    .filter(([message]) => message === "getTransactionStatus").length;
+}
+
+describe("pay-dem node reads take time and are polled at the configured interval", () => {
+  // Every other double here answers at once, so a per-read bound or a default
+  // timing constant collapsed to 1 ms would go unnoticed.
+  beforeEach(() => {
+    sdk.nodeCall.mockImplementation(
+      after(30, () => ({ state: "included", blockNumber: BLOCK })),
+    );
+    sdk.getTxByHash.mockImplementation(after(30, recordReturning(() => undefined)));
+  });
+
+  it("settles with the default bounds when each node read takes 30 ms", async () => {
+    const payDem = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+    expect(statusReads()).toBe(1);
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles when each node read takes 30 ms under explicit bounds", async () => {
+    const payDem = await rail({
+      statusRequestTimeoutMs: 500,
+      transactionRecordTimeoutMs: 2_000,
+    });
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+  });
+
+  it("bounds a status read by statusRequestTimeoutMs, not the inclusion budget", async () => {
+    const payDem = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      inclusionTimeoutMs: 2_000,
+      statusRequestTimeoutMs: 10,
+    });
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toEqual(NOT_OK);
+    expect(statusReads()).toBe(1);
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+  });
+
+  it("bounds a record read by statusRequestTimeoutMs, not the record budget", async () => {
+    sdk.nodeCall.mockResolvedValue({ state: "included", blockNumber: BLOCK });
+    const payDem = await rail({
+      statusRequestTimeoutMs: 10,
+      transactionRecordTimeoutMs: 2_000,
+    });
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toEqual(NOT_OK);
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
+    expect(sdk.waitForNonce).not.toHaveBeenCalled();
+  });
+
+  it("waits the poll interval between status reads", async () => {
+    sdk.nodeCall.mockResolvedValue({ state: "pending" });
+    const payDem = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      inclusionTimeoutMs: 50,
+      inclusionPollIntervalMs: 10,
+      statusRequestTimeoutMs: 50,
+    });
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toEqual(NOT_OK);
+    // About five reads fit a 50 ms budget at 10 ms; without the wait the node
+    // would be read back to back for the whole budget.
+    expect(statusReads()).toBeGreaterThan(1);
+    expect(statusReads()).toBeLessThanOrEqual(7);
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("polls a pending status every 500 ms by default", async () => {
+    sdk.nodeCall
+      .mockResolvedValueOnce({ state: "pending" })
+      .mockResolvedValue({ state: "included", blockNumber: BLOCK });
+    sdk.getTxByHash.mockImplementation(recordReturning(() => undefined));
+    const payDem = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+    vi.useFakeTimers();
+    try {
+      const settlement = payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS });
+
+      await vi.advanceTimersByTimeAsync(499);
+      expect(statusReads()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(settlement).resolves.toMatchObject({ ok: true, blockNumber: BLOCK });
+      expect(statusReads()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("the execution observer tells failed from indeterminate (#338)", () => {
   // `settle()` maps both outcomes to the same not-ok result, so this asserts
   // the observer's own state and reason.
