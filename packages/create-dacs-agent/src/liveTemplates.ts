@@ -17,6 +17,10 @@ const BETTER_SQLITE_VERSION = "12.6.2";
 const STANDARD_REVISION = "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20";
 const CONFIG_SCHEMA_VERSION = 1;
 const SQLITE_SCHEMA_VERSION = 8;
+// The SDK's Node floor, within the majors better-sqlite3 BETTER_SQLITE_VERSION
+// supports; a live project cannot run without that native adapter. The
+// generated doctor's supportedNode() applies the same range.
+const LIVE_NODE_ENGINES = "^20.19.0 || ^22.12.0 || 23.x || 24.x || 25.x";
 
 // The image smoke probes each of these for its exact version.
 function productionDependencies(
@@ -43,7 +47,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     version: "0.1.0",
     private: true,
     type: "module",
-    engines: { node: "^20.19.0 || >=22.12.0" },
+    engines: { node: LIVE_NODE_ENGINES },
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
@@ -775,7 +779,7 @@ function supportedNode(): boolean {
   if (match === null) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
-  return major === 20 ? minor >= 19 : major === 22 ? minor >= 12 : major > 22;
+  return major === 20 ? minor >= 19 : major === 22 ? minor >= 12 : major >= 23 && major <= 25;
 }
 
 async function privateDirectory(role: "buyer" | "seller") {
@@ -4510,6 +4514,13 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 });
 `;
 
+// Both Dockerfile stages start from this Node release, pinned to the official
+// multi-platform image index docker-library last recorded for the tag; the
+// image smoke requires the image's Node to be exactly this release.
+const IMAGE_NODE_VERSION = "20.19.1";
+const IMAGE_BASE = `node:${IMAGE_NODE_VERSION}-bookworm-slim` +
+  "@sha256:83e53269616ca1b22cf7533e5db4e2f1a0c24a8e818b21691d6d4a69ec9e2c6d";
+
 // The Dockerfile writes this image configuration and the image smoke checks it.
 const IMAGE_RUNTIME_ID = 10001;
 const IMAGE_USER = `${IMAGE_RUNTIME_ID}:${IMAGE_RUNTIME_ID}`;
@@ -4597,12 +4608,15 @@ const mode = {
 }[JSON.stringify(process.argv.slice(2))];
 // The directory's name is the compose project name as it stands: compose would
 // otherwise normalise it, and two directories differing only in case or
-// punctuation would share one project. Every compose call names it, with the
-// generated compose.yaml, and passes compose no other COMPOSE_* variable.
-// Compose also imports COMPOSE_* variables from .env, so a .env that sets one
-// is refused. Neither COMPOSE_FILE, COMPOSE_PROJECT_NAME nor an override file
-// such as compose.override.yaml can add a service, replace the image or move
-// the project.
+// punctuation would share one project. Two directories with the same name
+// would too, so no compose call runs while the project has a container that
+// compose created for another directory. Every compose call names the project,
+// with the generated compose.yaml, and passes compose no other COMPOSE_*
+// variable. Compose also imports COMPOSE_* variables from .env, in more forms
+// than a line start, so a .env that mentions COMPOSE_ at all is refused.
+// Neither COMPOSE_FILE, COMPOSE_PROJECT_NAME nor an override file such as
+// compose.override.yaml can add a service, replace the image or move the
+// project.
 const projectName = basename(projectPath);
 const services = ${quotedList(COMPOSE_SERVICES)};
 const composeArguments = [
@@ -4631,31 +4645,12 @@ if (mode === undefined || !${COMPOSE_PROJECT_NAME_PATTERN}.test(projectName)) {
     "starting with a letter or digit\\n");
   process.exit(2);
 }
-if (/^[ \\t]*(?:export[ \\t]+)?COMPOSE_/m.test(persistedSource)) {
-  process.stderr.write("remove every COMPOSE_* variable from .env: compose reads them " +
-    "from there, and this project's compose file, directory and name are fixed\\n");
+if (persistedSource.includes("COMPOSE_")) {
+  process.stderr.write("remove every COMPOSE_* variable, and any other mention of " +
+    "COMPOSE_, from .env: compose reads them from there, and this project's compose " +
+    "file, directory and name are fixed\\n");
   process.exit(2);
 }
-if (mode === "stop") process.exit(compose(["stop"]));
-if (mode === "down") process.exit(compose(["down"]));
-if (mode === "decommission") process.exit(compose(["down", "--remove-orphans"]));
-
-const image = setting("DACS_IMAGE");
-const uid = setting("DACS_RUNTIME_UID");
-const gid = setting("DACS_RUNTIME_GID");
-const timeoutSeconds = setting("DACS_IMAGE_SMOKE_TIMEOUT_SECONDS") ?? "120";
-const identity = /^[1-9][0-9]{0,9}$/;
-if (image === undefined || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/.test(image) ||
-    uid === undefined || !identity.test(uid) || Number(uid) > 2_147_483_647 ||
-    gid === undefined || !identity.test(gid) || Number(gid) > 2_147_483_647 ||
-    (mode === "smoke" && !/^[1-9][0-9]{0,3}$/.test(timeoutSeconds))) {
-  process.stderr.write("usage: set DACS_IMAGE and non-root DACS_RUNTIME_UID/GID " +
-    "(shell or .env), then run npm run dacs:image:smoke; " +
-    "DACS_IMAGE_SMOKE_TIMEOUT_SECONDS, if set, is 1-9999\\n");
-  process.exit(2);
-}
-const user = uid + ":" + gid;
-const immutableImageId = /^sha256:[0-9a-f]{64}$/;
 
 function docker(args) {
   const child = spawnSync("docker", args, {
@@ -4682,6 +4677,58 @@ function projectContainers() {
   if (!Array.isArray(containers)) throw new Error("docker container inspect returned no list");
   return containers;
 }
+// Exits before any compose call unless compose is v2.10 or later and every
+// container in the project was created by compose for this directory.
+function requireOwnProject() {
+  let refusal;
+  try {
+    const version = /^v?(\\d+)\\.(\\d+)\\./.exec(docker(["compose", "version", "--short"]));
+    if (version === null || Number(version[1]) < 2 ||
+        (Number(version[1]) === 2 && Number(version[2]) < 10)) {
+      refusal = "this project needs the Docker Compose plugin v2.10 or later";
+    } else {
+      const foreign = projectContainers().find((container) =>
+        container?.Config?.Labels?.["com.docker.compose.project.working_dir"] !== projectPath);
+      if (foreign !== undefined) {
+        refusal = "compose project " + projectName + " already has containers from " +
+          (foreign.Config?.Labels?.["com.docker.compose.project.working_dir"] ??
+            "an unknown directory") +
+          "; move this project to a directory whose name no other compose project uses";
+      }
+    }
+  } catch (error) {
+    process.stderr.write("could not check compose and project " + projectName + ": " +
+      (error instanceof Error ? error.message : String(error)) + "\\n");
+    process.exit(1);
+  }
+  if (refusal !== undefined) {
+    process.stderr.write(refusal + "\\n");
+    process.exit(2);
+  }
+}
+
+if (mode === "stop" || mode === "down" || mode === "decommission") requireOwnProject();
+if (mode === "stop") process.exit(compose(["stop"]));
+if (mode === "down") process.exit(compose(["down"]));
+if (mode === "decommission") process.exit(compose(["down", "--remove-orphans"]));
+
+const image = setting("DACS_IMAGE");
+const uid = setting("DACS_RUNTIME_UID");
+const gid = setting("DACS_RUNTIME_GID");
+const timeoutSeconds = setting("DACS_IMAGE_SMOKE_TIMEOUT_SECONDS") ?? "120";
+const identity = /^[1-9][0-9]{0,9}$/;
+if (image === undefined || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$/.test(image) ||
+    uid === undefined || !identity.test(uid) || Number(uid) > 2_147_483_647 ||
+    gid === undefined || !identity.test(gid) || Number(gid) > 2_147_483_647 ||
+    (mode === "smoke" && !/^[1-9][0-9]{0,3}$/.test(timeoutSeconds))) {
+  process.stderr.write("usage: set DACS_IMAGE and non-root DACS_RUNTIME_UID/GID " +
+    "(shell or .env), then run npm run dacs:image:smoke; " +
+    "DACS_IMAGE_SMOKE_TIMEOUT_SECONDS, if set, is 1-9999\\n");
+  process.exit(2);
+}
+const user = uid + ":" + gid;
+const immutableImageId = /^sha256:[0-9a-f]{64}$/;
+
 // Why the started project is not exactly one buyer and one seller from imageId.
 function startedMismatch(imageId) {
   const containers = projectContainers();
@@ -4730,6 +4777,7 @@ if (mode === "up") {
       "last passed dacs:image:smoke; rebuild if needed and rerun npm run dacs:image:smoke\\n");
     process.exit(5);
   }
+  requireOwnProject();
   const runtimeSettings = { DACS_IMAGE: imageId, DACS_RUNTIME_UID: uid, DACS_RUNTIME_GID: gid };
   // Report success only once each role's container was created from that ID.
   // A failed or partial start, a failed check and a mismatch all stop both roles.
@@ -4811,19 +4859,21 @@ if (!Array.isArray(imageEnvironment) || imageEnvironment.some((entry) =>
 // The probe checks the production tree and the exact version of every
 // production dependency, imports each SDK, host-kit and payment entry point the
 // service loads, and opens a database, which loads better-sqlite3's native binding.
+// It reports the image's Node release, which must be the one the Dockerfile pins.
 const probe = [
   'import { access, readFile } from "node:fs/promises";',
-  'const required = ["/app/dist/src/service.js", "/app/dist/src/cli.js", "/app/package.json", "/app/package-lock.json"];',
-  'for (const path of required) await access(path);',
-  'const forbidden = ["/app/src", "/app/test", "/app/.env", "/app/tsconfig.json", "/app/dacs.config.ts"];',
+  'const app = ${JSON.stringify(IMAGE_WORKING_DIRECTORY)};',
+  'const required = ["dist/src/service.js", "dist/src/cli.js", "package.json", "package-lock.json"];',
+  'for (const path of required) await access(app + "/" + path);',
+  'const forbidden = ["src", "test", ".env", "tsconfig.json", "dacs.config.ts"];',
   'for (const path of forbidden) {',
-  '  try { await access(path); throw new Error("development or secret path is present: " + path); }',
+  '  try { await access(app + "/" + path); throw new Error("development or secret path is present: " + app + "/" + path); }',
   '  catch (error) { if (error && error.code !== "ENOENT") throw error; }',
   '}',
   'const expected = ${probeVersions};',
   'const versions = {};',
   'for (const [name, version] of Object.entries(expected)) {',
-  '  const manifest = JSON.parse(await readFile("/app/node_modules/" + name + "/package.json", "utf8"));',
+  '  const manifest = JSON.parse(await readFile(app + "/node_modules/" + name + "/package.json", "utf8"));',
   '  if (manifest.version !== version) throw new Error(name + " version mismatch");',
   '  versions[name] = manifest.version;',
   '}',
@@ -4891,6 +4941,10 @@ if (runtime.status !== "pass") {
 if (runtime.uid !== Number(uid) || runtime.gid !== Number(gid)) {
   throw new Error("container runtime identity is not the compose user " + user);
 }
+if (runtime.node !== ${JSON.stringify(IMAGE_NODE_VERSION)}) {
+  throw new Error("container runs Node.js " + runtime.node +
+    ", not the ${IMAGE_NODE_VERSION} the generated Dockerfile installs");
+}
 
 // The image's own command, with no role configured, loads the service's
 // modules and then stops at its first check, before any secret, data or
@@ -4931,7 +4985,7 @@ process.stdout.write(JSON.stringify({
 `;
 }
 
-const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
+const DOCKERFILE = `FROM ${IMAGE_BASE} AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --omit=optional --no-audit --no-fund
@@ -4942,7 +4996,7 @@ COPY test ./test
 RUN npm run build
 RUN npm prune --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund
 
-FROM node:20.19.1-bookworm-slim
+FROM ${IMAGE_BASE}
 ENV NODE_ENV=production
 WORKDIR ${IMAGE_WORKING_DIRECTORY}
 RUN groupadd --system --gid ${IMAGE_RUNTIME_ID} dacs && useradd --system --uid ${IMAGE_RUNTIME_ID} --gid dacs --home-dir ${IMAGE_WORKING_DIRECTORY} dacs \\
@@ -5421,21 +5475,28 @@ starts. Compose gets this project's \`compose.yaml\` as its only file, this
 directory as its project directory, the directory's name as its project name,
 \`--no-build --pull never\`, and exactly the \`buyer\` and \`seller\` services. The
 directory's name must already be a compose project name (lower-case letters,
-digits, \`_\` and \`-\`, starting with a letter or digit), so two projects never
-share one. \`dacs:up\`, \`dacs:down\` and the backup, restore and uninstall stops
-set \`COMPOSE_PROJECT_NAME\` to that name, remove every other \`COMPOSE_*\`
-variable, including \`COMPOSE_FILE\`, from compose's environment, refuse to run
-while \`.env\` sets any \`COMPOSE_*\` variable, and never read override files such
-as \`compose.override.yaml\`. Other compose settings still come from the shell
-and \`.env\`. Once compose returns, \`dacs:up\` checks that the buyer and seller
-containers were created from the recorded image ID and that no other service
-runs in the project. If compose fails, the check fails or the containers do not
-match, it stops both roles, confirms neither still runs and exits non-zero; if
-it cannot stop them it says so and exits 1.
+digits, \`_\` and \`-\`, starting with a letter or digit), so compose does not
+normalise it. Two directories with the same name, such as \`prod/agent\` and
+\`staging/agent\`, would still share one project, so before any compose call
+\`dacs:up\`, \`dacs:down\` and the backup, restore and uninstall stops refuse to
+run while the project has a container that compose created for another
+directory. They also set \`COMPOSE_PROJECT_NAME\` to that name, remove every
+other \`COMPOSE_*\` variable, including \`COMPOSE_FILE\`, from compose's
+environment, refuse to run while \`.env\` mentions \`COMPOSE_\` anywhere, and
+never read override files such as \`compose.override.yaml\`. Other compose
+settings still come from the shell and \`.env\`. Once compose returns,
+\`dacs:up\` checks that the buyer and seller containers were created from the
+recorded image ID and that no other service runs in the project. If compose
+fails, the check fails or the containers do not match, it stops both roles,
+confirms neither still runs and exits non-zero; if it cannot stop them it says
+so and exits 1.
 
-These commands need the Docker CLI with the Compose plugin v2.10 or later,
-which added \`up --pull never\`. The smoke accepts the image configuration that
-Docker CLI versions both before and after 28.2 print.
+These commands need the Docker CLI with the Compose plugin v2.10 or later, this
+project's documented minimum; each compose command checks \`docker compose
+version\` first and refuses an older plugin. The smoke accepts the image
+configuration that Docker CLI versions both before and after 28.2 print, and
+requires the image to run Node.js ${IMAGE_NODE_VERSION}, the release the
+Dockerfile's digest-pinned base image provides.
 
 Compiled services use the host package's exact Demos ESM
 compatibility loader rather than a general TypeScript/esbuild production

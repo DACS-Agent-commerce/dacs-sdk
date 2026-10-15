@@ -253,9 +253,10 @@ image ID, check that image's configured user, working directory, entrypoint,
 command and environment, and run its containers from that ID as the compose
 runtime user, with no network, secrets or serving role. Its probe MUST check the
 exact version of every generated production dependency, import the entry points
-the service loads, including those of each enabled payment rail, and open a
-SQLite database. An unset entrypoint MUST be accepted whether Docker reports it
-as absent, `null` or empty. Only a pass may record the image ID and runtime
+the service loads, including those of each enabled payment rail, open a
+SQLite database, and report the image's Node.js release, which MUST be the
+release the generated Dockerfile's digest-pinned base image provides. An unset
+entrypoint MUST be accepted whether Docker reports it as absent, `null` or empty. Only a pass may record the image ID and runtime
 user, and a new attempt MUST withdraw the previous record first. In a Docker
 deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
 
@@ -266,13 +267,16 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
   build or pull, and exactly the `buyer` and `seller` services. The directory's
   name MUST already be a compose project name, used without normalisation;
 - ignore `COMPOSE_*` environment variables and compose override files, and
-  refuse to run while `.env` sets a `COMPOSE_*` variable, as the generated
-  `dacs:down` and maintenance stops also MUST; and
+  refuse to run while `.env` mentions `COMPOSE_`, while Compose is older than
+  v2.10, or while the compose project has a container created for another
+  project directory, as the generated `dacs:down` and maintenance stops also
+  MUST; and
 - stop both roles and fail unless compose started and created each from the
   recorded image ID and the started containers could be checked, and report a
   failure to stop them or confirm that they stopped.
 
-The generated Docker lifecycle requires the Compose plugin v2.10 or later.
+The generated Docker lifecycle requires the Compose plugin v2.10 or later, and
+checks it before each compose call.
 
 `dacs:setup` owns bounded setup writes such as Listing and binding publication.
 Without live-write confirmation it MUST print a read-only plan and exit without

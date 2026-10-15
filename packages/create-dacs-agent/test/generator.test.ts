@@ -70,7 +70,14 @@ interface FakeContainer {
   project: string;
   service: string;
   running: boolean;
+  // The project directory compose created it for; absent, it has no such label.
+  workingDir?: string;
+  // Created by `compose run` rather than as the service.
+  oneoff?: boolean;
 }
+
+// The image's Node release, which the Dockerfile's base image pins.
+const GENERATED_IMAGE_NODE_VERSION = "20.19.1";
 
 interface FakeDockerScenario {
   // Successive resolutions of an image tag, by `docker image inspect --format
@@ -78,17 +85,32 @@ interface FakeDockerScenario {
   imageIds: string[];
   daemonDown?: boolean;
   config: Readonly<Record<string, unknown>>;
-  probe: Readonly<Record<string, unknown>>;
+  // The probe runs for real against a production tree (see
+  // writeProductionTree) unless this replaces its output.
+  probe?: Readonly<Record<string, unknown>>;
+  // Changes to that tree: installed versions, paths removed or added, and
+  // symbolic links (path to target).
+  app?: Readonly<{
+    versions?: Record<string, string>;
+    remove?: string[];
+    add?: string[];
+    links?: Record<string, string>;
+  }>;
+  // What the probe's process sees in place of the --user identity and the
+  // image's Node release.
+  container?: Readonly<{ uid?: number; gid?: number; node?: string }>;
   service: Readonly<{ status: number; stderr: string }>;
   // That container never exits by itself.
   hang?: "probe" | "service";
+  // `docker compose version --short` prints this.
+  composeVersion?: string;
   // compose up exits with this status after creating only composeUpCreates.
   composeUpStatus?: number;
   composeUpCreates?: string[];
   // These docker commands ("ps", "container", "rm" or "compose <subcommand>")
-  // fail every time, or only the first time.
+  // fail every time, or only on these calls, counting from 1.
   fails?: string[];
-  failsOnce?: string[];
+  failsCalls?: Record<string, number[]>;
   // Compose is killed by a signal.
   composeKilled?: boolean;
   // compose stop succeeds but leaves the containers running.
@@ -118,7 +140,6 @@ function passingDockerScenario(
       Cmd: GENERATED_SERVICE_COMMAND,
       WorkingDir: "/app",
     },
-    probe: { status: "pass", uid: TEST_ONLY_RUNTIME_UID, gid: TEST_ONLY_RUNTIME_GID },
     service: { status: 1, stderr: GENERATED_ROLE_CHECK_REPORT + "\n" },
     ...overrides,
   };
@@ -129,11 +150,18 @@ function passingDockerScenario(
 // the project name (--project-name, else COMPOSE_PROJECT_NAME, else the
 // directory name), each service's image (an override's per-service image:,
 // else DACS_IMAGE from the environment, else .env) and the services started
-// (those named, else every service in the files).
+// (those named, else every service in the files). Each container it creates
+// carries the project directory it was created for.
+//
+// The smoke's probe container runs the probe program it is given with the
+// node arguments it is given, against a production tree standing in for /app,
+// as a process that sees the --user identity and the image's Node release.
 const TEST_ONLY_FAKE_DOCKER_SOURCE = `const {
   appendFileSync, existsSync, readFileSync, writeFileSync,
 } = require("node:fs");
+const { spawnSync } = require("node:child_process");
 const { basename, join, resolve } = require("node:path");
+const { pathToFileURL } = require("node:url");
 const args = process.argv.slice(2);
 const log = process.env.CREATE_DACS_AGENT_TEST_DOCKER_LOG;
 const containersPath = log + ".containers.json";
@@ -151,11 +179,40 @@ function once(name) {
   return true;
 }
 function failIf(name) {
+  const counter = log + ".calls-" + name.replace(/ /g, "-");
+  const call = (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0) + 1;
+  writeFileSync(counter, String(call));
   if ((scenario.fails ?? []).includes(name) ||
-      ((scenario.failsOnce ?? []).includes(name) && once(name))) {
+      (scenario.failsCalls?.[name] ?? []).includes(call)) {
     process.stderr.write("test-only " + name + " failure\\n");
     process.exit(1);
   }
+}
+function runProbe() {
+  const user = args[args.indexOf("--user") + 1].split(":").map(Number);
+  const nodeArguments = args.slice(args.indexOf("--entrypoint") + 3);
+  const program = nodeArguments.indexOf("--eval") + 1;
+  // The probe's one reference to the image's /app.
+  const app = 'const app = "/app";';
+  if (program === 0 || nodeArguments[program].split("\\n").filter((line) => line === app)
+    .length !== 1) {
+    process.stderr.write("test-only fake cannot map the probe's /app\\n");
+    process.exit(64);
+  }
+  nodeArguments[program] = nodeArguments[program]
+    .replace(app, "const app = " + JSON.stringify(scenario.appRoot) + ";");
+  const seen = { uid: user[0], gid: user[1], node: ${JSON.stringify(GENERATED_IMAGE_NODE_VERSION)},
+    ...scenario.container };
+  const child = spawnSync(process.execPath, [
+    "--import", pathToFileURL(scenario.containerShim).href, ...nodeArguments,
+  ], {
+    cwd: scenario.appRoot,
+    encoding: "utf8",
+    env: { CREATE_DACS_AGENT_TEST_CONTAINER: JSON.stringify(seen) },
+  });
+  process.stdout.write(child.stdout);
+  process.stderr.write(child.stderr);
+  process.exitCode = child.status ?? 1;
 }
 function resolveTag() {
   const counter = log + ".resolutions";
@@ -248,7 +305,7 @@ function compose(rest) {
       const Id = "container-" + project + "-" + service;
       const kept = state.filter((container) => container.Id !== Id);
       state.length = 0;
-      state.push(...kept, { Id, Image, project, service, running: true });
+      state.push(...kept, { Id, Image, project, service, running: true, workingDir: directory });
     }
     saveContainers(state);
     if (scenario.composeUpStatus !== undefined) process.exit(scenario.composeUpStatus);
@@ -270,7 +327,9 @@ if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
   process.stdout.write(JSON.stringify(scenario.config) + "\\n");
 } else if (args[0] === "run" && args.includes("--entrypoint")) {
   if (scenario.hang === "probe") hang();
-  else process.stdout.write(JSON.stringify(scenario.probe) + "\\n");
+  else if (scenario.probe !== undefined) {
+    process.stdout.write(JSON.stringify(scenario.probe) + "\\n");
+  } else runProbe();
 } else if (args[0] === "run") {
   if (scenario.hang === "service") hang();
   else {
@@ -280,6 +339,9 @@ if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
 } else if (args[0] === "rm" && args[1] === "--force") {
   // Removing the named smoke container succeeds unless it fails.
   failIf("rm");
+} else if (args[0] === "compose" && args[1] === "version" && args[2] === "--short") {
+  failIf("compose version");
+  process.stdout.write((scenario.composeVersion ?? "2.29.7") + "\\n");
 } else if (args[0] === "compose") {
   compose(args.slice(1));
 } else if (args[0] === "ps" && args.includes("--all") && args.includes("--quiet")) {
@@ -291,6 +353,10 @@ if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
     }
   }
 } else if (args[0] === "container" && args[1] === "inspect") {
+  if (args.length === 2) {
+    process.stderr.write("test-only: docker container inspect requires at least 1 argument\\n");
+    process.exit(1);
+  }
   failIf("container");
   if (scenario.inspectOutput !== undefined && once("inspect-output")) {
     process.stdout.write(scenario.inspectOutput + "\\n");
@@ -305,7 +371,9 @@ if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
       Config: { Labels: {
         "com.docker.compose.project": container.project,
         "com.docker.compose.service": container.service,
-        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.oneoff": container.oneoff ? "True" : "False",
+        ...(container.workingDir === undefined ? {}
+          : { "com.docker.compose.project.working_dir": container.workingDir }),
       } },
       State: { Running: container.running },
     };
@@ -352,7 +420,96 @@ async function generatedDockerProject(name: string): Promise<string> {
   return target;
 }
 
-type SmokeOptions = Readonly<{ args?: string[]; env?: Record<string, string> }>;
+const SDK_ENTRY_POINTS = [
+  "@kynesyslabs/dacs",
+  "@kynesyslabs/dacs/substrate",
+  "@kynesyslabs/dacs-node",
+  "@kynesyslabs/demosdk/websdk",
+  "@kynesyslabs/demosdk/storage",
+  "@kynesyslabs/demosdk/abstraction",
+];
+// The SDK and host kit import these on an x402 rail's first use.
+const X402_ENTRY_POINTS = [
+  "viem",
+  "viem/accounts",
+  "@x402/core/client",
+  "@x402/core/server",
+  "@x402/evm",
+  "@x402/evm/exact/client",
+  "@x402/evm/exact/server",
+  "@x402/fetch",
+];
+// Where an entry point's stub module lives below /app.
+function entryPointModule(entryPoint: string): string {
+  const parts = entryPoint.split("/");
+  const packageLength = entryPoint.startsWith("@") ? 2 : 1;
+  const subpath = parts.slice(packageLength).join("/");
+  return join("node_modules", ...parts.slice(0, packageLength), `${subpath || "index"}.js`);
+}
+const SQLITE_BINDING = join("node_modules", "better-sqlite3", "build", "Release",
+  "better_sqlite3.node");
+
+// /app as the generated Dockerfile leaves it: the built service, the package
+// files and production dependencies at the versions package.json pins, as
+// stub packages that export each entry point. Opening a stub database reads
+// SQLITE_BINDING, as better-sqlite3 loads its native binding.
+async function writeProductionTree(
+  root: string,
+  dependencies: Readonly<Record<string, string>>,
+  changes: FakeDockerScenario["app"] = {},
+): Promise<void> {
+  const files: Record<string, string> = {
+    [join("dist", "src", "service.js")]: "",
+    [join("dist", "src", "cli.js")]: "",
+    "package.json": "{}\n",
+    "package-lock.json": "{}\n",
+    [entryPointModule("@kynesyslabs/dacs-node/demos-loader")]: "",
+    [SQLITE_BINDING]: "",
+  };
+  for (const [name, version] of Object.entries(dependencies)) {
+    files[join("node_modules", name, "package.json")] = JSON.stringify({
+      name,
+      version: changes.versions?.[name] ?? version,
+      type: "module",
+      exports: { ".": "./index.js", "./*": "./*.js" },
+    });
+    files[join("node_modules", name, "index.js")] = "export {};\n";
+  }
+  for (const entryPoint of [...SDK_ENTRY_POINTS, ...X402_ENTRY_POINTS]) {
+    files[entryPointModule(entryPoint)] = "export {};\n";
+  }
+  files[join("node_modules", "better-sqlite3", "index.js")] = [
+    'import { readFileSync } from "node:fs";',
+    "export default class Database {",
+    "  constructor() {",
+    '    readFileSync(new URL("./build/Release/better_sqlite3.node", import.meta.url));',
+    "  }",
+    '  prepare(sql) { return { get: () => (sql === "SELECT 1 AS one" ? { one: 1 } : {}) }; }',
+    "  close() {}",
+    "}",
+    "",
+  ].join("\n");
+  for (const path of changes.remove ?? []) delete files[path];
+  for (const path of changes.add ?? []) files[path] = "";
+  for (const [path, source] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), source, "utf8");
+  }
+  for (const [path, linked] of Object.entries(changes.links ?? {})) {
+    await symlink(linked, join(root, path));
+  }
+}
+
+// Preloaded into the fake's probe process: the identity and Node release the
+// container would give it.
+const TEST_ONLY_CONTAINER_SHIM = `const seen = JSON.parse(process.env.CREATE_DACS_AGENT_TEST_CONTAINER);
+process.getuid = () => seen.uid;
+process.getgid = () => seen.gid;
+Object.defineProperty(process, "versions", { value: { ...process.versions, node: seen.node } });
+`;
+
+// umask: run the script under this file-creation mask rather than the test's.
+type SmokeOptions = Readonly<{ args?: string[]; env?: Record<string, string>; umask?: string }>;
 
 async function runGeneratedDockerSmoke(
   target: string,
@@ -363,12 +520,29 @@ async function runGeneratedDockerSmoke(
   const dockerLog = join(fakeBin, "docker-calls.jsonl");
   const scenarioPath = join(fakeBin, "docker-scenario.json");
   if (scenario !== undefined) {
-    await writeFile(scenarioPath, JSON.stringify(scenario), "utf8");
+    const appRoot = join(fakeBin, "app");
+    const containerShim = join(fakeBin, "container-shim.mjs");
+    const { dependencies } = JSON.parse(
+      await readFile(join(target, "package.json"), "utf8"),
+    ) as { dependencies: Record<string, string> };
+    await writeProductionTree(appRoot, dependencies, scenario.app);
+    await writeFile(containerShim, TEST_ONLY_CONTAINER_SHIM, "utf8");
+    await writeFile(
+      scenarioPath,
+      JSON.stringify({ ...scenario, appRoot, containerShim }),
+      "utf8",
+    );
     await writeFakeExecutable(fakeBin, "docker", TEST_ONLY_FAKE_DOCKER_SOURCE);
   }
-  const result = spawnSync(
+  const script = [
     process.execPath,
-    [join(target, "scripts", "docker-runtime-smoke.mjs"), ...(options.args ?? [])],
+    join(target, "scripts", "docker-runtime-smoke.mjs"),
+    ...(options.args ?? []),
+  ];
+  const result = spawnSync(
+    options.umask === undefined ? script[0]! : "/bin/sh",
+    options.umask === undefined ? script.slice(1)
+      : ["-c", `umask ${options.umask} && exec "$0" "$@"`, ...script],
     {
       cwd: target,
       encoding: "utf8",
@@ -414,7 +588,18 @@ async function generatedComposeArguments(target: string): Promise<string[]> {
   ];
 }
 
-const isComposeInvocation = (args: readonly string[]) => args[0] === "compose";
+// A compose command on the project, rather than `docker compose version`.
+const isComposeInvocation = (args: readonly string[]) =>
+  args[0] === "compose" && args[1] === "--file";
+const COMPOSE_VERSION_CHECK = ["compose", "version", "--short"];
+// What each compose command runs first: the version check, then the
+// project's containers (none here).
+async function composeChecks(target: string): Promise<string[][]> {
+  return [COMPOSE_VERSION_CHECK, [
+    "ps", "--all", "--quiet", "--no-trunc",
+    "--filter", `label=com.docker.compose.project=${basename(await realpath(target))}`,
+  ]];
+}
 
 function localImageReferenceOf(environment: string): string {
   const match = /^DACS_IMAGE=(.+)$/m.exec(environment);
@@ -595,6 +780,12 @@ describe("create-dacs-agent", () => {
       targetDirectory: join(parent, "Local.Agent"),
       deployment: "local",
     })).resolves.toMatchObject({ deployment: "local" });
+    // An offline project has no compose lifecycle to name.
+    await expect(createDacsAgentProject({
+      targetDirectory: join(parent, "Offline.Agent"),
+      deployment: "docker",
+      install: false,
+    })).resolves.toMatchObject({ mode: "offline", deployment: "docker" });
   });
 
   test.runIf(process.platform !== "win32")(
@@ -701,8 +892,12 @@ process.exit(1);
     expect(readme).not.toContain("must pass before an installer reports success");
     expect(readme).toContain("the image's configured service command");
     expect(readme).toContain("with `DACS_IMAGE` set to that image ID rather\nthan the tag");
-    expect(readme).toContain("refuse to run\nwhile `.env` sets any `COMPOSE_*` variable");
-    expect(readme).toContain("Compose plugin v2.10 or later");
+    expect(readme).toContain("refuse to run while `.env` mentions `COMPOSE_` anywhere");
+    expect(readme).toContain("refuse to\nrun while the project has a container that compose created for another\ndirectory");
+    expect(readme).not.toContain("never share one");
+    expect(readme).toContain("Compose plugin v2.10 or later, this\nproject's documented minimum");
+    expect(readme).not.toContain("which added");
+    expect(readme).toContain(`requires the image to run Node.js ${GENERATED_IMAGE_NODE_VERSION}`);
     // The script's --up, --stop and --down modes are exercised directly below; the
     // CLI only dispatches to them by deployment, after the pre-start doctor for
     // dacs:up, and refuses maintenance when the stop fails.
@@ -710,9 +905,26 @@ process.exit(1);
     expect(cli).toContain(
       'command(process.execPath, ["scripts/docker-runtime-smoke.mjs", ...args])',
     );
+    // The gate is the doctor's exit code: a block is returned before anything
+    // starts, and only missing local stores are initialised and rechecked.
     expect(cli).toContain([
       "async function startGate(): Promise<number> {",
       '  let report = await runGeneratedDoctor("pre-start", "start");',
+      "  const localInitializationOnly = report.checks.filter((item) => item.required &&",
+      '    item.status !== "pass").every((item) =>',
+      '      item.id === "local.data-directory" || item.id === "local.disk-space" ||',
+      '      item.id === "local.sqlite");',
+      "  if (report.exitCode !== 0 && !localInitializationOnly) {",
+      "    printDoctor(report);",
+      "    return report.exitCode;",
+      "  }",
+      "  if (report.exitCode !== 0) {",
+      "    await initializeActorStores();",
+      '    report = await runGeneratedDoctor("pre-start", "start");',
+      "  }",
+      "  printDoctor(report);",
+      "  return report.exitCode;",
+      "}",
     ].join("\n"));
     expect(cli).toContain([
       '  else if (operation === "up") {',
@@ -767,29 +979,10 @@ process.exit(1);
   });
 
   test("probes the image for every production dependency and payment entry point", async () => {
-    const sdkEntryPoints = [
-      "@kynesyslabs/dacs",
-      "@kynesyslabs/dacs/substrate",
-      "@kynesyslabs/dacs-node",
-      "@kynesyslabs/demosdk/websdk",
-      "@kynesyslabs/demosdk/storage",
-      "@kynesyslabs/demosdk/abstraction",
-    ];
-    // The SDK and host kit import these on an x402 rail's first use.
-    const x402EntryPoints = [
-      "viem",
-      "viem/accounts",
-      "@x402/core/client",
-      "@x402/core/server",
-      "@x402/evm",
-      "@x402/evm/exact/client",
-      "@x402/evm/exact/server",
-      "@x402/fetch",
-    ];
     for (const [rails, entryPoints] of [
-      ["both", [...sdkEntryPoints, ...x402EntryPoints]],
-      ["x402", [...sdkEntryPoints, ...x402EntryPoints]],
-      ["pay-dem", sdkEntryPoints],
+      ["both", [...SDK_ENTRY_POINTS, ...X402_ENTRY_POINTS]],
+      ["x402", [...SDK_ENTRY_POINTS, ...X402_ENTRY_POINTS]],
+      ["pay-dem", SDK_ENTRY_POINTS],
     ] as const) {
       const target = join(await temporaryDirectory(), `probe-${rails}-agent`);
       await createDacsAgentProject({
@@ -835,6 +1028,43 @@ process.exit(1);
     expect(smoke).toContain(`if (config.WorkingDir !== ${JSON.stringify(workingDirectory)}) {`);
     const checked = /^const expectedCommand = (.+);$/m.exec(smoke);
     expect(JSON.parse(checked![1]!)).toEqual(command);
+    // Both stages start from one digest-pinned Node release, which the smoke
+    // requires the image to run.
+    expect([...dockerfile.matchAll(/^FROM (\S+)/gm)].map((match) => match[1])).toEqual(
+      Array(2).fill(`node:${GENERATED_IMAGE_NODE_VERSION}-bookworm-slim` +
+        "@sha256:83e53269616ca1b22cf7533e5db4e2f1a0c24a8e818b21691d6d4a69ec9e2c6d"),
+    );
+    expect(smoke).toContain(
+      `if (runtime.node !== ${JSON.stringify(GENERATED_IMAGE_NODE_VERSION)}) {`,
+    );
+  });
+
+  test("supports only the Node releases the pinned better-sqlite3 supports", async () => {
+    const target = await generatedDockerProject("node-range-agent");
+    const generated = JSON.parse(await readFile(join(target, "package.json"), "utf8")) as {
+      engines: { node: string };
+      dependencies: Record<string, string>;
+    };
+    const sqlite = JSON.parse(await readFile(
+      new URL("../../../node_modules/better-sqlite3/package.json", import.meta.url),
+      "utf8",
+    )) as { version: string; engines: { node: string } };
+    expect(sqlite.version).toBe(generated.dependencies["better-sqlite3"]);
+    // The SDK's ^20.19.0 || >=22.12.0, within each major better-sqlite3 lists.
+    const majors = sqlite.engines.node.split("||").map((range) => {
+      const major = /^\s*(\d+)\.x\s*$/.exec(range);
+      expect(major, range).not.toBeNull();
+      return Number(major![1]);
+    });
+    expect(generated.engines.node).toBe(majors.filter((major) => major >= 20 && major !== 21)
+      .map((major) => major === 20 ? "^20.19.0" : major === 22 ? "^22.12.0" : `${major}.x`)
+      .join(" || "));
+    // The doctor's local.node-version check applies the same range.
+    const doctor = await readFile(join(target, "src", "doctor.ts"), "utf8");
+    expect(doctor).toContain(
+      "  return major === 20 ? minor >= 19 : major === 22 ? minor >= 12 : " +
+        `major >= 23 && major <= ${Math.max(...majors)};`,
+    );
   });
 
   test.runIf(process.platform !== "win32")(
@@ -844,9 +1074,10 @@ process.exit(1);
       const image = localImageReferenceOf(await readFile(join(target, ".env"), "utf8"));
       const user = `${TEST_ONLY_RUNTIME_UID}:${TEST_ONLY_RUNTIME_GID}`;
       // The tag moves after the first resolution; every later call uses the ID.
+      // A permissive umask shows the modes the script itself asks for.
       const result = await runGeneratedDockerSmoke(target, passingDockerScenario({
         imageIds: [TEST_ONLY_FAKE_IMAGE_ID, TEST_ONLY_REPLACEMENT_IMAGE_ID],
-      }));
+      }), { umask: "022" });
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({
@@ -886,11 +1117,29 @@ process.exit(1);
         user,
         command: GENERATED_SERVICE_COMMAND,
       });
+      // Only the project's owner can read the record or its directory.
+      const receiptDirectory = join(target, ".dacs-runtime");
+      expect((await lstat(receiptDirectory)).mode & 0o777).toBe(0o700);
+      expect((await lstat(join(receiptDirectory, "docker-image-smoke.json"))).mode & 0o777)
+        .toBe(0o600);
+
+      // The probe ran as that user on the pinned Node release and found every
+      // production dependency at its pinned version.
+      const { dependencies } = JSON.parse(
+        await readFile(join(target, "package.json"), "utf8"),
+      ) as { dependencies: Record<string, string> };
+      expect(JSON.parse(result.stdout).runtime).toEqual({
+        status: "pass",
+        node: GENERATED_IMAGE_NODE_VERSION,
+        uid: TEST_ONLY_RUNTIME_UID,
+        gid: TEST_ONLY_RUNTIME_GID,
+        versions: dependencies,
+      });
 
       // Compose prefers the shell environment over .env; so does the smoke.
-      const shell = await runGeneratedDockerSmoke(target, passingDockerScenario({
-        probe: { status: "pass", uid: 5151, gid: 5252 },
-      }), { env: { DACS_RUNTIME_UID: "5151", DACS_RUNTIME_GID: "5252" } });
+      const shell = await runGeneratedDockerSmoke(target, passingDockerScenario(), {
+        env: { DACS_RUNTIME_UID: "5151", DACS_RUNTIME_GID: "5252" },
+      });
       expect(shell.status).toBe(0);
       expect(shell.invocations[3]).toContain("5151:5252");
       expect(shell.receipt).toMatchObject({ user: "5151:5252" });
@@ -921,6 +1170,11 @@ process.exit(1);
         ...await generatedComposeArguments(target),
         "up", "--detach", "--no-build", "--pull", "never", "buyer", "seller",
       ]]);
+      // Compose's version and the project's owner are checked just before.
+      expect(started.invocations.slice(1, 4)).toEqual([
+        ...await composeChecks(target),
+        started.invocations.filter(isComposeInvocation)[0],
+      ]);
       expect(started.composeEnvironments).toEqual([{
         subcommand: "up",
         DACS_IMAGE: TEST_ONLY_FAKE_IMAGE_ID,
@@ -1010,6 +1264,7 @@ process.exit(1);
     "dacs:up ignores COMPOSE_FILE, COMPOSE_PROJECT_NAME and compose override files",
     async () => {
       const target = await generatedDockerProject("override-agent");
+      const realTarget = await realpath(target);
       expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
       // Each file replaces the buyer's image with an unsmoked tag and adds a service.
       const override = [
@@ -1047,22 +1302,33 @@ process.exit(1);
           project: "override-agent",
           service,
           running: true,
+          workingDir: realTarget,
         })));
       }
 
       // Compose imports COMPOSE_* variables from .env itself, and falls back to
       // COMPOSE_PROJECT_NAME when the file does not load; such a .env is refused.
+      // Compose's .env grammar also starts a statement after any Unicode space,
+      // takes any whitespace after export and reads on after a quoted value, so
+      // any mention of COMPOSE_ is refused.
       const environment = await readFile(join(target, ".env"), "utf8");
       for (const line of [
         "COMPOSE_PROJECT_NAME=another-project",
         "export COMPOSE_PROFILES=extra",
         "  COMPOSE_FILE=extra.yaml",
+        "\fCOMPOSE_PROFILES=extra",
+        "\u00a0COMPOSE_PROFILES=extra",
+        "export\fCOMPOSE_PROFILES=extra",
+        'DACS_X402_TOKEN_NAME="USDC" COMPOSE_PROFILES=extra',
+        "# COMPOSE_PROFILES=extra",
       ]) {
         await writeFile(join(target, ".env"), `${environment}${line}\n`, "utf8");
         for (const args of [[], ["--up"], ["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
           const refused = await runGeneratedDockerSmoke(target, scenario, { args });
           expect(refused.status, `${line} ${args.join(" ")}`).toBe(2);
-          expect(refused.stderr).toContain("remove every COMPOSE_* variable from .env");
+          expect(refused.stderr).toContain(
+            "remove every COMPOSE_* variable, and any other mention of COMPOSE_, from .env",
+          );
           expect(refused.invocations).toEqual([]);
         }
       }
@@ -1084,6 +1350,7 @@ process.exit(1);
         project: "checked-start-agent",
         service: "extra",
         running: true,
+        workingDir: await realpath(target),
       };
       const refused: [Partial<FakeDockerScenario>, string][] = [
         [{ composeCreatesImage: TEST_ONLY_REPLACEMENT_IMAGE_ID },
@@ -1106,15 +1373,27 @@ process.exit(1);
         containers: [{ ...strayContainer, running: false }],
       }), up);
       expect(stopped.status).toBe(0);
+      // Nor does a one-off `compose run` container of a role.
+      const oneOff = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        containers: [{
+          ...strayContainer,
+          Id: "container-checked-start-agent-buyer-run",
+          service: "buyer",
+          oneoff: true,
+        }],
+      }), up);
+      expect(oneOff.stderr).toBe("");
+      expect(oneOff.status).toBe(0);
 
       // A failed or partial start, or a check that cannot complete, also stops
-      // both roles and confirms that neither still runs.
+      // both roles and confirms that neither still runs. The first ps is the
+      // check before compose up.
       const failedStarts: [Partial<FakeDockerScenario>, number, string][] = [
         [{ composeUpStatus: 17 }, 17, "compose up exited 17"],
         [{ composeUpStatus: 17, composeUpCreates: ["buyer"] }, 17, "compose up exited 17"],
-        [{ failsOnce: ["ps"] }, 1,
+        [{ failsCalls: { ps: [2] } }, 1,
           "could not check the started containers: docker ps failed: test-only ps failure"],
-        [{ failsOnce: ["container"] }, 1, "could not check the started containers: " +
+        [{ failsCalls: { container: [1] } }, 1, "could not check the started containers: " +
           "docker container failed: test-only container failure"],
         [{ inspectOutput: "{}" }, 1,
           "could not check the started containers: docker container inspect returned no list"],
@@ -1133,7 +1412,7 @@ process.exit(1);
           "compose stop exited 1"],
         [{ composeCreatesImage: TEST_ONLY_REPLACEMENT_IMAGE_ID, stopLeavesRunning: true },
           "buyer is still running"],
-        [{ fails: ["ps"] }, "docker ps failed: test-only ps failure"],
+        [{ failsCalls: { ps: [2, 3] } }, "docker ps failed: test-only ps failure"],
       ];
       for (const [overrides, message] of failedStops) {
         const result = await runGeneratedDockerSmoke(target, passingDockerScenario(overrides), up);
@@ -1153,6 +1432,7 @@ process.exit(1);
     async () => {
       const target = await generatedDockerProject("lifecycle-agent");
       const prefix = await generatedComposeArguments(target);
+      const checks = await composeChecks(target);
       const env = { COMPOSE_FILE: "extra.yaml", COMPOSE_PROJECT_NAME: "another-project" };
       const modes: [string[], string[]][] = [
         [["--stop"], ["stop"]],
@@ -1165,7 +1445,7 @@ process.exit(1);
           env,
         });
         expect(result.status, args.join(" ")).toBe(0);
-        expect(result.invocations).toEqual([[...prefix, ...compose]]);
+        expect(result.invocations).toEqual([...checks, [...prefix, ...compose]]);
         expect(result.composeEnvironments[0]).toMatchObject({
           COMPOSE_PROJECT_NAME: "lifecycle-agent",
           composeVariables: ["COMPOSE_PROJECT_NAME"],
@@ -1177,15 +1457,97 @@ process.exit(1);
         ]) {
           const failed = await runGeneratedDockerSmoke(target, scenario, { args, env });
           expect(failed.status, `${args.join(" ")} ${JSON.stringify(scenario.fails)}`).toBe(1);
-          expect(failed.invocations).toEqual([[...prefix, ...compose]]);
+          expect(failed.invocations).toEqual([...checks, [...prefix, ...compose]]);
         }
       }
       const failed = await runGeneratedDockerSmoke(target, passingDockerScenario({
         daemonDown: true,
       }), { args: ["--down"] });
       expect(failed.status).toBe(1);
+      expect(failed.stderr).toContain("could not check compose and project lifecycle-agent: " +
+        "docker compose failed: Cannot connect to the test-only Docker daemon");
     },
     SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "runs no compose command on another directory's project or with Compose before v2.10",
+    async () => {
+      // Two projects whose directories share a name share a compose project.
+      const production = await generatedDockerProject("agent");
+      const staging = await generatedDockerProject("agent");
+      expect(basename(dirname(production))).not.toBe(basename(dirname(staging)));
+      for (const target of [production, staging]) {
+        expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      }
+      const started = await runGeneratedDockerSmoke(production, passingDockerScenario(), {
+        args: ["--up"],
+      });
+      expect(started.status).toBe(0);
+      const productionContainers = started.containers!;
+      expect(productionContainers.map(({ workingDir }) => workingDir))
+        .toEqual(Array(2).fill(await realpath(production)));
+      const lifecycle = [["--up"], ["--stop"], ["--down"], ["--down", "--remove-orphans"]];
+      for (const args of lifecycle) {
+        const refused = await runGeneratedDockerSmoke(staging, passingDockerScenario({
+          containers: productionContainers,
+        }), { args });
+        expect(refused.status, args.join(" ")).toBe(2);
+        expect(refused.stderr).toContain(
+          `compose project agent already has containers from ${await realpath(production)}; ` +
+            "move this project to a directory whose name no other compose project uses",
+        );
+        expect(refused.invocations.filter(isComposeInvocation)).toEqual([]);
+        // Production's own roles are untouched.
+        expect(refused.containers ?? productionContainers).toEqual(productionContainers);
+        // The same containers are production's own.
+        const own = await runGeneratedDockerSmoke(production, passingDockerScenario({
+          containers: productionContainers,
+        }), { args });
+        expect(own.status, args.join(" ")).toBe(0);
+      }
+      // A container without compose's directory label is no proof of ownership.
+      const unlabelled = await runGeneratedDockerSmoke(production, passingDockerScenario({
+        containers: productionContainers.map(({ workingDir: _directory, ...container }) =>
+          container),
+      }), { args: ["--stop"] });
+      expect(unlabelled.status).toBe(2);
+      expect(unlabelled.stderr).toContain("already has containers from an unknown directory");
+
+      // Compose before v2.10, or a version it cannot read, is refused.
+      for (const composeVersion of ["2.9.0", "v2.9.9", "1.29.2", "dev", "2.10"]) {
+        for (const args of lifecycle) {
+          const refused = await runGeneratedDockerSmoke(production, passingDockerScenario({
+            composeVersion,
+          }), { args });
+          expect(refused.status, `${composeVersion} ${args.join(" ")}`).toBe(2);
+          expect(refused.stderr).toContain(
+            "this project needs the Docker Compose plugin v2.10 or later",
+          );
+          expect(refused.invocations.filter(isComposeInvocation)).toEqual([]);
+        }
+      }
+      for (const composeVersion of ["2.10.0", "v2.10.2", "2.40.3-desktop.1", "5.6.0"]) {
+        const accepted = await runGeneratedDockerSmoke(production, passingDockerScenario({
+          composeVersion,
+        }), { args: ["--down"] });
+        expect(accepted.status, composeVersion).toBe(0);
+      }
+      // A check that cannot complete runs no compose command either.
+      for (const overrides of [
+        { fails: ["compose version"] },
+        { fails: ["ps"] },
+        { containers: productionContainers, fails: ["container"] },
+      ]) {
+        const failed = await runGeneratedDockerSmoke(production, passingDockerScenario(
+          overrides,
+        ), { args: ["--stop"] });
+        expect(failed.status, JSON.stringify(overrides)).toBe(1);
+        expect(failed.stderr).toContain("could not check compose and project agent: ");
+        expect(failed.invocations.filter(isComposeInvocation)).toEqual([]);
+      }
+    },
+    SPAWNING_TEST_TIMEOUT_MS * 4,
   );
 
   test.runIf(process.platform !== "win32")(
@@ -1310,10 +1672,18 @@ process.exit(1);
           "image command does not start the generated DACS service"],
         [{ probe: { status: "fail", uid: TEST_ONLY_RUNTIME_UID, gid: TEST_ONLY_RUNTIME_GID } },
           "container probe did not report a pass"],
-        [{ probe: { status: "pass", uid: 10001, gid: TEST_ONLY_RUNTIME_GID } },
+        // An image whose process does not run as the compose user.
+        [{ container: { uid: 10001 } },
           `container runtime identity is not the compose user ${composeUser}`],
-        [{ probe: { status: "pass", uid: TEST_ONLY_RUNTIME_UID, gid: 10001 } },
+        [{ container: { gid: 10001 } },
           `container runtime identity is not the compose user ${composeUser}`],
+        // Any Node release but the one the Dockerfile pins, or none reported.
+        ...["18.0.0", "20.18.0", "20.19.2", "22.12.0", "v20.19.1"].map((node) =>
+          [{ container: { node } },
+            `container runs Node.js ${node}, not the ${GENERATED_IMAGE_NODE_VERSION} ` +
+              "the generated Dockerfile installs"] as [Partial<FakeDockerScenario>, string]),
+        [{ probe: { status: "pass", uid: TEST_ONLY_RUNTIME_UID, gid: TEST_ONLY_RUNTIME_GID } },
+          "container runs Node.js undefined, not the"],
         [{ daemonDown: true },
           "docker image failed: Cannot connect to the test-only Docker daemon"],
       ];
@@ -1342,7 +1712,69 @@ process.exit(1);
       expect(upMissing.status).toBe(1);
       expect(upMissing.stderr).toContain("ENOENT");
     },
-    SPAWNING_TEST_TIMEOUT_MS,
+    SPAWNING_TEST_TIMEOUT_MS * 2,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "fails the image probe for each wrong production file, version, entry point, binding or root",
+    async () => {
+      const target = await generatedDockerProject("probed-tree-agent");
+      const { dependencies } = JSON.parse(
+        await readFile(join(target, "package.json"), "utf8"),
+      ) as { dependencies: Record<string, string> };
+      const required = [
+        join("dist", "src", "service.js"),
+        join("dist", "src", "cli.js"),
+        "package.json",
+        "package-lock.json",
+      ];
+      const forbidden = ["src", "test", ".env", "tsconfig.json", "dacs.config.ts"];
+      const failures: [Partial<FakeDockerScenario>, string][] = [
+        ...Object.keys(dependencies).map((name) =>
+          [{ app: { versions: { [name]: "0.0.0-test" } } }, `${name} version mismatch`] as
+            [Partial<FakeDockerScenario>, string]),
+        ...required.map((path) =>
+          [{ app: { remove: [path] } }, `ENOENT: no such file or directory, access '`] as
+            [Partial<FakeDockerScenario>, string]),
+        ...forbidden.map((path) =>
+          [{ app: { add: [path] } }, `development or secret path is present: `] as
+            [Partial<FakeDockerScenario>, string]),
+        ...[...SDK_ENTRY_POINTS, ...X402_ENTRY_POINTS].map((entryPoint) =>
+          [{ app: { remove: [entryPointModule(entryPoint)] } }, "ERR_MODULE_NOT_FOUND"] as
+            [Partial<FakeDockerScenario>, string]),
+        [{ app: { remove: [SQLITE_BINDING] } }, "better_sqlite3.node"],
+        [{ container: { uid: 0, gid: 0 } }, "container executed as root"],
+      ];
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      for (const [overrides, message] of failures) {
+        const label = JSON.stringify(overrides);
+        const result = await runGeneratedDockerSmoke(target, passingDockerScenario(overrides));
+        expect(result.status, label).toBe(1);
+        expect(result.stderr, label).toContain("docker run failed: ");
+        expect(result.stderr, label).toContain(message);
+        // Which path, for the file checks.
+        const path = overrides.app?.remove?.[0] ?? overrides.app?.add?.[0];
+        if (path !== undefined && !path.startsWith("node_modules")) {
+          expect(result.stderr, label).toContain(`${path}`);
+        }
+        expect(result.receipt, label).toBeUndefined();
+        // The image's own command never ran.
+        expect(result.invocations.filter((args) => args[0] === "run"), label).toHaveLength(1);
+      }
+      // A forbidden path that cannot be checked fails the probe too; one that
+      // resolves to nothing is absent.
+      const unchecked = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        app: { links: { ".env": ".env" } },
+      }));
+      expect(unchecked.status).toBe(1);
+      expect(unchecked.stderr).toContain("ELOOP");
+      const dangling = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        app: { links: { ".env": "absent" } },
+      }));
+      expect(dangling.stderr).toBe("");
+      expect(dangling.status).toBe(0);
+    },
+    SPAWNING_TEST_TIMEOUT_MS * 4,
   );
 
   test.runIf(process.platform !== "win32")(
@@ -1359,6 +1791,8 @@ process.exit(1);
         [{ env: { DACS_RUNTIME_GID: "root" } }, "usage: set DACS_IMAGE and non-root"],
         [{ env: { DACS_IMAGE_SMOKE_TIMEOUT_SECONDS: "0" } }, "is 1-9999"],
         [{ env: { DACS_IMAGE_SMOKE_TIMEOUT_SECONDS: "10000" } }, "is 1-9999"],
+        [{ env: { DACS_IMAGE: "agent image:local" } }, "usage: set DACS_IMAGE and non-root"],
+        [{ env: { DACS_RUNTIME_UID: "2147483648" } }, "usage: set DACS_IMAGE and non-root"],
       ];
       for (const [options, message] of usageErrors) {
         const result = await runGeneratedDockerSmoke(target, passingDockerScenario(), options);
@@ -1373,6 +1807,24 @@ process.exit(1);
       });
       expect(upWithTimeout.status).toBe(5);
       expect(upWithTimeout.stderr).toContain("last passed dacs:image:smoke");
+      // An empty setting is unset, so the timeout default applies.
+      const emptyTimeout = await runGeneratedDockerSmoke(target, passingDockerScenario(), {
+        env: { DACS_IMAGE_SMOKE_TIMEOUT_SECONDS: "" },
+      });
+      expect(emptyTimeout.stderr).toBe("");
+      expect(emptyTimeout.status).toBe(0);
+      // A .env that exists but cannot be read is an error, not an empty file.
+      if (process.getuid?.() !== 0) {
+        await chmod(join(target, ".env"), 0o000);
+        try {
+          const unreadable = await runGeneratedDockerSmoke(target, passingDockerScenario());
+          expect(unreadable.status).toBe(1);
+          expect(unreadable.stderr).toContain("EACCES");
+          expect(unreadable.invocations).toEqual([]);
+        } finally {
+          await chmod(join(target, ".env"), 0o600);
+        }
+      }
 
       // Compose would normalise these names, so that agent.a, Agent-A and agenta
       // would all collide; the script uses a directory's name only as it stands.
