@@ -93,13 +93,20 @@ does not reveal merely because both locks exist. Once the destination claim is
 final, the preimage is public and the source refund path is forbidden. If the
 payee's source claim is not yet final, the result is `settle-asymmetric`, not a
 refund or terminal ordinary failure. If the source expiry passes without that
-claim, the session follows ST-8's expiry: once the adapter authenticates the
-retained source claim `failed`, or `absent` naming it, no claim can complete
-within the window and the result is the terminal `failed` with `errorClass`
-`settlement-atomicity` and reason `dest-revealed-source-unclaimed-expired`.
-While a claim may still prove final in time, or the core holds none, it is
-`operator-alert` with reason `htlc-source-claim-missed-after-reveal` (see
-Operator alerts and Settlement evidence).
+claim, the session follows ST-8's expiry only once the source lock is known
+to be unclaimed: no claim the core sent can land (it holds none, or the
+adapter authenticates the active one `failed`, or `absent` naming it), and the
+adapter authenticates the source lock's `lockState` as `open` or `refunded`.
+The result is then the terminal `failed` with `errorClass`
+`settlement-atomicity` and reason `dest-revealed-source-unclaimed-expired`. A
+claim usually reverts because the lock was already claimed outside the core,
+by the payee's own agent or anyone holding the public preimage. When the
+adapter reports the lock `claimed` by such a claim, the result is
+`operator-alert` with reason `htlc-source-claimed-outside-core` and that
+claim's reference. While a claim may still prove final in time, or the lock's
+disposition is not reported, it is `operator-alert` with reason
+`htlc-source-claim-missed-after-reveal` (see Operator alerts and Settlement
+evidence).
 
 The selected authority must provide a positive safe-integer
 `destinationFinalitySec`. For actual lock expiries, the last permissible reveal
@@ -363,13 +370,25 @@ if the chain has changed. The reasons are:
   The alert also carries `sourceClaimPending`. `true` means that a retained
   source claim is `pending`, unreported, or `absent` naming nothing, so it
   may still prove final within the window: if its `finalityReachedAt` is
-  within the window the next call settles, and once the adapter authenticates
-  it unlanded the next call returns the terminal ST-8 expiry. `false` means
-  the core holds no source claim, so none it sent can settle. Only the
-  operator can tell whether a claim was made outside the core. If none was,
+  within the window the next call settles. `false` means that no claim the
+  core sent can settle (it holds none, or the active one is authenticated
+  unlanded) and the adapter does not report the source lock's `lockState`.
+  The core then cannot tell whether a claim was made outside the core, so
+  the session is not terminal. The operator checks the source lock on chain
+  before recording anything. If it still holds the funds, or was refunded,
   the host finalises ST-8 as expired (`settle-failed`, `failed-counterparty`)
   and arranges the payee's payment outside the core, for example by having
-  the payer refund the source and pay the payee under the agreement.
+  the payer refund the source and pay the payee under the agreement. If it
+  was claimed, the payee was paid: the host anchors the `:resolved` record on
+  that claim and never pays the payee again. An adapter that reports
+  `lockState` lets the core make this decision itself.
+- `htlc-source-claimed-outside-core`: the payer's reveal is final, the
+  source expiry has passed, no claim the core sent can land, and the adapter
+  authenticates the source lock `claimed` by another transaction,
+  `sourceClaimTxRef` (its chain and contract are the intent's; only the hash
+  is the adapter's). The payee was paid. The host verifies that claim's
+  finality and anchors the ST-8 `:resolved` success record on it; it never
+  records `failed-counterparty` and never pays the payee again.
 - `htlc-destination-claim-failed-preimage-public`: a reveal failed on chain,
   so the preimage is public, and the core cannot send another one: the
   destination-claim window has closed, the absolute margin is gone, or three
@@ -389,9 +408,12 @@ if the chain has changed. The reasons are:
   was absent again. The core prepares no further fee-paying claims. The
   operator finds out why the claim cannot land (a paused contract, or a lock
   already claimed outside the core) before the source expiry. Past it the
-  last attempt is still unlanded, so the session ends with the terminal ST-8
-  expiry (`failed`, `settlement-atomicity`,
-  `dest-revealed-source-unclaimed-expired`).
+  last attempt is still unlanded, and the source lock's `lockState` decides:
+  `open` or `refunded` ends the session with the terminal ST-8 expiry
+  (`failed`, `settlement-atomicity`, `dest-revealed-source-unclaimed-expired`),
+  `claimed` returns `htlc-source-claimed-outside-core`, and an unreported one
+  returns `htlc-source-claim-missed-after-reveal` with `sourceClaimPending:
+  false`.
 - `htlc-refund-absent`: a retained refund is reported `absent` naming it, so
   it can never land, and the core will not re-send it; `refunds` shows that
   leg as `absent`. The operator lands a refund for that leg by hand. Refund
@@ -448,8 +470,9 @@ only when:
 - the HTLC-9 window closed without settlement (`errorClass`
   `settlement-atomicity`, reason `dest-revealed-source-unclaimed-expired`):
   the source claim is final but reached finality after the source expiry, or
-  the source expiry has passed and the adapter authenticates the retained
-  source claim `failed`, or `absent` naming it.
+  the source expiry has passed, no claim the core sent can land, and the
+  adapter authenticates the source lock's `lockState` as `open` or
+  `refunded`.
 
 These need an operator to reconcile the record, not a retry. A missing or different buyer salt is never `failed` (see
 `htlc-salt-missing` and `htlc-salt-mismatch` above). Every other non-final
@@ -616,8 +639,12 @@ question for this rail; until then, the adapter audit below is the control.
 retained prepared action's `txRef`, never a counterparty's or anyone else's
 transaction against the same lock. In particular, a payee who claims the
 source outside the core with a published preimage must not be reported under
-`source-claim`. The core rejects an observation of a transaction it did not
-prepare: the whole snapshot is unavailable, the result is `indeterminate`
+`source-claim`. Such a claim is reported only through the final source lock's
+optional `lockState` (`open`, `claimed` or `refunded`) and, when `claimed`,
+its `claimTxRef`; any other combination, or a `lockState` on another action,
+makes the snapshot invalid. Report `lockState` only from the source chain's
+own contract state at the observation. The core rejects an observation of a
+transaction it did not prepare: the whole snapshot is unavailable, the result is `indeterminate`
 with reason `htlc-ledger-observation-unavailable`, and nothing is replaced,
 rebroadcast or refunded until the adapter reports correctly. When a claim has
 replacement history, `observe` reports the active attempt, the one `claim`
@@ -795,6 +822,9 @@ ST-8 maps onto the core's results as follows:
   stands, and the session goes `settle-failed` → `failed-counterparty`.
 - `operator-alert` `htlc-source-claim-missed-after-reveal`: still
   `settle-asymmetric`; see `sourceClaimPending` under Operator alerts.
+- `operator-alert` `htlc-source-claimed-outside-core`: ST-8 resolved by a
+  claim the core did not send; anchor the superseding success record on
+  `sourceClaimTxRef` once that claim's finality is verified.
 
 ## Authority fields and the pinned rail
 
@@ -858,7 +888,7 @@ map as follows:
     `htlc-destination-claim-absent-preimage-broadcast`: the preimage was
     broadcast, so the payee can claim the source before its expiry. The other
     reasons are `htlc-source-claim-missed-after-reveal` (see its
-    `sourceClaimPending`),
+    `sourceClaimPending`), `htlc-source-claimed-outside-core`,
     `htlc-source-claim-replacement-limit-reached`, `htlc-refund-absent`,
     `htlc-salt-missing` and `htlc-salt-mismatch`;
   - `refund-stalled`: a refund reverted and is not re-sent;

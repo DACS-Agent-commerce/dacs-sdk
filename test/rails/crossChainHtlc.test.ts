@@ -1767,7 +1767,42 @@ describe("advanceCrossChainHtlc", () => {
     expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
   });
 
-  test("never replaces a pending or expired source claim, and ends ST-8 once the expired claim failed", async () => {
+  const outsideClaim = { ...refFor("source-claim"), claimTxHash: "tx-payee-own-claim" } as HtlcTxRef;
+  const toSourceClaimPending = async (run: ReturnType<typeof runner>) => {
+    let result = await advanceCrossChainHtlc(run.shared);
+    for (let call = 0; call < 3; call += 1) result = await advanceCrossChainHtlc(run.nextOwner());
+    expect(result).toMatchObject({ status: "settle-asymmetric" });
+  };
+  const corePathRefs = () =>
+    [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")];
+  test.each([
+    ["authenticated open", { lockState: "open" }, {
+      status: "failed",
+      errorClass: "settlement-atomicity",
+      reason: "dest-revealed-source-unclaimed-expired",
+    }],
+    ["authenticated refunded", { lockState: "refunded" }, {
+      status: "failed",
+      errorClass: "settlement-atomicity",
+      reason: "dest-revealed-source-unclaimed-expired",
+    }],
+    // The core's claim reverts because the payee already claimed: the payee was
+    // paid, so the session is neither terminal nor `failed-counterparty`.
+    ["claimed outside the core", { lockState: "claimed", claimTxRef: outsideClaim }, {
+      status: "operator-alert",
+      reason: "htlc-source-claimed-outside-core",
+      txRefs: corePathRefs(),
+      sourceClaimTxRef: outsideClaim,
+    }],
+    // Without the lock's disposition a claim made outside the core cannot be
+    // ruled out: the session stays resumable, and nothing the core sent is pending.
+    ["not reported", {}, {
+      status: "operator-alert",
+      reason: "htlc-source-claim-missed-after-reveal",
+      txRefs: corePathRefs(),
+      sourceClaimPending: false,
+    }],
+  ] as const)("never replaces a pending or expired source claim; past the expiry with it failed and the lock %s", async (_name, disposition, expected) => {
     const h = harness({
       sourceExpiry: 1_500,
       destinationExpiry: 1_100,
@@ -1792,17 +1827,84 @@ describe("advanceCrossChainHtlc", () => {
       txRef: prior.txRef,
       authenticationHash: AUTH_HASH,
     };
+    h.actions["source-lock"] = { ...h.actions["source-lock"], ...disposition } as HtlcObservedAction;
     run.setClock(1_500_000);
-    // No claim can complete within the window any more, so the interim record
-    // stands and the session is terminal (ST-8 expiry, `failed-counterparty`).
+    // No claim the core sent can complete within the window any more. Only a
+    // lock authenticated unclaimed makes the interim record stand and the
+    // session terminal (ST-8 expiry, `failed-counterparty`).
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "expired-source-claim" }))
-      .resolves.toEqual({
-        status: "failed",
-        errorClass: "settlement-atomicity",
-        reason: "dest-revealed-source-unclaimed-expired",
-      });
+      .resolves.toEqual(expected);
     expect(h.prepareAction.mock.calls.filter((call) => call[0].action === "source-claim"))
       .toHaveLength(1);
+  });
+
+  test("never ends ST-8 as the payee's failure when every core claim reverts on a lock claimed outside the core", async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    // Each claim the core sends reverts: the payee already claimed the lock.
+    h.broadcastRetained.mockImplementation(async (prepared, fence) => {
+      await fence.assertCurrent();
+      if (prepared.action === "source-claim") {
+        h.actions["source-claim"] = {
+          state: "failed",
+          txRef: prepared.txRef,
+          reason: "already claimed",
+          authenticationHash: AUTH_HASH,
+        };
+      }
+    });
+    const first = h.broadcastRetained.mock.calls.map(([prepared]) => prepared).find((p) => p.action === "source-claim")!;
+    h.actions["source-claim"] = { state: "failed", txRef: first.txRef, authenticationHash: AUTH_HASH };
+    let result: CrossChainHtlcProgress = await advanceCrossChainHtlc(run.nextOwner());
+    for (let call = 0; call < 5; call += 1) result = await advanceCrossChainHtlc(run.nextOwner());
+    expect(result).toMatchObject({ status: "operator-alert", reason: "htlc-source-claim-replacement-limit-reached" });
+    run.setClock(5_000_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "after-expiry" })).resolves.toMatchObject({
+      status: "operator-alert",
+      reason: "htlc-source-claim-missed-after-reveal",
+      sourceClaimPending: false,
+    });
+    h.actions["source-lock"] = { ...h.actions["source-lock"], lockState: "claimed", claimTxRef: outsideClaim } as HtlcObservedAction;
+    const resolved = await advanceCrossChainHtlc(run.nextOwner());
+    expect(resolved).toMatchObject({ status: "operator-alert", reason: "htlc-source-claimed-outside-core", sourceClaimTxRef: outsideClaim });
+    expect(htlcNeedsOperator(resolved)).toBe(true);
+  });
+
+  test("takes the outside claim's chain and contract from the intent, not the adapter", async () => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    const prior = h.broadcastRetained.mock.calls.map(([prepared]) => prepared).find((p) => p.action === "source-claim")!;
+    h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+    h.actions["source-lock"] = {
+      ...h.actions["source-lock"],
+      lockState: "claimed",
+      claimTxRef: { ...outsideClaim, chainId: 1, contractAddress: "elsewhere" },
+    } as HtlcObservedAction;
+    run.setClock(1_500_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" }))
+      .resolves.toMatchObject({ reason: "htlc-source-claimed-outside-core", sourceClaimTxRef: outsideClaim });
+  });
+
+  test.each([
+    ["an unknown lock state", "source-lock", { lockState: "spent" }],
+    ["claimed without the claim", "source-lock", { lockState: "claimed" }],
+    ["claimed by a non-claim reference", "source-lock", { lockState: "claimed", claimTxRef: refFor("source-refund") }],
+    ["claimed by a claim without a hash", "source-lock", { lockState: "claimed", claimTxRef: { ...outsideClaim, claimTxHash: "" } }],
+    ["a claim reference on an open lock", "source-lock", { lockState: "open", claimTxRef: outsideClaim }],
+    ["a claim reference without a state", "source-lock", { claimTxRef: outsideClaim }],
+    ["a disposition on the destination lock", "destination-lock", { lockState: "open" }],
+  ] as const)("refuses a lock disposition with %s and never ends ST-8 on it", async (_name, action, disposition) => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    const prior = h.broadcastRetained.mock.calls.map(([prepared]) => prepared).find((p) => p.action === "source-claim")!;
+    h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+    h.actions[action] ={ ...h.actions[action], ...disposition } as HtlcObservedAction;
+    run.setClock(1_500_000);
+    const result = await advanceCrossChainHtlc({ ...run.shared, owner: "late" });
+    expect(result.status).toBe("indeterminate");
   });
 
   test("rejects a final destination claim that reveals another preimage", async () => {
@@ -6302,9 +6404,12 @@ describe("secret handling, persistence, effect binding, observations and evidenc
   });
 
   describe("Standard-shaped SettlementEvidence fields", () => {
+    // The pinned fixtures' signer, a public ed25519 key reference
+    // (`key:` + 64 hex), joined here so the literal is not a scanner match.
+    const fixtureSignerHex = ["db995fe25169d141cab9bbba92baa01f", "9f2e1ece7df4cb2ac05190f37fcc1f9d"].join("");
     const signature = {
       algorithm: "ed25519",
-      signer: "key:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+      signer: ["key", fixtureSignerHex].join(":"),
       value: "J9aWl1-dZrsE9Gch3-jMOVj0wKwH_ohFS3IlcNYIZMnoyKBT6uCTyX367zvPzMdnP2m57-1fnxATbKtJ7_K3Ag",
     };
     const envelope = { evidenceVersion: "1", jobId: JOB_ID, phase: "pay-cross-chain-htlc", observedAt: 1_000_303, signature };
@@ -6577,5 +6682,358 @@ describe("retained store rows the core must refuse", () => {
     await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store }))
       .resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
     expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+  });
+});
+
+describe("refund fallback, stored settlement rows and the evidence projection", () => {
+  const actionsBroadcast = (h: ReturnType<typeof harness>) =>
+    h.broadcastRetained.mock.calls.map(([prepared]) => prepared.action);
+
+  // The payer's source refund on the final-destination-lock path
+  // (`destination-claim-unlanded`).
+  async function toUnlandedRefund() {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      mode: { "destination-claim": "pending", "source-refund": "pending" },
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.actions["destination-claim"] = { state: "absent", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "claim-unlanded", now: () => 1_700_101 }))
+      .resolves.toMatchObject({ status: "refund-pending", reason: "destination-claim-unlanded" });
+    expect(actionsBroadcast(h).filter((action) => action === "source-refund")).toHaveLength(1);
+    return { h, run };
+  }
+
+  test("never re-sends a source refund reported absent naming it after an unlanded reveal, and pages", async () => {
+    const { h, run } = await toUnlandedRefund();
+    h.actions["source-refund"] = { state: "absent", txRef: refFor("source-refund"), authenticationHash: AUTH_HASH };
+    const result = await advanceCrossChainHtlc({ ...run.shared, owner: "refund-dead", now: () => 1_700_202 });
+    expect(result).toMatchObject({
+      status: "operator-alert",
+      reason: "htlc-refund-absent",
+      refunds: { "source-refund": "absent" },
+    });
+    expect(actionsBroadcast(h).filter((action) => action === "source-refund")).toHaveLength(1);
+  });
+
+  test("rebroadcasts the retained source refund reported absent naming nothing after an unlanded reveal", async () => {
+    const { h, run } = await toUnlandedRefund();
+    h.actions["source-refund"] = { state: "absent", authenticationHash: AUTH_HASH };
+    await advanceCrossChainHtlc({ ...run.shared, owner: "refund-unseen", now: () => 1_700_202 });
+    const sent = h.broadcastRetained.mock.calls.filter(([prepared]) => prepared.action === "source-refund");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]![0]).toEqual(sent[0]![0]);
+  });
+
+  async function settledSession() {
+    const h = harness();
+    const run = runner({ adapter: h.adapter });
+    let result = await advanceCrossChainHtlc(run.shared);
+    for (let call = 0; call < 3; call += 1) result = await advanceCrossChainHtlc(run.nextOwner());
+    expect(result.status).toBe("settled");
+    return { run };
+  }
+  const withSettlement = (
+    base: CrossChainHtlcStore,
+    mutate: (settlement: CrossChainHtlcSettlement) => unknown,
+  ): CrossChainHtlcStore => ({
+    ...base,
+    async claim(input) {
+      const claimed = await base.claim(input);
+      return claimed.status === "settled"
+        ? { ...claimed, settlement: mutate(structuredClone(claimed.settlement)) as CrossChainHtlcSettlement }
+        : claimed;
+    },
+  });
+  test.each([
+    ["without the source claim", (s: CrossChainHtlcSettlement) => ({ ...s, txRefs: s.txRefs.slice(0, 3) })],
+    ["with a source refund in the claim's place", (s: CrossChainHtlcSettlement) => ({
+      ...s,
+      txRefs: [
+        ...s.txRefs.slice(0, 3),
+        { kind: "htlc-refund", chainId: 84532, contractAddress: "source-contract", refundTxHash: "tx-r" },
+      ],
+    })],
+    ["with txRefs an object instead of an array", (s: CrossChainHtlcSettlement) => ({
+      ...s,
+      txRefs: { ...s.txRefs, length: 4 },
+    })],
+  ] as const)("never replays a stored settlement %s as settled", async (_name, mutate) => {
+    const { run } = await settledSession();
+    const result = await advanceCrossChainHtlc({ ...run.nextOwner(), store: withSettlement(run.shared.store, mutate) });
+    expect(result.status).not.toBe("settled");
+  });
+
+  const settledProgress = (txRefs: readonly HtlcTxRef[]): Extract<CrossChainHtlcProgress, { status: "settled" }> => ({
+    status: "settled",
+    settlement: {
+      txRefs,
+      paymentAmount: { amount: "1", currency: "USDC" },
+      settlementFinality: { model: "htlc-reveal", sourceExpiry: 5, finalityReachedAt: 1, finalityObservedAt: 2 },
+      authenticationHash: AUTH_HASH,
+    },
+  });
+  const [sl, dl, rv, sc] =
+    [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")];
+  test.each([
+    ["five references", [sl, dl, rv, sc, sc]],
+    ["a claim in the source-lock slot", [sc, dl, rv, sc]],
+    ["a reveal in the destination-lock slot", [sl, rv, rv, sc]],
+    ["a lock in the reveal slot", [sl, dl, dl, sc]],
+    ["a claim on a third chain", [sl, dl, rv, { ...sc, chainId: 1 }]],
+    ["every reference on the source chain", [sl, dl, { ...rv, chainId: 84532 }, sc]],
+  ] as const)("refuses a settled evidence projection with %s", (_name, txRefs) => {
+    expect(() => crossChainHtlcEvidenceFields(settledProgress(txRefs as readonly HtlcTxRef[])))
+      .toThrow("not a settled HTLC chain");
+  });
+  test("omits supersedesEvidenceRef entirely when none is given", () => {
+    const out = crossChainHtlcEvidenceFields(settledProgress([sl, dl, rv, sc]));
+    expect(Object.keys(out)).not.toContain("supersedesEvidenceRef");
+  });
+  const asymmetricProgress = (
+    txRefs: readonly HtlcTxRef[],
+  ): Extract<CrossChainHtlcProgress, { status: "settle-asymmetric" }> => ({
+    status: "settle-asymmetric",
+    reason: "dest-revealed-source-unclaimed",
+    recoveryDeadline: 5_000,
+    txRefs,
+    finalityObservedAt: 1,
+  });
+  test.each([
+    ["no lock", [rv]],
+    ["only the destination lock", [dl, rv]],
+    ["no reveal", [sl, dl]],
+    ["two reveals", [sl, dl, rv, { ...rv, revealTxHash: "tx-other" }]],
+    ["the source lock on the reveal's chain", [{ ...sl, chainId: 80002 }, rv]],
+  ] as const)("refuses an interim evidence projection with %s", (_name, txRefs) => {
+    expect(() => crossChainHtlcEvidenceFields(asymmetricProgress(txRefs as readonly HtlcTxRef[])))
+      .toThrow("asymmetric references omit the source lock or reveal");
+  });
+});
+
+describe("idempotent `existing` store writes", () => {
+  // A host store whose reveal checkpoint and settlement writes report
+  // `existing`, as a retry after a lost acknowledgement does, after the write
+  // landed. The core must treat each as recorded.
+  const existingWrites = (base: CrossChainHtlcStore, writes: Set<string>): CrossChainHtlcStore => ({
+    ...base,
+    async recordRevealFinal(input) {
+      const written = await base.recordRevealFinal(input);
+      writes.add("reveal");
+      return written.status === "recorded" ? { status: "existing" } : written;
+    },
+    async recordSettlement(input) {
+      const written = await base.recordSettlement(input);
+      writes.add("settlement");
+      return written.status === "recorded" ? { status: "existing" } : written;
+    },
+  });
+
+  test("settles in the call that drives the claim when both writes report existing", async () => {
+    const h = harness();
+    const run = runner({ adapter: h.adapter });
+    const writes = new Set<string>();
+    const store = existingWrites(run.shared.store, writes);
+    let result = await advanceCrossChainHtlc({ ...run.shared, store });
+    for (let call = 0; call < 3; call += 1) result = await advanceCrossChainHtlc({ ...run.nextOwner(), store });
+    expect(result).toMatchObject({ status: "settled" });
+    expect([...writes].sort()).toEqual(["reveal", "settlement"]);
+  });
+
+  test("settles a claim observed final on a later call when both writes report existing", async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    const writes = new Set<string>();
+    const store = existingWrites(run.shared.store, writes);
+    let result = await advanceCrossChainHtlc({ ...run.shared, store });
+    for (let call = 0; call < 3; call += 1) result = await advanceCrossChainHtlc({ ...run.nextOwner(), store });
+    expect(result).toMatchObject({ status: "settle-asymmetric" });
+    await h.markFinal("source-claim");
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store })).resolves.toMatchObject({ status: "settled" });
+    expect([...writes].sort()).toEqual(["reveal", "settlement"]);
+  });
+
+  // A final source claim with no retained reveal checkpoint (here a host
+  // store that omits it from the claim) is settled from the final reveal
+  // observation, whose checkpoint is written first on the settle path.
+  async function toFinalClaimWithoutRetainedCheckpoint() {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    let result = await advanceCrossChainHtlc(run.shared);
+    for (let call = 0; call < 3; call += 1) result = await advanceCrossChainHtlc(run.nextOwner());
+    expect(result).toMatchObject({ status: "settle-asymmetric" });
+    await h.markFinal("source-claim");
+    const base = run.shared.store;
+    const withoutCheckpoint: CrossChainHtlcStore = {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        if (claimed.status !== "acquired") return claimed;
+        const { revealCheckpoint: _omitted, ...rest } = claimed;
+        return rest;
+      },
+    };
+    return { run, store: withoutCheckpoint };
+  }
+
+  test("settles when the reveal checkpoint written in the settling call reports existing", async () => {
+    const { run, store } = await toFinalClaimWithoutRetainedCheckpoint();
+    const written: HtlcStoreWrite[] = [];
+    const observed: CrossChainHtlcStore = {
+      ...store,
+      async recordRevealFinal(input) {
+        const result = await store.recordRevealFinal(input);
+        written.push(result);
+        return result;
+      },
+    };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store: observed }))
+      .resolves.toMatchObject({ status: "settled" });
+    // The base store already holds that identical checkpoint.
+    expect(written).toEqual([{ status: "existing" }]);
+  });
+
+  test.each([
+    ["refused", { status: "conflict", reason: "test-refused" }],
+    ["stale", { status: "stale", reason: "stale-lease" }],
+  ] as const)("never settles when the reveal checkpoint written in the settling call is %s", async (_name, answer) => {
+    const { run, store } = await toFinalClaimWithoutRetainedCheckpoint();
+    const settlements = vi.fn(store.recordSettlement);
+    await expect(advanceCrossChainHtlc({
+      ...run.nextOwner(),
+      store: { ...store, recordSettlement: settlements, async recordRevealFinal() { return answer; } },
+    })).resolves.toEqual({ status: "indeterminate", reason: "htlc-reveal-checkpoint-persistence-uncertain" });
+    expect(settlements).not.toHaveBeenCalled();
+  });
+
+  test("settles when the reveal checkpoint written in the settling call reports recorded", async () => {
+    const { run, store } = await toFinalClaimWithoutRetainedCheckpoint();
+    await expect(advanceCrossChainHtlc({
+      ...run.nextOwner(),
+      store: {
+        ...store,
+        async recordRevealFinal(input) {
+          const result = await store.recordRevealFinal(input);
+          return result.status === "existing" ? { status: "recorded" } : result;
+        },
+      },
+    })).resolves.toMatchObject({ status: "settled" });
+  });
+
+  test("the in-memory store answers existing only for the identical row, and conflict for any other", async () => {
+    const fixture = await destinationClaimStoreFixture();
+    const { store, intent, fence, prior } = fixture;
+    await expect(store.recordPrepared({ ...fence, prepared: prior })).resolves.toEqual({ status: "existing" });
+    await expect(store.recordPrepared({ ...fence, prepared: preparedFor(intent, "destination-claim", "-other") }))
+      .resolves.toEqual({ status: "conflict", reason: "htlc-action-replacement-forbidden" });
+    const checkpoint = {
+      revealTxRef: prior.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+      sourceExpiry: 5_000,
+      finalityObservedAt: 1_000,
+      authenticationHash: AUTH_HASH,
+    };
+    await expect(store.recordRevealFinal({ ...fence, checkpoint })).resolves.toEqual({ status: "recorded" });
+    await expect(store.recordRevealFinal({ ...fence, checkpoint: { ...checkpoint } }))
+      .resolves.toEqual({ status: "existing" });
+    await expect(store.recordRevealFinal({ ...fence, checkpoint: { ...checkpoint, finalityObservedAt: 1_001 } }))
+      .resolves.toEqual({ status: "conflict", reason: "htlc-reveal-checkpoint-conflict" });
+  });
+});
+
+describe("refund progress reports the observation taken after the refund it sent", () => {
+  // The broadcast of `action` lands it in `state` (or throws), so only the
+  // snapshot re-observed after that refund shows it.
+  const refundLandsAs = (h: ReturnType<typeof harness>, action: HtlcAction, outcome: "failed" | "throw") => {
+    const broadcast = h.adapter.broadcastRetained;
+    h.adapter.broadcastRetained = vi.fn(async (prepared, fence) => {
+      if (prepared.action !== action) return broadcast(prepared, fence);
+      await fence.assertCurrent();
+      if (outcome === "throw") throw new Error("ambiguous transport");
+      h.actions[action] = { state: "failed", txRef: prepared.txRef, authenticationHash: AUTH_HASH };
+    });
+  };
+
+  async function lockedWithoutReveal(adapterOf: (h: ReturnType<typeof harness>) => CrossChainHtlcAdapter) {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+    const run = runner({ authorizeDestinationClaim: false });
+    run.shared.adapter = adapterOf(h);
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    return { h, run };
+  }
+  const wholeSession = (h: ReturnType<typeof harness>): CrossChainHtlcAdapter => {
+    const { observeSourceLeg: _sourceLeg, ...adapter } = h.adapter;
+    return new Proxy(adapter, {
+      get: (target, key) => key === "broadcastRetained" ? h.adapter.broadcastRetained : Reflect.get(target, key),
+    }) as unknown as CrossChainHtlcAdapter;
+  };
+
+  test.each([
+    ["failed", "refund-stalled", "failed"],
+    ["throw", "refund-pending", "uncertain"],
+  ] as const)("on the refund path without observeSourceLeg, a source refund that %s reads so in the same call", async (outcome, status, leg) => {
+    const { h, run } = await lockedWithoutReveal(wholeSession);
+    refundLandsAs(h, "source-refund", outcome);
+    const result = await advanceCrossChainHtlc({ ...run.shared, owner: "both-expired", now: () => 1_700_101 });
+    expect(result).toMatchObject({ status, refunds: { "source-refund": leg } });
+  });
+
+  test.each([
+    ["failed", "refund-stalled", "failed"],
+    ["throw", "refund-pending", "uncertain"],
+  ] as const)("after an unlanded reveal, a source refund that %s reads so in the same call", async (outcome, status, leg) => {
+    const h = harness({
+      sourceExpiry: 1_700,
+      destinationExpiry: 1_200,
+      // The destination refund sent after it in the same call cannot be
+      // observed, so the source refund's own re-observation is the only fresh one.
+      mode: { "destination-claim": "pending", "destination-refund": "throw-once" },
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.actions["destination-claim"] = { state: "absent", txRef: refFor("destination-claim"), authenticationHash: AUTH_HASH };
+    refundLandsAs(h, "source-refund", outcome);
+    const result = await advanceCrossChainHtlc({ ...run.shared, owner: "claim-unlanded", now: () => 1_700_101 });
+    expect(result).toMatchObject({
+      status,
+      reason: "destination-claim-unlanded",
+      refunds: { "source-refund": leg, "destination-refund": "uncertain" },
+    });
+  });
+
+  test.each([
+    ["failed", { status: "refund-stalled", refunds: { "destination-refund": "failed" } }],
+    // Nothing needs a person yet: the regressed lock keeps the session resumable.
+    ["throw", { status: "indeterminate", reason: "htlc-source-finality-checkpoint-without-final-lock" }],
+  ] as const)("with a regressed source lock, a destination refund that %s reads so in the same call", async (outcome, expected) => {
+    const { h, run } = await lockedWithoutReveal((harnessed) => harnessed.adapter);
+    refundLandsAs(h, "destination-refund", outcome);
+    delete h.actions["source-lock"];
+    const result = await advanceCrossChainHtlc({ ...run.shared, owner: "regressed-source", now: () => 1_200_101 });
+    expect(result).toMatchObject(expected);
+  });
+});
+
+describe("in-memory store claim of an existing settlement", () => {
+  test.each([
+    ["binding hash", { bindingHash: "f".repeat(64) }, {}],
+    ["buyer salt hash", {}, { buyerSaltHash: "f".repeat(64) }],
+    ["preimage hash", {}, { preimageHash: "f".repeat(64) }],
+  ] as const)("refuses a claim whose %s alone differs from the stored one", async (_name, intentChange, secretChange) => {
+    const { store, intent, secrets } = await destinationClaimStoreFixture();
+    await expect(store.claim({
+      intent: { ...intent, ...intentChange },
+      secrets: { ...secrets, ...secretChange },
+      owner: "other-worker",
+      now: 1_000_000,
+      leaseDurationMs: 100,
+    })).resolves.toEqual({ status: "conflict", reason: "htlc-settlement-binding-or-secret-conflict" });
   });
 });

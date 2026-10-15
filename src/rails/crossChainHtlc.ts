@@ -266,6 +266,17 @@ export type HtlcObservedAction =
        * that depends on that lock; shape-checked whenever present.
        */
       lockTerms?: Readonly<HtlcLockTerms>;
+      /**
+       * Source lock only, optional: the lock's on-chain disposition when it
+       * was observed. `open` still holds the funds, `claimed` was spent by the
+       * claim in `claimTxRef`, which may be one the core never sent, and
+       * `refunded` returned them to the payer. Past the source expiry after a
+       * final reveal, only a lock authenticated `open` or `refunded` ends the
+       * session with the terminal ST-8 expiry.
+       */
+      lockState?: "open" | "claimed" | "refunded";
+      /** Present exactly when `lockState` is `claimed`: the claim that spent the lock. */
+      claimTxRef?: Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>;
       revealedPreimageHex?: string;
       authenticationHash: string;
     } & (
@@ -459,6 +470,15 @@ export type HtlcStoreClaim =
     }
   | { status: "conflict" | "corrupt"; reason: string };
 
+/**
+ * A store write's result. `existing` means the store already holds exactly
+ * this write and changed nothing: for `recordPrepared` and either replacement
+ * CAS, a row with the same `effectHash`, and so the same signed bytes; for a
+ * checkpoint or settlement, a canonically equal one. Any other row already in
+ * place is `conflict`. The core treats `existing` as `recorded` and then
+ * broadcasts the bytes it just passed, so a store that answered `existing`
+ * for a different row could send a second lock, reveal or refund.
+ */
 export type HtlcStoreWrite =
   | { status: "recorded" | "existing" }
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
@@ -629,10 +649,12 @@ export type CrossChainHtlcProgress =
       /**
        * The reveal is final and the source expiry has passed without a final
        * source claim, but a claim may still prove final within the window or
-       * the core cannot rule one out. Once the adapter authenticates the
-       * retained source claim `failed`, or `absent` naming it, no claim can
-       * complete and the result is the terminal ST-8 expiry instead: `failed`,
-       * `settlement-atomicity`, `dest-revealed-source-unclaimed-expired`.
+       * the core cannot rule one out. The result is the terminal ST-8 expiry
+       * instead (`failed`, `settlement-atomicity`,
+       * `dest-revealed-source-unclaimed-expired`) only once no claim the core
+       * sent can land (none is retained, or the active one is authenticated
+       * `failed`, or `absent` naming it) and the adapter authenticates the
+       * source lock `open` or `refunded`.
        */
       status: "operator-alert";
       reason: "htlc-source-claim-missed-after-reveal";
@@ -640,11 +662,26 @@ export type CrossChainHtlcProgress =
       /**
        * `true`: a retained source claim is pending, unreported, or `absent`
        * naming nothing, and may still prove final within the window; a later
-       * call settles it or finds it unlanded. `false`: the core holds no source
-       * claim, so none it sent can settle; only a claim made outside the core
-       * could.
+       * call settles it or finds it unlanded. `false`: no claim the core sent
+       * can settle, because none is retained or the active one is unlanded,
+       * and the source lock's disposition is not reported. A claim made
+       * outside the core may have spent the lock, so the host checks that the
+       * lock still holds the funds before it records `failed-counterparty`.
        */
       sourceClaimPending: boolean;
+    }
+  | {
+      /**
+       * The reveal is final, the source expiry has passed, no claim the core
+       * sent can land, and the adapter authenticates the source lock spent by
+       * `sourceClaimTxRef`, a claim the core did not send (the payee's own
+       * agent or another claimer). The payee was paid: the host anchors the
+       * ST-8 `:resolved` record on that claim, and never pays the payee again.
+       */
+      status: "operator-alert";
+      reason: "htlc-source-claimed-outside-core";
+      txRefs: readonly Readonly<HtlcTxRef>[];
+      sourceClaimTxRef: Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>;
     }
   | {
       /** A retained refund is reported `absent` naming it; the core will not re-send it. */
@@ -662,7 +699,13 @@ type HtlcRefundReason = Extract<
 >["reason"];
 type HtlcOperatorAlertReason = Extract<
   CrossChainHtlcProgress,
-  { status: "operator-alert"; reason: string; refunds?: never; sourceClaimPending?: never }
+  {
+    status: "operator-alert";
+    reason: string;
+    refunds?: never;
+    sourceClaimPending?: never;
+    sourceClaimTxRef?: never;
+  }
 >["reason"];
 
 /**
@@ -1495,6 +1538,18 @@ function validateSnapshot(
     if (observed.state !== "final") {
       throw new DacsError(`pay-cross-chain-htlc: ${action} state is invalid`);
     }
+    if (observed.lockState !== undefined || observed.claimTxRef !== undefined) {
+      const claimRef: unknown = observed.claimTxRef;
+      const claimRefValid = claimRef !== null && typeof claimRef === "object" &&
+        (claimRef as HtlcTxRef).kind === "htlc-claim" &&
+        typeof (claimRef as { claimTxHash?: unknown }).claimTxHash === "string" &&
+        (claimRef as { claimTxHash: string }).claimTxHash.length > 0;
+      if (action !== "source-lock" ||
+          !["open", "claimed", "refunded"].includes(observed.lockState as string) ||
+          (observed.lockState === "claimed" ? !claimRefValid : claimRef !== undefined)) {
+        throw new DacsError(`pay-cross-chain-htlc: ${action} disposition is invalid`);
+      }
+    }
     if (action === "source-lock" || action === "destination-lock") {
       try {
         // An unusable destination-lock expiry is the payee's chain fact; the
@@ -1982,20 +2037,46 @@ export async function advanceCrossChainHtlc(
     !unlandedActiveClaim(action, latest);
   // ST-8 past the source expiry after a final reveal. Every replaced attempt
   // was authenticated unlanded before it was replaced, and none is prepared
-  // after the expiry, so once the active claim is unlanded too no claim can
-  // complete within the window: the interim record stands and the session is
-  // terminal. Otherwise a claim may still prove final in time.
+  // after the expiry, so once the active claim is unlanded too no claim the
+  // core sent can complete. That alone does not expire the session: the most
+  // common reason a claim reverts is that the payee, or anyone holding the
+  // public preimage, already claimed the lock outside the core. Only a lock
+  // authenticated unclaimed past the expiry makes the interim record stand
+  // and the session terminal; a lock spent by another claim is that claim's
+  // resolution, and an unreported disposition stays resumable.
   const sourceClaimMissed = (
     latest: Readonly<HtlcLedgerSnapshot>,
     known: Readonly<Partial<Record<HtlcAction, Readonly<HtlcTxRef>>>>,
-  ): CrossChainHtlcProgress => unlandedActiveClaim("source-claim", latest)
-    ? { status: "failed", errorClass: "settlement-atomicity", reason: "dest-revealed-source-unclaimed-expired" }
-    : {
+  ): CrossChainHtlcProgress => {
+    const ownClaimDead = !prepared.has("source-claim") ||
+      unlandedActiveClaim("source-claim", latest) !== undefined;
+    const lock = latest.actions["source-lock"];
+    const lockState = lock?.state === "final" ? lock.lockState : undefined;
+    if (ownClaimDead && (lockState === "open" || lockState === "refunded")) {
+      return { status: "failed", errorClass: "settlement-atomicity", reason: "dest-revealed-source-unclaimed-expired" };
+    }
+    const txRefs = collectRefs(latest, prepared, [], ["destination-lock"], known);
+    if (ownClaimDead && lock?.state === "final" && lockState === "claimed" && lock.claimTxRef) {
+      return {
+        status: "operator-alert",
+        reason: "htlc-source-claimed-outside-core",
+        txRefs,
+        // The intent fixes the claim's chain and contract; only the hash is
+        // the adapter's.
+        sourceClaimTxRef: expectedRef({
+          intent,
+          action: "source-claim",
+          txHash: lock.claimTxRef.claimTxHash,
+        }) as Extract<HtlcTxRef, { kind: "htlc-claim" }>,
+      };
+    }
+    return {
       status: "operator-alert",
       reason: "htlc-source-claim-missed-after-reveal",
-      txRefs: collectRefs(latest, prepared, [], ["destination-lock"], known),
-      sourceClaimPending: prepared.has("source-claim"),
+      txRefs,
+      sourceClaimPending: !ownClaimDead,
     };
+  };
   // A final destination lock's expiry and terms are immutable. If either rules
   // out a safe reveal, the payer never reveals and each leg is refunded at its
   // own expiry instead of the session stopping with both legs locked. No reveal
