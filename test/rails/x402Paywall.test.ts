@@ -387,6 +387,74 @@ describe("x402PaywallCore — DACS-4 §9.5.7/§9.5.8", () => {
     expect(server.processSettlement).not.toHaveBeenCalled();
   });
 
+  // DACS-4 SB-1 (payee PB-1, asset, exact amount), X402-1 and the EIP-712
+  // domain: a facilitator-verified payment whose terms differ from the
+  // configured ones in one member is refused before settlement or work.
+  it.each<[string, (fixture: {
+    requirements: Record<string, any>;
+    payload: Record<string, any>;
+  }) => void]>([
+    ["payTo (requirements and accepted)", ({ requirements, payload }) => {
+      requirements.payTo = payload.accepted.payTo = `0x${"55".repeat(20)}`;
+    }],
+    ["authorization recipient", ({ payload }) => {
+      payload.payload.authorization.to = `0x${"55".repeat(20)}`;
+    }],
+    ["authorization value", ({ payload }) => {
+      payload.payload.authorization.value = "250001";
+    }],
+    ["asset", ({ requirements, payload }) => {
+      requirements.asset = payload.accepted.asset = `0x${"66".repeat(20)}`;
+    }],
+    ["network", ({ requirements, payload }) => {
+      requirements.network = payload.accepted.network = "eip155:8453";
+    }],
+    ["scheme", ({ requirements, payload }) => {
+      requirements.scheme = payload.accepted.scheme = "upto";
+    }],
+    ["EIP-712 name", ({ requirements, payload }) => {
+      requirements.extra.name = payload.accepted.extra.name = "USD Coin";
+    }],
+    ["EIP-712 version", ({ requirements, payload }) => {
+      requirements.extra.version = payload.accepted.extra.version = "1";
+    }],
+    ["x402Version", ({ payload }) => { payload.x402Version = 1; }],
+    ["accepted terms that disagree with the verified requirements", ({ payload }) => {
+      payload.accepted.maxTimeoutSeconds = 600;
+    }],
+  ])("refuses a verified payment with another %s before settlement", async (
+    _member,
+    mutate,
+  ) => {
+    const fixture = await paymentFixture() as unknown as {
+      requirements: Record<string, any>;
+      payload: Record<string, any>;
+    };
+    mutate(fixture);
+    const payload = fixture.payload as unknown as X402PaywallPaymentPayload;
+    const server = mockServer({
+      process: {
+        type: "payment-verified",
+        paymentPayload: payload,
+        paymentRequirements: fixture.requirements as X402PaywallPaymentRequirements,
+        cancellationDispatcher: { cancel: vi.fn(async () => undefined) },
+      },
+    });
+    const authorizeSettlement = vi.fn();
+    const fulfil = vi.fn();
+    const result = await x402PaywallCore(
+      { jobId: JOB_ID, phaseIndex: PHASE_INDEX, request: paidRequest(payload) },
+      coreDeps(server, { authorizeSettlement, fulfil }),
+    );
+    expect(result).toMatchObject({
+      disposition: "rejected",
+      reason: "payment-session-or-terms-mismatch",
+    });
+    expect(authorizeSettlement).not.toHaveBeenCalled();
+    expect(server.processSettlement).not.toHaveBeenCalled();
+    expect(fulfil).not.toHaveBeenCalled();
+  });
+
   it("never invokes fulfilment when the post-settlement payment gate rejects", async () => {
     const { payload, requirements } = await paymentFixture();
     const cancel = vi.fn(async () => undefined);
