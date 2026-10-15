@@ -654,6 +654,63 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     mutate(ev);
     expect((await verify(ev, { rail: htlcRail })).decision).toBe("fail");
   });
+  const htlcRefund = (ev: Record<string, any>, chainId: number) => ({
+    kind: "htlc-refund",
+    chainId,
+    contractAddress: ev.paymentTxRefs[0].contractAddress,
+    refundTxHash: `0x${"f".repeat(64)}`,
+  });
+  test.each([
+    ["puts a refund in the claim's place", (ev: Record<string, any>) => { ev.paymentTxRefs[2] = htlcRefund(ev, 84532); }],
+    ["puts a refund in the reveal's place", (ev: Record<string, any>) => { ev.paymentTxRefs[1] = htlcRefund(ev, 80002); }],
+    ["puts a refund in the lock's place", (ev: Record<string, any>) => { ev.paymentTxRefs[0] = htlcRefund(ev, 84532); }],
+    ["adds a fourth refund reference", (ev: Record<string, any>) => { ev.paymentTxRefs.push(htlcRefund(ev, 84532)); }],
+    ["puts the reveal off the pinned route", (ev: Record<string, any>) => { ev.paymentTxRefs[1].chainId = 11155111; }],
+    ["claims on another contract than the lock", (ev: Record<string, any>) => {
+      ev.paymentTxRefs[2].contractAddress = `0x${"c".repeat(40)}`;
+    }],
+    ["reuses the lock's tx hash for the claim", (ev: Record<string, any>) => {
+      ev.paymentTxRefs[2].claimTxHash = ev.paymentTxRefs[0].lockTxHash;
+    }],
+    ["reuses the reveal's tx hash for the lock", (ev: Record<string, any>) => {
+      ev.paymentTxRefs[0].lockTxHash = ev.paymentTxRefs[1].revealTxHash;
+    }],
+  ])("htlc success that %s → fail (reference set and topology)", async (_name, mutate) => {
+    const ev = htlcResolved();
+    mutate(ev);
+    expect((await verify(ev, { rail: htlcRail })).decision).toBe("fail");
+  });
+  test("htlc success with every reference on one chain and no pinned route → fail", async () => {
+    const ev = htlcResolved();
+    ev.paymentTxRefs[1].chainId = 84532;
+    expect((await verify(ev, { rail: { ...htlcRail, htlcRoute: undefined } })).decision).toBe("fail");
+  });
+  test.each([
+    ["carries only the reveal", (ev: Record<string, any>) => { ev.paymentTxRefs = [ev.paymentTxRefs[1]]; }],
+    ["carries a null reference", (ev: Record<string, any>) => { ev.paymentTxRefs.push(null); }],
+    ["carries an extra source refund", (ev: Record<string, any>) => { ev.paymentTxRefs.push(htlcRefund(ev, 84532)); }],
+    ["reuses the lock's tx hash for the reveal", (ev: Record<string, any>) => {
+      ev.paymentTxRefs[1].revealTxHash = ev.paymentTxRefs[0].lockTxHash;
+    }],
+  ])("htlc9 interim that %s → fail (exact set)", async (_name, mutate) => {
+    const ev = htlcInterim();
+    mutate(ev);
+    expect((await verify(ev, { rail: htlcRail })).decision).toBe("fail");
+  });
+  test.each([
+    ["with the rail context", { rail: htlcRail }],
+    ["without any context", {}],
+  ] as const)("htlc9 interim without paymentTxRefs (no reveal, HTLC-9(b)) → fail %s", async (_name, ctx) => {
+    const ev = htlcInterim();
+    delete ev.paymentTxRefs;
+    expect((await verify(ev, ctx as EvidenceContext)).decision).toBe("fail");
+  });
+  test("an htlc failure with another reason is not held to the interim set", async () => {
+    const ev = htlcInterim();
+    ev.reason = "destination-timeout";
+    ev.paymentTxRefs = [ev.paymentTxRefs[0], htlcRefund(ev, 84532)];
+    expect(await verify(ev, { rail: htlcRail })).toEqual({ decision: "pass", reasons: [] });
+  });
   test("htlcFinalityParams → pass (both params pinned, margin ok)", async () => {
     const ctx: EvidenceContext = {
       rail: { railType: "cross-chain-htlc", sourceFinalitySec: 120, safetyWindowSec: 600 },
