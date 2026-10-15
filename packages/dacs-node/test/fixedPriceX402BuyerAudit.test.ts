@@ -1623,6 +1623,19 @@ describe("buyer two-copy completion adapter", () => {
         new SubstrateError("Demos anchor receipt observation unavailable"));
       await expect(harness.authorize()).resolves.toBe("indeterminate");
     });
+
+    it(`keeps ${paymentProfile} retryable when the unanswered read is a BundleBinding verification`, async () => {
+      const harness = await completionHarness(paymentProfile);
+      let verdict: unknown;
+      mocks.verifyCompleted.mockImplementationOnce(async (input: CompletionInput, deps: CompletionDeps) => {
+        verdict = await deps.verifyBundleBinding(structuredClone(input.copies.seller.binding!));
+        throw new DacsError("completed buyer bundle signature verification failed: forged");
+      });
+      harness.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
+        new SubstrateError("Demos anchor receipt observation unavailable"));
+      await expect(harness.authorize()).resolves.toBe("indeterminate");
+      expect(verdict).toMatchObject({ disposition: expect.stringMatching(/^(?:indeterminate|error)$/) });
+    });
   }
 
   // One copy's Demos read never settles: the buyer copy's name lookup, or the
@@ -1992,6 +2005,12 @@ describe("buyer audit classification of seller Demos reads", () => {
         const reads = createClassifiedDemosSellerBundleReads(publication, JOB_ID);
         await expect(reads.resolveSellerBundle(bundleAddress(JOB_ID, "seller")))
           .resolves.toMatchObject({ disposition: "present" });
+        // Another address is a caller fault, not a substrate read to retry.
+        const other = await Promise.resolve()
+          .then(() => reads.resolveSellerBundle(bundleAddress(JOB_ID, "buyer")))
+          .catch((error: unknown) => error);
+        expect(other).toBeInstanceOf(DacsError);
+        expect(other).not.toBeInstanceOf(SubstrateError);
         await expect(reads.resolveBundleBinding!(bundleAddress(JOB_ID, "seller"), SELLER))
           .resolves.toMatchObject({ disposition: "present" });
         arrange(harness);

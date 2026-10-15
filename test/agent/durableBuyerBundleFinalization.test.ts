@@ -1388,7 +1388,9 @@ describe("durable buyer bundle finalization", () => {
     ["renewLease", { ok: false, reason: "lease-expired" }],
     ["claimCheckpoint", { ok: false, reason: "lease-mismatch" }],
     ["transition", { ok: false, reason: "lease-mismatch" }],
-  ] as const)("keeps a refused %s retryable", async (method, refusal) => {
+    // A revision that keeps moving exhausts the CAS retries.
+    ["transition", { ok: false, reason: "revision-mismatch" }],
+  ] as const)("keeps a refused %s retryable (%j)", async (method, refusal) => {
     const f = await fixture();
     const store = { ...f.store, [method]: vi.fn(async () => structuredClone(refusal)) };
     await expect(advanceCompletedBuyerBundleDurable(
@@ -1400,7 +1402,27 @@ describe("durable buyer bundle finalization", () => {
     expect(f.state.anchored).toBeUndefined();
   });
 
-  test("keeps a refused phase transition retryable after its checkpoint was written", async () => {
+  test.each(["lease-mismatch", "revision-mismatch", "terminal-state"] as const)("keeps the terminal result write refused for %s retryable", async (reason) => {
+    const f = await fixture();
+    const transition = f.store.transition.bind(f.store);
+    const finalWrite = vi.fn();
+    const store = {
+      ...f.store,
+      transition: vi.fn(async (input: { phase?: string }) => {
+        if (input.phase !== "buyer:finalised") return transition(input as never);
+        finalWrite();
+        return { ok: false as const, reason };
+      }),
+    };
+    await expect(advanceCompletedBuyerBundleDurable(
+      f.input,
+      f.provider,
+      { ...f.durability, store } as never,
+    )).resolves.toMatchObject({ disposition: "indeterminate" });
+    expect(finalWrite).toHaveBeenCalled();
+  });
+
+  test.each(["lease-mismatch", "revision-mismatch"] as const)("keeps a phase transition refused for %s retryable after its checkpoint was written", async (reason) => {
     const f = await fixture();
     const transition = f.store.transition.bind(f.store);
     const phaseOnly = vi.fn();
@@ -1409,7 +1431,7 @@ describe("durable buyer bundle finalization", () => {
       transition: vi.fn(async (input: { checkpoint?: unknown }) => {
         if (input.checkpoint !== undefined) return transition(input as never);
         phaseOnly();
-        return { ok: false as const, reason: "lease-mismatch" as const };
+        return { ok: false as const, reason };
       }),
     };
     await expect(advanceCompletedBuyerBundleDurable(

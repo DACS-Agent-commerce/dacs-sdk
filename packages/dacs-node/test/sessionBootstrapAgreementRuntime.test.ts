@@ -469,13 +469,24 @@ describe("session bootstrap agreement tracks", () => {
   // DACS-2 VPC-4/VP-R4: every authenticated non-pass decision ends the phase.
   // A `fail` is the seller's fault; `indeterminate` or `error` is the buyer's
   // own `permanent` failure as the verifier.
-  it.each([
+  it.each<[
+    "fail" | "indeterminate" | "error",
+    string,
+    string,
+    Readonly<{ planHash?: string; nativeAddress?: unknown }>?,
+  ]>([
     ["fail", "counterparty", "seller"],
     ["indeterminate", "permanent", "buyer"],
     ["error", "permanent", "buyer"],
-    // A finalized bundle whose Vet phase carries no VPC-4 class is refused.
+    // A finalized bundle whose Vet phase carries no VPC-4 class is refused,
+    // as is one that blames no party or names no plan or copy.
     ["fail", "transient", "seller"],
-  ] as const)("stops before agreement and resumes a locally produced Vet %s (%s)", async (decision, errorClass, faultedParty) => {
+    ["fail", "counterparty", "verifier"],
+    ["fail", "counterparty", "seller", { planHash: "A".repeat(64) }],
+    ["fail", "counterparty", "seller", { nativeAddress: "" }],
+    ["fail", "counterparty", "seller", { nativeAddress: 7 }],
+  ])("stops before agreement and resumes a locally produced Vet %s (%s, %s)", async (decision, errorClass, faultedParty, finalised = {}) => {
+    const refused = errorClass === "transient" || faultedParty === "verifier" || Object.keys(finalised).length > 0;
     const value = await fixture();
     const sellerTrack = createDacsSellerSessionBootstrapAgreementTrackV1({
       context: value.sellerContext,
@@ -526,8 +537,10 @@ describe("session bootstrap agreement tracks", () => {
             faultedParty,
             phaseSummary: [{ index: 0, kind: "vet-credentials", outcome: "fail", errorClass }],
           },
-          planHash: "a".repeat(64),
-          publication: { nativeAddress: "stor-terminal-buyer-copy" },
+          planHash: finalised.planHash ?? "a".repeat(64),
+          publication: {
+            nativeAddress: "nativeAddress" in finalised ? finalised.nativeAddress : "stor-terminal-buyer-copy",
+          },
         },
       }) as never;
     });
@@ -592,7 +605,7 @@ describe("session bootstrap agreement tracks", () => {
     expect(vet.produce).toHaveBeenCalledTimes(1);
     expect(agreement).not.toHaveBeenCalled();
 
-    await expect(buyerTrack(value.buyerOperation)).resolves.toEqual(errorClass === "transient"
+    await expect(buyerTrack(value.buyerOperation)).resolves.toEqual(refused
       ? { status: "operator-action", reasonCode: "vet-terminal-finalization-invalid" }
       : {
           status: "final",
@@ -604,6 +617,99 @@ describe("session bootstrap agreement tracks", () => {
         });
     expect(registerLocalTerminal).toHaveBeenCalledTimes(1);
     expect(vet.produce).toHaveBeenCalledTimes(1);
+    expect(agreement).not.toHaveBeenCalled();
+  });
+
+  // Registering this role's own Vet result: a production not established yet
+  // or a busy store is retried; a conflict or an invalid registration needs an
+  // operator.
+  const err = (reasonCode: string) => new DacsVetTerminalBundleTransportError(reasonCode);
+  it.each<["pass" | "fail", () => unknown, Readonly<Record<string, unknown>>]>([
+    ["fail", () => err("vet-terminal-production-indeterminate"),
+      { status: "indeterminate", reasonCode: "vet-terminal-production-indeterminate" }],
+    ["fail", () => err("agreement-vet-terminal-phase-conflict"),
+      { status: "operator-action", reasonCode: "agreement-vet-terminal-phase-conflict" }],
+    ["fail", () => err("vet-terminal-binding-conflict"),
+      { status: "operator-action", reasonCode: "vet-terminal-registration-conflict" }],
+    ["fail", () => err("vet-terminal-input-invalid"),
+      { status: "operator-action", reasonCode: "vet-terminal-registration-invalid" }],
+    ["fail", () => new TypeError("registration crashed"),
+      { status: "operator-action", reasonCode: "vet-terminal-registration-invalid" }],
+    ["fail", () => Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }),
+      { status: "indeterminate", reasonCode: "vet-terminal-registration-invalid-busy" }],
+    ["pass", () => err("vet-terminal-binding-conflict"),
+      { status: "operator-action", reasonCode: "vet-terminal-registration-conflict" }],
+    ["pass", () => new TypeError("store unavailable"),
+      { status: "indeterminate", reasonCode: "vet-terminal-local-vet-unavailable" }],
+  ])("classifies a local Vet %s whose registration throws (%#)", async (decision, thrown, expected) => {
+    const value = await fixture();
+    const sellerTrack = createDacsSellerSessionBootstrapAgreementTrackV1({
+      context: value.sellerContext,
+      sessionBootstrap: value.sellerTransport,
+      resolveBuyerRequirement: () => EMPTY_REQUIREMENT,
+      agreementProposalReady: () => false,
+      agreement: vi.fn(),
+    });
+    const vet = {
+      produce: vi.fn(async () => Object.freeze({
+        status: "ready" as const,
+        production: Object.freeze({ record: Object.freeze({ overallDecision: decision }) }) as never,
+      })),
+      authenticate: vi.fn(async () => "valid" as const),
+    };
+    const registerLocalTerminal = vi.fn(async () => { throw thrown(); });
+    const registerLocalVetPass = vi.fn(async () => { throw thrown(); });
+    const agreement = vi.fn();
+    const buyerTrack = createDacsBuyerSessionBootstrapAgreementTrackV1({
+      context: value.buyerContext,
+      sessionBootstrap: value.buyerTransport,
+      resolveRequirements: () => ({
+        buyer: EMPTY_REQUIREMENT,
+        seller: Object.freeze({
+          requirementVersion: "1" as const,
+          required: [{ scheme: "did", verificationRequired: true }],
+        }),
+      }),
+      vet,
+      terminalBundle: {
+        runtime: {
+          registerLocalTerminal,
+          registerLocalVetPass,
+          advanceRegisteredTerminal: vi.fn(async () => {
+            throw new DacsVetTerminalBundleTransportError("vet-terminal-material-unavailable");
+          }),
+        } as never,
+        createInput: vi.fn(() => ({ terminalInputVersion: "test" }) as never),
+      },
+      agreement,
+    });
+    await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject({
+      reasonCode: "buyer-session-challenge-pending",
+    });
+    await value.sellerTransport.handleMessage(await authenticated({
+      type: "session-init",
+      payload: lastMessage(value.buyerSend).payload as DacsHttpPayloadByType["session-init"],
+      sender: value.buyer,
+      audience: value.seller,
+      privateKey: value.buyerKeys.privateKey,
+      role: "buyer",
+      nonceByte: 11,
+    }), { role: "seller", coordinator: { startOrder: value.startOrder } } as never);
+    const sellerLoaded = await value.sellerStore.load("seller", JOB_ID);
+    if (sellerLoaded.status !== "ok") throw new Error("seller order missing");
+    await sellerTrack(operation(sellerLoaded.record));
+    await value.buyerTransport.handleMessage(await authenticated({
+      type: "session-challenge",
+      payload: lastMessage(value.sellerSend).payload as DacsHttpPayloadByType["session-challenge"],
+      sender: value.seller,
+      audience: value.buyer,
+      privateKey: value.sellerKeys.privateKey,
+      role: "seller",
+      nonceByte: 12,
+    }), { role: "buyer" } as never);
+
+    await expect(buyerTrack(value.buyerOperation)).resolves.toMatchObject(expected);
+    expect(decision === "pass" ? registerLocalVetPass : registerLocalTerminal).toHaveBeenCalledTimes(1);
     expect(agreement).not.toHaveBeenCalled();
   });
 
@@ -722,6 +828,12 @@ describe("session bootstrap agreement tracks", () => {
       { status: "indeterminate", reasonCode: "buyer-session-seller-vet-pending" }],
     ["an invalid pass", "pass", "invalid",
       { status: "operator-action", reasonCode: "buyer-session-seller-vet-invalid" }],
+    // An authenticator that answers outside its contract, or throws, has not
+    // authenticated anything: retry, never blame.
+    ["a pass the authenticator answers with an unknown verdict", "pass", "authentic" as never,
+      { status: "indeterminate", reasonCode: "buyer-session-seller-vet-pending" }],
+    ["a pass whose authenticator throws", "pass", "throws" as never,
+      { status: "indeterminate", reasonCode: "buyer-session-seller-vet-pending" }],
   ])("the buyer does not act on %s", async (_label, decision, authentication, expected) => {
     const value = await fixture();
     const sellerTrack = createDacsSellerSessionBootstrapAgreementTrackV1({
@@ -736,7 +848,10 @@ describe("session bootstrap agreement tracks", () => {
         status: "ready" as const,
         production: Object.freeze({ record: Object.freeze({ overallDecision: decision }) }) as never,
       })),
-      authenticate: vi.fn(async () => authentication),
+      authenticate: vi.fn(async () => {
+        if (authentication === ("throws" as never)) throw new Error("authenticator unavailable");
+        return authentication;
+      }),
     };
     const registerLocalTerminal = vi.fn();
     const registerLocalVetPass = vi.fn();
