@@ -112,12 +112,20 @@ export interface DacsDemosActorRuntimeOptionsV1 {
   journalDirectory?: string;
   /** Read-only probes receive an adapter whose journal rejects every write lease. */
   writePolicy?: "perform" | "read-only";
+  /**
+   * Fetch transport for the adapter's Demos CCI identity reads. Without it,
+   * reads fail before sending wherever global fetch and demosdk's Axios might
+   * take different routes, such as behind HTTP(S)_PROXY; inject a fetch that
+   * uses the proxy there.
+   */
+  identityFetch?: typeof fetch;
   /** Deterministic test/custom-host seam. Production omits this callback. */
   createAdapter?: (input: Readonly<{
     rpc: string;
     secret: string;
     writeJournal: DemosWriteJournal;
     maximumFeeOs: bigint;
+    identityFetch?: typeof fetch;
   }>) => Promise<DacsDemosAdapterV1> | DacsDemosAdapterV1;
   /** Deterministic test/custom-host seam. Production uses the SDK native rail. */
   createPayDemRail?: (input: Readonly<{
@@ -235,6 +243,7 @@ async function defaultAdapter(input: Readonly<{
   secret: string;
   writeJournal: DemosWriteJournal;
   maximumFeeOs: bigint;
+  identityFetch?: typeof fetch;
 }>): Promise<DacsDemosAdapterV1> {
   const substrate = await import("@kynesyslabs/dacs/substrate").catch(() => {
     throw new DacsDemosRuntimeError("demos-adapter-unavailable");
@@ -372,6 +381,8 @@ export async function createDacsDemosActorRuntimeV1(
         typeof rawOptions.journalDirectory !== "string") ||
       (rawOptions.writePolicy !== undefined && rawOptions.writePolicy !== "perform" &&
         rawOptions.writePolicy !== "read-only") ||
+      (rawOptions.identityFetch !== undefined &&
+        typeof rawOptions.identityFetch !== "function") ||
       (rawOptions.createAdapter !== undefined &&
         typeof rawOptions.createAdapter !== "function") ||
       (rawOptions.createPayDemRail !== undefined &&
@@ -423,6 +434,8 @@ export async function createDacsDemosActorRuntimeV1(
         secret,
         writeJournal,
         maximumFeeOs: BigInt(baseUnits(config.limits.maxDemosNetworkFeeDem, 9)),
+        ...(rawOptions.identityFetch === undefined
+          ? {} : { identityFetch: rawOptions.identityFetch }),
       });
       await adapter.connect();
       if (rawOptions.role === "buyer" && rawOptions.writePolicy !== "read-only" &&
