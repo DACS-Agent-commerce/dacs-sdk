@@ -2549,6 +2549,33 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     );
   });
 
+  // DACS-5 ST-11 step 4 / CORE SR2-9: the seller's own bundle must itself be
+  // finalized and established at its logical and native address before the
+  // session is finalised. The anchor proof verifier accepts every case here,
+  // so the receipt check is the only guard.
+  test.each<[string, (receipt: AnchorReceipt) => void]>([
+    ["only included", (receipt) => { receipt.state = "included"; }],
+    ["an indeterminate observation", (receipt) => {
+      receipt.observationDisposition = "indeterminate";
+      receipt.preservedReceiptHash = "9".repeat(64);
+    }],
+    ["bound to another logical address", (receipt) => {
+      receipt.logicalAddress = bundleAddress(JOB_ID, "buyer");
+    }],
+    ["bound to another native address", (receipt) => {
+      receipt.nativeAddress = "stor-another-native";
+    }],
+  ])("refuses a seller bundle receipt that is %s", async (_label, mutate) => {
+    const f = fixture();
+    f.provider.submitSellerBundle = vi.fn((logicalAddress, bundle) => {
+      f.anchor(logicalAddress, bundle);
+      mutate(f.state.anchored!.anchorReceipt);
+    });
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /exact established finalized AnchorReceipt/,
+    );
+  });
+
   test("write-input mapping fails closed when binding discovery is indeterminate", async () => {
     const f = fixture("write-input");
     f.provider.resolveBundleBinding = vi.fn(() => ({
