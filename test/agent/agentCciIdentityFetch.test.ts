@@ -4,7 +4,7 @@ import { createServer, request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createAgent, type AgentConfig } from "../../src/agent/Agent.js";
+import { createAgent, createUnsafeManualAgent, type AgentConfig } from "../../src/agent/Agent.js";
 import { DacsError } from "../../src/errors.js";
 import {
   DEMOS_CCI_PROXY_BYPASS,
@@ -92,5 +92,23 @@ describe("AgentConfig.identityFetch", () => {
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(DacsError);
     expect(error).toMatchObject({ message: "AgentConfig.identityFetch must be a stable function when supplied" });
+  });
+
+  it("rejects an accessor identityFetch before connecting", async () => {
+    const get = vi.fn(() => fetch);
+    const config = Object.defineProperty({ demosRpc: "http://127.0.0.1:9/" }, "identityFetch", { get, enumerable: true });
+    const error = await createAgent(config as AgentConfig).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).toMatchObject({ message: "AgentConfig.identityFetch must be stable data" });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("passes demosWriteJournal and identityFetch to the Demos adapter it connects", async () => {
+    const { rpc } = await nodeBehindProxy();
+    const demosWriteJournal = { acquire: vi.fn() } as unknown as NonNullable<AgentConfig["demosWriteJournal"]>;
+    const identityFetch = vi.fn<typeof fetch>();
+    const agent = await createUnsafeManualAgent({ demosRpc: rpc, demosWriteJournal, identityFetch });
+    const { config } = agent.adapter as unknown as { config: Record<string, unknown> };
+    expect(config).toMatchObject({ rpc, writeJournal: demosWriteJournal, identityFetch });
   });
 });

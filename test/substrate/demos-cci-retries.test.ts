@@ -189,6 +189,9 @@ describe("Demos identity transient retries", () => {
     "Thursday, 06-Nov-2070 08:49:37 GMT", "Thursday, 06-Nov-70 08:49:37 UTC", "Thursday, 31-Feb-70 08:49:37 GMT",
     "Fri Nov  6 24:49:37 2099", "Thu, 31 Dec 2099 24:00:00 GMT", "Thu, 31 Dec 2099 23:60:00 GMT",
     "Thu, 31 Dec 2099 23:59:61 GMT", "Thu, 01 Jan 2099 0:00:00 GMT",
+    // Days that don't exist, named by the weekday of the date they roll over to
+    // (2 Mar 2099 is a Monday, 1 May 2099 a Friday).
+    "Mon, 30 Feb 2099 00:00:00 GMT", "Fri, 31 Apr 2099 00:00:00 GMT",
     // Each form is anchored at both ends.
     "xThu, 01 Jan 2099 00:00:00 GMT", "Thu, 01 Jan 2099 00:00:00 GMTx",
     "xThursday, 06-Nov-70 08:49:37 GMT", "Thursday, 06-Nov-70 08:49:37 GMTx",
