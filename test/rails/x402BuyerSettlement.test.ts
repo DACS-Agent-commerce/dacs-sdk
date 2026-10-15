@@ -347,6 +347,34 @@ describe("durable buyer x402 intent", () => {
     }
   });
 
+  // DACS-4 SB-3 (DACS-4.md:782): the handler MUST NOT substitute a random
+  // nonce. The intent below is otherwise self-consistent: the record, the
+  // signed authorization and the header all carry the same random nonce.
+  test("refuses a self-consistent intent whose nonce is not the SB-3 derivation", () => {
+    const random = `0x${"5a".repeat(32)}` as const;
+    const draft = intentDraft();
+    draft.authorizationNonce = random;
+    const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+    ((payload.payload as Record<string, unknown>).authorization as Record<string, unknown>)
+      .nonce = random;
+    draft.signedPaymentPayload = payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+    draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+    expect(() => createX402BuyerSettlementIntent(draft))
+      .toThrow("x402 buyer authorization nonce does not satisfy DACS-4 SB-3");
+    // A retained intent with the same substitution is refused on cold restart.
+    const intent = createX402BuyerSettlementIntent(intentDraft()) as Record<string, unknown>;
+    const { bindingHash: _bindingHash, ...core } = {
+      ...intent,
+      authorizationNonce: random,
+      signedPaymentPayload: payload,
+      paymentHeader: draft.paymentHeader,
+    } as Record<string, unknown>;
+    expect(() => assertX402BuyerSettlementIntent({
+      ...core,
+      bindingHash: sha256Hex(canonicalize(core)),
+    } as never)).toThrow();
+  });
+
   test("rejects non-JID-1 job IDs before deriving an exact settlement key", () => {
     expect(x402BuyerSettlementKey({
       railId: RAIL_ID,

@@ -796,6 +796,78 @@ describe("x402 buyer EVM authorization provider", () => {
     });
   });
 
+  // DACS-4 SB-3 retry: only evidence from this chain's canonical history may
+  // resume or refuse a settlement. Each read below differs in one binding.
+  test("does not look up an intent on another chain", async () => {
+    const otherChain = CHAIN_ID + 1;
+    const { lookup } = await reconcile(provider(reader({ chainId: otherChain }), {
+      chainId: otherChain,
+    }));
+    expect(lookup).toEqual({ disposition: "unavailable", reason: "evm-chain-mismatch" });
+  });
+
+  test.each([
+    ["another block number", (input: { blockNumber: number; blockHash: string }) => ({
+      used: true, blockNumber: input.blockNumber - 1, blockHash: input.blockHash,
+    })],
+    ["another block hash", (input: { blockNumber: number; blockHash: string }) => ({
+      used: true, blockNumber: input.blockNumber, blockHash: `0x${"ee".repeat(32)}`,
+    })],
+  ])("refuses authorization state read at %s than the head", async (_label, state) => {
+    const custom = reader();
+    custom.readAuthorizationState = async (input) => state(input);
+    const { lookup } = await reconcile(provider(custom));
+    expect(lookup).toEqual({
+      disposition: "unavailable",
+      reason: "evm-authorization-observation-invalid",
+    });
+  });
+
+  test("refuses a cancelled-authorization log that is not an AuthorizationCanceled event", async () => {
+    const { lookup } = await reconcile(provider(reader({ used: [], cancelled: [log()] })));
+    expect(lookup).toEqual({
+      disposition: "unavailable",
+      reason: "evm-authorization-observation-invalid",
+    });
+  });
+
+  test.each([
+    ["block hash", { blockHash: `0x${"ee".repeat(32)}` }],
+    ["block number", { blockNumber: 99 }],
+    ["head hash", { headBlockHash: `0x${"ee".repeat(32)}` }],
+  ])("refuses an event ancestry proof for another %s", async (_label, override) => {
+    const custom = reader();
+    custom.confirmBlockAncestor = async (input) => ({ canonical: true, ...input, ...override });
+    const { lookup } = await reconcile(provider(custom));
+    expect(lookup).toEqual({ disposition: "unavailable", reason: "evm-block-ancestry-invalid" });
+  });
+
+  test("refuses an advanced final head reported for another chain", async () => {
+    const custom = reader();
+    let reads = 0;
+    custom.getFinalityHead = async () => reads++ === 0
+      ? { chainId: CHAIN_ID, blockNumber: 110, blockHash: HEAD_HASH, timestamp: 2_000 }
+      : { chainId: CHAIN_ID + 1, blockNumber: 112, blockHash: `0x${"dd".repeat(32)}`,
+          timestamp: 2_004 };
+    const { lookup } = await reconcile(provider(custom));
+    expect(lookup).toEqual({ disposition: "unavailable", reason: "evm-finality-head-changed" });
+  });
+
+  test("refuses an advanced final head whose ancestry proof names another head", async () => {
+    const custom = reader();
+    let reads = 0;
+    const confirm = custom.confirmBlockAncestor.bind(custom);
+    custom.confirmBlockAncestor = async (input) => input.headBlockNumber === 112
+      ? { canonical: true, ...input, headBlockHash: `0x${"ee".repeat(32)}` }
+      : confirm(input);
+    custom.getFinalityHead = async () => reads++ === 0
+      ? { chainId: CHAIN_ID, blockNumber: 110, blockHash: HEAD_HASH, timestamp: 2_000 }
+      : { chainId: CHAIN_ID, blockNumber: 112, blockHash: `0x${"dd".repeat(32)}`,
+          timestamp: 2_004 };
+    const { lookup } = await reconcile(provider(custom));
+    expect(lookup).toEqual({ disposition: "unavailable", reason: "evm-finality-head-changed" });
+  });
+
   test("rejects a read set if the finality head changes during lookup", async () => {
     const custom = reader();
     let reads = 0;
