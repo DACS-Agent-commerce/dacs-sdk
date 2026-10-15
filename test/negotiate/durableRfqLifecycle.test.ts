@@ -1475,6 +1475,265 @@ describe("durable RFQ turn timeout for the waiting member", () => {
   });
 });
 
+describe("durable RFQ agreement timeout for the waiting member", () => {
+  const OFFER = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+  const AGREEMENT_TIMEOUT = "RFQ agreement timeout elapsed (RFQ-4)";
+  const TERMINAL = "RFQ session is already terminal";
+
+  /** The buyer offers at NOW; the seller receives and accepts at `acceptAt`. */
+  async function acceptedPair(clock: { now: number }, acceptAt = NOW) {
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { buyerClient, sellerClient } = clients(network.transport, durableReservation(), () => clock.now);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await expect(buyerClient.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "ready" });
+    clock.now = acceptAt;
+    await deliver(network, SELLER, sellerClient);
+    await expect(sellerClient.respond(JOB_ID, () => ({ action: "accept" }))).resolves.toMatchObject({ status: "ready" });
+    return { network, buyerClient, sellerClient };
+  }
+
+  async function record(client: DurableRfqLifecycleClient<string>) {
+    const status = await client.getStatus(JOB_ID);
+    if (status.status !== "ok") throw new Error("record missing");
+    return status.record;
+  }
+
+  test("the seller whose accept is never answered records the timeout once it elapses", async () => {
+    const clock = { now: NOW };
+    const { network, sellerClient } = await acceptedPair(clock, NOW + 2_000);
+    // The buyer never starts the agreement. Acceptance was at NOW + 2,000.
+    clock.now = NOW + 12_000;
+    await expect(sellerClient.sendAbort(JOB_ID, "buyer silent")).resolves.toMatchObject({
+      status: "rejected", reason: TERMINAL,
+    });
+    expect((await record(sellerClient)).failure).toBeUndefined();
+
+    clock.now = NOW + 12_001;
+    await expect(sellerClient.sendAbort(JOB_ID, "buyer silent")).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+    const failed = await record(sellerClient);
+    expect(failed.session.status).toBe("accepted");
+    expect(failed.failure).toEqual({
+      failureVersion: "1", class: "timeout", reason: AGREEMENT_TIMEOUT, recordedAt: NOW + 12_001,
+    });
+    expect(failed.agreement).toBeUndefined();
+    // Nothing was signed or published: the accept is the only packet.
+    expect(failed.transcript).toHaveLength(2);
+    expect(failed.outbox).toHaveLength(1);
+    expect(network.pending(BUYER)).toBe(1);
+    await expect(sellerClient.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+  });
+
+  test.each([
+    [10_000, "ready"],
+    [10_001, "rejected"],
+  ] as const)("a proposal the seller receives %i ms after acceptance is %s", async (delay, expected) => {
+    const clock = { now: NOW };
+    const { network, buyerClient, sellerClient } = await acceptedPair(clock);
+    clock.now = NOW + 1_000;
+    await deliver(network, BUYER, buyerClient);
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const proposal = network.take(SELLER);
+    if (proposal === undefined) throw new Error("no proposal");
+    clock.now = NOW + delay;
+    const received = await sellerClient.receive(proposal);
+    const stored = await record(sellerClient);
+    if (expected === "ready") {
+      expect(received.status).toBe("ready");
+      expect(stored.agreement?.finalized).toBeDefined();
+      expect(network.pending(BUYER)).toBe(1);
+      return;
+    }
+    // Refused before the seller signs anything.
+    expect(received).toMatchObject({ status: "rejected", reason: AGREEMENT_TIMEOUT });
+    expect(stored.failure).toMatchObject({ class: "timeout", reason: AGREEMENT_TIMEOUT });
+    expect(stored.agreement).toBeUndefined();
+    expect(stored.inboxPacketIds).toHaveLength(1);
+    expect(stored.outbox).toHaveLength(1);
+    expect(network.pending(BUYER)).toBe(0);
+  });
+
+  test("the buyer whose proposal is never countersigned records the timeout once it elapses", async () => {
+    const clock = { now: NOW };
+    const { network, buyerClient } = await acceptedPair(clock);
+    clock.now = NOW + 1_000;
+    await deliver(network, BUYER, buyerClient);
+    clock.now = NOW + 2_000;
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    // The seller never countersigns. The plan was generated at NOW + 2,000.
+    clock.now = NOW + 12_000;
+    await expect(buyerClient.sendAbort(JOB_ID)).resolves.toMatchObject({ status: "rejected", reason: TERMINAL });
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "duplicate" });
+    expect((await record(buyerClient)).failure).toBeUndefined();
+
+    clock.now = NOW + 12_001;
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+    const failed = await record(buyerClient);
+    expect(failed.session.status).toBe("accepted");
+    expect(failed.failure).toMatchObject({ class: "timeout", reason: AGREEMENT_TIMEOUT, recordedAt: NOW + 12_001 });
+    expect(failed.agreement?.finalized).toBeUndefined();
+    expect(failed.outbox).toHaveLength(2);
+    expect(network.pending(SELLER)).toBe(1);
+    await expect(buyerClient.sendAbort(JOB_ID)).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+  });
+
+  test("sendAbort records the buyer's timeout while it waits on the contribution", async () => {
+    const clock = { now: NOW };
+    const { network, buyerClient } = await acceptedPair(clock);
+    await deliver(network, BUYER, buyerClient);
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    clock.now = NOW + 10_001;
+    await expect(buyerClient.sendAbort(JOB_ID, "seller silent")).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+    expect((await record(buyerClient)).failure).toMatchObject({ class: "timeout" });
+  });
+
+  test("a buyer that starts the agreement after the acceptance deadline records the timeout instead", async () => {
+    const clock = { now: NOW };
+    const { network, buyerClient } = await acceptedPair(clock);
+    // The buyer's acceptance deadline runs from its own receipt of the accept.
+    clock.now = NOW + 1_000;
+    await deliver(network, BUYER, buyerClient);
+    clock.now = NOW + 11_001;
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+    const failed = await record(buyerClient);
+    expect(failed.agreement).toBeUndefined();
+    expect(failed.outbox).toHaveLength(1);
+    expect(network.pending(SELLER)).toBe(0);
+  });
+
+  test("a late contribution still finalizes while the buyer has recorded no timeout; after one it is refused", async () => {
+    for (const recordFirst of [false, true]) {
+      const clock = { now: NOW };
+      const { network, buyerClient, sellerClient } = await acceptedPair(clock);
+      await deliver(network, BUYER, buyerClient);
+      await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+      clock.now = NOW + 5_000;
+      await deliver(network, SELLER, sellerClient);
+      clock.now = NOW + 20_000;
+      if (recordFirst) {
+        await expect(buyerClient.sendAbort(JOB_ID)).resolves.toMatchObject({ reason: AGREEMENT_TIMEOUT });
+      }
+      const contribution = network.take(BUYER);
+      if (contribution === undefined) throw new Error("no contribution");
+      const received = await buyerClient.receive(contribution);
+      if (recordFirst) {
+        // The seller holds a finalized agreement; this record holds the timeout.
+        expect(received).toMatchObject({ status: "rejected", reason: AGREEMENT_TIMEOUT });
+        expect((await record(sellerClient)).agreement?.finalized).toBeDefined();
+      } else {
+        expect(received.status).toBe("ready");
+        expect((await record(buyerClient)).agreement?.finalized).toBeDefined();
+      }
+    }
+  });
+
+  test("acceptance moves awaitingSince to the trusted acceptance time on both members", async () => {
+    const clock = { now: NOW };
+    const { network, buyerClient, sellerClient } = await acceptedPair(clock, NOW + 2_000);
+    expect((await record(sellerClient)).session.awaitingSince).toBe(NOW + 2_000);
+    clock.now = NOW + 3_000;
+    await deliver(network, BUYER, buyerClient);
+    expect((await record(buyerClient)).session.awaitingSince).toBe(NOW + 3_000);
+  });
+});
+
+describe("durable RFQ timeout whose write the store refuses", () => {
+  const OFFER = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+
+  /** A client whose store answers `refusal` to any write that records a failure. */
+  function refusingClient(
+    role: "buyer" | "seller",
+    transport: DurableRfqLifecycleTransport<string>,
+    clock: { now: number },
+    refusal: { status: "stale" } | { status: "unavailable"; reason: string },
+  ) {
+    const memory = createInMemoryDurableRfqLifecycleStore<string>();
+    const keys = role === "buyer" ? buyerKeys : sellerKeys;
+    const claim = role === "buyer" ? BUYER : SELLER;
+    return createDurableRfqLifecycleClient({
+      role,
+      store: {
+        load: (storeRole, jobId) => memory.load(storeRole, jobId),
+        create: (stored) => memory.create(stored),
+        compareAndSwap: (storeRole, jobId, revision, next) =>
+          next.failure !== undefined ? refusal : memory.compareAndSwap(storeRole, jobId, revision, next),
+      },
+      transport,
+      reserveChannelId: durableReservation(),
+      signChannelMessage: channelSigner(keys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: agreementSigner(claim, keys.privateKey),
+      verifyAgreementContribution: verifyAgreement,
+      nowMs: () => clock.now,
+    });
+  }
+
+  const refusals = [
+    [{ status: "stale" } as const, { status: "conflict", reason: "RFQ lifecycle state changed concurrently" }],
+    [{ status: "unavailable", reason: "store offline" } as const, { status: "indeterminate", reason: "store offline" }],
+  ] as const;
+
+  test.each(refusals)("the waiting member's timeout answers the store's %o", async (refusal, expected) => {
+    const clock = { now: NOW };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const buyerClient = refusingClient("buyer", network.transport, clock, refusal);
+    await buyerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, OFFER);
+    clock.now = NOW + 10_001;
+    await expect(buyerClient.sendAbort(JOB_ID)).resolves.toEqual(expected);
+    const stored = await buyerClient.getStatus(JOB_ID);
+    expect(stored.status === "ok" && stored.record.failure).toBeUndefined();
+  });
+
+  test.each(refusals)("a late turn's timeout on receipt answers the store's %o", async (refusal, expected) => {
+    const clock = { now: NOW };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { buyerClient } = clients(network.transport, durableReservation(), () => clock.now);
+    const sellerClient = refusingClient("seller", network.transport, clock, refusal);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, OFFER);
+    const offer = network.take(SELLER);
+    clock.now = NOW + 10_001;
+    // receive() retries a stale write before it answers conflict.
+    await expect(sellerClient.receive(offer)).resolves.toEqual(
+      expected.status === "conflict"
+        ? { status: "conflict", reason: "RFQ receive CAS retry limit reached" }
+        : expected,
+    );
+    const stored = await sellerClient.getStatus(JOB_ID);
+    expect(stored.status === "ok" && stored.record.failure).toBeUndefined();
+  });
+
+  test.each(refusals)("the agreement timeout answers the store's %o", async (refusal, expected) => {
+    const clock = { now: NOW };
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const { buyerClient } = clients(network.transport, durableReservation(), () => clock.now);
+    const sellerClient = refusingClient("seller", network.transport, clock, refusal);
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, OFFER);
+    await deliver(network, SELLER, sellerClient);
+    await sellerClient.sendAccept(JOB_ID);
+    clock.now = NOW + 10_001;
+    await expect(sellerClient.sendAbort(JOB_ID)).resolves.toEqual(expected);
+    const stored = await sellerClient.getStatus(JOB_ID);
+    expect(stored.status === "ok" && stored.record.failure).toBeUndefined();
+  });
+});
+
 describe("durable RFQ receive() rejections and packet parsing", () => {
   const OFFER = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
 
