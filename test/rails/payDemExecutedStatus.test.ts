@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -54,7 +56,7 @@ interface BroadcastTransaction {
     from: string;
     to: string;
     amount: string | number;
-    nonce: number;
+    nonce: number | string;
     data: [string, { nativeOperation: string; args: [string, string] }];
     [key: string]: unknown;
   };
@@ -66,15 +68,27 @@ interface TransactionRecord extends BroadcastTransaction {
   blockNumber: unknown;
 }
 
-/** The node's record for the transaction that was actually broadcast. */
+/**
+ * The node's record for the transaction that was actually broadcast, in the
+ * shape `getTxByHash` serves it (node `stabilisation@61b8e75`, see the
+ * recorded node2 records below): the nonce is a decimal string (a pg `bigint`
+ * column), the amount is a number, the native args carry the payee without
+ * `0x`, and the node adds `attrs`.
+ */
 function broadcastRecord(): TransactionRecord {
   const validity = sdk.broadcast.mock.calls.at(-1)?.[0] as {
     response: { data: { transaction: BroadcastTransaction } };
   };
+  const transaction = structuredClone(validity.response.data.transaction);
+  const [payee, amount] = transaction.content.data[1].args;
+  transaction.content.nonce = String(transaction.content.nonce);
+  transaction.content.amount = Number(transaction.content.amount);
+  transaction.content.data[1].args = [payee.replace(/^0x/, ""), amount];
   return {
-    ...structuredClone(validity.response.data.transaction),
+    ...transaction,
     status: "confirmed",
     blockNumber: BLOCK,
+    attrs: { reference_block: BLOCK - 1 },
   };
 }
 
@@ -179,9 +193,11 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts the record's numeric post-fork amount projection bound by the payload", async () => {
+  it("accepts a record that keeps the signed wire amount and numeric nonce", async () => {
     sdk.getTxByHash.mockImplementation(recordReturning((record) => {
-      record.content.amount = Number(AMOUNT_OS);
+      record.content.amount = AMOUNT_OS;
+      record.content.nonce = NONCE;
+      record.content.data[1].args[0] = RECIPIENT;
     }));
     const payDem = await rail();
 
@@ -226,15 +242,15 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
 
   it.each([
     ["amount", (record: TransactionRecord) => {
-      record.content.amount = "1000000000";
+      record.content.amount = 1_000_000_000;
       record.content.data[1].args[1] = "1000000000";
     }],
     ["payee", (record: TransactionRecord) => {
       record.content.to = `0x${"ef".repeat(32)}`;
-      record.content.data[1].args[0] = `0x${"ef".repeat(32)}`;
+      record.content.data[1].args[0] = "ef".repeat(32);
     }],
     ["nonce", (record: TransactionRecord) => {
-      record.content.nonce = NONCE + 1;
+      record.content.nonce = String(NONCE + 1);
     }],
     ["payer", (record: TransactionRecord) => {
       record.content.from = `0x${"12".repeat(32)}`;
@@ -342,6 +358,38 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(3);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
+
+  it("gives a lagging record the default 30 second budget", async () => {
+    sdk.getTxByHash
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockImplementation(recordReturning(() => undefined));
+    const payDem = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      inclusionPollIntervalMs: 10,
+      statusRequestTimeoutMs: 50,
+    });
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not read the record when the status index reports failed", async () => {
+    // Current nodes never emit status `failed` (#338), but a status index that
+    // does is never overridden by a confirmed record.
+    sdk.nodeCall.mockResolvedValue({ state: "failed", blockNumber: BLOCK });
+    const payDem = await rail();
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toEqual(NOT_OK);
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("the execution observer tells failed from indeterminate (#338)", () => {
@@ -358,6 +406,7 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
     },
   };
 
+  /** An executed record in the node's projection (see `broadcastRecord`). */
   function executedRecord(): TransactionRecord {
     return {
       hash: TX_HASH,
@@ -368,13 +417,14 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
         from: WALLET,
         from_ed25519_address: WALLET,
         to: RECIPIENT,
-        amount: AMOUNT_OS,
-        nonce: NONCE,
+        amount: Number(AMOUNT_OS),
+        nonce: String(NONCE),
         data: [
           "native",
-          { nativeOperation: "send", args: [RECIPIENT, AMOUNT_OS] },
+          { nativeOperation: "send", args: [PAYEE_HEX, AMOUNT_OS] },
         ],
       },
+      attrs: { reference_block: BLOCK - 1 },
     };
   }
 
@@ -406,14 +456,14 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
     ["a mismatched amount", "transaction record does not match the prepared transfer",
       async () => {
         const record = executedRecord();
-        record.content.amount = "1";
+        record.content.amount = 1;
         record.content.data[1].args[1] = "1";
         return record;
       }],
     ["a mismatched nonce", "transaction record does not bind the signed nonce",
       async () => {
         const record = executedRecord();
-        record.content.nonce = NONCE + 1;
+        record.content.nonce = String(NONCE + 1);
         return record;
       }],
     ["another inclusion block",
@@ -435,7 +485,7 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
       "transaction record does not bind the signed nonce",
       async () => {
         const record = { ...executedRecord(), status: "failed" };
-        record.content.nonce = NONCE + 1;
+        record.content.nonce = String(NONCE + 1);
         return record;
       }],
     ["a failed record without a body",
@@ -452,7 +502,7 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
       "transaction record does not match the prepared transfer",
       async () => {
         const record = { ...executedRecord(), status: "failed" };
-        record.content.amount = "1";
+        record.content.amount = 1;
         record.content.data[1].args[1] = "1";
         return record;
       }],
@@ -484,6 +534,125 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
     });
     expect(spy.mock.calls.length).toBeGreaterThan(1);
   });
+
+  it("waits the poll interval between record reads", async () => {
+    const read = vi.fn(async () => null);
+
+    await expect(observeDemosExecutionByHash(TX_HASH, read, expected, {
+      ...FAST,
+      inclusionPollIntervalMs: 10,
+      transactionRecordTimeoutMs: 50,
+    })).resolves.toEqual({
+      state: "indeterminate",
+      reason: "transaction record is missing or malformed",
+    });
+    // About five reads fit a 50 ms budget at 10 ms; without the wait the node
+    // would be read back to back for the whole budget.
+    expect(read.mock.calls.length).toBeGreaterThan(1);
+    expect(read.mock.calls.length).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("the execution observer reads recorded node2 records (#338)", () => {
+  // Raw `getTxByHash` envelopes read from node2 (kynesyslabs/node
+  // stabilisation@61b8e75). demosdk's `getTxByHash` resolves the envelope's
+  // `response` member, so that is what the observer is given.
+  const node2 = JSON.parse(readFileSync(
+    new URL("../fixtures/demos-node2-records.json", import.meta.url),
+    "utf8",
+  )) as { getTxByHash: Record<string, { response: Record<string, unknown> }> };
+  const PAYER = "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a";
+  const PAYEE = "0x706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1";
+  const CONFIRMED_HASH = "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918";
+  const FAILED_HASH = "85b8fcdcee48822742a39e1b9877f5e2f8dde36430e8e486e3a8b0c9a7744cbd";
+
+  function served(hash: string) {
+    return vi.fn(async () => structuredClone(node2.getTxByHash[hash]!.response));
+  }
+
+  function transfer(nonce: number) {
+    return {
+      payer: PAYER,
+      payee: PAYEE,
+      amountOs: 9_500_000_000n,
+      nonce,
+      postFork: true,
+    };
+  }
+
+  it("serves the nonce as a decimal string", () => {
+    for (const envelope of Object.values(node2.getTxByHash)) {
+      expect(typeof (envelope.response.content as { nonce: unknown }).nonce)
+        .toBe("string");
+    }
+  });
+
+  it("reports node2's confirmed native send as executed", async () => {
+    const read = served(CONFIRMED_HASH);
+
+    await expect(observeDemosExecutionByHash(
+      CONFIRMED_HASH,
+      read,
+      { blockNumber: 498_447, transfer: transfer(28) },
+      FAST,
+    )).resolves.toEqual({ state: "executed" });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(CONFIRMED_HASH);
+  });
+
+  it("reports node2's TX_NONCE_INVALID_LOW record as failed", async () => {
+    const read = served(FAILED_HASH);
+
+    await expect(observeDemosExecutionByHash(
+      FAILED_HASH,
+      read,
+      { blockNumber: 480_877, transfer: transfer(9) },
+      FAST,
+    )).resolves.toEqual({ state: "failed" });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["another nonce", CONFIRMED_HASH, 498_447, 29,
+      "transaction record does not bind the signed nonce"],
+    ["another inclusion block", CONFIRMED_HASH, 498_448, 28,
+      "transaction record block does not match the observed inclusion"],
+    ["a failed record under another nonce", FAILED_HASH, 480_877, 10,
+      "transaction record does not bind the signed nonce"],
+  ])("is indeterminate for a recorded record with %s", async (
+    _case,
+    hash,
+    blockNumber,
+    nonce,
+    reason,
+  ) => {
+    await expect(observeDemosExecutionByHash(
+      hash,
+      served(hash),
+      { blockNumber, transfer: transfer(nonce) },
+      FAST,
+    )).resolves.toEqual({ state: "indeterminate", reason });
+  });
+
+  it.each([
+    // node2 (61b8e75) serves not-found as {result: 400, response: "error"};
+    // stabilisation HEAD (52e2e569) serves {result: 404, response: null}.
+    ["node2's not-found response", "error"],
+    ["stabilisation HEAD's not-found response", null],
+  ])("polls %s until the budget ends", async (_case, response) => {
+    const read = vi.fn(async () => response);
+
+    await expect(observeDemosExecutionByHash(
+      CONFIRMED_HASH,
+      read,
+      { blockNumber: 498_447, transfer: transfer(28) },
+      FAST,
+    )).resolves.toEqual({
+      state: "indeterminate",
+      reason: "transaction record is missing or malformed",
+    });
+    expect(read.mock.calls.length).toBeGreaterThan(1);
+  });
 });
 
 describe("no failed or indeterminate execution causes another broadcast (#338)", () => {
@@ -512,7 +681,7 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     }],
     ["a mismatched record", () => {
       sdk.getTxByHash.mockImplementation(recordReturning((record) => {
-        record.content.amount = "1";
+        record.content.amount = 1;
         record.content.data[1].args[1] = "1";
       }));
     }],
