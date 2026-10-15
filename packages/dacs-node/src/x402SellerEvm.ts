@@ -254,6 +254,14 @@ function authorizationFromIntent(intent: Readonly<X402PaywallSettlementIntent>):
 /**
  * The one settlement chain an authenticated x402 rail admits is its own EVM
  * chain, classified as an L2 for the DACS-4 default depth of 1.
+ *
+ * DACS-4 §9.5.2 step 6 defines defaults only for L2s and Ethereum mainnet, and
+ * this classifier does not consult an L2 registry: any non-mainnet chain of the
+ * rail (including a non-L2 such as Polygon, Avalanche or BSC) gets depth 1 when
+ * the rail sets no `finalityBlocks`. Chain 1 never reaches it (the resolver
+ * applies 12 first). The observer counts below its finality tag (`finalized`
+ * by default), but a deployment on a non-L2 chain should still set
+ * `finalityBlocks` explicitly.
  */
 export function classifyDacsAuthenticatedX402ChainV1(
   rail: Readonly<AuthenticatedRailDefinition>,
