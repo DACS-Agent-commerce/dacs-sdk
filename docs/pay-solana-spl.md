@@ -22,10 +22,12 @@ The core:
   that the payer ends at zero lamports or at least its rent-exempt minimum;
 - persists the complete signed transaction before any broadcast;
 - reconciles the retained signature before rebroadcast or replacement;
-- permits a replacement signature only after authenticated, confirmed
+- permits a replacement signature only after authenticated, `finalized`
   blockhash-expiry evidence is durably recorded;
 - closes the key as `failed` when the chain refused the retained transfer at
   `finalized` commitment;
+- reports a preflight RPC failure, before anything is signed, as
+  `transient`, and keeps the key open for the retry;
 - checks the durable generation fence before and after each wallet/RPC call,
   while requiring adapters to recheck the supplied fence immediately before
   each authority-bearing side effect; and
@@ -84,9 +86,14 @@ result.
   of band. A transfer that landed but does not match the intent
   (`solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`)
   is reported here, because funds may have moved.
+- `transient`: the preflight read failed (`solana-spl-preflight-unavailable`).
+  The call signed nothing, and every retained attempt had durable `finalized`
+  expiry evidence, so nothing under the key can land. The key stays open:
+  retry the same authority. It never authorizes paying the phase another way.
 - `failed`: nothing under this settlement key moved tokens or can land. The
   store shows no retained attempt, or every retained attempt with complete,
-  durably acknowledged expiry evidence, except that the latest may instead
+  durably acknowledged expiry evidence (`finalized` for the latest; see
+  "Upgrading" for older records), except that the latest may instead
   have landed and been refused by the chain at `finalized` commitment
   (`solana-spl-transfer-failed-on-chain`). The store has closed the key.
 
@@ -105,6 +112,7 @@ result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
 |---|---|
 | `failed` / `permanent` | `solana-spl-insufficient-token-balance`, `solana-spl-insufficient-network-fee-balance`, `solana-spl-insufficient-ata-rent-and-fee-balance`, `solana-spl-transfer-failed-on-chain` |
 | `failed` / `counterparty` | `solana-spl-payee-ata-missing`, `solana-spl-payee-ata-binding-mismatch` |
+| `transient` | `solana-spl-preflight-unavailable` |
 | `waiting` | `solana-spl-settlement-held`, `solana-spl-reconciliation-pending`, `solana-spl-broadcast-not-yet-visible` |
 | `indeterminate`, before the store is read | `solana-spl-authority-invalid`, `solana-spl-runtime-policy-invalid`, `solana-spl-dependencies-invalid`, `solana-spl-settlement-store-unavailable` |
 | `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
@@ -117,6 +125,9 @@ phase) or `corrupt` claim is `indeterminate`, not `failed`: that record may
 hold a broadcast this call cannot inspect, so it must be resolved out of band.
 `solana-spl-failure-persistence-uncertain` also covers a close after an
 on-chain refusal that the store did not acknowledge.
+`solana-spl-preflight-unavailable` is `transient` when the preflight read
+itself failed, and `indeterminate` when the lease was lost around it, because
+another worker may then be signing.
 
 ### Reporting to the phase handler
 
@@ -127,20 +138,32 @@ DACS-4 PC-4 classifies a payment phase as `ok: true`, or `ok: false` with an
 |---|---|
 | `settled` | `ok: true`, with `txRefs: [settlement.txRef]` and `settlementFinality`. Anchoring then follows PC-7. |
 | `failed` | `ok: false` with the result's `errorClass`: `permanent` or `counterparty`. The phase may be paid another way. |
+| `transient` | `ok: false` with `errorClass: "transient"` (PC-4: RPC failure). Retry the same authority; never pay the phase another way. |
 | `waiting` | Not a phase outcome. Keep the session non-terminal and resume the same authority. |
 | `indeterminate` | Not a phase outcome. Keep the session non-terminal: PC-7 reconciliation of the original binding, by resuming or out of band. |
 
+`transient` is the one result that may count against a retry budget. The
+core returns it only before anything is signed in the call, when every
+retained attempt already has durable `finalized` expiry evidence, so a retry
+of the same key cannot pay twice. The key is not closed, so the retry
+continues it. If the budget runs out and the session ends `failed-perm`
+(DACS-5), nothing under the key has landed, but the key is still open: do not
+resume it after the session is terminal.
+
 Never report `waiting` or `indeterminate` as `transient`. A transient
 failure can exhaust a retry budget and end the session as `failed-perm`
-(DACS-5) while a retained transfer can still land. §9.5.3's "congestion or
+while a retained transfer can still land. §9.5.3's "congestion or
 timeout → `transient`" is the case the core reports as `waiting` or
-`indeterminate` for that reason: once a transfer may have been broadcast,
-only reconciliation may end the phase. For the same reason the core has no
-`counterparty` result for a wallet that declines to sign and no `permanent`
-result for a signature it refuses: both are reported as `indeterminate`
-(`solana-spl-preparation-unavailable`,
-`solana-spl-prepared-transaction-invalid`), and the key stays open, because
-the core cannot prove that nothing was signed or sent.
+`indeterminate` once a transfer may have been broadcast, because only
+reconciliation may then end the phase. Two PC-4 rows remain deviations for
+the same reason. There is no `permanent` result for a signature the core
+refuses, and no result at all for a wallet that declines to sign. Both are
+`indeterminate` (`solana-spl-prepared-transaction-invalid`,
+`solana-spl-preparation-unavailable`), and the key stays open. A signer that
+throws, or returns bytes the core refuses, proves nothing about whether it
+also signed or sent something, and `permanent` would let the phase be paid
+another way while such a transaction could land. (A wallet decline as
+`counterparty` is §9.5.2's EVM rule, not §9.5.3's.)
 
 The core is the rail step of a payment phase, not a whole PC-7 handler. After
 `settled`, the caller still owns the rest of PC-7: build and sign the
@@ -164,8 +187,12 @@ authority after the lease expires. A production store must atomically retain
 the signed wire bytes, lease generation, complete `SolanaSplExpiryEvidence` and
 final settlement or failure across process restart. The evidence binds the
 retained signature to a non-negative safe-integer `observedBlockHeight`
-strictly greater than its `lastValidBlockHeight`, the literal `confirmed`
-commitment and an authentication hash. `expiredSignatures` remains in the store claim for source
+strictly greater than its `lastValidBlockHeight`, the literal `finalized`
+commitment and an authentication hash. A record an earlier version wrote may
+hold `confirmed` evidence: the core still loads it for a predecessor, but
+reconciles the latest attempt again, and the store must then let the new
+`finalized` evidence for that signature replace the `confirmed` record.
+`expiredSignatures` remains in the store claim for source
 compatibility, but a hash-only legacy marker is never replacement authority: it
 causes the retained attempt to be reconciled again. A store must allow a later
 authenticated `settled-same` observation to supersede such an expiry marker.
@@ -175,8 +202,8 @@ replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
 `recordFailure` must close the key only for the current lease generation and
-only while every retained attempt has expiry evidence or is the attempt that
-`landedFailure` names. A store must refuse a `landedFailure` that does not
+only while every retained attempt has expiry evidence (`finalized` for the
+latest) or is the attempt that `landedFailure` names. A store must refuse a `landedFailure` that does not
 name a retained attempt or is not `finalized`, and must retain the one it
 accepts with the failure. Once it has, `claim`
 returns `{ status: "failed", intent, failure }`, `isCurrent` is false, and
@@ -276,9 +303,21 @@ checked against the intent. It never returns the store's object, so store
 text, extra fields and `toJSON` hooks never reach the caller.
 The exported in-memory store is for tests and development only.
 
-The adapter must authenticate reconciliation from Solana ledger state. For
-`absent-expired`, absence and height must come from one coherent authenticated
-confirmed ledger view. Its `authenticationHash` must bind the cluster,
+The adapter must authenticate reconciliation from Solana ledger state. The
+core checks the shape of every proof, never its authenticity: for
+`absent-valid`, `absent-expired`, `landed-failed` and `settled-same`, the
+`authenticationHash` only has to be 64 lower-case hex characters. Solana RPC
+answers carry nothing the core could verify (no signature or state proof over
+`getSignatureStatuses`, `getBlockHeight` or `getTransaction`), so the adapter
+and the store are the trust boundary, and their contracts below are what make
+a proof strong.
+
+For `absent-expired`, absence and height must come from one coherent
+authenticated ledger view, and `commitmentLevel` must be that view's level.
+The core acts only on `finalized`. Below it the result is `waiting`
+(`solana-spl-reconciliation-pending`), because if the observed block were
+rolled back, the attempt could still land on another fork before its last
+valid block height. Its `authenticationHash` must bind the cluster,
 signature, retained last-valid bound, observed height and commitment; hash
 format alone is not authentication. Adapters that omit the optional expiry
 fields remain source-compatible but produce an `indeterminate` result at
@@ -301,10 +340,12 @@ synchronous RPC answer is not ledger state. A malformed `landed-failed` is
 durable-nonce one. A nonce transaction stays valid past its blockhash's last
 valid block height, so expiry evidence would prove nothing about it. The core
 decodes the signed message (legacy or v0) as far as its first instruction and
-refuses a system-program `AdvanceNonceAccount` there, which is how agave
-recognizes a nonce transaction, as
+refuses a system-program `AdvanceNonceAccount` there as
 `solana-spl-prepared-transaction-invalid`: nothing is retained or broadcast.
-Bytes that are not such a message are refused the same way. The same check
+agave also requires that instruction's first account to be writable. The core
+does not check the accounts, so it refuses every transaction agave treats as
+a nonce transaction, and a few more. Bytes that are not such a message are
+refused the same way, and so is a v1 message (SIMD-0385). The same check
 applies to every retained attempt a store returns.
 
 `settled-same` reports the instruction it decoded at `instructionIndex`:
@@ -328,6 +369,14 @@ token account the payee owns for the mint, because the address is derived,
 not observed, so another one is the adapter's fault. Nothing is signed and
 the key stays open.
 
+Preflight balances and the payee account's existence, owner and mint decide
+`failed` results that close the key, and the core cannot tell a stale read
+from a true one. The adapter must therefore read them from one coherent view
+at the intent's commitment level or stronger: a lagging RPC that reports a
+zero balance or a missing account would close the key with the wrong reason.
+Nothing has been signed in that case, so the cost is a wrong failure, never
+a double payment.
+
 Token-2022 is not supported, and its associated token account is refused in
 the same way. A Token-2022 mint with a transfer fee credits the payee less
 than the `TransferChecked` amount, so the amount the core checks would not be
@@ -346,7 +395,9 @@ there under agave's older rent-state rules, but not once SIMD-0392
 (`relax_post_exec_min_balance_check`) is active. The core cannot see which
 applies, so it reports `indeterminate` with
 `solana-spl-payer-rent-state-unknown`: nothing is signed and the key stays
-open. A top-up to the minimum lets the same key proceed.
+open. A top-up to at least the minimum plus the network fee and any ATA rent
+lets the same key proceed. A top-up to exactly the minimum does not: the fee
+would then leave the payer between zero and the minimum, which is `failed`.
 
 When `payeeAtaExists` is true, `payeeAtaOwner` and `payeeAtaMint` must be
 Base58 public keys too: strings, so pass `toBase58()` rather than a
@@ -362,12 +413,12 @@ unverified signature string is not settlement evidence. A live wallet/RPC
 adapter and funded public-network proof remain a separate integration
 deliverable.
 
-The guarantee behind `failed` is as strong as its evidence. Expiry evidence
-is observed at `confirmed`, and Solana reserves full rollback safety for
-`finalized`. A `failed` key whose last attempt expired could therefore, in
-the rare event that a confirmed block is rolled back, see that attempt land
-on another fork before its last valid block height. A refusal by the chain
-is acted on only at `finalized`.
+The guarantees behind `failed`, `transient` and a replacement are as strong as
+their evidence, so the core acts on chain evidence only at `finalized`, where
+Solana gives full rollback safety. Expiry or a refusal seen at `processed`
+or `confirmed` is `waiting`. A replacement or close after an expiry
+therefore waits for the block that passed the last valid block height to be
+finalized, typically a few seconds to tens of seconds later.
 
 ## Solana references
 
@@ -378,7 +429,8 @@ read at these revisions:
 |---|---|
 | Commitment levels, `getSignatureStatuses` and its `err`, blockhash expiry, durable nonces, fee-payer rent | agave `v4.3.0` (`825efd18292aff6ffcf9daa0f7612f21b3531a72`): `rpc/src/rpc.rs`, `runtime/src/bank/check_transactions.rs`, `svm/src/account_loader.rs`, `svm/src/rent_calculator.rs` |
 | Wire format: compact-u16 signature count, then the signatures, then a legacy or v0 message | `solana-short-vec` 3.3.0, the version agave `v4.3.0` locks |
-| Durable-nonce detection: the first instruction is the system program's `AdvanceNonceAccount` | agave `v4.3.0`, `get_durable_nonce` in the message crate it locks |
+| Durable-nonce detection: the first instruction is the system program's `AdvanceNonceAccount` (the core skips agave's writable-account check, so it refuses a superset) | agave `v4.3.0` `runtime/src/bank/check_transactions.rs`, which calls `SVMMessage::get_durable_nonce` from `solana-svm-transaction` 5.0.0, the version agave locks |
+| Message versions: legacy and v0 are decoded; v1, gated behind SIMD-0385, is refused | `solana-message` 4.5.0, the version agave `v4.3.0` locks |
 | `TransferChecked` (`u64` amount, `u8` decimals), token-account owner, mint and state, on-chain refusals | SPL Token `program@v9.0.0` (`dfb260231c761be7d9c8b63728e770a102b86495`) |
 | Associated token account address: seeds owner, token program and mint under `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL`, with SPL Token `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`; bumps 255 down to 1 | `@solana/spl-token` 0.3.11 `getAssociatedTokenAddressSync` and `@solana/web3.js` 1.98.0 `findProgramAddressSync`, as `package-lock.json` resolves them; the tests pin their answers |
 | Base58 | `bs58` 5.0.0; the tests pin its answers |
@@ -422,6 +474,18 @@ new revision of any of them.
 - **Stores** must accept `recordFailure` with `landedFailure` and retain it.
   A store that refuses it leaves the key open as
   `solana-spl-failure-persistence-uncertain`, so nothing is paid twice.
+- **Expiry evidence is `finalized`.** `markAttemptExpired` now carries
+  `commitmentLevel: "finalized"`, and adapters must report `absent-expired`
+  at the level they observed: expiry seen at `confirmed` is `waiting` until
+  it is finalized. A record an earlier version wrote with `confirmed`
+  evidence still loads for a predecessor. For the latest attempt the core
+  reconciles again, and the store must let the new `finalized` evidence
+  replace the `confirmed` record; a store that refuses leaves the key
+  `indeterminate` (`solana-spl-expiry-persistence-uncertain`), so nothing is
+  paid twice.
+- **Callers** get a new `transient` status. Map it to `ok: false` /
+  `transient` and retry the same authority. An exhaustive `switch` on
+  `status` needs a case for it.
 - **`jobId` must be a canonical CORE JID-1 ULID.** Any other value is
   `solana-spl-authority-invalid` before the store is read. A canonical
   `jobId` is ASCII, so earlier versions' NFC normalization never changed it:

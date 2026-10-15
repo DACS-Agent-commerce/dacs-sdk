@@ -113,10 +113,16 @@ export interface SolanaSplSignedAttempt {
   attemptHash: string;
 }
 
+/**
+ * Proof that a retained transaction's blockhash expired without it landing.
+ * Only `finalized` proof lets the core sign a replacement or close the key: a
+ * rolled-back confirmed block could still let the attempt land. `confirmed`
+ * appears only in records an earlier version wrote.
+ */
 export interface SolanaSplExpiryEvidence {
   signature: string;
   observedBlockHeight: number;
-  commitmentLevel: "confirmed";
+  commitmentLevel: "finalized" | "confirmed";
   authenticationHash: string;
 }
 
@@ -192,9 +198,11 @@ export interface SolanaSplEffectFence {
 
 /**
  * Wallet/RPC boundary. Implementations must inspect the exact retained signed
- * transaction and authenticate reconciliation against Solana ledger state. An
+ * transaction and authenticate reconciliation against Solana ledger state. The
+ * core checks only the shape of each proof, never its authenticity. An
  * absent-expired result must derive absence and block height from one coherent
- * confirmed view, and its authentication hash must bind the cluster,
+ * view, report that view's commitment level (the core acts only on
+ * `finalized`), and its authentication hash must bind the cluster,
  * signature, last-valid bound, observed height and commitment level. A
  * landed-failed result must come from the transaction's authenticated status
  * with a non-null error, and its hash must bind the cluster, signature, slot,
@@ -204,7 +212,7 @@ export interface SolanaSplEffectFence {
  * `prepareSignedTransfer` must sign a recent-blockhash transaction, never a
  * durable-nonce one: expiry evidence proves nothing about a nonce transaction,
  * which stays valid past its blockhash's last valid block height. The core
- * refuses one before retaining it, as agave recognizes it.
+ * refuses, before retaining it, any transaction agave would treat as one.
  */
 export interface SolanaSplAdapter {
   preflight(
@@ -320,7 +328,7 @@ export interface SolanaSplSettlementStore {
     generation: number;
     signature: string;
     observedBlockHeight: number;
-    commitmentLevel: "confirmed";
+    commitmentLevel: "finalized";
     authenticationHash: string;
   }): Promise<SolanaSplStoreWrite>;
   recordSettlement(input: {
@@ -334,8 +342,8 @@ export interface SolanaSplSettlementStore {
   /**
    * Closes the key with a terminal failure, in one atomic write that succeeds
    * only for the current lease generation and only while every retained
-   * attempt has expiry evidence or is the one `landedFailure` names, which the
-   * store retains with the failure. From then on `claim` returns the `failed`
+   * attempt has expiry evidence (`finalized` for the latest) or is the one
+   * `landedFailure` names, which the store retains with the failure. From then on `claim` returns the `failed`
    * claim with exactly this failure, and every other write for the key is
    * refused.
    */
@@ -361,16 +369,21 @@ export interface SolanaSplSettlementStore {
  * - `indeterminate`: the phase may or may not be paid. A transfer may have
  *   landed or may still land. It never authorizes a fresh payment; resolve it
  *   by resuming the same authority or out of band.
+ * - `transient`: the preflight read failed (DACS-4 PC-4: RPC failure). This
+ *   call signed nothing, and every attempt the store retained had durable,
+ *   `finalized` expiry evidence, so nothing under the key can land. The key
+ *   stays open: retry the same authority. It never authorizes paying the
+ *   phase another way.
  * - `failed`: nothing under this settlement key moved tokens or can land.
- *   Every retained attempt has durable expiry evidence, except that the
- *   latest may instead have landed and been refused by the chain at
- *   `finalized` commitment. The store closed the key before this was
- *   reported. Every later call with the same authority returns the same
- *   result without signing or broadcasting, so the phase may be paid another
- *   way. A retry after a top-up needs a new phase, and so a new key.
+ *   Every retained attempt has durable expiry evidence (`finalized` for the
+ *   latest), except that the latest may instead have landed and been refused
+ *   by the chain at `finalized` commitment. The store closed the key before
+ *   this was reported. Every later call with the same authority returns the
+ *   same result without signing or broadcasting, so the phase may be paid
+ *   another way. A retry after a top-up needs a new phase, and so a new key.
  */
 export type SolanaSplProgress =
-  | { status: "waiting" | "indeterminate"; reason: string }
+  | { status: "waiting" | "indeterminate" | "transient"; reason: string }
   | {
       status: "failed";
       errorClass: "permanent" | "counterparty";
@@ -482,10 +495,12 @@ function compactU16(bytes: Uint8Array, offset: number): [number, number] {
 }
 
 /**
- * Whether a wire transaction is a durable-nonce transaction, decided as agave
- * decides it (`get_durable_nonce`): the message's first instruction calls the
- * system program with `AdvanceNonceAccount` data, trailing bytes allowed.
- * Throws for bytes that are not a legacy or v0 message through that
+ * Whether a wire transaction may be a durable-nonce transaction: the message's
+ * first instruction calls the system program with `AdvanceNonceAccount` data,
+ * trailing bytes allowed. agave's rule (`get_durable_nonce`) also requires
+ * that instruction's first account to be writable; this check ignores the
+ * accounts, so it refuses every transaction agave treats as one, and a few
+ * more. Throws for bytes that are not a legacy or v0 message through that
  * instruction. Expiry evidence proves nothing about a nonce transaction, which
  * stays valid past its blockhash's last valid block height.
  */
@@ -495,7 +510,8 @@ function isDurableNonceTransaction(transaction: Uint8Array): boolean {
   let offset = afterSignatures + 64 * signatures;
   const prefix = transaction[offset];
   if (prefix === undefined) throw invalid();
-  // A versioned message starts with 0x80 | version; only v0 exists.
+  // A versioned message starts with 0x80 | version. agave accepts v0, and v1
+  // only once SIMD-0385 is active; anything but v0 is refused.
   if ((prefix & 0x80) !== 0) {
     if (prefix !== 0x80) throw invalid();
     offset += 1;
@@ -999,6 +1015,12 @@ function captureRetainedAttempts(
   return Object.freeze(retained);
 }
 
+/**
+ * Checks expiry evidence for a retained attempt. Returns null for well-formed
+ * evidence below `finalized`, which a rolled-back block could still undo, and
+ * throws for malformed evidence. With `retained`, `confirmed` evidence an
+ * earlier version stored is captured too; the caller decides what it allows.
+ */
 function captureExpiryEvidence(
   value: Readonly<{
     signature: unknown;
@@ -1007,7 +1029,8 @@ function captureExpiryEvidence(
     authenticationHash: unknown;
   }>,
   attempt: Readonly<SolanaSplSignedAttempt>,
-): Readonly<SolanaSplExpiryEvidence> {
+  retained = false,
+): Readonly<SolanaSplExpiryEvidence> | null {
   if (value.signature !== attempt.signature) {
     throw new DacsError("pay-solana-spl: expiry evidence signature mismatch");
   }
@@ -1017,17 +1040,21 @@ function captureExpiryEvidence(
       value.observedBlockHeight <= attempt.lastValidBlockHeight) {
     throw new DacsError("pay-solana-spl: expiry evidence block height is invalid");
   }
-  if (value.commitmentLevel !== "confirmed") {
-    throw new DacsError("pay-solana-spl: expiry evidence must be confirmed");
+  if (!COMMITMENT_LEVELS.includes(value.commitmentLevel as SolanaCommitmentLevel)) {
+    throw new DacsError("pay-solana-spl: expiry evidence commitment level is invalid");
   }
   if (typeof value.authenticationHash !== "string" ||
       !HASH_RE.test(value.authenticationHash)) {
     throw new DacsError("pay-solana-spl: expiry evidence authentication hash is invalid");
   }
+  if (value.commitmentLevel !== "finalized" &&
+      !(retained && value.commitmentLevel === "confirmed")) {
+    return null;
+  }
   return Object.freeze({
     signature: attempt.signature,
     observedBlockHeight: value.observedBlockHeight,
-    commitmentLevel: value.commitmentLevel,
+    commitmentLevel: value.commitmentLevel as SolanaSplExpiryEvidence["commitmentLevel"],
     authenticationHash: value.authenticationHash,
   });
 }
@@ -1046,10 +1073,13 @@ function captureRetainedExpiryEvidence(
         captured.has(attempt.signature)) {
       throw new DacsError("pay-solana-spl: retained expiry evidence is inconsistent");
     }
-    captured.set(attempt.signature, captureExpiryEvidence(
+    const evidence = captureExpiryEvidence(
       candidate as Readonly<SolanaSplExpiryEvidence>,
       attempt,
-    ));
+      true,
+    );
+    if (!evidence) throw new DacsError("pay-solana-spl: retained expiry evidence is inconsistent");
+    captured.set(attempt.signature, evidence);
   }
   return captured;
 }
@@ -1303,13 +1333,16 @@ function readClaim(
   }
 }
 
+/** The only expiry evidence the core writes or acts on. */
+type FinalizedExpiryEvidence = Readonly<SolanaSplExpiryEvidence & { commitmentLevel: "finalized" }>;
+
 /** A reconciliation result after validation; nothing else leaves `reconcile`. */
 type ReconciledState =
   | { disposition: "settled-same"; settlement: Readonly<SolanaSplSettlementResult> | null }
   | { disposition: "settled-different" }
   | { disposition: "pending" }
   | { disposition: "absent-valid" }
-  | { disposition: "absent-expired"; evidence: Readonly<SolanaSplExpiryEvidence> }
+  | { disposition: "absent-expired"; evidence: FinalizedExpiryEvidence }
   | { disposition: "landed-failed"; evidence: Readonly<SolanaSplLandedFailureEvidence> }
   | { disposition: "indeterminate"; reason: string };
 
@@ -1371,15 +1404,17 @@ function readReconciliation(
       return { disposition: "indeterminate", reason: "solana-spl-absence-proof-invalid" };
     case "absent-expired":
       try {
-        return {
-          disposition,
-          evidence: captureExpiryEvidence({
-            signature: attempt.signature,
-            observedBlockHeight: result.observedBlockHeight,
-            commitmentLevel: result.commitmentLevel,
-            authenticationHash: result.authenticationHash,
-          }, attempt),
-        };
+        const evidence = captureExpiryEvidence({
+          signature: attempt.signature,
+          observedBlockHeight: result.observedBlockHeight,
+          commitmentLevel: result.commitmentLevel,
+          authenticationHash: result.authenticationHash,
+        }, attempt);
+        // Expiry seen below finalized is awaited, never acted on: if its block
+        // were rolled back, the attempt could still land on another fork.
+        return evidence?.commitmentLevel === "finalized"
+          ? { disposition, evidence: evidence as FinalizedExpiryEvidence }
+          : { disposition: "pending" };
       } catch {
         return { disposition: "indeterminate", reason: "solana-spl-expiry-proof-invalid" };
       }
@@ -1622,7 +1657,7 @@ export async function advanceSolanaSplSettlement(
   // Returns null only when the store acknowledged exactly this evidence.
   const persistExpiry = async (
     attempt: Readonly<SolanaSplSignedAttempt>,
-    evidence: Readonly<SolanaSplExpiryEvidence>,
+    evidence: FinalizedExpiryEvidence,
   ): Promise<SolanaSplProgress | null> => {
     try {
       const marked = storeWrite(await markAttemptExpired({
@@ -1639,8 +1674,8 @@ export async function advanceSolanaSplSettlement(
           "acknowledged expiry evidence",
           EVIDENCE_KEYS,
         ) as Readonly<SolanaSplExpiryEvidence>;
-        if (canonicalize(captureExpiryEvidence(acknowledged, attempt)) ===
-              canonicalize(evidence)) return null;
+        const captured = captureExpiryEvidence(acknowledged, attempt);
+        if (captured && canonicalize(captured) === canonicalize(evidence)) return null;
       }
     } catch {
       // An unavailable, unreadable or invalid acknowledgement cannot
@@ -1650,7 +1685,9 @@ export async function advanceSolanaSplSettlement(
   };
 
   const latest = attempts.at(-1);
-  if (latest && !expiryEvidence.has(latest.signature)) {
+  // Only finalized expiry evidence lets the latest attempt be replaced or the
+  // key closed. Confirmed evidence an earlier version stored is checked again.
+  if (latest && expiryEvidence.get(latest.signature)?.commitmentLevel !== "finalized") {
     const state = await reconcile(latest);
     const terminal = await finalize(latest, state);
     if (terminal) return terminal;
@@ -1684,10 +1721,21 @@ export async function advanceSolanaSplSettlement(
     if (persistenceFailure) return persistenceFailure;
   }
 
+  // A stale fence means another worker may be signing, so only a failed read
+  // under a current fence is `transient`. Nothing has been signed in this
+  // call, and nothing retained can land, so a retry of the same key is safe.
   let preflight: Readonly<SolanaSplPreflight>;
   try {
     await fence.assertCurrent();
+  } catch {
+    return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
+  }
+  try {
     preflight = await runPreflight(intent, fence);
+  } catch {
+    return { status: "transient", reason: "solana-spl-preflight-unavailable" };
+  }
+  try {
     await fence.assertCurrent();
   } catch {
     return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
@@ -1859,12 +1907,16 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
       if (!attempt) {
         return { status: "conflict", reason: "solana-expiry-proof-or-signature-invalid" };
       }
-      let evidence: Readonly<SolanaSplExpiryEvidence>;
+      let evidence: Readonly<SolanaSplExpiryEvidence> | null;
       try {
         evidence = captureExpiryEvidence(input, attempt);
       } catch {
+        evidence = null;
+      }
+      if (!evidence) {
         return { status: "conflict", reason: "solana-expiry-proof-or-signature-invalid" };
       }
+      // Only finalized evidence is ever written here, so a prior record is final.
       const prior = record.expired.get(input.signature);
       if (prior && canonicalize(prior) !== canonicalize(evidence)) {
         return { status: "conflict", reason: "solana-expiry-proof-conflict" };
@@ -1907,7 +1959,8 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
           return { status: "conflict", reason: "solana-landed-failure-invalid" };
         }
       }
-      // Only a key with no attempt that can still land may be closed.
+      // Only a key with no attempt that can still land may be closed. This
+      // store holds only finalized expiry evidence.
       if (record.attempts.some((attempt) => !record.expired.has(attempt.signature) &&
           attempt.signature !== landedFailure?.signature)) {
         return { status: "conflict", reason: "solana-failure-attempt-live" };

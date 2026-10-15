@@ -144,7 +144,7 @@ const expiredFor = (
   overrides: Record<string, unknown> = {},
 ): SolanaSplReconciliation => ({
   disposition: "absent-expired", observedBlockHeight: attempt.lastValidBlockHeight + 1,
-  commitmentLevel: "confirmed", authenticationHash: "e".repeat(64), ...overrides,
+  commitmentLevel: "finalized", authenticationHash: "e".repeat(64), ...overrides,
 }) as SolanaSplReconciliation;
 const lost = { disposition: "indeterminate", reason: "lost" } as const;
 
@@ -880,7 +880,7 @@ describe("the in-memory store fences and checks every write", () => {
     await expect(store.isCurrent({ ...current, owner: "worker-z", now: 1_101 })).resolves.toBe(false);
     await expect(store.isCurrent({ ...current, settlementKey: HASH, now: 1_101 })).resolves.toBe(false);
     await expect(store.markAttemptExpired({
-      ...fence, signature: SIGNATURE_1, observedBlockHeight: 1, commitmentLevel: "confirmed", authenticationHash: HASH,
+      ...fence, signature: SIGNATURE_1, observedBlockHeight: 1, commitmentLevel: "finalized", authenticationHash: HASH,
     })).resolves.toMatchObject({ status: "stale" });
     await expect(store.recordSettlement({ ...fence, signature: SIGNATURE_1, settlement: {} as never }))
       .resolves.toMatchObject({ status: "stale" });
@@ -918,13 +918,17 @@ describe("the in-memory store fences and checks every write", () => {
     const { store, fence, attemptFor } = await opened();
     await store.recordAttempt({ ...fence, attempt: await attemptFor(1) });
     const evidence = {
-      signature: SIGNATURE_1, observedBlockHeight: 10_002, commitmentLevel: "confirmed" as const,
+      signature: SIGNATURE_1, observedBlockHeight: 10_002, commitmentLevel: "finalized" as const,
       authenticationHash: "e".repeat(64),
     };
     await expect(store.markAttemptExpired({ ...fence, ...evidence, signature: SIGNATURE_2 }))
       .resolves.toMatchObject({ status: "conflict" });
     await expect(store.markAttemptExpired({ ...fence, ...evidence, observedBlockHeight: 10_001 }))
       .resolves.toMatchObject({ status: "conflict" });
+    for (const commitmentLevel of ["confirmed", "processed"]) {
+      await expect(store.markAttemptExpired({ ...fence, ...evidence, commitmentLevel: commitmentLevel as never }))
+        .resolves.toMatchObject({ status: "conflict" });
+    }
     await expect(store.markAttemptExpired({ ...fence, ...evidence })).resolves.toEqual({ status: "recorded", expiryEvidence: evidence });
     await expect(store.markAttemptExpired({ ...fence, ...evidence })).resolves.toEqual({ status: "existing", expiryEvidence: evidence });
     await expect(store.markAttemptExpired({ ...fence, ...evidence, observedBlockHeight: 10_003 }))

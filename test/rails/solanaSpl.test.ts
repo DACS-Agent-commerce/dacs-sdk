@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { types as nodeTypes } from "node:util";
 import vm from "node:vm";
 
@@ -141,7 +144,7 @@ function expired(
   return {
     disposition: "absent-expired",
     observedBlockHeight: attempt.lastValidBlockHeight + 1,
-    commitmentLevel: "confirmed",
+    commitmentLevel: "finalized",
     authenticationHash: "e".repeat(64),
     ...overrides,
   };
@@ -707,7 +710,7 @@ describe("advanceSolanaSplSettlement", () => {
     expect(new Set(wires).size).toBe(1);
   });
 
-  test("persists valid confirmed expiry before preparing a replacement", async () => {
+  test("persists valid finalized expiry before preparing a replacement", async () => {
     let clock = 1_000;
     const sequence: string[] = [];
     const counts = new Map<string, number>();
@@ -751,7 +754,7 @@ describe("advanceSolanaSplSettlement", () => {
     expect(markAttemptExpired).toHaveBeenCalledWith(expect.objectContaining({
       signature: SIGNATURE_1,
       observedBlockHeight: 10_002,
-      commitmentLevel: "confirmed",
+      commitmentLevel: "finalized",
       authenticationHash: "e".repeat(64),
     }));
     expect(sequence).toEqual([
@@ -762,12 +765,12 @@ describe("advanceSolanaSplSettlement", () => {
   });
 
   test.each([
-    ["missing height", { commitmentLevel: "confirmed" }],
-    ["non-integer height", { observedBlockHeight: 10_001.5, commitmentLevel: "confirmed" }],
-    ["equal height", { observedBlockHeight: 10_001, commitmentLevel: "confirmed" }],
-    ["lower height", { observedBlockHeight: 10_000, commitmentLevel: "confirmed" }],
+    ["missing height", { commitmentLevel: "finalized" }],
+    ["non-integer height", { observedBlockHeight: 10_001.5, commitmentLevel: "finalized" }],
+    ["equal height", { observedBlockHeight: 10_001, commitmentLevel: "finalized" }],
+    ["lower height", { observedBlockHeight: 10_000, commitmentLevel: "finalized" }],
     ["missing commitment", { observedBlockHeight: 10_002 }],
-    ["wrong commitment", { observedBlockHeight: 10_002, commitmentLevel: "processed" }],
+    ["an unknown commitment", { observedBlockHeight: 10_002, commitmentLevel: "rooted" }],
   ])("refuses replacement for %s in fresh expiry evidence", async (_name, fields) => {
     let clock = 1_000;
     let reconciliations = 0;
@@ -802,6 +805,100 @@ describe("advanceSolanaSplSettlement", () => {
     expect(markAttemptExpired).not.toHaveBeenCalled();
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+
+  // A rolled-back confirmed block could still let attempt 1 land, so expiry
+  // below finalized neither replaces it nor lets a failure close the key.
+  test.each(["processed", "confirmed"] as const)(
+    "expiry observed at %s waits, then replaces once finalized",
+    async (level) => {
+      let clock = 1_000;
+      let reconciliations = 0;
+      const store = createInMemorySolanaSplSettlementStore();
+      const markAttemptExpired = vi.spyOn(store, "markAttemptExpired");
+      const recordFailure = vi.spyOn(store, "recordFailure");
+      const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+      const runPreflight = vi.fn(async () => preflight({ payerTokenBalanceBaseUnits: "0" }));
+      const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> => {
+        if (attempt.attempt === 2) {
+          return { disposition: "settled-same", transfer: observed({ signature: attempt.signature }) };
+        }
+        reconciliations += 1;
+        if (reconciliations === 1) return { disposition: "indeterminate", reason: "lost" };
+        return expired(attempt, reconciliations === 2 ? { commitmentLevel: level } : {});
+      });
+      const shared = input({
+        store,
+        adapter: adapter({ prepareSignedTransfer, reconcile }),
+        now: () => clock,
+      });
+
+      await advanceSolanaSplSettlement(shared);
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({
+        ...shared, owner: "worker-b", adapter: adapter({ prepareSignedTransfer, reconcile, preflight: runPreflight }),
+      })).resolves.toEqual({ status: "waiting", reason: "solana-spl-reconciliation-pending" });
+      expect(markAttemptExpired).not.toHaveBeenCalled();
+      expect(runPreflight).not.toHaveBeenCalled();
+      expect(recordFailure).not.toHaveBeenCalled();
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-c" }))
+        .resolves.toMatchObject({ status: "settled", settlement: { txRef: { signature: SIGNATURE_2 } } });
+      expect(markAttemptExpired).toHaveBeenCalledWith(expect.objectContaining({
+        signature: SIGNATURE_1, commitmentLevel: "finalized",
+      }));
+      expect(prepareSignedTransfer).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  // Records an earlier version wrote may hold confirmed expiry evidence. The
+  // latest attempt's is reconciled again, and finalized evidence replaces it.
+  test("confirmed expiry evidence an earlier version stored is checked again before replacement", async () => {
+    let clock = 1_000;
+    const base = createInMemorySolanaSplSettlementStore();
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async claim(request) {
+        const claim = await base.claim(request);
+        if (claim.status !== "acquired" || claim.attempts.length !== 1 ||
+            claim.expiredSignatures.length > 0) return claim;
+        const latest = claim.attempts[0]!;
+        return {
+          ...claim,
+          expiredSignatures: [latest.signature],
+          expiryEvidence: [{ ...expiredEvidence(latest), commitmentLevel: "confirmed" }],
+        };
+      },
+    };
+    const markAttemptExpired = vi.spyOn(store, "markAttemptExpired");
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    let answer: SolanaSplReconciliation | undefined = { disposition: "indeterminate", reason: "lost" };
+    const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> =>
+      attempt.attempt === 2
+        ? { disposition: "settled-same", transfer: observed({ signature: attempt.signature }) }
+        : answer ?? expired(attempt));
+    const shared = input({ store, adapter: adapter({ prepareSignedTransfer, reconcile }), now: () => clock });
+
+    await advanceSolanaSplSettlement(shared);
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    clock += 101;
+    answer = expired({ signature: SIGNATURE_1, lastValidBlockHeight: 10_001 }, { commitmentLevel: "confirmed" });
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      .resolves.toEqual({ status: "waiting", reason: "solana-spl-reconciliation-pending" });
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+
+    clock += 101;
+    answer = undefined;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-c" }))
+      .resolves.toMatchObject({ status: "settled", settlement: { txRef: { signature: SIGNATURE_2 } } });
+    expect(markAttemptExpired).toHaveBeenCalledTimes(1);
+    expect(markAttemptExpired).toHaveBeenCalledWith(expect.objectContaining({
+      signature: SIGNATURE_1, commitmentLevel: "finalized",
+    }));
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(2);
   });
 
   test.each(["missing", "mismatched"] as const)(
@@ -912,9 +1009,11 @@ describe("advanceSolanaSplSettlement", () => {
       status: "indeterminate",
     });
     clock += 101;
+    // The preflight read fails after the expiry is durable, with nothing
+    // signed in this call: PC-4 `transient`, and the key stays open.
     await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
       .resolves.toEqual({
-        status: "indeterminate",
+        status: "transient",
         reason: "solana-spl-preflight-unavailable",
       });
     const persisted = await store.claim({
@@ -929,7 +1028,7 @@ describe("advanceSolanaSplSettlement", () => {
       expiryEvidence: [{
         signature: SIGNATURE_1,
         observedBlockHeight: 10_002,
-        commitmentLevel: "confirmed",
+        commitmentLevel: "finalized",
         authenticationHash: "e".repeat(64),
       }],
     });
@@ -982,7 +1081,7 @@ describe("advanceSolanaSplSettlement", () => {
       await advanceSolanaSplSettlement(shared);
       clock += 101;
       await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
-        .resolves.toMatchObject({ status: "indeterminate" });
+        .resolves.toEqual({ status: "transient", reason: "solana-spl-preflight-unavailable" });
       clock += 101;
       await expect(advanceSolanaSplSettlement({
         ...shared,
@@ -1265,6 +1364,48 @@ describe("advanceSolanaSplSettlement", () => {
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
   });
 
+  // DACS-4 PC-4 / §9.5.3: an RPC failure is `transient`. Before anything is
+  // signed, nothing under the key can land, so the retry resumes the same key.
+  test("a preflight RPC failure before signing is transient and leaves the key open for a retry", async () => {
+    let clock = 1_000;
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordFailure = vi.spyOn(store, "recordFailure");
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    const shared = input({ store, now: () => clock, adapter: adapter({ prepareSignedTransfer }) });
+
+    const first = await advanceSolanaSplSettlement({
+      ...shared,
+      adapter: adapter({
+        prepareSignedTransfer,
+        preflight: async () => { throw new Error("getAccountInfo: 503 at https://rpc.example"); },
+      }),
+    });
+    expect(first).toEqual({ status: "transient", reason: "solana-spl-preflight-unavailable" });
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(recordFailure).not.toHaveBeenCalled();
+
+    clock += 101;
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      .resolves.toMatchObject({ status: "settled", settlement: { txRef: { signature: SIGNATURE_1 } } });
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  test("a preflight that throws under a stale fence is indeterminate, not transient", async () => {
+    let current = true;
+    const store = createInMemorySolanaSplSettlementStore();
+    await expect(advanceSolanaSplSettlement(input({
+      store: { ...store, isCurrent: async (request) => current && store.isCurrent(request) },
+      adapter: adapter({
+        preflight: async () => {
+          current = false;
+          return preflight();
+        },
+      }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-unavailable" });
+  });
+
   test("lease loss during preflight cannot become a stale permanent outcome", async () => {
     let clock = 1_000;
     const store = createInMemorySolanaSplSettlementStore();
@@ -1367,7 +1508,7 @@ describe("advanceSolanaSplSettlement", () => {
           expiryEvidence: [{
             signature: latest.signature,
             observedBlockHeight: latest.lastValidBlockHeight,
-            commitmentLevel: "confirmed",
+            commitmentLevel: "finalized",
             authenticationHash: "e".repeat(64),
           }],
         };
@@ -1597,6 +1738,31 @@ describe("advanceSolanaSplSettlement pays only the payee's associated token acco
       .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-settled-instruction-mismatch" });
     await expect(settleVector(vectorEvent))
       .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-settled-instruction-mismatch" });
+  });
+
+  // The values above are copied from the vector; when it is synced
+  // (`npm run conformance:sync`), check they still match it.
+  const VECTOR_PATH = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "../../vendor/DACS-Standard/conformance/vectors/security/settlement-event-identity-v0.6.json",
+  );
+  test.skipIf(!existsSync(VECTOR_PATH))("the copied values match the synced vector", () => {
+    const vector = (JSON.parse(readFileSync(VECTOR_PATH, "utf8")) as {
+      vectors: { name: string; phaseIndex: number; verificationContext: { railId: string };
+        ledgerEvents: Record<string, unknown>[]; settlementEvidence: Record<string, unknown> }[];
+    }).vectors.find((candidate) => candidate.name === "current-solana-instruction-index");
+    expect(vector).toBeDefined();
+    const { payee: _substituted, ...event } = vectorEvent;
+    expect(vector!.ledgerEvents[0]).toMatchObject(event);
+    expect(vector!.phaseIndex).toBe(2);
+    expect(vector!.verificationContext.railId).toBe("solana-devnet-sol");
+    expect(vector!.settlementEvidence).toMatchObject({
+      paymentTxRefs: [{ kind: "solana-instruction", cluster: "devnet", signature: VECTOR_SIGNATURE, instructionIndex: 2 }],
+      paymentAmount: { amount: "5", currency: "SOL" },
+      settlementFinality: {
+        model: "commitment-level", finalityCommitmentLevel: "finalized", finalityObservedAt: 1_785_866_400_000,
+      },
+    });
   });
 });
 
@@ -2134,7 +2300,7 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
     await expect(store.recordFailure({ ...fence, failure })).resolves.toMatchObject({ status: "conflict" });
     const expiry = {
       signature: SIGNATURE_1, observedBlockHeight: 10_002,
-      commitmentLevel: "confirmed", authenticationHash: "e".repeat(64),
+      commitmentLevel: "finalized", authenticationHash: "e".repeat(64),
     } as const;
     await expect(store.markAttemptExpired({ ...fence, ...expiry }))
       .resolves.toMatchObject({ status: "recorded" });
@@ -2171,7 +2337,7 @@ describe("advanceSolanaSplSettlement failed closes the settlement key", () => {
     // Expired, then seen settled: only the settlement can refuse the close.
     await expect(store.markAttemptExpired({
       ...fence, signature: SIGNATURE_1, observedBlockHeight: 10_002,
-      commitmentLevel: "confirmed", authenticationHash: "e".repeat(64),
+      commitmentLevel: "finalized", authenticationHash: "e".repeat(64),
     })).resolves.toMatchObject({ status: "recorded" });
     await expect(store.recordSettlement({
       ...fence, signature: SIGNATURE_1, settlement: {} as never,
@@ -2437,7 +2603,7 @@ function expiredEvidence(attempt: Pick<SolanaSplSignedAttempt, "signature" | "la
   return {
     signature: attempt.signature,
     observedBlockHeight: attempt.lastValidBlockHeight + 1,
-    commitmentLevel: "confirmed" as const,
+    commitmentLevel: "finalized" as const,
     authenticationHash: "e".repeat(64),
   };
 }
@@ -2713,7 +2879,7 @@ describe("advanceSolanaSplSettlement uncertain paths are never failed", () => {
     expect(result.status).not.toBe("failed");
     expect(markAttemptExpired).toHaveBeenCalledTimes(1);
     expect(markAttemptExpired.mock.calls[0]?.[0]).toMatchObject({
-      signature: SIGNATURE_1, observedBlockHeight: 10_002, commitmentLevel: "confirmed",
+      signature: SIGNATURE_1, observedBlockHeight: 10_002, commitmentLevel: "finalized",
     });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
     clock = 3_000;
@@ -3381,7 +3547,7 @@ describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", ()
   const evidenceFor = (attempt: { signature: string; lastValidBlockHeight: number }) => ({
     signature: attempt.signature,
     observedBlockHeight: attempt.lastValidBlockHeight + 1,
-    commitmentLevel: "confirmed",
+    commitmentLevel: "finalized",
     authenticationHash: "e".repeat(64),
   });
   test.each<[string, 1 | 2, (claim: Acquired) => unknown]>([
@@ -3410,6 +3576,11 @@ describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", ()
       ...claim,
       expiryEvidence: [...(claim.expiryEvidence ?? []), ...(claim.expiryEvidence ?? [])],
     })],
+    // No version ever stored processed evidence; confirmed is the legacy level.
+    ["expiry evidence at processed", 2, (claim) => ({
+      ...claim,
+      expiryEvidence: (claim.expiryEvidence ?? []).map((row) => ({ ...row, commitmentLevel: "processed" })),
+    })],
     // Attempt 1 is hidden: attempt 2 alone looks like a first attempt.
     ["attempt 2 at index 0", 2, (claim) => ({
       ...claim, attempts: claim.attempts.slice(1), expiredSignatures: [], expiryEvidence: [],
@@ -3419,6 +3590,15 @@ describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", ()
     })],
   ])("%s is corrupt state: nothing is reconciled, signed or broadcast", async (_name, count, view) => {
     await expect(resumeWith(count, view)).resolves.toEqual(corrupt);
+  });
+
+  // An earlier version wrote confirmed evidence; attempt 2 was already signed
+  // on it, so it still loads. Attempt 2 itself is reconciled as usual.
+  test("a predecessor's confirmed expiry evidence from an earlier version still loads", async () => {
+    await expect(resumeWith(2, (claim) => ({
+      ...claim,
+      expiryEvidence: (claim.expiryEvidence ?? []).map((row) => ({ ...row, commitmentLevel: "confirmed" })),
+    }))).resolves.toMatchObject({ reconciled: [2, 3], prepared: [3], expiries: 1 });
   });
 
   // A proxy answers `length`, its own keys and each index from separate code.
