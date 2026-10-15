@@ -717,7 +717,7 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     asset: "USDC",
     payee: "0xpayee",
     expectedPayee: "0xpayee",
-    jobId: "job-1",
+    jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     phaseIndex: 0,
   };
   const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };

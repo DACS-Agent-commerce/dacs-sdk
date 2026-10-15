@@ -2,6 +2,7 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
 import { CounterpartyError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import type {
   PaymentPayloadResult,
   PaymentRequirements,
@@ -776,6 +777,9 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
 
       let scheme: SchemeNetworkClient = new ExactEvmScheme(account);
       if (jobId !== undefined && phaseIndex !== undefined) {
+        // The derivation itself stays total for the Standard's derivation-only
+        // SB-3 vectors; a payment binds only a canonical JID-1 job id.
+        requireCanonicalJobId(jobId, "pay-x402 jobId");
         const nonce = await dacsX402AuthorizationNonce({
           jobId,
           phaseIndex,
@@ -920,6 +924,9 @@ export function x402Settle(
         `x402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipientEvm}`,
       );
     }
+    // CORE JID-3: refuse a non-canonical job id before the SB-3 nonce, the
+    // idempotency key or the paywall request is derived from it.
+    requireCanonicalJobId(jobId, "x402 settlement jobId");
     // phaseIndex is a property of the SETTLEMENT REQUEST, not the static paywall
     // descriptor: the SB-3 authorization nonce MUST bind the same phase the
     // idempotency key dedupes on, or the on-chain single-use nonce and the

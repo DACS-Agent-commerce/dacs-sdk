@@ -52,7 +52,7 @@ vi.mock("node:https", () => ({
   request: vi.fn(() => { throw new Error("unexpected real HTTPS request"); }),
 }));
 
-const JOB_ID = "job-x402-production-positive";
+const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const PHASE_INDEX = 2;
 const CHAIN_ID = 84532;
 const NETWORK = `eip155:${CHAIN_ID}` as const;
@@ -473,4 +473,24 @@ describe("x402 production transport positive flow", () => {
       ]);
     },
   );
+
+  test("createX402Rail refuses a non-canonical jobId before any request, nonce or signature (JID-3)", async () => {
+    const https = publicHttps();
+    const rail = await createX402Rail({
+      evmPrivateKey: "offline-mocked-signer",
+      requireSessionBinding: true,
+      rpcUrl: "https://rpc.example",
+      finalityBlocks: 2,
+      transportPolicy: POLICY,
+      publicHttpsDependencies: https.dependencies,
+    });
+    const assertCurrent = vi.fn(async () => { https.events.push("fence"); });
+    await expect(rail.settle({
+      paywallUrl: RESOURCE, network: NETWORK, recipientEvm: PAYEE,
+      amount: AMOUNT, asset: ASSET, jobId: JOB_ID.toLowerCase(), phaseIndex: PHASE_INDEX,
+    }, { assertCurrent })).rejects.toThrow(/pay-x402 jobId must be a canonical uppercase ULID/);
+    expect(https.events).toEqual([]);
+    expect(peers.signTypedData).not.toHaveBeenCalled();
+    expect(assertCurrent).not.toHaveBeenCalled();
+  });
 });

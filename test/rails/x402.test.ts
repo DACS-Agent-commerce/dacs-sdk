@@ -60,14 +60,14 @@ describe("DACS EIP-3009 session binding", () => {
     expect(await verifyDacsX402AuthorizationNonce(input, `0x${"A".repeat(64)}`)).toBe("malformed");
   });
 
-  test("the three normative retry cases retain the same derived nonce", async () => {
+  test("a retry re-derives the same nonce for the same job and phase", async () => {
     const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
     const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
-    // used+same-transfer resumes, used+different-transfer refuses, and cancelled
-    // refuses at the reconcile layer; none may mint a replacement nonce.
-    for (const _state of ["used-same", "used-different", "cancelled"]) {
-      expect(await dacsX402AuthorizationNonce(input)).toBe(expected);
-    }
+    // Only the derivation is pinned here. The three retry vectors (used-same,
+    // used-different, cancelled) run across a real restart in
+    // idempotencyProcessRestart.test.ts.
+    expect(await dacsX402AuthorizationNonce(input)).toBe(expected);
+    expect(await dacsX402AuthorizationNonce({ ...input })).toBe(expected);
   });
 
   test("rejects malformed derivation inputs", async () => {
@@ -799,12 +799,12 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "USDC",
       payee: RECIPIENT,
       expectedPayee: RECIPIENT,
-      jobId: "j1",
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     });
 
     expect(captured?.asset).toBe("0x036CbD53842c5426634e7929541eC2318f3dCF7e");
     expect(captured?.amount).toBe("1000000");
-    expect(captured?.jobId).toBe("j1");
+    expect(captured?.jobId).toBe("01ARZ3NDEKTSV4RRFFQ69G5FAV");
     expect(captured?.phaseIndex).toBe(3);
   });
 
@@ -845,7 +845,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "USDC",
       payee: RECIPIENT,
       expectedPayee: RECIPIENT,
-      jobId: "j1",
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       phaseIndex: 2,
     });
 
@@ -876,7 +876,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     });
 
-    await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "j1" });
+    await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV" });
 
     expect(captured?.phaseIndex).toBe(0);
   });
