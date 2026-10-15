@@ -10,16 +10,3 @@ description = "Mnemonic or seed phrase assigned in source"
 regex = '''(?i)(?:mnemonic|seed[_ -]?phrase)\s*(?:=|:)\s*["'\x60]([a-z]+(?:\s+[a-z]+){11,23})["'\x60]'''
 secretGroup = 1
 keywords = ["mnemonic", "seed_phrase", "seed phrase"]
-
-# Circle's published testnet USDC token contracts (Ethereum Sepolia, Base
-# Sepolia, Polygon Amoy), in the lowercase form the HTLC package-consumer
-# fixture uses. Public 20-byte addresses, not secrets. Each pattern is anchored
-# to one exact value and applies to the generic-api-key rule only.
-[[allowlists]]
-description = "Published testnet USDC contract addresses"
-targetRules = ["generic-api-key"]
-regexes = [
-  '''^0x1c7d4b196cb0c7b01d743fbc6116a902379c7238$''',
-  '''^0x036cbd53842c5426634e7929541ec2318f3dcf7e$''',
-  '''^0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582$''',
-]
