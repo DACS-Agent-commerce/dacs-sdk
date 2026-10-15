@@ -1038,7 +1038,8 @@ export function createDacsFixedPriceBuyerAuditV1(
             observationVersion: "1" as const,
             kind: "authenticated-x402-event",
             observedAt: fresh.finalityObservedAt,
-            finality: copy(paymentFinality),
+            // The signed shape, echo or not; the depth was checked above.
+            finality: copy(evidenceFinality),
             sessionBinding: {
               disposition: "established" as const,
               kind: "eip3009",

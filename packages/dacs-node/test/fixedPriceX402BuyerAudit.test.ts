@@ -10,6 +10,7 @@ import {
   isSettlementEvidence,
   prepareCompletedSellerBundleCounterSignatureRequest,
   verifyCompletedSellerBundleCounterSignatureRequest,
+  verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
 } from "@kynesyslabs/dacs";
 import type {
@@ -893,6 +894,56 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       request: requestWithFinality(f, undefined),
     })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
   });
+
+  // The audit's material goes on to the SDK settlement verification that
+  // DurableBuyerBundleFinalization runs, so evidence with or without the echo
+  // has to pass there too, still at the authenticated depth.
+  it.each([2, undefined])(
+    "verifies the finalized session settlement of evidence with echo %s",
+    async (finalityBlocks) => {
+      const { audit, authenticated, f, observation, pair } = await x402AuditHarness();
+      const request = requestWithFinality(f, finalityBlocks);
+      const preliminary = await audit.bundleTransport.resolveVerification({
+        authenticated,
+        request,
+      });
+      const exactRequest = prepareCompletedSellerBundleCounterSignatureRequest({
+        ...preliminary.input,
+        seller: {
+          ...preliminary.input.seller,
+          signer: async (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+        },
+      });
+      mocks.bundleRequest.mockResolvedValue(exactRequest);
+      const material = await audit.audit.resolveMaterial({
+        operation: { order: pair.buyer },
+        retained: { application: f.application },
+      } as never);
+      const verify = () => verifyFinalizedSessionSettlement(
+        material.input.settlementContext,
+        material.input.settlement,
+        material.durability.settlementVerification,
+      );
+      const verified = await verify();
+      expect(verified).toMatchObject({ disposition: "verified" });
+      if (verified.disposition !== "verified" || verified.value.outcome !== "success") {
+        return;
+      }
+      expect(verified.value.nativeObservation.finality).toEqual(
+        material.input.settlement.evidence.settlementFinality,
+      );
+      expect(material.input.settlementContext.rail.finality).toEqual({
+        model: "block-depth",
+        finalityBlocks: 2,
+      });
+      // The buyer's re-observation is still held to the authenticated depth.
+      mocks.observeX402Transfer.mockResolvedValueOnce({ ...observation, confirmations: 1 });
+      await expect(verify()).resolves.toEqual({
+        disposition: "rejected",
+        reason: "native settlement: buyer-audit-native-settlement-conflict",
+      });
+    },
+  );
 
   // The DACS-4 phase card makes rail.parameters.finalityBlocks optional; the
   // L2 default (1) applies, as in the seller's payment intake.

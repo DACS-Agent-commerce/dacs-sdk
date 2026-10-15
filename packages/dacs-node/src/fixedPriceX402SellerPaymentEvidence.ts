@@ -462,8 +462,10 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
               // Retain the authorization's exact authenticated finality floor.
               // A later observer may report a higher block depth or a newer
               // observation time, but those monotonic facts must not change the
-              // publication effect identity on replay.
-              confirmations: retainedFinality.finalityBlocks,
+              // publication effect identity on replay. Evidence without the
+              // optional depth echo (DACS-4 §9.7) carries no depth member here.
+              ...(retainedFinality.finalityBlocks === undefined
+                ? {} : { confirmations: retainedFinality.finalityBlocks }),
               finalityObservedAt: retainedFinality.finalityObservedAt,
               sessionBinding: copy(observed.sessionBinding),
             };

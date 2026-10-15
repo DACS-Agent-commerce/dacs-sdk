@@ -414,6 +414,88 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(revalidate).not.toHaveBeenCalled();
   });
 
+  // DACS-4 §9.7: the finality echo is optional. Evidence without it is held
+  // to the authenticated rail pin, and the native observation must carry the
+  // same (echo-less) signed finality.
+  it("verifies evidence that omits the optional block-depth echo", async () => {
+    const exact = fixture();
+    const evidence = exact.settlement.evidence;
+    replacePaymentEvidence({
+      ...exact,
+      phase: "pay-x402",
+      txRef: evidence.paymentTxRefs![0]!,
+      amount: { amount: "5", currency: "USDC" },
+      finality: { model: "block-depth", finalityObservedAt: 1_777_000_000_000 },
+      settlementId: SETTLEMENT_ID,
+    });
+    expect(isSettlementEvidence(exact.settlement.evidence)).toBe(true);
+    await expect(verifyFinalizedSessionSettlement(
+      context(12),
+      exact.settlement,
+      provider(exact.proof, {
+        revalidateSettlement: (input) => nativePassForEvidence(input, SETTLEMENT_ID),
+      }),
+    )).resolves.toMatchObject({ disposition: "verified", value: { outcome: "success" } });
+    // The native observation still has to report the signed shape exactly.
+    await expect(verifyFinalizedSessionSettlement(
+      context(12),
+      exact.settlement,
+      provider(exact.proof),
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reason: "native settlement observation finality differs from the signed evidence",
+    });
+  });
+
+  it("holds a present commitment echo to the rail pin and accepts an omitted one", async () => {
+    const signature = "1".repeat(64);
+    const settlementId = `solana:devnet:${signature}:2`;
+    const solanaContext = context();
+    solanaContext.rail = {
+      ...solanaContext.rail,
+      railType: "solana-spl",
+      handler: "pay-solana-spl",
+      network: "solana:devnet",
+      finality: { model: "commitment-level", finalityCommitmentLevel: "finalized" },
+    };
+    const cases: Array<[SettlementFinality, string]> = [
+      [{ model: "commitment-level", finalityObservedAt: 1_777_000_000_000 }, "verified"],
+      [{
+        model: "commitment-level",
+        finalityCommitmentLevel: "finalized",
+        finalityObservedAt: 1_777_000_000_000,
+      }, "verified"],
+      [{
+        model: "commitment-level",
+        finalityCommitmentLevel: "confirmed",
+        finalityObservedAt: 1_777_000_000_000,
+      }, "rejected"],
+    ];
+    for (const [finality, disposition] of cases) {
+      const exact = fixture();
+      replacePaymentEvidence({
+        ...exact,
+        phase: "pay-solana-spl",
+        txRef: {
+          kind: "solana-instruction",
+          cluster: "devnet",
+          signature,
+          instructionIndex: 2,
+        },
+        amount: { amount: "5", currency: "USDC" },
+        finality,
+        settlementId,
+      });
+      await expect(verifyFinalizedSessionSettlement(
+        solanaContext,
+        exact.settlement,
+        provider(exact.proof, {
+          revalidateSettlement: (input) => nativePassForEvidence(input, settlementId),
+        }),
+      ), JSON.stringify(finality)).resolves.toMatchObject({ disposition });
+    }
+  });
+
   it("rejects evidence/proof substitutions and a forged anchor", async () => {
     const { settlement, proof } = fixture();
     const wrongEvidence = structuredClone(settlement);
