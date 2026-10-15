@@ -224,7 +224,7 @@ interface Harness {
   ): X402PaywallFulfilmentContext<X402SellerPaymentPermitAuthorization>;
   resolvedScope: X402SellerCommittedSessionScope;
   installAuthorization(authorization: SellerPaymentAuthorization): void;
-  retainSettlement(sessionAuthorization: unknown): void;
+  retainSettlement(sessionAuthorization: unknown, intentVersion?: string): void;
   runThroughPaywallCore(): Promise<unknown>;
   setObservation(observation: X402TransferObservation): void;
   resumeFinalisation(authorization: X402SellerPaymentPermitAuthorization): Promise<unknown>;
@@ -907,9 +907,9 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
     installAuthorization(value) {
       activeAuthorization = structuredClone(value);
     },
-    retainSettlement(sessionAuthorization) {
+    retainSettlement(sessionAuthorization, intentVersion = "2") {
       const intentCore = {
-        intentVersion: "2" as const,
+        intentVersion: intentVersion as "2",
         settlementKey: x402PaywallSettlementKey({
           jobId: JOB_ID,
           phaseIndex: PAYMENT_PHASE_INDEX,
@@ -1061,6 +1061,23 @@ describe("createX402SellerSpine", () => {
       },
     });
     expect(replay).toEqual(first);
+    expect(harness.counts.delivery).toBe(0);
+  });
+
+  // Only the version differs: the retained binding hash is recomputed over it.
+  it("does not recover a permit from a retained intent of another intentVersion", async () => {
+    const harness = makeHarness();
+    const pre = await harness.spine.authorizeSettlement(harness.preContext);
+    if (pre.disposition !== "authorized") throw new Error(pre.reason);
+    harness.retainSettlement(pre.authorization, "3");
+
+    await expect(harness.spine.recoverPaymentAuthorization({
+      jobId: JOB_ID,
+      phaseIndex: PAYMENT_PHASE_INDEX,
+    })).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "seller-settlement-store-invalid",
+    });
     expect(harness.counts.delivery).toBe(0);
   });
 

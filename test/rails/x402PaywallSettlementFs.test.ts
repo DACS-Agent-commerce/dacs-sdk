@@ -301,6 +301,31 @@ describe("filesystem x402 paywall settlement store", () => {
     await expect(store.load(intent.settlementKey)).rejects.toThrow(/unsafe/);
   });
 
+  // The binding hash is recomputed over intentVersion "2", so only the version
+  // check refuses an otherwise intact intent that claims another version.
+  test("refuses an intent of another intentVersion before any store effect", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = await createFsX402PaywallSettlementStore({ dir: directory });
+    const intent = intentFor();
+    const otherVersion = { ...intent, intentVersion: "3" } as unknown as
+      X402PaywallSettlementIntent;
+    await expect(store.claim(otherVersion)).rejects.toThrow(
+      "x402 paywall settlement intent shape is invalid",
+    );
+    await expect(store.load(intent.settlementKey)).resolves.toEqual({ status: "absent" });
+    await writeFile(recordFile(directory, intent.settlementKey), JSON.stringify({
+      storeVersion: X402_PAYWALL_SETTLEMENT_STORE_VERSION,
+      intent: otherVersion,
+    }), "utf8");
+    const error = await store.load(intent.settlementKey).then(
+      () => undefined,
+      (reason: unknown) => reason as Error,
+    );
+    expect(error?.message).toBe("x402 paywall settlement record is corrupt");
+    expect((error?.cause as Error | undefined)?.message)
+      .toBe("x402 paywall settlement intent shape is invalid");
+  });
+
   test("rejects non-canonical inputs without invoking accessors", async () => {
     const directory = await temporaryStoreDirectory();
     const store = await createFsX402PaywallSettlementStore({ dir: directory });

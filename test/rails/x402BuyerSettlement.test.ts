@@ -1129,6 +1129,58 @@ describe("advanceX402BuyerSettlement", () => {
     })).toMatchObject({ status: "existing", outcome: { status: "captured" } });
   });
 
+  test("refuses unsupported store, intent and outcome versions before any effect", async () => {
+    const intent = makeIntent();
+    const otherIntent = { ...intent, intentVersion: "2" } as unknown as
+      X402BuyerSettlementIntent;
+    expect(() => assertX402BuyerSettlementIntent(otherIntent))
+      .toThrow("unsupported x402 buyer intentVersion");
+    const store = createInMemoryX402BuyerSettlementStore();
+    await expect(store.claim({
+      intent: otherIntent,
+      owner: "worker",
+      now: 1_000,
+      leaseDurationMs: 100,
+    })).rejects.toThrow("unsupported x402 buyer intentVersion");
+    await expect(store.load(intent.settlementKey)).resolves.toEqual({ status: "absent" });
+
+    const claim = await store.claim({
+      intent,
+      owner: "worker",
+      now: 1_000,
+      leaseDurationMs: 100,
+    });
+    if (claim.status !== "acquired") throw new Error("claim failed");
+    await expect(store.recordOutcome({
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      lease: claim.lease,
+      outcome: {
+        outcomeVersion: "2",
+        status: "captured",
+        settlement: capturedSettlement(intent),
+      } as never,
+      now: 1_001,
+    })).rejects.toThrow("unsupported x402 buyer outcomeVersion");
+    const held = await store.load(intent.settlementKey);
+    expect(held).toMatchObject({ status: "held", lease: { generation: 1 } });
+    expect(held).not.toHaveProperty("outcome");
+
+    const stored = {
+      storeVersion: 1,
+      intent,
+      generation: 1,
+      lease: { owner: "worker", generation: 1, stage: "fresh", expiresAt: 1_100 },
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    };
+    expect(() => createInMemoryX402BuyerSettlementStore([stored])).not.toThrow();
+    expect(() => createInMemoryX402BuyerSettlementStore([{ ...stored, storeVersion: 2 }]))
+      .toThrow("unsupported x402 buyer storeVersion");
+    expect(() => createInMemoryX402BuyerSettlementStore([{ ...stored, intent: otherIntent }]))
+      .toThrow("unsupported x402 buyer intentVersion");
+  });
+
   test("pending disclosures are exact, no-overwrite, and bind the terminal receipt", async () => {
     const intent = makeIntent();
     const store = createInMemoryX402BuyerSettlementStore();
