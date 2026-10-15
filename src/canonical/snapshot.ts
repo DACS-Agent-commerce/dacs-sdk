@@ -48,12 +48,17 @@ function hasIntrinsicConstructor(
  * graphs. Reject every JavaScript view that JSON/JCS would omit or alias before
  * taking an owned clone: accessors, proxies, sparse arrays, exotic prototypes,
  * symbols, `undefined`, negative zero, cycles, and unsupported scalar values.
+ *
+ * Negative zero is a local authoring alias only. CORE §B.2 admits it as a JSON
+ * number that serialises as `0`, so received data may opt in: the canonical
+ * snapshot below re-parses `0`, and the owned value never retains `-0`.
  */
 function isDataOnlyJson(
   value: unknown,
   ancestors = new Set<object>(),
   omitUndefinedObjectProperties = false,
   allowReadOnlyDescriptors = false,
+  allowNegativeZero = false,
 ): boolean {
   if (value === null || typeof value === "boolean") {
     return true;
@@ -62,7 +67,7 @@ function isDataOnlyJson(
   if (typeof value === "number") {
     return (
       Number.isFinite(value) &&
-      !Object.is(value, -0) &&
+      (allowNegativeZero || !Object.is(value, -0)) &&
       Math.abs(value) <= Number.MAX_SAFE_INTEGER
     );
   }
@@ -117,6 +122,7 @@ function isDataOnlyJson(
             ancestors,
             omitUndefinedObjectProperties,
             allowReadOnlyDescriptors,
+            allowNegativeZero,
           )
         ) {
           return false;
@@ -147,6 +153,7 @@ function isDataOnlyJson(
               ancestors,
               omitUndefinedObjectProperties,
               allowReadOnlyDescriptors,
+              allowNegativeZero,
             ))
       ) {
         return false;
@@ -222,12 +229,16 @@ export function snapshotCanonicalJsonConfig<T>(value: T, label: string): T {
  * at this boundary. Accessors, proxies, exotic prototypes, hidden properties,
  * unsupported scalars, cycles, sparse arrays, and `undefined` remain rejected.
  *
+ * Received data may also carry negative zero, e.g. CF-5-admitted `-0.0`. CORE
+ * §B.2 serialises it as `0`, so the owned snapshot holds `0` and hashes,
+ * signed scopes and verifiers agree with the admitted bytes instead of failing.
+ *
  * Keep authoring/signing inputs on {@link snapshotCanonicalJson}: accepting a
- * read-only view here is deliberately limited to values already returned from
- * an asynchronous read boundary.
+ * read-only view or negative zero here is deliberately limited to values
+ * already returned from a read boundary.
  */
 export function snapshotCanonicalJsonRead<T>(value: T, label: string): T {
-  return snapshotCanonicalJsonInternal(value, label, false, true);
+  return snapshotCanonicalJsonInternal(value, label, false, true, true);
 }
 
 /**
@@ -265,6 +276,7 @@ function snapshotCanonicalJsonInternal<T>(
   label: string,
   omitUndefinedObjectProperties: boolean,
   allowReadOnlyDescriptors = false,
+  allowNegativeZero = false,
 ): T {
   try {
     if (
@@ -273,6 +285,7 @@ function snapshotCanonicalJsonInternal<T>(
         new Set(),
         omitUndefinedObjectProperties,
         allowReadOnlyDescriptors,
+        allowNegativeZero,
       )
     ) {
       throw new TypeError("not data-only JSON");
