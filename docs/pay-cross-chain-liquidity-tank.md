@@ -73,6 +73,10 @@ durable store, `createFsLiquidityTankStore` for a single host (see
 in the SDK's tests and declares `"conformance-tested"`. The exported in-memory
 store loses everything on restart, refuses to construct without
 `{ acknowledgeVolatile: true }`, and declares itself `"volatile-acknowledged"`.
+It is for tests and development only, never production: the core runs end to
+end on it. The declaration is the host's, and the core does not check it: it
+checks only that the value is one of the two strings, so a non-durable store
+that declares `"conformance-tested"` also runs end to end.
 
 **A shared tank's balance comes from the bridge, not the core.** The core
 checks one operation at a time. That the bridge never locks more than a tank's
@@ -98,14 +102,24 @@ const result = await advanceLiquidityTankSettlement({
 });
 ```
 
-`prepareSubmission` must build and sign offline, and send nothing. **It must
-not use the Demos SDK's `"manual"` confirmation path**: in demosdk 4.0.16,
-`"manual"` means build, sign *and confirm*, and `confirm` sends the full
-signed transaction to the node as `confirmTx`
-(`build/websdk/DemosTransactions.js:231`) before anything is stored. Build
-the bridge transaction and sign it locally (for example
-`NativeBridgeMethods.generateOperationTx` and `demos.sign`), and return those
-bytes. The store commits those exact signed bytes first. `broadcastRetained`
+`prepareSubmission` must build and sign the bridge transaction locally and
+send no signed bytes. Reads it needs to sign, such as the nonce, fee and
+network parameters, are allowed. **It must not use the Demos SDK's `"manual"`
+confirmation path**: in demosdk 4.0.16, `"manual"` means build, sign *and
+confirm*, and `confirm` sends the full signed transaction to the node as
+`confirmTx` (`build/websdk/DemosTransactions.js:231`) before anything is
+stored. **demosdk 4.0.16 has no signing path for this route that works.**
+`NativeBridgeMethods.generateOperationTx` sets `to` to the EVM
+`originAddress` and `from_ed25519_address` to the Demos address
+(`build/bridge/nativeBridge.js:68-69`), and then calls `demos.sign`. But
+`sign` refuses a `nativeBridge` transaction unless those two addresses are
+equal (`build/websdk/demosclass.js:657`), and unless `to` is `0x` plus 64 hex
+characters (`:683`). So signing fails for every EVM origin address. It fails
+closed, before any bytes exist, but no adapter can be built on it until the
+SDK's address handling and this route are aligned (see
+[Open before any live adapter is wired](#open-before-any-live-adapter-is-wired)).
+Whatever signer is used, `prepareSubmission` returns the signed bytes, and the
+store commits those exact bytes first. `broadcastRetained`
 then does every network step for that retained transaction, `confirm` and
 `broadcast` included, and may repeat only those steps for those bytes, so an
 ambiguous response never authorizes a new nonce or bridge operation. Whether
@@ -485,10 +499,16 @@ the SDK's tests pin it:
 | Progress | Phase handler records |
 |---|---|
 | `settled` | `ok: true`; success evidence with the settlement's `txRef` (both hashes), `paymentAmount` and `settlementFinality`, superseding any interim record at the `:resolved` address |
-| `settle-asymmetric` (`tank-locked-unreleased` or `lock-contradicted`) | the interim failure evidence, reason `tank-locked-unreleased`, with `lockTxHash` and `recoveryDeadline` and no `releaseTxHash`; the session is `settle-asymmetric` |
-| `failed`, `errorClass: "failed-substrate"` (any of its three reasons) | `ok: false`, `errorClass: "substrate"`; the interim record stands with reason `tank-locked-unreleased`; bundle cause `failed-substrate`. Keep the core's reason only as host metadata |
-| `failed`, `errorClass: "permanent"` | `ok: false`, `errorClass: "permanent"` |
+| `settle-asymmetric` (`tank-locked-unreleased` or `lock-contradicted`) | the interim failure evidence, reason `tank-locked-unreleased`, with the progress `txRef` (`lockTxHash` and `recoveryDeadline`, no `releaseTxHash`) as `interimTxRef`; the session is `settle-asymmetric` |
+| `failed`, `errorClass: "failed-substrate"` (any of its three reasons) | `ok: false`, `errorClass: "substrate"`; bundle cause `failed-substrate`. The interim record, reason `tank-locked-unreleased`, must stand at the PC-2 address with the progress `lockTxRef` as `interimTxRef`. An expiry can be the first result a host sees (a first read past the deadline, or a lost `settle-asymmetric` result), so anchor the interim record from `interimTxRef` if the phase has not anchored it yet; it is write-once. Keep the core's reason only as host metadata |
+| `failed`, `errorClass: "failed-substrate"` with `txRef` (a release reached the payee after the deadline) | as above, and the outcome's `release` carries the release `txRef` (both hashes) and `finalityObservedAt`: the buyer has paid, so never authorize another payment for the phase, and reconcile from `release` |
+| `failed`, `errorClass: "permanent"` | `ok: false`, `errorClass: "permanent"`. Its `reason` is the bridge's own failure text, passed through unprefixed: host metadata only, never a core reason |
 | `waiting`, `indeterminate` | no phase result yet: retry, or escalate by reason (see [Reasons that need an operator](#reasons-that-need-an-operator)). A host that gives up on `liquidity-tank-capacity-unavailable` fails the phase `transient` on the same rail, never another mechanism |
+
+`liquidityTankPhaseOutcome` throws a `DacsError` for a `failed-substrate`
+progress without `lockTxRef`, or with `txRef` but no `finalityObservedAt`:
+the core never returns one, and no admissible interim record can be built
+from it.
 
 ## Host duties
 
@@ -498,7 +518,9 @@ reviewing the host phase handler:
 - **Evidence and anchoring** (PC-2, PC-3, PC-7, ST-8): build, anchor and
   supersede `SettlementEvidence` as mapped above, return the
   `PhaseHandlerResult`, and keep a durable, idempotent anchor retry. A retry
-  calls the core again, which never signs a second submission.
+  calls the core again, which never signs a second submission. Before
+  recording an expiry, make sure the interim record is anchored, from the
+  expiry's `lockTxRef` when no earlier `settle-asymmetric` result anchored it.
 - **Pinned rail** (§9.5.5 step 2, §9.13): resolve the rail descriptor behind
   `railDescriptorHash`, check `sourceLiquidityTankId` and
   `destinationLiquidityTankId` against its `liquidityTankIds` for the route,
@@ -616,7 +638,9 @@ restart and an expiry), bridge-ID uniqueness, observation ordering, late complet
 completion-versus-expiry election in both orders, failure retention, a
 timely completion replacing a durable failure that carries its lock, a
 failure that carries its lock as expiry evidence only when it is the durable
-observation, the contradiction-expiry compare-and-set (refused before the
+observation, a late completion as expiry evidence only for the durable
+checkpoint's or failure's lock and deadline, the contradiction-expiry
+compare-and-set (refused before the
 deadline, at or before the checkpoint, on a live pending or beside retained
 failure evidence), settlement replay, and state that survives `reopenStore`, including the
 bridge-ID index. Two more drive the core through one phase with a worker that
@@ -675,11 +699,14 @@ claim, preparation, signature, observation or broadcast:
   store sets it once it does.
 - **`"volatile-acknowledged"`**: the store loses every row on restart, and its
   caller has said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile:
-  true })` sets it. For tests and development only.
+  true })` sets it. For tests and development only, never production: the
+  core runs end to end on it, and after a restart signs a second bridge
+  operation.
 
 The field is optional in the TypeScript type so that a store under
 development can run the suite, but the core refuses a store without it. It is
-a declaration, not a proof: the core cannot check it, and a host that declares
+the host's declaration, not a proof: the core checks only that it is one of
+the two strings, not that the store is durable, and a host that declares
 `"conformance-tested"` for a store that never passed the suite has removed the
 only runtime gate. Review it with the store.
 
@@ -1003,8 +1030,10 @@ read-only on 2026-10-14 against these revisions, none of which the SDK pins:
   characters; a signed operation is refused once `validUntil` (about five
   minutes) passes; and the payer's EVM deposit happens first, with the Demos
   transaction carrying its hash.
-- `kynesyslabs/node` `61b8e75a`, which `node2.demos.sh` reported running: the
-  native-bridge handlers are stubs, and no bridge-status call exists.
+- `kynesyslabs/node` `61b8e75a`, which `node2.demos.sh` reported running (as a
+  dirty build, `dirty: true`, on 2026-10-15, so the deployed code may differ
+  from that commit): the native-bridge handlers are stubs, and no
+  bridge-status call exists.
 
 `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })` is for tests
 and development only, and declares `restartSafety: "volatile-acknowledged"`.
@@ -1029,10 +1058,14 @@ atomically, and pass `runLiquidityTankStoreConformance`.
 - reviewed evidence that the bridge enforces `reserved + available =
   capacity` atomically across concurrent phases (see
   [Tank balance](#tank-balance-is-the-bridges)); the SDK does not;
+- a signer that can sign this route: demosdk 4.0.16's `generateOperationTx`
+  and `demos.sign` refuse every EVM origin address (see the signing note
+  above), and its `POLYGON` USDC address is marked as Mumbai's, not Amoy's
+  (`build/bridge/nativeBridgeTypes.js:19`);
 - a review of the live adapter's signing window, with a test against the
-  real SDK transport that `prepareSubmission` makes no network call (no
-  `confirm`) and keeps no copy of the signed bytes, and bounded deadlines on
-  every adapter and verifier call;
+  real SDK transport that `prepareSubmission` sends no signed bytes (no
+  `confirm` or `broadcast`; reads such as the nonce are allowed) and keeps no
+  copy of them, and bounded deadlines on every adapter and verifier call;
 - one versioned bridge API and DTO, agreed between the Standard and the Demos
   SDK and node, carrying what the core and the verifier need (see
   [Adapter trust boundary](#adapter-trust-boundary)), with its SDK and node
