@@ -21,9 +21,9 @@ const BASE58_ALPHABET =
 // The associated token account program, and the one token program this rail
 // pays through: SPL Token. Token-2022 is not supported: a transfer-fee mint
 // credits the payee less than the instruction's amount, so the amount the
-// core checks would not be the amount paid.
-const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+// core checks would not be the amount paid. Both are public program ids.
+const ATA_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const SPL_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const ED25519_P = 2n ** 255n - 19n;
 // The system program's key is 32 zero bytes; `AdvanceNonceAccount` is its
 // instruction 4, a little-endian u32.
@@ -588,8 +588,8 @@ function programAddress(seeds: readonly Uint8Array[], program: Uint8Array): Buff
  */
 function isAssociatedTokenAccount(account: string, owner: string, mint: string): boolean {
   return programAddress(
-    [base58Bytes(owner, 32), base58Bytes(TOKEN_PROGRAM, 32), base58Bytes(mint, 32)],
-    base58Bytes(ASSOCIATED_TOKEN_PROGRAM, 32),
+    [base58Bytes(owner, 32), base58Bytes(SPL_PROGRAM_ID, 32), base58Bytes(mint, 32)],
+    base58Bytes(ATA_PROGRAM_ID, 32),
   ).equals(base58Bytes(account, 32));
 }
 
