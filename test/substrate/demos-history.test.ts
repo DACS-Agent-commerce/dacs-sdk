@@ -28,6 +28,8 @@ interface RowOptions {
   timestamp?: number | string;
 }
 
+type Row = Record<string, unknown>;
+
 // Rows are listed newest first, so each row built gets an older timestamp by default.
 let nextTimestamp = 1_800_000_000_000;
 
@@ -212,6 +214,118 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     await expect(fetchPage(first.nextCursor, 2)).rejects.toBeInstanceOf(AnchorHistoryRestartRequiredError);
   });
 
+  // Boundary guards. Each history changes between the first and second page.
+  const tied = (hash: string, timestamp: number, n: number) => row({
+    hash, timestamp, nativeAddress: `stor-${n.toString(16).padStart(40, "0")}`, logicalAddress: `dacs1:s:${hash}:v1`,
+  });
+  async function drain(fetchPage: ReturnType<typeof createDemosHistoryPageFetcher>, limit: number) {
+    const emitted: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const result = await fetchPage(cursor, limit);
+      emitted.push(...result.entries.map((entry) => entry.logicalAddress!.split(":")[2]!));
+      cursor = result.nextCursor;
+      if (cursor === null) break;
+    }
+    return emitted;
+  }
+  function changingClient(first: Record<string, unknown>[], later: Record<string, unknown>[]) {
+    let calls = 0;
+    return clientWith(async (_owner, _type, { start, limit }) =>
+      (calls++ === 0 ? first : later).slice(start, start + limit));
+  }
+
+  test("a window that starts inside the boundary group restarts instead of skipping a tied row", async () => {
+    // Page 1 sees X2 X1 A B. The newest rows then vanish (a lagging backend or a
+    // rollback), so the window starts at B and cannot show C was before it.
+    const [x2, x1, a, b, c, d] = [
+      tied("X2", 12, 1), tied("X1", 11, 2), tied("A", 9, 3), tied("B", 5, 4), tied("C", 5, 5), tied("D", 1, 6),
+    ];
+    const client = changingClient([x2, x1, a, b, c, d], [a, c, b, d]);
+    const fetchPage = createDemosHistoryPageFetcher(client, OWNER);
+    await expect(drain(fetchPage, 4)).rejects.toBeInstanceOf(AnchorHistoryRestartRequiredError);
+    expect(client.getTransactionHistory).toHaveBeenLastCalledWith(OWNER, "storageProgram", { start: 2, limit: 100 });
+    // The restart from null reads C.
+    await expect(drain(fetchPage, 4)).resolves.toEqual(["A", "C", "B", "D"]);
+  });
+
+  test.each([
+    ["a duplicated boundary row", (a: Row, b: Row, c: Row, d: Row) => [a, b, c, c, d]],
+    ["exactly one emitted row missing", (a: Row, b: Row, _c: Row, d: Row) => [a, b, d]],
+    ["every emitted row missing", (a: Row, _b: Row, _c: Row, d: Row) => [a, d]],
+  ])("a boundary group with %s restarts and emits nothing", async (_name, later) => {
+    const [a, b, c, d] = [tied("A", 9, 1), tied("B", 5, 2), tied("C", 5, 3), tied("D", 1, 4)];
+    const fetchPage = createDemosHistoryPageFetcher(changingClient([a, b, c, d], later(a, b, c, d)), OWNER);
+    const first = await fetchPage(null, 3);
+    expect(first.entries.map((entry) => entry.logicalAddress)).toEqual(["dacs1:s:A:v1", "dacs1:s:B:v1", "dacs1:s:C:v1"]);
+    await expect(fetchPage(first.nextCursor, 3)).rejects.toBeInstanceOf(AnchorHistoryRestartRequiredError);
+  });
+
+  // Admission guards: a malformed row fails the page; it is never skipped silently.
+  const edited = (edit: (value: Row) => void): Row => {
+    const value = row({ hash: "tx-edit", logicalAddress: "dacs1:s:svc:v1" });
+    edit(value);
+    return value;
+  };
+  const payloadOf = (value: Row) => ((value.content as Row).data as [string, Row])[1];
+  const setStorage = (value: Row, address: string) => {
+    (value.content as Row).to = address;
+    payloadOf(value).storageAddress = address;
+  };
+  test.each<[string, (value: Row) => void, RegExp]>([
+    ["a blank hash", (v) => { v.hash = " "; }, /no transaction hash/],
+    ["no status", (v) => { delete v.status; }, /no transaction status/],
+    ["a pending status in a block", (v) => { v.status = "pending"; }, /unsupported status pending/],
+    ["a confirmed status without a block", (v) => { v.blockNumber = null; }, /not block-confirmed/],
+    ["a negative block", (v) => { v.blockNumber = -1; }, /not block-confirmed/],
+    ["a decimal-string block", (v) => { v.blockNumber = "42"; }, /not block-confirmed/],
+    ["another transaction type", (v) => { (v.content as Row).type = "native"; }, /malformed storage content/],
+    ["a blank sender", (v) => { (v.content as Row).from = " "; }, /malformed storage content/],
+    ["a sender with leading junk", (v) => { (v.content as Row).from = `x${OWNER}`; }, /32-byte hex address/],
+    ["a sender with trailing junk", (v) => { (v.content as Row).from = `${OWNER}00`; }, /32-byte hex address/],
+    ["a three-part payload", (v) => { ((v.content as Row).data as unknown[]).push({}); }, /malformed storage payload/],
+    ["a one-part payload", (v) => { ((v.content as Row).data as unknown[]).pop(); }, /malformed storage payload/],
+    ["another payload tag", (v) => { ((v.content as Row).data as unknown[])[0] = "native"; }, /malformed storage payload/],
+    ["an unknown operation", (v) => { payloadOf(v).operation = "CREATE_STORAGE"; }, /inconsistent storage metadata/],
+    ["a storage address with leading junk", (v) => setStorage(v, `x${NATIVE_1}`), /inconsistent storage metadata/],
+    ["a storage address with trailing junk", (v) => setStorage(v, `${NATIVE_1}0`), /inconsistent storage metadata/],
+    ["an uppercase storage address", (v) => setStorage(v, NATIVE_1.toUpperCase()), /inconsistent storage metadata/],
+    ["array metadata", (v) => { payloadOf(v).metadata = ["dacs1:s:svc:v1"]; }, /malformed record metadata/],
+    ["string metadata", (v) => { payloadOf(v).metadata = "dacs1:s:svc:v1"; }, /malformed record metadata/],
+    ["a blank logical_address", (v) => { payloadOf(v).metadata = { logical_address: " " }; }, /invalid logical_address metadata/],
+    ["a numeric logical_address", (v) => { payloadOf(v).metadata = { logical_address: 7 }; }, /invalid logical_address metadata/],
+  ])("a row with %s fails the page", async (_name, edit, error) => {
+    const client = clientWith(async (_owner, _type, { start }) => start === 0 ? [edited(edit)] : []);
+    await expect(createDemosHistoryPageFetcher(client, OWNER)(null, 2)).rejects.toThrow(error);
+  });
+
+  test.each<[string, (value: Row) => void, boolean]>([
+    ["an update carrying logical metadata", (v) => { payloadOf(v).operation = "WRITE_STORAGE"; }, false],
+    ["a DELETE_ITEM operation", (v) => { payloadOf(v).operation = "DELETE_ITEM"; }, false],
+    ["null metadata", (v) => { payloadOf(v).metadata = null; }, false],
+    ["a confirmation in block 0", (v) => { v.blockNumber = 0; }, true],
+    ["a timestamp of 0", (v) => { (v.content as Row).timestamp = 0; }, true],
+    ["a decimal-string timestamp of 0", (v) => { (v.content as Row).timestamp = "0"; }, true],
+  ])("a row with %s is well formed (emitted: %s)", async (_name, edit, emitted) => {
+    const client = clientWith(async (_owner, _type, { start }) => start === 0 ? [edited(edit)] : []);
+    await expect(createDemosHistoryPageFetcher(client, OWNER)(null, 2)).resolves.toEqual({
+      entries: emitted ? [{ nativeAddress: NATIVE_1, logicalAddress: "dacs1:s:svc:v1", owner: OWNER }] : [],
+      nextCursor: null,
+    });
+  });
+
+  test("an RPC result longer than the requested page fails instead of being consumed", async () => {
+    const rows = [1, 2, 3].map((n) => tied(`R${n}`, 10 - n, n));
+    const fetchPage = createDemosHistoryPageFetcher(clientWith(async () => rows), OWNER);
+    await expect(fetchPage(null, 2)).rejects.toThrow(/exceeded the requested page size/);
+  });
+
+  test.each([`x${OWNER}`, `${OWNER}00`, "not-an-owner"])("the owner %s is refused before any node call", (owner) => {
+    const client = clientWith(async () => []);
+    expect(() => createDemosHistoryPageFetcher(client, owner)).toThrow(/32-byte hex address/);
+    expect(client.getTransactionHistory).not.toHaveBeenCalled();
+  });
+
   test("rows out of timestamp order, or without a timestamp, are malformed", async () => {
     const outOfOrder = createDemosHistoryPageFetcher(clientWith(async () => [
       row({ hash: "older", timestamp: 1 }), row({ hash: "newer", timestamp: 2 }),
@@ -374,6 +488,9 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     })).toString("base64url")}`],
     ["an undecodable encoding", "dacs-demos-history-v2.!!!"],
     ["an incomplete payload", v2({ v: 2 })],
+    ["a null payload", `dacs-demos-history-v2.${Buffer.from("null").toString("base64url")}`],
+    ["an array payload", `dacs-demos-history-v2.${Buffer.from("[2]").toString("base64url")}`],
+    ["a non-array boundary list", v2({ ...valid, boundaryTxHashes: { 0: "tx-a", length: 1 } })],
     ["another version number", v2({ ...valid, v: 1 })],
     ["another owner's cursor", v2({ ...valid, owner: OTHER_OWNER })],
     ["a non-decimal timestamp", v2({ ...valid, boundaryTimestamp: "05" })],
@@ -540,6 +657,7 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     const fetchPage = createDemosHistoryPageFetcher(client, OWNER);
     await expect(fetchPage(null, 0)).rejects.toThrow(/integer from 1 to 100/);
     await expect(fetchPage(null, 101)).rejects.toThrow(/integer from 1 to 100/);
+    await expect(fetchPage(null, 1.5)).rejects.toThrow(/integer from 1 to 100/);
 
     const conflict = createDemosHistoryPageFetcher(
       clientWith(async () => [
