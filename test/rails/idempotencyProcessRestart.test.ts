@@ -31,6 +31,11 @@ const RECONCILED = {
 const IDENTITY: Record<RailMode, string | undefined> = {
   generic: `test-effect:${RESTART_JOB_ID}:0`, evm: undefined, x402: NONCE,
 };
+const ABSENT = /absence alone.*operator action/;
+// Direct ERC-20 keeps no submission reference before the crash window, so even
+// a landed transfer is not adopted by its terms: recovery stops for an operator.
+const UNATTRIBUTABLE = /direct ERC-20 retained no submission reference.*operator action/;
+const LANDED: Record<RailMode, RegExp | null> = { generic: null, evm: UNATTRIBUTABLE, x402: null };
 
 async function crash(h: SettlementProcessHarness, mode: RailMode, point: "before-effect" | "before-outcome") {
   const first = h.start("first", { mode, crash: point });
@@ -101,8 +106,8 @@ describe.each(["generic", "evm", "x402"] as const)("real Node restart: %s settle
   }, 30_000);
 
   test.each([
-    ["landed", null],
-    ["absent", /absence alone.*operator action/],
+    ["landed", LANDED[mode]],
+    ["absent", ABSENT],
     ["throws", /authoritative lookup unavailable/],
   ] as const)("SIGKILL after effect, before putOutcome: reconcile %s", async (reconcile, error) => {
     const h = await harness();
@@ -133,7 +138,11 @@ describe.each(["generic", "evm", "x402"] as const)("real Node restart: %s settle
     const h = await harness();
     await crash(h, mode, "before-outcome");
     const winner = await race(h, mode, "landed");
-    expect(winner).toMatchObject({ ok: true, value: RECONCILED });
+    if (LANDED[mode] === null) expect(winner).toMatchObject({ ok: true, value: RECONCILED });
+    else {
+      expect(winner).toMatchObject({ ok: false, error: { name: "DacsError" } });
+      expect(winner.error?.message).toMatch(LANDED[mode]!);
+    }
     await expectRailEffects(h, mode, 1);
     expect(await h.count("grants")).toBe(0);
   }, 30_000);
@@ -167,6 +176,12 @@ const SB3 = JSON.parse(readFileSync(new URL(
   want: { action?: "resume-existing" | "refuse"; mustGenerateFreshNonce?: boolean };
 }> };
 const RETRY = SB3.vectors.filter((vector) => vector.op === "retry");
+const OTHER_PAYEE = `0x${"9".repeat(40)}`;
+
+// One line of the test rail authority that this test, not the worker, writes.
+async function seed(h: SettlementProcessHarness, records: RailRecord[]) {
+  for (const record of records) await appendFile(join(h.root, "authority"), `${JSON.stringify(record)}\n`);
+}
 
 describe("x402 SB-3 retry identity across a real restart (#43)", () => {
   test("the Standard still carries the three retry vectors", () => {
@@ -175,17 +190,21 @@ describe("x402 SB-3 retry identity across a real restart (#43)", () => {
     ]);
   });
 
+  // An EIP-3009 nonce is used or cancelled once. Used-same is our own landed
+  // transfer (crash after the effect). The refusals start from a crash after
+  // signing but before submission, so the nonce's only state is the one the
+  // vector names, and each refusal must give its own reason.
+  const REASON = { cancelled: /SB-3 authorization nonce is cancelled; refusing a fresh nonce/, different:
+    /SB-3 authorization nonce was used by a different transfer; refusing a fresh nonce/ };
   test.each(RETRY.map((vector) => [vector.name, vector] as const))("%s", async (_name, vector) => {
     const h = await harness();
-    await crash(h, "x402", "before-outcome");
     const prior = vector.priorAuthorization!;
+    const ours = prior.state === "used" && prior.sameTransferParameters;
+    await crash(h, "x402", ours ? "before-outcome" : "before-effect");
     // The token contract's authorization state for this nonce, as a reconciler observes it.
-    if (prior.state === "cancelled") {
-      await appendFile(join(h.root, "authority"), `${JSON.stringify({ rail: "x402", nonce: NONCE, state: "cancelled" })}\n`);
-    } else if (!prior.sameTransferParameters) {
-      await appendFile(join(h.root, "authority"), `${JSON.stringify({
-        rail: "x402", txHash: `0x${"e".repeat(64)}`, nonce: NONCE, state: "used", to: `0x${"9".repeat(40)}`, value: "1000000",
-      })}\n`);
+    if (prior.state === "cancelled") await seed(h, [{ rail: "x402", nonce: NONCE, state: "cancelled" }]);
+    else if (!ours) {
+      await seed(h, [{ rail: "x402", txHash: `0x${"e".repeat(64)}`, nonce: NONCE, state: "used", to: OTHER_PAYEE, value: "1000000" }]);
     }
     const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
     expect(vector.want.mustGenerateFreshNonce).toBe(false);
@@ -194,13 +213,64 @@ describe("x402 SB-3 retry identity across a real restart (#43)", () => {
       expect(restarted).toMatchObject({ ok: true, value: RECONCILED });
     } else {
       expect(vector.want.action).toBe("refuse");
+      const reason = prior.state === "cancelled" ? REASON.cancelled : REASON.different;
       expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
-      expect(restarted.error?.message).toMatch(/SB-3 authorization nonce .*refusing a fresh nonce/);
+      expect(restarted.error?.message).toMatch(reason);
       // Refusal is durable: a later process still cannot replace the authorization.
       const again = await h.start("again", { mode: "x402", now: 300, reconcile: "landed" }).result();
-      expect(again.ok).toBe(false);
+      expect(again).toMatchObject({ ok: false, error: { name: "DacsError" } });
+      expect(again.error?.message).toMatch(reason);
     }
-    await expectRailEffects(h, "x402", 1);
+    // Only the crashed process ever signed, and only a used-same nonce landed here.
+    await expectRailEffects(h, "x402", ours ? 1 : 0, 1);
+    expect(await h.count("grants")).toBe(0);
+  }, 30_000);
+
+  test("used by a different amount is refused for that reason, with no fresh nonce", async () => {
+    const h = await harness();
+    await crash(h, "x402", "before-effect");
+    await seed(h, [{ rail: "x402", txHash: `0x${"e".repeat(64)}`, nonce: NONCE, state: "used", to: PAYEE, value: "2000000" }]);
+    const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
+    expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
+    expect(restarted.error?.message).toMatch(REASON.different);
+    await expectRailEffects(h, "x402", 0, 1);
+    expect(await h.count("grants")).toBe(0);
+  }, 30_000);
+});
+
+// The restarted process must consult the rail authority under its own retained
+// identity: what the authority does not hold for this effect is never adopted.
+const OTHER_PHASE_NONCE = await dacsX402AuthorizationNonce({ jobId: RESTART_JOB_ID, phaseIndex: 1 });
+const TX = `0x${"a".repeat(64)}`;
+// The published Base Sepolia USDC contract the worker transfers.
+const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const UNRELATED: Record<RailMode, RailRecord[]> = {
+  generic: [{ rail: "generic", txHash: TX, identity: `test-effect:${RESTART_JOB_ID}:1` }],
+  // An earlier transfer with exactly this job's token, payer, payee and value.
+  evm: [{ rail: "evm", txHash: `0x${"f".repeat(64)}`, token: USDC, from: `0x${"2".repeat(40)}`, to: PAYEE, value: "1000000" }],
+  x402: [{ rail: "x402", txHash: TX, nonce: OTHER_PHASE_NONCE, state: "used", to: PAYEE, value: "1000000" }],
+};
+const MISS: Record<RailMode, RegExp> = { generic: ABSENT, evm: UNATTRIBUTABLE, x402: ABSENT };
+
+describe.each(["generic", "evm", "x402"] as const)("real Node restart: %s landed recovery queries its own identity (#43)", (mode) => {
+  test("an authority with no record for this effect is not adopted", async () => {
+    const h = await harness();
+    await crash(h, mode, "before-effect");
+    const restarted = await h.start("restarted", { mode, now: 200, reconcile: "landed" }).result();
+    expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
+    expect(restarted.error?.message).toMatch(MISS[mode]);
+    await expectRailEffects(h, mode, 0, mode === "x402" ? 1 : 0);
+    expect(await h.count("grants")).toBe(0);
+  }, 30_000);
+
+  test("a record under another identity, or an identical earlier transfer, is not adopted", async () => {
+    const h = await harness();
+    await crash(h, mode, "before-effect");
+    await seed(h, UNRELATED[mode]);
+    const restarted = await h.start("restarted", { mode, now: 200, reconcile: "landed" }).result();
+    expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
+    expect(restarted.error?.message).toMatch(MISS[mode]);
+    await expectRailEffects(h, mode, 0, mode === "x402" ? 1 : 0);
     expect(await h.count("grants")).toBe(0);
   }, 30_000);
 });

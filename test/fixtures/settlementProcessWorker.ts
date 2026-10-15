@@ -43,9 +43,17 @@ const success = (txHash = TX): SettleResult => ({
   finality: { model: "block-depth", finalityBlocks: 2 },
 });
 // The rail identity each mode can recompute from its own request after a restart.
-const genericIdentity = (request: SettleRequest) => `test-effect:${request.jobId}:${request.phaseIndex ?? 0}`;
-const sb3Nonce = (request: SettleRequest) =>
+type Phase = Pick<SettleRequest, "jobId" | "phaseIndex">;
+const genericIdentity = (request: Phase) => `test-effect:${request.jobId}:${request.phaseIndex ?? 0}`;
+const sb3Nonce = (request: Phase) =>
   dacsX402AuthorizationNonce({ jobId: request.jobId, phaseIndex: request.phaseIndex ?? 0 });
+// Recovery derives the phase from the settlement key it is reconciling, never
+// from whichever request this process happened to be started with.
+function recovered(key: string): Phase {
+  const phaseAt = key.lastIndexOf(":");
+  const jobAt = key.lastIndexOf(":", phaseAt - 1);
+  return { jobId: key.slice(jobAt + 1, phaseAt), phaseIndex: Number(key.slice(phaseAt + 1)) };
+}
 
 async function marker(name: string, value: unknown = { pid: process.pid }) {
   // Publish complete content: the parent may read a marker as soon as it exists.
@@ -105,23 +113,28 @@ const log: SettlementLog = {
 const owner = options.owner ?? id;
 const store = createIdempotencyStore(log, { owner, now: () => now, leaseDurationMs: 100 });
 
-// Query the test rail authority by the identity this process derives itself:
-// the generic effect identity, the SB-3 EIP-3009 nonce, or (direct ERC-20 has
-// no pre-submission reference) the bound transfer terms.
-async function lookup(fence?: Readonly<SettlementEffectFence>): Promise<SettleResult | null> {
+// Query the test rail authority by the identity this process derives itself
+// from the key being recovered: the generic effect identity or the SB-3
+// EIP-3009 nonce.
+async function lookup(key: string, fence?: Readonly<SettlementEffectFence>): Promise<SettleResult | null> {
+  if (mode === "evm") {
+    // Direct ERC-20 retains no submission reference before the crash window
+    // (evmErc20Settle binds no effect identity), so this job's transfer cannot
+    // be told apart from an earlier one with the same token, payer, payee and
+    // value. Never attribute a transfer by its terms alone.
+    throw new DacsError(
+      "direct ERC-20 retained no submission reference; refusing to attribute a transfer by its terms; operator action required",
+    );
+  }
+  const phase = recovered(key);
   const ledger = await lines<RailRecord>("authority");
   if (mode === "generic") {
-    const found = ledger.filter((entry) => entry.rail === "generic" && entry.identity === genericIdentity(req)).at(-1);
-    return found ? success(found.txHash) : null;
-  }
-  if (mode === "evm") {
-    const found = ledger.filter((entry) => entry.rail === "evm" && entry.token === token &&
-      entry.from === PAYER && entry.to === PAYEE && entry.value === req.amount).at(-1);
+    const found = ledger.filter((entry) => entry.rail === "generic" && entry.identity === genericIdentity(phase)).at(-1);
     return found ? success(found.txHash) : null;
   }
   // DACS-4 §9.5.8 SB-3: the derived nonce is the retry identity. Reconcile its
   // authorization state; resume only the same transfer and never mint a new nonce.
-  const nonce = await sb3Nonce(req);
+  const nonce = await sb3Nonce(phase);
   if (fence?.effectIdentity !== nonce) throw new DacsError("x402 effect fence does not retain the SB-3 nonce");
   const found = ledger.filter((entry): entry is Extract<RailRecord, { rail: "x402" }> =>
     entry.rail === "x402" && entry.nonce === nonce).at(-1);
@@ -135,8 +148,8 @@ async function lookup(fence?: Readonly<SettlementEffectFence>): Promise<SettleRe
   return success(found.txHash);
 }
 
-const reconcile: SettlementReconcile = async (_key, fence) => {
-  append("reconciles", { pid: process.pid, key: _key, generation: fence?.generation, identity: fence?.effectIdentity });
+const reconcile: SettlementReconcile = async (key, fence) => {
+  append("reconciles", { pid: process.pid, key, generation: fence?.generation, identity: fence?.effectIdentity });
   if (options.race) {
     await marker(`reconciling-${id}`);
     await waitForFiles(root!, ["finish-reconcile"]);
@@ -148,7 +161,7 @@ const reconcile: SettlementReconcile = async (_key, fence) => {
     return {
       disposition: "replay-authorized", bindingHash: fence.bindingHash,
       // Bind the identity this rail derives, never an echo of the fence.
-      effectIdentity: mode === "x402" ? await sb3Nonce(req) : genericIdentity(req),
+      effectIdentity: mode === "x402" ? await sb3Nonce(recovered(key)) : genericIdentity(recovered(key)),
       protection: "prior-effect-terminal",
       async assertReplaySafe() {
         // The parent has reaped the pre-effect process before either contender
@@ -158,7 +171,7 @@ const reconcile: SettlementReconcile = async (_key, fence) => {
       },
     };
   }
-  return lookup(fence);
+  return lookup(key, fence);
 };
 
 function binding(request: SettleRequest): SettlementBinding {
@@ -238,7 +251,8 @@ const x402 = x402Settle({
           x402Version: 2, resource: { url: String(url), mimeType: "application/json" },
           accepts: [{
             scheme: "exact", network: NETWORK, amount: req.amount, asset: TOKEN, payTo: PAYEE,
-            maxTimeoutSeconds: 120, extra: { name: "USD Coin", version: "2" },
+            // The EIP-712 domain of Base Sepolia USDC, as @x402/evm names it.
+            maxTimeoutSeconds: 120, extra: { name: "USDC", version: "2" },
           }],
           extensions: {},
         };
