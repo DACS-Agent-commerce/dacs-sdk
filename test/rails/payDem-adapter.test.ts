@@ -558,6 +558,58 @@ describe("createPayDemRail nonce coordination", () => {
     ]);
   });
 
+  it("does not broadcast when the prepared-transfer fence rejects", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => undefined,
+      assertCurrentBeforeBroadcast: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        throw new DacsError("prepared-transfer fence is no longer current");
+      },
+    })).rejects.toThrow(/prepared-transfer fence is no longer current/);
+    // Give an unawaited fence time to settle: broadcast must still not start.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+    expect(sdk.nodeCall).not.toHaveBeenCalled();
+  });
+
+  it("does not broadcast when the generation fence is lost beside broadcast", async () => {
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+    let checks = 0;
+    const effectFence = {
+      owner: "payment-worker",
+      generation: 3,
+      settlementKey: "demos-native:DEM:job-fenced:0",
+      bindingHash: "ab".repeat(32),
+      async assertCurrent() {
+        checks += 1;
+        // Current before signing; lost by the time of broadcast.
+        if (checks > 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          throw new DacsError("settlement generation is no longer current");
+        }
+      },
+    };
+
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+    }, effectFence)).rejects.toThrow(/settlement generation is no longer current/);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(checks).toBe(2);
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+    expect(sdk.nodeCall).not.toHaveBeenCalled();
+  });
+
   it("fails before signing when configured and per-settlement journals conflict", async () => {
     const rail = await createPayDemRail({
       rpc: "https://node.test",
