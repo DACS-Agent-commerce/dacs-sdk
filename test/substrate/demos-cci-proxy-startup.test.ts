@@ -14,18 +14,20 @@ import {
   type NodeRouteState,
 } from "../../src/substrate/demosCciTransport.js";
 
-// Each child starts with exactly the environment below, optionally installs a
-// global Agent of Node's own class whose connector tunnels through a proxy (the
-// shape fetch-socks documents), optionally loads a .env file at runtime as the
+// Each child starts with exactly the environment below, optionally builds an
+// Agent of Node's own class whose connector tunnels through a proxy (the shape
+// fetch-socks documents) and installs it as the global dispatcher or passes it
+// from a wrapper that replaces global fetch, optionally loads a .env file at runtime as the
 // generated live agent does, then sends one request with global fetch and one
 // with axios (demosdk's transport) to a local target. It reports what the guard
 // reads: the global dispatchers before and after fetch loads, each with the
-// guard's own Node-default check run on the real object, whether Node gave its
-// global agents a proxy configuration, execArgv and the environment. The
+// guard's own Node-default check run on the real object, the guard's check of
+// the global fetch the read calls, whether Node gave its global agents a proxy
+// configuration, execArgv and the environment. The
 // parent's proxy and target record which route each request took.
 const CHILD = `
-const [rpc, checkModule, connectVia, envFile] = process.argv.slice(1);
-const { isNodeDefaultAgent } = await import(checkModule);
+const [rpc, checkModule, connectVia, connectMode, envFile] = process.argv.slice(1);
+const { isNodeBuiltinFetch, isNodeDefaultAgent } = await import(checkModule);
 const name = (value) => value === undefined ? null : value?.constructor?.name ?? "";
 const describe = (value) => value === undefined ? null
   : { name: name(value), nodeDefault: isNodeDefaultAgent(value) };
@@ -51,11 +53,17 @@ if (connectVia) {
     });
   };
   const agent = new NodeAgent({ connect });
-  for (const n of ["2", "1"]) if (globalThis[symbol(n)] !== undefined) globalThis[symbol(n)] = agent;
+  if (connectMode === "fetch") {
+    const nodeFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => nodeFetch(input, { ...init, dispatcher: agent });
+  } else {
+    for (const n of ["2", "1"]) if (globalThis[symbol(n)] !== undefined) globalThis[symbol(n)] = agent;
+  }
   // fetch had to load first, so the state before the read is the installed one.
   before = dispatchers();
 }
 if (envFile) process.loadEnvFile(envFile);
+const builtinFetch = isNodeBuiltinFetch(globalThis.fetch);
 const headers = (client) => ({ "content-type": "application/json", "x-probe": client });
 await fetch(rpc, { method: "POST", headers: headers("fetch"), body: "{}", signal: AbortSignal.timeout(5000) })
   .then(response => response.text()).catch(() => undefined);
@@ -69,12 +77,13 @@ const env = {};
 for (const [key, value] of Object.entries(process.env)) {
   if (/^((https?|all|no)_proxy|NODE_USE_ENV_PROXY|NODE_OPTIONS)$/i.test(key)) env[key] = value;
 }
-console.log(JSON.stringify({ before, after: dispatchers(), agents, execArgv: process.execArgv, env }));
+console.log(JSON.stringify({ builtinFetch, before, after: dispatchers(), agents, execArgv: process.execArgv, env }));
 `;
 
 type Route = "proxy" | "direct";
 type Dispatcher = { name: string; nodeDefault: boolean } | null;
 interface ChildState {
+  builtinFetch: boolean;
   before: Dispatcher[];
   after: Dispatcher[];
   agents: Array<{ name: string; proxied: boolean }>;
@@ -88,9 +97,13 @@ const named = (kind: string | null) => kind === null ? undefined : new ({ [kind]
 // shape; otherwise a stand-in with the reported name, which the check refuses.
 class DispatcherBase {}
 const nodeDefaultAgent = () => Object.assign(new ({ Agent: class extends DispatcherBase {} }).Agent(), {
-  [Symbol("factory")]: function defaultFactory() {},
+  [Symbol("factory")]: new Function("return function defaultFactory (origin, opts) {\n" +
+    "  return opts && opts.connections === 1 ? new Client(origin, opts) : new Pool(origin, opts)\n}")() as unknown,
   [Symbol("options")]: { connect: undefined },
 });
+// Where the child's real check found Node's own fetch, a stand-in with its source.
+const nodeFetch = new Function("return function fetch(input, init = undefined) {\n" +
+  "  const undiciModule = require('internal/deps/undici/undici');\n  return undiciModule.fetch(input, init);\n}")() as unknown;
 const rebuilt = (dispatcher: Dispatcher) =>
   dispatcher?.nodeDefault === true ? nodeDefaultAgent() : named(dispatcher?.name ?? null);
 const SWITCH_FLAG = process.allowedNodeEnvironmentFlags.has("--use-env-proxy");
@@ -142,9 +155,9 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
   });
 
   async function run(startup: Record<string, string>, dotEnv?: Record<string, string>, flags: string[] = [],
-    connectVia = "") {
+    connectVia = "", connectMode: "dispatcher" | "fetch" = "dispatcher") {
     routes.clear();
-    const args = [...flags, "--input-type=module", "-e", CHILD, rpc, checkModule, connectVia];
+    const args = [...flags, "--input-type=module", "-e", CHILD, rpc, checkModule, connectVia, connectMode];
     if (dotEnv !== undefined) {
       const file = join(dir, `${Object.keys(startup).join("-")}.env`);
       writeFileSync(file, Object.entries(dotEnv).map(([name, value]) => `${name}=${value}\n`).join(""));
@@ -162,6 +175,7 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
     });
     const child = JSON.parse(stdout.trim().split("\n").pop()!) as ChildState;
     const state = (dispatchers: Dispatcher[]): NodeRouteState => ({
+      fetch: child.builtinFetch ? nodeFetch : () => undefined,
       dispatchers: [rebuilt(dispatchers[0]!), rebuilt(dispatchers[1]!)],
       agents: child.agents.map(({ name, proxied }) =>
         Object.assign(named(name) ?? {}, { options: proxied ? { proxyEnv: {} } : {} })),
@@ -187,6 +201,7 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
       switchApplied: child.agents.some(agent => agent.proxied),
       // The real check on each dispatcher left under .2 and .1 (null if none).
       nodeDefault: child.after.map(dispatcher => dispatcher?.nodeDefault ?? null),
+      builtinFetch: child.builtinFetch,
       fetchRoute: fetchRoute?.[0],
       axiosRoute: axiosRoute?.[0],
     };
@@ -196,9 +211,18 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
     const result = await run({});
     expect(result).toMatchObject({ mismatch: undefined, fetchRoute: "direct", axiosRoute: "direct" });
     expect(result.httpsMismatch).toBeUndefined();
-    // Node's real default Agent passes the check: under .1 on Node 20-22, under
-    // both symbols on 24, and under .2 (beside its wrapper under .1) on 26.
+    // Node's real default Agent and Node's own fetch pass the checks: the Agent
+    // under .1 on Node 20-22, under both symbols on 24, and under .2 (beside its
+    // wrapper under .1) on 26.
     expect(result.nodeDefault).toContain(true);
+    expect(result.builtinFetch).toBe(true);
+  });
+
+  it("refuses a replaced global fetch that tunnels through a proxy while Node's default dispatcher stays", async () => {
+    const result = await run({}, undefined, [], proxyUrl, "fetch");
+    expect(result).toMatchObject({ mismatch: DEMOS_CCI_ROUTE_UNVERIFIED, fetchRoute: "proxy", axiosRoute: "direct" });
+    expect(result.nodeDefault).toContain(true);
+    expect(result.builtinFetch).toBe(false);
   });
 
   it("refuses a global Agent whose connector tunnels through a proxy, as fetch-socks installs", async () => {

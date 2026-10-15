@@ -3,7 +3,7 @@ import https from "node:https";
 
 import { DacsError, SubstrateError, TransientError } from "../errors.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
-import { isNodeDefaultDispatcher } from "./nodeDefaultDispatcher.js";
+import { isNodeBuiltinFetch, isNodeDefaultDispatcher } from "./nodeDefaultDispatcher.js";
 
 /** Default and hard maximum for one raw GCR identity response (2 MiB). */
 export const DEMOS_CCI_MAX_RESPONSE_BYTES = DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes;
@@ -235,7 +235,7 @@ export const DEMOS_CCI_PROXY_BYPASS =
   "Demos GCR identity read would bypass the environment proxy; inject identityFetch";
 export const DEMOS_CCI_ROUTE_UNVERIFIED =
   "Demos GCR identity read cannot verify its route with Node's proxy switch " +
-  "or a custom global dispatcher or agent; inject identityFetch";
+  "or a custom global fetch, dispatcher or agent; inject identityFetch";
 
 // proxy-from-env 2.1.0's NO_PROXY match: true when `host` should be proxied.
 function proxyFromEnvShouldProxy(host: string, port: number, noProxy: string): boolean {
@@ -313,6 +313,8 @@ function axiosUsesProxy(url: URL, env: NodeJS.ProcessEnv): boolean {
 
 /** What decides the routes of Node's global fetch and of demosdk's Axios. */
 export interface NodeRouteState {
+  /** globalThis.fetch, which the read calls when it is allowed. */
+  fetch: unknown;
   /** The global dispatchers under undici.globalDispatcher.2 and .1, undefined until fetch loads. */
   dispatchers: readonly [unknown, unknown];
   /** http.globalAgent and https.globalAgent, which Axios uses when it connects directly. */
@@ -323,6 +325,7 @@ export interface NodeRouteState {
 function nodeRouteState(): NodeRouteState {
   const globals = globalThis as Record<symbol, unknown>;
   return {
+    fetch: globalThis.fetch,
     dispatchers: [globals[GLOBAL_DISPATCHER], globals[LEGACY_GLOBAL_DISPATCHER]],
     agents: [http.globalAgent, https.globalAgent],
     execArgv: process.execArgv,
@@ -346,27 +349,41 @@ function nodeMayProxyAxios(env: NodeJS.ProcessEnv, state: NodeRouteState): boole
  * Why Node's global fetch might not take the route demosdk's Axios transport
  * takes to `rpc`, or undefined when both connect directly. Axios follows the
  * environment (proxy-from-env 2.1.0, then axios 1.17's NO_PROXY bypass) and,
- * with Node's proxy switch on, Node's proxy-aware global agents; fetch follows
- * the global dispatcher. Node's proxy rules differ by release and its startup
- * snapshot can't be read, so none is emulated: global fetch is used only while
- * the dispatcher is Node's default `new Agent()` (no connector, factory or other
- * option), the switch is off and Axios would connect directly.
+ * with Node's proxy switch on, Node's proxy-aware global agents; Node's own
+ * fetch follows the global dispatcher. Node's proxy rules differ by release and
+ * its startup snapshot can't be read, so none is emulated: global fetch is used
+ * only while it is Node's own, the dispatcher is Node's default `new Agent()`
+ * (no connector, factory or other option), the switch is off and Axios would
+ * connect directly.
  */
 export function fetchProxyMismatch(
   rpc: string,
   env: NodeJS.ProcessEnv = process.env,
   state: NodeRouteState = nodeRouteState(),
 ): string | undefined {
+  if (!isNodeBuiltinFetch(state.fetch) || !isNodeDefaultDispatcher(state.dispatchers) ||
+      nodeMayProxyAxios(env, state)) {
+    return DEMOS_CCI_ROUTE_UNVERIFIED;
+  }
   let url: URL;
   try {
     url = new URL(rpc);
   } catch {
     return undefined;
   }
-  if (!isNodeDefaultDispatcher(state.dispatchers) || nodeMayProxyAxios(env, state)) {
-    return DEMOS_CCI_ROUTE_UNVERIFIED;
-  }
   return axiosUsesProxy(url, env) ? DEMOS_CCI_PROXY_BYPASS : undefined;
+}
+
+/**
+ * The transport for a read with no injected identityFetch: the global fetch
+ * that fetchProxyMismatch just checked, so a later swap of globalThis.fetch
+ * can't change the route. Throws the stable refusal, before signing, otherwise.
+ */
+export function defaultCciTransport(rpc: string): typeof fetch {
+  const state = nodeRouteState();
+  const mismatch = fetchProxyMismatch(rpc, process.env, state);
+  if (mismatch !== undefined) throw new DacsError(mismatch);
+  return state.fetch as typeof fetch;
 }
 
 /** One fresh, bounded attempt, including time-bound header construction. */

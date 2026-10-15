@@ -30,7 +30,7 @@ import {
   DEMOS_CCI_MAX_RESPONSE_BYTES,
   DEMOS_CCI_DEFAULT_TIMEOUT_MS,
   DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS,
-  fetchProxyMismatch,
+  defaultCciTransport,
   readDemosCciResponse,
 } from "./demosCciTransport.js";
 import {
@@ -4143,17 +4143,16 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       return headers;
     };
-    // demosdk's Axios transport honours HTTP(S)_PROXY and ALL_PROXY; global
-    // fetch is used only where both provably connect directly, and otherwise
-    // nothing is sent. The message names no URL, which may hold credentials.
-    const proxyMismatch = this.config.identityFetch === undefined
-      ? fetchProxyMismatch(this.config.rpc) : undefined;
-    if (proxyMismatch !== undefined) throw new DacsError(proxyMismatch);
+    // demosdk's Axios transport honours HTTP(S)_PROXY and ALL_PROXY; Node's own
+    // global fetch is used only where both provably connect directly, and
+    // otherwise nothing is sent. The message names no URL, which may hold
+    // credentials.
+    const transport = this.config.identityFetch ?? defaultCciTransport(this.config.rpc);
     const raw = await readDemosCciResponse(
       this.config.rpc,
       ref,
       buildHeaders,
-      this.config.identityFetch ?? fetch,
+      transport,
       this.config.identityMaxResponseBytes ?? DEMOS_CCI_MAX_RESPONSE_BYTES,
       this.config.identityTimeoutMs ?? DEMOS_CCI_DEFAULT_TIMEOUT_MS,
       this.config.identityTotalTimeoutMs ?? DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS,

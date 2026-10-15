@@ -3,6 +3,21 @@ import { types } from "node:util";
 // No imports beyond Node built-ins: the proxy startup test transpiles this file
 // alone and runs it in a child against the dispatchers Node really installed.
 
+// Captured at load, so a later override can't answer for the code it inspects.
+const functionSource = Function.prototype.toString;
+const sourceOf = (value: unknown): string => Reflect.apply(functionSource, value, []) as string;
+const compact = (source: string) => source.replace(/[\s;]+/g, "");
+// undici 6-8's `defaultFactory` (lib/dispatcher/agent.js), identical in the
+// source of Node 20.19, 22.23, 24.22 and 26.12 and in Node's bundled copy once
+// whitespace and semicolons are dropped.
+const DEFAULT_FACTORY_SOURCE = compact(`function defaultFactory (origin, opts) {
+  return opts && opts.connections === 1 ? new Client(origin, opts) : new Pool(origin, opts)
+}`);
+// Node 20-26 define global fetch in lib/internal/bootstrap/web/exposed-window-or-worker.js
+// as this function, which loads Node's own undici on first call.
+const NODE_FETCH_PREFIX = "function fetch(input, init = undefined) {";
+const NODE_FETCH_LOADER = "require('internal/deps/undici/undici')";
+
 // An own data property keyed by a symbol with this description, as undici 6-8's
 // Agent keeps its constructor options and factory.
 function ownSymbolData(value: object, description: string): unknown {
@@ -30,7 +45,9 @@ function className(value: unknown): unknown {
  * subclass or compose() Proxy, and without its own dispatch), undici's default
  * factory, and no option set beyond undici 7-8's default `maxOrigins`. An Agent
  * given a `connect` function (fetch-socks), a `factory`, a socket path, TLS or
- * any other option is not Node's default, whatever route it takes.
+ * any other option is not Node's default, whatever route it takes. The factory
+ * is judged by its source text, so another function named `defaultFactory`
+ * is refused; nothing here runs the object's code.
  */
 export function isNodeDefaultAgent(value: unknown): boolean {
   if (className(value) !== "Agent" || Object.hasOwn(value as object, "dispatch") ||
@@ -39,7 +56,8 @@ export function isNodeDefaultAgent(value: unknown): boolean {
   }
   const factory = ownSymbolData(value as object, "factory");
   const options = ownSymbolData(value as object, "options");
-  if (typeof factory !== "function" || factory.name !== "defaultFactory" ||
+  if (typeof factory !== "function" || types.isProxy(factory) ||
+      compact(sourceOf(factory)) !== DEFAULT_FACTORY_SOURCE ||
       options === null || typeof options !== "object" || types.isProxy(options)) {
     return false;
   }
@@ -48,6 +66,17 @@ export function isNodeDefaultAgent(value: unknown): boolean {
     if (descriptor === undefined || !("value" in descriptor)) return false;
     return descriptor.value === undefined || key === "maxOrigins" && descriptor.value === Infinity;
   });
+}
+
+/**
+ * Whether `value` is Node's own global fetch, which sends by the global
+ * dispatcher, judged by its source text. A wrapper, a bound or Proxy fetch, or
+ * any other replacement may route anywhere, whatever dispatcher is installed.
+ */
+export function isNodeBuiltinFetch(value: unknown): boolean {
+  if (typeof value !== "function" || types.isProxy(value)) return false;
+  const source = sourceOf(value);
+  return source.startsWith(NODE_FETCH_PREFIX) && source.includes(NODE_FETCH_LOADER);
 }
 
 /**

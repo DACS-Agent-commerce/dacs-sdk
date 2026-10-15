@@ -32,6 +32,15 @@ const makeAdapter = (
 const DISPATCHERS = [Symbol.for("undici.globalDispatcher.2"), Symbol.for("undici.globalDispatcher.1")];
 const restoreNodeRoute: Array<() => void> = [];
 
+// Stub global fetch with a function that has the source of Node's own fetch
+// (the default transport refuses any other) and calls `impl`.
+function stubNodeFetch(impl: typeof fetch) {
+  vi.stubGlobal("fetch", new Function("fetchImpl",
+    "return function fetch(input, init = undefined) {\n" +
+    "    if (!fetchImpl) fetchImpl = require('internal/deps/undici/undici').fetch;\n" +
+    "    return fetchImpl(input, init);\n  }")(impl));
+}
+
 // The default identity transport reads only where it and demosdk's Axios both
 // connect directly: no environment proxy, Node's proxy switch off, and Node's
 // default dispatcher and global agents. Pin that state; global fetch is stubbed.
@@ -409,7 +418,7 @@ describe("DemosAdapter", () => {
     const raw = { result: 200, response: { web2: {} } };
     const registryLookup = vi.fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify(raw)));
-    vi.stubGlobal("fetch", registryLookup);
+    stubNodeFetch(registryLookup);
     withoutEnvironmentProxy();
 
     await expect(adapter.resolveIdentity("legacy-demos-address")).resolves.toEqual({
@@ -441,7 +450,7 @@ describe("DemosAdapter", () => {
         },
       },
     };
-    vi.stubGlobal("fetch", vi.fn<typeof fetch>()
+    stubNodeFetch(vi.fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify(raw))));
     withoutEnvironmentProxy();
 
