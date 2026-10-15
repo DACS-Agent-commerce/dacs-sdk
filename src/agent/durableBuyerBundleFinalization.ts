@@ -641,8 +641,9 @@ function exactRecordFromLoad(
   loaded: Awaited<ReturnType<FencedSessionStoreV2["load"]>>,
 ): SessionRecord {
   if (loaded.status === "unsupported" || loaded.status === "corrupt") {
-    // Retained state that cannot be read needs an operator.
-    throw new SubstrateError(
+    // Retained state that cannot be read needs an operator: a permanent
+    // DacsError, since a SubstrateError would be retried.
+    throw new DacsError(
       loaded.status === "unsupported"
         ? `buyer bundle state uses unsupported store version ${loaded.version}`
         : `buyer bundle state is corrupt: ${loaded.reason}`,
@@ -656,7 +657,7 @@ function exactRecordFromLoad(
   const record = clone(loaded.record);
   const violation = sessionRecordShapeViolation(record);
   if (violation) {
-    throw new SubstrateError(`buyer bundle state is corrupt: ${violation}`);
+    throw new DacsError(`buyer bundle state is corrupt: ${violation}`);
   }
   return record;
 }

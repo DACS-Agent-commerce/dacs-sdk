@@ -1381,6 +1381,69 @@ describe("durable buyer bundle finalization", () => {
     expect(f.state.anchored).toBeUndefined();
   });
 
+  // A store that refuses a lease or a write for another worker or a stale
+  // fence leaves the work retryable, with nothing published.
+  test.each([
+    ["acquireLease", { ok: false, reason: "held" }],
+    ["renewLease", { ok: false, reason: "lease-expired" }],
+    ["claimCheckpoint", { ok: false, reason: "lease-mismatch" }],
+    ["transition", { ok: false, reason: "lease-mismatch" }],
+  ] as const)("keeps a refused %s retryable", async (method, refusal) => {
+    const f = await fixture();
+    const store = { ...f.store, [method]: vi.fn(async () => structuredClone(refusal)) };
+    await expect(advanceCompletedBuyerBundleDurable(
+      f.input,
+      f.provider,
+      { ...f.durability, store } as never,
+    )).resolves.toMatchObject({ disposition: "indeterminate" });
+    expect(store[method]).toHaveBeenCalled();
+    expect(f.state.anchored).toBeUndefined();
+  });
+
+  test("keeps a refused phase transition retryable after its checkpoint was written", async () => {
+    const f = await fixture();
+    const transition = f.store.transition.bind(f.store);
+    const phaseOnly = vi.fn();
+    const store = {
+      ...f.store,
+      transition: vi.fn(async (input: { checkpoint?: unknown }) => {
+        if (input.checkpoint !== undefined) return transition(input as never);
+        phaseOnly();
+        return { ok: false as const, reason: "lease-mismatch" as const };
+      }),
+    };
+    await expect(advanceCompletedBuyerBundleDurable(
+      f.input,
+      f.provider,
+      { ...f.durability, store } as never,
+    )).resolves.toMatchObject({ disposition: "indeterminate" });
+    expect(phaseOnly).toHaveBeenCalled();
+  });
+
+  // Retained state that cannot be read needs an operator; state not written
+  // yet is retried.
+  test.each([
+    ["corrupt", { status: "corrupt", reason: "record hash mismatch" }, "permanent"],
+    ["of an unsupported version", { status: "unsupported", version: 99 }, "permanent"],
+    ["missing", { status: "missing" }, "indeterminate"],
+  ] as const)("classifies retained buyer state that is %s", async (_label, loaded, kind) => {
+    const f = await fixture();
+    const store = { ...f.store, load: async () => structuredClone(loaded) };
+    const progress = advanceCompletedBuyerBundleDurable(
+      f.input,
+      f.provider,
+      { ...f.durability, store } as never,
+    );
+    if (kind === "permanent") {
+      const error = await progress.catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(DacsError);
+      expect(error).not.toBeInstanceOf(SubstrateError);
+    } else {
+      await expect(progress).resolves.toMatchObject({ disposition: "indeterminate" });
+    }
+    expect(f.state.anchored).toBeUndefined();
+  });
+
   test.each(["rejected", "indeterminate"] as const)(
     "surfaces a %s settlement verdict before any retained state is trusted",
     async (disposition) => {

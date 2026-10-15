@@ -20,6 +20,7 @@ export * from "./commerceRuntime.js";
 export * from "./contracts.js";
 export * from "./doctor.js";
 export * from "./demosRuntime.js";
+export * from "./bundleBindingDiscovery.js";
 export * from "./demosBundlePublication.js";
 export * from "./demosPublication.js";
 export * from "./events.js";

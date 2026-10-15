@@ -49,3 +49,9 @@ export {
   type ScanOptions,
   type ScanSeen,
 } from "./scanner.js";
+export {
+  BUNDLE_BINDING_FETCH_BUDGET,
+  resolveBundleBindingCandidates,
+  type BundleBindingCandidateResolution,
+  type ResolveBundleBindingCandidatesInput,
+} from "./bundleBindingCandidates.js";

@@ -1427,19 +1427,28 @@ async function publishBinding(
     );
   }
 
-  const published = await resolveBinding(
-    expected.logicalAddress,
-    expected.signer,
-    role,
-    provider,
-  );
-  if (published.disposition !== "present" || !exact(published.binding, authenticatedCandidate)) {
+  // The publisher confirmed the write. Discovery may lag it, so a lookup that
+  // does not show the binding yet gates nothing (ST-11, BB-8); a different
+  // binding resolved for this role does.
+  let published: SellerBundleBindingLookup | undefined;
+  try {
+    published = await resolveBinding(
+      expected.logicalAddress,
+      expected.signer,
+      role,
+      provider,
+    );
+  } catch (error) {
+    if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
+    published = undefined;
+  }
+  if (published?.disposition === "present" && !exact(published.binding, authenticatedCandidate)) {
     throw new IndeterminateSubstrateError(
       `published ${role} BundleBinding is not independently readable and exact`,
     );
   }
   return authenticateBinding(
-    published.binding,
+    authenticatedCandidate,
     expected,
     localParty,
     provider,

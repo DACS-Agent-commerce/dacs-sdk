@@ -1117,13 +1117,26 @@ type CompletionCopy = Record<string, unknown> & {
 type CompletionInput = { copies: Record<CompletionRole, CompletionCopy> };
 type CompletionHarness = Awaited<ReturnType<typeof completionHarness>>;
 
+// Co-signed by both parties, as a completed copy must be for BB-5 check 9.
 function completedBundle(role: CompletionRole) {
+  const unsigned = completedBundleScope();
+  const sign = (party: typeof BUYER | typeof SELLER) => ({
+    party,
+    algorithm: "ed25519",
+    value: Buffer.from(ed25519Sign(
+      signedBytes(ARTIFACT_SEPARATORS.FaultAttestationBundle, contentHash(unsigned)),
+      privateKeyFromSeed(party === BUYER ? BUYER_SEED : SELLER_SEED),
+    )).toString("base64url"),
+  });
+  return { ...unsigned, anchoredByRole: role, signatures: [sign(BUYER), sign(SELLER)] };
+}
+
+function completedBundleScope() {
   return {
     faultBundleVersion: "1",
     jobId: JOB_ID,
     outcome: "completed",
     faultedParty: "none",
-    anchoredByRole: role,
     listingRef: { listingId: "listing-completion", version: 1, contentHash: "e".repeat(64) },
     parties: [
       { role: "buyer", bundleHash: "1".repeat(64), primaryClaim: BUYER },
@@ -1135,11 +1148,6 @@ function completedBundle(role: CompletionRole) {
     recipeRegistryVersion: 1,
     railRegistryVersion: 1,
     finalisedAt: NOW,
-    signatures: [{
-      party: role === "buyer" ? BUYER : SELLER,
-      algorithm: "ed25519",
-      value: Buffer.alloc(64, role === "buyer" ? 5 : 6).toString("base64url"),
-    }],
   };
 }
 
@@ -1585,7 +1593,9 @@ describe("buyer two-copy completion adapter", () => {
         return answeredCalls === 1;
       });
       await expect(harness.authorize()).resolves.toBe(false);
-      expect(answeredCalls).toBe(2);
+      // The anchor check, the binding discovery's native read (BB-6) and the
+      // binding verification's native read.
+      expect(answeredCalls).toBe(3);
     });
 
     it(`keeps ${paymentProfile} retryable when the only answered result is valid`, async () => {
@@ -1893,25 +1903,38 @@ async function driveCopiesSettling(input: CompletionInput, deps: CompletionDeps)
   return { state: "audit-complete" };
 }
 
-// Demos state changes that make the seller's publication permanently invalid
-// (retry reads the same immutable objects) or leave a read unanswered.
-const sellerBindingName = `dacs5:bundle-binding:${JOB_ID}:seller`;
-const demosReadCases: Array<[string, "permanent" | "unavailable", (h: CompletionHarness) => void]> = [
-  ["invalid seller bundle content", "permanent", (h) => {
+// Demos state changes that invalidate the seller's publication or leave a read
+// unanswered. A consumer finds the seller's copy only through its signed
+// BundleBinding and an exact native read, so every case leaves the seller's
+// side `indeterminate`, never absent (DACS-5 BB-7, BB-8), and the reason says
+// which BB-6 step stopped it.
+const demosReadCases: Array<[string, string, (h: CompletionHarness) => void]> = [
+  ["invalid seller bundle content", "bundle-binding-candidates-rejected", (h) => {
     const read = h.adapter.readAnchor.getMockImplementation()!;
     h.adapter.readAnchor.mockImplementation(async (address: string) =>
       address === h.copies.seller.nativeAddress ? { not: "a bundle" } as never : read(address));
   }],
   // DemosAdapter answers false only for a fetched record that contradicts the receipt.
-  ["a seller bundle receipt that fetched Demos records contradict", "permanent", (h) => {
-    h.adapter.verifyDemosAnchorReceipt.mockResolvedValue(false);
+  ["a seller bundle receipt that fetched Demos records contradict",
+    "bundle-binding-candidates-rejected", (h) => {
+      h.adapter.verifyDemosAnchorReceipt.mockResolvedValue(false);
+    }],
+  ["a seller copy whose signatures do not verify", "bundle-binding-candidates-rejected", (h) => {
+    const read = h.adapter.readAnchor.getMockImplementation()!;
+    h.adapter.readAnchor.mockImplementation(async (address: string) => {
+      const value = await read(address);
+      if (address !== h.copies.seller.nativeAddress || value === null) return value;
+      const forged = structuredClone(value) as { signatures: Array<{ value: string }> };
+      forged.signatures[0]!.value = Buffer.alloc(64, 9).toString("base64url");
+      return forged as never;
+    });
   }],
-  ["invalid BundleBinding content", "permanent", (h) => {
+  ["invalid BundleBinding content", "bundle-binding-undiscovered", (h) => {
     const read = h.adapter.readAnchor.getMockImplementation()!;
     h.adapter.readAnchor.mockImplementation(async (address: string) =>
       address === "native:seller-binding" ? { not: "a binding" } as never : read(address));
   }],
-  ["a BundleBinding that fails authentication", "permanent", (h) => {
+  ["a BundleBinding that fails authentication", "bundle-binding-undiscovered", (h) => {
     const read = h.adapter.readAnchor.getMockImplementation()!;
     h.adapter.readAnchor.mockImplementation(async (address: string) => {
       if (address !== "native:seller-binding") return read(address);
@@ -1924,32 +1947,36 @@ const demosReadCases: Array<[string, "permanent" | "unavailable", (h: Completion
   }],
   // What DemosAdapter throws when the node returns demosdk's bare "error" for
   // a finalized transaction it has not indexed yet, or hits a DB error.
-  ["an unanswered receipt verification", "unavailable", (h) => {
+  ["an unanswered receipt verification", "bundle-binding-candidates-unfetched", (h) => {
     h.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
       new IndeterminateSubstrateError("Demos anchor receipt observation unavailable"));
   }],
-  ["a plain SubstrateError from receipt verification", "unavailable", (h) => {
-    h.adapter.verifyDemosAnchorReceipt.mockRejectedValue(new SubstrateError("Demos anchor receipt observation unavailable"));
-  }],
-  // The bundle and binding were just read at their addresses; a node that
-  // then finds no program there has not caught up.
-  ["a receipt lookup that no longer finds the program", "unavailable", (h) => {
-    h.adapter.resolveDemosAnchorReceipt.mockResolvedValue(null);
-  }],
-  // The name index, or a binding, names the copy's address before the node
-  // can read it there.
-  ["a seller copy not readable yet at its address", "unavailable", (h) => {
-    const read = h.adapter.readAnchor.getMockImplementation()!;
-    h.adapter.readAnchor.mockImplementation(async (address: string) =>
-      address === h.copies.seller.nativeAddress ? null : read(address));
-  }],
-  ["Demos reads that cannot be answered", "unavailable", (h) => {
+  ["a plain SubstrateError from receipt verification", "bundle-binding-candidates-unfetched",
+    (h) => {
+      h.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
+        new SubstrateError("Demos anchor receipt observation unavailable"));
+    }],
+  // The bundle was just read at its address; a node that then finds no
+  // program there has not caught up.
+  ["a receipt lookup that no longer finds the program", "bundle-binding-candidates-unfetched",
+    (h) => {
+      h.adapter.resolveDemosAnchorReceipt.mockResolvedValue(null);
+    }],
+  // A binding names the copy's address before the node can read it there.
+  ["a seller copy not readable yet at its address", "bundle-binding-candidates-unfetched",
+    (h) => {
+      const read = h.adapter.readAnchor.getMockImplementation()!;
+      h.adapter.readAnchor.mockImplementation(async (address: string) =>
+        address === h.copies.seller.nativeAddress ? null : read(address));
+    }],
+  ["Demos reads that cannot be answered", "bundle-binding-undiscovered", (h) => {
     h.adapter.resolveAnchorByName.mockRejectedValue(new Error("rpc unavailable"));
   }],
-  ["a seller bundle name lookup that is indeterminate", "unavailable", (h) => {
+  ["a binding program the name index does not show yet", "bundle-binding-undiscovered", (h) => {
     const resolve = h.adapter.resolveAnchorByName.getMockImplementation()!;
     h.adapter.resolveAnchorByName.mockImplementation(async (name: string) =>
-      name === bundleAddress(JOB_ID, "seller") ? { status: "indeterminate" } as never : resolve(name));
+      name === `dacs5:bundle-binding:${JOB_ID}:seller`
+        ? { status: "absent" } as never : resolve(name));
   }],
 ];
 
@@ -1957,7 +1984,7 @@ describe("buyer audit classification of seller Demos reads", () => {
   for (const paymentProfile of ["x402", "pay-dem"] as const) {
     it.each(demosReadCases)(
       `classifies ${paymentProfile} %s through the Demos publication`,
-      async (label, kind, arrange) => {
+      async (_label, reason, arrange) => {
         const harness = await completionHarness(paymentProfile);
         const publication = createDacsDemosBundlePublicationV1({
           context: harness.context, jobId: JOB_ID, buyer: BUYER, seller: SELLER,
@@ -1969,36 +1996,45 @@ describe("buyer audit classification of seller Demos reads", () => {
           .resolves.toMatchObject({ disposition: "present" });
         arrange(harness);
 
-        // The strict verifier retries a SubstrateError or a non-DacsError
-        // throw, and treats any other DacsError as permanent.
-        const permanent = (error: unknown) =>
-          error instanceof DacsError && !(error instanceof SubstrateError);
-        const bundle = await Promise.resolve(reads.resolveSellerBundle(bundleAddress(JOB_ID, "seller")))
-          .then((value) => ({ value }), (error: unknown) => ({ error }));
-        const binding = await Promise.resolve(reads.resolveBundleBinding!(bundleAddress(JOB_ID, "seller"), SELLER))
-          .then((value) => ({ value }), (error: unknown) => ({ error }));
-        if (kind === "permanent") {
-          expect("error" in binding && permanent(binding.error)).toBe(true);
-          if (!label.includes("BundleBinding")) {
-            expect("error" in bundle && permanent(bundle.error)).toBe(true);
-          }
-        } else {
-          expect("error" in bundle ? permanent(bundle.error) : false).toBe(false);
-          // The binding's bundle is read at its native address, not by name.
-          expect(binding).toEqual(label === "a seller bundle name lookup that is indeterminate"
-            ? { value: { disposition: "present", binding: harness.copies.seller.binding } }
-            : { value: {
-              disposition: "indeterminate", reason: "bundle-binding-resolution-unavailable",
-            } });
-        }
-
+        await expect(reads.resolveSellerBundle(bundleAddress(JOB_ID, "seller")))
+          .resolves.toEqual({ disposition: "indeterminate", reason });
+        await expect(reads.resolveBundleBinding!(bundleAddress(JOB_ID, "seller"), SELLER))
+          .resolves.toEqual({ disposition: "indeterminate", reason });
         const finalization = await harness.audit.bundleTransport.resolveSellerFinalization({
           identity: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
         } as never);
-        expect(finalization.disposition).toBe(kind === "permanent" ? "rejected" : "indeterminate");
+        expect(finalization).toEqual({ disposition: "indeterminate", reason });
       },
     );
   }
+
+  // The seller copy's storage-program name is never a consumer resolution key.
+  it.each([
+    ["absent", { status: "absent" }],
+    ["indeterminate", { status: "indeterminate" }],
+    ["at another address", { status: "present", address: "native:elsewhere" }],
+  ])("finds the seller's copy through its binding when its name lookup is %s", async (_label, answer) => {
+    const harness = await completionHarness("x402");
+    const resolve = harness.adapter.resolveAnchorByName.getMockImplementation()!;
+    harness.adapter.resolveAnchorByName.mockImplementation(async (name: string) =>
+      name === bundleAddress(JOB_ID, "seller") ? answer as never : resolve(name));
+    const finalization = await harness.audit.bundleTransport.resolveSellerFinalization({
+      identity: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
+    } as never);
+    expect(finalization).toMatchObject({ disposition: "present",
+      value: { nativeAddress: harness.copies.seller.nativeAddress } });
+    expect(harness.adapter.resolveAnchorByName).not.toHaveBeenCalledWith(
+      bundleAddress(JOB_ID, "seller"), expect.anything());
+  });
+
+  it("refuses to resolve another role's copy by its storage-program name", async () => {
+    const harness = await completionHarness("x402");
+    const publication = createDacsDemosBundlePublicationV1({
+      context: harness.context, jobId: JOB_ID, buyer: BUYER, seller: SELLER,
+    });
+    await expect(publication.resolveRoleBundle("seller")).rejects.toMatchObject({
+      reasonCode: "bundle-resolution-role-invalid" });
+  });
 
   it("keeps the BundleBinding of a valid seller publication readable", async () => {
     const harness = await completionHarness("x402");

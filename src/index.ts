@@ -467,6 +467,10 @@ export {
   type ScanPage,
   type ScanOptions,
   type ScanSeen,
+  BUNDLE_BINDING_FETCH_BUDGET,
+  resolveBundleBindingCandidates,
+  type BundleBindingCandidateResolution,
+  type ResolveBundleBindingCandidatesInput,
 } from "./discovery/index.js";
 
 // Deterministic identityTier derivation (DACS-1 §6.3.2.1, IT-1..IT-3).

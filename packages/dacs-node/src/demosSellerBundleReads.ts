@@ -9,13 +9,6 @@ import {
   type DacsDemosBundlePublicationV1,
 } from "./demosBundlePublication.js";
 
-// Binding lookups that Demos could not answer, as opposed to a binding that
-// was read and failed authentication.
-export const TRANSIENT_BINDING_RESOLUTION_REASONS: ReadonlySet<string> = new Set([
-  "bundle-binding-resolution-indeterminate",
-  "bundle-binding-resolution-unavailable",
-]);
-
 /**
  * The reason code of a Demos bundle read that retry cannot repair (invalid
  * anchored content, receipt or authority), or undefined for an unanswered read.
@@ -27,9 +20,12 @@ export function permanentDemosBundleReadReason(error: unknown): string | undefin
 }
 
 /**
- * Seller-bundle and BundleBinding reads for the core verifier. Permanent Demos
- * failures become a DacsError, which the verifier reports as permanent; an
- * unanswered read stays `indeterminate` or a thrown read error, and is retried.
+ * Seller-bundle and BundleBinding reads for the core verifier, run by a
+ * consumer of the seller's copy. The copy is found only through the seller's
+ * discovered signed BundleBindings and read at its exact native address
+ * (DACS-5 BB-5..BB-7); its storage-program name is never a resolution key. A
+ * side that no binding resolves, whose candidates fail validation or that
+ * equivocates is `indeterminate`, never `absent` (BB-7, BB-8).
  */
 export function createClassifiedDemosSellerBundleReads(
   publication: Readonly<DacsDemosBundlePublicationV1>,
@@ -37,31 +33,15 @@ export function createClassifiedDemosSellerBundleReads(
 ): Pick<SellerBundleFinalizationReadProvider, "resolveSellerBundle" | "resolveBundleBinding"> {
   return {
     async resolveSellerBundle(logicalAddress: string) {
-      // Absence is retried as not yet visible, so another job's address is
-      // refused outright.
       if (logicalAddress !== bundleAddress(jobId, "seller")) {
         throw new DacsError("seller bundle reads serve only this job's seller bundle");
       }
-      let anchored: Awaited<ReturnType<typeof publication.resolveRoleBundle>>;
-      try {
-        anchored = await publication.resolveRoleBundle("seller");
-      } catch (error) {
-        const reason = permanentDemosBundleReadReason(error);
-        if (reason !== undefined) {
-          throw new DacsError(`seller bundle readback is invalid: ${reason}`, { cause: error });
-        }
-        throw error;
-      }
-      return anchored === null ? { disposition: "absent" as const }
-        : { disposition: "present" as const, anchored };
+      const bound = await publication.resolveBoundRoleBundle("seller");
+      return bound.disposition === "present"
+        ? { disposition: "present" as const, anchored: bound.anchored }
+        : { disposition: "indeterminate" as const, reason: bound.reason };
     },
-    async resolveBundleBinding(logicalAddress: string, signer: string) {
-      const resolved = await publication.resolveBundleBinding(logicalAddress, signer);
-      if (resolved.disposition === "indeterminate" &&
-          !TRANSIENT_BINDING_RESOLUTION_REASONS.has(resolved.reason)) {
-        throw new DacsError(`BundleBinding readback is invalid: ${resolved.reason}`);
-      }
-      return resolved;
-    },
+    resolveBundleBinding: (logicalAddress: string, signer: string) =>
+      publication.resolveBundleBinding(logicalAddress, signer),
   };
 }

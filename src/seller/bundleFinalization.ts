@@ -3658,28 +3658,31 @@ async function publishBinding(
   if (publication.disposition === "rejected") {
     throw new DacsError(`BundleBinding publication was rejected: ${publication.reason}`);
   }
-  let publishedLookup: SellerBundleBindingLookup;
+  // The publisher confirmed the write. Discovery may lag it, so a lookup that
+  // does not show the binding yet gates nothing (ST-11, BB-8); a different
+  // binding resolved for this seller does.
+  let publishedLookup: SellerBundleBindingLookup | undefined;
   try {
     publishedLookup = snapshot(
       await provider.resolveBundleBinding(expected.logicalAddress, signer),
       "published BundleBinding readback",
     );
-  } catch (error) {
-    throw new SubstrateError("published BundleBinding is not independently readable", {
-      cause: error,
-    });
+  } catch {
+    publishedLookup = undefined;
   }
   if (
-    publishedLookup.disposition !== "present" ||
-    !isBundleBinding(publishedLookup.binding) ||
-    !bindingMatches(publishedLookup.binding, expected) ||
-    !exact(publishedLookup.binding, binding)
+    isRecord(publishedLookup) && publishedLookup.disposition === "present" && (
+      !isBundleBinding(publishedLookup.binding) ||
+      !bindingMatches(publishedLookup.binding, expected) ||
+      !exact(publishedLookup.binding, binding)
+    )
   ) {
     throw new SubstrateError("published BundleBinding is not independently readable and exact");
   }
-  await locallyVerifyBindingSignature(publishedLookup.binding, provider);
+  // Signature, then the provider's exact native read of the bound copy.
+  await locallyVerifyBindingSignature(binding, provider);
   return {
-    binding: snapshot(publishedLookup.binding, "published BundleBinding"),
+    binding: snapshot(binding, "published BundleBinding"),
     resumed: false,
   };
 }
@@ -4023,34 +4026,37 @@ export async function verifyFinalizedSellerBundleReadOnly(
     if (!bindingMatches(result.binding, expectedBinding)) {
       throw new DacsError("retained BundleBinding maps different bundle content");
     }
+    // Signature, then the provider's exact native read of the bound copy.
     await locallyVerifyBindingSignature(result.binding, retainedProvider);
     let bindingLookup: SellerBundleBindingLookup;
     try {
       bindingLookup = await retainedProvider.resolveBundleBinding(logicalAddress, session.seller.primaryClaim);
     } catch (error) {
-      throw unavailableUnlessPermanent(error, "retained BundleBinding readback errored");
+      // A permanent provider answer passes through; an unanswered lookup is
+      // no evidence either way (BB-8).
+      if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
+      bindingLookup = { disposition: "indeterminate", reason: "unanswered" };
     }
     bindingLookup = snapshot(bindingLookup, "retained BundleBinding readback");
-    if (isRecord(bindingLookup) && bindingLookup.disposition === "indeterminate" &&
+    if (!isRecord(bindingLookup) || !(
+      (bindingLookup.disposition === "present" && hasOnlyKeys(bindingLookup, ["disposition", "binding"])) ||
+      (bindingLookup.disposition === "absent" && hasOnlyKeys(bindingLookup, ["disposition"])) ||
+      (bindingLookup.disposition === "indeterminate" &&
         hasOnlyKeys(bindingLookup, ["disposition", "reason"]) &&
-        typeof bindingLookup.reason === "string" && bindingLookup.reason.length > 0) {
-      throw new IndeterminateSubstrateError(`retained BundleBinding readback is indeterminate: ${bindingLookup.reason}`);
+        typeof bindingLookup.reason === "string" && bindingLookup.reason.length > 0)
+    )) {
+      throw new DacsError("retained BundleBinding readback returned an invalid disposition");
     }
-    if (isRecord(bindingLookup) && bindingLookup.disposition === "absent" &&
-        hasOnlyKeys(bindingLookup, ["disposition"])) {
-      throw new IndeterminateSubstrateError(
-        "retained BundleBinding is not yet visible in the BundleBinding name index",
-      );
-    }
-    if (
-      !isRecord(bindingLookup) || bindingLookup.disposition !== "present" ||
+    // ST-11: discovery visibility never gates completion, and non-discovery is
+    // no evidence either way (BB-8). Only a different binding resolved for
+    // this seller answers against the retained one.
+    if (bindingLookup.disposition === "present" && (
       !isBundleBinding(bindingLookup.binding) ||
       !bindingMatches(bindingLookup.binding, expectedBinding) ||
       !exact(bindingLookup.binding, result.binding)
-    ) {
+    )) {
       throw new DacsError("retained BundleBinding is not independently readable and exact");
     }
-    await locallyVerifyBindingSignature(bindingLookup.binding, retainedProvider);
   }
 
   return snapshot(result as unknown as FinalizedSellerBundle, "verified seller bundle result");

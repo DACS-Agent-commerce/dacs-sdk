@@ -2411,6 +2411,92 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     expect(f.provider.publishBundleBinding).not.toHaveBeenCalled();
   });
 
+  // Retry versus permanent per provider read: a callback's throw, whatever its
+  // class, is an unanswered read; only a returned `invalid` is an answer.
+  const callbackThrows: Array<[string, () => Error]> = [
+    ["a non-DacsError", () => new TypeError("fetch failed")],
+    ["a plain SubstrateError", () => new SubstrateError("node down")],
+    ["an IndeterminateSubstrateError", () => new IndeterminateSubstrateError("unanswered")],
+    ["a DacsError", () => new DacsError("verifier crashed")],
+  ];
+  const callbacks = [
+    "resolveDependency",
+    "resolvePaymentPhaseIndex",
+    "verifyDependencyReceipt",
+    "verifyBundleAnchorReceipt",
+    "verifyBundleBinding",
+  ] as const;
+  test.each(callbacks.flatMap((callback) =>
+    callbackThrows.map(([label, thrown]) => [callback, label, thrown] as const)))(
+    "retries a %s that throws %s",
+    async (callback, _label, thrown) => {
+      const f = fixture("write-input");
+      vi.mocked(f.provider[callback]!).mockImplementation((() => { throw thrown(); }) as never);
+      const error = await finalizeCompletedSellerBundleCore(f.input, f.provider)
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+      expect(f.provider[callback]).toHaveBeenCalled();
+    },
+  );
+  test.each([
+    ["indeterminate", IndeterminateSubstrateError],
+    ["error", IndeterminateSubstrateError],
+    ["invalid", DacsError],
+  ] as const)("classifies a bundle anchor receipt verdict of %s", async (verdict, expected) => {
+    const f = fixture("write-input");
+    vi.mocked(f.provider.verifyBundleAnchorReceipt).mockImplementation(() => verdict);
+    const error = await finalizeCompletedSellerBundleCore(f.input, f.provider)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(expected);
+    if (verdict === "invalid") expect(error).not.toBeInstanceOf(SubstrateError);
+  });
+  // The strict CVR verifier answers `unresolved` when a dependency it needs
+  // throws. That is not an answer about the record.
+  test.each(callbackThrows)("retries a CVR whose recipe resolver throws %s", async (_label, thrown) => {
+    const f = fixture("write-input");
+    f.provider.compositeVerificationDeps.resolveRecipe = vi.fn(() => { throw thrown(); });
+    const error = await finalizeCompletedSellerBundleCore(f.input, f.provider)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect((error as Error).message).toMatch(/strict verification is unresolved \(recipe-resolution\)/);
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  // ST-11/BB-8: once the publisher confirms the write, a lookup that does not
+  // show the binding yet gates nothing. A different binding it resolves for
+  // this seller, or a native verification that fails, still does.
+  test.each([
+    ["absent", () => ({ disposition: "absent" }), "complete"],
+    ["indeterminate", () => ({ disposition: "indeterminate", reason: "catalog lag" }), "complete"],
+    ["unanswered", () => { throw new SubstrateError("index unavailable"); }, "complete"],
+    ["a different binding", (binding: BundleBinding) => ({
+      disposition: "present", binding: { ...binding, anchorTx: "test:other-anchor-tx" },
+    }), "retry"],
+  ] as const)("after publishing, treats a binding lookup that is %s as discovery only", async (_label, lookup, outcome) => {
+    const f = fixture("write-input");
+    vi.mocked(f.provider.resolveBundleBinding!).mockImplementation((() =>
+      f.state.binding === undefined ? { disposition: "absent" }
+        : lookup(f.state.binding as BundleBinding)) as never);
+    const settled = await finalizeCompletedSellerBundleCore(f.input, f.provider)
+      .then((value) => ({ value }), (error: unknown) => ({ error }));
+    if (outcome === "complete") {
+      expect(settled).toMatchObject({ value: { binding: f.state.binding } });
+      expect(f.provider.verifyBundleBinding).toHaveBeenCalledWith(f.state.binding);
+    } else {
+      expect("error" in settled && settled.error).toBeInstanceOf(SubstrateError);
+    }
+  });
+
+  test("after publishing, still refuses a binding whose native verification fails", async () => {
+    const f = fixture("write-input");
+    vi.mocked(f.provider.resolveBundleBinding!).mockImplementation(() => ({ disposition: "absent" }));
+    vi.mocked(f.provider.verifyBundleBinding!).mockImplementation(() => "invalid");
+    const error = await finalizeCompletedSellerBundleCore(f.input, f.provider)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).not.toBeInstanceOf(SubstrateError);
+  });
+
   test("never overwrites an existing seller-role copy that binds different session facts", async () => {
     const f = fixture();
     await finalizeCompletedSellerBundleCore(f.input, f.provider);
@@ -3115,9 +3201,9 @@ describe("read-only authentication of retained finalized seller bundles", () => 
     },
   );
 
-  test.each(["mismatch", "absence", "indeterminate"] as const)(
+  test.each(["mismatch"] as const)(
     "rejects BundleBinding readback %s",
-    async (disposition) => {
+    async () => {
       const retained = await finalizedForReadVerification("write-input");
       if (!retained.result.binding) throw new Error("write-input binding fixture missing");
       await expect(
@@ -3129,15 +3215,11 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       ).resolves.toEqual(retained.result);
       const resolveBundleBinding: NonNullable<
         SellerBundleFinalizationReadProvider["resolveBundleBinding"]
-      > = disposition === "absence"
-        ? () => ({ disposition: "absent" })
-        : disposition === "indeterminate"
-          ? () => ({ disposition: "indeterminate", reason: "catalog unavailable" })
-          : () => {
-              const binding = structuredClone(retained.result.binding!);
-              binding.nativeAddress = "stor-mismatched-binding";
-              return { disposition: "present", binding };
-            };
+      > = () => {
+        const binding = structuredClone(retained.result.binding!);
+        binding.nativeAddress = "stor-mismatched-binding";
+        return { disposition: "present", binding };
+      };
       const provider: SellerBundleFinalizationReadProvider = {
         ...retained.provider,
         resolveBundleBinding,
@@ -3149,6 +3231,33 @@ describe("read-only authentication of retained finalized seller bundles", () => 
           provider,
         ),
       ).rejects.toThrow(/BundleBinding|readable|exact|binding/i);
+    },
+  );
+
+  // ST-11/BB-8: discovery visibility never gates completion. The retained
+  // binding's signature and the provider's native read of the bound copy still do.
+  test.each(["absence", "indeterminate"] as const)(
+    "accepts BundleBinding readback %s and still verifies the binding natively",
+    async (disposition) => {
+      const retained = await finalizedForReadVerification("write-input");
+      const lookup = disposition === "absence"
+        ? { disposition: "absent" as const }
+        : { disposition: "indeterminate" as const, reason: "catalog unavailable" };
+      const verifyBundleBinding = vi.fn(retained.provider.verifyBundleBinding!);
+      const provider: SellerBundleFinalizationReadProvider = {
+        ...retained.provider,
+        resolveBundleBinding: () => lookup,
+        verifyBundleBinding,
+      };
+      await expect(verifyFinalizedSellerBundleReadOnly(retained.input, retained.result, provider))
+        .resolves.toEqual(retained.result);
+      expect(verifyBundleBinding).toHaveBeenCalledWith(retained.result.binding);
+      verifyBundleBinding.mockImplementation(() => "invalid");
+      const error = await verifyFinalizedSellerBundleReadOnly(
+        retained.input, retained.result, provider,
+      ).then(() => undefined, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(DacsError);
+      expect(error).not.toBeInstanceOf(SubstrateError);
     },
   );
 
@@ -3175,25 +3284,23 @@ describe("read-only authentication of retained finalized seller bundles", () => 
     if (!retryable) expect(error).toBe(permanent);
   });
 
-  test.each([
-    ["name-index absence", () => ({ disposition: "absent" }), true],
-    ["absence with extra keys", () => ({ disposition: "absent", reason: "x" }), false],
-    ["an invalid disposition", () => ({ disposition: "unknown" }), false],
-    ["an invalid indeterminate shape", () => ({ disposition: "indeterminate", reason: "" }), false],
-    ["null output", () => null, false],
+  // Malformed output and a permanent provider answer reject; an unanswered
+  // lookup is discovery that found nothing, which gates nothing (BB-8).
+  test.each<[string, () => unknown, "permanent" | "complete"]>([
+    ["absence with extra keys", () => ({ disposition: "absent", reason: "x" }), "permanent"],
+    ["an invalid disposition", () => ({ disposition: "unknown" }), "permanent"],
+    ["an invalid indeterminate shape", () => ({ disposition: "indeterminate", reason: "" }), "permanent"],
+    ["null output", () => null, "permanent"],
     ["a permanent provider DacsError", () => {
       throw new DacsError("BundleBinding readback is invalid: bundle-binding-invalid");
-    }, false],
-    ["an unavailable read", () => ({
-      disposition: "indeterminate", reason: "bundle-binding-resolution-unavailable",
-    }), true],
+    }, "permanent"],
     ["a thrown substrate read failure", () => {
       throw new SubstrateError("native read failed");
-    }, true],
+    }, "complete"],
     ["a thrown network error", () => {
       throw new TypeError("fetch failed");
-    }, true],
-  ])("classifies a BundleBinding readback with %s", async (_label, lookup, retryable) => {
+    }, "complete"],
+  ])("classifies a BundleBinding readback with %s", async (_label, lookup, outcome) => {
     const retained = await finalizedForReadVerification("write-input");
     const provider = { ...retained.provider, resolveBundleBinding: vi.fn(async () => lookup()) };
     const error = await verifyFinalizedSellerBundleReadOnly(
@@ -3201,8 +3308,12 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       retained.result,
       provider as never,
     ).then(() => undefined, (error: unknown) => error);
-    expect(error).toBeInstanceOf(Error);
-    expect(error instanceof IndeterminateSubstrateError).toBe(retryable);
+    if (outcome === "complete") {
+      expect(error).toBeUndefined();
+    } else {
+      expect(error).toBeInstanceOf(DacsError);
+      expect(error).not.toBeInstanceOf(SubstrateError);
+    }
   });
 });
 
@@ -3286,15 +3397,24 @@ describe("completed two-sided session gate over a real seller closure", () => {
     expect(providerWriteCounts(retained.fixture)).toEqual({ submit: 1, publish: 1 });
   });
 
-  test.each([
-    ["the seller bundle", "resolveSellerBundle"],
-    ["the seller BundleBinding", "resolveBundleBinding"],
-  ] as const)("retries while Demos's name index does not show %s yet", async (_label, read) => {
+  test("retries while the seller bundle is not visible yet", async () => {
     const { retained, input, deps } = await composition();
-    vi.mocked(retained.provider[read]!).mockImplementation((() => ({ disposition: "absent" })) as never);
+    vi.mocked(retained.provider.resolveSellerBundle).mockImplementation((() => ({ disposition: "absent" })) as never);
     const error = await verifyCompletedTwoSidedSession(input, deps).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(IndeterminateSubstrateError);
     expect(String(error)).toMatch(/not yet visible/);
+  });
+
+  // ST-11: external index visibility never gates audit-pending -> finalised.
+  test.each([
+    ["absent", () => ({ disposition: "absent" })],
+    ["indeterminate", () => ({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" })],
+  ] as const)("completes while the seller BundleBinding lookup is %s", async (_label, lookup) => {
+    const { retained, input, deps } = await composition();
+    vi.mocked(retained.provider.resolveBundleBinding!).mockImplementation(lookup as never);
+    await expect(verifyCompletedTwoSidedSession(input, deps)).resolves.toMatchObject({
+      state: "audit-complete",
+    });
   });
 
   test("reports a closure that does not match the copies as an answer", async () => {

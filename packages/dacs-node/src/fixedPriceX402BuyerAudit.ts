@@ -98,8 +98,8 @@ import { createDacsX402SellerEvmObserverV1 } from "./x402SellerEvm.js";
 import {
   createClassifiedDemosSellerBundleReads,
   permanentDemosBundleReadReason,
-  TRANSIENT_BINDING_RESOLUTION_REASONS,
 } from "./demosSellerBundleReads.js";
+import type { DacsBundleBindingDiscoverySurfaceV1 } from "./bundleBindingDiscovery.js";
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
 // The coordinator records the audit's result only while the audit track's
@@ -139,6 +139,11 @@ export interface DacsFixedPriceX402BuyerAuditOptionsV1 {
    * `verifyCompletedTwoSidedSession`.
    */
   completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>;
+  /**
+   * DACS-1 §6.3.5 well-known and §6.3.6 catalog surfaces consulted for the
+   * seller's signed BundleBinding, besides its Demos binding program.
+   */
+  bundleBindingDiscovery?: readonly Readonly<DacsBundleBindingDiscoverySurfaceV1>[];
 }
 
 export interface DacsFixedPriceX402BuyerAuditV1 {
@@ -154,6 +159,8 @@ export interface DacsFixedPricePayDemBuyerAuditOptionsV1 {
   leaseTtlMs?: number;
   /** As for the x402 buyer audit. */
   completionDeadline?: Readonly<CompletedTwoSidedSessionDeadline>;
+  /** As for the x402 buyer audit. */
+  bundleBindingDiscovery?: readonly Readonly<DacsBundleBindingDiscoverySurfaceV1>[];
 }
 
 export interface DacsFixedPricePayDemBuyerAuditV1 {
@@ -493,6 +500,7 @@ export function createDacsFixedPriceBuyerAuditV1(
   const context = options.context;
   const leaseTtlMs = timing(options.leaseTtlMs);
   const deadline = completionDeadline(options.completionDeadline);
+  const discovery = [...(options.bundleBindingDiscovery ?? [])];
   const rail = options.rail;
   const provenance = getAuthenticatedRailProvenance(rail)!;
   const payDem = options.paymentProfile === "pay-dem";
@@ -1215,6 +1223,7 @@ export function createDacsFixedPriceBuyerAuditV1(
     }
     const publication = createDacsDemosBundlePublicationV1({
       context,
+      discovery,
       jobId: order.jobId,
       buyer: order.buyer,
       seller: order.seller,
@@ -1477,24 +1486,21 @@ export function createDacsFixedPriceBuyerAuditV1(
         }
         const publication = createDacsDemosBundlePublicationV1({
           context,
+          discovery,
           jobId: loaded.record.jobId,
           buyer: loaded.record.buyer,
           seller: loaded.record.seller,
         });
-        const anchored = await publication.resolveRoleBundle("seller");
-        if (anchored === null) return { disposition: "absent" as const,
-          reason: "seller-finalization-pending" };
-        const binding = await publication.resolveBundleBinding(
-          bundleAddress(loaded.record.jobId, "seller"),
-          loaded.record.seller,
-        );
-        if (binding.disposition !== "present") {
-          return binding.disposition === "absent"
-            ? { disposition: "absent" as const, reason: "seller-binding-pending" }
-            : TRANSIENT_BINDING_RESOLUTION_REASONS.has(binding.reason)
-              ? { disposition: "indeterminate" as const, reason: binding.reason }
-              : { disposition: "rejected" as const, reason: binding.reason };
+        // The seller's copy through its discovered signed BundleBindings and an
+        // exact native read, never its storage-program name (DACS-5 BB-5). A
+        // binding no surface shows yet, rejected candidates and equivocation
+        // are all `indeterminate`, never absence (BB-7, BB-8).
+        const bound = await publication.resolveBoundRoleBundle("seller");
+        if (bound.disposition !== "present") {
+          return { disposition: "indeterminate" as const, reason: bound.reason };
         }
+        const { anchored } = bound;
+        const binding = { binding: bound.binding };
         const sellerBundle = copy(anchored.bundle);
         const buyerBundle = copy({ ...sellerBundle, anchoredByRole: "buyer" as const });
         const result: FinalizedSellerBundle = {
@@ -1625,6 +1631,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           result.buyerBundle.jobId !== operation.order.jobId) return false;
       const publication = createDacsDemosBundlePublicationV1({
         context,
+        discovery,
         jobId: operation.order.jobId,
         buyer: operation.order.buyer,
         seller: operation.order.seller,
