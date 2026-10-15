@@ -159,6 +159,18 @@ function completed(
   };
 }
 
+/** The lock an expiry ends, which every committed expiry carries for the interim record. */
+function lockTxRef(recoveryDeadline = RECOVERY_DEADLINE_MS, lockTxHash = "source-lock-tx") {
+  return {
+    kind: "liquidity-tank",
+    bridgeId: BRIDGE_ID,
+    sourceChainId: 11_155_111,
+    destChainId: 80_002,
+    lockTxHash,
+    recoveryDeadline,
+  };
+}
+
 /** The committed expiry of `completed(…, finalityObservedAt, recoveryDeadline)`: late, with its evidence. */
 function releasedLate(finalityObservedAt: number, recoveryDeadline = RECOVERY_DEADLINE_MS) {
   return {
@@ -166,6 +178,7 @@ function releasedLate(finalityObservedAt: number, recoveryDeadline = RECOVERY_DE
     errorClass: "failed-substrate",
     reason: "tank-released-after-recovery-deadline",
     reputationNeutral: true,
+    lockTxRef: lockTxRef(recoveryDeadline),
     txRef: {
       kind: "liquidity-tank",
       bridgeId: BRIDGE_ID,
@@ -251,6 +264,7 @@ const CONTRADICTED_EXPIRY = {
   errorClass: "failed-substrate",
   reason: "tank-lock-contradicted-recovery-expired",
   reputationNeutral: true,
+  lockTxRef: lockTxRef(),
 } as const;
 
 /** Broadcasts once and durably records the locked pending checkpoint. */
@@ -1141,6 +1155,7 @@ describe("advanceLiquidityTankSettlement", () => {
       errorClass: "failed-substrate",
       reason: "tank-locked-unreleased-recovery-expired",
       reputationNeutral: true,
+      lockTxRef: lockTxRef(),
     });
     expect(recordRecoveryExpired).toHaveBeenCalledTimes(1);
 
@@ -1157,6 +1172,7 @@ describe("advanceLiquidityTankSettlement", () => {
       errorClass: "failed-substrate",
       reason: "tank-locked-unreleased-recovery-expired",
       reputationNeutral: true,
+      lockTxRef: lockTxRef(),
     });
     expect(recordRecoveryExpired).not.toHaveBeenCalled();
     expect(recordObservation).not.toHaveBeenCalled();
@@ -1253,6 +1269,7 @@ describe("advanceLiquidityTankSettlement", () => {
         errorClass: "failed-substrate",
         reason: "tank-locked-unreleased-recovery-expired",
         reputationNeutral: true,
+        lockTxRef: lockTxRef(),
       });
     expect(recordRecoveryExpired).toHaveBeenCalledTimes(1);
     expect(recordRecoveryExpired).toHaveBeenCalledWith(expect.objectContaining({
@@ -1661,6 +1678,7 @@ describe("advanceLiquidityTankSettlement", () => {
         errorClass: "failed-substrate",
         reason: "tank-locked-unreleased-recovery-expired",
         reputationNeutral: true,
+        lockTxRef: lockTxRef(),
       });
     expect(recordRecoveryExpired).toHaveBeenCalledTimes(1);
     expect(recordRecoveryExpired).toHaveBeenCalledWith(expect.objectContaining({
@@ -1683,6 +1701,7 @@ describe("advanceLiquidityTankSettlement", () => {
       errorClass: "failed-substrate",
       reason: "tank-locked-unreleased-recovery-expired",
       reputationNeutral: true,
+      lockTxRef: lockTxRef(),
     });
     expect(h.observe).not.toHaveBeenCalled();
     expect(recordRecoveryExpired).not.toHaveBeenCalled();
@@ -6225,6 +6244,7 @@ describe("final review, round 1", () => {
         errorClass: "failed-substrate",
         reason: "tank-locked-unreleased-recovery-expired",
         reputationNeutral: true,
+        lockTxRef: lockTxRef(),
       };
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "expiry" })).resolves.toEqual(expired);
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "replay" })).resolves.toEqual(expired);
@@ -6405,6 +6425,7 @@ describe("final review, round 3", () => {
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "deadline-worker" })).resolves.toEqual({
         status: "failed", errorClass: "failed-substrate", reason: "tank-locked-unreleased-recovery-expired",
         reputationNeutral: true,
+        lockTxRef: lockTxRef(),
       });
       run.setClock(RECOVERY_DEADLINE_MS + 10_000);
       h.setObservation(completed(h.operationHash, RECOVERY_DEADLINE_MS - 1));
@@ -6465,6 +6486,7 @@ describe("final review, round 3", () => {
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "late" })).resolves.toEqual({
         status: "failed", errorClass: "failed-substrate", reason: "tank-locked-unreleased-recovery-expired",
         reputationNeutral: true,
+        lockTxRef: lockTxRef(),
       });
     });
   });
@@ -6638,6 +6660,7 @@ describe("final review, round 3", () => {
       await expect(advanceLiquidityTankSettlement({ ...run.shared, owner: "after" })).resolves.toEqual({
         status: "failed", errorClass: "failed-substrate", reason: "tank-locked-unreleased-recovery-expired",
         reputationNeutral: true,
+        lockTxRef: lockTxRef(),
       });
     });
 

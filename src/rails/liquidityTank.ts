@@ -399,14 +399,18 @@ export type LiquidityTankStoreWrite =
 
 /**
  * What a store declares about surviving a restart. The core refuses, before
- * any claim, a store that declares neither value.
+ * any claim, a store that declares neither value. The declaration is the
+ * host's: the core checks only that it is one of these two strings, not that
+ * the store is durable or passed conformance, so a volatile store declaring
+ * `"conformance-tested"` runs end to end. Review it with the store.
  * - `"conformance-tested"`: durable and atomic, and passes every
  *   `runLiquidityTankStoreConformance` case against its real backend. The
  *   SDK's `createFsLiquidityTankStore` declares it; a host store declares it
  *   once it passes.
  * - `"volatile-acknowledged"`: loses every row on restart, and its caller has
  *   said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })`
- *   declares it; tests and development only.
+ *   declares it. For tests and development only, never production: the core
+ *   runs end to end on it, and a restart then signs a second bridge operation.
  */
 export type LiquidityTankStoreRestartSafety = "conformance-tested" | "volatile-acknowledged";
 
@@ -550,6 +554,21 @@ export type LiquidityTankProgress =
       reason: string;
       reputationNeutral?: true;
       /**
+       * Set exactly when `errorClass` is `failed-substrate`: the lock this
+       * expiry ends, in a `settle-asymmetric` result's `txRef` shape. The
+       * interim record (DACS-5 SEB-3) names this lock. An expiry can be the
+       * first result a host sees, so a phase that has not anchored the interim
+       * record anchors it from this.
+       */
+      lockTxRef?: Readonly<{
+        kind: "liquidity-tank";
+        bridgeId: string;
+        sourceChainId: number;
+        destChainId: number;
+        lockTxHash: string;
+        recoveryDeadline: number;
+      }>;
+      /**
        * Set exactly when `reason` is `tank-released-after-recovery-deadline`:
        * the authenticated completion that finalized at or after
        * `recoveryDeadline`. The phase is `failed-substrate`, but the release
@@ -608,18 +627,30 @@ export type LiquidityTankProgress =
     }
   | { status: "settled"; settlement: Readonly<LiquidityTankSettlement> };
 
+type LiquidityTankLockTxRef = NonNullable<Extract<LiquidityTankProgress, { status: "failed" }>["lockTxRef"]>;
+
 /**
  * What a host phase handler records for one progress result, in DACS terms
  * (DACS-4 PC-3, PC-4 and §9.5.5; DACS-5 ST-8 and SEB-3). The core's
  * `errorClass: "failed-substrate"` and its three expiry reasons are not DACS
- * values: an expiry is `errorClass: "substrate"`, its evidence keeps the
- * interim reason `tank-locked-unreleased`, and the bundle records the cause
- * `failed-substrate`; the core's reason is kept only as `progressReason`.
- * `none` means there is no phase result yet: retry or escalate by `reason`.
+ * values: an expiry is `errorClass: "substrate"`, its evidence is the interim
+ * record (reason `tank-locked-unreleased`, `interimTxRef`), and the bundle
+ * records the cause `failed-substrate`; the core's reason is kept only as
+ * `progressReason`. The interim record is write-once at the PC-2 address:
+ * anchor it from `interimTxRef` if the phase has not, then fail the phase.
+ * `release` is set when the bridge reports a release reached the payee after
+ * the deadline: the buyer has paid, so never authorize another payment for
+ * the phase, and reconcile from it. `none` means there is no phase result
+ * yet: retry or escalate by `reason`.
  */
 export type LiquidityTankPhaseOutcome =
   | Readonly<{ kind: "none" }>
-  | Readonly<{ kind: "interim"; evidenceOutcome: "failure"; evidenceReason: "tank-locked-unreleased" }>
+  | Readonly<{
+      kind: "interim";
+      evidenceOutcome: "failure";
+      evidenceReason: "tank-locked-unreleased";
+      interimTxRef: LiquidityTankLockTxRef;
+    }>
   | Readonly<{ kind: "result"; ok: true; evidenceOutcome: "success" }>
   | Readonly<{
       kind: "result";
@@ -627,24 +658,46 @@ export type LiquidityTankPhaseOutcome =
       errorClass: "substrate";
       evidenceOutcome: "failure";
       evidenceReason: "tank-locked-unreleased";
+      interimTxRef: LiquidityTankLockTxRef;
       bundleCause: "failed-substrate";
       progressReason: string;
+      release?: Readonly<{
+        txRef: NonNullable<Extract<LiquidityTankProgress, { status: "failed" }>["txRef"]>;
+        finalityObservedAt: number;
+      }>;
     }>
   | Readonly<{ kind: "result"; ok: false; errorClass: "permanent"; progressReason: string }>;
 
+/**
+ * Throws a `DacsError` for a `failed-substrate` progress without `lockTxRef`,
+ * or with `txRef` but no `finalityObservedAt`: the core never returns one, and
+ * no admissible interim record can be built from it.
+ */
 export function liquidityTankPhaseOutcome(progress: LiquidityTankProgress): LiquidityTankPhaseOutcome {
   if (progress.status === "settled") return { kind: "result", ok: true, evidenceOutcome: "success" };
   // A contradicted lock is still open: the interim record stands.
   if (progress.status === "settle-asymmetric") {
-    return { kind: "interim", evidenceOutcome: "failure", evidenceReason: "tank-locked-unreleased" };
+    return {
+      kind: "interim", evidenceOutcome: "failure", evidenceReason: "tank-locked-unreleased",
+      interimTxRef: progress.txRef,
+    };
   }
   if (progress.status === "failed") {
-    return progress.errorClass === "failed-substrate"
-      ? {
-          kind: "result", ok: false, errorClass: "substrate", evidenceOutcome: "failure",
-          evidenceReason: "tank-locked-unreleased", bundleCause: "failed-substrate", progressReason: progress.reason,
-        }
-      : { kind: "result", ok: false, errorClass: "permanent", progressReason: progress.reason };
+    if (progress.errorClass !== "failed-substrate") {
+      return { kind: "result", ok: false, errorClass: "permanent", progressReason: progress.reason };
+    }
+    if (progress.lockTxRef === undefined ||
+        (progress.txRef !== undefined && progress.finalityObservedAt === undefined)) {
+      throw new DacsError("pay-cross-chain-liquidity-tank: failed-substrate progress lacks its lock evidence");
+    }
+    return {
+      kind: "result", ok: false, errorClass: "substrate", evidenceOutcome: "failure",
+      evidenceReason: "tank-locked-unreleased", interimTxRef: progress.lockTxRef,
+      bundleCause: "failed-substrate", progressReason: progress.reason,
+      ...(progress.txRef === undefined
+        ? {}
+        : { release: { txRef: progress.txRef, finalityObservedAt: progress.finalityObservedAt as number } }),
+    };
   }
   return { kind: "none" };
 }
@@ -1433,6 +1486,21 @@ function validateCapturedObservation(
   }) as unknown as Exclude<LiquidityTankObservation, { status: "indeterminate" }>;
 }
 
+/** The interim record's txRef for a lock: its hash and deadline, no release. */
+function lockTxRef(
+  intent: Readonly<LiquidityTankIntent>,
+  lock: Readonly<{ bridgeId: string; lockTxHash: string; recoveryDeadline: number }>,
+): LiquidityTankLockTxRef {
+  return Object.freeze({
+    kind: "liquidity-tank" as const,
+    bridgeId: lock.bridgeId,
+    sourceChainId: intent.sourceChainId,
+    destChainId: intent.destinationChainId,
+    lockTxHash: lock.lockTxHash,
+    recoveryDeadline: lock.recoveryDeadline,
+  });
+}
+
 /**
  * The progress of a durable lock: a locked pending checkpoint, or a failure
  * that carries the lock it failed after, which is that lock's terminal
@@ -1454,14 +1522,7 @@ function progressFromDurableObservation(
     recoveryDeadline: lock.recoveryDeadline,
     pastDeadline: now >= lock.recoveryDeadline,
     ...(status === undefined ? {} : { bridgeStatus: status }),
-    txRef: Object.freeze({
-      kind: "liquidity-tank",
-      bridgeId: lock.bridgeId,
-      sourceChainId: intent.sourceChainId,
-      destChainId: intent.destinationChainId,
-      lockTxHash: lock.lockTxHash,
-      recoveryDeadline: lock.recoveryDeadline,
-    }),
+    txRef: lockTxRef(intent, lock),
   };
 }
 
@@ -1647,12 +1708,25 @@ function retainedStateRefusal(error: unknown): LiquidityTankProgress {
  * The committed expiry, from the authenticated evidence it committed. A
  * completion finalized at or after the deadline is still `failed-substrate`,
  * as DACS-4 §9.5.5 requires, but the release did reach the payee: it is
- * reported apart, with the transaction evidence to reconcile from.
+ * reported apart, with the transaction evidence to reconcile from. Every
+ * expiry carries the lock it ends (the checkpoint's when there is one), so a
+ * host that never saw `settle-asymmetric` can still anchor the interim record.
  */
 function recoveryExpiredProgress(
   intent: Readonly<LiquidityTankIntent>,
   evidence: LiquidityTankRecoveryEvidence,
 ): LiquidityTankProgress {
+  const expired = {
+    status: "failed" as const,
+    errorClass: "failed-substrate" as const,
+    reputationNeutral: true as const,
+    lockTxRef: lockTxRef(
+      intent,
+      evidence.status === "failed-after-lock" || evidence.status === "contradicted-after-lock"
+        ? evidence.checkpoint
+        : evidence,
+    ),
+  };
   const releaseEvidence = (
     completion: Readonly<Extract<LiquidityTankObservation, { status: "completed" }>>,
   ) => ({
@@ -1668,13 +1742,7 @@ function recoveryExpiredProgress(
     finalityObservedAt: completion.finalityObservedAt,
   });
   if (evidence.status === "completed") {
-    return {
-      status: "failed",
-      errorClass: "failed-substrate",
-      reason: "tank-released-after-recovery-deadline",
-      reputationNeutral: true,
-      ...releaseEvidence(evidence),
-    };
+    return { ...expired, reason: "tank-released-after-recovery-deadline", ...releaseEvidence(evidence) };
   }
   if (evidence.status === "contradicted-after-lock") {
     // A lock expired on a read that contradicted it is reported apart: the
@@ -1682,19 +1750,12 @@ function recoveryExpiredProgress(
     // A completion of another lock says a release reached the payee: it is
     // returned with the expiry.
     return {
-      status: "failed",
-      errorClass: "failed-substrate",
+      ...expired,
       reason: "tank-lock-contradicted-recovery-expired",
-      reputationNeutral: true,
       ...(evidence.contradiction.status === "completed" ? releaseEvidence(evidence.contradiction) : {}),
     };
   }
-  return {
-    status: "failed",
-    errorClass: "failed-substrate",
-    reason: "tank-locked-unreleased-recovery-expired",
-    reputationNeutral: true,
-  };
+  return { ...expired, reason: "tank-locked-unreleased-recovery-expired" };
 }
 
 function settlementFromCompletedObservation(

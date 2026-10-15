@@ -233,6 +233,8 @@ describe("the core binds prepared bytes to this phase", () => {
     ["an empty bridge ID", { bridgeId: "" }],
     ["a bridge ID longer than 128 characters", { bridgeId: "b".repeat(129) }],
     ["a bridge ID with a character outside [A-Za-z0-9_-]", { bridgeId: "bridge/308" }],
+    // A number would match the ID grammar once coerced to a string.
+    ["a numeric bridge ID", { bridgeId: 308 }],
     ["a preparedAt that is not an integer", { preparedAt: String(PREPARED_AT) }],
   ])("a prepared submission with %s is neither stored nor broadcast", async (_label, fields) => {
     const p = phase();
@@ -250,6 +252,8 @@ describe("the core binds prepared bytes to this phase", () => {
     ["a node-derived ID", `bridge_${"0123456789abcdef"}`],
     ["an SDK-derived ID", `bridge_${"ab".repeat(32)}`],
     ["the longest accepted ID", "b".repeat(128)],
+    ["the shortest accepted ID", "A"],
+    ["an ID with upper case and an underscore", "Tank_A1"],
   ])("%s is accepted as a bridge ID and settles", async (_label, bridgeId) => {
     const p = phase();
     p.prepareWith({ bridgeId });
@@ -258,6 +262,62 @@ describe("the core binds prepared bytes to this phase", () => {
     await expect(p.run()).resolves.toMatchObject({ status: "settled", settlement: { txRef: { bridgeId } } });
     p.tick();
     await expect(p.run()).resolves.toMatchObject({ status: "settled", settlement: { txRef: { bridgeId } } });
+  });
+
+});
+
+describe("a stored settlement is checked field by field before it is reported", () => {
+  type Settlement = Record<string, Record<string, unknown> | unknown>;
+  const at = (part: string, fields: Record<string, unknown>) => (settlement: Settlement) =>
+    ({ ...settlement, [part]: { ...(settlement[part] as object), ...fields } });
+  test.each([
+    // A number would match the ID grammar once coerced to a string.
+    ["a numeric bridge ID", at("txRef", { bridgeId: 308 })],
+    ["another txRef kind", at("txRef", { kind: "htlc-lock" })],
+    ["another source chain", at("txRef", { sourceChainId: 1 })],
+    ["another destination chain", at("txRef", { destChainId: 1 })],
+    ["another amount", at("paymentAmount", { amount: "1.26" })],
+    ["another currency", at("paymentAmount", { currency: "USDT" })],
+    ["another finality model", at("settlementFinality", { model: "htlc" })],
+    ["an authentication hash that is not 64 hex", (s: Settlement) => ({ ...s, authenticationHash: "a".repeat(63) })],
+    ["finality at the recovery deadline", at("settlementFinality", { finalityObservedAt: D })],
+  ])("%s is refused", async (_label, rewrite) => {
+    let rewriting = false;
+    const store = patched((inner) => ({
+      claim: async (input) => {
+        const claimed = await inner.claim(input);
+        return rewriting && claimed.status === "settled"
+          ? { ...claimed, settlement: rewrite(claimed.settlement as never) }
+          : claimed;
+      },
+    }) as Partial<LiquidityTankStore>);
+    const p = phase({ store });
+    p.seeAfterBroadcast(completed(PREPARED_AT + 2_000));
+    await expect(p.run()).resolves.toMatchObject({ status: "settled" });
+    rewriting = true;
+    p.tick();
+    await expect(p.run()).resolves.toEqual({
+      status: "indeterminate", reason: "liquidity-tank-stored-settlement-mismatch",
+    });
+  });
+});
+
+describe("a retained row without its submission", () => {
+  test("a claim holding failure evidence but no submission never signs a new one", async () => {
+    const store = patched((inner) => ({
+      claim: async (input) => {
+        const claimed = await inner.claim(input);
+        return claimed.status === "acquired"
+          ? { ...claimed, recoveryFailure: { status: "failed-after-lock" } } as never
+          : claimed;
+      },
+    }));
+    const p = phase({ store });
+    await expect(p.run()).resolves.toEqual({
+      status: "indeterminate", reason: "liquidity-tank-retained-state-corrupt",
+    });
+    expect(p.prepareSubmission).not.toHaveBeenCalled();
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
   });
 });
 
@@ -333,14 +393,23 @@ describe("failure retention counts only a successful write with an exact, readab
 });
 
 describe("a late release with no prior durable observation", () => {
-  test("a first read that is a completion finalized at the deadline commits its expiry", async () => {
+  test("a first read that is a completion finalized at the deadline commits its expiry, with the lock and the release", async () => {
     const p = phase();
     p.at(D + 100);
     p.prepareWith({ preparedAt: D + 100 });
     p.see(completed(D));
-    await expect(p.run()).resolves.toMatchObject({
+    const lock = {
+      kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+      lockTxHash: "source-lock-tx", recoveryDeadline: D,
+    };
+    const release = { txRef: { ...lock, releaseTxHash: "destination-release-tx" }, finalityObservedAt: D };
+    const result = await p.run();
+    expect(result).toEqual({
       status: "failed", errorClass: "failed-substrate", reason: "tank-released-after-recovery-deadline",
+      reputationNeutral: true, lockTxRef: lock, ...release,
     });
+    // The host anchors the interim record from the lock and reconciles the paid release.
+    expect(liquidityTankPhaseOutcome(result)).toMatchObject({ interimTxRef: lock, release });
   });
 });
 
@@ -559,20 +628,34 @@ describe("ST-8 source-lock finality is the verifier's gate", () => {
 });
 
 describe("mapping progress to DACS phase results", () => {
+  const LOCK = {
+    kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+    lockTxHash: "source-lock-tx", recoveryDeadline: D,
+  } as const;
+  const RELEASE = { ...LOCK, releaseTxHash: "destination-release-tx" } as const;
+  const expiry = (reason: string, release?: { txRef: Record<string, unknown>; finalityObservedAt: number }) => [
+    { status: "failed", errorClass: "failed-substrate", reason, reputationNeutral: true, lockTxRef: LOCK,
+      ...(release ?? {}) },
+    {
+      kind: "result", ok: false, errorClass: "substrate", evidenceOutcome: "failure",
+      evidenceReason: "tank-locked-unreleased", interimTxRef: LOCK, bundleCause: "failed-substrate",
+      progressReason: reason, ...(release ? { release } : {}),
+    },
+  ] as const;
   const MAPPINGS: readonly (readonly [string, unknown, unknown])[] = [
     ["settled", { status: "settled", settlement: {} }, { kind: "result", ok: true, evidenceOutcome: "success" }],
-    ["locked", { status: "settle-asymmetric", reason: "tank-locked-unreleased" },
-      { kind: "interim", evidenceOutcome: "failure", evidenceReason: "tank-locked-unreleased" }],
-    ["contradicted", { status: "settle-asymmetric", reason: "lock-contradicted" },
-      { kind: "interim", evidenceOutcome: "failure", evidenceReason: "tank-locked-unreleased" }],
-    ...["tank-locked-unreleased-recovery-expired", "tank-released-after-recovery-deadline",
-      "tank-lock-contradicted-recovery-expired"].map((reason) => [
-      reason, { status: "failed", errorClass: "failed-substrate", reason, reputationNeutral: true },
-      {
-        kind: "result", ok: false, errorClass: "substrate", evidenceOutcome: "failure",
-        evidenceReason: "tank-locked-unreleased", bundleCause: "failed-substrate", progressReason: reason,
-      },
-    ] as const),
+    ["locked", { status: "settle-asymmetric", reason: "tank-locked-unreleased", txRef: LOCK },
+      { kind: "interim", evidenceOutcome: "failure", evidenceReason: "tank-locked-unreleased", interimTxRef: LOCK }],
+    ["contradicted", { status: "settle-asymmetric", reason: "lock-contradicted", txRef: LOCK },
+      { kind: "interim", evidenceOutcome: "failure", evidenceReason: "tank-locked-unreleased", interimTxRef: LOCK }],
+    ["tank-locked-unreleased-recovery-expired", ...expiry("tank-locked-unreleased-recovery-expired")],
+    ["tank-lock-contradicted-recovery-expired", ...expiry("tank-lock-contradicted-recovery-expired")],
+    ["tank-released-after-recovery-deadline, with the release",
+      ...expiry("tank-released-after-recovery-deadline", { txRef: RELEASE, finalityObservedAt: D })],
+    ["tank-lock-contradicted-recovery-expired, with another lock's release",
+      ...expiry("tank-lock-contradicted-recovery-expired", {
+        txRef: { ...RELEASE, lockTxHash: "other-lock-tx" }, finalityObservedAt: D + 1,
+      })],
     ["permanent", { status: "failed", errorClass: "permanent", reason: "bridge rejected" },
       { kind: "result", ok: false, errorClass: "permanent", progressReason: "bridge rejected" }],
     ["waiting", { status: "waiting", reason: "liquidity-tank-settlement-held" }, { kind: "none" }],
@@ -583,10 +666,19 @@ describe("mapping progress to DACS phase results", () => {
     expect(liquidityTankPhaseOutcome(progress as LiquidityTankProgress)).toEqual(outcome);
   });
 
+  test.each([
+    ["without its lock", { lockTxRef: undefined }],
+    ["with a release but no finality", { txRef: RELEASE }],
+  ])("a failed-substrate progress %s is refused, never mapped", (_label, fields) => {
+    const progress = { ...expiry("tank-locked-unreleased-recovery-expired")[0], ...fields };
+    expect(() => liquidityTankPhaseOutcome(progress as LiquidityTankProgress))
+      .toThrow("failed-substrate progress lacks its lock evidence");
+  });
+
   test("every errorClass it returns is in the SDK's DACS errorClass vocabulary", () => {
     const classes: BundlePhaseErrorClass[] = [];
     for (const progress of [
-      { status: "failed", errorClass: "failed-substrate", reason: "tank-locked-unreleased-recovery-expired" },
+      expiry("tank-locked-unreleased-recovery-expired")[0],
       { status: "failed", errorClass: "permanent", reason: "bridge rejected" },
     ] as LiquidityTankProgress[]) {
       const outcome = liquidityTankPhaseOutcome(progress);
@@ -596,8 +688,46 @@ describe("mapping progress to DACS phase results", () => {
   });
 
   test("is exported from the rails and root barrels", () => {
+    expect(typeof liquidityTankPhaseOutcome).toBe("function");
     expect(rails.liquidityTankPhaseOutcome).toBe(liquidityTankPhaseOutcome);
     expect(root.liquidityTankPhaseOutcome).toBe(liquidityTankPhaseOutcome);
+  });
+});
+
+describe("an expiry is the first result a host sees", () => {
+  // The host never saw settle-asymmetric, so the expiry itself must carry the
+  // lock the interim record names (DACS-5 SEB-3).
+  const LOCKED_EXPIRY = {
+    status: "failed", errorClass: "failed-substrate", reason: "tank-locked-unreleased-recovery-expired",
+    reputationNeutral: true,
+    lockTxRef: {
+      kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+      lockTxHash: "source-lock-tx", recoveryDeadline: D,
+    },
+  };
+
+  test.each([
+    ["a locked pending stamped past the deadline", locked(D + 50)],
+    ["a lock-bearing failure", lockBearingFailure(D - 20_000)],
+  ])("the first read after broadcast is %s, and the host clock is past the deadline", async (_label, first) => {
+    const p = phase();
+    p.at(D + 100);
+    p.prepareWith({ preparedAt: D - 30_000 });
+    p.see(empty(D - 30_000));
+    p.seeAfterBroadcast(first);
+    const result = await p.run();
+    expect(result).toEqual(LOCKED_EXPIRY);
+    expect(liquidityTankPhaseOutcome(result)).toMatchObject({ interimTxRef: LOCKED_EXPIRY.lockTxRef });
+    p.tick();
+    await expect(p.run()).resolves.toEqual(LOCKED_EXPIRY);
+  });
+
+  test("a host that lost its settle-asymmetric result still gets the lock with the expiry", async () => {
+    const p = phase();
+    await lockDurably(p);
+    p.see(locked(D + 1));
+    p.at(D + 100);
+    await expect(p.run()).resolves.toEqual(LOCKED_EXPIRY);
   });
 });
 

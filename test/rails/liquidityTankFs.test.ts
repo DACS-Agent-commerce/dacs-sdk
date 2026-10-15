@@ -409,6 +409,11 @@ describe("createFsLiquidityTankStore", () => {
       const expired = {
         status: "failed", errorClass: "failed-substrate", reason: "tank-lock-contradicted-recovery-expired",
         reputationNeutral: true,
+        // The checkpoint's lock, which the interim record names.
+        lockTxRef: {
+          kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+          lockTxHash: "fs-source-lock-tx", recoveryDeadline: DEADLINE,
+        },
       };
       phase.observation = emptyAt(DEADLINE);
       phase.now = DEADLINE;
