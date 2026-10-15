@@ -9,6 +9,8 @@ export interface LiveProjectTemplateOptions {
   rails: "x402" | "pay-dem" | "both";
   runtimeUid: number;
   runtimeGid: number;
+  /** 32 lower-case hex digits, random for each generated project. */
+  projectIdentity: string;
 }
 
 const SDK_VERSION = "0.1.0-alpha.0";
@@ -4607,19 +4609,22 @@ const mode = {
   '["--down","--remove-orphans"]': "decommission",
 }[JSON.stringify(process.argv.slice(2))];
 // The compose project name is the directory's name as it stands, which compose
-// would otherwise normalise, followed by a digest of the directory's full path,
-// so that two directories with the same name, such as prod/agent and
-// staging/agent, never share a project, not even when both start at once. No
-// compose call runs while the project has a container that compose created for
-// another directory. Every compose call names the project, with the generated
-// compose.yaml, and passes compose no other COMPOSE_* variable. Compose also
+// would otherwise normalise, followed by a digest of the identity the generator
+// gave this project and the directory's full path. Two directories with the
+// same name, such as prod/agent and staging/agent, never share a project, not
+// even when both start at once, and nor does a new project generated where a
+// moved one used to be. No compose call runs while the project has a container
+// that compose created for another directory. Every compose call names the
+// project, with the generated compose.yaml, and passes compose no other
+// COMPOSE_* variable. Compose also
 // imports COMPOSE_* variables from .env, in more forms than a line start, so a
 // .env that mentions COMPOSE_ at all is refused. Neither COMPOSE_FILE,
 // COMPOSE_PROJECT_NAME nor an override file such as compose.override.yaml can
 // add a service, replace the image or move the project.
+const projectIdentity = "${options.projectIdentity}";
 const directoryName = basename(projectPath);
 const projectName = directoryName + "-" +
-  createHash("sha256").update(projectPath).digest("hex").slice(0, 12);
+  createHash("sha256").update(projectIdentity + projectPath).digest("hex").slice(0, 12);
 // dacs:up records the project it starts here. Moving the directory changes the
 // project name, so until the recorded project's containers are gone, no compose
 // call runs from the new directory: it would neither stop the old roles nor
@@ -4729,7 +4734,8 @@ function requireOwnProject() {
           " as compose project " + record.project + ", which still has containers. " +
           "If this directory was moved from there, remove them with: docker compose " +
           "--project-name " + record.project + " down, then rerun. If " + record.directory +
-          " is a copy still in use, delete .dacs-runtime/compose-project.json here instead";
+          " is another project that is still in use (this directory is a copy of it), " +
+          "delete .dacs-runtime/compose-project.json here instead";
       } else {
         const foreign = foreignContainers(projectContainers());
         if (foreign !== undefined) {
@@ -5529,12 +5535,16 @@ than the tag, so rebuilding or retagging after the check cannot change what
 starts. Compose gets this project's \`compose.yaml\` as its only file, this
 directory as its project directory, \`--no-build --pull never\`, and exactly the
 \`buyer\` and \`seller\` services. Its project name is the directory's name, a
-\`-\` and the first 12 hex digits of the SHA-256 of the directory's full path;
-\`dacs:up\` prints it as \`project\`. The directory's name must already be a
-compose project name (lower-case letters, digits, \`_\` and \`-\`, starting with
-a letter or digit), so compose does not normalise it, and two directories with
-the same name, such as \`prod/agent\` and \`staging/agent\`, never share a
-project. Before any compose call, \`dacs:up\`, \`dacs:down\` and the backup,
+\`-\` and the first 12 hex digits of the SHA-256 of this project's identity
+followed by the directory's full path; the identity is the random
+\`projectIdentity\` that the generator wrote into
+\`scripts/docker-runtime-smoke.mjs\`, and \`dacs:up\` prints the name as
+\`project\`. The directory's name must already be a compose project name
+(lower-case letters, digits, \`_\` and \`-\`, starting with a letter or digit),
+so compose does not normalise it. Two directories with the same name, such as
+\`prod/agent\` and \`staging/agent\`, never share a project, and nor does a
+new project generated at a path this one was moved from. Before any compose
+call, \`dacs:up\`, \`dacs:down\` and the backup,
 restore and uninstall stops refuse to run while the project has a container
 that compose created for another directory.
 
@@ -5544,8 +5554,11 @@ the project name, so while the recorded project still has containers these
 commands refuse to run and name it. If you moved the project, remove the old
 containers with \`docker compose --project-name <recorded project> down\`, which
 works from any directory and keeps both data directories, then rerun; if the
-recorded directory is a copy still in use, delete this directory's
-\`.dacs-runtime/compose-project.json\` instead.
+recorded directory is another project that is still in use (this directory is
+a copy of it), delete this directory's \`.dacs-runtime/compose-project.json\`
+instead. A copy or clone of this project shares its identity, so do not put
+one at a path this project was moved from while the containers started there
+still exist: it would get their project name. Remove them first.
 
 These commands also set \`COMPOSE_PROJECT_NAME\` to the project name, remove
 every other \`COMPOSE_*\` variable, including \`COMPOSE_FILE\`, from compose's
@@ -5580,6 +5593,10 @@ procedures before any manual data removal.
 export function liveProjectTemplates(
   options: LiveProjectTemplateOptions,
 ): Readonly<Record<string, string>> {
+  if (typeof options.projectIdentity !== "string" ||
+      !/^[0-9a-f]{32}$/.test(options.projectIdentity)) {
+    throw new TypeError("projectIdentity must be 32 lower-case hex digits");
+  }
   return Object.freeze({
     "package.json": packageJson(options),
     "tsconfig.json": TSCONFIG,

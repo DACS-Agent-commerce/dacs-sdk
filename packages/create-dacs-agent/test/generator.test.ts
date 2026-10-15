@@ -18,7 +18,7 @@ import { basename, dirname, join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { createDacsAgentProject } from "../src/index.js";
+import { createDacsAgentProject, projectTemplates } from "../src/index.js";
 import { parseCreateDacsAgentArguments } from "../src/cli.js";
 import { publishCompleteStagingDirectory } from "../src/publication.js";
 
@@ -581,12 +581,20 @@ async function runGeneratedDockerSmoke(
   return { ...result, invocations, composeEnvironments, containers, receipt };
 }
 
+// The identity the generator wrote into a project's Docker lifecycle script.
+async function generatedProjectIdentity(target: string): Promise<string> {
+  const script = await readFile(join(target, "scripts", "docker-runtime-smoke.mjs"), "utf8");
+  const identities = [...script.matchAll(/^const projectIdentity = "([0-9a-f]{32})";$/gm)];
+  if (identities.length !== 1) throw new Error("generated script has no single identity");
+  return identities[0]![1]!;
+}
+
 // The compose project name of a generated project: its directory's name and
-// the start of the SHA-256 of its full path.
+// the start of the SHA-256 of its identity followed by its full path.
 async function generatedProjectName(target: string): Promise<string> {
   const directory = await realpath(target);
-  return `${basename(directory)}-` +
-    createHash("sha256").update(directory).digest("hex").slice(0, 12);
+  return `${basename(directory)}-` + createHash("sha256")
+    .update(await generatedProjectIdentity(target) + directory).digest("hex").slice(0, 12);
 }
 
 // The compose invocation prefix every Docker lifecycle command uses.
@@ -801,6 +809,177 @@ describe("create-dacs-agent", () => {
   });
 
   test.runIf(process.platform !== "win32")(
+    "pins the generator's option checks, defaults, package name, targets and npm steps",
+    async () => {
+      // npm, as the generator runs it: each call is logged with the lifecycle-script
+      // setting it saw, and exits as the scenario file says for its arguments.
+      const fakeBin = await temporaryDirectory();
+      const npmLog = join(fakeBin, "npm-calls.jsonl");
+      const npmScenario = join(fakeBin, "npm-scenario.json");
+      await writeFakeExecutable(fakeBin, "npm", `const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(npmLog)}, JSON.stringify({
+  args, ignoreScripts: process.env.npm_config_ignore_scripts,
+}) + "\\n");
+process.exit(JSON.parse(fs.readFileSync(${JSON.stringify(npmScenario)}, "utf8"))[args.join(" ")] ?? 0);
+`);
+      const npmCalls = async () => (await readFile(npmLog, "utf8").catch(() => ""))
+        .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown);
+      const parent = await temporaryDirectory();
+      const live = {
+        mode: "live-demos",
+        profile: "dacs-sdk:fixed-price-x402:v1",
+        role: "buyer",
+      } as const;
+      const inheritedPath = process.env.PATH;
+      process.env.PATH = fakeBin;
+      try {
+        await writeFile(npmScenario, "{}", "utf8");
+        const target = join(parent, "rejected");
+        for (const [options, message] of [
+          [undefined, "targetDirectory is required"],
+          [{ targetDirectory: 42 }, "targetDirectory is required"],
+          [{ targetDirectory: "  " }, "targetDirectory must not be empty"],
+          [{ targetDirectory: target, mode: "hosted" }, "mode must be offline or live-demos"],
+          [{ targetDirectory: target, deployment: "k8s" }, "deployment must be local or docker"],
+          [{ targetDirectory: target, rails: "sol" }, "rails must be x402, pay-dem or both"],
+          [{ targetDirectory: target, install: "no" }, "install and run options must be boolean"],
+          [{ targetDirectory: target, install: false, run: "yes" },
+            "install and run options must be boolean"],
+          [{ targetDirectory: target, profile: live.profile },
+            "offline mode requires profile dacs-sdk:fixed-price-offline:v1"],
+          [{ ...live, targetDirectory: target, role: "demo-all" },
+            "live-demos requires buyer or seller role separation"],
+          [{ ...live, targetDirectory: target, run: true },
+            "--run is the offline smoke flag and is not valid for live-demos"],
+        ] as const) {
+          await expect(createDacsAgentProject(options as never), message).rejects.toThrow(message);
+        }
+        await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await npmCalls()).toEqual([]);
+
+        // Defaults; an offline project reports no rails.
+        await expect(createDacsAgentProject({
+          targetDirectory: join(parent, "live-defaults"),
+          mode: "live-demos",
+          install: false,
+        })).resolves.toMatchObject({
+          profile: live.profile,
+          role: "buyer",
+          deployment: "local",
+          rails: "both",
+          installed: false,
+          ran: false,
+          doctor: "not-run",
+        });
+        const offline = await createDacsAgentProject({
+          targetDirectory: join(parent, "offline-defaults"),
+          install: false,
+        });
+        expect(offline).toMatchObject({ mode: "offline", role: "demo-all", deployment: "local" });
+        expect(offline).not.toHaveProperty("rails");
+
+        // The package name is the directory's name, normalised for npm.
+        for (const [name, packageName] of [
+          ["--My Agent!!--", "my-agent"],
+          ["a".repeat(220), "a".repeat(214)],
+          ["---", "dacs-agent"],
+        ]) {
+          const created = join(parent, "names", name!);
+          await mkdir(dirname(created), { recursive: true });
+          await createDacsAgentProject({ targetDirectory: created, install: false });
+          expect(JSON.parse(await readFile(join(created, "package.json"), "utf8")).name)
+            .toBe(packageName);
+        }
+
+        // A parent that is a symbolic link is refused; one reached through a
+        // symbolic link is used by its canonical path.
+        const realParent = await temporaryDirectory();
+        await mkdir(join(realParent, "sub"));
+        const linkedParent = join(parent, "linked-parent");
+        await symlink(realParent, linkedParent);
+        await expect(createDacsAgentProject({
+          targetDirectory: join(linkedParent, "agent"),
+          install: false,
+        })).rejects.toThrow("target parent must be a directory, not a symbolic link");
+        await expect(lstat(join(realParent, "agent"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect((await createDacsAgentProject({
+          targetDirectory: join(linkedParent, "sub", "agent"),
+          install: false,
+        })).targetDirectory).toBe(join(await realpath(realParent), "sub", "agent"));
+
+        // An existing file or non-empty directory is refused by name and kept.
+        const file = join(parent, "file-target");
+        await writeFile(file, "kept", "utf8");
+        await expect(createDacsAgentProject({ targetDirectory: file, install: false }))
+          .rejects.toThrow("target path exists and is not a directory");
+        const occupied = join(parent, "occupied-target");
+        await mkdir(occupied);
+        await writeFile(join(occupied, "kept"), "kept", "utf8");
+        await expect(createDacsAgentProject({ targetDirectory: occupied, install: false }))
+          .rejects.toThrow("target directory is not empty; refusing to overwrite it");
+        expect(await readFile(file, "utf8")).toBe("kept");
+        expect(await readdir(occupied)).toEqual(["kept"]);
+
+        // npm runs with lifecycle scripts off; --run type-checks and smokes.
+        const install = ["install", "--ignore-scripts", "--omit=optional", "--no-fund"];
+        expect(await createDacsAgentProject({ targetDirectory: join(parent, "installed") }))
+          .toMatchObject({ installed: true, ran: false });
+        await rm(npmLog, { force: true });
+        expect(await createDacsAgentProject({ targetDirectory: join(parent, "run"), run: true }))
+          .toMatchObject({ installed: true, ran: true, doctor: "not-run" });
+        expect(await npmCalls()).toEqual([
+          install,
+          ["run", "typecheck"],
+          ["run", "dacs:smoke:offline"],
+        ].map((args) => ({ args, ignoreScripts: "true" })));
+
+        // A failed npm step fails generation; the doctor's exit 5 reports blocked.
+        await writeFile(npmScenario, JSON.stringify({ [install.join(" ")]: 1 }), "utf8");
+        await expect(createDacsAgentProject({ targetDirectory: join(parent, "failed") }))
+          .rejects.toThrow(`npm ${install.join(" ")} failed (exit 1)`);
+        const doctor = "run dacs:doctor -- --phase pre-start --for start";
+        for (const [status, outcome] of [[0, "pass"], [5, "blocked"]] as const) {
+          await writeFile(npmScenario, JSON.stringify({ [doctor]: status }), "utf8");
+          await expect(createDacsAgentProject({
+            ...live,
+            targetDirectory: join(parent, `doctor-${status}`),
+          })).resolves.toMatchObject({ installed: true, doctor: outcome });
+        }
+        await writeFile(npmScenario, JSON.stringify({ [doctor]: 1 }), "utf8");
+        await expect(createDacsAgentProject({ ...live, targetDirectory: join(parent, "doctor-1") }))
+          .rejects.toThrow(`npm ${doctor} failed (exit 1)`);
+      } finally {
+        process.env.PATH = inheritedPath;
+      }
+
+      // Under a permissive umask and as root, the files stay owner-only, both
+      // role data directories are private, and compose never runs as root.
+      const inheritedUmask = process.umask(0o022);
+      const getuid = process.getuid;
+      const getgid = process.getgid;
+      process.getuid = () => 0;
+      process.getgid = () => 0;
+      const target = join(parent, "private");
+      try {
+        await createDacsAgentProject({ ...live, targetDirectory: target, install: false });
+      } finally {
+        process.umask(inheritedUmask);
+        process.getuid = getuid;
+        process.getgid = getgid;
+      }
+      expect((await lstat(join(target, "package.json"))).mode & 0o777).toBe(0o600);
+      for (const role of ["buyer", "seller"]) {
+        expect((await lstat(join(target, "data", role))).mode & 0o777, role).toBe(0o700);
+      }
+      const environment = await readFile(join(target, ".env.example"), "utf8");
+      expect(environment).toMatch(/^DACS_RUNTIME_UID=10001$/m);
+      expect(environment).toMatch(/^DACS_RUNTIME_GID=10001$/m);
+    },
+    SPAWNING_TEST_TIMEOUT_MS * 2,
+  );
+
+  test.runIf(process.platform !== "win32")(
     "never runs npm with --no-install",
     async () => {
       const fakeBin = await temporaryDirectory();
@@ -873,6 +1052,31 @@ process.exit(1);
     SPAWNING_TEST_TIMEOUT_MS,
   );
 
+  test("gives each live project's Docker lifecycle its own random identity", () => {
+    const options = {
+      packageName: "agent",
+      deployment: "docker",
+      mode: "live-demos",
+      role: "buyer",
+      rails: "both",
+    } as const;
+    const script = (projectIdentity?: string) =>
+      projectTemplates({ ...options, projectIdentity })["scripts/docker-runtime-smoke.mjs"]!;
+    const identityOf = (source: string) =>
+      /^const projectIdentity = "([0-9a-f]{32})";$/m.exec(source)?.[1];
+    const given = "a".repeat(32);
+    expect(identityOf(script(given))).toBe(given);
+    expect(script(given)).toContain(
+      'createHash("sha256").update(projectIdentity + projectPath).digest("hex").slice(0, 12)',
+    );
+    const generated = [script(), script()].map(identityOf);
+    expect(generated[0]).toMatch(/^[0-9a-f]{32}$/);
+    expect(generated[1]).not.toBe(generated[0]);
+    for (const invalid of ["A".repeat(32), "a".repeat(31), "a".repeat(33), "g".repeat(32)]) {
+      expect(() => script(invalid)).toThrow("projectIdentity must be 32 lower-case hex digits");
+    }
+  });
+
   test("renders compose, .env and README around the one image the smoke checks", async () => {
     const target = await generatedDockerProject("compose-image-agent");
     const compose = await readFile(join(target, "compose.yaml"), "utf8");
@@ -906,7 +1110,12 @@ process.exit(1);
     expect(readme).toContain("with `DACS_IMAGE` set to that image ID rather\nthan the tag");
     expect(readme).toContain("refuse to run while `.env` mentions `COMPOSE_` anywhere");
     expect(readme).toContain("refuse to run while the project has a container\nthat compose created for another directory");
-    expect(readme).toContain("the first 12 hex digits of the SHA-256 of the directory's full path");
+    expect(readme).toContain("the first 12 hex digits of the SHA-256 of this project's identity\n" +
+      "followed by the directory's full path");
+    expect(readme).toContain("nor does a\nnew project generated at a path this one was moved from");
+    expect(readme).toContain("A copy or clone of this project shares its identity, so do not put\n" +
+      "one at a path this project was moved from while the containers started there\n" +
+      "still exist");
     expect(readme).toContain("If you moved the project, remove the old\ncontainers with " +
       "`docker compose --project-name <recorded project> down`");
     expect(readme).not.toContain("never share one");
@@ -1173,7 +1382,11 @@ process.exit(1);
       expect(unsmoked.invocations.filter(isComposeInvocation)).toEqual([]);
 
       expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
-      const started = await runGeneratedDockerSmoke(target, passingDockerScenario(), up);
+      // A permissive umask, so that only the script's own mode keeps the record private.
+      const started = await runGeneratedDockerSmoke(target, passingDockerScenario(), {
+        ...up,
+        umask: "022",
+      });
       expect(started.stderr).toBe("");
       expect(started.status).toBe(0);
       const projectName = await generatedProjectName(target);
@@ -1649,12 +1862,17 @@ process.exit(1);
       const refusal = `dacs:up last started this project's roles from ${originalPath} as ` +
         `compose project ${originalProject}, which still has containers. If this directory ` +
         `was moved from there, remove them with: docker compose --project-name ` +
-        `${originalProject} down, then rerun. If ${originalPath} is a copy still in use, ` +
-        "delete .dacs-runtime/compose-project.json here instead";
-      for (const containers of [running, running.map((container) => ({
-        ...container,
-        running: false,
-      }))]) {
+        `${originalProject} down, then rerun. If ${originalPath} is another project that is ` +
+        "still in use (this directory is a copy of it), delete " +
+        ".dacs-runtime/compose-project.json here instead";
+      const stopped = (container: FakeContainer) => ({ ...container, running: false });
+      // Both roles, running or stopped, or just one of them left.
+      for (const containers of [
+        running,
+        running.map(stopped),
+        [running[0]!],
+        [stopped(running[1]!)],
+      ]) {
         for (const args of [["--up"], ["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
           const refused = await runGeneratedDockerSmoke(moved, passingDockerScenario({
             containers,
@@ -1731,6 +1949,105 @@ process.exit(1);
           message);
         expect(failed.invocations.filter(isComposeInvocation)).toEqual([]);
       }
+    },
+    SPAWNING_TEST_TIMEOUT_MS * 4,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "records the project before compose starts, so a failed start's left role blocks a moved directory",
+    async () => {
+      const original = await generatedDockerProject("agent");
+      const originalProject = await generatedProjectName(original);
+      expect((await runGeneratedDockerSmoke(original, passingDockerScenario())).status).toBe(0);
+      // Compose creates the buyer, fails, and the buyer cannot then be stopped.
+      const failed = await runGeneratedDockerSmoke(original, passingDockerScenario({
+        composeUpStatus: 17,
+        composeUpCreates: ["buyer"],
+        fails: ["compose stop"],
+      }), { args: ["--up"] });
+      expect(failed.status).toBe(1);
+      expect(failed.stderr).toContain("stop them before anything else");
+      expect(failed.containers?.map(({ service, running }) => [service, running]))
+        .toEqual([["buyer", true]]);
+      expect(JSON.parse(await readFile(
+        join(original, ".dacs-runtime", "compose-project.json"), "utf8",
+      ))).toEqual({
+        recordVersion: 1,
+        project: originalProject,
+        directory: await realpath(original),
+      });
+
+      const moved = join(await temporaryDirectory(), "agent");
+      await rename(original, moved);
+      const refused = await runGeneratedDockerSmoke(moved, passingDockerScenario({
+        containers: failed.containers,
+      }), { args: ["--up"] });
+      expect(refused.status).toBe(2);
+      expect(refused.stderr).toContain(`as compose project ${originalProject}, which still has ` +
+        "containers");
+      expect(refused.invocations.filter(isComposeInvocation)).toEqual([]);
+      expect(refused.containers ?? failed.containers).toEqual(failed.containers);
+    },
+    SPAWNING_TEST_TIMEOUT_MS * 2,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "gives a project generated where a moved one used to be its own project",
+    async () => {
+      const original = await generatedDockerProject("agent");
+      const originalPath = await realpath(original);
+      const originalProject = await generatedProjectName(original);
+      expect((await runGeneratedDockerSmoke(original, passingDockerScenario())).status).toBe(0);
+      const started = await runGeneratedDockerSmoke(original, passingDockerScenario(), {
+        args: ["--up"],
+      });
+      expect(started.status).toBe(0);
+      const running = started.containers!;
+
+      // The project moves while its roles run, and a new one is generated in its place.
+      const moved = join(await temporaryDirectory(), "agent");
+      await rename(original, moved);
+      await createDacsAgentProject({
+        targetDirectory: original,
+        mode: "live-demos",
+        profile: "dacs-sdk:fixed-price-x402:v1",
+        role: "buyer",
+        deployment: "docker",
+        rails: "both",
+        install: false,
+      });
+      await writeFile(join(original, ".env"), await readFile(join(moved, ".env")));
+      expect(await realpath(original)).toBe(originalPath);
+      expect(await generatedProjectIdentity(original))
+        .not.toBe(await generatedProjectIdentity(moved));
+      const newProject = await generatedProjectName(original);
+      expect(newProject).toMatch(/^agent-[0-9a-f]{12}$/);
+      expect(newProject).not.toBe(originalProject);
+
+      // Its maintenance commands name only its own, empty project.
+      for (const args of [["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
+        const result = await runGeneratedDockerSmoke(original, passingDockerScenario({
+          containers: running,
+        }), { args });
+        expect(result.status, args.join(" ")).toBe(0);
+        expect(result.containers, args.join(" ")).toEqual(running);
+        expect(result.invocations.filter(isComposeInvocation)).toEqual([[
+          ...await generatedComposeArguments(original),
+          ...(args[0] === "--stop" ? ["stop"] : ["down", ...args.slice(1)]),
+        ]]);
+      }
+
+      // Its dacs:up starts its own pair and leaves the moved project's roles running.
+      expect((await runGeneratedDockerSmoke(original, passingDockerScenario())).status).toBe(0);
+      const own = await runGeneratedDockerSmoke(original, passingDockerScenario({
+        containers: running,
+      }), { args: ["--up"] });
+      expect(own.stderr).toBe("");
+      expect(own.status).toBe(0);
+      expect(JSON.parse(own.stdout)).toMatchObject({ project: newProject });
+      expect(own.containers?.slice(0, 2)).toEqual(running);
+      expect(own.containers?.slice(2).map(({ project }) => project))
+        .toEqual([newProject, newProject]);
     },
     SPAWNING_TEST_TIMEOUT_MS * 2,
   );

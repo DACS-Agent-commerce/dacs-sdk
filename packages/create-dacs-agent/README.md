@@ -42,8 +42,10 @@ mounts and data volumes; the template contains only configuration, command
 wiring and the seller fulfilment callback. With `--deploy docker` the project
 directory's name starts its compose project name, so it must already be a
 compose project name: lower-case letters, digits, `_` and `-`, starting with a
-letter or digit. A digest of the directory's full path completes the name, so
-directories with the same name never share a project. Its lifecycle commands
+letter or digit. A digest of a random identity generated for the project and
+the directory's full path completes the name, so directories with the same
+name never share a project, and nor does a new project generated where a
+moved one used to be. Its lifecycle commands
 refuse a compose project with containers from another directory, and, after
 the directory is moved, refuse to run until the project started from the old
 location has no containers left; the generated README gives the recovery.

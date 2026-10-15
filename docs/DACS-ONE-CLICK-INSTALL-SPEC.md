@@ -266,8 +266,10 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
   `compose.yaml` as its only file, the project's own directory, no build or
   pull, and exactly the `buyer` and `seller` services. The compose project name
   MUST be the directory's name, which MUST already be a compose project name and
-  is used without normalisation, followed by a digest of the directory's full
-  path, so that directories with the same name never share a project;
+  is used without normalisation, followed by a digest of a random identity the
+  generator gives the project and the directory's full path, so that
+  directories with the same name never share a project, and nor does a new
+  project generated at a path another project was moved from;
 - record the project it starts inside the project directory;
 - ignore `COMPOSE_*` environment variables and compose override files, and
   refuse to run while `.env` mentions `COMPOSE_`, while Compose is older than

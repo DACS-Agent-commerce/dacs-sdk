@@ -210,7 +210,8 @@ export async function createDacsAgentProject(
   }
   // The generated Docker lifecycle starts its compose project name with the
   // directory's name, unnormalised, so that names differing only in case or
-  // punctuation do not share one; a digest of the directory's path follows it.
+  // punctuation do not share one; a digest of the project's random identity
+  // and the directory's path follows it.
   if (mode === "live-demos" && deployment === "docker" &&
       !/^[a-z0-9][a-z0-9_-]*$/.test(basename(requestedTargetDirectory))) {
     throw new Error(
