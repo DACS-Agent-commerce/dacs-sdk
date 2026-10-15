@@ -40,6 +40,7 @@ const CASE = {
   failureCleared: "a timely completion clears retained failure evidence and wins",
   failureLockCompletion: "a timely completion of the lock a durable failure carries replaces it and blocks expiry",
   failureEvidence: "a failure that carries its lock is expiry evidence only as the durable observation",
+  completionLock: "a late completion is expiry evidence only for the durable lock and its deadline",
   contradictionCas: "a contradiction expires a lock only when stamped after its checkpoint and at or after the deadline, never while the operation is live",
   restart: "retained state survives a restart",
   settles: "through the core, crashes and restarts never double-send, lock more than the intent or settle an expired phase",
@@ -231,7 +232,6 @@ function rewritingWrites(
   };
 }
 
-/** Claims that overlap both read a free phase: the one that resumes first is granted a lease the store never wrote. */
 /**
  * Refuses a completion whenever the durable observation is a failure that
  * carries a lock, so that lock's timely release can never replace it.
@@ -261,6 +261,36 @@ function acceptingAnyContradictionExpiry(inner: LiquidityTankStore): Partial<Liq
   };
 }
 
+/**
+ * Records a late completion as expiry evidence wherever the reference store
+ * refuses it on the durable lock, when `skips` says so for that durable
+ * observation and the completion's lock.
+ */
+function skippingCompletionLockCas(
+  skips: (durable: { status: string; lockTxHash?: string }, completion: { lockTxHash: string }) => boolean,
+) {
+  return (inner: LiquidityTankStore): Partial<LiquidityTankStore> => {
+    const durable = new Map<string, LiquidityTankObservation>();
+    return {
+      recordObservation: async (input) => {
+        const result = await inner.recordObservation(input);
+        if (result.status === "recorded") durable.set(input.settlementKey, input.observation);
+        return result;
+      },
+      recordRecoveryExpired: async (input) => {
+        const result = await inner.recordRecoveryExpired(input);
+        const evidence = input.observation as { status: string; lockTxHash: string };
+        const prior = durable.get(input.settlementKey) as { status: string; lockTxHash?: string } | undefined;
+        return evidence.status === "completed" && prior !== undefined && result.status === "conflict" &&
+          result.reason === "liquidity-tank-recovery-checkpoint-cas-failed" && skips(prior, evidence)
+          ? { status: "recorded" }
+          : result;
+      },
+    };
+  };
+}
+
+/** Claims that overlap both read a free phase: the one that resumes first is granted a lease the store never wrote. */
 function raceyClaims(inner: LiquidityTankStore): Partial<LiquidityTankStore> {
   let inFlight = 0;
   return {
@@ -461,6 +491,15 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
       },
     };
   }), /expiry from a bare failure retained beside a checkpoint: store answered recorded/],
+  [CASE.completionLock, "takes a late completion of any lock as expiry evidence",
+    () => database(skippingCompletionLockCas(() => true)),
+    /late completion of another lock against a checkpoint: store answered recorded/],
+  [CASE.completionLock, "checks a late completion's lock hash but not its deadline",
+    () => database(skippingCompletionLockCas((prior, completion) => prior.lockTxHash === completion.lockTxHash)),
+    /late completion of the lock with another deadline against a checkpoint: store answered recorded/],
+  [CASE.completionLock, "checks a late completion against a checkpoint but not against a durable failure",
+    () => database(skippingCompletionLockCas((prior) => prior.status === "failed")),
+    /late completion of another lock against a durable failure that carries its lock: store answered recorded/],
   [CASE.contradictionCas, "records any contradiction expiry without its CAS",
     () => database(acceptingAnyContradictionExpiry),
     /contradiction stamped before the deadline: store answered recorded/],

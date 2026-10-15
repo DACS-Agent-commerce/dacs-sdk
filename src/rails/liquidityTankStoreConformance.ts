@@ -775,6 +775,29 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     }), true);
   }],
 
+  ["a late completion is expiry evidence only for the durable lock and its deadline", async (store, tag) => {
+    const expireAgainst = async (label: string, fixture: Fixture, write: WriteAuthority, durable: ObservationValue) => {
+      const late = fixture.completed(DEADLINE);
+      const expire = (observation: LiquidityTankRecoveryEvidence) =>
+        store.recordRecoveryExpired({ ...write, now: DEADLINE, expectedObservation: durable, observation });
+      await record(`late completion of another lock against ${label}`,
+        expire({ ...late, lockTxHash: "another-lock" }), false);
+      await record(`late completion of the lock with another deadline against ${label}`,
+        expire({ ...late, recoveryDeadline: DEADLINE - 100 }), false);
+      await record(`late completion of the lock against ${label}`, expire(late), true);
+    };
+    const checkpointed = new Fixture(tag, 0);
+    const locked = await lockWith(store, checkpointed, "owner-a", DEADLINE - 10, LEASE_MS, DEADLINE - 500);
+    await expireAgainst("a checkpoint", checkpointed, locked.write, locked.checkpoint);
+
+    const failing = new Fixture(tag, 1);
+    const write = await acquire(store, failing.intent, "owner-a", DEADLINE - 10);
+    await record("first submission", store.recordSubmission({ ...write, submission: failing.submission }), true);
+    const failure = failing.failedAfterLock(DEADLINE - 200);
+    await record("failure carrying its lock", store.recordObservation({ ...write, observation: failure }), true);
+    await expireAgainst("a durable failure that carries its lock", failing, write, failure);
+  }],
+
   ["a contradiction expires a lock only when stamped after its checkpoint and at or after the deadline, never while the operation is live",
     async (store, tag) => {
       const contradicted = (checkpoint: ObservationValue, contradiction: ObservationValue) =>
