@@ -263,20 +263,32 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
 - refuse to start unless `DACS_IMAGE` still resolves to the recorded image ID and
   the runtime user is unchanged;
 - start compose with the recorded image ID rather than the tag, the generated
-  `compose.yaml` as its only file, the project's own directory and name, no
-  build or pull, and exactly the `buyer` and `seller` services. The directory's
-  name MUST already be a compose project name, used without normalisation;
+  `compose.yaml` as its only file, the project's own directory, no build or
+  pull, and exactly the `buyer` and `seller` services. The compose project name
+  MUST be the directory's name, which MUST already be a compose project name and
+  is used without normalisation, followed by a digest of the directory's full
+  path, so that directories with the same name never share a project;
+- record the project it starts inside the project directory;
 - ignore `COMPOSE_*` environment variables and compose override files, and
   refuse to run while `.env` mentions `COMPOSE_`, while Compose is older than
-  v2.10, or while the compose project has a container created for another
-  project directory, as the generated `dacs:down` and maintenance stops also
-  MUST; and
+  v2.10, while the compose project has a container created for another
+  project directory, or while a project recorded from another directory still
+  has containers, as the generated `dacs:down` and maintenance stops also
+  MUST, and name that project and the recovery; and
 - stop both roles and fail unless compose started and created each from the
-  recorded image ID and the started containers could be checked, and report a
+  recorded image ID and the started containers could be checked, stop nothing
+  once the project has a container created for another directory, and report a
   failure to stop them or confirm that they stopped.
 
 The generated Docker lifecycle requires the Compose plugin v2.10 or later, and
 checks it before each compose call.
+
+The generator's tests run these commands against a test-only `docker` and run
+the image probe against a host-side stand-in for the image's production tree.
+No test or CI job yet builds the generated Dockerfile and smokes the built
+image, so the image's Node.js release, its better-sqlite3 native binding and
+its service command's role-check exit are enforced by `dacs:image:smoke` at
+deployment time but not proven in CI.
 
 `dacs:setup` owns bounded setup writes such as Listing and binding publication.
 Without live-write confirmation it MUST print a read-only plan and exit without

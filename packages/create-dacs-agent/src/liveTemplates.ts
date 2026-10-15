@@ -4569,7 +4569,7 @@ function dockerRuntimeSmoke(options: LiveProjectTemplateOptions): string {
     ...PROBE_ENTRY_POINTS,
     ...(options.rails === "pay-dem" ? [] : X402_PROBE_ENTRY_POINTS),
   ];
-  return `import { randomBytes } from "node:crypto";
+  return `import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -4606,18 +4606,25 @@ const mode = {
   '["--down"]': "down",
   '["--down","--remove-orphans"]': "decommission",
 }[JSON.stringify(process.argv.slice(2))];
-// The directory's name is the compose project name as it stands: compose would
-// otherwise normalise it, and two directories differing only in case or
-// punctuation would share one project. Two directories with the same name
-// would too, so no compose call runs while the project has a container that
-// compose created for another directory. Every compose call names the project,
-// with the generated compose.yaml, and passes compose no other COMPOSE_*
-// variable. Compose also imports COMPOSE_* variables from .env, in more forms
-// than a line start, so a .env that mentions COMPOSE_ at all is refused.
-// Neither COMPOSE_FILE, COMPOSE_PROJECT_NAME nor an override file such as
-// compose.override.yaml can add a service, replace the image or move the
-// project.
-const projectName = basename(projectPath);
+// The compose project name is the directory's name as it stands, which compose
+// would otherwise normalise, followed by a digest of the directory's full path,
+// so that two directories with the same name, such as prod/agent and
+// staging/agent, never share a project, not even when both start at once. No
+// compose call runs while the project has a container that compose created for
+// another directory. Every compose call names the project, with the generated
+// compose.yaml, and passes compose no other COMPOSE_* variable. Compose also
+// imports COMPOSE_* variables from .env, in more forms than a line start, so a
+// .env that mentions COMPOSE_ at all is refused. Neither COMPOSE_FILE,
+// COMPOSE_PROJECT_NAME nor an override file such as compose.override.yaml can
+// add a service, replace the image or move the project.
+const directoryName = basename(projectPath);
+const projectName = directoryName + "-" +
+  createHash("sha256").update(projectPath).digest("hex").slice(0, 12);
+// dacs:up records the project it starts here. Moving the directory changes the
+// project name, so until the recorded project's containers are gone, no compose
+// call runs from the new directory: it would neither stop the old roles nor
+// keep a second pair from starting on the same data.
+const projectRecordPath = new URL("compose-project.json", receiptDirectory);
 const services = ${quotedList(COMPOSE_SERVICES)};
 const composeArguments = [
   "compose",
@@ -4638,7 +4645,7 @@ function compose(args, settings = {}) {
   return child.status ?? 1;
 }
 
-if (mode === undefined || !${COMPOSE_PROJECT_NAME_PATTERN}.test(projectName)) {
+if (mode === undefined || !${COMPOSE_PROJECT_NAME_PATTERN}.test(directoryName)) {
   process.stderr.write("usage: node scripts/docker-runtime-smoke.mjs " +
     "[--up | --stop | --down [--remove-orphans]] from a project directory " +
     "whose name is a compose project name: lower-case letters, digits, _ and -, " +
@@ -4666,19 +4673,47 @@ function docker(args) {
 }
 
 const serviceOf = (container) => container?.Config?.Labels?.["com.docker.compose.service"];
-// Every container compose labelled with this project, running or not.
-function projectContainers() {
+const workingDirectoryOf = (container) =>
+  container?.Config?.Labels?.["com.docker.compose.project.working_dir"];
+// Every container compose labelled with this, or the named, project, running or not.
+function projectContainers(name = projectName) {
   const ids = docker([
     "ps", "--all", "--quiet", "--no-trunc",
-    "--filter", "label=com.docker.compose.project=" + projectName,
+    "--filter", "label=com.docker.compose.project=" + name,
   ]).split("\\n").filter((line) => line !== "");
   if (ids.length === 0) return [];
   const containers = JSON.parse(docker(["container", "inspect", ...ids]));
   if (!Array.isArray(containers)) throw new Error("docker container inspect returned no list");
   return containers;
 }
-// Exits before any compose call unless compose is v2.10 or later and every
-// container in the project was created by compose for this directory.
+// Why a compose call on this project could act on another directory's
+// containers: compose created one of them for another directory.
+function foreignContainers(containers) {
+  const foreign = containers.find((container) => workingDirectoryOf(container) !== projectPath);
+  return foreign === undefined ? undefined
+    : "compose project " + projectName + " has containers from " +
+      (workingDirectoryOf(foreign) ?? "an unknown directory") + ", not from " + projectPath;
+}
+// The project dacs:up last started from this project's files, if any.
+function recordedProject() {
+  let record;
+  try {
+    record = JSON.parse(readFileSync(projectRecordPath, "utf8"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") return undefined;
+    throw new Error(".dacs-runtime/compose-project.json is unreadable: " +
+      (error instanceof Error ? error.message : String(error)));
+  }
+  if (record === null || typeof record !== "object" || record.recordVersion !== 1 ||
+      typeof record.project !== "string" || !${COMPOSE_PROJECT_NAME_PATTERN}.test(record.project) ||
+      typeof record.directory !== "string") {
+    throw new Error(".dacs-runtime/compose-project.json is not a compose project record");
+  }
+  return record;
+}
+// Exits before any compose call unless compose is v2.10 or later, the project
+// dacs:up last started from another directory has no containers left, and
+// every container in this project was created by compose for this directory.
 function requireOwnProject() {
   let refusal;
   try {
@@ -4687,13 +4722,20 @@ function requireOwnProject() {
         (Number(version[1]) === 2 && Number(version[2]) < 10)) {
       refusal = "this project needs the Docker Compose plugin v2.10 or later";
     } else {
-      const foreign = projectContainers().find((container) =>
-        container?.Config?.Labels?.["com.docker.compose.project.working_dir"] !== projectPath);
-      if (foreign !== undefined) {
-        refusal = "compose project " + projectName + " already has containers from " +
-          (foreign.Config?.Labels?.["com.docker.compose.project.working_dir"] ??
-            "an unknown directory") +
-          "; move this project to a directory whose name no other compose project uses";
+      const record = recordedProject();
+      if (record !== undefined && record.project !== projectName &&
+          projectContainers(record.project).length > 0) {
+        refusal = "dacs:up last started this project's roles from " + record.directory +
+          " as compose project " + record.project + ", which still has containers. " +
+          "If this directory was moved from there, remove them with: docker compose " +
+          "--project-name " + record.project + " down, then rerun. If " + record.directory +
+          " is a copy still in use, delete .dacs-runtime/compose-project.json here instead";
+      } else {
+        const foreign = foreignContainers(projectContainers());
+        if (foreign !== undefined) {
+          refusal = foreign + "; this project's commands act only on containers compose " +
+            "created for this directory, so remove the others or move this directory";
+        }
       }
     }
   } catch (error) {
@@ -4748,8 +4790,12 @@ function startedMismatch(imageId) {
     : "service " + serviceOf(unexpected) + " is also running in compose project " + projectName;
 }
 // Stops both roles and confirms neither still runs; otherwise says why not.
+// Compose stops every buyer and seller in the project, so nothing is stopped
+// once the project also has containers compose created for another directory.
 function stopRoles(settings) {
   try {
+    const foreign = foreignContainers(projectContainers());
+    if (foreign !== undefined) return foreign + ", so none was stopped";
     const stopped = compose(["stop", ...services], settings);
     if (stopped !== 0) return "compose stop exited " + stopped;
     const running = projectContainers().find((container) =>
@@ -4778,6 +4824,15 @@ if (mode === "up") {
     process.exit(5);
   }
   requireOwnProject();
+  mkdirSync(receiptDirectory, { recursive: true, mode: 0o700 });
+  const temporaryRecord = new URL("compose-project.json." + process.pid + ".tmp",
+    receiptDirectory);
+  writeFileSync(temporaryRecord, JSON.stringify({
+    recordVersion: 1,
+    project: projectName,
+    directory: projectPath,
+  }) + "\\n", { mode: 0o600, flag: "wx" });
+  renameSync(temporaryRecord, projectRecordPath);
   const runtimeSettings = { DACS_IMAGE: imageId, DACS_RUNTIME_UID: uid, DACS_RUNTIME_GID: gid };
   // Report success only once each role's container was created from that ID.
   // A failed or partial start, a failed check and a mismatch all stop both roles.
@@ -5472,24 +5527,37 @@ Docker \`dacs:up\` reads that record and refuses to start unless
 unchanged. It then runs compose with \`DACS_IMAGE\` set to that image ID rather
 than the tag, so rebuilding or retagging after the check cannot change what
 starts. Compose gets this project's \`compose.yaml\` as its only file, this
-directory as its project directory, the directory's name as its project name,
-\`--no-build --pull never\`, and exactly the \`buyer\` and \`seller\` services. The
-directory's name must already be a compose project name (lower-case letters,
-digits, \`_\` and \`-\`, starting with a letter or digit), so compose does not
-normalise it. Two directories with the same name, such as \`prod/agent\` and
-\`staging/agent\`, would still share one project, so before any compose call
-\`dacs:up\`, \`dacs:down\` and the backup, restore and uninstall stops refuse to
-run while the project has a container that compose created for another
-directory. They also set \`COMPOSE_PROJECT_NAME\` to that name, remove every
-other \`COMPOSE_*\` variable, including \`COMPOSE_FILE\`, from compose's
+directory as its project directory, \`--no-build --pull never\`, and exactly the
+\`buyer\` and \`seller\` services. Its project name is the directory's name, a
+\`-\` and the first 12 hex digits of the SHA-256 of the directory's full path;
+\`dacs:up\` prints it as \`project\`. The directory's name must already be a
+compose project name (lower-case letters, digits, \`_\` and \`-\`, starting with
+a letter or digit), so compose does not normalise it, and two directories with
+the same name, such as \`prod/agent\` and \`staging/agent\`, never share a
+project. Before any compose call, \`dacs:up\`, \`dacs:down\` and the backup,
+restore and uninstall stops refuse to run while the project has a container
+that compose created for another directory.
+
+\`dacs:up\` records the project it starts in
+\`.dacs-runtime/compose-project.json\`. Moving or renaming the directory changes
+the project name, so while the recorded project still has containers these
+commands refuse to run and name it. If you moved the project, remove the old
+containers with \`docker compose --project-name <recorded project> down\`, which
+works from any directory and keeps both data directories, then rerun; if the
+recorded directory is a copy still in use, delete this directory's
+\`.dacs-runtime/compose-project.json\` instead.
+
+These commands also set \`COMPOSE_PROJECT_NAME\` to the project name, remove
+every other \`COMPOSE_*\` variable, including \`COMPOSE_FILE\`, from compose's
 environment, refuse to run while \`.env\` mentions \`COMPOSE_\` anywhere, and
 never read override files such as \`compose.override.yaml\`. Other compose
 settings still come from the shell and \`.env\`. Once compose returns,
 \`dacs:up\` checks that the buyer and seller containers were created from the
 recorded image ID and that no other service runs in the project. If compose
 fails, the check fails or the containers do not match, it stops both roles,
-confirms neither still runs and exits non-zero; if it cannot stop them it says
-so and exits 1.
+confirms neither still runs and exits non-zero. If it cannot stop them, or the
+project now has a container that compose created for another directory, it
+stops nothing more, says so and exits 1.
 
 These commands need the Docker CLI with the Compose plugin v2.10 or later, this
 project's documented minimum; each compose command checks \`docker compose

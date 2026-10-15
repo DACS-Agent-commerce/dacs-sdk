@@ -40,10 +40,22 @@ It does not start services, publish or pay. Generated Docker services use the
 same reviewed host image with separate non-root buyer/seller processes, secret
 mounts and data volumes; the template contains only configuration, command
 wiring and the seller fulfilment callback. With `--deploy docker` the project
-directory's name is its compose project name, so it must already be one:
-lower-case letters, digits, `_` and `-`, starting with a letter or digit. Its
-lifecycle commands refuse a compose project that already has containers from
-another directory of the same name.
+directory's name starts its compose project name, so it must already be a
+compose project name: lower-case letters, digits, `_` and `-`, starting with a
+letter or digit. A digest of the directory's full path completes the name, so
+directories with the same name never share a project. Its lifecycle commands
+refuse a compose project with containers from another directory, and, after
+the directory is moved, refuse to run until the project started from the old
+location has no containers left; the generated README gives the recovery.
+
+This package's tests run the generated `dacs:image:smoke`, `dacs:up` and
+`dacs:down` script against a test-only `docker` that models the Docker CLI and
+Compose, and run the image probe against a host-side stand-in for the image's
+production tree. No test or CI job builds the generated Dockerfile or runs the
+smoke against a built image, so the image-level guarantees (its Node.js
+release, the better-sqlite3 native binding inside the image, and the service
+exiting at its role check) are checked by the smoke at deployment time but not
+yet proven in CI.
 
 The live bootstrap currently supervises buyer and seller services. Its
 `--role` default is therefore restricted to `buyer` or `seller`; the generated

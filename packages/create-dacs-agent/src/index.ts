@@ -208,10 +208,9 @@ export async function createDacsAgentProject(
   if (run && !install) {
     throw new Error("--run cannot be combined with --no-install");
   }
-  // The generated Docker lifecycle uses the directory's name as its compose
-  // project name, unnormalised, so that names differing only in case or
-  // punctuation do not share one; it refuses a project already used from
-  // another directory.
+  // The generated Docker lifecycle starts its compose project name with the
+  // directory's name, unnormalised, so that names differing only in case or
+  // punctuation do not share one; a digest of the directory's path follows it.
   if (mode === "live-demos" && deployment === "docker" &&
       !/^[a-z0-9][a-z0-9_-]*$/.test(basename(requestedTargetDirectory))) {
     throw new Error(
