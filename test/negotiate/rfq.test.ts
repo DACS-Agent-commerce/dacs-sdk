@@ -17,6 +17,7 @@ import {
   type RfqTurnBody,
   type VerifiedListingInput,
 } from "../../src/index.js";
+import { isPhaseStep } from "../../src/artifacts/validators.js";
 
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
@@ -535,6 +536,15 @@ describe("bounded RFQ turn reducer", () => {
       openRfqSession(openInput(listing({ maxTurns: 2 })), reservation),
     ).resolves.toMatchObject({ decision: "pass", state: { maxTurns: 2 } });
     expect(reservation).toHaveBeenCalledOnce();
+  });
+
+  // The Listing validator's own check, which session opening otherwise masks.
+  test.each([
+    [0, false],
+    [1, false],
+    [2, true],
+  ])("RFQ-1: the Listing phase-step validator gives maxTurns %j %s", (maxTurns, valid) => {
+    expect(isPhaseStep({ kind: "negotiate-rfq", parameters: { maxTurns, timeoutSec: 10 } })).toBe(valid);
   });
 
   test("uses trusted receipt time, not sender sentAt, and times out without verification", async () => {
