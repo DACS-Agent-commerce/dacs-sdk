@@ -37,7 +37,13 @@ function fakeClient(
     async transfer(args) {
       self.sent = args;
       return (
-        over.result ?? { ok: true, state: "included", hash: TX_HASH, blockNumber: 4242 }
+        over.result ?? {
+          ok: true,
+          state: "included",
+          execution: "executed",
+          hash: TX_HASH,
+          blockNumber: 4242,
+        }
       );
     },
   };
@@ -174,6 +180,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       result: {
         ok: true,
         state: "included",
+        execution: "executed",
         hash: `0x${TX_HASH.toUpperCase()}`,
         blockNumber: 1,
       },
@@ -187,7 +194,9 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("broadcast ACCEPTANCE without observed inclusion → ok:false, no bft-final (steward finding)", async () => {
     // ok:true + a hash but NO terminal inclusion state: the node accepted the tx
     // for submission, it hasn't been observed to land. Must not mint bft-final.
-    const client = fakeClient({ result: { ok: true, hash: TX_HASH, blockNumber: 9 } });
+    const client = fakeClient({
+      result: { ok: true, execution: "executed", hash: TX_HASH, blockNumber: 9 },
+    });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
@@ -195,10 +204,37 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   });
 
   test("terminal inclusion state but NO block height → ok:false (finality witness missing)", async () => {
-    const client = fakeClient({ result: { ok: true, state: "included", hash: TX_HASH } });
+    const client = fakeClient({
+      result: { ok: true, state: "included", execution: "executed", hash: TX_HASH },
+    });
     const res = await payDemSettleCore(params(), client);
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
+  });
+
+  test.each([
+    ["no execution attestation", {}],
+    ["an execution attestation other than executed", { execution: "included" }],
+    ["a boolean execution attestation", { execution: true }],
+  ])("inclusion with %s → ok:false, no evidence (#338)", async (_case, execution) => {
+    // A client written to the pre-#338 contract reports inclusion alone as
+    // success; the core must not mint bft-final evidence from it.
+    const client = fakeClient({
+      result: {
+        ok: true,
+        state: "included",
+        hash: TX_HASH,
+        blockNumber: 7,
+        ...execution,
+      } as DemosTransferResult,
+    });
+    await expect(payDemSettleCore(params(), client)).resolves.toEqual({
+      ok: false,
+      txHash: TX_HASH,
+      chainId: "demos:testnet",
+      payer: PAYER,
+      payee: RECIPIENT,
+    });
   });
 
   test("a poll that timed out (nonterminal) → ok:false, no evidence", async () => {
@@ -211,7 +247,13 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("accepts the exact DACS-4 §9.5.9 terminal included state", async () => {
     expect([...TERMINAL_INCLUDED]).toEqual(["included"]);
     const client = fakeClient({
-      result: { ok: true, state: "included", hash: TX_HASH, blockNumber: 7 },
+      result: {
+        ok: true,
+        state: "included",
+        execution: "executed",
+        hash: TX_HASH,
+        blockNumber: 7,
+      },
     });
     await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
       ok: true,
@@ -224,7 +266,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     "fails closed for non-normative terminal state %s",
     async (state) => {
       const client = fakeClient({
-        result: { ok: true, state, hash: TX_HASH, blockNumber: 7 },
+        result: { ok: true, state, execution: "executed", hash: TX_HASH, blockNumber: 7 },
       });
       const res = await payDemSettleCore(params(), client);
       expect(res.ok).toBe(false);
@@ -237,7 +279,13 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     TERMINAL_INCLUDED.add("confirmed");
     try {
       const client = fakeClient({
-        result: { ok: true, state: "confirmed", hash: TX_HASH, blockNumber: 7 },
+        result: {
+          ok: true,
+          state: "confirmed",
+          execution: "executed",
+          hash: TX_HASH,
+          blockNumber: 7,
+        },
       });
       const res = await payDemSettleCore(params(), client);
       expect(res.ok).toBe(false);
@@ -270,6 +318,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     response.resolve({
       ok: true,
       state: "included",
+      execution: "executed",
       hash: TX_HASH,
       blockNumber: 12,
     });
@@ -292,6 +341,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
         return {
           ok: true,
           state: "included",
+          execution: "executed" as const,
           hash: TX_HASH,
           blockNumber: 12,
         };

@@ -20,6 +20,18 @@ read again every `inclusionPollIntervalMs` until `transactionRecordTimeoutMs`
 the transaction hash, so the settlement intent stays held, and no path
 broadcasts again.
 
+## Custom native clients
+
+`payDemSettleCore` accepts any `DemosNativeClient`. It reports success only
+when the client's result has `ok: true`, `state: "included"`, a block number
+and `execution: "executed"`. `execution: "executed"` is the client's statement
+that it read the node's transaction record and that record shows the prepared
+transfer executed at that block, as described above. `createPayDemRail` sets
+it only after that check. A client that observed only the status index must
+leave it out. Its `included` result then returns `ok: false` with no finality,
+so the intent stays held and nothing is resubmitted. This includes a client
+written before #338, when `included` alone meant success.
+
 ## Node behaviour this depends on
 
 The mapping was verified against kynesyslabs/node

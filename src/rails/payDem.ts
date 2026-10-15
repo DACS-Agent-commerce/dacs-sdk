@@ -306,6 +306,14 @@ export interface DemosTransferResult {
    * transfer executed (#338).
    */
   state?: string;
+  /**
+   * `"executed"` when the client read the node's transaction record for the
+   * signed hash and it shows the prepared transfer executed at `blockNumber`
+   * (#338). Inclusion alone is not execution: {@link payDemSettleCore} reports
+   * success only when this is present, so a client that observed only the
+   * status index fails closed.
+   */
+  execution?: "executed";
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
   /** Confirmed transfer amount plus network fee, in integer OS. */
@@ -327,9 +335,9 @@ export interface DemosNativeClient {
   address: string;
   /**
    * Sign, confirm, and broadcast a native DEM transfer; resolve its receipt.
-   * Resolve `ok: true, state: "included"` only when the node's transaction
-   * record for the signed hash shows the exact prepared transfer executed;
-   * inclusion alone is not success (#338).
+   * Resolve `ok: true, state: "included", execution: "executed"` only when the
+   * node's transaction record for the signed hash shows the exact prepared
+   * transfer executed; inclusion alone is not success (#338).
    */
   transfer(args: {
     to: string;
@@ -633,6 +641,11 @@ export async function payDemSettleCore(
     "blockNumber",
     "pay-dem transfer result blockNumber",
   );
+  const executionProperty = stableDataProperty(
+    response,
+    "execution",
+    "pay-dem transfer result execution",
+  );
   const totalDebitProperty = stableDataProperty(
     response,
     "totalDebitOs",
@@ -668,11 +681,14 @@ export async function payDemSettleCore(
   // Observed inclusion (§9.5.9): a verifiable tx id AND the exact terminal
   // `included` state AND the finality-witness block height. Broadcast acceptance
   // or an unregistered status alias is NOT finality — without these three, we do
-  // not stamp bft-final, because the tx may never have landed.
+  // not stamp bft-final, because the tx may never have landed. Inclusion is not
+  // execution either (#338): the client must also attest that the node's
+  // transaction record shows the transfer executed.
   const observedFinal =
     okProperty.value === true &&
     txHash.length > 0 &&
     state === DACS_DEMOS_INCLUDED_STATE &&
+    executionProperty.value === "executed" &&
     Number.isSafeInteger(blockNumber) &&
     (blockNumber as number) >= 0;
 
@@ -1708,6 +1724,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       return {
         ok: true,
         state: "included",
+        execution: "executed",
         hash: txHash,
         blockNumber: terminal.blockNumber,
         ...(confirmedDebitOs === null
