@@ -119,6 +119,20 @@ the timeout has passed, the waiting member's send is refused with
 after the timeout records it too. Our own reject or abort reason is limited to
 4,096 characters.
 
+The agreement exchange after acceptance (DACS-3 §8.4.2 steps 4–5) has the same
+timeout. Acceptance sets `awaitingSince` to its trusted receipt time on each
+member. The buyer's proposal is due `timeoutMs` after that, and the seller's
+contribution `timeoutMs` after the buyer generated the proposal's plan. Once
+the step a member waits on is overdue, `sendAbort()`, any other send call, or
+`startAgreement()` answers `rejected` with "RFQ agreement timeout elapsed
+(RFQ-4)" and stores the `timeout` failure; the session stays `accepted` and
+nothing is signed or published. A proposal the seller receives after its
+deadline records the timeout before the seller signs anything. A contribution
+the buyer receives late still finalizes while the buyer has recorded no
+timeout, because the seller finalized when it sent it; after the buyer has
+recorded one, it is refused, and the two records disagree, as any timeout
+race can leave them.
+
 `receive()` returns `rejected` only as its answer about the packet: it is
 malformed or misrouted; its job does not exist, has failed, or is stored
 corrupt or in an unsupported version; its RFQ turn timed out; or the turn, plan
@@ -246,8 +260,9 @@ SR-4 channel. It does not provide:
 - the §8.3.4 member acknowledgement. An acknowledgement here is the node's
   statement that it stored the frame (below), not a receipt from the other
   member. The member waiting on a reply detects a silent or censored channel
-  through the RFQ-4 turn timeout instead: once it has elapsed, any send call,
-  such as `sendAbort()`, records the timeout as the job's terminal failure.
+  through the RFQ-4 timeout instead, during the turns and during the
+  agreement exchange: once it has elapsed, `sendAbort()` records the timeout
+  as the job's terminal failure (above).
 - a normative channel-signature profile. Signing and verification stay with
   the lifecycle's callbacks until DACS-Standard#349 settles the framing.
 
@@ -536,8 +551,8 @@ can still become `acknowledged` when our exact frame appears, or `rejected` on
 a conflicting frame. The SDK has no call that clears a `duplicate` entry. Handle it like a
 failed history entry (below): if the counterparty did receive the packet, its
 reply still arrives through `receive()` and the job continues. Only otherwise
-may the host need to end the job (once the counterparty's turn timeout has
-passed, `sendAbort()` records it as the job's failure) and open a new one with
+may the host need to end the job (once the counterparty's turn or agreement
+step is overdue, `sendAbort()` records the timeout as the job's failure) and open a new one with
 a new `jobId` and `channelId`.
 
 The limits of this evidence:
@@ -548,11 +563,28 @@ The limits of this evidence:
   message.
 - A `failed` history row for the packet blocks every resend, permanently.
 - Nothing bounds when a timed-out send lands.
+- Node `61b8e75` refuses a sender's message once 200 of its offline messages
+  are undelivered, with "Offline message limit reached", before storing it
+  (`L2PSMessagingService.ts:39-105`); demosdk passes on only that text. The
+  transport treats it like any failed send: `indeterminate`, and resent after
+  the grace once history proves absence. It is never an acknowledgement. Only
+  the RFQ-4 timeout ends such a job.
+- The node pages history by timestamp alone, with a strict `timestamp <
+  before` cursor (`L2PSMessagingService.ts:337-374`). When more than a page of
+  the pair's rows share one millisecond, the rows past the page on that
+  millisecond appear on no page. Recovery and reconcile then stay
+  `indeterminate` and never resend, but such a packet is not recovered until
+  the node pages by timestamp and row ID.
 - All of this describes node `61b8e75`; recheck it when the node changes.
   The transport has no node version handshake. Before deploying, check that
-  the node's `getNetworkInfo` reports commit `61b8e75` and is not `dirty`,
-  and that the installed demosdk is 4.0.16 or a release whose
-  `instant_messaging/L2PSMessagingPeer.js` and `l2ps_types.d.ts` match it.
+  the node's `getNetworkInfo` reports commit
+  `61b8e75aa8db5e408c49e1c3a89db4d673f45578` and `dirty: false` (demosdk's
+  `NetworkInfo` type omits that `nodeVersion` field, so read it untyped),
+  and that the installed demosdk's `build/instant_messaging/L2PSMessagingPeer.js`
+  and `l2ps_types.d.ts` have SHA-256 `997e6275122abbd738e2817c6396db60cba72e5859b8c0830b9b942a746c75be`
+  and `974b1abe8ad57d3eecc0f91c489b0491a44f31ae36b6e54da4e231343b75d0f2`, as
+  in 4.0.16 through 4.0.18. The SDK's own tests check those two hashes
+  against the locked demosdk.
   The duplicate handling above keys on the node's exact "Duplicate message"
   text.
 
@@ -609,13 +641,18 @@ answers `rejected` before the send outbox is written for a packet whose
 canonical bytes are larger, or for a custom codec's frame over the limit; the
 lifecycle records that as a terminal transport failure instead of resending a
 frame the node can never take. The lifecycle itself refuses our own reject or
-abort reason over 4,096 characters before anything is signed or stored, so a
-terminal turn always fits.
+abort reason over 4,096 characters before anything is signed or stored. Even
+fully escaped (4,096 control characters become 24,576 bytes), such a reason
+leaves room for the envelope, so a terminal turn fits as long as the host's
+channel signature (`TSignature`, which the SDK does not measure) stays small.
+A turn that does not fit is still refused before the outbox write and
+recorded as a terminal transport failure.
 
 Payloads from Demos are size-checked before they are copied or canonicalized:
 a frame over that limit, a history page of more than 100 entries, or a page
 whose strings total more than 100 × (131,072 + 8,192) characters is refused.
-A page of node-written rows stays well within that budget. A refused live
+Only sender-chosen fields shaped like an RFQ frame are charged (below), so a
+full page of rows the node accepts stays within that budget. A refused live
 payload goes to `onError`; a refused history page makes reconciliation or
 recovery `indeterminate`.
 
@@ -721,10 +758,12 @@ resend even after the grace expires. The SDK currently has no call that clears
 such a failed-history entry: `resumeOutbox()` keeps returning `indeterminate`.
 If the counterparty did receive the packet, its reply still arrives through
 `receive()` and the job continues, with the stale entry left `indeterminate`.
-Otherwise end the job: once the counterparty's turn timeout has passed on the
-trusted clock, `sendAbort()` (or any other send call) records the RFQ-4
-timeout as the job's terminal failure, without signing or sending anything;
-before that it is refused with "counterparty owns the next RFQ turn". Then
+Otherwise end the job: once the counterparty's turn, or the agreement step
+this member waits on, is overdue on the trusted clock, `sendAbort()` records
+the RFQ-4 timeout as the job's terminal failure, without signing or sending
+anything; before that it is refused ("counterparty owns the next RFQ turn"
+while the session is open, "RFQ session is already terminal" after
+acceptance). Then
 open a new job with a new `jobId` and `channelId`. Alert on outbox entries
 that remain `indeterminate` across restarts. An operator redrive or
 acknowledgement call is tracked as a follow-up.
@@ -743,7 +782,10 @@ never deletes a row (`L2PSMessagingServer.ts:236-250`). A row whose
 sender-chosen fields are not shaped like an RFQ frame is therefore skipped,
 not refused: a `messageHash` that is not a lower-case SHA-256 hash (demosdk's
 own `L2PSChannelTransport` sends 128 hex digits), or an `encrypted` value
-that is not a well-formed frame. Reconciliation ignores such a row, and
+that is not a record of Base64 string `ciphertext` and `nonce` within the
+frame limits and an optional well-formed string `ephemeralKey` (a number, for
+example, even one too large for the canonical form). Such a field is replaced
+by `null` and not charged to the page budget. Reconciliation ignores such a row, and
 `resumeInbound()` counts it in `ignored` without offering it to the consumer
 or becoming `indeterminate`. A malformed node-written field still refuses the
 whole page. A row under our packet ID and route whose frame is not well
