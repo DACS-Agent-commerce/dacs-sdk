@@ -466,7 +466,16 @@ describe("session bootstrap agreement tracks", () => {
     expect(value.buyerSend).not.toHaveBeenCalled();
   });
 
-  it("stops before agreement and resumes a locally produced Vet failure", async () => {
+  // DACS-2 VPC-4/VP-R4: every authenticated non-pass decision ends the phase.
+  // A `fail` is the seller's fault; `indeterminate` or `error` is the buyer's
+  // own `permanent` failure as the verifier.
+  it.each([
+    ["fail", "counterparty", "seller"],
+    ["indeterminate", "permanent", "buyer"],
+    ["error", "permanent", "buyer"],
+    // A finalized bundle whose Vet phase carries no VPC-4 class is refused.
+    ["fail", "transient", "seller"],
+  ] as const)("stops before agreement and resumes a locally produced Vet %s (%s)", async (decision, errorClass, faultedParty) => {
     const value = await fixture();
     const sellerTrack = createDacsSellerSessionBootstrapAgreementTrackV1({
       context: value.sellerContext,
@@ -480,7 +489,7 @@ describe("session bootstrap agreement tracks", () => {
       required: [{ scheme: "did", verificationRequired: true }],
     });
     const production = Object.freeze({
-      record: Object.freeze({ overallDecision: "fail" as const }),
+      record: Object.freeze({ overallDecision: decision }),
     }) as never;
     const vet = {
       produce: vi.fn(async () => Object.freeze({
@@ -513,7 +522,10 @@ describe("session bootstrap agreement tracks", () => {
         disposition: "finalised" as const,
         recovered: true,
         result: {
-          bundle: { faultedParty: "seller" },
+          bundle: {
+            faultedParty,
+            phaseSummary: [{ index: 0, kind: "vet-credentials", outcome: "fail", errorClass }],
+          },
           planHash: "a".repeat(64),
           publication: { nativeAddress: "stor-terminal-buyer-copy" },
         },
@@ -580,14 +592,16 @@ describe("session bootstrap agreement tracks", () => {
     expect(vet.produce).toHaveBeenCalledTimes(1);
     expect(agreement).not.toHaveBeenCalled();
 
-    await expect(buyerTrack(value.buyerOperation)).resolves.toEqual({
-      status: "final",
-      outcome: "failure",
-      errorClass: "counterparty",
-      faultedParty: "seller",
-      reference: "stor-terminal-buyer-copy",
-      authenticationHash: "a".repeat(64),
-    });
+    await expect(buyerTrack(value.buyerOperation)).resolves.toEqual(errorClass === "transient"
+      ? { status: "operator-action", reasonCode: "vet-terminal-finalization-invalid" }
+      : {
+          status: "final",
+          outcome: "failure",
+          errorClass,
+          faultedParty,
+          reference: "stor-terminal-buyer-copy",
+          authenticationHash: "a".repeat(64),
+        });
     expect(registerLocalTerminal).toHaveBeenCalledTimes(1);
     expect(vet.produce).toHaveBeenCalledTimes(1);
     expect(agreement).not.toHaveBeenCalled();
@@ -695,9 +709,7 @@ describe("session bootstrap agreement tracks", () => {
     expect(agreement).not.toHaveBeenCalled();
   });
 
-  // DACS-2 VPC-3, VPC-4 and VP-R4: this role acts on a
-  // produced Vet only once it authenticates, and an authenticated
-  // `indeterminate` or `error` decision is never retried.
+  // DACS-2 VPC-3: this role acts on a produced Vet only once it authenticates.
   it.each<[
     string,
     "pass" | "fail" | "indeterminate" | "error",
@@ -710,10 +722,6 @@ describe("session bootstrap agreement tracks", () => {
       { status: "indeterminate", reasonCode: "buyer-session-seller-vet-pending" }],
     ["an invalid pass", "pass", "invalid",
       { status: "operator-action", reasonCode: "buyer-session-seller-vet-invalid" }],
-    ["an authenticated indeterminate decision", "indeterminate", "valid",
-      { status: "operator-action", reasonCode: "session-vet-decision-indeterminate" }],
-    ["an authenticated error decision", "error", "valid",
-      { status: "operator-action", reasonCode: "session-vet-decision-error" }],
   ])("the buyer does not act on %s", async (_label, decision, authentication, expected) => {
     const value = await fixture();
     const sellerTrack = createDacsSellerSessionBootstrapAgreementTrackV1({
@@ -789,19 +797,23 @@ describe("session bootstrap agreement tracks", () => {
     expect(agreement).not.toHaveBeenCalled();
   });
 
+  // An authenticated non-pass decision is this seller's terminal to produce
+  // (DACS-2 VPC-4); it never admits the buyer.
   it.each<[
     string,
-    "pass" | "fail" | "indeterminate",
+    "pass" | "fail" | "indeterminate" | "error",
     "valid" | "indeterminate",
     Readonly<Record<string, unknown>>,
+    boolean,
   ]>([
     ["an unauthenticated failure", "fail", "indeterminate",
-      { status: "indeterminate", reasonCode: "seller-session-buyer-vet-pending" }],
+      { status: "indeterminate", reasonCode: "seller-session-buyer-vet-pending" }, false],
     ["an unauthenticated pass", "pass", "indeterminate",
-      { status: "indeterminate", reasonCode: "seller-session-buyer-vet-pending" }],
-    ["an authenticated indeterminate decision", "indeterminate", "valid",
-      { status: "operator-action", reasonCode: "session-vet-decision-indeterminate" }],
-  ])("the seller does not admit the buyer on %s", async (_label, decision, authentication, expected) => {
+      { status: "indeterminate", reasonCode: "seller-session-buyer-vet-pending" }, false],
+    ["an authenticated failure", "fail", "valid", {}, true],
+    ["an authenticated indeterminate decision", "indeterminate", "valid", {}, true],
+    ["an authenticated error decision", "error", "valid", {}, true],
+  ])("the seller does not admit the buyer on %s", async (_label, decision, authentication, expected, terminal) => {
     const value = await fixture();
     const vet = {
       produce: vi.fn(async () => Object.freeze({
@@ -876,7 +888,7 @@ describe("session bootstrap agreement tracks", () => {
     await expect(sellerTrack(sellerOperation)).resolves.toMatchObject(expected);
     expect(vet.authenticate).toHaveBeenCalled();
     expect(lastMessage(value.sellerSend).type).not.toBe("session-admission");
-    expect(registerLocalTerminal).not.toHaveBeenCalled();
+    expect(registerLocalTerminal).toHaveBeenCalledTimes(terminal ? 1 : 0);
     expect(registerLocalVetPass).not.toHaveBeenCalled();
     expect(sellerAgreement).not.toHaveBeenCalled();
   });

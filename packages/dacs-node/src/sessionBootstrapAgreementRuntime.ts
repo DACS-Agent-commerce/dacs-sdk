@@ -426,7 +426,11 @@ export async function advanceDacsVetTerminalTrackV1(
   }
   if (progress.disposition === "finalised") {
     const faultedParty = progress.result.bundle.faultedParty;
+    // VPC-4: `counterparty` for a `fail`, `permanent` for `indeterminate`/`error`.
+    const errorClass = progress.result.bundle.phaseSummary
+      .find((phase) => phase.kind === "vet-credentials" && phase.outcome === "fail")?.errorClass;
     if ((faultedParty !== "buyer" && faultedParty !== "seller") ||
+        (errorClass !== "counterparty" && errorClass !== "permanent") ||
         !HASH_RE.test(progress.result.planHash) ||
         typeof progress.result.publication.nativeAddress !== "string" ||
         progress.result.publication.nativeAddress.length === 0) {
@@ -435,7 +439,7 @@ export async function advanceDacsVetTerminalTrackV1(
     return Object.freeze({
       status: "final" as const,
       outcome: "failure" as const,
-      errorClass: "counterparty" as const,
+      errorClass,
       faultedParty,
       reference: progress.result.publication.nativeAddress,
       authenticationHash: progress.result.planHash,
@@ -788,19 +792,14 @@ async function authenticateProducedVet(
   }
 }
 
-// DACS-2 VPC-4 and VP-R4: an authenticated `indeterminate` or `error` decision
-// fails the Vet phase as `permanent` and is never retried. This host cannot
-// produce the failed-perm terminal bundle for it yet (the core Vet terminal
-// plan covers `fail` only), so the phase stops before agreement for an
-// operator instead of waiting on a decision that will not change.
-function nonTerminalVetDecision(
+// DACS-2 VPC-4 and VP-R4: every authenticated non-pass decision fails the Vet
+// phase and is never retried. `fail` is the evaluated party's fault; an
+// `indeterminate` or `error` decision is the verifier's own `permanent`
+// failure. Both end at DACS-5 `vet-failed` with a terminal bundle.
+function terminalVetDecision(
   decision: CompositeVerificationRecord["overallDecision"],
-): Readonly<FixedPriceX402TrackOperationResult> | undefined {
-  if (decision === "pass" || decision === "fail") return undefined;
-  return operator(
-    decision === "error" ? "session-vet-decision-error" :
-      "session-vet-decision-indeterminate",
-  );
+): boolean {
+  return decision === "fail" || decision === "indeterminate" || decision === "error";
 }
 
 export function createDacsBuyerSessionBootstrapAgreementTrackV1(
@@ -934,11 +933,7 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
         "indeterminate",
       );
     }
-    const sellerDecision = nonTerminalVetDecision(
-      sellerVet.production.record.overallDecision,
-    );
-    if (sellerDecision !== undefined) return sellerDecision;
-    if (sellerVet.production.record.overallDecision === "fail") {
+    if (terminalVetDecision(sellerVet.production.record.overallDecision)) {
       return await finalizeLocalVetFailure(
         options.terminalBundle,
         context,
@@ -978,10 +973,8 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
       return pending(context, delay, "buyer-session-admission-vet-pending", "indeterminate");
     }
     if (buyerProduction.record.overallDecision !== "pass") {
-      const remoteDecision = nonTerminalVetDecision(
-        buyerProduction.record.overallDecision,
-      );
-      return remoteDecision ?? pending(
+      // The seller, who ran this Vet, produces the terminal plan.
+      return pending(
         context,
         delay,
         "buyer-session-admission-terminal-pending",
@@ -1178,11 +1171,7 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         "indeterminate",
       );
     }
-    const buyerDecision = nonTerminalVetDecision(
-      buyerVet.production.record.overallDecision,
-    );
-    if (buyerDecision !== undefined) return buyerDecision;
-    if (buyerVet.production.record.overallDecision === "fail") {
+    if (terminalVetDecision(buyerVet.production.record.overallDecision)) {
       return await finalizeLocalVetFailure(
         options.terminalBundle,
         context,

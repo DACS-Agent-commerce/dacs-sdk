@@ -2,7 +2,6 @@ import { types as nodeTypes } from "node:util";
 
 import {
   advanceTerminalBundleDurable,
-  attestationBundleHash,
   createTerminalBundlePlan,
   createTerminalBundleSignatureContribution,
   prepareVetTerminalBundle,
@@ -12,7 +11,6 @@ import {
   type PreparedVetTerminalBundle,
   type DurableTerminalBundleProgress,
   type DurableTerminalBundleProvider,
-  type TerminalBundleAnchorPublication,
   type TerminalBundlePlan,
   type TerminalBundleResolution,
   type TerminalBundleSignatureContribution,
@@ -38,6 +36,7 @@ import {
   type DacsPreAgreementPhaseV1,
 } from "./preAgreementPhase.js";
 import { createDacsDemosBundlePublicationV1 } from "./demosBundlePublication.js";
+import { createVetTerminalBundleProvider } from "./vetTerminalBundleProvider.js";
 import { captureDacsFixedPriceX402ApplicationV1 } from
   "./fixedPriceX402Profile.js";
 import { loadDacsLiveOrderInputV1 } from "./orderInput.js";
@@ -1253,7 +1252,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         reasonCode: "vet-terminal-proposal-invalid",
       });
     }
-    if (prepared.status === "indeterminate" || prepared.status === "retry") {
+    if (prepared.status === "indeterminate") {
       return Object.freeze({
         disposition: "indeterminate" as const,
         reasonCode: "vet-terminal-production-indeterminate",
@@ -1745,120 +1744,18 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     if (buyer === undefined || seller === undefined) {
       throw new DacsVetTerminalBundleTransportError("vet-terminal-plan-party-mismatch");
     }
-    const publication = createDacsDemosBundlePublicationV1({
-      context,
-      jobId: proposal.plan.authority.jobId,
-      buyer: buyer.primaryClaim,
-      seller: seller.primaryClaim,
+    return createVetTerminalBundleProvider({
+      role,
+      publication: createDacsDemosBundlePublicationV1({
+        context,
+        jobId,
+        buyer: buyer.primaryClaim,
+        seller: seller.primaryClaim,
+      }),
+      assertNoPlanConflict: () => assertNoPlanConflict(context, jobId),
+      conflictFenced: (callback) => invokeConflictFenced(context, jobId, callback),
+      refuse: (reason) => new DacsVetTerminalBundleTransportError(reason),
     });
-    const verify = (
-      result: "valid" | "invalid" | "indeterminate" | "error",
-      invalidReason: string,
-      indeterminateReason: string,
-    ) => result === "valid"
-      ? Object.freeze({ disposition: "valid" as const })
-      : result === "invalid"
-        ? Object.freeze({ disposition: "invalid" as const, reason: invalidReason })
-        : Object.freeze({
-            disposition: "indeterminate" as const,
-            reason: indeterminateReason,
-          });
-    const provider: DurableTerminalBundleProvider = {
-      async resolveOwnBundle(input) {
-        await assertNoPlanConflict(context, jobId);
-        if (input.role !== role) {
-          return { disposition: "rejected" as const,
-            reason: "vet-terminal-bundle-role-mismatch" };
-        }
-        try {
-          const anchored = await publication.resolveRoleBundle(role);
-          if (anchored === null) {
-            return { disposition: "authoritatively-absent" as const,
-              reason: "vet-terminal-bundle-absent" };
-          }
-          if (anchored.anchorReceipt.state !== "finalized") {
-            return { disposition: "indeterminate" as const,
-              reason: "vet-terminal-bundle-finality-pending" };
-          }
-          const bundleContentHash = attestationBundleHash(anchored.bundle);
-          if (anchored.anchorReceipt.logicalAddress !== input.logicalAddress ||
-              bundleContentHash !== input.bundleContentHash) {
-            return { disposition: "rejected" as const,
-              reason: "vet-terminal-bundle-conflict" };
-          }
-          const value: TerminalBundleAnchorPublication = {
-            role,
-            logicalAddress: input.logicalAddress,
-            nativeAddress: anchored.nativeAddress,
-            bundleContentHash,
-            bundle: anchored.bundle,
-            anchorReceipt: anchored.anchorReceipt,
-            ...(anchored.anchorTx === undefined ? {} : { anchorTx: anchored.anchorTx }),
-          };
-          return { disposition: "present" as const, value: Object.freeze(value) };
-        } catch {
-          return { disposition: "indeterminate" as const,
-            reason: "vet-terminal-bundle-resolution-unavailable" };
-        }
-      },
-      async submitOwnBundle(input) {
-        if (input.role !== role) {
-          throw new DacsVetTerminalBundleTransportError(
-            "vet-terminal-bundle-role-mismatch",
-          );
-        }
-        await invokeConflictFenced(context, jobId, () =>
-          publication.submitRoleBundle(role, input.logicalAddress, input.bundle));
-      },
-      async verifyOwnBundlePublication(input) {
-        if (input.role !== role) {
-          return { disposition: "invalid" as const,
-            reason: "vet-terminal-bundle-role-mismatch" };
-        }
-        return verify(
-          await publication.verifyBundleAnchorReceipt({
-            bundle: input.bundle,
-            nativeAddress: input.nativeAddress,
-            anchorReceipt: input.anchorReceipt,
-            ...(input.anchorTx === undefined ? {} : { anchorTx: input.anchorTx }),
-          }),
-          "vet-terminal-bundle-publication-invalid",
-          "vet-terminal-bundle-publication-indeterminate",
-        );
-      },
-      async resolveOwnBundleBinding(input) {
-        await assertNoPlanConflict(context, jobId);
-        if (input.role !== role) {
-          return { disposition: "rejected" as const,
-            reason: "vet-terminal-binding-role-mismatch" };
-        }
-        const resolved = await publication.resolveBundleBinding(
-          input.logicalAddress,
-          input.signer,
-        );
-        return resolved.disposition === "present"
-          ? { disposition: "present" as const, value: resolved.binding }
-          : resolved.disposition === "absent"
-            ? { disposition: "authoritatively-absent" as const,
-                reason: "vet-terminal-binding-absent" }
-            : resolved;
-      },
-      async publishOwnBundleBinding(binding) {
-        const result = await invokeConflictFenced(context, jobId, () =>
-          publication.publishRoleBundleBinding(role, binding));
-        if (result.disposition !== "published") {
-          throw new DacsVetTerminalBundleTransportError(result.reason);
-        }
-      },
-      async verifyOwnBundleBinding(binding) {
-        return verify(
-          await publication.verifyBundleBinding(binding),
-          "vet-terminal-binding-invalid",
-          "vet-terminal-binding-indeterminate",
-        );
-      },
-    };
-    return Object.freeze(provider);
   };
 
   const validatePayload: DacsHttpPayloadValidatorV1 = async (input) => {
@@ -2118,7 +2015,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       } catch {
         throw new DacsVetTerminalBundleTransportError("vet-terminal-input-invalid");
       }
-      if (prepared.status === "indeterminate" || prepared.status === "retry") {
+      if (prepared.status === "indeterminate") {
         throw new DacsVetTerminalBundleTransportError(
           "vet-terminal-production-indeterminate",
         );

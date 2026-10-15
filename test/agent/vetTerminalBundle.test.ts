@@ -194,15 +194,37 @@ describe("terminal Vet bundle preparation", () => {
     })).toThrow(/only an abort authority/i);
   });
 
-  test.each(["indeterminate", "error"] as const)(
-    "keeps an authenticated %s decision non-terminal and blameless",
-    async (decision) => {
-      const result = await prepareVetTerminalBundle(input(decision), authentication());
-      expect(result).toMatchObject({ status: "retry", decision });
-      expect(result).not.toHaveProperty("authority");
-      expect(result).not.toHaveProperty("faultedParty");
-    },
-  );
+  // DACS-2 VPC-4/VP-R4: never retried; the phase fails as `permanent`, the
+  // verifier's own failure, so the verifier's copy reads `failed-perm`.
+  test.each([
+    ["indeterminate", "authenticated-vet-indeterminate"],
+    ["error", "authenticated-vet-error"],
+  ] as const)("ends an authenticated %s decision as the verifier's permanent failure", async (decision, reason) => {
+    const result = await prepareVetTerminalBundle(input(decision), authentication());
+    expect(result).toMatchObject({
+      status: "terminal",
+      state: "vet-failed",
+      faultedParty: "buyer",
+      sessionRecord: {
+        state: "vet-failed",
+        phaseResults: [{ result: { ok: false, reason, errorClass: "permanent" } }],
+      },
+      authority: {
+        terminalClass: "failure",
+        faultedParty: "buyer",
+        terminalPhase: { kind: "vet-credentials", state: "failed", errorClass: "permanent" },
+        phaseSummary: [{ index: 0, kind: "vet-credentials", outcome: "fail",
+          errorClass: "permanent", attestationRef: input(decision).production.recordRef }],
+        vetRecords: [input(decision).production.recordRef],
+      },
+    });
+    if (result.status !== "terminal") throw new Error();
+    // The evaluated seller's copy names the buyer: failed-counterparty there,
+    // failed-perm in the buyer's own copy (DACS-5 §10.4.1).
+    const plan = createTerminalBundlePlan(result.authority, { kind: "co-signed" });
+    const outcomes = Object.fromEntries(plan.copies.map((entry) => [entry.role, entry.outcome]));
+    expect(outcomes).toEqual({ buyer: "failed-perm", seller: "failed-counterparty" });
+  });
 
   test("passes an authenticated passing record without producing terminal state", async () => {
     const result = await prepareVetTerminalBundle(input("pass"), authentication());

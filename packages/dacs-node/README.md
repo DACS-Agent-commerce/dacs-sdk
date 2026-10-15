@@ -180,8 +180,11 @@ A terminal proposal carries the exact
 finalized `VetProduction` as well as the derived co-signed plan; each role
 independently authenticates the production, reconstructs the authority and
 requires byte-equivalent canonical output before retaining or signing it.
-`pass` creates no terminal authority, while `indeterminate`, verifier outage,
-or a non-terminal Vet decision remains retryable and produces no blame.
+`pass` creates no terminal authority, and a verifier outage remains retryable
+and produces no blame. Every authenticated non-pass decision ends the Vet phase
+at `vet-failed` (DACS-2 VPC-4, VP-R4): `fail` is the evaluated party's
+`counterparty` fault, while `indeterminate` or `error` is the verifier's own
+`permanent` failure, so the verifier's copy reads `failed-perm`.
 
 When configured, the returned graph exposes `terminalBundles`.
 `registerLocalTerminal(input)` durably binds locally observed failure material,
@@ -406,14 +409,19 @@ Demos readbacks, finalized receipts, BB-1 bindings, and the complete seller
 ST-11 dependency graph. Its audit reference is the authenticated native bundle
 address. Native DEM and x402 use the same two-copy finish boundary. A Demos
 read that cannot be answered leaves the track `indeterminate`
-(`buyer-audit-completion-indeterminate`) and it is retried. So does a seller
-bundle, bundle copy or BundleBinding that Demos's name index does not show yet:
-the index may lag finality by several blocks, so its absence is not an answer
-(the durable buyer finalizer reports it as `indeterminate` too). Only a completion
-that was read and failed authentication needs operator action. A seller bundle
-or BundleBinding that Demos returns with invalid content, an invalid receipt or
-a failed authentication is immutable, so it also goes to operator action
-instead of being retried. Demos's answer against one copy goes to operator
+(`buyer-audit-completion-indeterminate`) and it is retried. The seller's copy
+is never looked up by its storage-program name: the buyer discovers the
+seller's signed BundleBindings (its Demos binding program plus any configured
+`bundleBindingDiscovery` surfaces: a DACS-1 §6.3.5 well-known index or §6.3.6
+catalog), resolves them as a DACS-5 BB-6 candidate set (at most 8 fetches per
+signer, collapse, fully-signed precedence) and reads the copy at the bound
+native address. A side that no surface binds yet, whose candidates all fail
+validation, or that equivocates is `indeterminate` (BB-7, BB-8), never absent.
+Binding discovery never gates completion. Only a completion that was read and
+failed authentication needs operator action. Every retry is bounded: a track
+that stays `indeterminate` for the coordinator's `maximumSubstratePauseMs`
+(DACS-5 ST-7, default 3600 s) stops at operator action with
+`substrate-pause-exceeded`. Demos's answer against one copy goes to operator
 action even when a read of the other copy went unanswered in the same check,
 whichever arrives first: both copies settle before the check decides. A read
 that never settles is cut off at one deadline for the whole check (the seller

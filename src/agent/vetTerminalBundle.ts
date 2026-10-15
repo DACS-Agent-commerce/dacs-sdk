@@ -3,8 +3,10 @@
  *
  * This module does not perform Vet and does not own either party's signer. It accepts the exact
  * finalized `VetProduction`, asks a caller-supplied verifier to authenticate that production,
- * and converts only an objective `fail` decision into the data-only authority consumed by the
- * role-local terminal-bundle coordinator. `indeterminate` and `error` remain non-terminal.
+ * and converts a non-pass decision into the data-only authority consumed by the role-local
+ * terminal-bundle coordinator. Per DACS-2 VPC-4, `fail` is the evaluated party's fault
+ * (`counterparty`), and `indeterminate` or `error` is the verifier's own `permanent` failure,
+ * which VP-R4 never retries; DACS-5 ST-2 then ends both at `vet-failed`.
  */
 import { types as nodeTypes } from "node:util";
 
@@ -64,9 +66,12 @@ export interface VetFailureTerminalSessionRecord {
     invokedAt: number;
     result: Readonly<{
       ok: false;
-      reason: "authenticated-vet-failure";
+      reason:
+        | "authenticated-vet-failure"
+        | "authenticated-vet-indeterminate"
+        | "authenticated-vet-error";
       attestationRef: Readonly<AttestationRef>;
-      errorClass: "counterparty";
+      errorClass: "counterparty" | "permanent";
     }>;
     contextDelta: Readonly<Record<string, never>>;
   }>[];
@@ -111,11 +116,6 @@ export interface PrepareVetTerminalBundleDeps {
 export type PreparedVetTerminalBundle =
   | Readonly<{
       status: "pass";
-      record: Readonly<CompositeVerificationRecord>;
-    }>
-  | Readonly<{
-      status: "retry";
-      decision: "indeterminate" | "error";
       record: Readonly<CompositeVerificationRecord>;
     }>
   | Readonly<{
@@ -329,8 +329,8 @@ function captureAuthenticator(
 }
 
 /**
- * Authenticate and classify one role-owned Vet production. Only a finalized, recursively
- * authenticated `fail` decision enters DACS-5 `vet-failed` and creates terminal authority.
+ * Authenticate and classify one role-owned Vet production. A finalized, recursively
+ * authenticated non-pass decision enters DACS-5 `vet-failed` and creates terminal authority.
  */
 export async function prepareVetTerminalBundle(
   source: Readonly<PrepareVetTerminalBundleInput>,
@@ -366,12 +366,18 @@ export async function prepareVetTerminalBundle(
 
   const record = deepFreeze(canonicalSnapshot(input.production.record, "Vet record"));
   if (record.overallDecision === "pass") return deepFreeze({ status: "pass", record });
-  if (record.overallDecision === "indeterminate" || record.overallDecision === "error") {
-    return deepFreeze({ status: "retry", decision: record.overallDecision, record });
-  }
-  if (record.overallDecision !== "fail") {
+  if (record.overallDecision !== "fail" && record.overallDecision !== "indeterminate" &&
+      record.overallDecision !== "error") {
     throw new DacsError("authenticated Vet record carries an unsupported decision");
   }
+  // DACS-2 VPC-4. The record does not carry the §7.8.2 proximate cause, so the
+  // unparseable-presentation exception cannot be shown and `permanent` applies.
+  const permanent = record.overallDecision !== "fail";
+  const errorClass = permanent ? "permanent" as const : "counterparty" as const;
+  const faultedParty = permanent ? verifier.role : input.evaluatedRole;
+  const reason = record.overallDecision === "fail" ? "authenticated-vet-failure" as const
+    : record.overallDecision === "error" ? "authenticated-vet-error" as const
+      : "authenticated-vet-indeterminate" as const;
 
   const endedAt = input.production.anchorReceipt.observedAt;
   if (!isSafeUint(endedAt) || endedAt < input.vetInvokedAt || endedAt < record.generatedAt) {
@@ -398,9 +404,9 @@ export async function prepareVetTerminalBundle(
       invokedAt: input.vetInvokedAt,
       result: {
         ok: false,
-        reason: "authenticated-vet-failure",
+        reason,
         attestationRef: input.production.recordRef,
-        errorClass: "counterparty",
+        errorClass,
       },
       contextDelta: {},
     }],
@@ -423,12 +429,12 @@ export async function prepareVetTerminalBundle(
   const authority = createTerminalBundleAuthority({
     jobId: input.jobId,
     terminalClass: "failure",
-    faultedParty: input.evaluatedRole,
+    faultedParty,
     terminalPhase: {
       index: input.vetPhaseIndex,
       kind: "vet-credentials",
       state: "failed",
-      errorClass: "counterparty",
+      errorClass,
     },
     sessionRecordHash: sha256Hex(canonicalize(frozenSession)),
     terminalEvidenceHash: sha256Hex(canonicalize(productionEvidence)),
@@ -448,9 +454,15 @@ export async function prepareVetTerminalBundle(
       index: input.vetPhaseIndex,
       kind: "vet-credentials",
       outcome: "fail",
-      errorClass: "counterparty",
+      errorClass,
       attestationRef: input.production.recordRef,
     }],
+    // DACS-5 §10.4.3 asks for "the available `vetRecords`". This lists the
+    // terminal CVR only: both roles derive their plans from that one
+    // authenticated production, so the two copies stay canonically equal
+    // (§10.4.1). The other direction's passing CVR, which the signer checks
+    // before it signs, is not listed. The Standard does not say whether
+    // "available" includes it, and no vector settles it.
     vetRecords: [input.production.recordRef],
     settlementEvidence: [],
     recipeRegistryVersion: input.recipeRegistryVersion,
@@ -460,7 +472,7 @@ export async function prepareVetTerminalBundle(
   return deepFreeze({
     status: "terminal",
     state: "vet-failed",
-    faultedParty: input.evaluatedRole,
+    faultedParty,
     sessionRecord: frozenSession,
     authority,
   });
