@@ -461,6 +461,13 @@ describe("x402 production transport positive flow", () => {
       }
       expectRequests(https);
       expect(peers.signTypedData).toHaveBeenCalledOnce();
+      // The EIP-712 domain is the negotiated token contract on the negotiated chain.
+      expect(peers.signTypedData).toHaveBeenCalledWith(expect.objectContaining({
+        domain: {
+          name: "USD Coin", version: "2", chainId: CHAIN_ID,
+          verifyingContract: expect.stringMatching(new RegExp(`^${ASSET}$`, "i")),
+        },
+      }));
       expect(reader.waitForTransactionReceipt).toHaveBeenCalledWith({
         hash: TX, confirmations: 2,
       });
