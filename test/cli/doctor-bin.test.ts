@@ -11,12 +11,13 @@ import { pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 
 import { isMainModule, parseDoctorArgs, runCli } from "../../src/bin/dacs.js";
+import { VERIFIED_DEMOS_NODE_REVISION } from "../../src/cli/doctor.js";
 import type { DoctorReport } from "../../src/cli/index.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, lstatSync: vi.fn(actual.lstatSync), fstatSync: vi.fn(actual.fstatSync),
-    readFileSync: vi.fn(actual.readFileSync) };
+    readFileSync: vi.fn(actual.readFileSync), readSync: vi.fn(actual.readSync) };
 });
 vi.mock("node:tty", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:tty")>();
@@ -25,13 +26,19 @@ vi.mock("node:tty", async (importOriginal) => {
 
 const adapterCalls = vi.hoisted(() => ({ factory: vi.fn(), connect: vi.fn(), address: vi.fn(),
   nodeCall: vi.fn() }));
+const MOCK_ADDRESS = vi.hoisted(() => "0xmock-adapter-address");
 vi.mock("../../src/substrate/index.js", () => ({
   DemosAdapter: class {
     constructor(config: unknown) { adapterCalls.factory(config); }
     async connect() { adapterCalls.connect(); }
-    getAddress() { adapterCalls.address(); return "unused"; }
+    getAddress() { adapterCalls.address(); return MOCK_ADDRESS; }
     get raw() {
-      return { nodeCall: async (message: unknown) => { adapterCalls.nodeCall(message); return 42; } };
+      return { nodeCall: async (message: unknown) => {
+        adapterCalls.nodeCall(message);
+        return message === "getNetworkInfo"
+          ? { nodeVersion: { commit: "0".repeat(40), version: "0.0.0", dirty: false } }
+          : 42;
+      } };
     }
   },
 }));
@@ -42,16 +49,33 @@ const actualTty = await vi.importActual<typeof import("node:tty")>("node:tty");
 afterEach(() => {
   vi.mocked(fs.fstatSync).mockReset();
   vi.mocked(fs.readFileSync).mockImplementation(actualFs.readFileSync);
+  vi.mocked(fs.readSync).mockImplementation(actualFs.readSync);
   vi.mocked(tty.isatty).mockImplementation(actualTty.isatty);
   vi.clearAllMocks();
 });
 
-/** Serve doctor's stdin from memory, as a pipe rather than a TTY. */
-function pipeStdin(input: Buffer | string): void {
+type ReadSync = (fd: number, buffer: Buffer, offset: number, length: number, position: number | null) => number;
+
+/** Serve doctor's stdin from memory, as a pipe rather than a TTY; return the buffers read into. */
+function pipeStdin(input: Buffer | string): Buffer[] {
+  const bytes = Buffer.from(input);
+  const buffers: Buffer[] = [];
+  let served = 0;
   vi.mocked(tty.isatty).mockReturnValue(false);
-  vi.mocked(fs.readFileSync).mockImplementation(((path: Parameters<typeof fs.readFileSync>[0], ...rest: unknown[]) =>
-    path === 0 ? Buffer.from(input) : (actualFs.readFileSync as (...args: unknown[]) => unknown)(path, ...rest)
-  ) as typeof fs.readFileSync);
+  vi.mocked(fs.readSync as ReadSync).mockImplementation((fd, buffer, offset, length, position) => {
+    if (fd !== 0) return (actualFs.readSync as ReadSync)(fd, buffer, offset, length, position);
+    buffers.push(buffer);
+    const count = Math.min(length, bytes.length - served);
+    bytes.copy(buffer, offset, served, served + count);
+    served += count;
+    return count;
+  });
+  return buffers;
+}
+
+function stdinWasRead(): boolean {
+  return vi.mocked(fs.readSync).mock.calls.some((call) => call[0] === 0) ||
+    vi.mocked(fs.readFileSync).mock.calls.some((call) => call[0] === 0);
 }
 
 async function runCaptured(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -380,15 +404,49 @@ describe("dacs bin", () => {
     }
   });
 
-  it.each(["rpc", "wallet"] as const)("refuses whitespace-only and invalid UTF-8 %s stdin", async (source) => {
-    for (const input of [" \n\t\n", Buffer.from([0xff])]) {
+  it.each(["rpc", "wallet"] as const)("refuses whitespace-only, invalid UTF-8 and NUL %s stdin", async (source) => {
+    for (const input of [" \n\t\n", Buffer.from([0xff]), "abc\0def\n"]) {
       pipeStdin(input);
       const { code, stdout, stderr } = await runCaptured(["doctor", "--offline", "--json",
         source === "rpc" ? "--rpc-file" : "--wallet-secret-file", "-"]);
       expect(code).toBe(2);
       expect(stdout).toBe("");
-      expect(stderr).toContain(`Could not use ${source} credential from stdin; it must be non-empty UTF-8 text`);
+      expect(stderr).toContain(`Could not use ${source} credential from stdin; it must be non-empty UTF-8 text without NUL`);
     }
+  });
+
+  it.each(["rpc", "wallet"] as const)("bounds %s stdin to 65,536 bytes like a credential file", async (source) => {
+    const flag = source === "rpc" ? "--rpc-file" : "--wallet-secret-file";
+    const exact = source === "rpc"
+      ? `https://node.example/${"a".repeat(65_536 - "https://node.example/".length)}`
+      : "b".repeat(65_536);
+    let buffers = pipeStdin(exact);
+    const accepted = await runCaptured(["doctor", "--offline", "--json", flag, "-"]);
+    expect(accepted.stderr).toBe("");
+    expect(accepted.code).toBe(5);
+    for (const buffer of buffers) expect(buffer.every((byte) => byte === 0)).toBe(true);
+
+    buffers = pipeStdin(`${exact}c`);
+    const refused = await runCaptured(["doctor", "--offline", "--json", flag, "-"]);
+    expect(refused.code).toBe(2);
+    expect(refused.stdout).toBe("");
+    expect(refused.stderr).toContain(`Could not use ${source} credential from stdin; it must be at most 65536 bytes`);
+    expect(refused.stderr).not.toContain("bbbb");
+    for (const buffer of buffers) expect(buffer.every((byte) => byte === 0)).toBe(true);
+  });
+
+  it("refuses over-limit stdin through a real pipe in the built CLI", () => {
+    const builtBin = join(process.cwd(), "dist", "bin", "dacs.js");
+    const run = (input: string) => spawnSync("node", [builtBin, "doctor", "--offline", "--json",
+      "--wallet-secret-file", "-"], { encoding: "utf8", input, env: { ...process.env, NODE_NO_WARNINGS: "1" } });
+    const exact = run("d".repeat(65_536));
+    expect(exact.status).toBe(5);
+    expect(exact.stderr).toBe("");
+    // More than a pipe buffer, so the CLI refuses while input is still pending.
+    const over = run("d".repeat(200_000));
+    expect(over.status).toBe(2);
+    expect(over.stdout).toBe("");
+    expect(over.stderr).toContain("Could not use wallet credential from stdin; it must be at most 65536 bytes");
   });
 
   it("passes trimmed file and stdin credentials to the adapter intact", async () => {
@@ -404,12 +462,18 @@ describe("dacs bin", () => {
       expect(stderr).toBe("");
       expect(code).toBe(5);
       expect(adapterCalls.factory).toHaveBeenCalledExactlyOnceWith({ rpc, secret });
-      expect(adapterCalls.nodeCall).toHaveBeenCalledExactlyOnceWith("getLastBlockNumber");
+      expect(adapterCalls.nodeCall.mock.calls).toEqual([["getLastBlockNumber"], ["getNetworkInfo"]]);
       const report = JSON.parse(stdout) as DoctorReport;
       expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
         status: "pass", data: { lastBlockNumber: 42 },
       });
-      expect(report.checks.find((c) => c.id === "wallet.identity")?.status).toBe("pass");
+      // The default factory's getAddress wrapper must reach the connected adapter.
+      expect(report.checks.find((c) => c.id === "wallet.identity")).toMatchObject({
+        status: "pass", data: { address: MOCK_ADDRESS },
+      });
+      expect(report.checks.find((c) => c.id === "rpc.node-revision")).toMatchObject({
+        status: "warn", data: { reported: { commit: "0".repeat(40), version: "0.0.0", dirty: false } },
+      });
       expect(stdout).not.toContain(secret);
     } finally {
       rmSync(temp, { recursive: true, force: true });
@@ -458,7 +522,7 @@ describe("dacs bin", () => {
       source === "rpc" ? "--rpc-file" : "--wallet-secret-file", "-"]);
     expect(code).toBe(2);
     expect(stderr).toContain(`${source} input requires piped stdin when path is -`);
-    expect(fs.readFileSync).not.toHaveBeenCalledWith(0);
+    expect(stdinWasRead()).toBe(false);
   });
 
   it("reads a named credential file even when stdin is a TTY", async () => {
@@ -829,24 +893,59 @@ describe("dacs bin", () => {
       });
     }
 
-    it("passes against a Demos-shaped RPC using only read-only calls", async () => {
-      await withRpc((method, body) => {
+    /** Answer like a Demos node: `GET /`, then envelope-wrapped nodeCall responses. */
+    function demosNode(responses: Record<string, unknown>) {
+      return (method: string | undefined, body: string): Reply => {
         if (method === "GET") return { status: 200, type: "application/json", body: '{"message":"Hello, World!"}' };
         const request = JSON.parse(body) as { method?: string; params?: Array<{ message?: string }> };
-        return request.method === "nodeCall" && request.params?.[0]?.message === "getLastBlockNumber"
-          ? { status: 200, type: "application/json",
-              body: JSON.stringify({ result: 200, response: 4242, require_reply: false, extra: null }) }
+        const message = request.params?.[0]?.message ?? "";
+        return request.method === "nodeCall" && Object.hasOwn(responses, message)
+          ? { status: 200, type: "application/json", body: JSON.stringify(responses[message]) }
           : { status: 404, type: "application/json", body: "{}" };
-      }, async (url, seen) => {
+      };
+    }
+
+    it("passes against a Demos-shaped RPC using only read-only calls", async () => {
+      // Envelope shapes as recorded from node2 (build 61b8e75) on 2026-10-15.
+      await withRpc(demosNode({
+        getLastBlockNumber: { result: 200, response: 4242, require_reply: false, extra: null },
+        getNetworkInfo: { result: 200, require_reply: false, extra: null, response: {
+          forks: { osDenomination: { activationHeight: 0, activated: true, currentHeight: 4242 } },
+          nodeVersion: { name: "demos-node-software", version: "0.9.8", commit: VERIFIED_DEMOS_NODE_REVISION,
+            commitShort: VERIFIED_DEMOS_NODE_REVISION.slice(0, 7), dirty: false },
+        } },
+      }), async (url, seen) => {
         const { code, report } = await runBuiltDoctor(url);
         expect(report.checks.find((c) => c.id === "substrate.adapter-load")?.status).toBe("pass");
         expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
           status: "pass", data: { lastBlockNumber: 4242 },
         });
+        expect(report.checks.find((c) => c.id === "rpc.node-revision")).toEqual({
+          id: "rpc.node-revision", status: "pass", summary: "Node reports the verified build revision",
+          data: { verified: VERIFIED_DEMOS_NODE_REVISION,
+            reported: { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false } },
+        });
         expect(code).toBe(5);
-        for (const request of seen.filter((r) => r.method !== "GET")) {
-          expect(JSON.parse(request.body)).toMatchObject({ method: "nodeCall", params: [{ message: "getLastBlockNumber" }] });
-        }
+        const posted = seen.filter((r) => r.method !== "GET").map((r) => JSON.parse(r.body) as {
+          method?: string; params?: Array<{ message?: string }>;
+        });
+        expect(posted.map((r) => [r.method, r.params?.[0]?.message]))
+          .toEqual([["nodeCall", "getLastBlockNumber"], ["nodeCall", "getNetworkInfo"]]);
+      });
+    }, 120_000);
+
+    it("reports a node that is still loading its state as not ready", async () => {
+      // A loading node answers HTTP 200 with result 503 and this response.
+      await withRpc(demosNode({
+        getLastBlockNumber: { result: 503, response: "STATE_NOT_READY", require_reply: false, extra: null },
+      }), async (url) => {
+        const { code, report } = await runBuiltDoctor(url);
+        expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+          status: "fail", summary: "Demos node is not ready",
+          remediation: "Wait for the Demos node to finish loading its state, then retry.",
+        });
+        expect(report.checks.some((c) => c.id === "rpc.node-revision")).toBe(false);
+        expect(code).toBe(3);
       });
     }, 120_000);
 

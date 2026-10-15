@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 
 import { formatDoctorText, redactRpcUrl, runDoctor } from "../../src/cli/index.js";
 
-import { runDoctorForCli } from "../../src/cli/doctor.js";
+import { runDoctorForCli, VERIFIED_DEMOS_NODE_REVISION } from "../../src/cli/doctor.js";
 import type { DoctorSecretFile } from "../../src/cli/secretFile.js";
 import { VERSION } from "../../src/version.js";
 
@@ -312,7 +312,7 @@ describe("dacs doctor", () => {
       id: "rpc.reachable", status: "fail", summary: "RPC endpoint did not answer the Demos block-height call",
       data: { rpc: "https://node.example/[redacted]" },
       detail: "getLastBlockNumber did not return a non-negative integer",
-      remediation: "Check that the RPC URL points at a Demos node.",
+      remediation: "Check that the RPC URL points at a reachable, synced Demos node.",
     });
     expect(report.checks.find((c) => c.id === "wallet.identity")).toMatchObject({
       status: "skip", summary: "Wallet identity skipped because the Demos RPC check did not pass",
@@ -344,6 +344,121 @@ describe("dacs doctor", () => {
     });
   });
 
+  it("never runs the height call after a failed connect", async () => {
+    const getLastBlockNumber = vi.fn(async () => 1234);
+    const getNetworkInfo = vi.fn(async () => ({}));
+    const getAddress = vi.fn(() => "unused");
+    const report = await runDoctor({
+      rpc: "https://node.example", walletSecret: "secret-value",
+      adapterFactory: () => ({
+        connect: async () => { throw new Error("connect refused"); },
+        getAddress, getLastBlockNumber, getNetworkInfo,
+      }),
+    });
+    expect(report.exitCode).toBe(3);
+    expect(report.checks.filter((c) => c.id.startsWith("rpc."))).toEqual([{
+      id: "rpc.reachable", status: "fail", summary: "Demos RPC check failed",
+      data: { rpc: "https://node.example/" },
+      detail: "connect refused",
+      remediation: "Check the RPC URL and network reachability.",
+    }]);
+    expect(getLastBlockNumber).not.toHaveBeenCalled();
+    expect(getNetworkInfo).not.toHaveBeenCalled();
+    expect(getAddress).not.toHaveBeenCalled();
+    expect(report.checks.find((c) => c.id === "wallet.identity")?.status).toBe("skip");
+  });
+
+  it("passes RPC reachability for block height 0", async () => {
+    const report = await runDoctor({
+      rpc: "https://node.example",
+      adapterFactory: () => ({ connect: async () => {}, getAddress: () => "unused", getLastBlockNumber: async () => 0 }),
+    });
+    expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+      status: "pass", data: { lastBlockNumber: 0 },
+    });
+  });
+
+  it("tells a loading node apart from a non-Demos endpoint", async () => {
+    const report = await runDoctor({
+      rpc: "https://node.example", walletSecret: "secret-value",
+      adapterFactory: () => ({ connect: async () => {}, getAddress: () => "unused",
+        getLastBlockNumber: async () => "STATE_NOT_READY" }),
+    });
+    expect(report.exitCode).toBe(3);
+    expect(report.checks.find((c) => c.id === "rpc.reachable")).toEqual({
+      id: "rpc.reachable", status: "fail", summary: "Demos node is not ready",
+      data: { rpc: "https://node.example/" },
+      detail: "getLastBlockNumber answered STATE_NOT_READY",
+      remediation: "Wait for the Demos node to finish loading its state, then retry.",
+    });
+    expect(report.checks.find((c) => c.id === "wallet.identity")?.status).toBe("skip");
+  });
+
+  describe("node build revision", () => {
+    const build = (nodeVersion: unknown) => async () => ({ forks: {}, nodeVersion });
+    async function revision(getNetworkInfo?: () => Promise<unknown>) {
+      const report = await runDoctor({
+        rpc: "https://node.example",
+        adapterFactory: () => ({ connect: async () => {}, getAddress: () => "unused",
+          getLastBlockNumber: async () => 7, ...(getNetworkInfo ? { getNetworkInfo } : {}) }),
+      });
+      // Revision warnings are advisory: the exit code stays that of the blocked checks.
+      expect(report.exitCode).toBe(5);
+      expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("pass");
+      return report.checks.find((c) => c.id === "rpc.node-revision");
+    }
+    const remediation =
+      "Compare the node's Demos build with the verified revision before relying on this doctor's RPC verdict.";
+    const other = "a".repeat(40);
+
+    it("passes only for the verified commit with a clean build", async () => {
+      expect(await revision(build({ commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false })))
+        .toEqual({
+          id: "rpc.node-revision", status: "pass", summary: "Node reports the verified build revision",
+          data: { verified: VERIFIED_DEMOS_NODE_REVISION,
+            reported: { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false } },
+        });
+    });
+
+    it.each([
+      ["a different commit", { commit: other, version: "0.9.9", dirty: false },
+        "Node reports a different build than the verified revision",
+        { commit: other, version: "0.9.9", dirty: false }],
+      ["uncommitted changes", { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: true },
+        "Node reports the verified revision with uncommitted changes",
+        { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: true }],
+      ["no clean-build flag", { commit: VERIFIED_DEMOS_NODE_REVISION },
+        "Node reports the verified revision but not whether its build is clean",
+        { commit: VERIFIED_DEMOS_NODE_REVISION, version: null, dirty: null }],
+      ["a short or malformed commit", { commit: VERIFIED_DEMOS_NODE_REVISION.slice(0, 7), version: "x y", dirty: "no" },
+        "Node build revision could not be compared with the verified revision",
+        { commit: null, version: null, dirty: null }],
+    ])("warns for %s and keeps only well-formed fields", async (_label, nodeVersion, summary, reported) => {
+      expect(await revision(build(nodeVersion))).toEqual({
+        id: "rpc.node-revision", status: "warn", summary, remediation,
+        data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported },
+      });
+    });
+
+    it.each([
+      ["no nodeVersion", async () => ({ forks: {} })],
+      ["a transport error envelope", async () => ({ result: 500, response: new Error("POST https://node.example") })],
+      ["a thrown error", async () => { throw new Error("socket hang up"); }],
+    ])("warns when the node reports %s", async (_label, getNetworkInfo) => {
+      expect(await revision(getNetworkInfo)).toEqual({
+        id: "rpc.node-revision", status: "warn",
+        summary: "Node build revision could not be compared with the verified revision", remediation,
+        data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: null },
+      });
+    });
+
+    it("skips when an injected adapter cannot read the build", async () => {
+      expect(await revision()).toEqual({
+        id: "rpc.node-revision", status: "skip", summary: "The adapter cannot read the node build revision",
+      });
+    });
+  });
+
   it.each([
     ["v20.19.0", "pass"], ["v20.20.1", "pass"], ["v22.12.0", "pass"], ["v22.23.3", "pass"],
     ["v23.0.0", "pass"], ["v24.1.0", "pass"], ["v26.0.0", "pass"],
@@ -370,6 +485,16 @@ describe("dacs doctor", () => {
     });
   });
 
+  it.each([["missing", undefined], ["not a string", 1]])("fails when package.json version is %s", async (_label, version) => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const pkg = JSON.parse(actual.readFileSync("package.json", "utf8")) as Record<string, unknown>;
+    vi.mocked(fs.readFileSync).mockImplementationOnce(() => JSON.stringify({ ...pkg, version }));
+    const report = await runDoctor({ offline: true });
+    expect(report.checks.find((c) => c.id === "package.version")).toMatchObject({
+      status: "fail", data: { version: VERSION, packageVersion: null },
+    });
+  });
+
   it.each(["x402", "evm-erc20"])("classifies %s as needing external config", async (rail) => {
     const report = await runDoctor({ offline: true, rail });
     expect(report.checks.find((c) => c.id === "rail.availability")).toMatchObject({
@@ -390,8 +515,11 @@ describe("dacs doctor", () => {
     const report = await runDoctor({ offline: true, rail: "pay-d402" });
 
     const rail = report.checks.find((c) => c.id === "rail.availability");
-    expect(rail?.status).toBe("warn");
-    expect(rail?.data?.availability).toBe("operator_gated");
+    expect(rail).toEqual({
+      id: "rail.availability", status: "warn", summary: "pay-d402 is experimental, not a supported live rail",
+      data: { availability: "operator_gated" },
+      detail: "demosdk 4.0.17 and later sign and broadcast real d402_payment transactions, so a preview settlement can move real DEM.",
+    });
   });
 
   it("formats compact human output without tables", async () => {

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readDoctorSecretFile } from "../../src/cli/secretFile.js";
+import { readDoctorCredentialStdin, readDoctorSecretFile } from "../../src/cli/secretFile.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -220,11 +220,61 @@ describe("doctor credential descriptor admission", () => {
     ["an encoded surrogate", Buffer.from([0x61, 0xed, 0xa0, 0x80])],
     ["an overlong encoding", Buffer.from([0xc0, 0xaf])],
     ["a multibyte sequence cut at the limit", Buffer.concat([Buffer.alloc(limit - 1, 0x61), Buffer.from([0xc3])])],
+    // The host's demosRuntime text() refuses NUL, so admitting it would be a false pass.
+    ["a NUL byte", Buffer.from("abc\0def\n")],
   ])("refuses credential content with %s", (_label, bytes) => {
     const path = fixture(bytes);
     expect(() => readDoctorSecretFile(path, "rpc"))
-      .toThrow("Could not use rpc credential file; it must contain non-empty UTF-8 text");
+      .toThrow("Could not use rpc credential file; it must contain non-empty UTF-8 text without NUL");
     expect(fs.closeSync).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a directory as not regular before opening it", () => {
+    const directory = fs.mkdtempSync(join(tmpdir(), "dacs-admission-dir-"));
+    directories.push(directory);
+    expect(() => readDoctorSecretFile(directory, "rpc"))
+      .toThrow("Could not read rpc credential file; check that it is a readable regular file");
+    expect(fs.openSync).not.toHaveBeenCalled();
+    expectNoRead();
+  });
+
+  it.each(["EACCES", "ENOENT"])("reports %s from open after lstat as unreadable, not as a symlink", (code) => {
+    const path = fixture();
+    vi.mocked(fs.openSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error(`${code}: open '${path}'`), { code });
+    });
+    let message = "";
+    try {
+      readDoctorSecretFile(path, "wallet");
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe("Could not read wallet credential file; check that it is a readable regular file");
+    expectNoRead();
+  });
+
+  it("reports the admitted descriptor's metadata, not the pathname's", () => {
+    const secret = randomBytes(32).toString("hex");
+    const path = fixture(Buffer.from(secret));
+    let admittedMode = 0;
+    vi.mocked(fs.fstatSync).mockImplementationOnce((...args) => {
+      const stat = actual.fstatSync(...args) as fs.Stats;
+      // Still exactly 0600 in the permission bits, but distinguishable from lstat.
+      stat.mode |= 0o4000;
+      admittedMode = stat.mode;
+      return stat;
+    });
+    const result = readDoctorSecretFile(path, "wallet");
+    expect(result.value).toBe(secret);
+    expect(result.file).toEqual({
+      source: "wallet",
+      symlink: false,
+      mode: admittedMode,
+      ownerUid: actual.statSync(path).uid,
+      currentUid: typeof process.getuid === "function" ? process.getuid() : undefined,
+      platform: process.platform,
+    });
+    expect(result.file.mode).not.toBe(actual.statSync(path).mode);
   });
 
   it.each([
@@ -361,5 +411,78 @@ describe("doctor credential descriptor admission", () => {
     expect(() => readDoctorSecretFile(path, "wallet")).toThrow("Could not read wallet credential file");
     expect(fs.readSync).toHaveBeenCalled();
     expect(fs.closeSync).toHaveBeenCalledOnce();
+  });
+});
+
+describe("doctor credential stdin", () => {
+  type ReadSync = (fd: number, buffer: Buffer, offset: number, length: number, position: number | null) => number;
+
+  /** Serve fd 0 from memory in short chunks; return every buffer doctor read into. */
+  function serveStdin(input: Buffer, chunk = 4_096): Buffer[] {
+    const buffers: Buffer[] = [];
+    let served = 0;
+    vi.mocked(fs.readSync as ReadSync).mockImplementation((fd, buffer, offset, length) => {
+      expect(fd).toBe(0);
+      buffers.push(buffer);
+      const count = Math.min(length, chunk, input.length - served);
+      input.copy(buffer, offset, served, served + count);
+      served += count;
+      return count;
+    });
+    return buffers;
+  }
+
+  it("accepts exactly 65,536 bytes", () => {
+    const secret = randomBytes(limit / 2).toString("hex");
+    serveStdin(Buffer.from(secret));
+    expect(readDoctorCredentialStdin("wallet")).toBe(secret);
+  });
+
+  it.each(["rpc", "wallet"] as const)("refuses %s stdin one byte over the limit, reading no further", (source) => {
+    serveStdin(Buffer.alloc(limit + 4_096, 0x61));
+    expect(() => readDoctorCredentialStdin(source))
+      .toThrow(`Could not use ${source} credential from stdin; it must be at most 65536 bytes`);
+    const consumed = vi.mocked(fs.readSync as ReadSync).mock.results
+      .reduce((sum, result) => sum + (result.value as number), 0);
+    expect(consumed).toBe(limit + 1);
+  });
+
+  it.each([
+    ["empty", Buffer.alloc(0)],
+    ["whitespace only", Buffer.from(" \n\t")],
+    ["an invalid byte", Buffer.from([0xff])],
+    ["a NUL byte", Buffer.from("abc\0def")],
+  ])("refuses stdin content that is %s", (_label, input) => {
+    serveStdin(input);
+    expect(() => readDoctorCredentialStdin("rpc"))
+      .toThrow("Could not use rpc credential from stdin; it must be non-empty UTF-8 text without NUL");
+  });
+
+  it("reports a stdin read failure without detail", () => {
+    vi.mocked(fs.readSync).mockImplementation(() => {
+      throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+    });
+    let message = "";
+    try {
+      readDoctorCredentialStdin("wallet");
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe("Could not read wallet credential from stdin");
+  });
+
+  it.each([
+    ["accepted", Buffer.from(randomBytes(32).toString("hex"))],
+    ["refused", Buffer.from([0xff, 0xfe])],
+    ["oversized", Buffer.alloc(limit + 1, 0x62)],
+  ])("zeroes the stdin buffer when content is %s", (_label, input) => {
+    const buffers = serveStdin(input);
+    try {
+      readDoctorCredentialStdin("wallet");
+    } catch {
+      // Refusals are covered above; only the wipe matters here.
+    }
+    expect(buffers.length).toBeGreaterThan(0);
+    for (const buffer of buffers) expect(buffer.every((byte) => byte === 0)).toBe(true);
   });
 });

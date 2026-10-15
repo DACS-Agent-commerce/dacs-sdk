@@ -16,13 +16,15 @@ import { CounterpartyError, DacsError } from "../errors.js";
  * terms don't match the negotiated agreement (termsMatchD402) — otherwise
  * auto-pay could settle the wrong recipient or amount.
  *
- * ⚠️ EXPERIMENTAL — NOT node-enabled. D402 processing (`d402_payment`) is not
- * live on production Demos nodes yet: the client half exists, the node side does
- * not process the tx. This rail therefore CANNOT settle live today, and per the
- * RAV-R1 discipline ("MUST NOT treat a non-`live` rail as live") it must not be
- * selected as a production settlement path. `createPayD402Rail` refuses to build
- * unless the caller passes `acknowledgeExperimental: true`, so it can't be wired
- * as `live` by accident. It graduates when the node ships d402 processing.
+ * ⚠️ EXPERIMENTAL — not a supported live rail (§9.4.4 non-`live`). It is NOT
+ * inert: demosdk 4.0.17 and later sign, confirm and broadcast a real
+ * `d402_payment` transaction, and current Demos node source applies it as a DEM
+ * transfer from buyer to seller. A "preview" settlement can therefore spend real
+ * funds. Per the RAV-R1 discipline ("MUST NOT treat a non-`live` rail as live")
+ * it must not be selected as a production settlement path. `createPayD402Rail`
+ * refuses to build unless the caller passes `acknowledgeExperimental: true`, so
+ * it can't be wired as `live` by accident. It graduates once d402 settlement is
+ * verified end to end on production nodes.
  *
  * NOTE ON NAMING: this is `pay-d402` (the HTTP-402 protocol rail), distinct from
  * the spec's `pay-dem` (§9.5.9) — the plain `demos.transfer` native rail, which
@@ -216,10 +218,11 @@ export interface PayD402RailConfig {
   /** Override fetch (tests / custom transport). Defaults to global fetch. */
   fetchImpl?: typeof fetch;
   /**
-   * REQUIRED to build the rail: D402 is not node-enabled (§9.4.4 non-`live`), so
-   * this rail cannot settle live. Constructing it without this explicit
-   * acknowledgement throws, so it can never be wired as a `live` path by
-   * accident (RAV-R1). Set `true` only for experimental / preview use.
+   * REQUIRED to build the rail: D402 is not a supported live rail (§9.4.4
+   * non-`live`). Constructing it without this explicit acknowledgement throws,
+   * so it can never be wired as a `live` path by accident (RAV-R1). Set `true`
+   * only for experimental use, knowing that settlement broadcasts a real
+   * `d402_payment` transaction that can move real DEM.
    */
   acknowledgeExperimental: boolean;
 }
@@ -238,8 +241,9 @@ export interface PayD402Rail {
 export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD402Rail> {
   if (!config?.acknowledgeExperimental) {
     throw new DacsError(
-      "pay-d402 is EXPERIMENTAL and not node-enabled (§9.4.4 non-`live`): it cannot settle live. " +
-        "Pass acknowledgeExperimental: true to construct it for preview use — never select it as a live rail (RAV-R1).",
+      "pay-d402 is EXPERIMENTAL and not a supported live rail (§9.4.4 non-`live`), but settling broadcasts a real " +
+        "d402_payment transaction that can move real DEM. Pass acknowledgeExperimental: true only for experimental " +
+        "use — never select it as a live rail (RAV-R1).",
     );
   }
   if (!config?.rpc) throw new DacsError("pay-d402 rail requires an rpc URL");

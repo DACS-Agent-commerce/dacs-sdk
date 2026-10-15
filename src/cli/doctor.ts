@@ -32,6 +32,11 @@ export interface DoctorAdapter {
    * any endpoint that answers HTTP GET, so `rpc.reachable` reports `warn`.
    */
   getLastBlockNumber?(): Promise<unknown>;
+  /**
+   * Read-only Demos `getNetworkInfo` node call. Its `nodeVersion` build
+   * revision is compared with the node revision this SDK was verified against.
+   */
+  getNetworkInfo?(): Promise<unknown>;
 }
 
 export interface DoctorOptions {
@@ -47,8 +52,15 @@ export interface DoctorOptions {
 
 const RUNTIME_NODE = "runtime.node";
 const RPC_REACHABLE = "rpc.reachable";
+const RPC_NODE_REVISION = "rpc.node-revision";
 const SUBSTRATE_ADAPTER_LOAD = "substrate.adapter-load";
 const SUPPORTED_NODE_RANGE_FALLBACK = "^20.19.0 || >=22.12.0";
+/**
+ * kynesyslabs/node commit whose getLastBlockNumber handler the RPC check was
+ * verified against; node2 reported this build in getNetworkInfo on 2026-10-15.
+ * Update it only after re-verifying that handler at the new commit.
+ */
+export const VERIFIED_DEMOS_NODE_REVISION = "61b8e75aa8db5e408c49e1c3a89db4d673f45578";
 
 function check(
   id: string,
@@ -185,11 +197,65 @@ async function defaultAdapterFactory(config: {
     // demosdk resolves nodeCall with the node's `response` field, or with an
     // error envelope on transport failure; doctor only accepts a block height.
     getLastBlockNumber: () => adapter.raw.nodeCall("getLastBlockNumber"),
+    // Raw nodeCall, not getNetworkInfo(): that caches and may reuse an old answer.
+    getNetworkInfo: () => adapter.raw.nodeCall("getNetworkInfo"),
   };
 }
 
 function isBlockHeight(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+// Demos nodes answer getLastBlockNumber with this while their state is loading.
+const STATE_NOT_READY = "STATE_NOT_READY";
+
+interface ReportedNodeBuild {
+  commit: string | null;
+  version: string | null;
+  dirty: boolean | null;
+}
+
+/** Keep only well-formed build fields; the rest of the untrusted answer is dropped. */
+function reportedNodeBuild(info: unknown): ReportedNodeBuild | null {
+  const build = typeof info === "object" && info !== null
+    ? (info as { nodeVersion?: unknown }).nodeVersion : undefined;
+  if (typeof build !== "object" || build === null) return null;
+  const { commit, version, dirty } = build as Record<string, unknown>;
+  return {
+    commit: typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit) ? commit : null,
+    version: typeof version === "string" && /^[0-9A-Za-z.+-]{1,64}$/.test(version) ? version : null,
+    dirty: typeof dirty === "boolean" ? dirty : null,
+  };
+}
+
+async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null): Promise<DoctorCheck> {
+  const remediation = "Compare the node's Demos build with the verified revision before relying on this doctor's RPC verdict.";
+  if (!adapter.getNetworkInfo) {
+    return check(RPC_NODE_REVISION, "skip", "The adapter cannot read the node build revision");
+  }
+  let reported: ReportedNodeBuild | null = null;
+  try {
+    reported = reportedNodeBuild(await adapter.getNetworkInfo());
+  } catch {
+    // Untrusted transport failures are reported as an unknown build.
+  }
+  const data = { verified: pinned, reported };
+  if (!pinned || !reported?.commit) {
+    return check(RPC_NODE_REVISION, "warn", "Node build revision could not be compared with the verified revision", {
+      data, remediation,
+    });
+  }
+  if (reported.commit !== pinned) {
+    return check(RPC_NODE_REVISION, "warn", "Node reports a different build than the verified revision", {
+      data, remediation,
+    });
+  }
+  if (reported.dirty === false) {
+    return check(RPC_NODE_REVISION, "pass", "Node reports the verified build revision", { data });
+  }
+  return check(RPC_NODE_REVISION, "warn", reported.dirty
+    ? "Node reports the verified revision with uncommitted changes"
+    : "Node reports the verified revision but not whether its build is clean", { data, remediation });
 }
 
 const WINDOWS_CREDENTIAL_FILE_REMEDIATION =
@@ -327,6 +393,7 @@ export async function runDoctorForCli(
       } catch (err) {
         checks.push(
           check(RPC_REACHABLE, "fail", "Demos RPC check failed", {
+            data,
             detail: sanitizeError(err, needles),
             remediation: "Check the RPC URL and network reachability.",
           }),
@@ -355,13 +422,22 @@ export async function runDoctorForCli(
               data: { ...data, lastBlockNumber: height },
             }),
           );
+          checks.push(await nodeRevisionCheck(made, VERIFIED_DEMOS_NODE_REVISION));
+        } else if (height === STATE_NOT_READY) {
+          checks.push(
+            check(RPC_REACHABLE, "fail", "Demos node is not ready", {
+              data,
+              detail: "getLastBlockNumber answered STATE_NOT_READY",
+              remediation: "Wait for the Demos node to finish loading its state, then retry.",
+            }),
+          );
         } else {
           // Never echo the response: it is untrusted and may carry the RPC URL.
           checks.push(
             check(RPC_REACHABLE, "fail", "RPC endpoint did not answer the Demos block-height call", {
               data,
               detail: failure ?? "getLastBlockNumber did not return a non-negative integer",
-              remediation: "Check that the RPC URL points at a Demos node.",
+              remediation: "Check that the RPC URL points at a reachable, synced Demos node.",
             }),
           );
         }
@@ -421,8 +497,9 @@ export async function runDoctorForCli(
     );
   } else if (options.rail === "pay-d402") {
     checks.push(
-      check("rail.availability", "warn", "pay-d402 is experimental, not live", {
+      check("rail.availability", "warn", "pay-d402 is experimental, not a supported live rail", {
         data: { availability: PAY_D402_AVAILABILITY },
+        detail: "demosdk 4.0.17 and later sign and broadcast real d402_payment transactions, so a preview settlement can move real DEM.",
       }),
     );
   } else if (options.rail === "x402" || options.rail === "evm-erc20") {

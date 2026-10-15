@@ -17,14 +17,41 @@ class CredentialContentError extends Error {}
 
 /**
  * Decode like the host consumer (packages/dacs-node/src/demosRuntime.ts):
- * fatal UTF-8, then trim. Malformed or blank text is unusable.
+ * fatal UTF-8, then trim. Malformed, blank or NUL-bearing text is unusable.
  */
 export function decodeDoctorCredential(bytes: Uint8Array): string | undefined {
   try {
     const value = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
-    return value.length > 0 ? value : undefined;
+    return value.length > 0 && !value.includes("\0") ? value : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** Read piped stdin under the same size and content rules as a credential file. */
+export function readDoctorCredentialStdin(source: DoctorSecretFile["source"]): string {
+  const bytes = Buffer.alloc(MAX_SECRET_BYTES + 1);
+  try {
+    let length = 0;
+    try {
+      while (length < bytes.length) {
+        const read = readSync(0, bytes, length, bytes.length - length, null);
+        if (read === 0) break;
+        length += read;
+      }
+    } catch {
+      throw new Error(`Could not read ${source} credential from stdin`);
+    }
+    if (length > MAX_SECRET_BYTES) {
+      throw new Error(`Could not use ${source} credential from stdin; it must be at most ${MAX_SECRET_BYTES} bytes`);
+    }
+    const value = decodeDoctorCredential(bytes.subarray(0, length));
+    if (value === undefined) {
+      throw new Error(`Could not use ${source} credential from stdin; it must be non-empty UTF-8 text without NUL`);
+    }
+    return value;
+  } finally {
+    bytes.fill(0);
   }
 }
 
@@ -101,7 +128,7 @@ export function readDoctorSecretFile(
     return { value, file };
   } catch (error) {
     throw new Error(error instanceof CredentialContentError
-      ? `Could not use ${source} credential file; it must contain non-empty UTF-8 text`
+      ? `Could not use ${source} credential file; it must contain non-empty UTF-8 text without NUL`
       : `Could not read ${source} credential file; check that it is a readable regular file`);
   } finally {
     bytes?.fill(0);

@@ -922,9 +922,19 @@ completion currently report `blocked` until the resolver/completion work lands
 
 `rpc.reachable` passes only when the endpoint also answers the read-only Demos
 `getLastBlockNumber` node call with a non-negative integer, so a web server that
-merely answers HTTP `GET` fails it. The default adapter needs
-`@kynesyslabs/demosdk` 4.0.18 or later: earlier builds use directory imports
-that Node's ESM loader rejects, which `substrate.adapter-load` reports as `fail`.
+merely answers HTTP `GET` fails it. A node that answers `STATE_NOT_READY` while
+it loads its state also fails, with a "retry later" remediation. The default
+adapter needs `@kynesyslabs/demosdk` 4.0.17 or later: earlier builds use
+directory imports that Node's ESM loader rejects, which `substrate.adapter-load`
+reports as `fail`.
+
+After a passing height call, `rpc.node-revision` reads the node's build from the
+read-only `getNetworkInfo` node call and compares its commit with the
+`kynesyslabs/node` revision this doctor was verified against
+(`61b8e75aa8db5e408c49e1c3a89db4d673f45578`). It passes only for that commit
+with a clean build. A different, unreported, or uncommitted build reports
+`warn`, which does not change the exit code: the RPC verdict was not verified
+against that node source.
 
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.
@@ -950,16 +960,21 @@ admission (exit code `1`); the secret is not read and no adapter is created.
 Files are limited to 65,536 bytes, with path and descriptor size checks and
 bounded reads that also reject growth beyond the limit. Content is decoded as
 strict UTF-8 and trimmed, like the host consumer does. Empty, oversized,
-unreadable, whitespace-only, or non-UTF-8 files produce path-free usage errors
-(exit code `2`). Unlike the host, doctor also accepts relative paths. Stdin input
-gets the same content rules but no file checks, and environment inputs get
-neither.
+unreadable, whitespace-only, NUL-bearing, or non-UTF-8 files produce path-free
+usage errors (exit code `2`). Unlike the host, doctor also accepts relative
+paths. Stdin input gets the same 65,536-byte bounded read and content rules but
+no file checks, and environment inputs get neither.
 
 The shipped `pay-dem` handler is recognized as a known native DEM rail. Its
 availability and funding are not checked, so it reports `warn`, meaning
-"classified only". `--rail` takes the host's rail profile IDs (`pay-dem`,
-`pay-d402`, `x402`, `evm-erc20`), not DACS-4 rail IDs. For example, the
-Standard's `demos-native:DEM` rail is selected as `pay-dem`. Balance, nonce,
+"classified only". `--rail` takes rail profile IDs, not DACS-4 rail IDs:
+`pay-dem` and `x402` are the profiles the Node host can configure, and
+`evm-erc20` and `pay-d402` are doctor-only labels for SDK rails the host does
+not configure. For example, the Standard's `demos-native:DEM` rail is selected
+as `pay-dem`. `pay-d402` reports `warn` because it is experimental and not a
+supported live rail; note that demosdk 4.0.17 and later broadcast real
+`d402_payment` transactions, so an acknowledged experimental settlement can
+move real DEM. Balance, nonce,
 storage, anchor-completion, and cost checks remain `blocked`, including in
 offline mode, which makes no connections, writes, or payments.
 
@@ -971,9 +986,10 @@ offline mode, which makes no connections, writes, or payments.
 | `config.secrets` | pass, skip | `walletSecret` (always `[redacted]`) |
 | `config.{rpc,wallet}-file.symlink` | pass, fail | none |
 | `config.{rpc,wallet}-file.mode` | pass, fail, skip (file not opened) | `mode`: 4-digit octal string |
-| `config.{rpc,wallet}-file.owner` | pass, fail, skip (no user ID) | `ownerUid`, `currentUid` |
+| `config.{rpc,wallet}-file.owner` | pass, fail, skip (symlink, or no user ID) | `ownerUid`, `currentUid` |
 | `substrate.adapter-load` | pass, fail | none |
-| `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail, skip | `rpc` (redacted); `lastBlockNumber` on pass |
+| `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail, skip | `rpc` (redacted) unless skipped; `lastBlockNumber` on pass |
+| `rpc.node-revision` | pass, warn, skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`commit`, `version`, `dirty`, or `null`) |
 | `wallet.identity` | pass, skip | `address` |
 | `wallet.balance`, `wallet.nonce`, `storage.binding-resolution`, `anchor.completion`, `cost.estimate` | blocked | none |
 | `rail.availability` | warn, fail, skip | `rail`, `known`, or `availability` |
