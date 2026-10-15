@@ -1,5 +1,6 @@
-import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
-import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
+import { attestationBundleHash } from "../agent/twoSidedBundle.js";
+import type { AnyAttestationBundle } from "../artifacts/types.js";
+import { contentHash } from "../canonical/index.js";
 import type { AnchorBinding, BindingIndex } from "./binding.js";
 import {
   createBoundArtifactRepository,
@@ -139,7 +140,8 @@ export interface ArtifactScanState {
  * binding is `indeterminate` (`binding-not-yet-visible`), as in `write`, and a
  * record that cannot be found is `indeterminate` (`record-not-yet-visible`).
  * `unclassified` is a row whose logical address is not an exact current-profile
- * address, including one with a malformed job ID; it is neither resolved nor read.
+ * address, including one with a malformed job ID or a non-canonical CF-4
+ * segment; it is neither resolved nor read.
  */
 export type ScannedArtifactOutcome =
   | Exclude<VerifiedRead, { status: "unverifiable" | "indeterminate" | "absent" | "unreadable" }>
@@ -236,17 +238,11 @@ const ROW_CODES: ReadonlySet<string> = new Set<ArtifactRowIndeterminateCode>([
 ]);
 
 /**
- * DACS-5 §10.4.1 `attestation_bundle_hash`: omit `signatures` and
- * `anchoredByRole`, as the SDK's bundle producer does.
+ * DACS-5 §10.4.1 `attestation_bundle_hash`, through the bundle producer's own
+ * omission set so the two cannot drift. The scope is not shape-checked here.
  */
-function attestationBundleHash(record: Record<string, unknown>): string {
-  const snapshot = snapshotCanonicalJsonRead(record, "attestation bundle");
-  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
-    throw new TypeError("attestation bundle must be a canonical JSON object");
-  }
-  return sha256Hex(canonicalize(Object.fromEntries(
-    Object.entries(snapshot).filter(([key]) => key !== "signatures" && key !== "anchoredByRole"),
-  )));
+function bundleRecordHash(record: Record<string, unknown>): string {
+  return attestationBundleHash(record as unknown as AnyAttestationBundle);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -379,6 +375,10 @@ function stateContradiction(state: ArtifactScanState): string | undefined {
       return `scan state has disagreeing deferred and metadata entries for ${nativeAddress}`;
     }
     deferredRows.add(nativeAddress);
+  }
+  // A retry must find the failing row's logical address it saw first.
+  if (pendingRow !== null && !metadata.has(pendingRow.nativeAddress)) {
+    return `scan state has pending row ${pendingRow.nativeAddress} without its logical metadata`;
   }
   if (pendingRow !== null && seen.has(pendingRow.nativeAddress)) {
     return `scan state has pending row ${pendingRow.nativeAddress} already in seen`;
@@ -522,7 +522,7 @@ export function createScanningArtifactRepository(
         return adapter.readAnchor(address);
       },
       // A bundle binding commits to the DACS-5 §10.4.1 hash, which role copies share.
-      contentHashOf: anchor.kind === "bundle" ? attestationBundleHash : contentHash,
+      contentHashOf: anchor.kind === "bundle" ? bundleRecordHash : contentHash,
       verifySignature: async (record, binding) => {
         try {
           // DACS-5 BB-4/BB-5 require a BundleBinding, which the generic binding
@@ -685,6 +685,9 @@ export function createScanningArtifactRepository(
               state: {
                 ...state,
                 seen: handled,
+                // Keep the page's observed metadata: the failing row is not in
+                // `seen`, so only this binds its logical address for the retry.
+                metadata,
                 deferred,
                 pendingRow: { nativeAddress: anchor.nativeAddress, attempts },
               },

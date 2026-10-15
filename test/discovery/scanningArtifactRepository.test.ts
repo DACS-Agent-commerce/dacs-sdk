@@ -62,8 +62,11 @@ const state = (cursor: string | null): ArtifactScanState => ({
   deferred: [],
 });
 const cursors = (count: number) => new Set(Array.from({ length: count }, (_, i) => `consumed-${i}`));
+// A retry state keeps the failing row's logical metadata from the page.
 const retrying = (input: ArtifactScanState, id: string, attempts = 1): ArtifactScanState => ({
-  ...input, pendingRow: { nativeAddress: `stor-${id}`, attempts },
+  ...input,
+  metadata: new Map([...input.metadata, [`stor-${id}`, logical(id)]]),
+  pendingRow: { nativeAddress: `stor-${id}`, attempts },
 });
 const deferredRow = (id: string): ArtifactScanDeferredRow => ({
   anchor: { nativeAddress: `stor-${id}`, logicalAddress: logical(id), owner: OWNER, kind: "listing" },
@@ -585,6 +588,39 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fixture.verifyArtifact).not.toHaveBeenCalled();
   });
 
+  // DACS-4 SB-1: a non-CF-4 payment address is an error before any projection,
+  // so a permissive payment verifier never sees it.
+  test("non-canonical CF-4 rows are unclassified and never resolved, read or verified", async () => {
+    const malformed = [
+      `dacs4:payment:${JOB}:evm-erc20%3a1%3aUSDC:0`,
+      `dacs4:payment:${JOB}:evm-erc20?asset=USDC:0`,
+      `dacs1:${OWNER}:bad listing:v1`,
+    ];
+    const resolve = vi.fn(async () => ({ status: "absent" as const }));
+    const verifyArtifact = vi.fn(() => true);
+    const fixture = setup([], { index: { resolve }, verifyArtifact });
+    const entries = malformed.map((logicalAddress, i) => ({ nativeAddress: `stor-cf4-${i}`, logicalAddress, owner: OWNER }));
+    fixture.fetchPage.mockResolvedValue({ entries, nextCursor: null });
+    const included = await fixture.repo.scanPage(undefined, { includeUnknown: true });
+    expect(included.results.map(({ anchor, outcome }) => [anchor.kind, outcome.status]))
+      .toEqual(malformed.map(() => ["unknown", "unclassified"]));
+    expect(resolve).not.toHaveBeenCalled();
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
+    expect(verifyArtifact).not.toHaveBeenCalled();
+  });
+
+  test("a verifier that rewrites the anchor it receives cannot change the reported row", async () => {
+    const fixture = setup(["a"], {
+      verifyArtifact: (_value, _binding, anchor) => {
+        Object.assign(anchor, { kind: "rating", logicalAddress: logical("forged") });
+        return true;
+      },
+    });
+    const result = await fixture.repo.scanPage();
+    expect(result.results).toMatchObject([{ anchor: { ...row("a"), kind: "listing" }, outcome: { status: "verified" } }]);
+    expect(result.state.seen).toEqual(new Map([["stor-a", logical("a")]]));
+  });
+
   test.each([
     ["throw", "indeterminate"], ["truthy", "signature-invalid"],
   ])("fails closed when verifier is %s", async (mode, status) => {
@@ -791,7 +827,7 @@ describe("createScanningArtifactRepository (#54)", () => {
 
   const keptRows = {
     seen: new Map([["stor-x", logical("x")]]),
-    metadata: new Map([["stor-x", logical("x")], ["stor-y", logical("y")]]),
+    metadata: new Map([["stor-x", logical("x")], ["stor-y", logical("y")], ["stor-z", logical("z")]]),
     deferred: [deferredRow("y")],
     pendingRow: { nativeAddress: "stor-z", attempts: 2 },
   };
@@ -929,6 +965,28 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(second.state).toEqual(first.state);
     expect(fixture.readAnchor).not.toHaveBeenCalled();
   });
+
+  test.each([null, "page-2"])(
+    "a failing row rebound to another logical address before its retry is a conflict (cursor %s)",
+    async (cursor) => {
+      const fixture = setup(["a"], { verifyArtifact: () => { throw new Error("registry 503"); } });
+      fixture.fetchPage.mockResolvedValue({ entries: [row("a")], nextCursor: "later" });
+      const first = await fixture.repo.scanPage(cursor === null ? undefined : state(cursor));
+      expect(first).toMatchObject({ status: "indeterminate", code: "verifier-unavailable" });
+      expect(first.state.metadata).toEqual(new Map([["stor-a", logical("a")]]));
+      expect(first.state.pendingRow).toEqual({ nativeAddress: "stor-a", attempts: 1 });
+
+      fixture.fetchPage.mockResolvedValue({
+        entries: [{ nativeAddress: "stor-a", logicalAddress: logical("rebound"), owner: OWNER }], nextCursor: "later",
+      });
+      const retried = await fixture.repo.scanPage(first.state);
+      expect(retried).toMatchObject({
+        status: "conflict", code: "metadata-conflict", results: [], state: first.state,
+        reason: `conflicting logical metadata for stor-a: ${logical("a")} vs ${logical("rebound")}`,
+      });
+      expect(fixture.readAnchor).toHaveBeenCalledOnce();
+    },
+  );
 
   test("does not hide disagreeing seen and metadata in resumed state", async () => {
     const fixture = setup(["a"]);
@@ -1136,14 +1194,30 @@ describe("createScanningArtifactRepository (#54)", () => {
     ["string seen", { seen: "stor-a" }],
     ["non-pair seen entry", { seen: [["stor-a"]] }],
     ["non-string seen value", { seen: new Map([["stor-a", 7]]) }],
+    ["string seen entries", { seen: ["stor-a"] }],
+    ["a three-part seen entry", { seen: [["stor-a", logical("a"), "extra"]] }],
     ["null metadata", { metadata: null }],
-    ["non-string consumed cursor", { consumedCursors: new Set([7]) }],
+    ["non-string metadata value", { metadata: new Map([["stor-a", 7]]) }],
+    // Otherwise consistent, so only the element check refuses it.
+    ["non-string consumed cursor", { consumedCursors: new Set([7]), pagesConsumed: 2 }],
     ["throwing iterator", { consumedCursors: { [Symbol.iterator]() { throw new Error("trap"); } } }],
     ["missing pendingRow", { pendingRow: undefined }],
     ["zero pendingRow attempts", { pendingRow: { nativeAddress: "stor-a", attempts: 0 } }],
+    ["a blank pendingRow address", { metadata: new Map([[" ", logical("a")]]), pendingRow: { nativeAddress: " ", attempts: 1 } }],
     ["missing deferred", { deferred: undefined }],
+    ["a non-array deferred collection", { deferred: new Set() }],
     ["unknown deferred code", { deferred: [{ anchor: row("a"), code: "absent", reason: "", attempts: 1 }] }],
     ["deferred without anchor", { deferred: [{ code: "read-indeterminate", reason: "", attempts: 1 }] }],
+    ["a deferred row with a blank native address",
+      { deferred: [{ anchor: { ...row("a"), nativeAddress: " " }, code: "read-indeterminate", reason: "", attempts: 1 }] }],
+    ["a deferred row with a blank logical address",
+      { deferred: [{ anchor: { ...row("a"), logicalAddress: " " }, code: "read-indeterminate", reason: "", attempts: 1 }] }],
+    ["a deferred row with a blank owner",
+      { deferred: [{ anchor: { ...row("a"), owner: " " }, code: "read-indeterminate", reason: "", attempts: 1 }] }],
+    ["a deferred row with a numeric reason",
+      { deferred: [{ anchor: row("a"), code: "read-indeterminate", reason: 7, attempts: 1 }] }],
+    ["a deferred row with zero attempts",
+      { deferred: [{ anchor: row("a"), code: "read-indeterminate", reason: "", attempts: 0 }] }],
   ])("malformed persisted state (%s) requires a restart without fetching", async (_name, bad) => {
     const fixture = setup(["a"]);
     const input = { ...state("next"), ...bad } as unknown as ArtifactScanState;
@@ -1155,6 +1229,7 @@ describe("createScanningArtifactRepository (#54)", () => {
 
   const pending = { nativeAddress: "stor-a", attempts: 1 };
   const handledA = { seen: new Map([["stor-a", logical("a")]]), metadata: new Map([["stor-a", logical("a")]]) };
+  const pendingA = { metadata: new Map([["stor-a", logical("a")]]), pendingRow: pending };
   // Each case breaks exactly one relationship, except the review's S2 state.
   test.each<[string, Partial<ArtifactScanState>, string]>([
     ["S2: exhausted with unread history and a pending row",
@@ -1188,8 +1263,11 @@ describe("createScanningArtifactRepository (#54)", () => {
       "scan state has disagreeing deferred and metadata entries for stor-a"],
     ["a pending row already in seen", { ...handledA, pendingRow: pending },
       "scan state has pending row stor-a already in seen"],
-    ["a pending row already deferred", { deferred: [deferredRow("a")], pendingRow: pending },
+    ["a pending row already deferred", { ...pendingA, deferred: [deferredRow("a")] },
       "scan state has pending row stor-a already deferred"],
+    // A retry could not detect the row rebinding to another logical address.
+    ["a pending row without its logical metadata", { pendingRow: pending },
+      "scan state has pending row stor-a without its logical metadata"],
   ])("contradictory persisted state (%s) requires a restart without fetching", async (_name, contradiction, reason) => {
     const fixture = setup(["a"]);
     const result = await fixture.repo.scanPage({ ...state("next"), ...contradiction });
@@ -1203,10 +1281,14 @@ describe("createScanningArtifactRepository (#54)", () => {
   // The other direction: every page-count, cursor and exhaustion shape scanPage returns.
   test.each<[string, Partial<ArtifactScanState>]>([
     ["a fresh traversal", { cursor: null, pagesConsumed: 0 }],
-    ["a valid restart keeping rows", { cursor: null, pagesConsumed: 0, ...handledA, pendingRow: { nativeAddress: "stor-b", attempts: 2 } }],
+    ["a valid restart keeping rows", {
+      cursor: null, pagesConsumed: 0, seen: handledA.seen,
+      metadata: new Map([...handledA.metadata, ["stor-b", logical("b")]]),
+      pendingRow: { nativeAddress: "stor-b", attempts: 2 },
+    }],
     ["the second page", { cursor: "c1", pagesConsumed: 1 }],
     ["a later page", { cursor: "c3", pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]) }],
-    ["a later page retrying a row", { cursor: "c3", pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]), pendingRow: pending }],
+    ["a later page retrying a row", { cursor: "c3", pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]), ...pendingA }],
     ["one exhausted page", { cursor: null, pagesConsumed: 1, exhausted: true }],
     ["several exhausted pages", { cursor: null, pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]), exhausted: true }],
   ])("consistent persisted state (%s) is resumed", async (_name, consistent) => {
@@ -1235,7 +1317,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     const persisted = JSON.parse(JSON.stringify({
       ...state("next"),
       seen: [["stor-x", logical("x")]],
-      metadata: [["stor-x", logical("x")]],
+      metadata: [["stor-x", logical("x")], ["stor-a", logical("a")]],
       consumedCursors: ["earlier"],
       pagesConsumed: 2,
       pendingRow: { nativeAddress: "stor-a", attempts: 1 },

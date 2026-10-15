@@ -23,6 +23,10 @@
  *    history (`nextCursor: null`), not a swallowed error.
  */
 
+import {
+  decodeAddressSegment,
+  encodeAddressSegment,
+} from "../canonical/addressing.js";
 import { describeError } from "./describeError.js";
 
 export type AnchorKind =
@@ -44,36 +48,62 @@ export type AnchorKind =
   | "unknown";
 
 /**
- * Classify exact current-profile logical-address structures (CORE §B.1 CF-4).
+ * A CF-4 variable segment is canonical when it is exactly what the SDK's
+ * encoder produces for its decoded value: the reserved delimiters are escaped
+ * with uppercase hex, nothing else is escaped, and the value is non-empty,
+ * NFC-normalized text without whitespace, control characters or lone surrogates.
+ */
+function isCanonicalVariableSegment(segment: string): boolean {
+  return (
+    /^[^\s\p{Cc}\p{Cs}]+$/u.test(segment) &&
+    segment.normalize("NFC") === segment &&
+    encodeAddressSegment(decodeAddressSegment(segment)) === segment
+  );
+}
+
+/**
+ * Classify current-profile logical-address structures (CORE §B.1 CF-4).
  * Broad `dacsN:` prefix matching is deliberately insufficient: ratings are not
  * bundles, and only `dacs4:payment:` is SettlementEvidence. Every `{jobId}` must
- * be a JID-1 canonical ULID; an address with a malformed one is `unknown`, which
- * a consumer must not repair or resolve (JID-3). A `stor-` bundle address has the
- * same shape as a DACS-1 stor-cred slot; classification cannot tell them apart.
+ * be a JID-1 canonical ULID, every variable segment must be canonical CF-4
+ * (DACS-4 SB-1 makes a non-CF-4 rail segment an error), and fixed segments must
+ * match their grammar: a URL-safe `listingId` of at most 128 characters and a
+ * lowercase `scheme` token. Any other address is `unknown`, which a consumer
+ * must not repair or resolve (JID-3). The CF-2 form of a ClaimReference inside
+ * a variable segment is not parsed; the verifier checks the logical slot. A
+ * `stor-` bundle address has the same shape as a DACS-1 stor-cred slot;
+ * classification cannot tell them apart.
  */
 export function classifyAnchor(logicalAddress: string): AnchorKind {
-  const segment = "[^:]+";
+  // The only capturing group is a variable segment; `matches` checks each one.
+  const segment = "([^:]+)";
   const jobId = "[0-7][0-9A-HJKMNP-TV-Z]{25}";
-  const index = "(0|[1-9][0-9]*)";
+  const index = "(?:0|[1-9][0-9]*)";
   const hash = "[0-9a-f]{64}";
-  if (new RegExp(`^dacs1-revoked:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
+  const listingId = "[A-Za-z0-9._~-]{1,128}";
+  const scheme = "[a-z][a-z0-9-]*";
+  const matches = (pattern: string): boolean => {
+    const match = new RegExp(pattern).exec(logicalAddress);
+    return match !== null && match.slice(1).every(isCanonicalVariableSegment);
+  };
+  if (matches(`^dacs1-revoked:${segment}:${listingId}:v[1-9][0-9]*$`)) {
     return "listing-revocation";
   }
-  if (new RegExp(`^dacs1:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
+  if (matches(`^dacs1:${segment}:${listingId}:v[1-9][0-9]*$`)) {
     return "listing";
   }
   if (logicalAddress === "dacs2:registry:v0.1") return "verification-registry";
-  if (new RegExp(`^dacs2:composite:${jobId}:${segment}$`).test(logicalAddress)) {
+  if (matches(`^dacs2:composite:${jobId}:${segment}$`)) {
     return "verification-composite";
   }
-  if (new RegExp(`^dacs2:${jobId}:${segment}:${segment}:v[1-9][0-9]*$`).test(logicalAddress)) {
+  if (matches(`^dacs2:${jobId}:${scheme}:${segment}:v[1-9][0-9]*$`)) {
     return "verification-result";
   }
   if (new RegExp(`^dacs3:commit:${jobId}$`).test(logicalAddress)) {
     return "agreement-commitment";
   }
   if (logicalAddress === "dacs4:registry:v0.1") return "rail-registry";
-  if (new RegExp(`^dacs4:payment:${jobId}:${segment}:${index}(:resolved)?$`).test(logicalAddress)) {
+  if (matches(`^dacs4:payment:${jobId}:${segment}:${index}(?::resolved)?$`)) {
     return "settlement-evidence";
   }
   if (new RegExp(`^dacs4:payment-disposition:${jobId}:${index}:${hash}$`).test(logicalAddress)) {
@@ -90,7 +120,7 @@ export function classifyAnchor(logicalAddress: string): AnchorKind {
     return "settlement-amendment";
   }
   if (new RegExp(`^stor-${hash}$`).test(logicalAddress)) return "bundle";
-  if (new RegExp(`^dacs5:rating:${jobId}:${segment}$`).test(logicalAddress)) return "rating";
+  if (matches(`^dacs5:rating:${jobId}:${segment}$`)) return "rating";
   return "unknown";
 }
 

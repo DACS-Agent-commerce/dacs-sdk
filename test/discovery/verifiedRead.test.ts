@@ -331,6 +331,71 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     }
   });
 
+  // Each binding guard alone: no read and no verifier call follow a mismatch.
+  test.each<[string, Record<string, unknown>]>([
+    ["a numeric logical address", { logicalAddress: 7 }],
+    ["a missing logical address", { logicalAddress: undefined }],
+    ["a numeric owner", { owner: 7 }],
+    ["a missing owner", { owner: undefined }],
+    ["an empty anchor kind", { anchorKind: "" }],
+    ["a padded anchor kind", { anchorKind: " listing" }],
+    ["a numeric anchor kind", { anchorKind: 7 }],
+    ["a numeric native address", { nativeAddress: 7 }],
+    ["a blank native address", { nativeAddress: " " }],
+    ["a missing native address", { nativeAddress: undefined }],
+    ["a revoked binding", { revoked: true }],
+  ])("binding-mismatch: a binding with %s is never read or verified", async (_name, over) => {
+    const read = vi.fn(async () => RECORD);
+    const verifySignature = vi.fn(() => true);
+    const hostile = { ...binding(), ...over };
+    const r = await resolveAndRead(
+      { resolve: async () => ({ status: "present", binding: hostile as unknown as AnchorBinding }) },
+      LOGICAL, SELLER, depsWith({}, { read, verifySignature }),
+    );
+    expect(r.status).toBe("binding-mismatch");
+    expect(read).not.toHaveBeenCalled();
+    expect(verifySignature).not.toHaveBeenCalled();
+  });
+
+  test("a binding owner differing only by case, padding or 0x prefix still matches", async () => {
+    const owner = "a".repeat(64);
+    const read = vi.fn(async () => RECORD);
+    const r = await resolveAndRead(
+      { resolve: async () => ({ status: "present", binding: binding({ owner: ` 0x${owner.toUpperCase()} `, anchorKind: "listing" }) }) },
+      LOGICAL, owner, depsWith({}, { read, verifySignature: () => true }),
+    );
+    expect(r.status).toBe("verified");
+    expect(read).toHaveBeenCalledWith("stor-real", "listing");
+  });
+
+  test.each([["a string", "stor-real"], ["a number", 7], ["null", null], ["an array", [binding()]], ["a function", () => binding()]])(
+    "indeterminate: a present binding that is %s is never read",
+    async (_name, value) => {
+      const read = vi.fn(async () => RECORD);
+      const r = await resolveAndRead(
+        { resolve: async () => ({ status: "present", binding: value as unknown as AnchorBinding }) },
+        LOGICAL, SELLER, depsWith({}, { read, verifySignature: () => true }),
+      );
+      expect(r).toMatchObject({ status: "indeterminate", reason: expect.stringContaining("binding snapshot failed") });
+      expect(read).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([["a string", "bytes"], ["a number", 7], ["an array", [RECORD]], ["a function", () => RECORD]])(
+    "indeterminate: a read that returns %s is never hashed or verified",
+    async (_name, value) => {
+      const contentHash = vi.fn(contentHashOf);
+      const verifySignature = vi.fn(() => true);
+      const r = await resolveAndRead(
+        createInMemoryBindingIndex([binding()]), LOGICAL, SELLER,
+        depsWith({}, { read: async () => value as never, contentHashOf: contentHash, verifySignature }),
+      );
+      expect(r).toMatchObject({ status: "indeterminate", reason: expect.stringContaining("read record snapshot failed") });
+      expect(contentHash).not.toHaveBeenCalled();
+      expect(verifySignature).not.toHaveBeenCalled();
+    },
+  );
+
   test("signature verifier: a valid signature keeps the read verified", async () => {
     const index = createInMemoryBindingIndex([binding()]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, {

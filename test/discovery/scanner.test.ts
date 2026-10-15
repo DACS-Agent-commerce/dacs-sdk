@@ -67,8 +67,71 @@ describe("classifyAnchor (§6.3.4 logical-address kinds)", () => {
     ["short verificationMethodHash", `dacs4:payload-attestation:${JOB}:${"a".repeat(63)}:0`],
     ["non-minimal attempt", `dacs4:payload-attestation:${JOB}:${HASH}:01`],
     ["negative attempt", `dacs4:payload-attestation:${JOB}:${HASH}:-1`],
+    ["non-minimal phaseIndex", `dacs4:payment:${JOB}:pay-x402:03`],
+    ["non-numeric phaseIndex", `dacs4:payment:${JOB}:pay-x402:x`],
+    ["non-minimal entitlement index", `dacs4:entitlement:${JOB}:01`],
+    ["non-numeric entitlement index", `dacs4:entitlement:${JOB}:x`],
+    ["non-minimal amendment index", `dacs4:amendment:${JOB}:${HASH}:01`],
+    ["malformed amendment hash", `dacs4:amendment:${JOB}:${HASH.toUpperCase()}:0`],
+    ["prefix before the payment-disposition kind", `x:dacs4:payment-disposition:${JOB}:3:${HASH}`],
   ])("a DACS-4 address with a %s is unknown", (_name, address) => {
     expect(classifyAnchor(address)).toBe("unknown");
+  });
+
+  // CF-4 (CORE §B.1): reserved delimiters in a variable segment are escaped with
+  // uppercase hex and nothing else is escaped. DACS-4 SB-1 makes a non-CF-4 rail
+  // segment an error, and the pinned conformance test rejects `%3a`.
+  const CLAIM = "cci-xm%3Aevm%3Amainnet%3A0x1234";
+  test.each([
+    ["a lowercase escape", "evm-erc20%3a1%3aUSDC"],
+    ["a raw ?", "evm-erc20?asset=USDC"],
+    ["a raw &", "evm-erc20&USDC"],
+    ["a raw =", "evm-erc20=USDC"],
+    ["a bare %", "evm-erc20%USDC"],
+    ["an escaped non-reserved byte", "evm-erc20%41USDC"],
+    ["a truncated escape", "evm-erc20%3"],
+    ["a space", "evm erc20"],
+    ["a tab", "evm\terc20"],
+    ["a control character", "evm\u0000erc20"],
+    ["a lone surrogate", "evm\ud800erc20"],
+    ["non-NFC text", "café"],
+  ])("a variable segment with %s makes every address that carries it unknown", (_name, value) => {
+    for (const address of [
+      `dacs1:${value}:svc:v1`,
+      `dacs1-revoked:${value}:svc:v1`,
+      `dacs2:${JOB}:cci-xm:${value}:v1`,
+      `dacs2:composite:${JOB}:${value}`,
+      `dacs4:payment:${JOB}:${value}:0`,
+      `dacs4:payment:${JOB}:${value}:0:resolved`,
+      `dacs5:rating:${JOB}:${value}`,
+    ]) {
+      expect(classifyAnchor(address), address).toBe("unknown");
+    }
+  });
+
+  test("an escaped % is canonical CF-4, so the decoded value is left to the verifier", () => {
+    // `%25` is how CF-4 writes a literal `%`; the tuple comparison rejects a
+    // double-encoded rail, not the classifier.
+    expect(classifyAnchor(`dacs4:payment:${JOB}:evm-erc20%253A1:0`)).toBe("settlement-evidence");
+    expect(classifyAnchor(`dacs1:${CLAIM}%3Fjurisdiction%3DUS%26tier%3D1:svc:v1`)).toBe("listing");
+  });
+
+  test.each([
+    ["a space in listingId", `dacs1:${CLAIM}:bad listing:v1`],
+    ["an escaped listingId", `dacs1:${CLAIM}:my%3Alisting:v1`],
+    ["a reserved byte in listingId", `dacs1-revoked:${CLAIM}:my?listing:v1`],
+    ["a non-ASCII listingId", `dacs1:${CLAIM}:café:v1`],
+    ["a 129-character listingId", `dacs1:${CLAIM}:${"l".repeat(129)}:v1`],
+    ["listing version 0", `dacs1:${CLAIM}:svc:v0`],
+    ["an uppercase scheme", `dacs2:${JOB}:CCI-XM:evm%3Amainnet%3A0x1234:v1`],
+    ["an escaped scheme", `dacs2:${JOB}:cci%3Axm:evm%3Amainnet%3A0x1234:v1`],
+    ["recipe version 0", `dacs2:${JOB}:cci-xm:evm%3Amainnet%3A0x1234:v0`],
+  ])("a fixed segment with %s is unknown", (_name, address) => {
+    expect(classifyAnchor(address)).toBe("unknown");
+  });
+
+  test("a 128-character URL-safe listingId is a listing", () => {
+    expect(classifyAnchor(`dacs1:${CLAIM}:${"Az09._~-".repeat(16)}:v1`)).toBe("listing");
   });
 
   // CORE JID-1: malformed job IDs are never repaired, so never classified.
@@ -285,6 +348,53 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
     });
   });
 
+  // Each raw-page guard alone: the page records nothing and keeps its cursor.
+  test.each<[string, unknown, string]>([
+    ["a numeric nextCursor", { entries: [], nextCursor: 7 }, "history page nextCursor must be a string or null"],
+    ["no nextCursor", { entries: [] }, "history page nextCursor must be a string or null"],
+    ["a string entry", { entries: ["stor-a"], nextCursor: null }, "history entry 0 must be an object"],
+    ["a null entry", { entries: [null], nextCursor: null }, "history entry 0 must be an object"],
+    ["a numeric native address", { entries: [{ nativeAddress: 7 }], nextCursor: null }, "history entry 0 has no native address"],
+    ["a blank native address", { entries: [{ nativeAddress: " " }], nextCursor: null }, "history entry 0 has no native address"],
+    ["a numeric logical address", { entries: [{ nativeAddress: "stor-a", logicalAddress: 7 }], nextCursor: null },
+      "history entry 0 has invalid logical metadata"],
+    ["a blank logical address", { entries: [{ nativeAddress: "stor-a", logicalAddress: " " }], nextCursor: null },
+      "history entry 0 has invalid logical metadata"],
+    ["a numeric owner", { entries: [entry("stor-a", "dacs1:s:a:v1", 7 as never)], nextCursor: null },
+      "history entry 0 has an invalid owner"],
+    ["a blank owner", { entries: [entry("stor-a", "dacs1:s:a:v1", " ")], nextCursor: null },
+      "history entry 0 has an invalid owner"],
+  ])("a page with %s is indeterminate at the same cursor and records nothing", async (_name, page, reason) => {
+    const seen = new Map<string, string>();
+    const logicalMetadata = new Map<string, string>();
+    const res = await scanAnchorPage(async () => page as RawScanPage, "cursor-3", { seen, logicalMetadata, includeUnknown: true });
+    expect(res).toEqual({ status: "indeterminate", reason: `page fetch failed: ${reason}`, cursor: "cursor-3" });
+    expect(seen.size).toBe(0);
+    expect(logicalMetadata.size).toBe(0);
+  });
+
+  test("an entry without logical metadata is never an anchor, even with includeUnknown", async () => {
+    const seen = new Map<string, string>();
+    const logicalMetadata = new Map<string, string>();
+    const res = await scanAnchorPage(
+      async () => ({ entries: [entry("stor-a")], nextCursor: null }), null, { seen, logicalMetadata, includeUnknown: true });
+    expect(res).toEqual({ status: "page", anchors: [], nextCursor: null });
+    expect(seen.size).toBe(0);
+    expect(logicalMetadata.size).toBe(0);
+  });
+
+  test("two logical addresses for one native address on the same page conflict", async () => {
+    const seen = new Map<string, string>();
+    const res = await scanAnchorPage(async () => ({
+      entries: [entry("stor-a", "dacs1:s:a:v1"), entry("stor-a", "dacs1:s:b:v1")], nextCursor: "next",
+    }), "cursor-4", { seen });
+    expect(res).toEqual({
+      status: "indeterminate", code: "metadata-conflict", cursor: "cursor-4",
+      reason: "conflicting logical metadata for stor-a: dacs1:s:a:v1 vs dacs1:s:b:v1",
+    });
+    expect(seen.size).toBe(0);
+  });
+
   test("codes a page larger than the limit and a fetcher's restart signal", async () => {
     const oversized = await scanAnchorPage(
       async () => ({ entries: [entry("stor-a", "dacs1:s:a:v1"), entry("stor-b", "dacs1:s:b:v1")], nextCursor: null }),
@@ -424,7 +534,19 @@ describe("scanAllAnchors (drain the whole history)", () => {
     });
     await expect(scanAllAnchors(fetch)).resolves.toMatchObject({
       status: "aborted",
+      // The last page read, so a resume re-reads it rather than entering the cycle.
+      resumeCursor: "b",
       reason: expect.stringContaining("cursor cycle"),
     });
+  });
+
+  test("the default page bound admits a history longer than a few pages", async () => {
+    const fetch = async (cursor: string | null): Promise<RawScanPage> => {
+      const page = cursor === null ? 0 : Number(cursor);
+      return { entries: [entry(`stor-${page}`, `dacs1:s:l${page}:v1`)], nextCursor: page < 24 ? String(page + 1) : null };
+    };
+    const result = await scanAllAnchors(fetch);
+    expect(result.status).toBe("complete");
+    expect(result.anchors).toHaveLength(25);
   });
 });
