@@ -429,18 +429,24 @@ describe("a prepared or retained attempt is checked field by field", () => {
 // never retained: agave treats a message as one when its first instruction
 // calls the system program (32 zero bytes) with AdvanceNonceAccount data.
 describe("durable-nonce and malformed messages", () => {
-  // A legacy message, or v0 with no address table lookups, whose key 0 signs.
+  // A Solana compact-u16: seven bits a byte, low bits first.
+  const compact = (value: number): number[] =>
+    value < 0x80 ? [value] : [(value & 0x7f) | 0x80, ...compact(value >> 7)];
+  // A legacy message, or v0 with no address table lookups, whose first
+  // `signers` keys sign.
   function message(
     keys: readonly Buffer[],
     instructions: readonly { program: number; data: readonly number[]; accounts?: readonly number[] }[],
     version?: number,
+    signers = 1,
   ): Buffer {
     return Buffer.concat([
       ...(version === undefined ? [] : [Buffer.from([0x80 | version])]),
-      Buffer.from([1, 0, 1, keys.length]), ...keys, Buffer.alloc(32, 3),
-      Buffer.from([instructions.length]),
-      ...instructions.map(({ program, data, accounts = [] }) =>
-        Buffer.from([program, accounts.length, ...accounts, data.length, ...data])),
+      Buffer.from([signers, 0, 1, ...compact(keys.length)]), ...keys, Buffer.alloc(32, 3),
+      Buffer.from(compact(instructions.length)),
+      ...instructions.map(({ program, data, accounts = [] }) => Buffer.from([
+        program, ...compact(accounts.length), ...accounts, ...compact(data.length), ...data,
+      ])),
       ...(version === undefined ? [] : [Buffer.from([0])]),
     ]);
   }
@@ -449,9 +455,17 @@ describe("durable-nonce and malformed messages", () => {
   const OTHER = Buffer.alloc(32, 5);
   const NEARLY_SYSTEM = Buffer.concat([Buffer.alloc(31), Buffer.from([1])]);
   const NONCE = [4, 0, 0, 0];
+  // Instruction data of 128 bytes, whose length takes two compact-u16 bytes.
+  const padded = (data: readonly number[]) => [...data, ...Array<number>(128 - data.length).fill(0)];
   const TRANSFER = message([PAYER_KEY, OTHER], [{ program: 1, data: [12] }]);
+  // The key order web3.js 1.98.0 compiles for nonceAdvance + transferChecked:
+  // the payer, the nonce account and both token accounts, the recent
+  // blockhashes sysvar, then the system program at static index 4.
+  const WEB3_KEYS = [PAYER_KEY, Buffer.alloc(32, 6), Buffer.alloc(32, 7), Buffer.alloc(32, 8), SYSTEM, OTHER];
+  const SECOND_SIGNER = Buffer.alloc(32, 9);
+  const SECOND_SIGNATURE = Buffer.alloc(64);
 
-  async function prepareWith(wireMessage: Buffer) {
+  async function prepareWith(wireMessage: Buffer, otherSignatures: readonly Buffer[] = []) {
     const store = createInMemorySolanaSplSettlementStore();
     const recordAttempt = vi.spyOn(store, "recordAttempt");
     const broadcastRetained = vi.fn(adapter().broadcastRetained);
@@ -463,7 +477,8 @@ describe("durable-nonce and malformed messages", () => {
           return {
             ...prepared,
             signedTransactionBase64: Buffer.concat([
-              Buffer.from([1]), base58Decode(prepared.signature, 64), wireMessage,
+              Buffer.from([1 + otherSignatures.length]), base58Decode(prepared.signature, 64),
+              ...otherSignatures, wireMessage,
             ]).toString("base64"),
           };
         },
@@ -472,6 +487,45 @@ describe("durable-nonce and malformed messages", () => {
     }));
     return { result, recordAttempt, broadcastRetained };
   }
+
+  // The shapes a real adapter builds: the system program past static index 1,
+  // a second signer, and data long enough for a two-byte compact-u16 length.
+  test.each([
+    ["the system program at static index 4", message(WEB3_KEYS, [
+      { program: 4, accounts: [1, 5, 0], data: NONCE }, { program: 5, accounts: [2, 3, 0], data: [12] },
+    ]), []],
+    ["the system program at static index 4 in v0", message(WEB3_KEYS, [
+      { program: 4, accounts: [1, 5, 0], data: NONCE },
+    ], 0), []],
+    ["two signatures", message([PAYER_KEY, SECOND_SIGNER, SYSTEM], [
+      { program: 2, accounts: [0, 1], data: NONCE },
+    ], undefined, 2), [SECOND_SIGNATURE]],
+    ["AdvanceNonceAccount data of 128 bytes", message([PAYER_KEY, SYSTEM], [
+      { program: 1, accounts: [0], data: padded(NONCE) },
+    ]), []],
+  ])("a nonce transaction with %s is refused before it is retained", async (_name, wireMessage, others) => {
+    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, others);
+    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" });
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["the system program at static index 4", message(WEB3_KEYS, [
+      { program: 4, accounts: [0, 1], data: [2, 0, 0, 0] }, { program: 5, accounts: [2, 3, 0], data: [12] },
+    ]), []],
+    ["two signatures", message([PAYER_KEY, SECOND_SIGNER, OTHER], [
+      { program: 2, accounts: [0, 1], data: [12] },
+    ], undefined, 2), [SECOND_SIGNATURE]],
+    ["first-instruction data of 128 bytes", message([PAYER_KEY, OTHER], [
+      { program: 1, accounts: [0], data: padded([12]) },
+    ]), []],
+  ])("a transfer with %s is retained and settles", async (_name, wireMessage, others) => {
+    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, others);
+    expect(result).toMatchObject({ status: "settled" });
+    expect(recordAttempt).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+  });
 
   test.each([
     ["a legacy durable-nonce transaction", message([PAYER_KEY, SYSTEM], [{ program: 1, accounts: [0], data: NONCE }])],
