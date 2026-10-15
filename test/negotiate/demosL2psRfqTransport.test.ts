@@ -1,4 +1,4 @@
-import { createDecipheriv, createHmac, randomBytes } from "node:crypto";
+import { createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -47,6 +47,7 @@ import {
   type IdentityBundle,
   type Listing,
   type RfqChannelReservationInput,
+  type RfqLifecyclePacket,
 } from "../../src/index.js";
 
 const NOW = 1_780_000_000_000;
@@ -263,6 +264,9 @@ class FakeL2psHub {
         message.messageHash === messageHash,
     );
     if (stored === undefined) {
+      // Like the node after a successful submission: the L2PS transaction
+      // hash, and delivered or queued by whether the recipient is online
+      // (L2PSMessagingService.ts:71-76).
       stored = {
         id: `message-${this.messages.length + 1}`,
         from,
@@ -270,9 +274,9 @@ class FakeL2psHub {
         messageHash,
         encrypted: structuredClone(encrypted),
         l2psUid: L2PS_UID,
-        l2psTxHash: null,
+        l2psTxHash: (this.messages.length + 1).toString(16).padStart(64, "a"),
         timestamp: NOW + this.messages.length,
-        status: "l2ps_pending",
+        status: (this.handlers.get(to)?.size ?? 0) > 0 ? "delivered" : "queued",
       };
       this.messages.push(stored);
     }
@@ -678,6 +682,21 @@ async function demosPeer(config: object): Promise<DemosL2psRfqPeerLike> {
 function demosConfig(serverUrl: unknown) {
   return { serverUrl, publicKey: BUYER_PEER, l2psUid: L2PS_UID, signFn: () => "00" };
 }
+
+describe("reviewed demosdk messaging files", () => {
+  // The transport mirrors these two files' shapes and the peer's private
+  // config.serverUrl. They were reviewed at 4.0.16; 4.0.17 and 4.0.18 ship
+  // them byte for byte. A lockfile move that changes either fails here, so the
+  // adapter is re-reviewed before the new release is tested against.
+  test.each([
+    ["L2PSMessagingPeer.js", "997e6275122abbd738e2817c6396db60cba72e5859b8c0830b9b942a746c75be"],
+    ["l2ps_types.d.ts", "974b1abe8ad57d3eecc0f91c489b0491a44f31ae36b6e54da4e231343b75d0f2"],
+  ])("instant_messaging/%s is the reviewed file", async (file, sha256) => {
+    const build = dirname(createRequire(import.meta.url).resolve("@kynesyslabs/demosdk"));
+    const bytes = await readFile(join(build, "instant_messaging", file));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(sha256);
+  });
+});
 
 function channelOptions(peer: DemosL2psRfqPeerLike, peerChannel?: unknown): DemosL2psRfqTransportOptions {
   return {
@@ -3960,6 +3979,43 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
       await expect(absent.transport.reconcile(absent.packet)).resolves.toEqual({ disposition: "absent" });
     });
 
+    // Each value is one node 61b8e75 stores (a truthy ciphertext and nonce in
+    // a jsonb column) but the canonical snapshot refuses, so before it was
+    // nulled one such row refused every page that held it.
+    test.each([
+      { name: "a nonce of 1e300", fields: { encrypted: { ciphertext: "QUFB", nonce: 1e300 } } },
+      { name: "a nonce of 2^53", fields: { encrypted: { ciphertext: "QUFB", nonce: 2 ** 53 } } },
+      { name: "a ciphertext of 1e300", fields: { encrypted: { ciphertext: 1e300, nonce: "QUFB" } } },
+      { name: "an ephemeralKey of 1e300", fields: { encrypted: { ciphertext: "QUFB", nonce: "QUFB", ephemeralKey: 1e300 } } },
+      { name: "an ephemeralKey with a lone surrogate", fields: { encrypted: { ciphertext: "QUFB", nonce: "QUFB", ephemeralKey: "k\ud800" } } },
+      { name: "a ciphertext that is not Base64", fields: { encrypted: { ciphertext: "QUFB\udc00", nonce: "QUFB" } } },
+      { name: "a messageHash of 2^60", fields: { messageHash: 2 ** 60 } },
+    ])("a counterparty row with $name blocks neither side", async ({ fields }) => {
+      const fixture = await inboundReceiver();
+      fixture.hub.messages.push(counterpartyRow(fixture.own, 0, fields));
+      await expect(buyerReconcile(fixture)).resolves.toEqual({ disposition: "acknowledged" });
+      fixture.hub.messages.pop();
+      fixture.hub.messages.push(counterpartyRow(fixture.own, 1, { from: BUYER_PEER, to: SELLER_PEER, ...fields }));
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "complete", delivered: 1, ignored: 1, skipped: [],
+      });
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+      fixture.transport.stop();
+    });
+
+    test("a full page of maximum-size counterparty rows with oversized hashes stays within the page budget", async () => {
+      let page: DemosL2psRfqHistoryPage | undefined;
+      const { transport, packet, own } = await buyerWithSentOffer({
+        history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
+      });
+      const encrypted = { ciphertext: "A".repeat(MAX_CIPHERTEXT_CHARS), nonce: "QUFB", ephemeralKey: "e".repeat(4_096) };
+      // A hash that can never be an RFQ frame's is not charged.
+      const rows = Array.from({ length: 99 }, (_, index) =>
+        counterpartyRow(own, index, { messageHash: `${index}:`.padEnd(16_384, "f"), encrypted }));
+      page = { messages: [...rows, structuredClone(own)], hasMore: false };
+      await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+    }, 60_000);
+
     test("a row under our packetId and route that is not a well-formed frame is a conflict", async () => {
       const { hub, transport, packet } = await buyerWithSentOffer();
       hub.messages[0]!.encrypted = { ciphertext: 1, nonce: 1 } as never;
@@ -4006,6 +4062,17 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
       expect(fixture.requests).toEqual([
         { limit: 100 },
         { before: counterpartyRow(fixture.own, 0).timestamp, limit: 100 },
+      ]);
+    });
+
+    test("the cursor after a page of several rows is that page's oldest timestamp", async () => {
+      const fixture = await paged((own, before) => before === undefined
+        ? { messages: [counterpartyRow(own, 0), counterpartyRow(own, 1)], hasMore: true }
+        : { messages: [structuredClone(own)], hasMore: false });
+      await expect(fixture.transport.reconcile(fixture.packet)).resolves.toEqual({ disposition: "acknowledged" });
+      expect(fixture.requests).toEqual([
+        { limit: 100 },
+        { before: counterpartyRow(fixture.own, 1).timestamp, limit: 100 },
       ]);
     });
 
@@ -4126,6 +4193,211 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
         status: "indeterminate", delivered: 0, ignored: 1, skipped: [],
         reason: "Demos L2PS inbound history recovery page limit reached",
       });
+      fixture.transport.stop();
+    });
+  });
+
+  describe("delivery-path verdicts", () => {
+    const consumer = () => vi.fn((_packet: unknown) => ({ status: "ready" as const, record: undefined as never }));
+
+    test.each(["delivered", "queued"] as const)(
+      "a node-written successful row (status %s, string l2psTxHash) acknowledges and is recovered",
+      async (status) => {
+        const fixture = await inboundReceiver();
+        fixture.hub.messages[0]!.status = status;
+        expect(fixture.own.l2psTxHash).toMatch(/^[0-9a-f]{64}$/);
+        await expect(buyerReconcile(fixture)).resolves.toEqual({ disposition: "acknowledged" });
+        await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+          status: "complete", delivered: 1, ignored: 0, skipped: [],
+        });
+        expect(fixture.receive).toHaveBeenCalledTimes(1);
+        fixture.transport.stop();
+      },
+    );
+
+    test("a 98,288-byte packet is delivered live and through recovery, and reconcile acknowledges it", async () => {
+      const hub = new FakeL2psHub();
+      const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+      const largest = buyerRejectPacket(98_288);
+      const live = hubTransport(hub, "seller", { codec });
+      const liveConsumer = consumer();
+      live.transport.start(liveConsumer);
+      const buyerSide = hubTransport(hub, "buyer", { codec });
+      await expect(buyerSide.transport.publish(largest)).resolves.toEqual({ disposition: "acknowledged" });
+      await live.transport.drain();
+      expect(live.errors).toEqual([]);
+      expect(liveConsumer.mock.calls.map(([packet]) => packet)).toEqual([largest]);
+      live.transport.stop();
+
+      const recovering = hubTransport(hub, "seller", { codec });
+      const recovered = consumer();
+      recovering.transport.start(recovered);
+      await expect(recovering.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "complete", delivered: 1, ignored: 0, skipped: [],
+      });
+      expect(recovered.mock.calls.map(([packet]) => packet)).toEqual([largest]);
+      recovering.transport.stop();
+      await expect(buyerSide.transport.reconcile(largest)).resolves.toEqual({ disposition: "acknowledged" });
+    });
+
+    test.each([
+      {
+        name: "a mapping with no key for the claim yet",
+        extra: { peerForClaim: (claim: string) => (claim === BUYER ? undefined : peerForClaim(claim)) },
+        reason: "Demos L2PS RFQ peer mapping has no key for the claim yet",
+      },
+      {
+        name: "a mapping that is not reciprocal",
+        extra: { claimForPeer: (peer: string) => (peer === BUYER_PEER ? "did:demos:someone-else" : claimForPeer(peer)) },
+        reason: "Demos L2PS RFQ peer/claim mapping is not reciprocal",
+      },
+    ])("recovery through $name is indeterminate and reads nothing", async ({ extra, reason }) => {
+      let reads = 0;
+      const fixture = await inboundReceiver({
+        extra: extra as Partial<DemosL2psRfqTransportOptions>,
+        history: (base) => async (peerKey, options) => {
+          reads += 1;
+          return base(peerKey, options);
+        },
+      });
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 0, ignored: 0, skipped: [], reason,
+      });
+      expect(reads).toBe(0);
+      expect(fixture.receive).not.toHaveBeenCalled();
+      fixture.transport.stop();
+    });
+
+    test("a newer well-formed frame that does not open leaves the older packet delivered", async () => {
+      const fixture = await inboundReceiver();
+      // Another messageHash changes the AAD, so the frame fails authentication.
+      fixture.hub.messages.push({
+        ...structuredClone(fixture.own), id: "unreadable", messageHash: "d".repeat(64), timestamp: fixture.own.timestamp + 1,
+      });
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 1, ignored: 0, skipped: [],
+        reason: "Demos L2PS inbound history contains an unreadable RFQ frame",
+      });
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+      fixture.transport.stop();
+    });
+
+    test("a three-page recovery whose only packet is on page 3 delivers it", async () => {
+      const fixture = await inboundReceiver({ extra: { historyPageSize: 2, historyMaxPages: 3 } });
+      // Pages of two rows: the cursor must be each page's oldest timestamp.
+      for (let index = 0; index < 4; index += 1) {
+        fixture.hub.messages.push(counterpartyRow(fixture.own, index, { from: BUYER_PEER, to: SELLER_PEER, messageHash: "x" }));
+      }
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 1, ignored: 4, skipped: [],
+        reason: "Demos L2PS timestamp pagination cannot prove inbound completeness",
+      });
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+      fixture.transport.stop();
+    });
+  });
+
+  // DACS-3 §8.3.4 asks for member acknowledgement, which node 61b8e75 cannot
+  // give: it stores and answers whether or not the recipient ever reads the
+  // row. Silence is detected by the RFQ-4 timeout, which these tests pin.
+  describe("node storage is not member acknowledgement", () => {
+    const OFFER = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+
+    test("on two isolated nodes the send is acknowledged and never delivered; the waiting buyer records the RFQ-4 timeout", async () => {
+      const buyerNode = new FakeL2psHub();
+      const sellerNode = new FakeL2psHub();
+      const clock = { now: NOW };
+      const buyerSide = hubTransport(buyerNode, "buyer");
+      const sellerSide = hubTransport(sellerNode, "seller");
+      const reservation = durableReservation();
+      const buyerClient = createDurableRfqLifecycleClient({
+        ...clientOptions("buyer", buyerSide.transport, reservation), nowMs: () => clock.now,
+      });
+      const sellerClient = createDurableRfqLifecycleClient({
+        ...clientOptions("seller", sellerSide.transport, reservation), nowMs: () => clock.now,
+      });
+      const received = vi.fn((packet: RfqLifecyclePacket<string>) => sellerClient.receive(packet));
+      sellerSide.transport.start(received);
+      await buyerClient.open(openInput());
+      await sellerClient.open(openInput());
+      await expect(buyerClient.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "ready" });
+      // The buyer's node stored the offer for a recipient it has never seen.
+      expect(buyerNode.messages).toMatchObject([{ from: BUYER_PEER, to: SELLER_PEER, status: "queued" }]);
+      await sellerSide.transport.drain();
+      await expect(sellerSide.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "complete", delivered: 0, ignored: 0, skipped: [],
+      });
+      expect(received).not.toHaveBeenCalled();
+
+      clock.now = NOW + 10_000;
+      await expect(buyerClient.sendAbort(JOB_ID)).resolves.toMatchObject({
+        status: "rejected", reason: "counterparty owns the next RFQ turn",
+      });
+      clock.now = NOW + 10_001;
+      await expect(buyerClient.sendAbort(JOB_ID)).resolves.toMatchObject({
+        status: "rejected", reason: "RFQ turn timeout elapsed (RFQ-4)",
+      });
+      const status = await buyerClient.getStatus(JOB_ID);
+      expect(status.status === "ok" && status.record.failure).toMatchObject({ class: "timeout" });
+      // The stored acknowledgement is final: nothing is resent.
+      await expect(buyerClient.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "rejected" });
+      expect(buyerNode.sends).toBe(1);
+      sellerSide.transport.stop();
+    });
+
+    test("the node's offline quota refusal is never an acknowledgement, and the RFQ-4 timeout ends the resends", async () => {
+      const hub = new FakeL2psHub();
+      const clock = { now: NOW };
+      let ticks = 0;
+      let refusals = 0;
+      // Node 61b8e75 refuses a sender's 201st offline message before it stores
+      // anything (L2PSMessagingService.ts:39-78,88-105); demosdk keeps only the text.
+      const peer: DemosL2psRfqPeerLike = {
+        ...hub.peer(BUYER_PEER),
+        send: async () => {
+          refusals += 1;
+          throw new Error("Offline message limit reached");
+        },
+      };
+      const { transport } = hubTransport(hub, "buyer", { peer, monotonicNowMs: () => ticks });
+      const client = createDurableRfqLifecycleClient({
+        ...clientOptions("buyer", transport, durableReservation()), nowMs: () => clock.now,
+      });
+      await client.open(openInput());
+      await expect(client.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "indeterminate" });
+      // Past the grace, history proves absence, so the packet is sent again and refused again.
+      ticks = 60_000;
+      await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
+      expect(refusals).toBe(2);
+
+      clock.now = NOW + 10_001;
+      await expect(client.sendAbort(JOB_ID)).resolves.toMatchObject({
+        status: "rejected", reason: "RFQ turn timeout elapsed (RFQ-4)",
+      });
+      ticks = 600_000;
+      await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "rejected" });
+      expect(refusals).toBe(2);
+      expect(hub.messages).toEqual([]);
+    });
+
+    test("more than a page of rows on one timestamp keeps recovery and reconcile indeterminate", async () => {
+      const fixture = await inboundReceiver();
+      // Node 61b8e75 pages by timestamp alone with a strict `timestamp < before`
+      // (L2PSMessagingService.ts:337-374): 100 rows on the offer's own timestamp,
+      // ordered ahead of it, fill the first page and the cursor skips the offer.
+      fixture.hub.messages.unshift(...Array.from({ length: 100 }, (_, index) =>
+        counterpartyRow(fixture.own, index, {
+          from: BUYER_PEER, to: SELLER_PEER, messageHash: "x", timestamp: fixture.own.timestamp,
+        })));
+      await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+        status: "indeterminate", delivered: 0, ignored: 100, skipped: [],
+        reason: "Demos L2PS timestamp pagination cannot prove inbound completeness",
+      });
+      expect(fixture.receive).not.toHaveBeenCalled();
+      // Absence is never proved, so the buyer does not resend.
+      const sends = fixture.hub.sends;
+      await expect(buyerReconcile(fixture)).resolves.toMatchObject({ disposition: "indeterminate" });
+      expect(fixture.hub.sends).toBe(sends);
       fixture.transport.stop();
     });
   });

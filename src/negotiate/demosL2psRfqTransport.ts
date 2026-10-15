@@ -606,6 +606,54 @@ function admitIncoming(value: unknown): number {
  * peer pair for good. Its row is kept for pagination, without a frame.
  */
 const SENDER_HISTORY_KEYS = new Set<string>(["messageHash", "encrypted"]);
+const BASE64_TEXT = /^[A-Za-z0-9+/]*={0,2}$/;
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+const NOT_A_FRAME = { value: null, chars: 0 } as const;
+
+/**
+ * A sender-chosen history field is kept only when it is exactly shaped like
+ * an RFQ frame's: a 64-hex messageHash, or an encrypted record of Base64
+ * string ciphertext and nonce within their limits and an optional
+ * well-formed string ephemeralKey. Anything else, such as a number the
+ * canonical snapshot would refuse or an oversized hash, becomes null and is
+ * not charged to the page budget.
+ */
+function admitSenderField(key: string, value: unknown): { value: unknown; chars: number } {
+  if (key === "messageHash") {
+    return typeof value === "string" && HASH.test(value)
+      ? { value, chars: value.length }
+      : NOT_A_FRAME;
+  }
+  let frame: JsonRecord;
+  try {
+    frame = admittedFields(
+      value,
+      ["ciphertext", "nonce", "ephemeralKey"],
+      "Demos L2PS encrypted RFQ frame",
+    );
+  } catch {
+    return NOT_A_FRAME;
+  }
+  const { ciphertext, nonce, ephemeralKey } = frame;
+  if (
+    typeof ciphertext !== "string" ||
+    ciphertext.length > base64Chars(MAX_CIPHERTEXT_BYTES) ||
+    !BASE64_TEXT.test(ciphertext) ||
+    typeof nonce !== "string" ||
+    nonce.length > base64Chars(MAX_NONCE_BYTES) ||
+    !BASE64_TEXT.test(nonce) ||
+    (ephemeralKey !== undefined &&
+      (typeof ephemeralKey !== "string" ||
+        ephemeralKey.length > MAX_EPHEMERAL_KEY_CHARS ||
+        LONE_SURROGATE.test(ephemeralKey)))
+  ) {
+    return NOT_A_FRAME;
+  }
+  return {
+    value: { ciphertext, nonce, ...(ephemeralKey === undefined ? {} : { ephemeralKey }) },
+    chars: ciphertext.length + nonce.length + ((ephemeralKey as string | undefined)?.length ?? 0),
+  };
+}
 
 /**
  * Bound a history page before the deep snapshot, and return a copy in which
@@ -646,14 +694,9 @@ function admitHistoryPage(value: unknown): JsonRecord {
     for (const key of HISTORY_ENTRY_KEYS) {
       if (!(key in entry)) continue;
       if (SENDER_HISTORY_KEYS.has(key)) {
-        try {
-          chars += key === "encrypted"
-            ? admitEncrypted(entry[key])
-            : admittedChars(entry[key], MAX_CANONICAL_STRING_CHARS, "messageHash");
-          row[key] = entry[key];
-        } catch {
-          row[key] = null;
-        }
+        const admittedField = admitSenderField(key, entry[key]);
+        chars += admittedField.chars;
+        row[key] = admittedField.value;
         continue;
       }
       chars += admittedChars(entry[key], MAX_CANONICAL_STRING_CHARS, "Demos L2PS RFQ history entry");
