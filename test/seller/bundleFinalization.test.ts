@@ -2600,6 +2600,61 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       .resolves.toEqual(result);
   });
 
+  // ST-11 steps 1-2 for each dependency, pinned by their own
+  // answers on both the producing and the read-only closure.
+  const dependencyAt = (f: ReturnType<typeof fixture>, which: "listing" | "agreement" | "buyer-vet") =>
+    f.input.dependencies.find((candidate) => which === "listing"
+      ? candidate.source.kind === "listing"
+      : candidate.source.kind === "attestation-ref" &&
+        candidate.source.ref.anchor.locator === `dacs-test:${which}`)!;
+  const receiptChanges: Array<[string, (receipt: AnchorReceipt) => void]> = [
+    ["an included", (receipt) => { receipt.state = "included"; }],
+    ["an indeterminate", (receipt) => {
+      receipt.observationDisposition = "indeterminate";
+      receipt.preservedReceiptHash = "9".repeat(64);
+    }],
+  ];
+  for (const which of ["listing", "agreement", "buyer-vet"] as const) {
+    test.each(receiptChanges)(`rejects %s ${which} dependency receipt`, async (_label, change) => {
+      const f = fixture();
+      const dependency = dependencyAt(f, which);
+      expect(dependency).toBeDefined();
+      change(dependency.anchorReceipt);
+      const error = await finalizeCompletedSellerBundleCore(f.input, f.provider).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(DacsError);
+      expect(error).not.toBeInstanceOf(SubstrateError);
+      expect(String(error)).toMatch(/dependency \S+ lacks an established finalized AnchorReceipt/);
+      expect(f.sellerSign).not.toHaveBeenCalled();
+      expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+    });
+  }
+
+  test.each(receiptChanges)("re-verification rejects %s dependency receipt", async (_label, change) => {
+    const f = fixture();
+    const result = await finalizeCompletedSellerBundleCore(f.input, f.provider);
+    const input = terminalVerificationInput(f);
+    change(input.dependencies.find((candidate) => candidate.source.kind === "listing")!.anchorReceipt);
+    const error = await verifyFinalizedSellerBundleReadOnly(input, result, terminalReadProvider(f))
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).not.toBeInstanceOf(SubstrateError);
+    expect(String(error)).toMatch(/dependency \S+ lacks an established finalized AnchorReceipt/);
+  });
+
+  // A Vet reference at a logical locator is bound like any other dependency;
+  // only a native Vet locator is exempt here (and bound to its party above).
+  test.each(["agreement", "buyer-vet"] as const)(
+    "rejects a %s dependency receipt bound to another logical address",
+    async (which) => {
+      const f = fixture();
+      dependencyAt(f, which).anchorReceipt.logicalAddress = "dacs-test:another-address";
+      const error = await finalizeCompletedSellerBundleCore(f.input, f.provider).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(DacsError);
+      expect(String(error)).toMatch(/dependency \S+ receipt binds a different logical address/);
+      expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+    },
+  );
+
   test("rejects native Vet references with a receipt bound to another logical party", async () => {
     const f = fixture("pure", "storage", false, false, false, { nativeVetRefs: true });
     const dependency = f.input.dependencies.find((candidate) => candidate.anchorReceipt.logicalAddress.startsWith("dacs2:composite:"))!;

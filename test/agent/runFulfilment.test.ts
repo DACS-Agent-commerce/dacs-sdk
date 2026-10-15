@@ -1275,7 +1275,9 @@ describe("runFulfilmentCore", () => {
     }
   });
 
-  test.each(["valid", "wrong-logical", "wrong-native", "wrong-hash", "wrong-writer"] as const)(
+  test.each([
+    "valid", "wrong-logical", "wrong-native", "wrong-hash", "wrong-writer", "included", "indeterminate",
+  ] as const)(
     "checks %s native Vet reference receipt bindings before fulfilment",
     async (binding) => {
       const f = fixture();
@@ -1299,6 +1301,12 @@ describe("runFulfilmentCore", () => {
       if (binding === "wrong-native") receipt.nativeAddress += ":other";
       if (binding === "wrong-hash") receipt.contentHash = "f".repeat(64);
       if (binding === "wrong-writer") receipt.writer = BUYER;
+      // DACS-2 VPC-5: only a finalized, established Vet record authorizes delivery.
+      if (binding === "included") receipt.state = "included";
+      if (binding === "indeterminate") {
+        receipt.observationDisposition = "indeterminate";
+        receipt.preservedReceiptHash = "9".repeat(64);
+      }
       const result = await runFulfilmentCore(f.request, f.deps);
       expect(result).toMatchObject(binding === "valid"
         ? { decision: "completed" }
