@@ -3,6 +3,7 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  admitRawJson,
   buildComponentSignature,
   contentHash,
   ed25519Sign,
@@ -252,6 +253,31 @@ describe("ComponentSignature foundation", () => {
       ).rejects.toThrow("not stable canonical JSON");
     }
     expect(wallet).not.toHaveBeenCalled();
+  });
+
+  it("verifies received negative-zero spellings against the zero-valued signed scope", async () => {
+    // CORE §B.2: negative zero is in-profile and serialises as 0, so admitted
+    // wire bytes spelling -0 carry the same signed scope as the signer's 0.
+    const signed = await signComponentArtifact(
+      { ...listing, generatedAt: 0, metrics: { floors: [0, { delta: 0 }] } },
+      "dacs-listing:v1:",
+      { algorithm: "ed25519", signer: seller, sign },
+    );
+    const received = admitRawJson(Buffer.from(
+      JSON.stringify(signed)
+        .replace('"generatedAt":0', '"generatedAt":-0.0')
+        .replace('"floors":[0,{"delta":0}]', '"floors":[-0,{"delta":-0e3}]'),
+      "utf8",
+    )) as Record<string, unknown>;
+    expect(Object.is(received["generatedAt"], -0)).toBe(true);
+    expect(
+      Object.is((received["metrics"] as { floors: [number] }).floors[0], -0),
+    ).toBe(true);
+
+    expect(contentHash(received)).toBe(contentHash(signed));
+    await expect(
+      verifyComponentSignature(received, "dacs-listing:v1:", deps()),
+    ).resolves.toMatchObject({ status: "valid" });
   });
 
   it("expands repeated object identities into independent wire values", async () => {
