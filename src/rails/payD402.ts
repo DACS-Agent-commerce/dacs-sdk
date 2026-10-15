@@ -74,13 +74,14 @@ export interface PayD402SettleParams {
   requestInit?: RequestInit;
 }
 
-/** Numeric equality over integer base-unit amounts (tolerant of leading zeros / dual number|string shape). */
+/**
+ * Numeric equality over integer base-unit amounts (tolerant of leading zeros).
+ * Both sides must be plain decimal digits: demosdk signs the offered string as
+ * written, and `BigInt` alone would also accept hex, binary, octal, a sign or
+ * surrounding whitespace, so "0x3B9ACA00" or " 1000000000" would match.
+ */
 function sameAmount(a: string, b: string): boolean {
-  try {
-    return BigInt(a) === BigInt(b);
-  } catch {
-    return a === b;
-  }
+  return /^[0-9]+$/.test(a) && /^[0-9]+$/.test(b) && BigInt(a) === BigInt(b);
 }
 
 /**
@@ -200,9 +201,10 @@ export async function payD402SettleCore(
 
 /**
  * This rail's availability, in the §9.4.4 spec vocabulary (issue #5: the
- * previous `"experimental"` was a fourth, SDK-local vocabulary). D402 is
- * quarantined pending node-side enablement — that is `operator_gated`: not
- * selectable until an operator enables it, and never auto-selected (RAV-R1).
+ * previous `"experimental"` was a fourth, SDK-local vocabulary). D402 is not a
+ * supported live rail, although its settlement can move real DEM — that is
+ * `operator_gated`: not selectable until an operator explicitly acknowledges
+ * it, and never auto-selected (RAV-R1).
  * The `acknowledgeExperimental` config flag keeps its name (API stability);
  * it is the caller-side acknowledgement this gate requires.
  */

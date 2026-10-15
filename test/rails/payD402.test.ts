@@ -1,4 +1,44 @@
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+
+const sdk = vi.hoisted(() => ({
+  connect: vi.fn(),
+  connectWallet: vi.fn(),
+  createPayment: vi.fn(),
+  settle: vi.fn(),
+  clientDemos: [] as unknown[],
+}));
+
+// Constructing the rail never reaches a real node, even if the ack gate regresses.
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class MockDemos {
+    readonly connect = sdk.connect;
+    readonly connectWallet = sdk.connectWallet;
+
+    getAddress(): string {
+      return "demos1payeraddress00000000000000000000000000";
+    }
+  },
+}));
+
+vi.mock("@kynesyslabs/demosdk/d402/client", () => ({
+  D402Client: class MockD402Client {
+    readonly createPayment = sdk.createPayment;
+    readonly settle = sdk.settle;
+
+    constructor(demos: unknown) {
+      sdk.clientDemos.push(demos);
+    }
+  },
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  sdk.clientDemos.length = 0;
+  sdk.connect.mockResolvedValue(undefined);
+  sdk.connectWallet.mockResolvedValue(undefined);
+  sdk.createPayment.mockImplementation(async (requirement: unknown) => ({ tx: "unsigned", requirement }));
+  sdk.settle.mockResolvedValue({ success: true, hash: "0xdemhash", blockNumber: 42 });
+});
 
 import {
   termsMatchD402,
@@ -38,6 +78,37 @@ describe("termsMatchD402 (§4.1 abort guard, native DEM)", () => {
     const r = termsMatchD402(expected, { recipient: RECIPIENT, amount: "999" });
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/amount mismatch/);
+  });
+
+  // demosdk signs the offered string as written, so anything BigInt would
+  // reinterpret (or cannot parse) must never pass as the agreed amount.
+  test.each([
+    ["fractional", "1500000000.9"],
+    ["exponent", "1.5e9"],
+    ["hex", `0x${(1500000000).toString(16).toUpperCase()}`],
+    ["binary", `0b${(1500000000).toString(2)}`],
+    ["octal", `0o${(1500000000).toString(8)}`],
+    ["signed", "+1500000000"],
+    ["surrounding whitespace", " 1500000000 "],
+    ["empty", ""],
+  ])("rejects a %s offered amount", (_label, amount) => {
+    const r = termsMatchD402(expected, { recipient: RECIPIENT, amount });
+    expect(r).toEqual({
+      ok: false,
+      reason: `amount mismatch: 402 says ${amount}, agreement says 1500000000`,
+    });
+  });
+
+  test("never matches identical non-decimal amounts", () => {
+    for (const amount of ["abc", "1.5", "0x10", "-0"]) {
+      expect(termsMatchD402({ recipient: RECIPIENT, amount }, { recipient: RECIPIENT, amount }).ok)
+        .toBe(false);
+    }
+  });
+
+  test("refuses a non-decimal agreed amount even when its value matches", () => {
+    expect(termsMatchD402({ recipient: RECIPIENT, amount: "0x10" }, { recipient: RECIPIENT, amount: "16" }).ok)
+      .toBe(false);
   });
 });
 
@@ -126,6 +197,30 @@ describe("payD402SettleCore", () => {
     ).rejects.toThrow(/expected HTTP 402/);
   });
 
+  test("§4.1 abort: a hex amount equal to the agreement is rejected before paying", async () => {
+    const client = fakeClient();
+    await expect(
+      payD402SettleCore(params(), {
+        client,
+        fetchImpl: fetch402({ recipient: RECIPIENT, amount: "0x59682F00", resourceId: "res-1" }),
+        payerAddress: PAYER,
+      }),
+    ).rejects.toThrow(/amount mismatch: 402 says 0x59682F00/);
+    expect(client.paid).toBeUndefined();
+  });
+
+  test("a whitespace-only resourceId is rejected before paying", async () => {
+    const client = fakeClient();
+    await expect(
+      payD402SettleCore(params(), {
+        client,
+        fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: " \t" }),
+        payerAddress: PAYER,
+      }),
+    ).rejects.toThrow("d402: 402 body missing a string `resourceId`");
+    expect(client.paid).toBeUndefined();
+  });
+
   test("a malformed 402 body (no resourceId) is rejected", async () => {
     const client = fakeClient();
     await expect(
@@ -178,9 +273,99 @@ describe("createPayD402Rail — experimental quarantine (RAV-R1)", () => {
   });
 
   test("refuses to build without acknowledgeExperimental (never wired as live by accident)", async () => {
-    await expect(
-      createPayD402Rail({ rpc: "https://node.demos.sh", secret: "x" } as never),
-    ).rejects.toThrow(/EXPERIMENTAL|acknowledgeExperimental/);
+    for (const acknowledgeExperimental of [undefined, false]) {
+      await expect(
+        createPayD402Rail({ rpc: "https://rpc.d402.test", secret: "x", acknowledgeExperimental } as never),
+      ).rejects.toThrow(
+        "pay-d402 is EXPERIMENTAL and not a supported live rail (§9.4.4 non-`live`), but settling broadcasts a real " +
+          "d402_payment transaction that can move real DEM. Pass acknowledgeExperimental: true only for experimental " +
+          "use — never select it as a live rail (RAV-R1).",
+      );
+    }
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(sdk.connectWallet).not.toHaveBeenCalled();
+  });
+
+  test("an acknowledged rail connects, signs through D402Client and labels evidence with its network", async () => {
+    const fetchImpl = fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" });
+    const rail = await createPayD402Rail({
+      rpc: "https://rpc.d402.test",
+      secret: "test mnemonic",
+      network: "demos:testnet",
+      fetchImpl,
+      acknowledgeExperimental: true,
+    });
+    expect(sdk.connect).toHaveBeenCalledExactlyOnceWith("https://rpc.d402.test");
+    expect(sdk.connectWallet).toHaveBeenCalledExactlyOnceWith("test mnemonic");
+    expect(sdk.clientDemos).toHaveLength(1);
+    expect(rail.address).toBe(PAYER);
+
+    const res = await rail.settle({ paywallUrl: URL, recipient: RECIPIENT, amount: "1500000000" } as never);
+    expect(res).toEqual({
+      ok: true,
+      txHash: "0xdemhash",
+      chainId: "demos:testnet",
+      payer: PAYER,
+      payee: RECIPIENT,
+    });
+    expect(sdk.createPayment).toHaveBeenCalledExactlyOnceWith({
+      recipient: RECIPIENT,
+      amount: "1500000000",
+      resourceId: "res-1",
+    });
+    expect(sdk.settle).toHaveBeenCalledOnce();
+
+    const labelled = await rail.settle({ ...params(), network: "demos:other" });
+    expect(labelled.chainId).toBe("demos:other");
+  });
+
+  test("an acknowledged rail without a network label records \"demos\"", async () => {
+    const rail = await createPayD402Rail({
+      rpc: "https://rpc.d402.test",
+      secret: "test mnemonic",
+      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+      acknowledgeExperimental: true,
+    });
+    const res = await rail.settle({ paywallUrl: URL, recipient: RECIPIENT, amount: "1500000000" } as never);
+    expect(res.chainId).toBe("demos");
+  });
+});
+
+describe("payD402Settle bridge network label", () => {
+  function recordingRail() {
+    const seen: Array<Record<string, unknown>> = [];
+    const rail: PayD402Rail = {
+      address: PAYER,
+      settle: async (p) => {
+        seen.push({ ...p });
+        return { ok: true, txHash: "0xdemhash", chainId: p.network, payer: PAYER, payee: p.recipient };
+      },
+    };
+    return { rail, seen };
+  }
+  const request = {
+    rail: "pay-d402",
+    phase: "pay-d402",
+    amount: "1500000000",
+    asset: "DEM",
+    payee: "did:demos:seller",
+    expectedPayee: RECIPIENT,
+    jobId: "network-label",
+  } as const;
+
+  test("passes the paywall's network label through to the rail", async () => {
+    const { rail, seen } = recordingRail();
+    const res = await payD402Settle(rail, { url: URL, recipient: RECIPIENT, network: "demos:testnet" })(
+      request as never,
+    );
+    expect(seen).toEqual([{ paywallUrl: URL, recipient: RECIPIENT, amount: "1500000000", network: "demos:testnet" }]);
+    expect(res.chainId).toBe("demos:testnet");
+  });
+
+  test("defaults the label to \"demos\" when the paywall has none", async () => {
+    const { rail, seen } = recordingRail();
+    await payD402Settle(rail, { url: URL, recipient: RECIPIENT })(request as never);
+    expect(seen[0]?.["network"]).toBe("demos");
   });
 });
 
