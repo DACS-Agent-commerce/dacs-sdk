@@ -29,7 +29,7 @@ import {
   type X402TransferObservation,
 } from "../../src/seller/index.js";
 import {
-  dacsX402AuthorizationNonce, verifyDacsX402AuthorizationNonce,
+  dacsX402AuthorizationNonce, legacyDacsX402AuthorizationNonce, verifyDacsX402AuthorizationNonce,
 } from "../../src/rails/x402.js";
 import { isCanonicalJobId } from "../../src/negotiate/jobId.js";
 
@@ -2297,19 +2297,29 @@ describe("verifySellerPaymentIntake", () => {
       // Legacy job ids are derivation-only; a full-input vector also passes JID-1.
       if (vector.validationScope === "full-input") expect(isCanonicalJobId(vector.jobId), vector.name).toBe(true);
       const input = { jobId: vector.jobId, phaseIndex: vector.phaseIndex as number };
+      // CONFORMANCE-PLAN's pre-JID-1 boundary: a derivation-only vector
+      // reproduces only through the named legacy helper; the payment-path
+      // helper refuses its job id before hashing (CORE JID-3).
+      const legacy = vector.validationScope === "derivation-only";
+      const buyerNonce = legacy ? legacyDacsX402AuthorizationNonce : dacsX402AuthorizationNonce;
+      if (legacy) await expect(dacsX402AuthorizationNonce(input), vector.name).rejects.toThrow(/canonical uppercase ULID/);
       if (vector.op === "derive") {
         expect([vector.expected, vector.want.binding], vector.name).toEqual(["error", "malformed-input"]);
         expect(() => x402Eip3009Nonce(input.jobId, input.phaseIndex), vector.name).toThrow();
-        await expect(dacsX402AuthorizationNonce(input), vector.name).rejects.toThrow();
+        await expect(buyerNonce(input), vector.name).rejects.toThrow();
         continue;
       }
       // Seller verification and the buyer's signing rail derive the same bytes.
       const derived = x402Eip3009Nonce(input.jobId, input.phaseIndex);
-      expect(await dacsX402AuthorizationNonce(input), vector.name).toBe(derived);
+      expect(await buyerNonce(input), vector.name).toBe(derived);
       if (vector.expectedNonce) expect(derived, vector.name).toBe(vector.expectedNonce);
       if (vector.want.derivedNonce) expect(derived, vector.name).toBe(vector.want.derivedNonce);
       if (vector.op === "verify-binding") {
-        const binding = await verifyDacsX402AuthorizationNonce(input, vector.presentedNonce!);
+        const presented = vector.presentedNonce!;
+        const binding = legacy
+          ? !/^0x[0-9a-f]{64}$/.test(presented) ? "malformed"
+            : presented === derived ? "present-and-matches" : "present-and-mismatches"
+          : await verifyDacsX402AuthorizationNonce(input, presented);
         expect(binding, vector.name).toBe(vector.want.binding);
         const verdict = binding === "present-and-matches" ? "pass" : binding === "malformed" ? "error" : "fail";
         expect(verdict, vector.name).toBe(vector.expected);

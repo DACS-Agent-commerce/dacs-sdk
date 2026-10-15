@@ -32,10 +32,11 @@ const PHASE_INDEX = 2;
 const AMOUNT = "250000";
 
 it("keeps buyer and seller SB-3 nonce derivation byte-identical", async () => {
+  const jobId = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
   expect(await dacsX402AuthorizationNonce({
-    jobId: JOB_ID,
+    jobId,
     phaseIndex: PHASE_INDEX,
-  })).toBe(x402Eip3009Nonce(JOB_ID, PHASE_INDEX));
+  })).toBe(x402Eip3009Nonce(jobId, PHASE_INDEX));
 });
 
 const expected = {

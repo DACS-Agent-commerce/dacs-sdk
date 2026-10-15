@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/index.js";
-import { dacsX402AuthorizationNonce } from "../../src/rails/x402.js";
+import { dacsX402AuthorizationNonce, legacyDacsX402AuthorizationNonce } from "../../src/rails/x402.js";
 import {
   createX402Paywall,
   x402PaywallCore,
@@ -1161,8 +1161,9 @@ describe("buyer/seller SB-3 nonce agreement", () => {
       { jobId: "\ud83e\udd16-\u4f9b\u7d66-\ud83d\ude80", phaseIndex: 42 },
       { jobId: "max-safe-phase", phaseIndex: Number.MAX_SAFE_INTEGER },
     ];
+    // Pre-JID-1 labels: the buyer reproduces them only through its legacy helper.
     for (const vector of vectors) {
-      expect(await dacsX402AuthorizationNonce(vector)).toBe(
+      expect(await legacyDacsX402AuthorizationNonce(vector)).toBe(
         x402Eip3009Nonce(vector.jobId, vector.phaseIndex),
       );
     }
@@ -1173,7 +1174,7 @@ describe("buyer/seller SB-3 nonce agreement", () => {
 
   it("rejects negative zero consistently and keeps the paywall fail-closed", async () => {
     await expect(dacsX402AuthorizationNonce({
-      jobId: JOB_ID,
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       phaseIndex: -0,
     })).rejects.toThrow("non-negative phaseIndex");
     expect(() => x402Eip3009Nonce(JOB_ID, -0)).toThrow("safe unsigned integer");

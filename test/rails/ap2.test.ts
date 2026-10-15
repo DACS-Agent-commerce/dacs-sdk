@@ -8,6 +8,7 @@ import {
   createInMemoryAp2BindingStore,
   deriveAp2IdempotencyKey,
   deriveAp2TransactionId,
+  legacyDeriveAp2IdempotencyKey,
   evaluateAp2TransactionBinding,
   type AdvanceAp2SettlementInput,
   type Ap2AttestedProviderStatus,
@@ -34,9 +35,16 @@ describe("DACS-4 v0.6 AP2 30-case safety corpus", () => {
     ["ap2-key-base", JOB_ID, 3, "326c806fa163e7ec2c97f512d479a846a67291c8c4092d55395068e35356eb97"],
     ["ap2-key-phase-separation", JOB_ID, 4, "7b80ba1a15d989611ed25599fb25d7e7071b52c30a01c54fed23138371f058a4"],
     ["ap2-key-job-separation", OTHER_JOB_ID, 3, "e255e8c5eacfbeadbefbeee884bad22bf2164894a890bb9a7ceb934d99062f3b"],
-    ["ap2-key-nfc-normalization", "cafe\u0301-job", 0, "2128576ea9daf4765462705820c909c9f40cad744fa7b46298e495579c4eb184"],
   ])("%s", (_name, jobId, phaseIndex, expected) => {
     expect(deriveAp2IdempotencyKey(jobId, phaseIndex)).toBe(expected);
+  });
+
+  // A pre-JID-1 Unicode label: AP2-6 validates JID-1 before hashing, so the
+  // frozen vector reproduces only through the named legacy helper.
+  test("ap2-key-nfc-normalization", () => {
+    expect(legacyDeriveAp2IdempotencyKey("cafe\u0301-job", 0))
+      .toBe("2128576ea9daf4765462705820c909c9f40cad744fa7b46298e495579c4eb184");
+    expect(() => deriveAp2IdempotencyKey("cafe\u0301-job", 0)).toThrow(/pay-ap2: jobId must be a canonical uppercase ULID/);
   });
 
   test("ap2-key-negative-phase-error", () => {

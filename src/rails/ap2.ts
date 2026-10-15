@@ -7,6 +7,7 @@ import {
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import type { AttestationRef } from "../artifacts/types.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BASE64URL_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
@@ -75,8 +76,24 @@ export type Ap2TransactionBindingDecision =
   | { decision: "fail"; action: "reject-replay"; submitNewPayment: false }
   | { decision: "error"; action: "refuse-conflict"; submitNewPayment: false };
 
-/** AP2-6 byte-exact provider idempotency key. */
+/**
+ * AP2-6 byte-exact provider idempotency key. AP2-6 / CORE JID-3: the job id
+ * must pass JID-1 before it is hashed.
+ */
 export function deriveAp2IdempotencyKey(
+  jobId: string,
+  phaseIndex: number,
+): string {
+  requireCanonicalJobId(jobId, "pay-ap2: jobId");
+  return legacyDeriveAp2IdempotencyKey(jobId, phaseIndex);
+}
+
+/**
+ * Pre-JID-1 AP2-6 derivation for the Standard's frozen derivation-only vectors
+ * (for example the Unicode NFC label). It establishes no provider or payment
+ * authority; the handler uses {@link deriveAp2IdempotencyKey}.
+ */
+export function legacyDeriveAp2IdempotencyKey(
   jobId: string,
   phaseIndex: number,
 ): string {

@@ -626,8 +626,24 @@ export interface X402Rail {
   ): Promise<SettleResult>;
 }
 
-/** Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase. */
+/**
+ * Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase.
+ * CORE JID-3: the job id must pass JID-1 before it is hashed.
+ */
 export async function dacsX402AuthorizationNonce(input: {
+  jobId: string;
+  phaseIndex: number;
+}): Promise<`0x${string}`> {
+  requireCanonicalJobId(input?.jobId, "x402 DACS binding jobId");
+  return legacyDacsX402AuthorizationNonce(input);
+}
+
+/**
+ * Pre-JID-1 SB-3 derivation for the Standard's frozen derivation-only vectors
+ * (short, descriptive or Unicode job labels). It establishes no payment or
+ * verification authority; payment paths use {@link dacsX402AuthorizationNonce}.
+ */
+export async function legacyDacsX402AuthorizationNonce(input: {
   jobId: string;
   phaseIndex: number;
 }): Promise<`0x${string}`> {
@@ -775,11 +791,11 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
         throw new Error("pay-x402 requires the DACS jobId/phaseIndex authorization binding");
       }
 
+      // CORE JID-3: any supplied job id passes JID-1 before the nonce hash or
+      // any request, even when no phase makes this a bound payment.
+      if (jobId !== undefined) requireCanonicalJobId(jobId, "pay-x402 jobId");
       let scheme: SchemeNetworkClient = new ExactEvmScheme(account);
       if (jobId !== undefined && phaseIndex !== undefined) {
-        // The derivation itself stays total for the Standard's derivation-only
-        // SB-3 vectors; a payment binds only a canonical JID-1 job id.
-        requireCanonicalJobId(jobId, "pay-x402 jobId");
         const nonce = await dacsX402AuthorizationNonce({
           jobId,
           phaseIndex,

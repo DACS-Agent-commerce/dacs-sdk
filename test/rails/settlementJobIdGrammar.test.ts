@@ -3,9 +3,13 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
+import { deriveAp2IdempotencyKey, legacyDeriveAp2IdempotencyKey } from "../../src/rails/ap2.js";
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
-import type { SettlementIdempotencyStore } from "../../src/rails/idempotency.js";
-import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
+import { settlementKey, type SettlementIdempotencyStore } from "../../src/rails/idempotency.js";
+import { solanaSplSettlementKey } from "../../src/rails/solanaSpl.js";
+import {
+  dacsX402AuthorizationNonce, legacyDacsX402AuthorizationNonce, x402Settle, type X402Rail,
+} from "../../src/rails/x402.js";
 
 // CORE JID-3 at the settlement entry points: the pinned Standard's job-id
 // grammar vectors. A job id that fails JID-1 validation must be refused before
@@ -83,4 +87,38 @@ describe.each(["x402", "evm"] as const)("%s settlement admits only a canonical J
       expect(h.calls).toEqual({ rail: 1, store: 1 });
     },
   );
+});
+
+// CORE JID-3 at the jobId-specific derivations the rails use: the settlement
+// key (pay-dem, x402, ERC-20), the pay-solana-spl key, the SB-3 EIP-3009 nonce
+// and the AP2-6 provider idempotency key (AP2-6: "validate jobId under CORE
+// JID-1 before hashing").
+describe("jobId-specific derivations admit only a canonical JID-1 jobId", () => {
+  test.each(MALFORMED.map((vector) => [vector.name, vector] as const))("%s is refused before derivation", async (_name, vector) => {
+    const jobId = vector.jobId as string;
+    expect(() => settlementKey("pay-dem", jobId, 0)).toThrow(/settlement key jobId must be a canonical uppercase ULID/);
+    expect(() => solanaSplSettlementKey({ jobId, railId: "solana-devnet-usdc", phaseIndex: 0 }))
+      .toThrow(/pay-solana-spl: jobId must be a canonical uppercase ULID/);
+    await expect(dacsX402AuthorizationNonce({ jobId, phaseIndex: 0 }))
+      .rejects.toThrow(/x402 DACS binding jobId must be a canonical uppercase ULID/);
+    expect(() => deriveAp2IdempotencyKey(jobId, 0)).toThrow(/pay-ap2: jobId must be a canonical uppercase ULID/);
+  });
+
+  test.each(CANONICAL.map((vector) => [vector.name, vector] as const))("%s derives from the byte-exact id", async (_name, vector) => {
+    const jobId = vector.jobId as string;
+    expect(settlementKey("pay-dem", jobId, 3)).toBe(`pay-dem:${jobId}:3`);
+    expect(solanaSplSettlementKey({ jobId, railId: "solana-devnet-usdc", phaseIndex: 3 })).toMatch(/^[0-9a-f]{64}$/);
+    await expect(dacsX402AuthorizationNonce({ jobId, phaseIndex: 3 }))
+      .resolves.toBe(await legacyDacsX402AuthorizationNonce({ jobId, phaseIndex: 3 }));
+    expect(deriveAp2IdempotencyKey(jobId, 3)).toBe(legacyDeriveAp2IdempotencyKey(jobId, 3));
+  });
+
+  test("the frozen pre-JID-1 derivation vectors stay reproducible only through the named legacy helpers", async () => {
+    await expect(dacsX402AuthorizationNonce({ jobId: "practice-dacs-0001", phaseIndex: 3 })).rejects.toThrow(/canonical/);
+    expect(await legacyDacsX402AuthorizationNonce({ jobId: "practice-dacs-0001", phaseIndex: 3 }))
+      .toBe("0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff");
+    expect(() => deriveAp2IdempotencyKey("café-job", 0)).toThrow(/canonical/);
+    expect(legacyDeriveAp2IdempotencyKey("café-job", 0))
+      .toBe("2128576ea9daf4765462705820c909c9f40cad744fa7b46298e495579c4eb184");
+  });
 });
