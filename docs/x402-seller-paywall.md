@@ -2,7 +2,8 @@
 
 Historical normative source audit: DACS Standard `next` at
 `662be1d4899a2cadf327fe2d5523e93a80334e5f` (DACS-4 v0.6), the historical
-revision pinned by the fixed-price coordinator.
+revision pinned by the fixed-price coordinator. That revision's CORE §B.1 only
+calls `jobId` "a ULID"; it has no JID rules.
 
 `createX402Paywall` is the thin HTTP-protocol adapter for the transport-
 independent seller lifecycle. It does not start a server or select a framework.
@@ -10,7 +11,14 @@ Applications provide the framework adapter and host the route themselves.
 
 `handle` first requires a canonical CORE JID-1 `jobId`. Any other value is
 rejected as `invalid-jobId` before the x402 server, settlement or fulfilment
-runs (CORE JID-3, DACS-4 SB-3).
+runs. The rule comes from CORE JID-1/JID-3 and DACS-4 SB-3 at the SDK's
+Standard pin `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, not from the historical
+revision above. At that pin, JID-1 is part of an unreleased corrective
+candidate (PROFILE.md, "Unreleased JID-1 corrective candidate"). It becomes an
+admissible live profile only once the Standard records a coordinated release
+tag or merge commit. Deployments must then pin that identifier for every
+participant. Until then this check only narrows the identifiers the paywall
+accepts; it is not a claim of a released JID-1 profile.
 
 The callback sequence is deliberately:
 

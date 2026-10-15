@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -1424,6 +1426,56 @@ describe("DemosAdapter.anchorAndWait", () => {
     // The same proof verifies once the node answers.
     await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
     await expect(adapter.verifyDemosWriteEvidence(evidence)).resolves.toBe(true);
+  });
+
+  // The supported node read contract (docs/demos-node-compatibility.md), as
+  // recorded from node2 on 2026-10-15. demosdk 4.0.16 hands the adapter
+  // body.response for a nodeCall and throws on a non-2xx Storage Program read.
+  it("keeps the recorded node2 not-found reads indeterminate", async () => {
+    const contract = JSON.parse(readFileSync(
+      "test/fixtures/demos-node/node2-read-contract-2026-10-15.json",
+      "utf8",
+    ));
+    expect(contract.deployment.commit).toBe("61b8e75aa8db5e408c49e1c3a89db4d673f45578");
+    const { reads } = contract;
+    const arrangements: Array<[string, (raw: any) => void]> = [
+      ["transaction", (raw) => raw.getTxByHash.mockResolvedValueOnce(reads.txMissing.body.response)],
+      ["block beyond head",
+        (raw) => raw.getBlockByNumber.mockResolvedValueOnce(reads.blockBeyondHead.body.response)],
+      ["block zero", (raw) => raw.getBlockByNumber.mockResolvedValueOnce(reads.blockZero.body.response)],
+      ["storage program", (raw) => raw.storagePrograms.read.mockRejectedValueOnce(Object.assign(
+        new Error("Request failed with status code 404"),
+        { response: { status: reads.storageMissing.httpStatus, data: reads.storageMissing.body } },
+      ))],
+    ];
+    for (const [read, arrange] of arrangements) {
+      const { adapter, raw, evidence, receipt } = await anchoredProof();
+      arrange(raw);
+      await expect(adapter.verifyDemosAnchorReceipt(receipt), read)
+        .rejects.toBeInstanceOf(SubstrateError);
+      arrange(raw);
+      await expect(adapter.verifyDemosWriteEvidence(evidence), read)
+        .rejects.toBeInstanceOf(SubstrateError);
+    }
+    // The found shapes carry every member the proof comparison reads, and the
+    // Storage Program read carries no provenance (so history must bind it).
+    expect(reads.txFound.body.response).toMatchObject({
+      status: "confirmed",
+      blockNumber: expect.any(Number),
+      hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(reads.txFound.body.response.contentKeys).toEqual(
+      expect.arrayContaining(["type", "from", "to", "nonce", "data"]),
+    );
+    expect(reads.blockFound.body.response).toMatchObject({
+      status: "confirmed",
+      orderedTransactionsIncludesTx: true,
+      validationDataKeys: ["signatures"],
+    });
+    expect(reads.blockFound.body.response.timestamp).toBeLessThan(1e11);
+    expect(reads.storageFound.keys).not.toEqual(expect.arrayContaining(["createdByTx"]));
+    expect(reads.storageFound.keys).not.toEqual(expect.arrayContaining(["lastModifiedByTx"]));
+    expect(reads.storageFound.keys).not.toEqual(expect.arrayContaining(["interactionTxs"]));
   });
 
   it("still refuses a proof that the node's own records contradict", async () => {
