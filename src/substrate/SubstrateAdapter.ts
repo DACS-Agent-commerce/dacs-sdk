@@ -23,7 +23,10 @@ export interface DemosAdapterConfig {
    * zero from the connected node before its first write.
    */
   chainIdentity?: string;
-  /** Raw identity response ceiling: default/max 2 MiB; positive safe integer only. */
+  /**
+   * Raw identity response ceiling: default/max 2 MiB; positive safe integer only.
+   * A read holds at most about twice this many bytes, plus one transport chunk.
+   */
   identityMaxResponseBytes?: number;
   /**
    * Per-attempt identity deadline: default 5,000 ms; positive safe integer at most 30,000.
@@ -36,10 +39,12 @@ export interface DemosAdapterConfig {
   /**
    * Raw Fetch transport for CCI reads; the adapter enforces bounds before JSON decoding.
    * The default, global fetch, is used only where it and demosdk's Axios both connect
-   * directly: Node's default dispatcher, no NODE_USE_ENV_PROXY=1 or --use-env-proxy,
-   * plain global agents, and no environment proxy that Axios applies to `rpc`. Otherwise
-   * identity reads throw DacsError without signing or sending. Inject a fetch, for
-   * example one with a proxy dispatcher, to choose the route yourself.
+   * directly: Node's default dispatcher (a bare `new Agent()`; one with a connector,
+   * factory or any other option counts as custom), no NODE_USE_ENV_PROXY=1 or
+   * --use-env-proxy, plain global agents, and no environment proxy that Axios applies
+   * to `rpc`. Otherwise identity reads throw DacsError without signing or sending.
+   * Inject a fetch, for example one with a proxy dispatcher, to choose the route
+   * yourself; createAgent() takes it as AgentConfig.identityFetch.
    */
   identityFetch?: typeof fetch;
 }

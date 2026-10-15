@@ -145,8 +145,10 @@ message `Demos GCR identity response redirect refused`.
 
 `DemosAdapterConfig.identityMaxResponseBytes` can tighten the raw ceiling to a
 positive safe integer; values above the hard maximum of 2,097,152 are rejected
-at construction. The default is also the hard maximum. Structural limits remain
-fixed. `DemosAdapterConfig.identityFetch` optionally injects a Fetch-compatible
+at construction. The default is also the hard maximum. A read holds at most
+about twice the ceiling in memory (the streamed chunks, then one combined copy)
+plus the one transport chunk that is checked before it is kept. Structural
+limits remain fixed. `DemosAdapterConfig.identityFetch` optionally injects a Fetch-compatible
 raw response transport for CCI reads; it must return a streamed `Response`,
 without decoding or prebuffering the body. The adapter owns byte counting and
 decoding even with an injected transport. The default uses global `fetch` and
@@ -180,13 +182,21 @@ explicitly:
   Node's proxy agent. It uses global `fetch` only where both clients connect
   directly: Node's default global dispatcher, the switch off, Node's plain
   `http`/`https` global agents, and no environment proxy that Axios applies
-  to the RPC URL. Otherwise identity reads throw a permanent `DacsError`
+  to the RPC URL. Node's default dispatcher means the undici `Agent` that
+  Node itself creates with `new Agent()`. An `Agent` given a `connect`
+  function (as fetch-socks installs it), a `factory`, a socket path or any
+  other option, a subclass, or a composed `Agent` counts as custom, because
+  it may route anywhere. Otherwise identity reads throw a permanent `DacsError`
   before signing or sending anything: `Demos GCR identity read would bypass
   the environment proxy; inject identityFetch` when Axios would use a proxy,
   or `Demos GCR identity read cannot verify its route with Node's proxy
   switch or a custom global dispatcher or agent; inject identityFetch`.
-  To read through a proxy, inject an `identityFetch` that uses one, for
-  example with the `undici` package (not a dependency of this SDK):
+  To read through a proxy, inject an `identityFetch` that uses one: as
+  `DemosAdapterConfig.identityFetch`, as `AgentConfig.identityFetch` for
+  `createAgent()`, or as the `identityFetch` option of dacs-node's
+  `createDacsDemosActorRuntimeV1` and live role runtime. For example, with the
+  `undici` package (not a dependency of this SDK; undici 8 needs Node 22.19 or
+  later, so use `undici@7` on Node 20):
 
   ```ts
   import { fetch as undiciFetch, ProxyAgent } from "undici";
@@ -211,6 +221,9 @@ gets the same answer from such a node. Reads without a connected wallet send
 no signature. An opt-in live check, `DACS_DEMOS_CCI_LIVE_RPC` with
 `DACS_DEMOS_CCI_LIVE_ADDRESS` (an address that already has a GCR account),
 runs one unauthenticated read in `test/substrate/demos-cci-live.test.ts`.
+Behind a proxy, also set `DACS_DEMOS_CCI_LIVE_GLOBAL_FETCH=1` and start Node
+22.21 or later with `NODE_USE_ENV_PROXY=1`, so the read goes through Node's
+proxy agent.
 
 Reverse lookup currently follows the operations exported by Demos SDK:
 
