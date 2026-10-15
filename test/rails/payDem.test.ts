@@ -9,6 +9,7 @@ import {
   type DemosTransferResult,
   type PayDemRail,
   type PayDemSettlementReconcile,
+  type PayDemSettlementRecoveryContext,
 } from "../../src/rails/payDem.js";
 import {
   createIdempotencyStore,
@@ -507,6 +508,70 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(transfers).toBe(1);
     expect(resumed.txHash).toBe(TX_HASH);
     expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["without reconciliation", undefined,
+      /cannot be authenticated after restart without reconciliation/],
+    ["when reconciliation proves absence", async () => null,
+      /contradicts reconciliation proof of absence/],
+    ["when reconciliation returns another transaction", { txHash: OTHER_TX_HASH },
+      /does not match the authoritative reconciled transaction/],
+    ["when reconciliation returns another block", { blockNumber: 4243 },
+      /does not match the authoritative reconciled transaction/],
+  ])("refuses a restarted durable outcome %s", async (_case, reconciled, message) => {
+    const client = fakeClient();
+    let transfers = 0;
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: async (params) => {
+        transfers += 1;
+        return payDemSettleCore(params, client);
+      },
+    };
+    const store = createIdempotencyStore(createInMemorySettlementLog());
+    await payDemSettle(rail, { network: "demos" }, { store })(req());
+    const reconcile = typeof reconciled === "function"
+      ? reconciled
+      : reconciled === undefined
+        ? undefined
+        : vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+            ok: true,
+            txHash: TX_HASH,
+            chainId: context.network,
+            payer: context.payer,
+            payee: context.payee,
+            finality: { model: "bft-final" as const },
+            blockNumber: 4242,
+            txRefKind: "demos",
+            amountOs: context.amountOs,
+            ...reconciled,
+          }));
+
+    await expect(payDemSettle(rail, { network: "demos" }, {
+      store,
+      ...(reconcile === undefined
+        ? {}
+        : { reconcile: reconcile as unknown as PayDemSettlementReconcile }),
+    })(req())).rejects.toThrow(message);
+    expect(transfers).toBe(1);
+  });
+
+  test("refuses a request for another phase or rail before transferring", async () => {
+    const client = fakeClient();
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: vi.fn(async (params) => payDemSettleCore(params, client)),
+    };
+
+    await expect(payDemSettle(rail, { network: "demos" })(req({ phase: "deliver" })))
+      .rejects.toThrow(/requires phase "pay-dem", got "deliver"/);
+    await expect(payDemSettle(rail, {
+      network: "demos",
+      railId: "demos-native:DEM",
+    })(req({ rail: "pay-dem" })))
+      .rejects.toThrow(/request rail "pay-dem" does not match authenticated descriptor/);
+    expect(rail.settle).not.toHaveBeenCalled();
   });
 
   test("durably recovers intent → journal → ambiguity → restart under the same exact tuple", async () => {
