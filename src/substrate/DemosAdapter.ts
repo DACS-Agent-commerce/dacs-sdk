@@ -295,7 +295,7 @@ export interface DemosRawClient {
   ): Promise<string>;
   getAddress(): string;
   getAddressNonce(address: string): Promise<number>;
-  // No index signatures: demosdk >=4.0.18 returns an interface, which TypeScript
+  // No index signatures: demosdk >=4.0.17 returns an interface, which TypeScript
   // will not assign to one. Callers re-validate the result at runtime anyway.
   getNetworkInfo(): Promise<
     | {
