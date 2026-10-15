@@ -692,13 +692,21 @@ different order on each query. The Demos fetcher's cursor therefore names the
 last emitted timestamp and every row emitted with it, and each continuation
 re-reads that timestamp group before moving on, so a reordered group loses no
 row. A group that no longer holds every emitted row, or that does not fit in the
-fetcher's 100-row window, requires a restart. Rows added after a traversal
-starts with a timestamp newer than its cursor, at the head or behind the cursor,
-are seen only by a new traversal. These ordering, status, row-shape and not-found
-assumptions were checked against the `kynesyslabs/node` source at commit
-`ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` and `@kynesyslabs/demosdk` 4.0.16; a
-node that behaves differently is not supported. A cursor from an earlier release
-(`dacs-demos-history-v1.`) requires a restart from null.
+fetcher's 100-row window, requires a restart. A history with more than about 99
+rows that share one timestamp cannot be traversed at all: every restart reaches
+the same group and restarts again, so alert on repeated restarts. Rows added
+after a traversal starts with a timestamp newer than its cursor, at the head or
+behind the cursor, are seen only by a new traversal. These ordering, status,
+row-shape and not-found assumptions were checked against the `kynesyslabs/node`
+source at commit `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`,
+`@kynesyslabs/demosdk` 4.0.16, and node2 testnet responses recorded on
+2026-10-15 (`test/fixtures/demos-node2-history.json`). The deployed node is
+newer than `ac8f45f`: its rows carry fields that source does not produce, and
+it records failed transactions. The node reports no version, so the fetcher
+cannot check one; a node whose ordering, status or row shape differs from these
+is not supported. A cursor from an earlier release (`dacs-demos-history-v1.`)
+requires a restart from null; `enumerateListings` returns `retryCursor: null`
+for it.
 
 This offline example inspects an unsigned synthetic candidate. It deliberately
 returns `unverifiable` until a signature and authorization provider is supplied:
@@ -751,8 +759,9 @@ cursor or `exhausted` before any consumed page; a `pagesConsumed` other than one
 more than the consumed cursors after one; a cursor after exhaustion, or no
 cursor without it; an `exhausted` state with a pending row; a row both in `seen`
 and `deferred`, or deferred twice; a pending row already in `seen` or
-`deferred`; or `seen` or `deferred` disagreeing with `metadata` about a row's
-logical address. Such a state is `restart-required` with `invalid-state`.
+`deferred`, or without an entry in `metadata`; or `seen` or `deferred`
+disagreeing with `metadata` about a row's logical address. Such a state is
+`restart-required` with `invalid-state`.
 Only fully handled rows enter `seen`; filtered rows remain in `metadata` for
 conflict detection and can be read on an overlapping page when `includeUnknown`
 is enabled. Input state is unchanged. Overlapping pages deduplicate by native
@@ -764,7 +773,9 @@ Every non-`page` result carries a machine-readable `code`. Act on its `status`:
   retries: attempts are counted per call, not per unit of time, so a tight retry
   loop defers a row moments into a short outage. The state keeps the page's
   starting cursor and remembers only the handled prefix, so the retry re-fetches
-  the page and re-reads the failed row. Row codes are `index-indeterminate`,
+  the page and re-reads the failed row. It also keeps the page's observed
+  `metadata`, so a failed row rewritten to another logical address before the
+  retry is a `conflict`. Row codes are `index-indeterminate`,
   `binding-not-yet-visible`, `read-indeterminate`, `record-not-yet-visible` and
   `verifier-unavailable`; `history-unavailable` is a page that could not be
   fetched. The rows after a failed row are not read until it succeeds or is
@@ -857,12 +868,20 @@ duplicated bundle, is not recognized and stays retryable. A row that
 `classifyAnchor` reports as `unknown`, shown only with `includeUnknown`, is a
 final `unclassified`: it is neither resolved, read nor verified. That includes
 a DACS address whose job ID is not a canonical uppercase ULID, which is never
-repaired. A DACS-5 bundle row (`stor-` and 64 hex characters, a shape a DACS-1
+repaired, and one that is not canonical CF-4: a variable segment (such as a
+claim or rail ID) with a lowercase or unneeded `%` escape, a raw `?`, `&`, `=`
+or `%`, whitespace, a control character or non-NFC text, or a fixed segment
+outside its grammar (a `listingId` that is not 1 to 128 URL-safe ASCII
+characters, or a `scheme` that is not a lowercase token). The CF-2 form of a
+ClaimReference inside a segment is left to the verifier. A DACS-5 bundle row (`stor-` and 64 hex characters, a shape a DACS-1
 stor-cred slot shares) is read and checked against the binding's hash over the
 DACS-5 §10.4.1 scope, which omits `signatures` and `anchoredByRole`, then is a
 final `unverifiable` with `code: "unsupported-kind"` without calling the
 verifier: a generic binding carries none of the DACS-5 BundleBinding fields its
-verification needs. Payment-disposition and payload-attestation rows are
+verification needs. The inherited `write` binds the generic content hash, which
+keeps `anchoredByRole`, so a role copy published through it scans as
+`hash-mismatch`; do not publish bundles through the generic repository.
+Payment-disposition and payload-attestation rows are
 classified as their own kinds and reach the verifier.
 A missing or non-function `verifyArtifact` is refused when the repository is
 created. Neither classification, a verified artifact nor `exhausted: true`
