@@ -57,7 +57,7 @@ import {
   type VerifyCompletedSellerBundleCounterSignatureRequestInput,
   type VerifyFinalizedSellerBundleInput,
 } from "../../src/seller/bundleFinalization.js";
-import { isBundleBinding } from "../../src/artifacts/validators.js";
+import { isBundleBinding, isCanonicalJobId } from "../../src/artifacts/validators.js";
 
 const NOW = 1_786_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -3097,19 +3097,41 @@ describe("read-only authentication of retained finalized seller bundles", () => 
 });
 
 describe("DACS-5 §10.4.2 BundleBinding Standard vectors", () => {
-  test("derives vector logical addresses and rejects the internally inconsistent tuple", () => {
-    const vectorSet = JSON.parse(
-      readFileSync(
-        "vendor/DACS-Standard/conformance/vectors/security/bundle-binding-v0.1.json",
-        "utf8",
-      ),
-    ) as {
-      vectors: Array<{
-        name: string;
-        request: { jobId: string; role: "buyer" | "seller" | "orchestrator" };
-        bindings: BundleBinding[];
-      }>;
-    };
+  const vectorSet = JSON.parse(
+    readFileSync(
+      "vendor/DACS-Standard/conformance/vectors/security/bundle-binding-v0.1.json",
+      "utf8",
+    ),
+  ) as {
+    vectors: Array<{
+      name: string;
+      expected: "pass" | "fail" | "indeterminate";
+      request: { jobId: string; role: "buyer" | "seller" | "orchestrator" };
+      bindings: BundleBinding[];
+    }>;
+  };
+
+  // The pinned corpus (DACS-Standard@d45c0a2) still uses free-form jobIds such
+  // as "BB-VALID-0001" and expects pass/fail/indeterminate. Current BB-5 makes a
+  // malformed requested or signed jobId `error` before hashing or discovery, so
+  // the corpus contradicts its own profile; the SDK follows BB-5 and the
+  // vectors are left as published. Their BB-6..BB-8 candidate dispositions are
+  // the injected resolver's job (`resolveBundleBinding`), not this validator's.
+  test("refuses every pinned vector binding before hashing its non-JID-1 jobId", () => {
+    expect(vectorSet.vectors.map((vector) => vector.expected)).toEqual([
+      "pass", "fail", "fail", "fail", "fail", "indeterminate", "pass",
+      "indeterminate", "indeterminate",
+    ]);
+    for (const vector of vectorSet.vectors) {
+      expect(isCanonicalJobId(vector.request.jobId)).toBe(false);
+      for (const binding of vector.bindings) {
+        expect(isCanonicalJobId(binding.jobId)).toBe(false);
+        expect(isBundleBinding(binding)).toBe(false);
+      }
+    }
+  });
+
+  test("keeps the archival vector tuples self-consistent (derivation only)", () => {
     for (const vector of vectorSet.vectors) {
       const requestedAddress = bundleAddress(vector.request.jobId, vector.request.role);
       for (const binding of vector.bindings) {
@@ -3121,8 +3143,25 @@ describe("DACS-5 §10.4.2 BundleBinding Standard vectors", () => {
             ? requestedAddress
             : bundleAddress(binding.jobId, binding.role),
         );
-        expect(isBundleBinding(binding)).toBe(vector.name !== "bb-tuple-mismatch");
       }
     }
+  });
+
+  test("admits the bb-valid-resolution tuple re-keyed to a canonical ULID, and no alias of it", () => {
+    const published = vectorSet.vectors.find(
+      (vector) => vector.name === "bb-valid-resolution",
+    )?.bindings[0];
+    if (!published) throw new Error("bb-valid-resolution vector missing");
+    const rekey = (jobId: string): BundleBinding => ({
+      ...published,
+      jobId,
+      logicalAddress: bundleAddress(jobId, published.role),
+    });
+    expect(isBundleBinding(rekey(JOB_ID))).toBe(true);
+    for (const alias of [JOB_ID.toLowerCase(), `${JOB_ID.slice(0, -1)}I`, `8${JOB_ID.slice(1)}`]) {
+      expect(isBundleBinding(rekey(alias))).toBe(false);
+    }
+    // BB-5 step 3: an unsupported bindingVersion is refused.
+    expect(isBundleBinding({ ...rekey(JOB_ID), bindingVersion: "2" } as unknown)).toBe(false);
   });
 });
