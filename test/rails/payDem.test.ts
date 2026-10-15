@@ -455,6 +455,26 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(second).toEqual(first);
   });
 
+  // CORE JID-1/JID-3: an alias of a paid jobId must not key a second transfer.
+  test("refuses a lower-case or free-form alias of a paid jobId with no second transfer", async () => {
+    const client = fakeClient();
+    let transfers = 0;
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: async (params) => {
+        transfers += 1;
+        return payDemSettleCore(params, client);
+      },
+    };
+    const settle = payDemSettle(rail, { network: "demos" });
+    await settle(req());
+    const paid = req().jobId as string;
+    for (const jobId of [paid.toLowerCase(), `${paid.slice(0, -1)}I`, "job-1"]) {
+      await expect(settle(req({ jobId })), jobId).rejects.toThrow(/canonical uppercase ULID/);
+    }
+    expect(transfers).toBe(1);
+  });
+
   test("a tx-bearing timeout holds the intent and never submits a second payment", async () => {
     let transfers = 0;
     const client = fakeClient({
