@@ -383,7 +383,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     asset: "DEM",
     payee: PAYEE_CLAIM,
     expectedPayee: SELLER_HEX,
-    jobId: "j1",
+    jobId: "01JA9PAYDEM000000000000000",
     phaseIndex: 0,
     ...over,
   });
@@ -552,7 +552,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     };
     const request = req({
       rail: "demos-native:DEM",
-      jobId: "job-restart",
+      jobId: "01JA9PAYDEM000000000000004",
       phaseIndex: 3,
       amount: "1.25",
     });
@@ -594,7 +594,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       reconcile,
     })(request);
 
-    const key = "demos-native:DEM:job-restart:3";
+    const key = "demos-native:DEM:01JA9PAYDEM000000000000004:3";
     expect(recovered).toMatchObject({
       ok: true,
       txHash: TX_HASH,
@@ -606,7 +606,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledWith({
       railId: "demos-native:DEM",
-      jobId: "job-restart",
+      jobId: "01JA9PAYDEM000000000000004",
       phaseIndex: 3,
       settlementKey: key,
       network: "demos",
@@ -628,7 +628,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const log = createInMemorySettlementLog();
     const request = req({
       rail: "demos-native:DEM",
-      jobId: "job-ambiguous",
+      jobId: "01JA9PAYDEM000000000000005",
       phaseIndex: 1,
     });
     await seedExpiredIntent(log, request);
@@ -668,11 +668,11 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     override,
     pattern,
   ) => {
-    const key = "demos-native:DEM:job-malicious:2";
+    const key = "demos-native:DEM:01JA9PAYDEM000000000000006:2";
     const log = createInMemorySettlementLog();
     const request = req({
       rail: "demos-native:DEM",
-      jobId: "job-malicious",
+      jobId: "01JA9PAYDEM000000000000006",
       phaseIndex: 2,
     });
     await seedExpiredIntent(log, request);
@@ -704,10 +704,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
 
   test("a cached success cannot be reused under changed amount terms", async () => {
     const log = createInMemorySettlementLog();
-    const key = "demos-native:DEM:job-cached:5";
+    const key = "demos-native:DEM:01JA9PAYDEM000000000000007:5";
     const originalRequest = req({
       rail: "demos-native:DEM",
-      jobId: "job-cached",
+      jobId: "01JA9PAYDEM000000000000007",
       phaseIndex: 5,
       amount: "1",
     });
@@ -744,7 +744,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       reconcile,
     })(req({
       rail: "demos-native:DEM",
-      jobId: "job-cached",
+      jobId: "01JA9PAYDEM000000000000007",
       phaseIndex: 5,
       amount: "2",
     }))).rejects.toThrow(/different terms/);
@@ -773,7 +773,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       store: createIdempotencyStore(backing),
     })(req({
       rail: "demos-native:DEM",
-      jobId: "job-fresh-invalid",
+      jobId: "01JA9PAYDEM000000000000002",
       phaseIndex: 1,
     }))).rejects.toThrow(/bft-final finality/);
     expect(putOutcome).not.toHaveBeenCalled();
@@ -808,7 +808,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
     })(req({
       rail: "demos-native:DEM",
-      jobId: "job-cached-invalid",
+      jobId: "01JA9PAYDEM000000000000001",
       phaseIndex: 1,
     }))).rejects.toThrow(/bft-final finality/);
     expect(rail.settle).not.toHaveBeenCalled();
@@ -843,7 +843,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
 
     await expect(payDemSettle(rail, { network: "demos" }, {
       store: new ClassStore(),
-    })(req({ jobId: "job-class-store" }))).resolves.toMatchObject({
+    })(req({ jobId: "01JA9PAYDEM000000000000003" }))).resolves.toMatchObject({
       ok: true,
       txHash: TX_HASH,
     });
@@ -894,13 +894,13 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     };
     const settle = payDemSettle(rail, { network: "demos" });
 
-    await settle(req({ rail: "demos-native:DEM", jobId: "job-7", phaseIndex: 2 }));
+    await settle(req({ rail: "demos-native:DEM", jobId: "01JA9PAYDEM000000000000008", phaseIndex: 2 }));
 
     expect(captured?.recovery).toEqual({
       railId: "demos-native:DEM",
-      jobId: "job-7",
+      jobId: "01JA9PAYDEM000000000000008",
       phaseIndex: 2,
-      settlementKey: "demos-native:DEM:job-7:2",
+      settlementKey: "demos-native:DEM:01JA9PAYDEM000000000000008:2",
       network: "demos",
       payer: PAYER,
       payee: SELLER_HEX,
@@ -914,9 +914,9 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     await expect(payDemSettleCore(params({
       recovery: {
         railId: "demos-native:DEM",
-        jobId: "job-7",
+        jobId: "01JA9PAYDEM000000000000008",
         phaseIndex: 2,
-        settlementKey: "demos-native:DEM:job-7:3",
+        settlementKey: "demos-native:DEM:01JA9PAYDEM000000000000008:3",
         network: "demos:testnet",
         payer: PAYER,
         payee: RECIPIENT,

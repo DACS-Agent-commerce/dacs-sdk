@@ -125,7 +125,7 @@ declare const ratingEffectStore: RatingPublicationEffectStore;
 const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlement;
 const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
-const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
+const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("01JA9REV1EWJ1DCAN0N1CAXYZ0", 0);
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
