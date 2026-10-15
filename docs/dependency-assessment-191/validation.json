@@ -1,0 +1,92 @@
+{
+  "status": "catalog consistent; acceptance blocked",
+  "source_head": "3904d704fb540e6e1d7dd502a0be29f20569c92d",
+  "sdk_runtime_and_dependency_files_unchanged": true,
+  "original_raw_files_verified": 587,
+  "original_raw_policy": "Unchanged raw bytes and the original tarballs retained outside the repository; archive hash and per-file hashes are in manifest.json.",
+  "derived_path_policy": "Collection-relative tarball references in catalog JSON and committed SBOM copies; original raw bytes unchanged.",
+  "generated_tests_before_per_file": {
+    "declared": 10,
+    "excluded": 1,
+    "executed": 9,
+    "passed": 8,
+    "failed": 1
+  },
+  "generated_tests_after_per_file": {
+    "declared": 10,
+    "excluded": 0,
+    "executed": 10,
+    "passed": 9,
+    "failed": 1,
+    "manifest_scope": "Assessment file references; intentional literal-pin guard failure."
+  },
+  "occupied_port_case": "Passed in both fresh complete test files.",
+  "pure_data_tests": {
+    "executed": 3,
+    "passed": 3,
+    "failed": 0
+  },
+  "native_compile_probes": {
+    "original": 0,
+    "imports_only": 2,
+    "adapted_with_broad_package": 0,
+    "adapted_without_broad_package": 2,
+    "scope": "Five import specifiers in three files; the remaining broad D402 import prevents a complete dependency removal."
+  },
+  "receipt_gaps": [
+    "Original buyer static-import command receipt is missing; original output retained. Fresh buyer and seller trace commands have receipts and reproduce the original closure.",
+    "Original first tooling install receipt reconstructs arguments and lacks start/end clock values."
+  ],
+  "live_npm_ls": "Both original and fresh commands exit 1 on the same optional range conflicts as npm sbom.",
+  "conditional_absence": "70 package rows and 91 exact-range rows per role require --omit=optional and this exact lock. Omission is not persisted; later plain npm install or npm ci may restore affected paths. Local configuration or doctor enforcement and reassessment remain required.",
+  "demosdk_lock_only_controls": {
+    "versions": [
+      "4.0.16",
+      "4.0.18"
+    ],
+    "flags": [
+      "--omit=dev",
+      "--omit=optional"
+    ],
+    "counts_each": {
+      "low": 19,
+      "moderate": 14,
+      "high": 37,
+      "critical": 3,
+      "total": 73
+    },
+    "scope": "Registry-only, lock-only controls, not generated compositions; no API compatibility qualification."
+  },
+  "upstream_required_floor": {
+    "package": "@demosnetwork/demos-native",
+    "version": "0.1.0-alpha.2",
+    "declared_ws": "^8.18.3",
+    "requested_ws_floor": ">=8.21.0 within the supported major",
+    "release_decision": "The owner and Hayk choose exact alpha.2 qualification or request a stable latest release by 2026-11-06."
+  },
+  "install_path_gaps": 0,
+  "blocked": [
+    "Both required primary live npm SBOM commands still exit 1 with ESBOMPROBLEMS. The supplementary physical exports do not satisfy that acceptance item."
+  ],
+  "not_checked": [
+    "Wallet/signature, RPC, chain calls or live execution compatibility.",
+    "Installed generated demosdk 4.0.18 composition and API compatibility.",
+    "External complete CycloneDX schema validation.",
+    "Production qualification and approval of proposed release dispositions."
+  ],
+  "generated_tests_literal_pins_per_file": {
+    "declared": 10,
+    "excluded": 0,
+    "executed": 10,
+    "passed": 10,
+    "failed": 0,
+    "scope": "Only two manifest specs restored to the generator literals; packed modules and lock unchanged; original manifest restored afterwards."
+  },
+  "doctor_check": "D-2: the generated literal-pin guard works as designed. The assessment file substitution causes the 9/1 result. File-install support remains an optional owner decision, not an acceptance blocker.",
+  "primary_sbom_follow_up": "D-1: qualify narrow migration; otherwise request U-03 correction/removal of optional bip39 3.1.0 and node-fetch 2.6.7 pins, or an npm-side correction, then rerun the required commands.",
+  "archive_source_check": "The incomplete fresh archive is preserved. A completed archive adds the actual retained generated test sources with individual hashes; full verification uses only extracted archive inputs.",
+  "trace_tool": "Requires --experimental-import-meta-resolve and exits nonzero for missing seeds or relative imports.",
+  "round2_files_verified": 437,
+  "round1_source_files_verified": 2,
+  "history_scan": "Pinned gitleaks 8.30.1 range scan over source..work: 0 findings after rebuilding the local branch."
+}
