@@ -74,10 +74,11 @@ export interface FixedPriceAgreementInput {
   /** Required exactly when the pinned Listing uses metered pricing. */
   meteredQuantity?: MeteredQuantityInput;
   /**
-   * DACS-3 §8.5 `terms.additionalTerms`, copied verbatim under both signatures
-   * and the agreement hash. Omit it (do not pass `{}` or `undefined`) for an
-   * Agreement byte-identical to one derived without it. Keys are
-   * `<namespace>:<name>:v<n>`; size and depth are capped (see
+   * DACS-3 §8.5 `terms.additionalTerms`, carried as its canonical snapshot
+   * (string values NFC-normalised, member names unchanged) under both
+   * signatures and the agreement hash. Omit it (do not pass `{}` or
+   * `undefined`) for an Agreement byte-identical to one derived without it.
+   * Keys are `<namespace>:<name>:v<n>`; size and depth are capped (see
    * docs/fixed-price-agreement.md). A seller re-derives from its own
    * authenticated context, so it must resolve the same terms itself; a
    * proposal carrying terms the seller did not resolve fails.
@@ -364,7 +365,7 @@ const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
  *   reader can recognise a key it does not support, and a new version is a new
  *   key rather than a silent change. CF-1 does not normalise member names, so
  *   case or non-ASCII freedom would allow byte-different spellings of one key.
- * - The `dacs` namespace is reserved for the Standard, and a `<name>` that
+ * - The `dacs` namespace is reserved by this SDK, and a `<name>` that
  *   spells a top-level §8.5 term member (ignoring hyphens) is refused, so an
  *   entry cannot reuse that exact member name. This is a name check only:
  *   other names and nested members may still restate a price, rail, or
@@ -374,10 +375,14 @@ const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
  *   Agreements with the same meaning.
  * - Every number is a safe integer, as in the signing plan, durable exchange,
  *   and seller responder; carry decimals as strings.
- * - The canonical UTF-8 form is capped at 8 KiB. The terms ride inside the
- *   anchored SR-2 Agreement (DACS-4 §9.6.1 soft limit 128 KB per Storage
- *   Program; DACS-1 LR-2 holds a whole Listing to 16 KiB), which must still
- *   fit parties, signatures, and the storage wrapper.
+ * - The canonical UTF-8 form is capped at 8 KiB, a local limit kept small
+ *   for its own sake: the terms ride inside every anchored SR-2 Agreement and
+ *   are re-sent at each exchange step. It is well inside the Storage Program
+ *   limit (128 KB in the pinned Standard; 1 MiB enforced by demosdk 4.0.16)
+ *   and half of the 16 KiB DACS-1 LR-2 Listing cap.
+ * - U+0000 is refused in every string and member name. The Demos node stores
+ *   anchored data as PostgreSQL `jsonb`, which rejects it, so an Agreement
+ *   carrying it could be co-signed but never anchored.
  * - Nesting is capped at 8 container levels, counting the record itself,
  *   so independent readers recurse a bounded amount.
  * - `__proto__`, `constructor`, and `prototype` member names are refused at
@@ -416,6 +421,7 @@ function requireBoundedAdditionalTermsValue(value: unknown, depth: number): void
       "additionalTerms numbers must be safe integers; carry decimals as strings",
     );
   }
+  if (typeof value === "string") requireAnchorableAdditionalTermsText(value);
   if (value === null || typeof value !== "object") return;
   if (depth > ADDITIONAL_TERMS_MAX_DEPTH) {
     throw new DacsError(
@@ -430,7 +436,16 @@ function requireBoundedAdditionalTermsValue(value: unknown, depth: number): void
     if (PROTOTYPE_MEMBER_NAMES.has(key)) {
       throw new DacsError("additionalTerms must not use a prototype member name");
     }
+    requireAnchorableAdditionalTermsText(key);
     requireBoundedAdditionalTermsValue(entry, depth + 1);
+  }
+}
+
+function requireAnchorableAdditionalTermsText(text: string): void {
+  if (text.includes("\u0000")) {
+    throw new DacsError(
+      "additionalTerms must not contain U+0000; the Demos substrate cannot anchor it",
+    );
   }
 }
 
@@ -595,8 +610,9 @@ function requirePayoutBindings(
  * DACS-3 §8.4.1/§8.5 pure derivation. No transport, anchor, payment, or private
  * repository dependency is involved. Caller-selected price/delivery never enter
  * this boundary: every signed term is derived from the exact pinned Listing.
- * The one caller-supplied term, `additionalTerms`, is copied verbatim after the
- * producer profile above and cannot alter any Listing-derived term.
+ * The one caller-supplied term, `additionalTerms`, is copied as its canonical
+ * snapshot after the producer profile above and cannot alter any
+ * Listing-derived term.
  */
 export function deriveFixedPriceAgreement(
   callerInput: FixedPriceAgreementInput,

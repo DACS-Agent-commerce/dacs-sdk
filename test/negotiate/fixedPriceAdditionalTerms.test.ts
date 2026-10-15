@@ -218,7 +218,10 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
       "com.example:price-quote:v1",
       "dacs.example:request:v2",
       "acme:prices:v10",
+      "acme:prices:v100",
       "a1:b2:v1",
+      // Exactly the 128-character cap.
+      `${"a".repeat(117)}:request:v1`,
     ]) {
       expect(
         deriveFixedPriceAgreement(withTerms(input(), { [key]: true })).terms
@@ -226,6 +229,12 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
         key,
       ).toEqual({ [key]: true });
     }
+  });
+
+  test("admits nested null at any depth", () => {
+    const terms = { "acme:x:v1": { cleared: null, list: [null, 1] } };
+    expect(deriveFixedPriceAgreement(withTerms(input(), terms)).terms.additionalTerms)
+      .toEqual(terms);
   });
 
   test.each(VARIANTS)(
@@ -310,6 +319,9 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
         "ácme:request:v1",
         "acme:request:v1​",
         `${"a".repeat(120)}:request:v1`,
+        // One past the 128-character cap.
+        `${"a".repeat(118)}:request:v1`,
+        "acme:re.quest:v1",
         "__proto__",
         "constructor",
       ]) {
@@ -373,6 +385,25 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
           kind,
         ).toThrow(/additionalTerms must not nest deeper than 8 levels/);
       }
+    });
+
+    test("U+0000 in any string value or member name", () => {
+      // The Demos node stores anchored data as PostgreSQL jsonb, which
+      // rejects U+0000, so such an Agreement could never be anchored.
+      for (const terms of [
+        { "acme:x:v1": "a\u0000b" },
+        { "acme:x:v1": { "k\u0000": 1 } },
+        { "acme:x:v1": ["ok", { deep: "\u0000" }] },
+      ]) {
+        expect(
+          () => deriveFixedPriceAgreement(withTerms(build(), terms)),
+          JSON.stringify(terms),
+        ).toThrow(/additionalTerms must not contain U\+0000/);
+      }
+      expect(
+        deriveFixedPriceAgreement(withTerms(build(), { "acme:x:v1": "\u0001\t\n" }))
+          .terms.additionalTerms,
+      ).toEqual({ "acme:x:v1": "\u0001\t\n" });
     });
 
     test("prototype member names at any depth", () => {
@@ -497,19 +528,27 @@ describe("fixed-price Agreement readers with additionalTerms", () => {
   );
 
   test("readers keep the Standard's open record: profile limits bind producers only", async () => {
-    // §8.5 allows any Record. An Agreement another conforming producer signed
-    // with an un-namespaced member is still a valid artifact for this reader.
+    // §8.5 allows any Record, and CORE §B.2 admits in-bound fractions. An
+    // Agreement another conforming producer signed with an un-namespaced
+    // member or a fraction is still a valid artifact for this reader.
     const agreementInput = input();
     const draft = deriveFixedPriceAgreement(agreementInput);
-    const foreign = await sign({
-      ...draft,
-      terms: { ...draft.terms, additionalTerms: { competitiveContext: { bids: 3 } } },
-    } as UnsignedAgreementArtifact);
-    expect(isAgreementArtifact(foreign)).toBe(true);
-    expect(() => validateFixedPriceAgreementBinding({
-      agreement: foreign,
-      verifiedListing: agreementInput.verifiedListing,
-      committedAt: NOW,
-    })).not.toThrow();
+    for (const additionalTerms of [
+      { rating: { stars: 3 } },
+      { "acme:rating:v1": { score: 4.5 } },
+      { "acme:rating:v1": { score: 1e-7 } },
+    ]) {
+      const foreign = await sign({
+        ...draft,
+        terms: { ...draft.terms, additionalTerms },
+      } as UnsignedAgreementArtifact);
+      const label = JSON.stringify(additionalTerms);
+      expect(isAgreementArtifact(foreign), label).toBe(true);
+      expect(() => validateFixedPriceAgreementBinding({
+        agreement: foreign,
+        verifiedListing: agreementInput.verifiedListing,
+        committedAt: NOW,
+      }), label).not.toThrow();
+    }
   });
 });
