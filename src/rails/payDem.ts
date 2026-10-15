@@ -1195,10 +1195,10 @@ type ObservedDemosExecution =
  * can report `included` for a transaction the node recorded as `failed`, so read
  * the node's transaction record for the retained signed hash. Only a
  * `confirmed` record at the observed inclusion block whose body is exactly the
- * prepared transfer is execution. A `failed` record for the hash is not
+ * prepared transfer is execution. A `failed` record bound the same way is not
  * settled. A record that is missing, pending, unreadable or malformed is polled
- * again within the budget; a stalled read or a confirmed record that does not
- * bind the prepared transfer is indeterminate at once. Like the status poll,
+ * again within the budget; a stalled read or a confirmed or failed record that
+ * does not bind the prepared transfer is indeterminate at once. Like the status poll,
  * this never retries or duplicates the broadcast.
  *
  * @internal Exported for tests, because `settle()` maps `failed` and
@@ -1259,9 +1259,10 @@ export async function observeDemosExecutionByHash(
       const record = snapshot as Record<string, unknown>;
       if (identity.status === "no-body" || identity.status === "hash-mismatch") {
         pending = "transaction record is missing or malformed";
-      } else if (record.status === DEMOS_FAILED_RECORD_STATUS) {
-        return { state: "failed" };
-      } else if (record.status === DEMOS_EXECUTED_RECORD_STATUS) {
+      } else if (record.status === DEMOS_FAILED_RECORD_STATUS ||
+          record.status === DEMOS_EXECUTED_RECORD_STATUS) {
+        // A terminal status says something about this transfer only when the
+        // record binds it, whether the status is `failed` or `confirmed`.
         if (identity.status !== "bound") {
           return {
             state: "indeterminate",
@@ -1284,7 +1285,9 @@ export async function observeDemosExecutionByHash(
             reason: "transaction record does not match the prepared transfer",
           };
         }
-        return { state: "executed" };
+        return record.status === DEMOS_FAILED_RECORD_STATUS
+          ? { state: "failed" }
+          : { state: "executed" };
       } else {
         pending = "transaction record has no terminal execution status";
       }

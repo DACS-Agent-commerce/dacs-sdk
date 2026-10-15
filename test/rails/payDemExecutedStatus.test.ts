@@ -209,6 +209,21 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
   });
 
+  it("does not report a failed record that does not bind the signed nonce as ok", async () => {
+    sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+      record.status = "failed";
+      delete (record.content as Record<string, unknown>).nonce;
+    }));
+    const payDem = await rail({ transactionRecordTimeoutMs: 1_000 });
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toEqual(NOT_OK);
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.waitForNonce).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["amount", (record: TransactionRecord) => {
       record.content.amount = "1000000000";
@@ -404,6 +419,46 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
     ["another inclusion block",
       "transaction record block does not match the observed inclusion",
       async () => ({ ...executedRecord(), blockNumber: BLOCK + 1 })],
+    // A failed status is only a statement about this transfer when the record
+    // binds it; otherwise it is malformed.
+    ["a failed record without a nonce",
+      "transaction record does not bind the signed nonce",
+      async () => {
+        const record: Record<string, unknown> = {
+          ...executedRecord(),
+          status: "failed",
+        };
+        delete (record.content as Record<string, unknown>).nonce;
+        return record;
+      }],
+    ["a failed record with another nonce",
+      "transaction record does not bind the signed nonce",
+      async () => {
+        const record = { ...executedRecord(), status: "failed" };
+        record.content.nonce = NONCE + 1;
+        return record;
+      }],
+    ["a failed record without a body",
+      "transaction record does not bind the signed nonce",
+      async () => {
+        const record: Record<string, unknown> = {
+          ...executedRecord(),
+          status: "failed",
+        };
+        delete record.content;
+        return record;
+      }],
+    ["a failed record for another amount",
+      "transaction record does not match the prepared transfer",
+      async () => {
+        const record = { ...executedRecord(), status: "failed" };
+        record.content.amount = "1";
+        record.content.data[1].args[1] = "1";
+        return record;
+      }],
+    ["a failed record at another block",
+      "transaction record block does not match the observed inclusion",
+      async () => ({ ...executedRecord(), status: "failed", blockNumber: BLOCK + 1 })],
   ])("is indeterminate at once for %s", async (_case, reason, read) => {
     const spy = vi.fn(read);
 
@@ -447,6 +502,12 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     ["a failed record", () => {
       sdk.getTxByHash.mockImplementation(recordReturning((record) => {
         record.status = "failed";
+      }));
+    }],
+    ["a failed record that does not bind the signed nonce", () => {
+      sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+        record.status = "failed";
+        delete (record.content as Record<string, unknown>).nonce;
       }));
     }],
     ["a mismatched record", () => {
