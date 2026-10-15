@@ -1314,6 +1314,68 @@ describe("role-separated Vet terminal bundle transport", () => {
     });
   });
 
+  // DACS-5 §10.4.1 required signers, BB-5 role authority: only
+  // the plan-party check binds a plan's buyer, seller and required signers
+  // to this role's authority and its authenticated peer.
+  it("refuses a plan whose parties are not this role and its authenticated peer", async () => {
+    const OTHER = claim(new Uint8Array(32).fill(73));
+    const buyerDatabase = await open("buyer");
+    const authenticate = vi.fn(async () => ({ status: "valid" as const }));
+    const sendMessage = vi.fn();
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context: {
+        role: "buyer", authority: BUYER, peerAuthority: OTHER,
+        database: buyerDatabase, sendMessage,
+      } as unknown as DacsLiveRoleOperationContextV1,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: authenticate,
+    });
+    const persist = vi.spyOn(buyerDatabase, "putEffectIntent");
+    // A context whose peer is not the order's is refused before any plan.
+    await expect(runtime.registerLocalTerminal(terminalInput()))
+      .rejects.toMatchObject({ reasonCode: "vet-terminal-order-mismatch" });
+    expect(persist).not.toHaveBeenCalled();
+
+    // The order's own peer proposes a self-consistent plan that names another
+    // buyer: its Vet of the seller is signed and anchored by that buyer.
+    const sellerDatabase = await open("seller");
+    const sellerSend = vi.fn();
+    const seller = createDacsVetTerminalBundleTransportRuntimeV1({
+      context: {
+        role: "seller", authority: SELLER, peerAuthority: BUYER,
+        database: sellerDatabase, sendMessage: sellerSend,
+      } as unknown as DacsLiveRoleOperationContextV1,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: authenticate,
+    });
+    const sellerPersist = vi.spyOn(sellerDatabase, "putEffectIntent");
+    const input = terminalInput();
+    const record = { ...input.production.record,
+      signature: { ...input.production.record.signature, signer: OTHER } };
+    const recordHash = contentHash(record as unknown as Record<string, unknown>);
+    const substituted: PrepareVetTerminalBundleInput = {
+      ...input,
+      parties: [
+        { role: "buyer", identityBundle: { ...identity("buyer"), presentedBy: OTHER, claims: [{ ref: OTHER }] } },
+        input.parties[1]!,
+      ],
+      production: {
+        record,
+        recordRef: { ...input.production.recordRef, contentHash: recordHash, signer: OTHER },
+        anchorReceipt: { ...input.production.anchorReceipt!, contentHash: recordHash, writer: OTHER },
+      },
+    };
+    const proposal = await terminalProposal(substituted);
+    expect(proposal.plan.authority.parties.find((party) => party.role === "buyer")?.primaryClaim)
+      .toBe(OTHER);
+    await expect(seller.handleMessage(
+      authenticated("terminal-bundle-proposal-buyer", proposal, BUYER, SELLER),
+      { role: "seller" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({ disposition: "rejected", reasonCode: "vet-terminal-plan-party-mismatch" });
+    expect(sellerPersist).not.toHaveBeenCalled();
+    expect(sellerSend).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["recipe", (input: PrepareVetTerminalBundleInput) => ({
       ...input,

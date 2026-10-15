@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const dependencies = vi.hoisted(() => ({
   application: undefined as unknown,
+  finalizedVetReceipt: true,
 }));
 
 vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@kynesyslabs/dacs")>()),
   getAuthenticatedRailProvenance: () => ({ registryVersion: 7 }),
-  isFinalizedVetAnchorReceipt: () => true,
+  isFinalizedVetAnchorReceipt: () => dependencies.finalizedVetReceipt,
 }));
 
 vi.mock("../src/fixedPriceX402Profile.js", async (importOriginal) => ({
@@ -61,6 +62,7 @@ function input() {
 
 describe("fixed-price Vet terminal projection", () => {
   beforeEach(() => {
+    dependencies.finalizedVetReceipt = true;
     dependencies.application = {
       listing: listing([
         { kind: "vet-credentials" },
@@ -132,5 +134,33 @@ describe("fixed-price Vet terminal projection", () => {
     expect(() => createInput(input() as never)).toThrow(
       /session projection is invalid/,
     );
+  });
+
+  // DACS-2 VPC-5, DACS-5 §10.4.1: the projection binds the
+  // terminal's job, parties and Vet record to the retained order.
+  const OTHER = `did:demos:agent:${"5".repeat(64)}`;
+  it.each<[string, (value: ReturnType<typeof input>) => void]>([
+    ["another retained job", (value) => { value.retained.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7E"; }],
+    ["another retained order binding", (value) => { value.retained.localBindingHash = "6".repeat(64); }],
+    ["another buyer identity", (value) => { value.buyerIdentity.presentedBy = OTHER; }],
+    ["another seller identity", (value) => { value.sellerIdentity.presentedBy = OTHER; }],
+    ["a Vet invoked before the order", (value) => {
+      value.vetInvokedAt = value.operation.order.createdAt - 1;
+    }],
+    ["a fractional Vet invocation time", (value) => { value.vetInvokedAt += 0.5; }],
+    ["a negative Vet invocation time", (value) => {
+      value.vetInvokedAt = -1;
+      value.operation.order.createdAt = -2;
+    }],
+    ["a fractional order time", (value) => { value.operation.order.createdAt += 0.5; }],
+    ["a Vet record without a finalized receipt", () => { dependencies.finalizedVetReceipt = false; }],
+  ])("rejects a projection with %s", (_label, change) => {
+    const createInput = createDacsFixedPriceVetTerminalInputFactoryV1({
+      rail: {} as never,
+      recipeRegistryVersion: 11,
+    });
+    const value = input();
+    change(value);
+    expect(() => createInput(value as never)).toThrow(/session projection is invalid/);
   });
 });

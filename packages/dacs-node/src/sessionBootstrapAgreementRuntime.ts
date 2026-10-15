@@ -788,18 +788,18 @@ async function authenticateProducedVet(
   }
 }
 
+// DACS-2 VPC-4 and VP-R4: an authenticated `indeterminate` or `error` decision
+// fails the Vet phase as `permanent` and is never retried. This host cannot
+// produce the failed-perm terminal bundle for it yet (the core Vet terminal
+// plan covers `fail` only), so the phase stops before agreement for an
+// operator instead of waiting on a decision that will not change.
 function nonTerminalVetDecision(
-  context: Readonly<DacsLiveRoleOperationContextV1>,
-  delay: number,
   decision: CompositeVerificationRecord["overallDecision"],
 ): Readonly<FixedPriceX402TrackOperationResult> | undefined {
   if (decision === "pass" || decision === "fail") return undefined;
-  return pending(
-    context,
-    delay,
+  return operator(
     decision === "error" ? "session-vet-decision-error" :
       "session-vet-decision-indeterminate",
-    "indeterminate",
   );
 }
 
@@ -935,8 +935,6 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
       );
     }
     const sellerDecision = nonTerminalVetDecision(
-      context,
-      delay,
       sellerVet.production.record.overallDecision,
     );
     if (sellerDecision !== undefined) return sellerDecision;
@@ -981,8 +979,6 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
     }
     if (buyerProduction.record.overallDecision !== "pass") {
       const remoteDecision = nonTerminalVetDecision(
-        context,
-        delay,
         buyerProduction.record.overallDecision,
       );
       return remoteDecision ?? pending(
@@ -1183,8 +1179,6 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
       );
     }
     const buyerDecision = nonTerminalVetDecision(
-      context,
-      delay,
       buyerVet.production.record.overallDecision,
     );
     if (buyerDecision !== undefined) return buyerDecision;

@@ -19,6 +19,7 @@ import {
 } from "@kynesyslabs/dacs/commerce";
 import { rawPublicKey, signedBytes } from "@kynesyslabs/dacs/crypto";
 import { demosAgentClaimRef, identityBundleHash } from "@kynesyslabs/dacs/identity";
+import { IndeterminateSubstrateError } from "@kynesyslabs/dacs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
@@ -241,5 +242,65 @@ describe("rail-bound live session identity", () => {
         },
       },
     })).resolves.toBe("invalid");
+
+    // DACS-2 §7.7.2, VPC-3: each binding of the CVR, its
+    // reference and its receipt is pinned. A forged record is anchored and
+    // read back exactly, so only the check named can refuse it.
+    const anchoredExactly = (forged: CompositeVerificationRecord) => {
+      const hash = contentHash(forged as unknown as Record<string, unknown>);
+      return {
+        record: forged,
+        recordRef: { ...exact.recordRef, contentHash: hash },
+        anchorReceipt: { ...receipt, contentHash: hash },
+      };
+    };
+    const authenticate = (
+      production: typeof exact,
+      adapter: Record<string, unknown> = {},
+    ) => authenticateDacsSessionVetProductionV1({
+      context: { demos: { adapter: {
+        verifyDemosAnchorReceipt: async () => true,
+        readAnchor: async (address: string) => address === nativeAddress ? production.record : null,
+        ...adapter,
+      } } } as never,
+      jobId: JOB_ID,
+      evaluatedIdentity,
+      requirement,
+      verifier,
+      production,
+    });
+    const otherKeys = generateKeyPairSync("ed25519");
+    const other = demosAgentClaimRef(rawPublicKey(otherKeys.publicKey));
+    const forgedSignature = anchoredExactly({
+      ...unsigned,
+      signature: {
+        ...record.signature,
+        value: sign(null, signedBytes(
+          ARTIFACT_SEPARATORS.CompositeVerificationRecord,
+          contentHash(unsigned),
+        ), otherKeys.privateKey).toString("base64url"),
+      },
+    });
+    const invalid: Array<[string, typeof exact]> = [
+      ["a CVR signature by another key", forgedSignature],
+      ["a reference signed by another party", { ...exact, recordRef: { ...exact.recordRef, signer: other } }],
+      ["a reference to other content", { ...exact, recordRef: { ...exact.recordRef, contentHash: "8".repeat(64) } }],
+      ["a receipt on another substrate", { ...exact, anchorReceipt: { ...receipt, substrate: "test:final" } }],
+      ["a receipt at another logical address", { ...exact, anchorReceipt: {
+        ...receipt, logicalAddress: compositeVerificationAddress(JOB_ID, verifier) } }],
+      ["a receipt for other content", { ...exact, anchorReceipt: { ...receipt, contentHash: "8".repeat(64) } }],
+      ["a receipt by another writer", { ...exact, anchorReceipt: { ...receipt, writer: other } }],
+    ];
+    for (const [label, production] of invalid) {
+      await expect(authenticate(production), label).resolves.toBe("invalid");
+    }
+    // Demos answers against the receipt: invalid. Demos does not answer:
+    // indeterminate, never invalid.
+    await expect(authenticate(exact, { verifyDemosAnchorReceipt: async () => false }))
+      .resolves.toBe("invalid");
+    await expect(authenticate(exact, { verifyDemosAnchorReceipt: async () => {
+      throw new IndeterminateSubstrateError("Demos anchor receipt observation unavailable");
+    } })).resolves.toBe("indeterminate");
+    await expect(authenticate(exact)).resolves.toBe("valid");
   });
 });
