@@ -125,13 +125,30 @@ describe("DACS EIP-3009 session binding", () => {
     expect(await verifyDacsX402AuthorizationNonce(input, `0x${"A".repeat(64)}`)).toBe("malformed");
   });
 
-  test("the three normative retry cases retain the same derived nonce", async () => {
+  // The SB-3 retry dispositions (used by this transfer resumes, used by another
+  // refuses, cancelled refuses) are reconciled against chain evidence in
+  // test/rails/x402BuyerEvmAuthorization.test.ts ("settled-same",
+  // "used-different", "cancelled"). Here only the derivation is pinned: it is
+  // a pure function of (jobId, phaseIndex), so a retry can never mint a
+  // replacement nonce.
+  test("derives the same nonce on every retry of the same job phase", async () => {
     const input = { jobId: ULID_JOB_ID, phaseIndex: 3 };
-    // used+same-transfer resumes, used+different-transfer refuses, and cancelled
-    // refuses at the reconcile layer; none may mint a replacement nonce.
-    for (const _state of ["used-same", "used-different", "cancelled"]) {
-      expect(await dacsX402AuthorizationNonce(input)).toBe(ULID_PHASE_3_NONCE);
-    }
+    const first = await dacsX402AuthorizationNonce(input);
+    expect(first).toBe(ULID_PHASE_3_NONCE);
+    expect(await dacsX402AuthorizationNonce({ ...input })).toBe(first);
+    expect(await dacsX402AuthorizationNonce({ ...input, phaseIndex: 4 })).not.toBe(first);
+  });
+
+  // F18: JID-1 is a string grammar; a value that merely stringifies to a
+  // canonical ULID is not one.
+  test.each([
+    [[ULID_JOB_ID]],
+    [Object(ULID_JOB_ID)],
+    [{ toString: () => ULID_JOB_ID }],
+  ])("refuses a non-string jobId that coerces to a canonical ULID", async (jobId) => {
+    expect(isCanonicalJobId(jobId)).toBe(false);
+    await expect(dacsX402AuthorizationNonce({ jobId: jobId as never, phaseIndex: 3 }))
+      .rejects.toThrow("x402 DACS binding jobId must be a canonical uppercase ULID");
   });
 
   test("rejects malformed derivation inputs", async () => {
