@@ -31,6 +31,7 @@ import {
 import {
   dacsX402AuthorizationNonce, verifyDacsX402AuthorizationNonce,
 } from "../../src/rails/x402.js";
+import { isCanonicalJobId } from "../../src/negotiate/jobId.js";
 
 const BUYER_DEMOS = `did:demos:agent:${"aa".repeat(32)}`;
 const SELLER_DEMOS = `did:demos:agent:${"bb".repeat(32)}`;
@@ -2276,18 +2277,25 @@ describe("verifySellerPaymentIntake", () => {
         derivedNonce?: string;
         expectedNonce?: string;
         priorAuthorization?: { state: string; sameTransferParameters: boolean };
+        validationScope: string;
         want: {
           derivedNonce?: string;
           binding?: string;
+          fallback?: boolean;
           action?: string;
           mustGenerateFreshNonce?: boolean;
         };
       }>;
     };
     const ops = { derive: 0, "verify-binding": 0, retry: 0 } as Record<string, number>;
+    const scopes = { "derivation-only": 0, "full-input": 0 } as Record<string, number>;
     for (const vector of set.vectors) {
       expect(Object.keys(ops), vector.name).toContain(vector.op);
       ops[vector.op]! += 1;
+      expect(Object.keys(scopes), vector.name).toContain(vector.validationScope);
+      scopes[vector.validationScope]! += 1;
+      // Legacy job ids are derivation-only; a full-input vector also passes JID-1.
+      if (vector.validationScope === "full-input") expect(isCanonicalJobId(vector.jobId), vector.name).toBe(true);
       const input = { jobId: vector.jobId, phaseIndex: vector.phaseIndex as number };
       if (vector.op === "derive") {
         expect([vector.expected, vector.want.binding], vector.name).toEqual(["error", "malformed-input"]);
@@ -2305,6 +2313,16 @@ describe("verifySellerPaymentIntake", () => {
         expect(binding, vector.name).toBe(vector.want.binding);
         const verdict = binding === "present-and-matches" ? "pass" : binding === "malformed" ? "error" : "fail";
         expect(verdict, vector.name).toBe(vector.expected);
+        if (vector.want.fallback === false) {
+          // A well-formed mismatching nonce is a hard rejection at seller intake,
+          // never the SB-1/SB-2 "not-established" fallback.
+          const ctx = makeContext("pay-x402");
+          if (ctx.x402Observation.status !== "finalized") throw new Error("fixture");
+          ctx.x402Observation.sessionBinding = { kind: "eip3009", nonce: vector.presentedNonce! };
+          await expect(verifySellerPaymentIntake(ctx.input, ctx.deps), vector.name).resolves.toEqual({
+            disposition: "rejected", fulfilment: "none", reason: "x402-session-binding-mismatch",
+          });
+        }
       } else {
         // The retry identity is the derived nonce itself; the authorization-state
         // actions run across a real restart in idempotencyProcessRestart.test.ts.
@@ -2317,6 +2335,8 @@ describe("verifySellerPaymentIntake", () => {
       }
     }
     expect(Object.values(ops).every((count) => count > 0)).toBe(true);
+    expect(scopes["full-input"]).toBeGreaterThan(0);
+    expect(set.vectors.filter((vector) => vector.want.fallback === false)).toHaveLength(2);
   });
 
   it("reconciles an ambiguous observation before claiming without rebroadcast", async () => {
