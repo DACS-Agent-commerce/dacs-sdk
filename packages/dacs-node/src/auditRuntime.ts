@@ -591,6 +591,7 @@ export function createDacsBuyerAuditTrackV1(
         return Object.freeze({
           status: "indeterminate" as const,
           reasonCode: `buyer-audit-${progress.stage}-indeterminate`,
+          retryAt: retryAt(context, delay),
         });
       }
       return Object.freeze({

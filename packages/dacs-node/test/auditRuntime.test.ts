@@ -355,6 +355,21 @@ describe("durable role-owned audit tracks", () => {
     });
   });
 
+  // A coordinator rejects an `indeterminate` result without `retryAt` as
+  // malformed, so the stage's own reason must carry one.
+  it("keeps an indeterminate buyer finalization stage retryable at the retry delay", async () => {
+    const { track } = finalisedBuyerTrack(vi.fn(async () => true));
+    advanceBuyer.mockResolvedValueOnce({
+      disposition: "indeterminate", stage: "seller-finalisation",
+    } as never);
+
+    await expect(track(operation("buyer").input as never)).resolves.toEqual({
+      status: "indeterminate",
+      reasonCode: "buyer-audit-seller-finalisation-indeterminate",
+      retryAt: 12_000,
+    });
+  });
+
   it("keeps an unanswered buyer completion read retryable", async () => {
     const { track } = finalisedBuyerTrack(vi.fn(async () => "indeterminate"));
 

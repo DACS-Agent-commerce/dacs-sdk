@@ -68,6 +68,8 @@ import {
   type PaymentEvidenceOutboundRequestClaim,
   type PaymentEvidenceOutbox,
   type PaymentEvidencePage,
+  fixedPriceCarriedSubstratePause,
+  fixedPriceRecordedSubstratePause,
 } from "@kynesyslabs/dacs/commerce";
 import { isCanonicalJobId } from "@kynesyslabs/dacs/negotiate";
 import BetterSqlite3 from "better-sqlite3";
@@ -4987,6 +4989,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
             attempts: retained.attempts + 1,
             updatedAt,
             lease,
+            ...fixedPriceCarriedSubstratePause(retained),
           };
           const next = saveRecord(current, {
             ...clone(current),
@@ -5089,6 +5092,7 @@ class DacsNodeSqliteDatabaseImpl implements DacsNodeSqliteDatabase {
                 updatedAt,
                 reasonCode: result.reasonCode,
                 ...(result.retryAt === undefined ? {} : { nextAttemptAt: result.retryAt }),
+                ...fixedPriceRecordedSubstratePause(retained, result.status, updatedAt),
               }) as CoordinatorTrackRecord;
           const tracks = clone(current.tracks) as Partial<
             Record<FixedPriceX402Track, CoordinatorTrackRecord>
