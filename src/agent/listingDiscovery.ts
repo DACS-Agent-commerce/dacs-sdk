@@ -893,7 +893,8 @@ export async function enumerateListingsForSeller(
       listings: [],
       diagnostics: [],
       reason: scan.reason,
-      retryCursor: cursor,
+      // A cursor the fetcher can no longer resume never succeeds on retry.
+      retryCursor: scan.code === "history-restart-required" ? null : cursor,
     };
   }
 

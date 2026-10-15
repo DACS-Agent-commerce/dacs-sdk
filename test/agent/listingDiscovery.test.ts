@@ -24,6 +24,7 @@ import {
   rawPublicKey,
 } from "../../src/crypto/index.js";
 import {
+  AnchorHistoryRestartRequiredError,
   createCatalogBindingIndex,
   createInMemoryBindingIndex,
   type AnchorBinding,
@@ -827,6 +828,24 @@ describe("enumerateListingsForSeller (#54)", () => {
       stage: "history",
       listings: [],
       retryCursor: "retry-me",
+    });
+
+    // A cursor the fetcher cannot resume (for example an earlier format) restarts.
+    await expect(
+      enumerateListingsForSeller(
+        SELLER.did,
+        depsFor([], {
+          createHistoryPageFetcher: () => async () => {
+            throw new AnchorHistoryRestartRequiredError("invalid Demos history cursor prefix");
+          },
+        }),
+        { cursor: "dacs-demos-history-v1.stale" },
+      ),
+    ).resolves.toMatchObject({
+      status: "indeterminate",
+      stage: "history",
+      listings: [],
+      retryCursor: null,
     });
 
     const baseIndex = createInMemoryBindingIndex([first.binding, second.binding]);
