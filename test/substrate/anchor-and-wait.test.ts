@@ -782,6 +782,79 @@ describe("DemosAdapter.anchorAndWait", () => {
     ).rejects.toThrow(/changed its signed content/);
   });
 
+  it("rejects a confirmed canonical row for a different transaction hash", async () => {
+    const { adapter, raw } = await makeAdapter();
+    const canonical = raw.getTxByHash.getMockImplementation()!;
+    raw.getTxByHash.mockImplementation(async (txRef: string) => ({
+      ...(await canonical(txRef)),
+      hash: "tx-canonical-other",
+    }));
+
+    await expect(
+      adapter.anchorAndWait(
+        "canonical-hash-bound",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).rejects.toMatchObject({
+      code: "inclusion-failed",
+      message: expect.stringMatching(
+        /canonical Demos transaction hash tx-canonical-other does not match tx-/,
+      ),
+    });
+    expect(raw.getBlockByNumber).not.toHaveBeenCalled();
+  });
+
+  // Each vector changes one field of the otherwise authenticating block.
+  it.each([
+    ["is malformed", () => "not a block", /Demos block 42 is malformed/],
+    ["has no hash", (block: any) => ({ ...block, hash: undefined }), /does not authenticate transaction/],
+    ["is not confirmed", (block: any) => ({ ...block, status: "pending" }), /does not authenticate transaction/],
+    ["has another number", (block: any) => ({ ...block, number: 43 }), /does not authenticate transaction/],
+    [
+      "has no timestamp",
+      (block: any) => ({ ...block, content: { ...block.content, timestamp: undefined } }),
+      /does not authenticate transaction/,
+    ],
+    [
+      "does not order the transaction",
+      (block: any) => ({ ...block, content: { ...block.content, ordered_transactions: ["tx-other"] } }),
+      /does not authenticate transaction/,
+    ],
+    [
+      "has no ordered list",
+      (block: any) => ({ ...block, content: { ...block.content, ordered_transactions: undefined } }),
+      /does not authenticate transaction/,
+    ],
+    ["has no BFT validation data", (block: any) => ({ ...block, validation_data: undefined }), /has no BFT validation data/],
+  ])("rejects an anchor whose canonical block %s", async (_label, change, message) => {
+    const { adapter, raw } = await makeAdapter();
+    const authentic = raw.getBlockByNumber.getMockImplementation()!;
+    raw.getBlockByNumber.mockImplementation(async (blockNumber: number) =>
+      change(await authentic(blockNumber)));
+
+    await expect(
+      adapter.anchorAndWait(
+        "canonical-block-bound",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "inclusion-failed", message: expect.stringMatching(message) });
+    expect(raw.getBlockByNumber).toHaveBeenCalledWith(42);
+  });
+
+  it("closes an anchor whose canonical row and block authenticate it (control)", async () => {
+    const { adapter, raw } = await makeAdapter();
+    await expect(
+      adapter.anchorAndWait(
+        "canonical-block-bound",
+        { value: 1 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toBeDefined();
+    expect(raw.getBlockByNumber).toHaveBeenCalledWith(42);
+  });
+
   it("rejects invalid completion and timing options before any write", async () => {
     const { adapter, raw } = await makeAdapter();
 
