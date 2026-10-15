@@ -21,6 +21,7 @@ import {
   type CrossChainHtlcSettlement,
   type CrossChainHtlcStore,
   type HtlcAction,
+  type HtlcEffectFence,
   type HtlcLease,
   type HtlcLedgerSnapshot,
   type HtlcLockTerms,
@@ -6685,6 +6686,359 @@ describe("retained store rows the core must refuse", () => {
   });
 });
 
+describe("retained history and checkpoint contradictions the core refuses", () => {
+  type Acquired = Extract<HtlcStoreClaim, { status: "acquired" }>;
+  type History = Acquired["sourceClaimAttemptHistory"];
+
+  /** A session whose `action` was replaced once: one history entry, every checkpoint retained. */
+  async function replacedOnce(action: "source-claim" | "destination-claim", reason?: string) {
+    const h = action === "source-claim"
+      ? harness({ mode: { "source-claim": "pending" } })
+      : harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    const calls = action === "source-claim" ? 4 : 3;
+    for (let call = 0; call < calls; call += 1) {
+      await advanceCrossChainHtlc(call === 0 ? run.shared : run.nextOwner());
+    }
+    const prior = h.broadcastRetained.mock.calls.map((call) => call[0]).find((p) => p.action === action);
+    if (!prior) throw new Error(`expected ${action}`);
+    h.actions[action] = {
+      state: "failed",
+      txRef: prior.txRef,
+      ...(reason === undefined ? {} : { reason }),
+      authenticationHash: AUTH_HASH,
+    };
+    await advanceCrossChainHtlc(run.nextOwner());
+    return { h, run };
+  }
+
+  /** The prepared action with `change` applied and its effect hash recomputed, so it stays self-consistent. */
+  function rehash(prepared: Readonly<HtlcPreparedAction>, change: Partial<HtlcPreparedAction>): HtlcPreparedAction {
+    const { effectHash: _old, ...unsigned } = { ...prepared, ...change };
+    return { ...unsigned, effectHash: sha256Hex(canonicalize(unsigned)) };
+  }
+
+  async function refuses(
+    action: "source-claim" | "destination-claim",
+    corrupt: (claimed: Acquired) => unknown,
+  ) {
+    const { h, run } = await replacedOnce(action);
+    const base = run.shared.store;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        return claimed.status === "acquired" ? corrupt(structuredClone(claimed)) as HtlcStoreClaim : claimed;
+      },
+    };
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    const result = await advanceCrossChainHtlc({ ...run.nextOwner(), store });
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+    return result;
+  }
+
+  const historyOf = (claimed: Acquired, action: "source-claim" | "destination-claim") =>
+    action === "source-claim" ? claimed.sourceClaimAttemptHistory : claimed.destinationClaimAttemptHistory;
+  const withHistory = (claimed: Acquired, action: "source-claim" | "destination-claim", history: unknown) =>
+    action === "source-claim"
+      ? { ...claimed, sourceClaimAttemptHistory: history as History }
+      : { ...claimed, destinationClaimAttemptHistory: history as History };
+  const active = (claimed: Acquired, action: HtlcAction) => claimed.prepared.find((p) => p.action === action)!;
+  const withActive = (claimed: Acquired, action: HtlcAction, row: HtlcPreparedAction | undefined) => ({
+    ...claimed,
+    prepared: [...claimed.prepared.filter((p) => p.action !== action), ...(row ? [row] : [])],
+  });
+
+  test.each(["source-claim", "destination-claim"] as const)("replays the unchanged retained %s history", async (action) => {
+    const { h, run } = await replacedOnce(action);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.not.toMatchObject({ status: "failed" });
+    expect(h.prepareAction.mock.calls.filter(([request]) => request.action === action)).toHaveLength(2);
+  });
+
+  test("replays a source-claim history of two replacements, each chained to the next", async () => {
+    const { h, run } = await replacedOnce("source-claim");
+    const second = h.broadcastRetained.mock.calls.map((call) => call[0]).filter((p) => p.action === "source-claim")[1];
+    if (!second) throw new Error("expected the first replacement");
+    h.actions["source-claim"] = { state: "failed", txRef: second.txRef, authenticationHash: AUTH_HASH };
+    await advanceCrossChainHtlc(run.nextOwner());
+    expect(h.prepareAction.mock.calls.filter(([request]) => request.action === "source-claim")).toHaveLength(3);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.not.toMatchObject({ status: "failed" });
+    expect(h.prepareAction.mock.calls.filter(([request]) => request.action === "source-claim")).toHaveLength(3);
+  });
+
+  const historyCases: readonly (readonly [string, string, (c: Acquired, a: "source-claim" | "destination-claim") => unknown])[] = [
+    ["is not an array", "history is invalid", (c, a) => withHistory(c, a, {})],
+    ["has no active attempt", "history omits the active attempt", (c, a) => withActive(c, a, undefined)],
+    ["holds a null entry", "history sequence is invalid", (c, a) => withHistory(c, a, [null])],
+    ["holds a number", "history sequence is invalid", (c, a) => withHistory(c, a, [1])],
+    ["numbers its first entry 2", "history sequence is invalid", (c, a) =>
+      withHistory(c, a, [{ ...historyOf(c, a)[0]!, attempt: 2 }])],
+    ["holds a prior with a tampered effect hash", "history integrity mismatch", (c, a) =>
+      withHistory(c, a, [{ ...historyOf(c, a)[0]!, prepared: { ...historyOf(c, a)[0]!.prepared, effectHash: "0".repeat(64) } }])],
+    ["names a malformed replacement", "history integrity mismatch", (c, a) =>
+      withHistory(c, a, [{ ...historyOf(c, a)[0]!, replacementEffectHash: "not-a-hash" }])],
+    ["names its prior as its own replacement", "history integrity mismatch", (c, a) =>
+      withHistory(c, a, [{ ...historyOf(c, a)[0]!, replacementEffectHash: historyOf(c, a)[0]!.prepared.effectHash }])],
+    ["holds one attempt twice", "history reuses an attempt", (c, a) => {
+      const [entry] = historyOf(c, a);
+      return withHistory(c, a, [entry, { ...entry!, attempt: 2 }]);
+    }],
+    ["holds another attempt with the same transaction", "history reuses an attempt", (c, a) => {
+      const [entry] = historyOf(c, a);
+      const twin = rehash(entry!.prepared, { signedPayloadBase64: Buffer.from("twin", "utf8").toString("base64") });
+      return withHistory(c, a, [{ ...entry!, replacementEffectHash: twin.effectHash }, { ...entry!, attempt: 2, prepared: twin }]);
+    }],
+    ["chains to an attempt that is not the active one", "history chain is invalid", (c, a) =>
+      withHistory(c, a, [{ ...historyOf(c, a)[0]!, replacementEffectHash: "d".repeat(64) }])],
+    ["has an active attempt that reuses a retained transaction", `active ATTEMPT reuses a retained attempt`, (c, a) => {
+      const [entry] = historyOf(c, a);
+      const reused = rehash(entry!.prepared, { preparedAt: entry!.prepared.preparedAt + 1 });
+      return withHistory(withActive(c, a, reused), a, [{ ...entry!, replacementEffectHash: reused.effectHash }]);
+    }],
+    ["holds a failure naming another transaction", "ATTEMPT failure observation is invalid", (c, a) => {
+      const [entry] = historyOf(c, a);
+      return withHistory(c, a, [{
+        ...entry!,
+        failedObservation: { ...entry!.failedObservation, txRef: active(c, a).txRef },
+      }]);
+    }],
+    ["holds an unauthenticated failure", "ATTEMPT failure observation is invalid", (c, a) =>
+      withHistory(c, a, [{ ...historyOf(c, a)[0]!, failedObservation: { ...historyOf(c, a)[0]!.failedObservation, authenticationHash: "x" } }])],
+    ["holds a failure with a numeric reason", "ATTEMPT failure observation is invalid", (c, a) =>
+      withHistory(c, a, [{ ...historyOf(c, a)[0]!, failedObservation: { ...historyOf(c, a)[0]!.failedObservation, reason: 7 } }])],
+    ["holds a failure that is only pending", "ATTEMPT failure observation is invalid", (c, a) =>
+      withHistory(c, a, [{ ...historyOf(c, a)[0]!, failedObservation: { ...historyOf(c, a)[0]!.failedObservation, state: "pending" } }])],
+  ];
+  test.each((["source-claim", "destination-claim"] as const).flatMap((action) =>
+    historyCases.map(([name, message, corrupt]) => ({ action, name, message, corrupt }))))(
+    "ends the session as permanent when the retained $action history $name",
+    async ({ action, message, corrupt }) => {
+      const subject = message.includes("ATTEMPT") ? message.replace("ATTEMPT", action) : `retained ${action} ${message}`;
+      await expect(refuses(action, (c) => corrupt(c, action))).resolves.toEqual({
+        status: "failed",
+        errorClass: "permanent",
+        reason: `pay-cross-chain-htlc: ${subject}`,
+      });
+    },
+  );
+
+  test.each([undefined, "out-of-gas"])("retains a failure's reason exactly when it has one (%s)", async (reason) => {
+    const { run } = await replacedOnce("source-claim", reason);
+    const { intent, secrets } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+    const claimed = await run.shared.store.claim({
+      intent,
+      secrets,
+      owner: "reader",
+      now: run.nextOwner().now(),
+      leaseDurationMs: 100,
+    });
+    if (claimed.status !== "acquired") throw new Error("expected the lease");
+    const { failedObservation } = claimed.sourceClaimAttemptHistory[0]!;
+    if (reason === undefined) expect(Object.keys(failedObservation)).not.toContain("reason");
+    else expect(failedObservation.reason).toBe(reason);
+  });
+
+  type Checkpointed = Required<Pick<Acquired, "sourceFinalityCheckpoint" | "revealCheckpoint">>;
+  const checkpoints = (c: Acquired) => c as Acquired & Checkpointed;
+  const checkpointCases: readonly (readonly [string, string, (c: Acquired & Checkpointed) => unknown])[] = [
+    ["a source checkpoint without its source lock", "retained source-finality checkpoint is invalid",
+      (c) => withActive(c, "source-lock", undefined)],
+    ["a source checkpoint of another effect", "retained source-finality checkpoint is invalid",
+      (c) => ({ ...c, sourceFinalityCheckpoint: { ...c.sourceFinalityCheckpoint, sourceLockEffectHash: "0".repeat(64) } })],
+    ["a source checkpoint of another transaction", "retained source-finality checkpoint is invalid",
+      (c) => ({
+        ...c,
+        sourceFinalityCheckpoint: {
+          ...c.sourceFinalityCheckpoint,
+          sourceLockTxRef: { ...c.sourceFinalityCheckpoint.sourceLockTxRef, lockTxHash: "tx-other" },
+        },
+      })],
+    ["an unauthenticated source checkpoint", "retained source-finality checkpoint is invalid",
+      (c) => ({ ...c, sourceFinalityCheckpoint: { ...c.sourceFinalityCheckpoint, authenticationHash: "x" } })],
+    ["source finality observed before the lock's inclusion", "retained source-finality timestamps are invalid",
+      (c) => ({
+        ...c,
+        sourceFinalityCheckpoint: {
+          ...c.sourceFinalityCheckpoint,
+          finalityObservedAt: c.sourceFinalityCheckpoint.includedAt - 1,
+        },
+      })],
+    ["a source lock included at its own expiry", "retained source-finality timestamps are invalid",
+      (c) => ({
+        ...c,
+        sourceFinalityCheckpoint: {
+          ...c.sourceFinalityCheckpoint,
+          includedAt: c.sourceFinalityCheckpoint.sourceExpiry * 1_000,
+          finalityObservedAt: c.sourceFinalityCheckpoint.sourceExpiry * 1_000,
+        },
+      })],
+    ["a reveal checkpoint naming no retained reveal", "retained reveal checkpoint is invalid",
+      (c) => ({ ...c, revealCheckpoint: { ...c.revealCheckpoint, revealTxRef: { ...c.revealCheckpoint.revealTxRef, revealTxHash: "tx-other" } } })],
+    ["an unauthenticated reveal checkpoint", "retained reveal checkpoint is invalid",
+      (c) => ({ ...c, revealCheckpoint: { ...c.revealCheckpoint, authenticationHash: "x" } })],
+    ["two source locks", "retained action duplicate",
+      (c) => ({ ...c, prepared: [...c.prepared, active(c, "source-lock")] })],
+    ["a source lock with a tampered effect hash", "retained action integrity mismatch",
+      (c) => withActive(c, "source-lock", { ...active(c, "source-lock"), effectHash: "0".repeat(64) })],
+    ["a destination lock with a tampered effect hash", "retained action integrity mismatch",
+      (c) => withActive(c, "destination-lock", { ...active(c, "destination-lock"), effectHash: "0".repeat(64) })],
+  ];
+  test.each(checkpointCases)("ends the session as permanent when the store retains %s", async (_name, message, corrupt) => {
+    await expect(refuses("source-claim", (c) => corrupt(checkpoints(c)))).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: `pay-cross-chain-htlc: ${message}`,
+    });
+  });
+
+  test("ends the session as permanent when the store retains two destination locks", async () => {
+    await expect(refuses("source-claim", (c) => ({ ...c, prepared: [...c.prepared, active(c, "destination-lock")] })))
+      .resolves.toEqual({ status: "failed", errorClass: "permanent", reason: "htlc-retained-action-duplicate" });
+  });
+
+  test("moves nothing when the stored intent cannot be canonicalized", async () => {
+    await expect(refuses("source-claim", (c) => ({ ...c, intent: { ...c.intent, amount: 1n } })))
+      .resolves.toEqual({ status: "indeterminate", reason: "htlc-settlement-store-intent-invalid" });
+  });
+});
+
+describe("observations that contradict the retained chain", () => {
+  /** The reveal is final and checkpointed; the payee's source claim is retained and pending. */
+  async function claimPending() {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    for (let call = 0; call < 4; call += 1) {
+      await advanceCrossChainHtlc(call === 0 ? run.shared : run.nextOwner());
+    }
+    if (h.actions["source-claim"]?.state !== "pending") throw new Error("expected a pending source claim");
+    return { h, run };
+  }
+
+  /** `base` with each acquired claim passed through `change`. */
+  const claimedAs = (
+    base: CrossChainHtlcStore,
+    change: (claimed: Extract<HtlcStoreClaim, { status: "acquired" }>) => HtlcStoreClaim,
+  ): CrossChainHtlcStore => ({
+    ...base,
+    async claim(input) {
+      const claimed = await base.claim(input);
+      return claimed.status === "acquired" ? change(claimed) : claimed;
+    },
+  });
+
+  test("refuses a final source claim when no reveal is reported or checkpointed", async () => {
+    const { h, run } = await claimPending();
+    await h.markFinal("source-claim");
+    delete h.actions["destination-claim"];
+    const store = claimedAs(run.shared.store, ({ revealCheckpoint: _lost, ...rest }) => rest);
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store })).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "htlc-final-claim-chain-incomplete",
+    });
+  });
+
+  test.each([
+    ["another preimage", "ab".repeat(32), "htlc-revealed-preimage-mismatch"],
+    ["a malformed preimage", "zz", "htlc-revealed-preimage-invalid"],
+  ])("refuses a final source claim reported with a reveal of %s", async (_name, revealedPreimageHex, reason) => {
+    const { h, run } = await claimPending();
+    await h.markFinal("source-claim");
+    h.actions["destination-claim"] = { ...h.actions["destination-claim"]!, revealedPreimageHex } as HtlcObservedAction;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason,
+    });
+  });
+
+  test("checkpoints a reveal first seen with the final claim, and stops if that write throws", async () => {
+    const { h, run } = await claimPending();
+    await h.markFinal("source-claim");
+    const base = run.shared.store;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      // A store that lost the reveal checkpoint and cannot write it again.
+      async claim(input) {
+        const claimed = await base.claim(input);
+        if (claimed.status !== "acquired") return claimed;
+        const { revealCheckpoint: _lost, ...rest } = claimed;
+        return rest;
+      },
+      async recordRevealFinal() { throw new Error("store offline"); },
+    };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-reveal-checkpoint-persistence-uncertain",
+    });
+  });
+
+  test("waits instead of driving the source claim when a final reveal has no destination lock", async () => {
+    const h = harness({ mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    for (let call = 0; call < 3; call += 1) {
+      await advanceCrossChainHtlc(call === 0 ? run.shared : run.nextOwner());
+    }
+    await h.markFinal("destination-claim", { revealedPreimageHex: PREIMAGE_HEX });
+    delete h.actions["destination-lock"];
+    // Neither reported nor retained: the store lost the destination lock's row.
+    const store = claimedAs(run.shared.store, (claimed) => ({
+      ...claimed,
+      prepared: claimed.prepared.filter((row) => row.action !== "destination-lock"),
+    }));
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-destination-lock-finality-regressed",
+    });
+    expect(h.prepareAction.mock.calls.map(([request]) => request.action)).not.toContain("source-claim");
+  });
+
+  test("refuses a final reveal other than the one its retained checkpoint names", async () => {
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    for (let call = 0; call < 3; call += 1) {
+      await advanceCrossChainHtlc(call === 0 ? run.shared : run.nextOwner());
+    }
+    const first = h.broadcastRetained.mock.calls.map((call) => call[0]).find((p) => p.action === "destination-claim")!;
+    h.actions["destination-claim"] = { state: "failed", txRef: first.txRef, authenticationHash: AUTH_HASH };
+    await advanceCrossChainHtlc(run.nextOwner());
+    const replacement = h.broadcastRetained.mock.calls.map((call) => call[0]).filter((p) => p.action === "destination-claim")[1]!;
+    // The store holds a checkpoint naming the first attempt; the chain reports the replacement final.
+    const base = run.shared.store;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        return claimed.status === "acquired"
+          ? {
+            ...claimed,
+            revealCheckpoint: {
+              revealTxRef: first.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+              sourceExpiry: 5_000,
+              finalityObservedAt: 1_000_000,
+              authenticationHash: AUTH_HASH,
+            },
+          }
+          : claimed;
+      },
+    };
+    h.actions["destination-claim"] = {
+      state: "final",
+      txRef: replacement.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+      finalityObservedAt: 1_000_500,
+      revealedPreimageHex: PREIMAGE_HEX,
+      authenticationHash: AUTH_HASH,
+    };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store })).resolves.toEqual({
+      status: "failed",
+      errorClass: "permanent",
+      reason: "htlc-reveal-checkpoint-conflict",
+    });
+  });
+});
+
 describe("refund fallback, stored settlement rows and the evidence projection", () => {
   const actionsBroadcast = (h: ReturnType<typeof harness>) =>
     h.broadcastRetained.mock.calls.map(([prepared]) => prepared.action);
@@ -7036,4 +7390,281 @@ describe("in-memory store claim of an existing settlement", () => {
       leaseDurationMs: 100,
     })).resolves.toEqual({ status: "conflict", reason: "htlc-settlement-binding-or-secret-conflict" });
   });
+});
+
+describe("layered rechecks: the clock or the lease moves during one await", () => {
+  /** `run` moves the clock inside event `at`; `lose` makes that `isCurrent` read report the lease lost. */
+  interface Step { at?: number; run?: () => void; lose?: number }
+
+  /** An adapter that never checks the fence itself, so only the core's fences guard each step. */
+  function unfenced(adapter: CrossChainHtlcAdapter): CrossChainHtlcAdapter {
+    const open = (fence: HtlcEffectFence): HtlcEffectFence => ({ ...fence, assertCurrent: async () => {} });
+    return {
+      observe: (intent, fence) => adapter.observe(intent, open(fence)),
+      observeSourceLeg: (intent, fence) => adapter.observeSourceLeg(intent, open(fence)),
+      prepareAction: (request, fence) => adapter.prepareAction(request, open(fence)),
+      broadcastRetained: (action, fence) => adapter.broadcastRetained(action, open(fence)),
+    };
+  }
+
+  /**
+   * Wraps a store and an adapter so that every awaited call is logged as an
+   * event, and `step` runs when the event at index `at` starts: inside that
+   * await, after the core read the clock for it.
+   */
+  function traced(
+    store: CrossChainHtlcStore,
+    adapter: CrossChainHtlcAdapter,
+    step?: Step,
+  ) {
+    const events: string[] = [];
+    const hit = (event: string) => {
+      events.push(event);
+      if (step?.run && events.length - 1 === step.at) step.run();
+    };
+    return {
+      events,
+      store: {
+        ...store,
+        isCurrent: async (input) => {
+          hit("isCurrent");
+          // A lease lost to another worker inside this read.
+          return step?.lose === events.length - 1 ? false : store.isCurrent(input);
+        },
+        recordPrepared: async (input) => { hit(`record:${input.prepared.action}`); return store.recordPrepared(input); },
+        recordRevealFinal: async (input) => { hit("recordRevealFinal"); return store.recordRevealFinal(input); },
+        recordSourceFinality: async (input) => { hit("recordSourceFinality"); return store.recordSourceFinality(input); },
+        replacePreparedSourceClaim: async (input) => {
+          hit("replace:source-claim");
+          return store.replacePreparedSourceClaim(input);
+        },
+        replacePreparedDestinationClaim: async (input) => {
+          hit("replace:destination-claim");
+          return store.replacePreparedDestinationClaim(input);
+        },
+      } satisfies CrossChainHtlcStore,
+      adapter: {
+        observe: async (intent, fence) => { hit("observe"); return adapter.observe(intent, fence); },
+        observeSourceLeg: async (intent, fence) => { hit("observeSourceLeg"); return adapter.observeSourceLeg(intent, fence); },
+        prepareAction: async (request, fence) => { hit(`prepare:${request.action}`); return adapter.prepareAction(request, fence); },
+        broadcastRetained: async (action, fence) => { hit(`broadcast:${action.action}`); return adapter.broadcastRetained(action, fence); },
+      } satisfies CrossChainHtlcAdapter,
+    };
+  }
+
+  /**
+   * Drives a session to the call under test with `prepare`, then runs that
+   * call traced, as worker "stepped" with a lease long enough that only the
+   * window, not the lease, closes when the clock moves.
+   */
+  async function scenario(
+    options: HarnessOptions,
+    prepare: (h: ReturnType<typeof harness>, run: ReturnType<typeof runner>) => Promise<void>,
+  ) {
+    const h = harness(options);
+    const run = runner({ adapter: unfenced(h.adapter) });
+    await prepare(h, run);
+    return {
+      h,
+      run,
+      call(step?: Step) {
+        const t = traced(run.shared.store, run.shared.adapter, step);
+        return {
+          events: t.events,
+          result: advanceCrossChainHtlc({
+            ...run.shared,
+            owner: "stepped",
+            store: t.store,
+            adapter: t.adapter,
+            leaseDurationMs: 10_000_000,
+          }),
+        };
+      },
+    };
+  }
+
+  /** The source lock and destination lock are final; the next call, at 1_484_999, reveals. */
+  const reveal = () => scenario({ destinationExpiry: 1_500 }, async (_h, run) => {
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_484_999);
+  });
+
+  /** The first source claim is authenticated failed; the next call replaces it. */
+  const sourceClaimReplacement = () => scenario({ mode: { "source-claim": "pending" } }, async (h, run) => {
+    for (let call = 0; call < 4; call += 1) {
+      await advanceCrossChainHtlc(call === 0 ? run.shared : run.nextOwner());
+    }
+    const prior = h.broadcastRetained.mock.calls.map((call) => call[0]).find((p) => p.action === "source-claim");
+    if (!prior) throw new Error("expected a source claim");
+    h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+    h.setMode("source-claim", "pending");
+    run.nextOwner();
+  });
+
+  /** The first reveal is authenticated failed; the next call replaces it. */
+  const destinationClaimReplacement = () => scenario(
+    { sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } },
+    async (h, run) => {
+      for (let call = 0; call < 3; call += 1) {
+        await advanceCrossChainHtlc(call === 0 ? run.shared : run.nextOwner());
+      }
+      const prior = h.broadcastRetained.mock.calls.map((call) => call[0]).find((p) => p.action === "destination-claim");
+      if (!prior) throw new Error("expected a reveal");
+      h.actions["destination-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+      run.nextOwner();
+    },
+  );
+
+  // Each case's call awaits, in order: the fence, the observation, the fence,
+  // the fence, the preparation, the fence, the store write, the fence, the
+  // broadcast, the fence, then the fence and observation of what it sent.
+  const cases = [
+    {
+      name: "a first reveal",
+      make: reveal,
+      write: "record:destination-claim",
+      action: "destination-claim",
+      closesAt: 1_485_000,
+      closed: { status: "waiting", reason: "htlc-destination-claim-cutoff-reached" },
+      sent: { status: "waiting", reason: "htlc-destination-claim-finality-pending" },
+      uncertain: "htlc-destination-claim-effect-uncertain",
+    },
+    {
+      name: "a source-claim replacement",
+      make: sourceClaimReplacement,
+      write: "replace:source-claim",
+      action: "source-claim",
+      closesAt: 5_000_000,
+      closed: { status: "operator-alert", reason: "htlc-source-claim-missed-after-reveal" },
+      sent: { status: "settle-asymmetric", reason: "dest-revealed-source-unclaimed" },
+      uncertain: "htlc-source-claim-effect-uncertain",
+    },
+    {
+      name: "a reveal replacement",
+      make: destinationClaimReplacement,
+      write: "replace:destination-claim",
+      action: "destination-claim",
+      closesAt: 1_485_000,
+      closed: { status: "operator-alert", reason: "htlc-destination-claim-failed-preimage-public" },
+      sent: { status: "waiting", reason: "htlc-destination-claim-finality-pending" },
+      uncertain: "htlc-destination-claim-replacement-uncertain",
+    },
+  ] as const;
+
+  const shape = (c: { action: string; write: string }) => [
+    "isCurrent", "observe", "isCurrent", "isCurrent", `prepare:${c.action}`, "isCurrent", c.write,
+    "isCurrent", `broadcast:${c.action}`, "isCurrent", "isCurrent", "observe", "isCurrent",
+  ];
+
+  test.each(cases)("$name awaits each fence around every adapter call and store write", async (c) => {
+    const s = await c.make();
+    const call = s.call();
+    await expect(call.result).resolves.toMatchObject(c.sent);
+    expect(call.events).toEqual(shape(c));
+  });
+
+  // Inside await k (the fence after the observation through the fence before
+  // the broadcast), the window closes: the very next check stops the call, so
+  // nothing (no store read, preparation, write or broadcast) follows await k.
+  test.each(cases.flatMap((c) => [2, 3, 4, 5, 6, 7].map((at) => ({ ...c, at }))))(
+    "$name: when the window closes inside await $at, the call stops right after it",
+    async ({ at, ...c }) => {
+      const s = await c.make();
+      const call = s.call({ at, run: () => s.run.setClock(c.closesAt) });
+      await expect(call.result).resolves.toMatchObject(c.closed);
+      expect(call.events).toEqual(shape(c).slice(0, at + 1));
+    },
+  );
+
+  test.each(cases)("$name is sent when the window closes only once the broadcast started", async (c) => {
+    const s = await c.make();
+    const call = s.call({ at: 8, run: () => s.run.setClock(c.closesAt) });
+    await expect(call.result).resolves.toMatchObject(c.sent);
+    expect(call.events).toEqual(shape(c));
+  });
+
+  /** The source lock is final but not yet checkpointed, so the call reads the source leg first. */
+  const uncheckpointedSourceLock = () => scenario({ mode: { "source-lock": "pending" } }, async (h, run) => {
+    await advanceCrossChainHtlc(run.shared);
+    await h.markFinal("source-lock", { includedAt: 1_000_000, expiresAt: 5_000 });
+    run.nextOwner();
+  });
+
+  test.each([
+    ["no fence fails", undefined, [
+      "isCurrent", "observeSourceLeg", "isCurrent", "recordSourceFinality", "isCurrent", "observe", "isCurrent",
+    ]],
+    ["the fence before it fails", 0, [
+      "isCurrent", "isCurrent", "observe", "isCurrent", "recordSourceFinality",
+    ]],
+    ["the fence after it fails", 2, [
+      "isCurrent", "observeSourceLeg", "isCurrent", "isCurrent", "observe", "isCurrent", "recordSourceFinality",
+    ]],
+  ] as const)("checkpoints from the source-leg observation only under the lease: %s", async (_name, lose, events) => {
+    const s = await uncheckpointedSourceLock();
+    const call = s.call(lose === undefined ? undefined : { lose });
+    await expect(call.result).resolves.toMatchObject({ status: "refund-pending" });
+    expect(call.events).toEqual(events);
+  });
+
+  test.each(cases.filter((c) => c.write.startsWith("replace:")))(
+    "$name is broadcast when the store answers `existing` to the replacement",
+    async (c) => {
+      const s = await c.make();
+      const store = s.run.shared.store;
+      const answerExisting = async (write: Promise<HtlcStoreWrite>): Promise<HtlcStoreWrite> =>
+        (await write).status === "recorded" ? { status: "existing" } : write;
+      const call = advanceCrossChainHtlc({
+        ...s.run.shared,
+        owner: "stepped",
+        leaseDurationMs: 10_000_000,
+        store: {
+          ...store,
+          replacePreparedSourceClaim: (input) => answerExisting(store.replacePreparedSourceClaim(input)),
+          replacePreparedDestinationClaim: (input) => answerExisting(store.replacePreparedDestinationClaim(input)),
+        },
+      });
+      await expect(call).resolves.toMatchObject(c.sent);
+      expect(s.h.broadcastRetained.mock.calls.filter(([action]) => action.action === c.action)).toHaveLength(2);
+    },
+  );
+
+  test.each(cases.filter((c) => c.write.startsWith("replace:")))(
+    "$name accepts, in the same call, an observation that still reports the replaced attempt",
+    async (c) => {
+      const s = await c.make();
+      const adapter = s.run.shared.adapter;
+      // The replacement goes out, but the chain view has not caught up with it.
+      const call = advanceCrossChainHtlc({
+        ...s.run.shared,
+        owner: "stepped",
+        leaseDurationMs: 10_000_000,
+        adapter: {
+          ...adapter,
+          broadcastRetained: async (action, fence) => {
+            if (action.action !== c.action) await adapter.broadcastRetained(action, fence);
+          },
+        },
+      });
+      await expect(call).resolves.not.toMatchObject({ reason: "htlc-ledger-observation-unavailable" });
+      await expect(call).resolves.not.toMatchObject({ status: "indeterminate" });
+    },
+  );
+
+  // A fence that reports the lease lost stops the call at that fence: before
+  // the observation is used, before the preparation, before the store write,
+  // before the broadcast, and before what was sent is observed.
+  test.each(cases.flatMap((c) => [0, 2, 3, 5, 7, 9, 10, 12].map((at) => ({ ...c, at }))))(
+    "$name: when the lease is lost at the fence at await $at, the call stops there",
+    async ({ at, ...c }) => {
+      const s = await c.make();
+      const call = s.call({ lose: at });
+      await expect(call.result).resolves.toEqual({
+        status: "indeterminate",
+        reason: at <= 2 ? "htlc-ledger-observation-unavailable" : c.uncertain,
+      });
+      expect(call.events).toEqual(shape(c).slice(0, at + 1));
+    },
+  );
 });
