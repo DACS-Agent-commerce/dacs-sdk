@@ -4,12 +4,26 @@ name: demosdk compatibility
 # the committed lockfile resolves 4.0.16, so ordinary CI never compiles against
 # a newer one. 4.0.18 broke `tsc` and the build while CI stayed green (#339).
 # This scheduled job typechecks and builds against the locked version, 4.0.18,
-# and the newest release in range, without changing the lockfile.
+# and the newest release in range, without changing the lockfile. It also runs
+# on pull requests that touch the dependency range or a source file that
+# imports demosdk, because a regression there can pass `tsc` at the locked
+# 4.0.16 and fail only at a newer release.
 
 on:
   schedule:
     - cron: "23 4 * * *"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/demosdk-compat.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "src/substrate/**"
+      - "src/rails/payDem*.ts"
+      - "src/rails/payD402.ts"
+      - "src/agent/Agent.ts"
+      - "src/index.ts"
 
 permissions:
   contents: read
