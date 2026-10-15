@@ -603,6 +603,16 @@ a runtime store lacks the method. `recordPrepared` remains immutable for every
 ordinary action. The exported in-memory store is for tests and development
 only and requires `{ acknowledgeVolatile: true }`.
 
+`checkCrossChainHtlcStore(makeStore)` runs this contract against a host
+store and returns one `{ name, ok, detail }` per case, so a host can assert it
+from its own test runner. `makeStore` must return a new, empty store each
+time. The cases cover lease ownership and generations, stale writes, binding
+and salt conflicts, write-once rows and checkpoints (`existing` only for the
+identical row), cross-session effect and transaction reuse, a destination
+lock's source-finality binding, the reveal/refund exclusion, both replacement
+CASes and concurrent workers. They do not prove durability, encryption or
+atomicity across processes, which remain the host's to test.
+
 When preparing a replacement of either claim, the adapter receives
 `replacement` context with the new attempt number, prior effect
 hash/reference, and failure authentication hash (`priorTxRef` is an
@@ -828,9 +838,32 @@ ST-8 maps onto the core's results as follows:
 
 ## Authority fields and the pinned rail
 
-The host builds `CrossChainHtlcAuthority` from the authenticated, pinned rail
-definition and the agreement. The core takes only the flattened fields; the
-SDK does not yet ship a resolver from a `RailDefinition`. The Standard's names
+`crossChainHtlcAuthorityFromRail(rail, selection)` builds the
+`CrossChainHtlcAuthority` from a rail definition that `resolveRail`
+authenticated and from the agreement's selection:
+
+```ts
+const rail = await resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, railSelector, deps);
+const authority = crossChainHtlcAuthorityFromRail(rail, {
+  sourceChainId, destinationChainId, // the agreement's route
+  jobId, phaseIndex, agreementHash, amount, currency,
+  sourceTokenId, destinationTokenId, sourceTokenDecimals, destinationTokenDecimals,
+  payerSourceAddress, payerDestinationAddress, payeeSourceAddress, payeeDestinationAddress,
+  destinationFinalitySec,
+});
+```
+
+It refuses a rail that is not branded by `resolveRail` (RAV-R5), not a
+`cross-chain-htlc` rail, or `disabled` or `failed` (RAV-R2). A host still runs
+its own RAV-R3 preflight for any other rail that is not `live`. It also
+refuses a selection field the rail owns. `railDescriptorHash` is the
+definition's authenticated content hash. The route is the one whose
+`(sourceChainId, destChainId)` equals the selection exactly: `1` and `"1"` are
+different routes, and there are no aliases. Exactly one route must match, and
+it must carry `htlcContracts`. The four parameters are read under their
+Standard names only, and a missing or non-positive one is refused, not
+defaulted. `currency` must be the rail's `canonicalSymbol`. HTLC-7 is checked
+by `createCrossChainHtlcIntent`, as for any authority. The Standard's names
 map as follows:
 
 | Pinned rail (DACS-4 §9.14, `CrossChainRoute`) | Authority field |
@@ -850,16 +883,22 @@ map as follows:
   destination adapter enforces (for example, confirmation depth times block
   time, with margin). It is bound into the intent like every other field.
 - Chain ids are positive safe integers, such as EIP-155 chain ids. The
-  Standard's route also allows string identifiers, for example for a Solana
-  leg. This version of the core does not support those routes and refuses a
+  Standard's `CrossChainRoute` also allows string identifiers, for example for
+  a Solana leg, but at the pinned revision its `htlc-lock`, `htlc-reveal`,
+  `htlc-claim` and `htlc-refund` references carry `chainId: number` (DACS-4
+  §9.3). A string-id route therefore cannot produce conforming evidence, so the
+  core is pinned to the numeric profile. The resolver selects the route
+  exactly, then refuses one with a string chain id, and the core refuses a
   non-integer chain id. A host must not invent a numeric alias for one,
   because the id is bound into every transaction reference and the evidence.
+- `sourceTokenId`, `destinationTokenId` and their decimals come from the host:
+  the Standard's `stablecoin-cross-chain` asset names only the symbol.
 
 ## Host recovery checklist
 
 - Supply a durable, atomic, encrypted `CrossChainHtlcStore` that survives the
   process. Restart safety depends on it; the in-memory store does not provide
-  it.
+  it. Run `checkCrossChainHtlcStore` against it in the host's tests.
 - Never discard the buyer salt while the session can still be driven. Keep
   it encrypted and durable until the session is terminal: settlement is
   recorded, both legs are refunded, or the core returned a permanent `failed`

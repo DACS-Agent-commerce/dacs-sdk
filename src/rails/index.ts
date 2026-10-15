@@ -182,6 +182,14 @@ export {
   type AdvanceCrossChainHtlcInput,
 } from "./crossChainHtlc.js";
 export {
+  crossChainHtlcAuthorityFromRail,
+  type CrossChainHtlcRailSelection,
+} from "./crossChainHtlcRail.js";
+export {
+  checkCrossChainHtlcStore,
+  type CrossChainHtlcStoreCheck,
+} from "./crossChainHtlcStoreConformance.js";
+export {
   solanaSplSettlementKey,
   createSolanaSplSettlementIntent,
   advanceSolanaSplSettlement,

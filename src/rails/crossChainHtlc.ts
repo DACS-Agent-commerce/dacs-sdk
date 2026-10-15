@@ -3322,7 +3322,10 @@ export function createInMemoryCrossChainHtlcStore(
           ? { status: "existing" }
           : { status: "conflict", reason: "htlc-action-replacement-forbidden" };
       }
-      record.prepared.set(input.prepared.action, Object.freeze({ ...input.prepared }));
+      record.prepared.set(input.prepared.action, Object.freeze({
+        ...input.prepared,
+        txRef: Object.freeze({ ...input.prepared.txRef }),
+      }));
       effects.set(input.prepared.effectHash, input.settlementKey);
       transactionOwners.set(transactionKey, input.settlementKey);
       return { status: "recorded" };
