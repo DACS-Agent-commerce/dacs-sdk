@@ -743,7 +743,11 @@ export interface PayDemRailConfig {
    * Overall budget for reading the node's transaction record after inclusion
    * (default 30 seconds). Each read is also bounded by `statusRequestTimeoutMs`.
    * When execution is not established within it, the settlement is
-   * indeterminate and never resubmitted.
+   * indeterminate and never resubmitted. demosdk's transport retries a
+   * connection error or a 502–504 up to four times, backing off up to
+   * 8 seconds per retry, so one transient error can outlast a 5 second
+   * `statusRequestTimeoutMs`; the read then counts as stalled and the
+   * settlement is indeterminate at once (liveness only, never a resubmission).
    */
   transactionRecordTimeoutMs?: number;
 }
@@ -1200,6 +1204,22 @@ type ObservedDemosExecution =
  * again within the budget; a stalled read or a confirmed or failed record that
  * does not bind the prepared transfer is indeterminate at once. Like the status poll,
  * this never retries or duplicates the broadcast.
+ *
+ * Node semantics this relies on, verified against kynesyslabs/node
+ * `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578` (what node2 reports
+ * at `GET /version`) and `stabilisation@52e2e569`:
+ * - `getTransactionStatus` reports `included` for every stored row, failed ones
+ *   included, and never produces `failed` (`src/libs/blockchain/chainTypes.ts`
+ *   `TxStatus`, `chainTransactions.ts` `getTransactionStatus`);
+ * - the record `status` is `confirmed`, `failed` or `pending`
+ *   (`src/utilities/constants.ts` `TRANSACTION_STATUS`);
+ * - `content.nonce` is a pg `bigint` column, so it is served as a decimal
+ *   string (`src/model/entities/Transactions.ts`);
+ * - not-found is `{result: 400, response: "error"}` at 61b8e75 and
+ *   `{result: 404, response: null}` at 52e2e569; both are polled.
+ * The default branch (`testnet`) has no `getTransactionStatus`. The recorded
+ * node2 records in `test/fixtures/demos-node2-records.json` pin this shape;
+ * see `docs/pay-dem-execution.md`.
  *
  * @internal Exported for tests, because `settle()` maps `failed` and
  * `indeterminate` to the same not-ok result; not re-exported from the rails

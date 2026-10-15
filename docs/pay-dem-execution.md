@@ -1,0 +1,68 @@
+# pay-dem execution gate
+
+A Demos node can report a transaction `included` in its status index while its
+transaction record says the transaction `failed`, for example with
+`TX_NONCE_INVALID_LOW` (#338). Inclusion alone therefore is not settlement.
+After the status index reports `included`, `createPayDemRail().settle()` reads
+the node's transaction record for the retained signed hash with
+`Demos.getTxByHash` and returns `ok: true` only when the record:
+
+- has status `confirmed`;
+- is at the observed inclusion block;
+- binds the signed hash and nonce; and
+- binds the prepared payer, payee and amount.
+
+A `failed` record that binds the same facts is a failed transfer. A
+`confirmed` or `failed` record that does not bind them, or a read that stalls,
+is indeterminate at once. A missing, pending, unreadable or malformed record is
+read again every `inclusionPollIntervalMs` until `transactionRecordTimeoutMs`
+(default 30 seconds) ends, then it is indeterminate. Every not-ok result keeps
+the transaction hash, so the settlement intent stays held, and no path
+broadcasts again.
+
+## Node behaviour this depends on
+
+The mapping was verified against kynesyslabs/node
+`stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578`, the commit node2
+(`0.9.9 RC`) reports at `GET /version`, and against `stabilisation@52e2e569`:
+
+| Behaviour | Source |
+|---|---|
+| `getTransactionStatus` returns `pending`, `included` or `unknown`. It returns `included` for every stored transaction row, failed rows included. `failed` is reserved and never produced. | `src/libs/blockchain/chainTypes.ts` (`TxStatus`), `src/libs/blockchain/chainTransactions.ts` (`getTransactionStatus`) |
+| A transaction record's `status` is `confirmed`, `failed` or `pending`. | `src/utilities/constants.ts` (`TRANSACTION_STATUS`) |
+| `content.nonce` is a pg `bigint` column and is served as a decimal string. `content.amount` is served as a number. | `src/model/entities/Transactions.ts`, `src/libs/blockchain/transaction.ts` (`fromEntityToWireNumber`) |
+| `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. demosdk resolves the `response` member, and both are polled. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
+
+The default branch (`testnet`) has no `getTransactionStatus` and records every
+included transaction as `confirmed`; the rail does not support it.
+`test/fixtures/demos-node2-records.json` holds two records read from node2 at
+61b8e75, one `confirmed` and one `failed` with `TX_NONCE_INVALID_LOW`, and
+`test/rails/payDemExecutedStatus.test.ts` runs the execution observer on them.
+Re-check this table when the deployed node moves to another commit.
+
+## Deviations from DACS-4 at `d45c0a29`
+
+- **Success state.** §9.5.9 step 5 returns success when the transaction reaches
+  the terminal `included` state. Current nodes report `included` for failed
+  transactions, so the SDK additionally requires a `confirmed` record at that
+  block. An implementation that follows the text literally reports a failed
+  payment as settled. The Standard needs a revision that defines Demos
+  `included` this way, and a vector that pairs an `included` status with a
+  `failed` record.
+- **Failure class.** §9.5.9 classifies a terminal `failed` transaction as
+  `permanent`, and PC-4 requires `ok: false` to carry an `errorClass`.
+  `SettleResult` has no `errorClass` for any rail. The session runner holds
+  every transaction-bearing not-ok result for reconciliation and never turns
+  it into terminal failure evidence on its own; an EVM revert, which surfaces
+  as an error after broadcast, is held the same way. A failed pay-dem record
+  is therefore reported like an indeterminate one: the intent stays held
+  until the caller's `reconcile` capability, or an operator, resolves it. The verdict is one node's record, not
+  an independent proof, so it is not used to close the session as failed.
+
+## Liveness
+
+demosdk's transport retries a connection error or an HTTP 502–504 up to four
+times, backing off up to 8 seconds per retry. One transient error can
+therefore outlast the 5 second `statusRequestTimeoutMs` default, and the record
+read then counts as stalled: the settlement is indeterminate and held. This
+delays settlement and never causes a second broadcast.
