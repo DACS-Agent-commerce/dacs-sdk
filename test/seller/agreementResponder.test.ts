@@ -422,6 +422,9 @@ describe("durable seller fixed-price agreement proposal responder", () => {
         );
         expect(completed.disposition).toBe("complete");
         expect(h.state.calls[effect]).toBe(1);
+        // Recovery restores the retained signature; it never signs again.
+        expect(h.state.calls.signature).toBe(1);
+        expect(h.state.calls.publication).toBe(1);
         expect(new Set(h.state.fences[effect].map((fence) => fence.idempotencyKey)).size).toBe(1);
       } finally {
         await rm(dir, { recursive: true, force: true });
@@ -1315,5 +1318,211 @@ describe("seller responder with metered fixed-price contexts", () => {
         "copied unit",
       );
     });
+  });
+});
+
+// Each guard below has no sibling that refuses the same input, so a test per
+// arm is the only thing that notices if one stops running.
+describe("seller responder proposal integrity and durable-effect guards", () => {
+  async function respond(h: Awaited<ReturnType<typeof harness>>) {
+    return respondToFixedPriceAgreementProposalDurable(h.request.input, h.durability);
+  }
+
+  function expectNoEffects(h: Awaited<ReturnType<typeof harness>>, label: string) {
+    expect(h.state.calls.signature, label).toBe(0);
+    expect(h.state.calls.publication, label).toBe(0);
+  }
+
+  function rehash(
+    request: Awaited<ReturnType<typeof requestForDraft>>,
+    proposal: Record<string, unknown>,
+    proposalHash: string,
+  ) {
+    request.input.proposal = { ...proposal, proposalHash } as never;
+    request.input.transportIdentity = {
+      ...request.input.transportIdentity,
+      proposalHash,
+    };
+  }
+
+  test("a proposalVersion other than 1 is rejected even when rehashed", async () => {
+    const request = await requestForDraft(deriveFixedPriceAgreement(agreementContext()));
+    const { proposalHash: _old, ...material } = request.input.proposal;
+    const changed = { ...material, proposalVersion: "2" };
+    rehash(request, changed, sha256Hex(canonicalize(changed)));
+    const h = await harness({ request });
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expect(h.state.calls.context).toBe(0);
+    expectNoEffects(h, "proposalVersion");
+  });
+
+  test("a proposalHash that does not hash the proposal material is rejected", async () => {
+    const request = await requestForDraft(deriveFixedPriceAgreement(agreementContext()));
+    const { proposalHash: _old, ...material } = request.input.proposal;
+    rehash(request, material, sha256Hex(canonicalize({ ...material, extra: true })));
+    const h = await harness({ request });
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expect(h.state.calls.context).toBe(0);
+    expectNoEffects(h, "proposalHash");
+  });
+
+  test("a proposal with an extra member is rejected", async () => {
+    const request = await requestForDraft(deriveFixedPriceAgreement(agreementContext()));
+    request.input.proposal = { ...request.input.proposal, extra: true } as never;
+    const h = await harness({ request });
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expectNoEffects(h, "extra member");
+  });
+
+  test("an authenticated context with one unknown member is refused before effects", async () => {
+    const h = await harness();
+    h.state.contextResolution = {
+      disposition: "present",
+      value: { ...structuredClone(h.context), sellerNote: "unrecognised" },
+    };
+    const result = await respond(h);
+    expect(result).toMatchObject({ disposition: "indeterminate", stage: "context" });
+    expect(result.disposition !== "complete" && result.reason).toMatch(
+      /authenticated seller agreement context is malformed/,
+    );
+    expectNoEffects(h, "unknown context member");
+  });
+
+  test("a local seller signer for another party cannot answer the seller role", async () => {
+    const h = await harness();
+    h.request.input.seller.party = OTHER_SELLER;
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "context" });
+    expectNoEffects(h, "local seller party");
+  });
+
+  type StoreFaults = {
+    renewLease?: FencedSessionStoreV2["renewLease"];
+    transition?: FencedSessionStoreV2["transition"];
+  };
+
+  function faultyStore(inner: FencedSessionStoreV2, faults: StoreFaults): FencedSessionStoreV2 {
+    return {
+      apiVersion: inner.apiVersion,
+      create: (input) => inner.create(input),
+      load: (jobId) => inner.load(jobId),
+      transition: (input) =>
+        faults.transition ? faults.transition(input) : inner.transition(input),
+      claimCheckpoint: (input) => inner.claimCheckpoint(input),
+      acquireLease: (input) => inner.acquireLease(input),
+      renewLease: (input) =>
+        faults.renewLease ? faults.renewLease(input) : inner.renewLease(input),
+      bindSessionAuthorization: (input) => inner.bindSessionAuthorization(input),
+      bindHash: (input) => inner.bindHash(input),
+      list: (input) => inner.list(input),
+    };
+  }
+
+  test.each<[string, (inner: FencedSessionStoreV2) => StoreFaults]>([
+    ["a stale or fenced lease renewal", () => ({
+      renewLease: async () => ({ ok: false, reason: "lease-fenced" }),
+    })],
+    ["a refused outcome transition", () => ({
+      transition: async () => ({ ok: false, reason: "lease-fenced" }),
+    })],
+    ["a checkpoint-state conflict without the sealed outcome", (inner) => ({
+      transition: async (input) => {
+        const loaded = await inner.load(input.jobId);
+        return loaded.status === "ok"
+          ? { ok: false, reason: "checkpoint-state", record: loaded.record }
+          : { ok: false, reason: "not-found" };
+      },
+    })],
+    ["exhausted CAS retries", () => ({
+      transition: async () => ({ ok: false, reason: "revision-mismatch" }),
+    })],
+  ])("%s never reaches the seller signer", async (name, faults) => {
+    const inner = createInMemoryFencedSessionStore();
+    const h = await harness({ store: faultyStore(inner, faults(inner)) });
+    const result = await respond(h);
+    expect(result.disposition, name).not.toBe("complete");
+    expectNoEffects(h, name);
+  });
+
+  test("a durable signature outcome is restored without asking the signer again", async () => {
+    const h = await harness();
+    h.state.lost.add("publication");
+    expect((await respond(h)).disposition).toBe("indeterminate");
+    // The signer side has forgotten; only the durable outcome may answer.
+    h.state.signatureResolution = { disposition: "absent", reason: "signer state gone" };
+    expect((await respond(h)).disposition).toBe("complete");
+    expect(h.state.calls.signature).toBe(1);
+    expect(h.state.calls.publication).toBe(1);
+  });
+
+  type SessionRecordValue = Extract<
+    Awaited<ReturnType<FencedSessionStoreV2["load"]>>,
+    { status: "ok" }
+  >["record"];
+  const KEY = durableSellerFixedPriceAgreementCheckpointKey;
+
+  function corruptCheckpoint(key: string, member: string, value: string | boolean) {
+    return (record: SessionRecordValue) => {
+      for (const checkpoint of record.checkpoints) {
+        if (checkpoint.key === key && checkpoint.data) checkpoint.data[member] = value;
+      }
+    };
+  }
+
+  test.each<[string, (record: SessionRecordValue) => void]>([
+    ["substituted seller signature authority",
+      corruptCheckpoint(KEY.sellerSignature, "idempotencyKey", "f".repeat(64))],
+    ["substituted publication contribution",
+      corruptCheckpoint(KEY.publication, "contributionHash", "f".repeat(64))],
+    ["publication not marked published", corruptCheckpoint(KEY.publication, "published", false)],
+    ["substituted result hash", corruptCheckpoint(KEY.result, "resultHash", "f".repeat(64))],
+    ["terminal phase without a result outcome", (record) => {
+      record.checkpoints = record.checkpoints.filter((value) => value.key !== KEY.result);
+    }],
+    ["result outcome outside the terminal phase", (record) => {
+      record.phase = "agreement-responder:finalizing";
+    }],
+    ["result outcome under a live lease", (record) => {
+      // A lease consistent with the record, so only the sealing check refuses it.
+      record.lease = {
+        owner: "seller-worker-1",
+        generation: record.leaseGeneration,
+        expiresAt: NOW + 60_000,
+      };
+    }],
+  ])("terminal recovery refuses %s without new effects", async (name, corrupt) => {
+    const inner = createInMemoryFencedSessionStore();
+    let tamper = false;
+    const store: FencedSessionStoreV2 = {
+      apiVersion: inner.apiVersion,
+      create: (input) => inner.create(input),
+      load: async (jobId) => {
+        const loaded = await inner.load(jobId);
+        if (!tamper || loaded.status !== "ok") return loaded;
+        const record = structuredClone(loaded.record);
+        corrupt(record);
+        return { ...loaded, record };
+      },
+      transition: (input) => inner.transition(input),
+      claimCheckpoint: (input) => inner.claimCheckpoint(input),
+      acquireLease: (input) => inner.acquireLease(input),
+      renewLease: (input) => inner.renewLease(input),
+      bindSessionAuthorization: (input) => inner.bindSessionAuthorization(input),
+      bindHash: (input) => inner.bindHash(input),
+      list: (input) => inner.list(input),
+    };
+    const h = await harness({ store });
+    expect((await respond(h)).disposition, name).toBe("complete");
+    tamper = true;
+    expect((await respond(h)).disposition, name).not.toBe("complete");
+    expect(h.state.calls.signature, name).toBe(1);
+    expect(h.state.calls.publication, name).toBe(1);
+  });
+
+  test("a session already bound to another agreement hash is never signed", async () => {
+    const h = await harness();
+    await h.store.create({ jobId: h.context.jobId, agreementHash: "f".repeat(64) });
+    const result = await respond(h);
+    expect(result.disposition).not.toBe("complete");
+    expectNoEffects(h, "conflicting agreement hash");
   });
 });
