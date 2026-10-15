@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
@@ -10,6 +10,7 @@ import {
   createInMemorySellerReceiptStore,
   isValidSellerReceiptClaim,
   isSellerFulfilmentHandoff,
+  resolveX402FinalityBlocks,
   sellerFulfilmentCandidateHash,
   sellerFulfilmentAuditSourceHash,
   verifySellerPaymentIntake,
@@ -2626,4 +2627,79 @@ describe("verifySellerPaymentIntake near misses (DACS-4 SB-1, CORE SR2-8)", () =
       });
     },
   );
+});
+
+// DACS-4 §9.5.x and the phase card: rail.parameters.finalityBlocks is optional
+// (default 1 on an L2, 12 on Ethereum mainnet). The buyer's commerce and audit
+// checks use this same resolver.
+describe("resolveX402FinalityBlocks", () => {
+  const rail = (chainId: number, parameters: Record<string, unknown> = {}) => ({
+    asset: { chainId },
+    parameters,
+  });
+  const l2 = () => ({ disposition: "l2" as const });
+
+  it.each([
+    ["an explicit depth", rail(84532, { finalityBlocks: 3 }), { disposition: "resolved", finalityBlocks: 3 }],
+    ["Ethereum mainnet without one", rail(1), { disposition: "resolved", finalityBlocks: 12 }],
+    ["an admitted L2 without one", rail(84532), { disposition: "resolved", finalityBlocks: 1 }],
+    ["a zero depth", rail(84532, { finalityBlocks: 0 }),
+      { disposition: "rejected", reason: "x402-finality-policy-invalid" }],
+    ["a fractional depth", rail(84532, { finalityBlocks: 1.5 }),
+      { disposition: "rejected", reason: "x402-finality-policy-invalid" }],
+    ["a string depth", rail(84532, { finalityBlocks: "2" }),
+      { disposition: "rejected", reason: "x402-finality-policy-invalid" }],
+  ] as const)("resolves %s", async (_label, candidate, expected) => {
+    await expect(resolveX402FinalityBlocks(candidate, l2)).resolves.toEqual(expected);
+  });
+
+  it("consults the classifier only for a non-mainnet rail without a depth", async () => {
+    const classify = vi.fn(l2);
+    await resolveX402FinalityBlocks(rail(1), classify);
+    await resolveX402FinalityBlocks(rail(84532, { finalityBlocks: 4 }), classify);
+    expect(classify).not.toHaveBeenCalled();
+    await resolveX402FinalityBlocks(rail(84532), classify);
+    expect(classify).toHaveBeenCalledWith({ chainId: 84532, rail: rail(84532) });
+  });
+
+  it.each([
+    ["unsupported", () => ({ disposition: "unsupported" as const, reason: "not-configured" }),
+      { disposition: "rejected", reason: "x402-chain-not-configured" }],
+    ["indeterminate", () => ({ disposition: "indeterminate" as const, reason: "rpc-down" }),
+      { disposition: "indeterminate", reason: "x402-chain-rpc-down" }],
+    ["error", () => ({ disposition: "error" as const, reason: "bad-config" }),
+      { disposition: "error", reason: "x402-chain-bad-config" }],
+    ["a throw", () => { throw new Error("offline"); },
+      { disposition: "indeterminate", reason: "x402-chain-classification-unavailable" }],
+    ["a malformed result", () => ({ disposition: "l2", extra: true }) as never,
+      { disposition: "error", reason: "x402-chain-classifier-invalid-result" }],
+  ] as const)("maps a classifier %s without defaulting the depth", async (
+    _label,
+    classify,
+    expected,
+  ) => {
+    await expect(resolveX402FinalityBlocks(rail(84532), classify)).resolves.toEqual(expected);
+  });
+
+  it("accepts retained x402 evidence that omits the optional depth echo", () => {
+    const claim = receiptClaim({ settlementId: `evm:84532:${"ab".repeat(32)}:0` });
+    const rehash = (finality: Record<string, unknown>) => {
+      const copy = structuredClone(claim);
+      (copy.authorization.evidenceInput as { settlementFinality: unknown })
+        .settlementFinality = finality;
+      copy.authorization.evidenceHash =
+        sha256Hex(canonicalize(copy.authorization.evidenceInput));
+      copy.evidenceHash = copy.authorization.evidenceHash;
+      return copy;
+    };
+    expect(isValidSellerReceiptClaim(claim)).toBe(true);
+    expect(isValidSellerReceiptClaim(rehash({
+      model: "block-depth", finalityObservedAt: claim.observedAt,
+    }))).toBe(true);
+    for (const finalityBlocks of [0, 1.5, "1"]) {
+      expect(isValidSellerReceiptClaim(rehash({
+        model: "block-depth", finalityBlocks, finalityObservedAt: claim.observedAt,
+      }))).toBe(false);
+    }
+  });
 });

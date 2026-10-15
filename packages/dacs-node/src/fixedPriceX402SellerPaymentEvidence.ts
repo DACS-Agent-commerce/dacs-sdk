@@ -429,7 +429,10 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
                   payment.settlementIdentity.txHash.toLowerCase() ||
                 observed.logIndex !== payment.settlementIdentity.logIndex ||
                 observed.includedAt !== payment.settlementIdentity.includedAt ||
-                observed.confirmations < retainedFinality.finalityBlocks ||
+                // The observer's "finalized" already applies the rail depth;
+                // an echo in the retained evidence may only raise it.
+                (retainedFinality.finalityBlocks !== undefined &&
+                  observed.confirmations < retainedFinality.finalityBlocks) ||
                 observed.finalityObservedAt < retainedFinality.finalityObservedAt ||
                 !sameEvmAddress(observed.payer, session.payer) ||
                 !sameEvmAddress(observed.payee, session.expected.payTo) ||

@@ -5,8 +5,11 @@ import {
   ERC20_TRANSFER_TOPIC,
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
+  resolveX402FinalityBlocks,
   type AuthenticatedRailDefinition,
   type SellerPaymentIntakeDeps,
+  type X402FinalityPolicyRail,
+  type X402FinalityPolicyResolution,
   type X402PaywallSettlementIntent,
   type X402PaywallSettlementReconciliation,
   type X402PaywallSettlementResult,
@@ -248,6 +251,55 @@ function authorizationFromIntent(intent: Readonly<X402PaywallSettlementIntent>):
  * as finality: it requires the exact AuthorizationUsed and ERC-20 Transfer in
  * one successful canonical receipt beneath the configured finality head.
  */
+/**
+ * The one settlement chain an authenticated x402 rail admits is its own EVM
+ * chain, classified as an L2 for the DACS-4 default depth of 1.
+ */
+export function classifyDacsAuthenticatedX402ChainV1(
+  rail: Readonly<AuthenticatedRailDefinition>,
+): ClassifySettlementChain {
+  const chainId = rail.asset.kind === "erc20" ? rail.asset.chainId : undefined;
+  return ({ chainId: candidateChain, rail: candidateRail }) => {
+    try {
+      return chainId !== undefined && candidateChain === chainId &&
+          canonicalize(candidateRail) === canonicalize(rail)
+        ? { disposition: "l2" as const }
+        : { disposition: "unsupported" as const,
+          reason: "settlement-chain-unregistered" };
+    } catch {
+      return { disposition: "unsupported" as const,
+        reason: "settlement-chain-unregistered" };
+    }
+  };
+}
+
+/**
+ * The pay-x402 block depth of an authenticated rail, by the same resolver the
+ * SDK's seller payment intake uses. `finalityBlocks` is optional in the rail
+ * parameters (DACS-4 phase card); an absent value is not an error.
+ */
+export function resolveDacsX402FinalityBlocksV1(
+  rail: Readonly<AuthenticatedRailDefinition>,
+): Promise<X402FinalityPolicyResolution> {
+  if (rail.railType !== "x402" || rail.asset.kind !== "erc20") {
+    return Promise.resolve({ disposition: "error", reason: "x402-finality-rail-invalid" });
+  }
+  const classify = classifyDacsAuthenticatedX402ChainV1(rail);
+  return resolveX402FinalityBlocks(
+    rail as Readonly<AuthenticatedRailDefinition & X402FinalityPolicyRail>,
+    (input) => classify(input as unknown as Parameters<ClassifySettlementChain>[0]),
+  );
+}
+
+/** True when an explicit `finalityBlocks` parameter is present but not a positive integer. */
+export function hasInvalidDacsX402FinalityParameterV1(
+  rail: Readonly<AuthenticatedRailDefinition>,
+): boolean {
+  const configured = record(rail.parameters) ? rail.parameters.finalityBlocks : undefined;
+  return configured !== undefined &&
+    (!Number.isSafeInteger(configured) || Number(configured) <= 0);
+}
+
 export function createDacsX402SellerEvmObserverV1(
   options: Readonly<DacsX402SellerEvmObserverOptionsV1>,
 ): Readonly<DacsX402SellerEvmObserverV1> {
@@ -278,10 +330,12 @@ export function createDacsX402SellerEvmObserverV1(
   const chainId = railAsset.chainId;
   const network = `eip155:${chainId}` as const;
   const asset = railAsset.contract.toLowerCase();
+  // The DACS-4 default when the parameter is absent: 12 on Ethereum mainnet,
+  // else 1 (the intake applies the same policy through its resolver).
   const minimumConfirmations = record(rail.parameters) &&
       Number.isSafeInteger(rail.parameters.finalityBlocks) &&
       Number(rail.parameters.finalityBlocks) > 0
-    ? Number(rail.parameters.finalityBlocks) : 1;
+    ? Number(rail.parameters.finalityBlocks) : chainId === 1 ? 12 : 1;
   const finalityTag = options.finalityTag ?? "finalized";
   let requestId = 0;
 
@@ -535,21 +589,7 @@ export function createDacsX402SellerEvmObserverV1(
       : { disposition: "fail" as const, reason: "x402-receipt-extension-invalid" };
   };
 
-  const classifyX402SettlementChain: ClassifySettlementChain = ({
-    chainId: candidateChain,
-    rail: candidateRail,
-  }) => {
-    try {
-      return candidateChain === chainId &&
-          canonicalize(candidateRail) === canonicalize(rail)
-        ? { disposition: "l2" as const }
-        : { disposition: "unsupported" as const,
-          reason: "settlement-chain-unregistered" };
-    } catch {
-      return { disposition: "unsupported" as const,
-        reason: "settlement-chain-unregistered" };
-    }
-  };
+  const classifyX402SettlementChain = classifyDacsAuthenticatedX402ChainV1(rail);
 
   return Object.freeze({
     network,
