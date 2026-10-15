@@ -20,6 +20,13 @@ const WALLET = `0x${"ab".repeat(32)}`;
 let fixtureId = 0;
 const writeJournal = createInMemoryDemosWriteJournal();
 
+// The storage-program name search posts with global fetch, bypassing `raw`,
+// and background index observation can outlive its test. A synthetic *.test
+// RPC must fail the same way everywhere and never reach DNS.
+const offlineFetch = async (): Promise<never> => {
+  throw new TypeError("fetch failed: synthetic test RPC is offline");
+};
+
 function notFound(): Error {
   return Object.assign(new Error("not found"), { response: { status: 404 } });
 }
@@ -158,6 +165,7 @@ async function makeAdapter(options?: {
   >();
   let lastObservedTxRef = "";
 
+  vi.stubGlobal("fetch", offlineFetch);
   raw.connect = vi.fn().mockResolvedValue(undefined);
   raw.getAddress = vi.fn(() => wallet);
   vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
@@ -259,6 +267,7 @@ function asAnchorError(error: unknown): AnchorWaitError {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.stubGlobal("fetch", offlineFetch);
 });
 
 describe("DemosAdapter.anchorAndWait", () => {
@@ -459,6 +468,132 @@ describe("DemosAdapter.anchorAndWait", () => {
       .rejects.toMatchObject({ code: "inclusion-failed" });
     expect(lease.snapshot.records[0]?.stage).toBe("broadcast-intent");
     await lease.release();
+  });
+
+  describe("canonical native-transfer authentication", () => {
+    type Mutable = Record<string, any>;
+    const other = "ef".repeat(32);
+
+    /**
+     * Reconcile one pending native transfer whose canonical transaction, block
+     * or journal entry differs from the matching control in one field only.
+     */
+    async function reconcileNative(change: {
+      record?: (record: Mutable) => void;
+      transaction?: (transaction: Mutable, payee: string) => void;
+      block?: (block: Mutable) => void;
+    } = {}) {
+      const { adapter, raw, wallet } = await makeAdapter();
+      const payer = wallet.replace(/^0x/, "").toLowerCase();
+      const payee = "cd".repeat(32);
+      const txRef = "9a".repeat(32);
+      const lease = await writeJournal.acquire({
+        chainIdentity: "test-chain",
+        wallet: wallet.toLowerCase(),
+      });
+      const record = pendingNativeTransfer(lease.generation, payer, payee, txRef, 9) as Mutable;
+      change.record?.(record);
+      await lease.put(record as DemosWriteJournalRecord);
+      const transaction: Mutable = {
+        hash: txRef,
+        status: "confirmed",
+        blockNumber: 44,
+        content: {
+          type: "native",
+          from: payer,
+          from_ed25519_address: `0x${payer}`,
+          to: payee,
+          nonce: 9,
+          amount: "1000000000",
+          data: ["native", { nativeOperation: "send", args: [payee, "1000000000"] }],
+        },
+      };
+      change.transaction?.(transaction, payee);
+      const block: Mutable = {
+        number: 44,
+        hash: "block-44",
+        status: "confirmed",
+        content: { timestamp: 120, ordered_transactions: [txRef] },
+        validation_data: { signatures: ["validator-test-signature"] },
+      };
+      change.block?.(block);
+      raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: transaction.blockNumber });
+      raw.getTxByHash.mockResolvedValue(transaction);
+      raw.getBlockByNumber.mockResolvedValue(block);
+      raw.getAddressNonce.mockResolvedValue(9);
+      try {
+        const outcome = await adapter.reconcileNativeTransferJournal(lease, 1_000)
+          .then(() => "closed", (error: unknown) => error);
+        return { outcome, stage: lease.snapshot.records[0]?.stage };
+      } finally {
+        await lease.release();
+      }
+    }
+
+    it("closes the matching control transfer", async () => {
+      expect(await reconcileNative()).toEqual({ outcome: "closed", stage: "canonical-confirmed" });
+    });
+
+    it.each<[string, Parameters<typeof reconcileNative>[0]]>([
+      ["a different transaction hash", { transaction: (tx) => { tx.hash = "ab".repeat(32); } }],
+      // The block echoes the same number, so only the transaction-side check can refuse it.
+      ["a negative block number", {
+        transaction: (tx) => { tx.blockNumber = -1; }, block: (b) => { b.number = -1; },
+      }],
+      ["a fractional block number", {
+        transaction: (tx) => { tx.blockNumber = 44.5; }, block: (b) => { b.number = 44.5; },
+      }],
+      ["a journal payer that is not the wallet", { record: (r) => { r.transfer.payer = other; } }],
+      ["a journal payee that is not the native address", {
+        record: (r) => { r.transfer.payee = other; },
+        transaction: (tx) => {
+          tx.content.to = other;
+          tx.content.data[1].args[0] = other;
+        },
+      }],
+      ["a non-native transaction type", { transaction: (tx) => { tx.content.type = "storageProgram"; } }],
+      ["custom charges", { transaction: (tx) => { tx.content.custom_charges = { rpc: "1" }; } }],
+      ["a different nonce", { transaction: (tx) => { tx.content.nonce = 10; } }],
+      ["a different from address", { transaction: (tx) => { tx.content.from = other; } }],
+      ["a different ed25519 from address", {
+        transaction: (tx) => { tx.content.from_ed25519_address = `0x${other}`; },
+      }],
+      ["no payer address at all", { transaction: (tx) => {
+        delete tx.content.from;
+        delete tx.content.from_ed25519_address;
+      } }],
+      ["a different recipient", { transaction: (tx) => { tx.content.to = other; } }],
+      ["a different content amount", { transaction: (tx) => { tx.content.amount = "999999999"; } }],
+      ["a zero journal amount", {
+        record: (r) => { r.transfer.amountOs = "0"; },
+        transaction: (tx) => {
+          tx.content.amount = "0";
+          tx.content.data[1].args[1] = "0";
+        },
+      }],
+      ["an extra tuple element", { transaction: (tx) => { tx.content.data.push("extra"); } }],
+      ["a different tuple tag", { transaction: (tx) => { tx.content.data[0] = "storageProgram"; } }],
+      ["a different native operation", {
+        transaction: (tx) => { tx.content.data[1].nativeOperation = "burn"; },
+      }],
+      ["an extra native argument", { transaction: (tx) => { tx.content.data[1].args.push("memo"); } }],
+      ["a different argument recipient", { transaction: (tx) => { tx.content.data[1].args[0] = other; } }],
+      ["a different argument amount", {
+        transaction: (tx) => { tx.content.data[1].args[1] = "999999999"; },
+      }],
+      ["a block without a hash", { block: (b) => { delete b.hash; } }],
+      ["an unconfirmed block", { block: (b) => { b.status = "pending"; } }],
+      ["a different block number", { block: (b) => { b.number = 45; } }],
+      ["a block without a timestamp", { block: (b) => { delete b.content.timestamp; } }],
+      ["a block that does not order the transfer", {
+        block: (b) => { b.content.ordered_transactions = ["ab".repeat(32)]; },
+      }],
+      ["a block without validation data", { block: (b) => { delete b.validation_data; } }],
+    ])("keeps the transfer open for %s", async (_label, change) => {
+      const { outcome, stage } = await reconcileNative(change);
+      expect(outcome).toMatchObject({ code: "inclusion-failed" });
+      expect(stage).toBe("broadcast-intent");
+    });
   });
 
   it("binds a mutable create to the nonce used to derive its address", async () => {
@@ -2196,6 +2331,81 @@ describe("DemosAdapter.anchorAndWait", () => {
     firstIncluded = true;
     await expect(queued).resolves.toMatchObject({ state: "included" });
     expect(second.raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
+  });
+
+  describe("accepted completion after an unknown broadcast outcome", () => {
+    /** Keep the signed hash absent until `include()`; then serve the canonical row. */
+    async function pendingUntilIncluded() {
+      const fixture = await makeAdapter();
+      const confirmed = fixture.raw.getTxByHash.getMockImplementation()!;
+      let included = false;
+      fixture.raw.nodeCall.mockImplementation(async () =>
+        included ? { state: "included", blockNumber: 42 } : { state: "pending" });
+      fixture.raw.getTxByHash.mockImplementation(async (txRef: string) =>
+        included ? confirmed(txRef) : { hash: txRef, status: "pending", blockNumber: null });
+      return { ...fixture, include: () => { included = true; } };
+    }
+
+    /** Resolves with the journal once the adapter releases its wallet lane. */
+    function journalAfterRelease(wallet: string) {
+      let released = false;
+      const lease = writeJournal.acquire({ chainIdentity: "test-chain", wallet: wallet.toLowerCase() })
+        .then((acquired) => { released = true; return acquired; });
+      return { lease, released: () => released };
+    }
+
+    it("reconciles a thrown broadcast by hash before releasing the wallet lane", async () => {
+      const { adapter, raw, wallet, include } = await pendingUntilIncluded();
+      raw.tx.broadcast.mockRejectedValue(
+        Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+      );
+      const error = asAnchorError(await adapter.anchorAndWait(
+        "accepted-thrown-broadcast", { value: 1 },
+        { completion: "accepted", timeoutMs: 1_000, pollMs: 1 },
+      ).catch((caught: unknown) => caught));
+      expect(error.code).toBe("broadcast-failed");
+
+      const journal = journalAfterRelease(wallet);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(journal.released()).toBe(false);
+      include();
+      const lease = await journal.lease;
+      expect(lease.snapshot.records).toMatchObject([{ stage: "native-visible", txRef: error.receipt.txRef }]);
+      await lease.release();
+    });
+
+    it.each([
+      ["a definitive rejection", { result: 400, response: "invalid tx" }, "canonical-failed"],
+      ["an accepted response", "accepted", "native-visible"],
+      ["an ambiguous result-503", { result: 503, response: "busy" }, "native-visible"],
+      ["no response at all", "never", "native-visible"],
+    ] as const)("settles a broadcast that outlives the deadline with %s", async (_label, late, stage) => {
+      const { adapter, raw, wallet, include } = await pendingUntilIncluded();
+      const broadcast = deferred<unknown>();
+      raw.tx.broadcast.mockImplementation(() => broadcast.promise);
+      const error = asAnchorError(await adapter.anchorAndWait(
+        `accepted-late-${stage}-${String(late === "never")}`, { value: 1 },
+        { completion: "accepted", timeoutMs: 30, pollMs: 1 },
+      ).catch((caught: unknown) => caught));
+      const txRef = error.receipt.txRef!;
+      expect(txRef).toMatch(/^tx-/);
+
+      const journal = journalAfterRelease(wallet);
+      if (late === "accepted") broadcast.resolve({ result: 200, response: { hash: txRef } });
+      else if (late !== "never") broadcast.resolve(late);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (stage === "canonical-failed") {
+        // Only a definitive 4xx closes the write without waiting for the hash.
+        expect(journal.released()).toBe(true);
+      } else {
+        // Anything else may have been accepted: the lane stays held until the hash resolves.
+        expect(journal.released()).toBe(false);
+        include();
+      }
+      const lease = await journal.lease;
+      expect(lease.snapshot.records).toMatchObject([{ stage, txRef }]);
+      await lease.release();
+    });
   });
 
   it("cancels during inclusion with a receipt and reconciles safely", async () => {

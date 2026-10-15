@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
@@ -26,10 +26,22 @@ const makeAdapter = (
   writeJournal,
 });
 
+// The storage-program search posts with global fetch, bypassing `raw`, and
+// index observation keeps polling after a write's test has finished. Keep fetch
+// offline between tests too, so nothing here reaches the live RPC named above.
+// Tests that need search results stub their own fetch.
+const offlineFetch = async (): Promise<never> => {
+  throw new TypeError("fetch failed: test RPC is offline");
+};
+
 describe("DemosAdapter", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", offlineFetch);
+  });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", offlineFetch);
   });
 
   it("requires an rpc url", () => {
@@ -334,6 +346,88 @@ describe("DemosAdapter", () => {
       adapter.proxyFetch({ url: "https://example.com/status" }),
     ).rejects.toThrow(/DAHR anchor transaction 0xdahr-failed failed on chain/);
     expect(stopProxy).toHaveBeenCalledOnce();
+  });
+
+  describe("DAHR canonical inclusion authentication", () => {
+    type Mutable = Record<string, any>;
+
+    /** Run proxyFetch where one canonical transaction or block field differs from the control. */
+    async function dahrFetch(change: {
+      status?: (status: Mutable) => void;
+      transaction?: (transaction: Mutable) => void;
+      block?: (block: Mutable) => Mutable | null | void;
+    } = {}) {
+      const adapter = makeAdapter();
+      Object.assign(adapter, { connected: true });
+      vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+      const status: Mutable = { state: "included", blockNumber: 7 };
+      change.status?.(status);
+      const transaction: Mutable = { hash: "0xdahr", status: "confirmed", blockNumber: 7 };
+      change.transaction?.(transaction);
+      let block: Mutable | null = {
+        number: 7,
+        status: "confirmed",
+        content: { ordered_transactions: ["0xdahr"] },
+        validation_data: { signature: "bft" },
+      };
+      const replaced = change.block?.(block);
+      if (replaced !== undefined) block = replaced;
+      vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue(status as never);
+      vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue(transaction as never);
+      const getBlock = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue(block as never);
+      const stopProxy = vi.fn(async () => undefined);
+      vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
+        "createDahr").mockResolvedValue({
+          startProxy: async () => ({
+            data: "ok", status: 200, responseHash: "c".repeat(64), txHash: "0xdahr", timestamp: 3,
+          }),
+          stopProxy,
+        });
+      const outcome = await adapter.proxyFetch({ url: "https://example.com/data" })
+        .then((result) => result, (error: unknown) => error);
+      expect(stopProxy).toHaveBeenCalledOnce();
+      return { outcome, getBlock };
+    }
+
+    it("returns the anchored response for the matching control", async () => {
+      const { outcome } = await dahrFetch();
+      expect(outcome).toMatchObject({ body: "ok", anchorTxRef: "0xdahr" });
+    });
+
+    it.each<[string, Parameters<typeof dahrFetch>[0]]>([
+      ["a different transaction hash", { transaction: (tx) => { tx.hash = "0xother"; } }],
+      ["a negative block number", {
+        status: (s) => { s.blockNumber = -1; }, transaction: (tx) => { tx.blockNumber = -1; },
+      }],
+      ["a fractional block number", {
+        status: (s) => { s.blockNumber = 7.5; }, transaction: (tx) => { tx.blockNumber = 7.5; },
+      }],
+      ["no block number", {
+        status: (s) => { delete s.blockNumber; }, transaction: (tx) => { delete tx.blockNumber; },
+      }],
+    ])("refuses %s before reading the block", async (_label, change) => {
+      const { outcome, getBlock } = await dahrFetch(change);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message)
+        .toBe("DAHR anchor transaction 0xdahr lacks authenticated canonical inclusion");
+      expect(getBlock).not.toHaveBeenCalled();
+    });
+
+    it.each<[string, Parameters<typeof dahrFetch>[0]]>([
+      ["a missing block", { block: () => null }],
+      ["an unconfirmed block", { block: (b) => { b.status = "pending"; } }],
+      ["a different block number", { block: (b) => { b.number = 8; } }],
+      ["a block without validation data", { block: (b) => { delete b.validation_data; } }],
+      ["a block that does not order the transaction", {
+        block: (b) => { b.content.ordered_transactions = ["0xother"]; },
+      }],
+      ["a block without ordered transactions", { block: (b) => { delete b.content; } }],
+    ])("refuses %s", async (_label, change) => {
+      const { outcome, getBlock } = await dahrFetch(change);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe("Demos block 7 does not authenticate DAHR transaction 0xdahr");
+      expect(getBlock).toHaveBeenCalledWith(7);
+    });
   });
 
   it("resolves a primary Demos agent DID from its self-certifying key", async () => {
