@@ -627,7 +627,7 @@ configured discriminator. The compatibility defaults remain process-local and
 must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
-starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
+starts a second SDK broadcast. In demosdk (4.0.16–4.0.18 checked), however, the underlying Axios
 requests used by broadcast, status, and nonce reads have no cancellation or
 request timeout. An open transport socket may therefore keep a Node process
 alive after the rail has returned an unresolved result. Terminating that process
@@ -934,9 +934,17 @@ read-only `getNetworkInfo` node call and compares its commit with the
 (`61b8e75aa8db5e408c49e1c3a89db4d673f45578`). It passes only for that commit
 with a clean build. A different, unreported, or uncommitted build reports
 `warn`, which does not change the exit code: the RPC verdict was not verified
-against that node source. demosdk sets no request timeout, so the doctor stops
-waiting for this non-blocking call after 5 seconds, reports `warn`, and still
-returns its report.
+against that node source.
+
+demosdk's `connect()` and node calls set no request timeout and cannot be
+cancelled, so the default adapter sends the same read-only requests through
+demosdk's own HTTP client (honouring the same proxy environment) with an abort
+signal. Each RPC call gets 5 seconds. A `GET` or height call that does not
+answer in time fails `rpc.reachable` (exit 3); a revision call that does not
+answer reports `warn`. Either way doctor cancels the request and returns its
+report, so a process that calls `runDoctor()` is not held open by the stalled
+socket. An injected `DoctorAdapter` receives the same `AbortSignal` and should
+cancel its request when it fires.
 
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.
@@ -990,7 +998,7 @@ offline mode, which makes no connections, writes, or payments.
 | `config.{rpc,wallet}-file.mode` | pass, fail, skip (file not opened) | `mode`: 4-digit octal string |
 | `config.{rpc,wallet}-file.owner` | pass, fail, skip (symlink, or no user ID) | `ownerUid`, `currentUid` |
 | `substrate.adapter-load` | pass, fail | none |
-| `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail, skip | `rpc` (redacted) unless skipped; `lastBlockNumber` on pass |
+| `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail (including no `GET` or height answer within 5 s), skip | `rpc` (redacted) unless skipped; `lastBlockNumber` on pass |
 | `rpc.node-revision` | pass, warn (including no answer within 5 s), skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`commit`, `version`, `dirty`, or `null`) |
 | `wallet.identity` | pass, skip | `address` |
 | `wallet.balance`, `wallet.nonce`, `storage.binding-resolution`, `anchor.completion`, `cost.estimate` | blocked | none |

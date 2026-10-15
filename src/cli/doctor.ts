@@ -2,6 +2,7 @@ import { VERSION } from "../version.js";
 import { PAY_D402_AVAILABILITY } from "../rails/index.js";
 import { readFileSync } from "node:fs";
 import type { DoctorSecretFile } from "./secretFile.js";
+import { demosHttpClient, type DemosHttpClient } from "./demosHttp.js";
 
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip" | "blocked";
 export type DoctorMode = "offline" | "read-only";
@@ -24,19 +25,24 @@ export interface DoctorReport {
   exitCode: number;
 }
 
+/**
+ * Doctor gives each RPC call `RPC_CALL_TIMEOUT_MS` and aborts its `signal` when
+ * that passes; an adapter should cancel the request then, or its socket outlives
+ * the report.
+ */
 export interface DoctorAdapter {
-  connect(): Promise<void>;
+  connect(signal?: AbortSignal): Promise<void>;
   getAddress(): string;
   /**
    * Read-only Demos node call. Without it doctor cannot tell a Demos RPC from
    * any endpoint that answers HTTP GET, so `rpc.reachable` reports `warn`.
    */
-  getLastBlockNumber?(): Promise<unknown>;
+  getLastBlockNumber?(signal?: AbortSignal): Promise<unknown>;
   /**
    * Read-only Demos `getNetworkInfo` node call. Its `nodeVersion` build
    * revision is compared with the node revision this SDK was verified against.
    */
-  getNetworkInfo?(): Promise<unknown>;
+  getNetworkInfo?(signal?: AbortSignal): Promise<unknown>;
 }
 
 export interface DoctorOptions {
@@ -185,20 +191,41 @@ function exitCodeFor(checks: DoctorCheck[]): number {
   return 0;
 }
 
+/**
+ * Send the unauthenticated request demosdk's `nodeCall` sends and resolve with
+ * the node's `response` field, as it does, but cancellable.
+ */
+async function readOnlyNodeCall(
+  http: DemosHttpClient, rpc: string, message: string, signal?: AbortSignal,
+): Promise<unknown> {
+  const { data } = await http.post(rpc, {
+    method: "nodeCall",
+    params: [{ type: "nodeCall", message, sender: null, receiver: null, timestamp: null, data: {}, extra: "" }],
+  }, { headers: { "Content-Type": "application/json" }, signal });
+  return typeof data === "object" && data !== null ? (data as { response?: unknown }).response : undefined;
+}
+
 async function defaultAdapterFactory(config: {
   rpc: string;
   secret?: string;
 }): Promise<DoctorAdapter> {
   const { DemosAdapter } = await import("../substrate/index.js");
-  const adapter = new DemosAdapter(config);
+  // Doctor sends nothing through the adapter, so it derives the wallet locally
+  // on the raw client and the adapter never holds the secret.
+  const raw = new DemosAdapter({ rpc: config.rpc }).raw;
+  // demosdk's connect() and nodeCall() set no timeout and take no signal, so
+  // doctor sends the same read-only requests itself; a timed-out probe is then
+  // aborted instead of holding a socket open after runDoctor() returns.
+  const http = demosHttpClient();
   return {
-    connect: () => adapter.connect(),
-    getAddress: () => adapter.getAddress(),
-    // demosdk resolves nodeCall with the node's `response` field, or with an
-    // error envelope on transport failure; doctor only accepts a block height.
-    getLastBlockNumber: () => adapter.raw.nodeCall("getLastBlockNumber"),
-    // Raw nodeCall, not getNetworkInfo(): that caches and may reuse an old answer.
-    getNetworkInfo: () => adapter.raw.nodeCall("getNetworkInfo"),
+    connect: async (signal) => {
+      // demosdk's connect() is this GET, which must answer 2xx.
+      await http.get(config.rpc, { signal });
+      if (config.secret !== undefined) await raw.connectWallet(config.secret);
+    },
+    getAddress: () => raw.getAddress(),
+    getLastBlockNumber: (signal) => readOnlyNodeCall(http, config.rpc, "getLastBlockNumber", signal),
+    getNetworkInfo: (signal) => readOnlyNodeCall(http, config.rpc, "getNetworkInfo", signal),
   };
 }
 
@@ -229,39 +256,52 @@ function reportedNodeBuild(info: unknown): ReportedNodeBuild | null {
 }
 
 /**
- * demosdk's node calls set no request timeout and cannot be cancelled, so stop
- * waiting for this non-blocking query after a bounded time rather than let a node
- * that answers the height call but stalls this one hold the whole report.
+ * Stop waiting for any one RPC call after a bounded time rather than let a node
+ * that is up but stalls a request hold the whole report.
  */
-export const NODE_REVISION_TIMEOUT_MS = 5_000;
-const NODE_REVISION_TIMED_OUT = Symbol("node revision timed out");
+export const RPC_CALL_TIMEOUT_MS = 5_000;
+const RPC_CALL_TIMED_OUT = Symbol("RPC call timed out");
+
+/** Race `call` against the deadline, then abort its signal so a stalled request is cancelled. */
+async function withDeadline<T>(call: (signal: AbortSignal) => Promise<T>): Promise<T | typeof RPC_CALL_TIMED_OUT> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      call(controller.signal),
+      new Promise<typeof RPC_CALL_TIMED_OUT>((resolve) => {
+        timer = setTimeout(resolve, RPC_CALL_TIMEOUT_MS, RPC_CALL_TIMED_OUT);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+function timedOutDetail(call: string): string {
+  return `${call} did not answer within ${RPC_CALL_TIMEOUT_MS} ms`;
+}
 
 async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null): Promise<DoctorCheck> {
   const remediation = "Compare the node's Demos build with the verified revision before relying on this doctor's RPC verdict.";
-  if (!adapter.getNetworkInfo) {
+  const getNetworkInfo = adapter.getNetworkInfo?.bind(adapter);
+  if (!getNetworkInfo) {
     return check(RPC_NODE_REVISION, "skip", "The adapter cannot read the node build revision");
   }
   let reported: ReportedNodeBuild | null = null;
   let timedOut = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const answer = await Promise.race([
-      adapter.getNetworkInfo(),
-      new Promise<typeof NODE_REVISION_TIMED_OUT>((resolve) => {
-        timer = setTimeout(resolve, NODE_REVISION_TIMEOUT_MS, NODE_REVISION_TIMED_OUT);
-      }),
-    ]);
-    if (answer === NODE_REVISION_TIMED_OUT) timedOut = true;
+    const answer = await withDeadline((signal) => getNetworkInfo(signal));
+    if (answer === RPC_CALL_TIMED_OUT) timedOut = true;
     else reported = reportedNodeBuild(answer);
   } catch {
     // Untrusted transport failures are reported as an unknown build.
-  } finally {
-    clearTimeout(timer);
   }
   const data = { verified: pinned, reported };
   if (timedOut) {
     return check(RPC_NODE_REVISION, "warn", "Node did not report its build revision in time", {
-      data, detail: `getNetworkInfo did not answer within ${NODE_REVISION_TIMEOUT_MS} ms`, remediation,
+      data, detail: timedOutDetail("getNetworkInfo"), remediation,
     });
   }
   if (!pinned || !reported?.commit) {
@@ -408,34 +448,41 @@ export async function runDoctorForCli(
     }
 
     if (made) {
+      const connectable = made;
       const needles = [options.walletSecret, ...rpcSensitiveNeedles(options.rpc)];
       const data = { rpc: redactRpcUrl(options.rpc) };
       let connected = false;
+      let connectFailure: string | undefined;
       try {
-        await made.connect();
-        connected = true;
+        connected = await withDeadline((signal) => connectable.connect(signal)) !== RPC_CALL_TIMED_OUT;
+        if (!connected) connectFailure = timedOutDetail("RPC endpoint");
       } catch (err) {
+        connectFailure = sanitizeError(err, needles);
+      }
+      if (connectFailure !== undefined) {
         checks.push(
           check(RPC_REACHABLE, "fail", "Demos RPC check failed", {
             data,
-            detail: sanitizeError(err, needles),
+            detail: connectFailure,
             remediation: "Check the RPC URL and network reachability.",
           }),
         );
       }
       // connect() only proves an HTTP GET succeeded; any web server passes that.
-      if (connected && !made.getLastBlockNumber) {
+      const getLastBlockNumber = made.getLastBlockNumber?.bind(made);
+      if (connected && !getLastBlockNumber) {
         adapter = made;
         checks.push(
           check(RPC_REACHABLE, "warn", "RPC endpoint answered; the adapter cannot confirm it is a Demos node", {
             data,
           }),
         );
-      } else if (connected && made.getLastBlockNumber) {
+      } else if (connected && getLastBlockNumber) {
         let height: unknown;
         let failure: string | undefined;
         try {
-          height = await made.getLastBlockNumber();
+          height = await withDeadline((signal) => getLastBlockNumber(signal));
+          if (height === RPC_CALL_TIMED_OUT) failure = timedOutDetail("getLastBlockNumber");
         } catch (err) {
           failure = sanitizeError(err, needles);
         }

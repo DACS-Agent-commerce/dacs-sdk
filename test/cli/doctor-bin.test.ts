@@ -24,23 +24,37 @@ vi.mock("node:tty", async (importOriginal) => {
   return { ...actual, isatty: vi.fn(actual.isatty) };
 });
 
-const adapterCalls = vi.hoisted(() => ({ factory: vi.fn(), connect: vi.fn(), address: vi.fn(),
-  nodeCall: vi.fn() }));
+const adapterCalls = vi.hoisted(() => ({ factory: vi.fn(), connectWallet: vi.fn(), address: vi.fn() }));
 const MOCK_ADDRESS = vi.hoisted(() => "0xmock-adapter-address");
 vi.mock("../../src/substrate/index.js", () => ({
   DemosAdapter: class {
     constructor(config: unknown) { adapterCalls.factory(config); }
-    async connect() { adapterCalls.connect(); }
-    getAddress() { adapterCalls.address(); return MOCK_ADDRESS; }
     get raw() {
-      return { nodeCall: async (message: unknown) => {
-        adapterCalls.nodeCall(message);
-        return message === "getNetworkInfo"
-          ? { nodeVersion: { commit: "0".repeat(40), version: "0.0.0", dirty: false } }
-          : 42;
-      } };
+      return {
+        connectWallet: async (secret: unknown) => { adapterCalls.connectWallet(secret); return MOCK_ADDRESS; },
+        getAddress: () => { adapterCalls.address(); return MOCK_ADDRESS; },
+      };
     }
   },
+}));
+
+// Doctor's default probes, answered like a Demos node; each records what it sent.
+const httpSent = vi.hoisted(() => [] as Array<{ url: string; method: string; message?: string; signal: boolean }>);
+vi.mock("../../src/cli/demosHttp.js", () => ({
+  demosHttpClient: () => ({
+    get: async (url: string, config: { signal?: AbortSignal }) => {
+      httpSent.push({ url, method: "GET", signal: config.signal instanceof AbortSignal });
+      return { status: 200, data: { message: "Hello, World!" } };
+    },
+    post: async (url: string, body: { params: Array<{ message: string }> }, config: { signal?: AbortSignal }) => {
+      const message = body.params[0]?.message;
+      httpSent.push({ url, method: "POST", message, signal: config.signal instanceof AbortSignal });
+      return { data: { result: 200, require_reply: false, extra: null,
+        response: message === "getNetworkInfo"
+          ? { nodeVersion: { commit: "0".repeat(40), version: "0.0.0", dirty: false } }
+          : 42 } };
+    },
+  }),
 }));
 
 const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -51,6 +65,7 @@ afterEach(() => {
   vi.mocked(fs.readFileSync).mockImplementation(actualFs.readFileSync);
   vi.mocked(fs.readSync).mockImplementation(actualFs.readSync);
   vi.mocked(tty.isatty).mockImplementation(actualTty.isatty);
+  httpSent.length = 0;
   vi.clearAllMocks();
 });
 
@@ -149,7 +164,7 @@ describe("dacs bin", () => {
       expect(report.checks.find((c) => c.id === checkId)?.status).toBe("fail");
       expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("skip");
       expect(adapterCalls.factory).not.toHaveBeenCalled();
-      expect(adapterCalls.connect).not.toHaveBeenCalled();
+      expect(adapterCalls.connectWallet).not.toHaveBeenCalled();
       expect(adapterCalls.address).not.toHaveBeenCalled();
       expect(output).not.toContain(secret);
       expect(output).not.toContain(temp);
@@ -174,7 +189,7 @@ describe("dacs bin", () => {
       expect(stderr).toContain(`Could not read ${source} credential file`);
       expect(stderr).not.toContain(temp);
       expect(adapterCalls.factory).not.toHaveBeenCalled();
-      expect(adapterCalls.connect).not.toHaveBeenCalled();
+      expect(adapterCalls.connectWallet).not.toHaveBeenCalled();
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
@@ -461,13 +476,17 @@ describe("dacs bin", () => {
         "--wallet-secret-file", walletFile]);
       expect(stderr).toBe("");
       expect(code).toBe(5);
-      expect(adapterCalls.factory).toHaveBeenCalledExactlyOnceWith({ rpc, secret });
-      expect(adapterCalls.nodeCall.mock.calls).toEqual([["getLastBlockNumber"], ["getNetworkInfo"]]);
+      // The adapter never holds the secret; the wallet is derived on its raw client.
+      expect(adapterCalls.factory).toHaveBeenCalledExactlyOnceWith({ rpc });
+      expect(adapterCalls.connectWallet).toHaveBeenCalledExactlyOnceWith(secret);
+      expect(httpSent).toEqual([{ url: rpc, method: "GET", signal: true },
+        { url: rpc, method: "POST", message: "getLastBlockNumber", signal: true },
+        { url: rpc, method: "POST", message: "getNetworkInfo", signal: true }]);
       const report = JSON.parse(stdout) as DoctorReport;
       expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
         status: "pass", data: { lastBlockNumber: 42 },
       });
-      // The default factory's getAddress wrapper must reach the connected adapter.
+      // The default factory's getAddress wrapper must reach the wallet-connected client.
       expect(report.checks.find((c) => c.id === "wallet.identity")).toMatchObject({
         status: "pass", data: { address: MOCK_ADDRESS },
       });
@@ -877,11 +896,23 @@ describe("dacs bin", () => {
     }
 
     function runBuiltDoctor(rpc: string, timeout = 90_000): Promise<{ code: number | null; report: DoctorReport }> {
-      // Keep demosdk's HTTP client off any proxy so it reaches the local fixture.
+      return runBuilt([join(process.cwd(), "dist", "bin", "dacs.js"), "doctor", "--json",
+        "--rpc", rpc, "--rail", "pay-dem"], timeout);
+    }
+
+    /** Call the public runDoctor() from a plain importing process, which must then exit on its own. */
+    function runLibraryDoctor(rpc: string, timeout = 45_000): Promise<{ code: number | null; report: DoctorReport }> {
+      const script = `const { runDoctor } = await import(${JSON.stringify(pathToFileURL(
+        join(process.cwd(), "dist", "cli", "index.js")).href)});
+process.stdout.write(JSON.stringify(await runDoctor({ rpc: process.argv[1] })));`;
+      return runBuilt(["--input-type=module", "-e", script, rpc], timeout);
+    }
+
+    function runBuilt(args: string[], timeout: number): Promise<{ code: number | null; report: DoctorReport }> {
+      // Keep any HTTP client off any proxy so it reaches the local fixture.
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/_proxy$/i.test(key)));
       return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [join(process.cwd(), "dist", "bin", "dacs.js"), "doctor", "--json",
-          "--rpc", rpc, "--rail", "pay-dem"], { env: { ...env, NODE_NO_WARNINGS: "1" }, timeout });
+        const child = spawn(process.execPath, args, { env: { ...env, NODE_NO_WARNINGS: "1" }, timeout });
         let stdout = "";
         child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
         child.on("error", reject);
@@ -975,6 +1006,48 @@ describe("dacs bin", () => {
         expect(seen.filter((r) => r.method !== "GET").map((r) => (JSON.parse(r.body) as {
           params?: Array<{ message?: string }>;
         }).params?.[0]?.message)).toEqual(["getLastBlockNumber", "getNetworkInfo"]);
+      });
+    }, 120_000);
+
+    it.each([
+      ["the GET", "RPC endpoint did not answer within 5000 ms", "Demos RPC check failed", []],
+      ["the height call", "getLastBlockNumber did not answer within 5000 ms",
+        "RPC endpoint did not answer the Demos block-height call", ["getLastBlockNumber"]],
+    ])("fails RPC reachability and exits when the node stalls %s", async (stalled, detail, summary, posted) => {
+      const node = demosNode({
+        getLastBlockNumber: { result: 200, response: 4242, require_reply: false, extra: null },
+      });
+      await withRpc((method, body) => {
+        if (method === "GET") return stalled === "the GET" ? null : node(method, body);
+        return stalled === "the height call" ? null : node(method, body);
+      }, async (url, seen) => {
+        // The spawn is killed (code null, no report) if the CLI keeps waiting.
+        const { code, report } = await runBuiltDoctor(url, 45_000);
+        expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({ status: "fail", summary, detail });
+        expect(report.checks.some((c) => c.id === "rpc.node-revision")).toBe(false);
+        expect(code).toBe(3);
+        expect(seen.filter((r) => r.method !== "GET").map((r) => (JSON.parse(r.body) as {
+          params?: Array<{ message?: string }>;
+        }).params?.[0]?.message)).toEqual(posted);
+      });
+    }, 120_000);
+
+    it("lets a process that imports runDoctor exit once a stalled revision call times out", async () => {
+      const node = demosNode({
+        getLastBlockNumber: { result: 200, response: 4242, require_reply: false, extra: null },
+      });
+      await withRpc((method, body) => {
+        if (method === "GET") return node(method, body);
+        const request = JSON.parse(body) as { params?: Array<{ message?: string }> };
+        return request.params?.[0]?.message === "getNetworkInfo" ? null : node(method, body);
+      }, async (url) => {
+        // No process.exit here: the child ends only if the stalled request was cancelled.
+        const { code, report } = await runLibraryDoctor(url);
+        expect(code).toBe(0);
+        expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("pass");
+        expect(report.checks.find((c) => c.id === "rpc.node-revision")).toMatchObject({
+          status: "warn", detail: "getNetworkInfo did not answer within 5000 ms",
+        });
       });
     }, 120_000);
 

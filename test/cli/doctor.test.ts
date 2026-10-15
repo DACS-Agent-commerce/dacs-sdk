@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 
 import { formatDoctorText, redactRpcUrl, runDoctor } from "../../src/cli/index.js";
 
-import { NODE_REVISION_TIMEOUT_MS, runDoctorForCli, VERIFIED_DEMOS_NODE_REVISION } from "../../src/cli/doctor.js";
+import { RPC_CALL_TIMEOUT_MS, runDoctorForCli, VERIFIED_DEMOS_NODE_REVISION } from "../../src/cli/doctor.js";
 import type { DoctorSecretFile } from "../../src/cli/secretFile.js";
 import { VERSION } from "../../src/version.js";
 
@@ -406,7 +406,7 @@ describe("dacs doctor", () => {
 
   describe("node build revision", () => {
     const build = (nodeVersion: unknown) => async () => ({ forks: {}, nodeVersion });
-    async function revision(getNetworkInfo?: () => Promise<unknown>) {
+    async function revision(getNetworkInfo?: (signal?: AbortSignal) => Promise<unknown>) {
       const report = await runDoctor({
         rpc: "https://node.example",
         adapterFactory: () => ({ connect: async () => {}, getAddress: () => "unused",
@@ -489,19 +489,25 @@ describe("dacs doctor", () => {
       });
     });
 
-    it("stops waiting for a node that never answers and still returns the report", async () => {
+    it("stops waiting for a node that never answers, cancels the call and still returns the report", async () => {
       vi.useFakeTimers();
       try {
         let settled = false;
-        const pending = revision(() => new Promise<never>(() => {})).finally(() => { settled = true; });
-        await vi.advanceTimersByTimeAsync(NODE_REVISION_TIMEOUT_MS - 1);
+        let signal: AbortSignal | undefined;
+        const pending = revision((received?: AbortSignal) => {
+          signal = received;
+          return new Promise<never>(() => {});
+        }).finally(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(RPC_CALL_TIMEOUT_MS - 1);
         expect(settled).toBe(false);
+        expect(signal?.aborted).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
         expect(await pending).toEqual({
           id: "rpc.node-revision", status: "warn", summary: "Node did not report its build revision in time",
           detail: "getNetworkInfo did not answer within 5000 ms", remediation,
           data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: null },
         });
+        expect(signal?.aborted).toBe(true);
         expect(vi.getTimerCount()).toBe(0);
       } finally {
         vi.useRealTimers();
@@ -517,6 +523,82 @@ describe("dacs doctor", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("RPC call deadline", () => {
+    const never = () => new Promise<never>(() => {});
+    it.each([
+      ["connect", "RPC endpoint did not answer within 5000 ms", "Demos RPC check failed"],
+      ["getLastBlockNumber", "getLastBlockNumber did not answer within 5000 ms",
+        "RPC endpoint did not answer the Demos block-height call"],
+    ] as const)("fails RPC reachability when the node stalls %s, and cancels it", async (stalled, detail, summary) => {
+      vi.useFakeTimers();
+      try {
+        const signals: Record<string, AbortSignal | undefined> = {};
+        const getLastBlockNumber = vi.fn(async (signal?: AbortSignal) => {
+          signals.getLastBlockNumber = signal;
+          return stalled === "getLastBlockNumber" ? never() : 7;
+        });
+        const getNetworkInfo = vi.fn(async () => ({}));
+        let settled = false;
+        const pending = runDoctor({
+          rpc: "https://node.example", walletSecret: "wallet-secret",
+          adapterFactory: () => ({
+            connect: async (signal?: AbortSignal) => {
+              signals.connect = signal;
+              if (stalled === "connect") await never();
+            },
+            getAddress: () => "unused", getLastBlockNumber, getNetworkInfo,
+          }),
+        }).finally(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(RPC_CALL_TIMEOUT_MS - 1);
+        expect(settled).toBe(false);
+        expect(signals[stalled]?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        const report = await pending;
+        expect(report.checks.find((c) => c.id === "rpc.reachable")).toEqual({
+          id: "rpc.reachable", status: "fail", summary, detail,
+          data: { rpc: "https://node.example/" },
+          remediation: stalled === "connect"
+            ? "Check the RPC URL and network reachability."
+            : "Check that the RPC URL points at a reachable, synced Demos node.",
+        });
+        expect(report.exitCode).toBe(3);
+        expect(signals[stalled]?.aborted).toBe(true);
+        expect(getLastBlockNumber).toHaveBeenCalledTimes(stalled === "connect" ? 0 : 1);
+        expect(getNetworkInfo).not.toHaveBeenCalled();
+        expect(report.checks.find((c) => c.id === "wallet.identity")?.status).toBe("skip");
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("passes each call a live signal and reports a thrown connect failure as before", async () => {
+      const received: Array<AbortSignal | undefined> = [];
+      const ok = await runDoctor({
+        rpc: "https://node.example",
+        adapterFactory: () => ({
+          connect: async (signal?: AbortSignal) => { received.push(signal); expect(signal?.aborted).toBe(false); },
+          getAddress: () => "unused",
+          getLastBlockNumber: async (signal?: AbortSignal) => {
+            received.push(signal);
+            expect(signal?.aborted).toBe(false);
+            return 7;
+          },
+        }),
+      });
+      expect(ok.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("pass");
+      expect(received).toHaveLength(2);
+      expect(received.every((signal) => signal instanceof AbortSignal)).toBe(true);
+      const failed = await runDoctor({
+        rpc: "https://node.example",
+        adapterFactory: () => ({ connect: async () => { throw new Error("ECONNREFUSED"); }, getAddress: () => "unused" }),
+      });
+      expect(failed.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+        status: "fail", summary: "Demos RPC check failed", detail: "ECONNREFUSED",
+      });
     });
   });
 
