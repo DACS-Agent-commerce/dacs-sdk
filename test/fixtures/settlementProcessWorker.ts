@@ -134,10 +134,13 @@ async function lookup(key: string, fence?: Readonly<SettlementEffectFence>): Pro
   }
   // DACS-4 §9.5.8 SB-3: the derived nonce is the retry identity. Reconcile its
   // authorization state; resume only the same transfer and never mint a new nonce.
+  // The state is read where the token contract keeps it: this chain, this
+  // token and this payer. The same nonce in any other scope is not this one.
   const nonce = await sb3Nonce(phase);
   if (fence?.effectIdentity !== nonce) throw new DacsError("x402 effect fence does not retain the SB-3 nonce");
   const found = ledger.filter((entry): entry is Extract<RailRecord, { rail: "x402" }> =>
-    entry.rail === "x402" && entry.nonce === nonce).at(-1);
+    entry.rail === "x402" && entry.network === NETWORK && entry.asset.toLowerCase() === token.toLowerCase() &&
+    entry.from.toLowerCase() === PAYER && entry.nonce === nonce).at(-1);
   if (!found) return null;
   if (found.state === "cancelled") {
     throw new DacsError("SB-3 authorization nonce is cancelled; refusing a fresh nonce for this phase");
@@ -258,13 +261,15 @@ const x402 = x402Settle({
         };
         return new Response(JSON.stringify(challenge), { status: 402, headers: { "PAYMENT-REQUIRED": encode(challenge) } });
       }
-      // The facilitator executes the signed authorization it was given.
-      const { authorization } = (JSON.parse(Buffer.from(signature, "base64").toString("utf8")) as {
-        payload: { authorization: { nonce: string; to: string; value: string } };
-      }).payload;
+      // The facilitator executes the signed authorization it was given, on the
+      // chain and token contract of the requirement it was signed for.
+      const { accepted, payload: { authorization } } = JSON.parse(Buffer.from(signature, "base64").toString("utf8")) as {
+        accepted: { network: string; asset: string };
+        payload: { authorization: { from: string; nonce: string; to: string; value: string } };
+      };
       await effect({
-        rail: "x402", txHash: TX, nonce: authorization.nonce, state: "used",
-        to: authorization.to, value: authorization.value,
+        rail: "x402", txHash: TX, network: accepted.network, asset: accepted.asset, from: authorization.from,
+        nonce: authorization.nonce, state: "used", to: authorization.to, value: authorization.value,
       });
       return new Response("delivered", { status: 200, headers: {
         "PAYMENT-RESPONSE": encode({ success: true, transaction: TX, network: NETWORK, payer: PAYER, amount: req.amount }),

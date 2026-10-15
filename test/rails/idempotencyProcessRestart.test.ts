@@ -21,11 +21,16 @@ afterEach(async () => {
 });
 
 const PAYEE = `0x${"1".repeat(40)}`;
+const PAYER = `0x${"2".repeat(40)}`;
 const NONCE = await dacsX402AuthorizationNonce({ jobId: RESTART_JOB_ID, phaseIndex: 0 });
+// The published Base Sepolia USDC contract the worker transfers.
+const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+// Where the token contract keeps this payer's EIP-3009 nonce state.
+const NONCE_SCOPE = { network: "eip155:84532", asset: USDC, from: PAYER } as const;
 // What the test rail authority reports for the landed effect; never the
 // crashed process's unpersisted result.
 const RECONCILED = {
-  ok: true, txHash: `0x${"a".repeat(64)}`, chainId: "eip155:84532", payer: `0x${"2".repeat(40)}`,
+  ok: true, txHash: `0x${"a".repeat(64)}`, chainId: "eip155:84532", payer: PAYER,
   payee: PAYEE, finality: { model: "block-depth", finalityBlocks: 2 },
 };
 const IDENTITY: Record<RailMode, string | undefined> = {
@@ -75,7 +80,7 @@ async function expectRailEffects(h: SettlementProcessHarness, mode: RailMode, co
   expect(effects).toHaveLength(count);
   for (const effect of effects) {
     expect(effect.rail).toBe(mode);
-    if (effect.rail === "x402") expect(effect).toMatchObject({ nonce: NONCE, state: "used", to: PAYEE });
+    if (effect.rail === "x402") expect(effect).toMatchObject({ ...NONCE_SCOPE, nonce: NONCE, state: "used", to: PAYEE });
     if (effect.rail === "generic") expect(effect.identity).toBe(IDENTITY.generic);
   }
   for (const reconcile of await h.lines<{ identity?: string }>("reconciles")) {
@@ -202,9 +207,11 @@ describe("x402 SB-3 retry identity across a real restart (#43)", () => {
     const ours = prior.state === "used" && prior.sameTransferParameters;
     await crash(h, "x402", ours ? "before-outcome" : "before-effect");
     // The token contract's authorization state for this nonce, as a reconciler observes it.
-    if (prior.state === "cancelled") await seed(h, [{ rail: "x402", nonce: NONCE, state: "cancelled" }]);
+    if (prior.state === "cancelled") await seed(h, [{ rail: "x402", ...NONCE_SCOPE, nonce: NONCE, state: "cancelled" }]);
     else if (!ours) {
-      await seed(h, [{ rail: "x402", txHash: `0x${"e".repeat(64)}`, nonce: NONCE, state: "used", to: OTHER_PAYEE, value: "1000000" }]);
+      await seed(h, [{
+        rail: "x402", txHash: `0x${"e".repeat(64)}`, ...NONCE_SCOPE, nonce: NONCE, state: "used", to: OTHER_PAYEE, value: "1000000",
+      }]);
     }
     const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
     expect(vector.want.mustGenerateFreshNonce).toBe(false);
@@ -229,7 +236,9 @@ describe("x402 SB-3 retry identity across a real restart (#43)", () => {
   test("used by a different amount is refused for that reason, with no fresh nonce", async () => {
     const h = await harness();
     await crash(h, "x402", "before-effect");
-    await seed(h, [{ rail: "x402", txHash: `0x${"e".repeat(64)}`, nonce: NONCE, state: "used", to: PAYEE, value: "2000000" }]);
+    await seed(h, [{
+      rail: "x402", txHash: `0x${"e".repeat(64)}`, ...NONCE_SCOPE, nonce: NONCE, state: "used", to: PAYEE, value: "2000000",
+    }]);
     const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
     expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
     expect(restarted.error?.message).toMatch(REASON.different);
@@ -242,13 +251,11 @@ describe("x402 SB-3 retry identity across a real restart (#43)", () => {
 // identity: what the authority does not hold for this effect is never adopted.
 const OTHER_PHASE_NONCE = await dacsX402AuthorizationNonce({ jobId: RESTART_JOB_ID, phaseIndex: 1 });
 const TX = `0x${"a".repeat(64)}`;
-// The published Base Sepolia USDC contract the worker transfers.
-const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 const UNRELATED: Record<RailMode, RailRecord[]> = {
   generic: [{ rail: "generic", txHash: TX, identity: `test-effect:${RESTART_JOB_ID}:1` }],
   // An earlier transfer with exactly this job's token, payer, payee and value.
-  evm: [{ rail: "evm", txHash: `0x${"f".repeat(64)}`, token: USDC, from: `0x${"2".repeat(40)}`, to: PAYEE, value: "1000000" }],
-  x402: [{ rail: "x402", txHash: TX, nonce: OTHER_PHASE_NONCE, state: "used", to: PAYEE, value: "1000000" }],
+  evm: [{ rail: "evm", txHash: `0x${"f".repeat(64)}`, token: USDC, from: PAYER, to: PAYEE, value: "1000000" }],
+  x402: [{ rail: "x402", txHash: TX, ...NONCE_SCOPE, nonce: OTHER_PHASE_NONCE, state: "used", to: PAYEE, value: "1000000" }],
 };
 const MISS: Record<RailMode, RegExp> = { generic: ABSENT, evm: UNATTRIBUTABLE, x402: ABSENT };
 
@@ -271,6 +278,28 @@ describe.each(["generic", "evm", "x402"] as const)("real Node restart: %s landed
     expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
     expect(restarted.error?.message).toMatch(MISS[mode]);
     await expectRailEffects(h, mode, 0, mode === "x402" ? 1 : 0);
+    expect(await h.count("grants")).toBe(0);
+  }, 30_000);
+});
+
+// DACS-4 §9.5.8 SB-3 binds the same authorization: an EIP-3009 nonce lives on
+// one token contract on one chain, per authorizer. The same nonce bytes used by
+// another payer, on another token or on another chain are not this transfer.
+describe("real Node restart: x402 landed recovery reads the nonce in its own scope (#43)", () => {
+  test.each([
+    ["payer", { from: OTHER_PAYEE }],
+    ["token", { asset: `0x${"3".repeat(40)}` }],
+    ["network", { network: "eip155:1" }],
+  ] as const)("the same nonce used under a foreign %s is not adopted", async (_name, foreign) => {
+    const h = await harness();
+    await crash(h, "x402", "before-effect");
+    await seed(h, [{
+      rail: "x402", txHash: TX, ...NONCE_SCOPE, ...foreign, nonce: NONCE, state: "used", to: PAYEE, value: "1000000",
+    }]);
+    const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
+    expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
+    expect(restarted.error?.message).toMatch(ABSENT);
+    await expectRailEffects(h, "x402", 0, 1);
     expect(await h.count("grants")).toBe(0);
   }, 30_000);
 });

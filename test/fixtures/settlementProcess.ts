@@ -26,11 +26,18 @@ export interface WorkerOptions {
   owner?: string;
 }
 
-/** One line of the test rail's authoritative ledger, written as the effect lands. */
+/**
+ * One line of the test rail's authoritative ledger, written as the effect lands.
+ * An EIP-3009 nonce's state lives on one token contract on one chain, per
+ * authorizer, so an x402 record carries that whole scope.
+ */
 export type RailRecord =
   | { rail: "generic"; txHash: string; identity: string }
   | { rail: "evm"; txHash: string; token: string; from: string; to: string; value: string }
-  | { rail: "x402"; txHash?: string; nonce: string; state: "used" | "cancelled"; to?: string; value?: string };
+  | {
+    rail: "x402"; txHash?: string; network: string; asset: string; from: string; nonce: string;
+    state: "used" | "cancelled"; to?: string; value?: string;
+  };
 
 export interface WorkerResult {
   pid: number;
