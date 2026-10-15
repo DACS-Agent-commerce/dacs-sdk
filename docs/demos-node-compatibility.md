@@ -25,10 +25,12 @@ tests and reviews were checked against.
 | Transport failure | `{ result: 500, response: Error }` | indeterminate |
 | `getTxByHash`, found | `hash`, `status: "confirmed"`, numeric `blockNumber`, `content` object | compared member by member |
 | `getBlockByNumber`, found | `number`, `hash`, `status`, `content.ordered_transactions`, `content.timestamp` in **seconds**, `validation_data.signatures` | compared; a block without `validation_data` is indeterminate |
-| `GET /storage-program/:address`, found | 12 members; **no** `createdByTx`, `lastModifiedByTx` or `interactionTxs` | provenance is recovered from the owner's Storage Program history. Without that history the read is indeterminate, never verified. |
+| `GET /storage-program/:address`, found | 12 members; **no** `createdByTx`, `lastModifiedByTx` or `interactionTxs` | provenance is recovered from the owner's Storage Program history. Without that history the read is indeterminate, never verified. A node that does serve the write's `createdByTx` (create) or `lastModifiedByTx` (update) is held to it exactly; `interactionTxs` never overrides it. |
+| `getTransactionHistory(owner, "storageProgram", { start, limit })` | HTTP 200 `{ result: 200, response: [rows] }`, newest first, paged by `start`/`limit`. Each row: `hash` (64 hex, no `0x`), `status: "confirmed"`, numeric `blockNumber`, `content.type: "storageProgram"`, `content.from` (owner), `content.to` (`stor-…`), `content.nonce` as a decimal string, `content.data: ["storageProgram", { operation, storageAddress, data, … }]` | a create proof must be the address's single `CREATE_STORAGE_PROGRAM`; an update proof must be its latest mutation. It is read only after every other observation matches. A malformed row, a head that moves during the scan, more than 100 pages of 100, or a value that changes after the scan is indeterminate. |
 
 `test/substrate/anchor-and-wait.test.ts` replays the recorded not-found reads
-through both verifiers. A node release that changes any row above has to be
+through both verifiers. The history row shape was read from node2 (read-only,
+owner `storageProgram` history) in the same review round. A node release that changes any row above has to be
 re-recorded and re-pinned here before it is supported. A response outside this
 contract is treated as unanswered: it is indeterminate and never verified.
 
@@ -41,7 +43,8 @@ contract is treated as unanswered: it is indeterminate and never verified.
 | `@x402/core`, `@x402/evm`, `@x402/fetch` | `2.15.0` (lockfile) | Executable x402 types and v1 map |
 | `viem` | `2.55.19` (lockfile) | keccak topics, EIP-712 signing |
 | EIP-3009 (Draft ERC) | `ethereum/ERCs@7ef00333d6b62eeee89ab64fc6d8a0ee87b8f5a7` and `ethereum/ERCs@dc0c98f9e8c726775874e7009e9d1c4f630c9d9d` | `AuthorizationUsed` / `AuthorizationCanceled` topics, `TransferWithAuthorization` type hash |
-| EIP-712, ERC-20 | `ethereum/EIPs@a53ca05661e55cb4326a7ece19c444d324e3d420` | Domain members, `Transfer` event |
+| EIP-712 | `ethereum/EIPs@a53ca05661e55cb4326a7ece19c444d324e3d420` (`EIPS/eip-712.md`) | Domain members |
+| ERC-20 | `ethereum/ERCs@dc0c98f9e8c726775874e7009e9d1c4f630c9d9d` (`ERCS/erc-20.md`) | `Transfer` event. At the EIPs commit above, `EIPS/eip-20.md` is only a "moved" stub. |
 
 The SDK constants were compared with these texts. No changed-path mismatch was
 found.
