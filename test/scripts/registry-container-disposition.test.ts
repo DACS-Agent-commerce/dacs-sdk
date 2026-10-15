@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
+  writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -12,10 +13,15 @@ import { afterEach, describe, expect, it } from "vitest";
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
 const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings,
   classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines,
-  registryDependencyViolations } = await import(dispositionModulePath);
+  registryDependencyViolations, runtimeImageInventoryFindings } = await import(dispositionModulePath);
+const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
+const { runtimeImageInventory } = await import(inventoryModulePath);
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
+
+// A runtime-image inventory that matches the lock's production closure.
+const completeInventory = { scanComplete: true, errors: [], missing: [] };
 
 // The shape written by scripts/verify-registry-container-consumer.sh when the
 // rehearsal works and only the recorded #191 transitive audit findings remain.
@@ -34,7 +40,8 @@ function baselineOnlySummary() {
       auditExitCode: 1,
       lockSbomExitCode: 0,
       physicalSbomExitCode: 0,
-      findings: { schema: "dacs-registry-policy-findings/v1" } as Record<string, unknown>,
+      findings: { schema: "dacs-registry-policy-findings/v1",
+        productionImageInventory: completeInventory } as Record<string, unknown>,
     },
   };
 }
@@ -143,8 +150,9 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   scratch.push(directory);
   const checkout = join(directory, "checkout");
   mkdirSync(join(checkout, "scripts"), { recursive: true });
-  writeFileSync(join(checkout, "scripts/registry-container-disposition.mjs"),
-    readFileSync(join(repoRoot, "scripts/registry-container-disposition.mjs")));
+  for (const name of ["registry-container-disposition.mjs", "runtime-image-inventory.mjs"]) {
+    writeFileSync(join(checkout, "scripts", name), readFileSync(join(repoRoot, "scripts", name)));
+  }
   writeFileSync(join(checkout, "scripts/registry-container-audit-baseline.json"),
     readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json")));
   const write = summary === undefined ? "" : [
@@ -474,7 +482,8 @@ describe("registry/container workflow wiring", () => {
     // The whole workflows directory, so a workflow added later is owned too, and
     // the package script mapping and local publisher the acceptance runs.
     for (const path of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
-      "scripts/registry-container-disposition.mjs", "scripts/verify-registry-container-consumer.sh",
+      "scripts/registry-container-disposition.mjs", "scripts/runtime-image-inventory.mjs",
+      "scripts/verify-registry-container-consumer.sh",
       "scripts/publish-exact-local-registry.mjs", "scripts/check-publish-environment.mjs", "package.json",
       ".github/workflows/", ".github/CODEOWNERS"]) {
       expect(owners).toContain(`/${path} @randomblocker`);
@@ -657,7 +666,8 @@ function writeSummary(overrides: Record<string, string> = {}) {
       observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }),
     "runtime-image-policy.json": JSON.stringify({ schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
       productionDependencyPolicyPassed: true }),
-    "policy-findings.json": JSON.stringify({ schema: "dacs-registry-policy-findings/v1", gitDependencies: [] }),
+    "policy-findings.json": JSON.stringify({ schema: "dacs-registry-policy-findings/v1", gitDependencies: [],
+      productionImageInventory: completeInventory }),
     "release-provenance.json": JSON.stringify({ version: CANDIDATE_VERSION }),
     "engine-strict.exit-code": "0\n",
     "npm-audit.exit-code": "1\n",
@@ -818,7 +828,8 @@ describe("registry/container evidence", () => {
         observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }],
       ["runtime-image-policy.json", { schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
         productionDependencyPolicyPassed: true }],
-      ["policy-findings.json", { schema: "dacs-registry-policy-findings/v1", gitDependencies: [] }],
+      ["policy-findings.json", { schema: "dacs-registry-policy-findings/v1", gitDependencies: [],
+        productionImageInventory: completeInventory }],
     ];
     const builder = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
       .split('node - "$artifact_stage" "$version" "$runtime_image"')[1]!.split("<<'NODE'\n")[1]!
@@ -1030,6 +1041,8 @@ describe("advisory-ID baseline", () => {
     expect(pullRequest.stdout).toContain(`::warning title=Advisory IDs outside the #191 baseline::${unlisted.join(", ")}. ` +
       "Pull requests only warn; the scheduled drift job and release paths fail");
     expect(pullRequest.stdout).toContain("::warning title=#191 security gate blocked::");
+    // A baseline-only disposition (exit 4) is no error annotation.
+    expect(pullRequest.stdout).not.toContain("::error title=Registry/container acceptance");
     expect(pullRequest.stepSummary).toBe("- Advisory IDs outside the #191 baseline (warning on this pull request; the " +
       `scheduled drift job and release paths fail on them): ${unlisted.join(", ")}\n`);
     expect(runDriftStep(summary, false).status).toBe(0);
@@ -1273,9 +1286,23 @@ const b7b180f = join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f
 // .gitignore ignores *.log, so that run's engine-strict.log is stored as
 // engine-strict.log.txt; every other file keeps its artifact name.
 const b7b180fFile = (name: string) => join(b7b180f, name === "engine-strict.log" ? "engine-strict.log.txt" : name);
+// That run predates the runtime-image inventory, so these tests stand in one
+// derived from the lock in use: its production closure without the optional
+// entries, which is what the image's `npm prune --omit=dev --omit=optional`
+// leaves. A CI run uploads observed fixtures with a real inventory.
+function closureInventory(lockText: string | undefined) {
+  const packages: Record<string, { version?: string; name?: string; dev?: boolean; optional?: boolean }> =
+    JSON.parse(lockText ?? "{}").packages ?? {};
+  return JSON.stringify({ schema: "dacs-runtime-image-inventory/v1", packages: Object.entries(packages)
+    .filter(([location, entry]) => location.startsWith("node_modules/") && !entry.dev && !entry.optional)
+    .map(([location, entry]) => ({ location, version: entry.version,
+      name: entry.name ?? location.slice(location.lastIndexOf("node_modules/") + 13) })) });
+}
 function b7b180fEvidence(overrides: Record<string, string | undefined> = {}) {
-  const read = (name: string) => name in overrides ? overrides[name]
+  const recorded = (name: string) => name in overrides ? overrides[name]
     : (() => { try { return readFileSync(b7b180fFile(name), "utf8"); } catch { return undefined; } })();
+  const read = (name: string) => name === "runtime-image-inventory.json" && !(name in overrides)
+    ? closureInventory(recorded("generated-package-lock.json")) : recorded(name);
   const summary = JSON.parse(readFileSync(join(b7b180f, "acceptance-summary.json"), "utf8"));
   summary.securityGate.findings = extractPolicyFindings(read);
   return summary;
@@ -1378,6 +1405,214 @@ describe("#191 policy-finding baseline", () => {
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("blocked");
     summary.securityGate.findings.gitDependencies = [];
     expect(classifyPolicyChecks(summary, baseline).registryDependency).toBe("passed");
+  });
+});
+
+// The image check sees every package in the final image, not only the two the
+// policy names: each must be in the lock's production closure at the lock's
+// name and version, and the image must hold every required closure entry.
+describe("runtime-image package inventory", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const lockText = readFileSync(join(b7b180f, "generated-package-lock.json"), "utf8");
+  const inventory = (edit: (packages: Array<Record<string, unknown>>) => void) => {
+    const value = JSON.parse(closureInventory(lockText)); edit(value.packages); return JSON.stringify(value);
+  };
+  const add = (location: string, name: string, version: string) =>
+    inventory(packages => { packages.push({ location, name, version }); });
+
+  it("as recorded, without an inventory, blocks the b7b180f run (exit 3)", () => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": undefined });
+    expect(summary.securityGate.findings.productionImageInventory.scanComplete).toBe(false);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+  });
+
+  it.each([
+    ["vitest", add("node_modules/vitest", "vitest", "3.2.4")],
+    ["eslint", add("node_modules/eslint", "eslint", "9.30.0")],
+    ["a nested esbuild", add("node_modules/sigstore/node_modules/esbuild", "esbuild", "0.25.5")],
+    ["a scoped package", add("node_modules/@types/node", "@types/node", "20.19.1")],
+    ["a closure package at another version", inventory(packages => {
+      packages.find(item => item.location === "node_modules/semver")!.version = "7.7.1"; })],
+    ["a closure location holding another package", inventory(packages => {
+      packages.find(item => item.location === "node_modules/ssri")!.name = "evil-ssri"; })],
+    ["an optional entry the image keeps at another version", add("node_modules/verror", "verror", "1.10.1")],
+  ])("blocks %s in the image (exit 3)", (_label, observed) => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": observed });
+    expect(summary.securityGate.findings.productionImageDependencies.length).toBeGreaterThan(1);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, failureClass: "policy" });
+    // A run whose named-package flag passed is blocked by the same finding.
+    summary.securityGate.productionImageDependencyPolicyPassed = true;
+    summary.securityGate.findings.productionImageDependencies =
+      summary.securityGate.findings.productionImageDependencies.filter((item: { name: string }) => item.name !== "typescript");
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
+  it("stays baseline-only for an optional entry the image keeps, and for an absent one", () => {
+    for (const observed of [add("node_modules/verror", "verror", "1.10.0"), undefined]) {
+      const summary = b7b180fEvidence(observed === undefined ? {} : { "runtime-image-inventory.json": observed });
+      expect(summary.securityGate.findings.productionImageInventory).toEqual({ scanComplete: true, errors: [], missing: [] });
+      expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("baseline");
+      expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4 });
+    }
+  });
+
+  it("blocks an image that lacks a required closure package", () => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": inventory(packages => {
+      packages.splice(packages.findIndex(item => item.location === "node_modules/minipass"), 1); }) });
+    expect(summary.securityGate.findings.productionImageInventory.missing).toEqual(["node_modules/minipass"]);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
+  it("blocks a dev-only lock entry in the image", () => {
+    const summary = b7b180fEvidence({
+      "generated-package-lock.json": withDev("node_modules/proc-log"),
+      "runtime-image-inventory.json": inventory(() => undefined),
+    });
+    expect(summary.securityGate.findings.productionImageDependencies).toContainEqual(
+      { name: "proc-log", location: "node_modules/proc-log", version: "7.0.0", integrity: expect.any(String) });
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
+  it("lists a named package once when it is also outside the closure", () => {
+    const summary = b7b180fEvidence({
+      "generated-package-lock.json": withDev("node_modules/typescript"),
+      "runtime-image-inventory.json": inventory(() => undefined),
+    });
+    expect(summary.securityGate.findings.productionImageDependencies
+      .filter((item: { location: string }) => item.location === "node_modules/typescript")).toHaveLength(1);
+  });
+  function withDev(location: string) {
+    const value = JSON.parse(lockText); value.packages[location].dev = true; return JSON.stringify(value);
+  }
+
+  it.each([
+    ["unreadable JSON", "{"],
+    ["another schema", JSON.stringify({ schema: "dacs-runtime-image-inventory/v0", packages: [] })],
+    ["no package list", JSON.stringify({ schema: "dacs-runtime-image-inventory/v1" })],
+    ["an entry without a version", add("node_modules/x", "x", undefined as never)],
+    ["an entry without a name", add("node_modules/x", undefined as never, "1.0.0")],
+    ["a repeated location", add("node_modules/semver", "semver", "7.8.5")],
+    ["a scope directory as a package", add("node_modules/@sigstore", "@sigstore", "1.0.0")],
+    ["a location outside node_modules", add("lib/x", "x", "1.0.0")],
+    ["a dot directory", add("node_modules/.bin", ".bin", "1.0.0")],
+  ])("blocks an inventory with %s", (_label, observed) => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": observed });
+    expect(summary.securityGate.findings.productionImageInventory.scanComplete).toBe(false);
+    expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
+  });
+
+  it("waives a package only when the baseline records its name and location", () => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": add("node_modules/vitest", "vitest", "3.2.4") });
+    const narrow = { ...baseline, policyFindings: { ...baseline.policyFindings, productionImageDependencies: [
+      ...baseline.policyFindings.productionImageDependencies, { name: "vitest", location: "node_modules/vitest" }] } };
+    expect(classifyPolicyChecks(summary, narrow).productionImage).toBe("baseline");
+    expect(registryContainerDisposition(summary, narrow)).toMatchObject({ exitCode: 4 });
+    const elsewhere = { ...narrow, policyFindings: { ...narrow.policyFindings, productionImageDependencies: [
+      ...baseline.policyFindings.productionImageDependencies, { name: "vitest", location: "node_modules/x/node_modules/vitest" }] } };
+    expect(classifyPolicyChecks(summary, elsewhere).productionImage).toBe("blocked");
+  });
+
+  it("reports a lock without packages as an incomplete scan", () => {
+    expect(runtimeImageInventoryFindings({ schema: "dacs-runtime-image-inventory/v1", packages: [] }, {}))
+      .toEqual({ scanComplete: false, errors: ["the generated lock has no packages"], unexpected: [], missing: [] });
+  });
+
+  // The script the acceptance mounts into the image.
+  const inventoryScript = join(repoRoot, "scripts/runtime-image-inventory.mjs");
+  function imageTree(extra: (root: string) => void = () => undefined) {
+    const root = mkdtempSync(join(tmpdir(), "dacs-image-inventory-"));
+    scratch.push(root);
+    const pkg = (location: string, manifest: Record<string, unknown>) => {
+      mkdirSync(join(root, location), { recursive: true });
+      writeFileSync(join(root, location, "package.json"), JSON.stringify(manifest));
+    };
+    pkg("node_modules/a", { name: "a", version: "1.0.0" });
+    pkg("node_modules/@s/b", { name: "@s/b", version: "2.0.0" });
+    pkg("node_modules/a/node_modules/c", { name: "c", version: "3.0.0" });
+    pkg("node_modules/alias", { name: "real", version: "4.0.0" });
+    mkdirSync(join(root, "node_modules/.bin"), { recursive: true });
+    writeFileSync(join(root, "node_modules/.package-lock.json"), "{}");
+    extra(root);
+    return root;
+  }
+  const treeLock = { packages: { "": { name: "app" },
+    "node_modules/a": { version: "1.0.0" }, "node_modules/@s/b": { version: "2.0.0" },
+    "node_modules/a/node_modules/c": { version: "3.0.0" }, "node_modules/alias": { name: "real", version: "4.0.0" },
+    "node_modules/opt": { version: "5.0.0", optional: true } } };
+
+  it("lists every package in the image tree, nested, scoped and aliased", () => {
+    const listed = runtimeImageInventory(imageTree());
+    expect(listed).toEqual({ schema: "dacs-runtime-image-inventory/v1", packages: [
+      { location: "node_modules/@s/b", name: "@s/b", version: "2.0.0" },
+      { location: "node_modules/a", name: "a", version: "1.0.0" },
+      { location: "node_modules/a/node_modules/c", name: "c", version: "3.0.0" },
+      { location: "node_modules/alias", name: "real", version: "4.0.0" },
+    ] });
+    expect(runtimeImageInventoryFindings(listed, treeLock))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+    // The CLI the image runs prints the same inventory.
+    const cli = spawnSync(process.execPath, [inventoryScript, imageTree()], { encoding: "utf8" });
+    expect(cli.status).toBe(0);
+    expect(JSON.parse(cli.stdout)).toEqual(listed);
+  });
+
+  it.each([
+    ["a directory without a readable manifest", (root: string) => mkdirSync(join(root, "node_modules/d"))],
+    ["a file Node could load as a module", (root: string) => writeFileSync(join(root, "node_modules/evil.js"), "")],
+    ["a symbolic link", (root: string) => symlinkSync(join(root, "node_modules/a"), join(root, "node_modules/e"))],
+  ])("lists %s unread, so the scan is incomplete", (_label, extra) => {
+    const listed = runtimeImageInventory(imageTree(extra));
+    const unread = listed.packages.filter((item: { name: unknown }) => item.name === null);
+    expect(unread).toHaveLength(1);
+    // A link is recorded as one, so the evidence shows why it was not read.
+    expect(unread[0].link === true).toBe(_label === "a symbolic link");
+    expect(runtimeImageInventoryFindings(listed, treeLock).scanComplete).toBe(false);
+  });
+
+  it("lists an image without node_modules as empty, which lacks the closure", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-image-inventory-"));
+    scratch.push(root);
+    const listed = runtimeImageInventory(root);
+    expect(listed.packages).toEqual([]);
+    expect(runtimeImageInventoryFindings(listed, treeLock).missing).toEqual(
+      ["node_modules/a", "node_modules/@s/b", "node_modules/a/node_modules/c", "node_modules/alias"]);
+  });
+
+  // The workflow step that assembles regenerated #191 fixtures from a run's
+  // evidence carries the inventory, and the fixture replays here.
+  it("assembles disposition fixtures with the inventory from a run's evidence", () => {
+    const checkout = mkdtempSync(join(tmpdir(), "dacs-registry-fixtures-"));
+    scratch.push(checkout);
+    const evidence = join(checkout, "registry-container-artifacts");
+    mkdirSync(evidence);
+    for (const name of readdirSync(b7b180f)) {
+      writeFileSync(join(evidence, name === "engine-strict.log.txt" ? "engine-strict.log" : name),
+        readFileSync(join(b7b180f, name)));
+    }
+    writeFileSync(join(evidence, "runtime-image-inventory.json"), add("node_modules/vitest", "vitest", "3.2.4"));
+    writeFileSync(join(evidence, "docker-build.log"), "not a fixture\n");
+    const result = runBash(["-e", "-c", workflowStepScript("Assemble disposition fixtures")], {
+      cwd: checkout, env: { GITHUB_SHA: "0123456789abcdef", PATH: stubBin(checkout) },
+    });
+    expect(result.status).toBe(0);
+    const fixtures = join(checkout, "registry-container-fixtures/registry-container-0123456");
+    expect(readdirSync(fixtures).sort()).toEqual([...readdirSync(b7b180f), "runtime-image-inventory.json"].sort());
+    const read = (name: string) => {
+      const file = join(fixtures, name === "engine-strict.log" ? "engine-strict.log.txt" : name);
+      return existsSync(file) ? readFileSync(file, "utf8") : undefined;
+    };
+    const summary = JSON.parse(read("acceptance-summary.json")!);
+    summary.securityGate.findings = extractPolicyFindings(read);
+    expect(summary.securityGate.findings.productionImageDependencies)
+      .toContainEqual({ name: "vitest", location: "node_modules/vitest", version: "3.2.4", integrity: null });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3 });
+    expect(workflowStepCondition("Assemble disposition fixtures")).toBe("always()");
+    expect(workflowStepCondition("Upload disposition fixtures")).toBe("always()");
+    expect(workflowStepLines("Upload disposition fixtures").lines.slice(
+      workflowStepLines("Upload disposition fixtures").start, workflowStepLines("Upload disposition fixtures").end).join("\n"))
+      .toContain("path: registry-container-fixtures/");
   });
 });
 

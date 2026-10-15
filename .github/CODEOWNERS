@@ -5,6 +5,7 @@
 /scripts/registry-container-audit-baseline.json @randomblocker
 /scripts/registry-container-audit-baseline.md @randomblocker
 /scripts/registry-container-disposition.mjs @randomblocker
+/scripts/runtime-image-inventory.mjs @randomblocker
 /scripts/verify-registry-container-consumer.sh @randomblocker
 /scripts/publish-exact-local-registry.mjs @randomblocker
 /scripts/check-publish-environment.mjs @randomblocker

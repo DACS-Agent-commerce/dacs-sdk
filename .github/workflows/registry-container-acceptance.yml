@@ -16,6 +16,7 @@ on:
       - "scripts/publish-exact-local-registry.mjs"
       - "scripts/registry-container-disposition.mjs"
       - "scripts/registry-container-audit-baseline.json"
+      - "scripts/runtime-image-inventory.mjs"
       - "scripts/verify-registry-container-consumer.sh"
       - "scripts/verify-release-set.mjs"
       - "src/**"
@@ -115,5 +116,36 @@ jobs:
         with:
           name: dacs-registry-container-${{ github.sha }}
           path: registry-container-artifacts/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Assemble disposition fixtures
+        # The evidence the disposition tests replay, in the layout of
+        # test/scripts/fixtures/registry-container-b7b180f, with the image's
+        # package inventory that the b7b180f run predates. The #191 baseline
+        # fixtures are regenerated from this artifact. engine-strict.log is
+        # stored as .txt because .gitignore ignores *.log.
+        if: always()
+        run: |
+          evidence=registry-container-artifacts
+          fixtures="registry-container-fixtures/registry-container-${GITHUB_SHA::7}"
+          if ! test -f "$evidence/acceptance-summary.json"; then exit 0; fi
+          mkdir -p "$fixtures"
+          for name in acceptance-summary.json consumer-lock-sbom.err consumer-lock-sbom.exit-code \
+            consumer-physical-sbom.err consumer-physical-sbom.exit-code dependency-policy.json \
+            engine-strict.exit-code engine-versions.json generated-package-lock.json \
+            runtime-image-policy.json runtime-image-inventory.json; do
+            if test -f "$evidence/$name"; then cp "$evidence/$name" "$fixtures/"; fi
+          done
+          if test -f "$evidence/engine-strict.log"; then
+            cp "$evidence/engine-strict.log" "$fixtures/engine-strict.log.txt"
+          fi
+
+      - name: Upload disposition fixtures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dacs-registry-container-fixtures-${{ github.sha }}
+          path: registry-container-fixtures/
           if-no-files-found: warn
           retention-days: 30

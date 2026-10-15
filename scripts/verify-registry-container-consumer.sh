@@ -411,6 +411,13 @@ rubic_present=false
 if docker run --rm --entrypoint test "$runtime_image" -d node_modules/rubic-sdk; then
   rubic_present=true
 fi
+# Every entry under the image's node_modules, read inside the image by a
+# dependency-free script mounted read-only. The disposition compares it with
+# the lock's production closure, so a package outside that closure blocks.
+docker run --rm --entrypoint node \
+  --volume "$repo_root/scripts/runtime-image-inventory.mjs:/opt/dacs-acceptance/runtime-image-inventory.mjs:ro" \
+  "$runtime_image" /opt/dacs-acceptance/runtime-image-inventory.mjs . \
+  > "$artifact_stage/runtime-image-inventory.json"
 runtime_imports_passed=false
 if docker run --rm --entrypoint sh "$runtime_image" -ceu '
   node --import @kynesyslabs/dacs-node/demos-loader --input-type=module -e "

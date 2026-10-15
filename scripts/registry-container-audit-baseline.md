@@ -73,7 +73,15 @@ artifact `dacs-registry-container-275d856a1bbea2de6f666c069878277b23544ff1`:
   `@ton/core`, `@solana/web3.js` and `node-fetch`).
 - `productionImageDependencies`: `typescript@5.9.2` stays in the image after
   `npm prune --omit=dev`, because it is a peer of viem, abitype and ox and so
-  is not marked dev in the lock.
+  is not marked dev in the lock. Besides `typescript` and `rubic-sdk`, which
+  the policy names, the acceptance lists every entry under the final image's
+  `node_modules` (`scripts/runtime-image-inventory.mjs`, run inside the image)
+  and the disposition compares it with the generated lock's production
+  closure (every entry not marked dev). Each image package outside that
+  closure, or at another name or version than the lock records at its
+  location, is a finding; an entry that cannot be read, or a required closure
+  package the image lacks, blocks without a baseline. The b7b180f run predates
+  the inventory; the acceptance workflow uploads regenerated fixtures with it.
 
 A run whose failing checks match only these entries is baseline-only (exit 4).
 Each entry keeps the version and integrity its source run observed, as

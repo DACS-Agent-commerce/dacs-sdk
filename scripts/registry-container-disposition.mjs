@@ -16,11 +16,14 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
 // The evidence a complete summary embeds, by the schema its producer writes.
 export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
 export const POLICY_FINDINGS_SCHEMA = "dacs-registry-policy-findings/v1";
+// Every entry under the final image's node_modules (runtime-image-inventory.mjs).
+export { RUNTIME_IMAGE_INVENTORY_SCHEMA };
 const baselinePath = new URL("./registry-container-audit-baseline.json", import.meta.url);
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
 
@@ -386,6 +389,48 @@ export function scanLockEngines(lock, versions) {
     evaluatedPackages, errors, violations };
 }
 
+// Compares the final image's package inventory with the lock's production
+// closure: every lock entry that is not dev-only, which is what `npm ci` and
+// `npm prune --omit=dev` leave. An optional entry may be absent (the image
+// omits optional dependencies, or the platform skips them). Each image package
+// outside the closure, or at another name or version than the lock records
+// there, is `unexpected`; each required closure entry the image lacks is
+// `missing`. An unreadable inventory or entry leaves the scan incomplete.
+export function runtimeImageInventoryFindings(inventory, lock) {
+  const packages = isPlainObject(lock?.packages) ? lock.packages : null;
+  if (packages === null) {
+    return { scanComplete: false, errors: ["the generated lock has no packages"], unexpected: [], missing: [] };
+  }
+  if (inventory?.schema !== RUNTIME_IMAGE_INVENTORY_SCHEMA || !Array.isArray(inventory.packages)) {
+    return { scanComplete: false, errors: [`runtime-image-inventory.json is not ${RUNTIME_IMAGE_INVENTORY_SCHEMA}`],
+      unexpected: [], missing: [] };
+  }
+  const closure = new Map(Object.entries(packages)
+    .filter(([location, entry]) => location.startsWith("node_modules/") && entry?.dev !== true));
+  const errors = [];
+  const unexpected = [];
+  const seen = new Set();
+  for (const item of inventory.packages) {
+    const location = item?.location;
+    if (typeof location !== "string" || !/^node_modules\/(?:.+\/node_modules\/)?(?:@[^/]+\/)?[^/@.][^/]*$/.test(location) ||
+        typeof item.name !== "string" || typeof item.version !== "string" || seen.has(location)) {
+      errors.push("unreadable runtime-image inventory entry: " + JSON.stringify(item));
+      continue;
+    }
+    seen.add(location);
+    const entry = closure.get(location);
+    const name = entry?.name ?? location.slice(location.lastIndexOf("node_modules/") + 13);
+    if (entry === undefined || entry.version !== item.version || name !== item.name) {
+      unexpected.push({ name: item.name, location, version: item.version,
+        integrity: packages[location]?.integrity ?? null });
+    }
+  }
+  const missing = [...closure]
+    .filter(([location, entry]) => !seen.has(location) && entry?.optional !== true && entry?.devOptional !== true)
+    .map(([location]) => location);
+  return { scanComplete: errors.length === 0, errors, unexpected, missing };
+}
+
 // Records each security-gate finding with its observed identity (lock path,
 // version, integrity, engine range, npm problem line); the baseline compares
 // them by rule (see gitIdentity below).
@@ -407,11 +452,18 @@ export function extractPolicyFindings(read) {
       problems: [...errors.matchAll(/^npm error ((?:missing|invalid|extraneous): .+)$/gm)].map(match => match[1]) };
   };
   const image = json("runtime-image-policy.json") ?? {};
-  const productionImageDependencies = [["typescript", image.typescriptPresent], ["rubic-sdk", image.rubicSdkPresent]]
+  let inventory = null;
+  try { inventory = json("runtime-image-inventory.json"); } catch { /* unreadable: the inventory is incomplete */ }
+  const { unexpected, ...imageInventory } = runtimeImageInventoryFindings(inventory, lock);
+  // The two packages the policy names, then every other image package outside
+  // the production closure.
+  const named = [["typescript", image.typescriptPresent], ["rubic-sdk", image.rubicSdkPresent]]
     .filter(([, present]) => present === true)
     .map(([name]) => packages[`node_modules/${name}`]
       ? { name, location: `node_modules/${name}`, ...identity(`node_modules/${name}`) }
       : { name, location: null, version: null, integrity: null });
+  const productionImageDependencies = [...named,
+    ...unexpected.filter(item => !named.some(known => known.location === item.location))];
   return {
     schema: POLICY_FINDINGS_SCHEMA,
     gitDependencies,
@@ -421,6 +473,7 @@ export function extractPolicyFindings(read) {
     lockSbom: sbom("consumer-lock-sbom"),
     physicalSbom: sbom("consumer-physical-sbom"),
     productionImageDependencies,
+    productionImageInventory: imageInventory,
   };
 }
 
@@ -451,6 +504,11 @@ export function classifyPolicyChecks(summary, baseline) {
   const findings = gate.findings ?? {};
   const known = baseline?.policyFindings ?? {};
   const engine = findings.engine;
+  const inventory = findings.productionImageInventory;
+  // The image's package set must be read in full and hold the whole required
+  // closure; a package outside it is a production-image finding (above).
+  const inventoryRead = inventory?.scanComplete === true && Array.isArray(inventory.missing) &&
+    inventory.missing.length === 0;
   const sbom = (exitCode, observed, knownProblems) => exitCode === 0 ? "passed" :
     observed?.exitCode === exitCode && observed.code === "ESBOMPROBLEMS" &&
       allListed(observed.problems, knownProblems, sbomIdentity) ? "baseline" : "blocked";
@@ -458,7 +516,7 @@ export function classifyPolicyChecks(summary, baseline) {
     registryDependency: gate.registryDependencyPolicyPassed === true
       ? ((findings.gitDependencies ?? []).length === 0 ? "passed" : "blocked")
       : allListed(findings.gitDependencies, known.gitDependencies, gitIdentity) ? "baseline" : "blocked",
-    productionImage: gate.productionImageDependencyPolicyPassed === true
+    productionImage: !inventoryRead ? "blocked" : gate.productionImageDependencyPolicyPassed === true
       ? ((findings.productionImageDependencies ?? []).length === 0 ? "passed" : "blocked")
       : allListed(findings.productionImageDependencies, known.productionImageDependencies, imageIdentity) ? "baseline" : "blocked",
     engineStrict: gate.engineStrictExitCode === 0 ? "passed" :
