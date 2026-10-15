@@ -1430,12 +1430,32 @@ const hasAgreementCommon = (
   return true;
 };
 
+// DACS-3 §8.5: an artifact carries exactly one of these four discriminators,
+// and a second one makes it ambiguous before terms or signatures are read.
+// This SDK reads only the first two; the identity-bound pair is listed so an
+// artifact carrying one of them can never be read through a legacy path.
+const AGREEMENT_DISCRIMINATORS = [
+  "agreementVersion",
+  "payeeBoundAgreementVersion",
+  "identityBoundAgreementVersion",
+  "identityBoundPayeeAgreementVersion",
+] as const;
+
+const hasOnlyAgreementDiscriminator = (
+  v: Record<string, unknown>,
+  member: (typeof AGREEMENT_DISCRIMINATORS)[number],
+): boolean =>
+  v[member] === "1" &&
+  AGREEMENT_DISCRIMINATORS.every(
+    (other) =>
+      other === member || !Object.prototype.hasOwnProperty.call(v, other),
+  );
+
 export function isAgreementDocument(v: unknown): v is AgreementDocument {
   return (
     isObj(v) &&
     isExactJsonRecord(v) &&
-    v.agreementVersion === "1" &&
-    v.payeeBoundAgreementVersion === undefined &&
+    hasOnlyAgreementDiscriminator(v, "agreementVersion") &&
     hasAgreementCommon(v, false)
   );
 }
@@ -1446,8 +1466,7 @@ export function isPayeeBoundAgreementDocument(
   return (
     isObj(v) &&
     isExactJsonRecord(v) &&
-    v.payeeBoundAgreementVersion === "1" &&
-    v.agreementVersion === undefined &&
+    hasOnlyAgreementDiscriminator(v, "payeeBoundAgreementVersion") &&
     hasAgreementCommon(v, true)
   );
 }
