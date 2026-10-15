@@ -609,7 +609,12 @@ record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. The bridge adds the exact
+`settlementStore`, and `reconcile`. The rail's timing bounds
+`inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
+`nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
+`payDem` to `createPayDemRail` unchanged; see
+[the pay-dem execution gate](./docs/pay-dem-execution.md) for what the rail
+requires of the node's transaction record after inclusion. The bridge adds the exact
 `(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
 amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
