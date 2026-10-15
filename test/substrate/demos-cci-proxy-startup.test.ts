@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import ts from "typescript";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -13,18 +14,47 @@ import {
   type NodeRouteState,
 } from "../../src/substrate/demosCciTransport.js";
 
-// Each child starts with exactly the environment below, optionally loads a
-// .env file at runtime as the generated live agent does, then sends one
-// request with global fetch and one with axios (demosdk's transport) to a
-// local target. It reports what the guard reads: the global dispatchers
-// before and after fetch loads, whether Node gave its global agents a proxy
-// configuration, execArgv and the environment. The parent's proxy and target
-// record which route each request took.
+// Each child starts with exactly the environment below, optionally installs a
+// global Agent of Node's own class whose connector tunnels through a proxy (the
+// shape fetch-socks documents), optionally loads a .env file at runtime as the
+// generated live agent does, then sends one request with global fetch and one
+// with axios (demosdk's transport) to a local target. It reports what the guard
+// reads: the global dispatchers before and after fetch loads, each with the
+// guard's own Node-default check run on the real object, whether Node gave its
+// global agents a proxy configuration, execArgv and the environment. The
+// parent's proxy and target record which route each request took.
 const CHILD = `
-const [rpc, envFile] = process.argv.slice(1);
+const [rpc, checkModule, connectVia, envFile] = process.argv.slice(1);
+const { isNodeDefaultAgent } = await import(checkModule);
 const name = (value) => value === undefined ? null : value?.constructor?.name ?? "";
-const dispatchers = () => ["2", "1"].map(n => name(globalThis[Symbol.for("undici.globalDispatcher." + n)]));
-const before = dispatchers();
+const describe = (value) => value === undefined ? null
+  : { name: name(value), nodeDefault: isNodeDefaultAgent(value) };
+const symbol = (n) => Symbol.for("undici.globalDispatcher." + n);
+const dispatchers = () => ["2", "1"].map(n => describe(globalThis[symbol(n)]));
+let before = dispatchers();
+if (connectVia) {
+  await fetch("data:,").catch(() => undefined);
+  const NodeAgent = (globalThis[symbol("2")] ?? globalThis[symbol("1")]).constructor;
+  const { connect: netConnect } = await import("node:net");
+  const via = new URL(connectVia);
+  const CRLF = String.fromCharCode(13, 10);
+  const connect = (options, callback) => {
+    const socket = netConnect(Number(via.port), via.hostname);
+    const fail = (error) => callback(error, null);
+    const target = options.hostname + ":" + options.port;
+    socket.once("error", fail);
+    socket.once("connect", () => socket.write("CONNECT " + target + " HTTP/1.1" + CRLF + "Host: " + target + CRLF + CRLF));
+    socket.once("data", (chunk) => {
+      socket.off("error", fail);
+      if (String(chunk).startsWith("HTTP/1.1 200")) callback(null, socket);
+      else callback(new Error("tunnel refused"), null);
+    });
+  };
+  const agent = new NodeAgent({ connect });
+  for (const n of ["2", "1"]) if (globalThis[symbol(n)] !== undefined) globalThis[symbol(n)] = agent;
+  // fetch had to load first, so the state before the read is the installed one.
+  before = dispatchers();
+}
 if (envFile) process.loadEnvFile(envFile);
 const headers = (client) => ({ "content-type": "application/json", "x-probe": client });
 await fetch(rpc, { method: "POST", headers: headers("fetch"), body: "{}", signal: AbortSignal.timeout(5000) })
@@ -43,9 +73,10 @@ console.log(JSON.stringify({ before, after: dispatchers(), agents, execArgv: pro
 `;
 
 type Route = "proxy" | "direct";
+type Dispatcher = { name: string; nodeDefault: boolean } | null;
 interface ChildState {
-  before: Array<string | null>;
-  after: Array<string | null>;
+  before: Dispatcher[];
+  after: Dispatcher[];
   agents: Array<{ name: string; proxied: boolean }>;
   execArgv: string[];
   env: Record<string, string>;
@@ -53,6 +84,15 @@ interface ChildState {
 
 // An object whose constructor has the reported name, as the guard sees it.
 const named = (kind: string | null) => kind === null ? undefined : new ({ [kind]: class {} })[kind]!();
+// Where the child's real check found Node's default Agent, a stand-in of that
+// shape; otherwise a stand-in with the reported name, which the check refuses.
+class DispatcherBase {}
+const nodeDefaultAgent = () => Object.assign(new ({ Agent: class extends DispatcherBase {} }).Agent(), {
+  [Symbol("factory")]: function defaultFactory() {},
+  [Symbol("options")]: { connect: undefined },
+});
+const rebuilt = (dispatcher: Dispatcher) =>
+  dispatcher?.nodeDefault === true ? nodeDefaultAgent() : named(dispatcher?.name ?? null);
 const SWITCH_FLAG = process.allowedNodeEnvironmentFlags.has("--use-env-proxy");
 
 describe("Demos CCI proxy route decided from Node's actual startup state", () => {
@@ -77,6 +117,7 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
   let rpc = "";
   let proxyUrl = "";
   let dir = "";
+  let checkModule = "";
 
   const listen = (server: Server) => new Promise<number>(resolve => {
     server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
@@ -86,6 +127,12 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
     rpc = `http://127.0.0.1:${await listen(target)}/rpc`;
     proxyUrl = `http://127.0.0.1:${await listen(proxy)}`;
     dir = mkdtempSync(join(tmpdir(), "dacs-cci-proxy-"));
+    // The guard's Node-default check, transpiled alone for the child to run.
+    const source = readFileSync(new URL("../../src/substrate/nodeDefaultDispatcher.ts", import.meta.url), "utf8");
+    checkModule = join(dir, "nodeDefaultDispatcher.mjs");
+    writeFileSync(checkModule, ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    }).outputText);
   });
 
   afterAll(async () => {
@@ -94,9 +141,10 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function run(startup: Record<string, string>, dotEnv?: Record<string, string>, flags: string[] = []) {
+  async function run(startup: Record<string, string>, dotEnv?: Record<string, string>, flags: string[] = [],
+    connectVia = "") {
     routes.clear();
-    const args = [...flags, "--input-type=module", "-e", CHILD, rpc];
+    const args = [...flags, "--input-type=module", "-e", CHILD, rpc, checkModule, connectVia];
     if (dotEnv !== undefined) {
       const file = join(dir, `${Object.keys(startup).join("-")}.env`);
       writeFileSync(file, Object.entries(dotEnv).map(([name, value]) => `${name}=${value}\n`).join(""));
@@ -113,8 +161,8 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
       child.on("close", code => (code === 0 ? resolve(out) : reject(new Error(`child exited ${code}: ${err}`))));
     });
     const child = JSON.parse(stdout.trim().split("\n").pop()!) as ChildState;
-    const state = (dispatchers: Array<string | null>): NodeRouteState => ({
-      dispatchers: [named(dispatchers[0]!), named(dispatchers[1]!)],
+    const state = (dispatchers: Dispatcher[]): NodeRouteState => ({
+      dispatchers: [rebuilt(dispatchers[0]!), rebuilt(dispatchers[1]!)],
       agents: child.agents.map(({ name, proxied }) =>
         Object.assign(named(name) ?? {}, { options: proxied ? { proxyEnv: {} } : {} })),
       execArgv: child.execArgv,
@@ -137,6 +185,8 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
       fromState: fetchProxyMismatch(rpc, withoutSwitch, state(child.after)),
       httpsMismatch: fetchProxyMismatch("https://node.example.test/", child.env, state(child.after)),
       switchApplied: child.agents.some(agent => agent.proxied),
+      // The real check on each dispatcher left under .2 and .1 (null if none).
+      nodeDefault: child.after.map(dispatcher => dispatcher?.nodeDefault ?? null),
       fetchRoute: fetchRoute?.[0],
       axiosRoute: axiosRoute?.[0],
     };
@@ -146,6 +196,15 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
     const result = await run({});
     expect(result).toMatchObject({ mismatch: undefined, fetchRoute: "direct", axiosRoute: "direct" });
     expect(result.httpsMismatch).toBeUndefined();
+    // Node's real default Agent passes the check: under .1 on Node 20-22, under
+    // both symbols on 24, and under .2 (beside its wrapper under .1) on 26.
+    expect(result.nodeDefault).toContain(true);
+  });
+
+  it("refuses a global Agent whose connector tunnels through a proxy, as fetch-socks installs", async () => {
+    const result = await run({}, undefined, [], proxyUrl);
+    expect(result).toMatchObject({ mismatch: DEMOS_CCI_ROUTE_UNVERIFIED, fetchRoute: "proxy", axiosRoute: "direct" });
+    expect(result.nodeDefault).not.toContain(true);
   });
 
   it.each([

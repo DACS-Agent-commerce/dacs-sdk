@@ -3,6 +3,7 @@ import https from "node:https";
 
 import { DacsError, SubstrateError, TransientError } from "../errors.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
+import { isNodeDefaultDispatcher } from "./nodeDefaultDispatcher.js";
 
 /** Default and hard maximum for one raw GCR identity response (2 MiB). */
 export const DEMOS_CCI_MAX_RESPONSE_BYTES = DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes;
@@ -144,6 +145,8 @@ function responseTooLarge(): DacsError {
 
 // Follow x402Outbound's bounded-read pattern: check declared length, then
 // count and own each streamed chunk before retaining it. Never call json().
+// Peak memory per read is about 2 × maxBytes (the chunks, then their copy into
+// one buffer) plus the one transport chunk that is checked before it is kept.
 async function consumeBoundedBody(
   response: Response,
   maxBytes: number,
@@ -329,14 +332,6 @@ function nodeRouteState(): NodeRouteState {
 const className = (value: unknown) =>
   (value as { constructor?: { name?: unknown } } | null | undefined)?.constructor?.name;
 
-// Node's default dispatcher, which connects directly: not loaded yet, or an
-// Agent, which Node 26 also wraps in a Dispatcher1Wrapper under ".1".
-function defaultDispatcher([current, legacy]: readonly [unknown, unknown]): boolean {
-  if (current !== undefined && className(current) !== "Agent") return false;
-  return legacy === undefined || className(legacy) === "Agent" ||
-    current !== undefined && className(legacy) === "Dispatcher1Wrapper";
-}
-
 // With NODE_USE_ENV_PROXY=1 or --use-env-proxy, Node 22.21+ also proxies the
 // global agents Axios connects through "directly", from a snapshot of the
 // environment taken at startup and by Node's own NO_PROXY rules.
@@ -354,8 +349,8 @@ function nodeMayProxyAxios(env: NodeJS.ProcessEnv, state: NodeRouteState): boole
  * with Node's proxy switch on, Node's proxy-aware global agents; fetch follows
  * the global dispatcher. Node's proxy rules differ by release and its startup
  * snapshot can't be read, so none is emulated: global fetch is used only while
- * the dispatcher is Node's default Agent, the switch is off and Axios would
- * connect directly.
+ * the dispatcher is Node's default `new Agent()` (no connector, factory or other
+ * option), the switch is off and Axios would connect directly.
  */
 export function fetchProxyMismatch(
   rpc: string,
@@ -368,7 +363,7 @@ export function fetchProxyMismatch(
   } catch {
     return undefined;
   }
-  if (!defaultDispatcher(state.dispatchers) || nodeMayProxyAxios(env, state)) {
+  if (!isNodeDefaultDispatcher(state.dispatchers) || nodeMayProxyAxios(env, state)) {
     return DEMOS_CCI_ROUTE_UNVERIFIED;
   }
   return axiosUsesProxy(url, env) ? DEMOS_CCI_PROXY_BYPASS : undefined;

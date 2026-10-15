@@ -286,7 +286,7 @@ describe("Demos CCI raw response boundary", () => {
     const { adapter, transport } = adapterFor(new Response("invalid-json-sentinel"));
     const error = await adapter.resolveIdentity("subject").catch((error: unknown) => error);
     expect(error).toBeInstanceOf(DacsError);
-    expect(error).toMatchObject({ message: "Demos GCR identity response is not valid UTF-8 JSON" });
+    expect(error).toMatchObject({ message: "Demos GCR identity response is not valid UTF-8 JSON", category: "permanent" });
     expect(error).not.toHaveProperty("cause");
     expect(transport).toHaveBeenCalledOnce();
   });
@@ -590,8 +590,22 @@ describe("Demos CCI raw response boundary", () => {
   });
 });
 
-// Stand-ins named like the objects Node can have installed.
-class Agent {}
+// Stand-ins named like the objects Node can have installed. Agent has the shape
+// undici 6-8 leave on Node's default `new Agent()`: undici's default factory and
+// options holding nothing but undefined values and undici 7-8's maxOrigins.
+const kFactory = Symbol("factory");
+const kOptions = Symbol("options");
+class DispatcherBase {}
+class Agent extends DispatcherBase {
+  [kFactory]: unknown;
+  [kOptions]: Record<string, unknown>;
+  constructor({ factory = function defaultFactory() {}, maxOrigins = Infinity, connect = undefined,
+    ...options }: Record<string, unknown> = {}) {
+    super();
+    this[kFactory] = factory;
+    this[kOptions] = { ...options, maxOrigins, connect };
+  }
+}
 class Dispatcher1Wrapper {}
 class EnvHttpProxyAgent {}
 class ProxyAgent {}
@@ -606,7 +620,8 @@ const routeState = (dispatchers: Dispatchers, agents: unknown[] = [plainAgent(),
 // line leaves it once fetch has loaded (probed on 20.19, 22.23, 24.21, 26.11).
 const DEFAULT_DISPATCHERS: Array<[string, Dispatchers]> = [
   ["before fetch loads", [undefined, undefined]],
-  ["Node 20 and 22", [undefined, new Agent()]],
+  // undici 6 keeps no maxOrigins option.
+  ["Node 20 and 22", [undefined, Object.assign(new Agent(), { [kOptions]: { connect: undefined, interceptors: undefined } })]],
   ["Node 24", [new Agent(), new Agent()]],
   ["Node 26", [new Agent(), new Dispatcher1Wrapper()]],
 ];
@@ -680,6 +695,16 @@ describe("Demos CCI proxy route: global fetch against demosdk's Axios", () => {
       [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.1.5" }, "http://localhost/", BYPASS],
       [{ HTTP_PROXY: P, NO_PROXY: "127.0.0.256" }, "http://localhost/", BYPASS],
       [{ HTTP_PROXY: P, NO_PROXY: "10.0.0.1" }, "http://localhost/", BYPASS],
+      // Decided by the installed proxy-from-env 2.1.0 and axios 1.17.0.
+      [{ HTTPS_PROXY: P, no_proxy: "other.example", NO_PROXY: "node.example" }, HTTPS, BYPASS],
+      [{ HTTPS_PROXY: P, NO_PROXY: "other.test,*example" }, HTTPS, undefined],
+      [{ HTTPS_PROXY: P, NO_PROXY: "*example:8443" }, HTTPS, undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "localhost" }, "http://[1::ffff:7f00:1]/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "0:0:0:0:0:0:0:1:5" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "0::0:0:0:0:0:1" }, "http://localhost/", BYPASS],
+      [{ HTTP_PROXY: P, NO_PROXY: "0:0:0:0:0:ffff:10.0.0.1" }, "http://10.0.0.1/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "10.0.0.200" }, "http://[::ffff:10.0.0.200]/", undefined],
+      [{ HTTP_PROXY: P, NO_PROXY: "[::1]x:8080" }, "http://[::1]:8080/", undefined],
       [{ HTTPS_PROXY: P }, "not a url", undefined],
       // Node's proxy switch: Node may proxy Axios itself, from a startup
       // snapshot this check can't read. Node reads only NODE_USE_ENV_PROXY=1.
@@ -710,6 +735,25 @@ describe("Demos CCI proxy route: global fetch against demosdk's Axios", () => {
     ["null under .1", [undefined, null]],
     ["a plain object", [undefined, {}]],
     ["an object without a prototype", [Object.create(null) as unknown, undefined]],
+    // An Agent that is not Node's bare `new Agent()` may route anywhere.
+    ["fetch-socks' Agent with a proxying connector", [undefined, new Agent({ connect: () => undefined })]],
+    ["fetch-socks' Agent under .2", [new Agent({ connect: () => undefined }), new Dispatcher1Wrapper()]],
+    ["an Agent with a custom factory", [new Agent({ factory: () => undefined }), new Agent()]],
+    ["an Agent with a socket path", [undefined, new Agent({ socketPath: "/run/proxy.sock" })]],
+    ["an Agent with connect options", [undefined, new Agent({ connect: { socketPath: "/run/proxy.sock" } })]],
+    ["an Agent with undici 6 interceptors", [undefined, new Agent({ interceptors: { Agent: [] } })]],
+    ["an Agent with any other option", [undefined, new Agent({ keepAliveTimeout: 1 })]],
+    ["an Agent with a lower maxOrigins", [new Agent({ maxOrigins: 1 }), new Agent({ maxOrigins: 1 })]],
+    ["a composed Agent, which undici 7-8 return as a Proxy", [new Proxy(new Agent(), {}), new Dispatcher1Wrapper()]],
+    ["a composed Agent under .1", [undefined, new Proxy(new Agent(), {})]],
+    ["an Agent subclass named Agent", [undefined, new ({ Agent: class extends Agent {} }).Agent()]],
+    ["an Agent with its own dispatch", [undefined, Object.assign(new Agent(), { dispatch() {} })]],
+    ["another class named Agent", [undefined, new ({ Agent: class {} }).Agent()]],
+    ["an Agent whose options are an accessor", [undefined, Object.defineProperty(new Agent(), kOptions, { get: () => ({}) })]],
+    ["an Agent whose option is an accessor", [undefined,
+      Object.assign(new Agent(), { [kOptions]: Object.defineProperty({}, "connect", { get: () => undefined }) })]],
+    ["an Agent with a factory of another name", [undefined, Object.assign(new Agent(), { [kFactory]: () => undefined })]],
+    ["an Agent without options", [undefined, Object.assign(new Agent(), { [kOptions]: null })]],
   ])("refuses %s", (_kind, dispatchers) => {
     for (const env of [{}, { HTTP_PROXY: P }, { HTTPS_PROXY: P }]) {
       expect(fetchProxyMismatch(HTTPS, env, routeState(dispatchers))).toBe(UNVERIFIED);
@@ -844,6 +888,12 @@ describe("Demos CCI default transport and the environment proxy", () => {
     expect(inspect(error)).not.toMatch(/secret|proxy\.example|node\.example/);
     expect(globalFetch).not.toHaveBeenCalled();
     expect(sign).not.toHaveBeenCalled();
+  });
+
+  it("reads Node's live http.globalAgent as well as its https agent", () => {
+    stubProxyEnvironment({}, [undefined, undefined],
+      { agents: [switchedAgent({ HTTP_PROXY: SECRET_PROXY }), new nodeHttps.Agent()] });
+    expect(fetchProxyMismatch("http://node.example/")).toBe(DEMOS_CCI_ROUTE_UNVERIFIED);
   });
 
   it("states the remedy in its stable messages", () => {
