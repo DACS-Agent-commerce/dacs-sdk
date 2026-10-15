@@ -853,7 +853,7 @@ describe("dacs bin", () => {
   describe("built CLI with the installed Demos SDK", () => {
     type Reply = { status: number; type: string; body: string };
     async function withRpc(
-      reply: (method: string | undefined, body: string) => Reply,
+      reply: (method: string | undefined, body: string) => Reply | null,
       run: (url: string, seen: Array<{ method?: string; body: string }>) => Promise<void>,
     ): Promise<void> {
       const seen: Array<{ method?: string; body: string }> = [];
@@ -863,23 +863,25 @@ describe("dacs bin", () => {
         req.on("end", () => {
           seen.push({ method: req.method, body });
           const out = reply(req.method, body);
-          res.writeHead(out.status, { "content-type": out.type }).end(out.body);
+          // null: hold the request open and never answer.
+          if (out !== null) res.writeHead(out.status, { "content-type": out.type }).end(out.body);
         });
       });
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       try {
         await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen);
       } finally {
+        server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
     }
 
-    function runBuiltDoctor(rpc: string): Promise<{ code: number | null; report: DoctorReport }> {
+    function runBuiltDoctor(rpc: string, timeout = 90_000): Promise<{ code: number | null; report: DoctorReport }> {
       // Keep demosdk's HTTP client off any proxy so it reaches the local fixture.
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/_proxy$/i.test(key)));
       return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [join(process.cwd(), "dist", "bin", "dacs.js"), "doctor", "--json",
-          "--rpc", rpc, "--rail", "pay-dem"], { env: { ...env, NODE_NO_WARNINGS: "1" }, timeout: 90_000 });
+          "--rpc", rpc, "--rail", "pay-dem"], { env: { ...env, NODE_NO_WARNINGS: "1" }, timeout });
         let stdout = "";
         child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
         child.on("error", reject);
@@ -946,6 +948,33 @@ describe("dacs bin", () => {
         });
         expect(report.checks.some((c) => c.id === "rpc.node-revision")).toBe(false);
         expect(code).toBe(3);
+      });
+    }, 120_000);
+
+    it("returns its report and exits when the node stalls the non-blocking revision call", async () => {
+      const node = demosNode({
+        getLastBlockNumber: { result: 200, response: 4242, require_reply: false, extra: null },
+      });
+      await withRpc((method, body) => {
+        if (method === "GET") return node(method, body);
+        const request = JSON.parse(body) as { params?: Array<{ message?: string }> };
+        return request.params?.[0]?.message === "getNetworkInfo" ? null : node(method, body);
+      }, async (url, seen) => {
+        // The spawn is killed (code null) if the CLI keeps waiting on the stalled call.
+        const { code, report } = await runBuiltDoctor(url, 45_000);
+        expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+          status: "pass", data: { lastBlockNumber: 4242 },
+        });
+        expect(report.checks.find((c) => c.id === "rpc.node-revision")).toEqual({
+          id: "rpc.node-revision", status: "warn", summary: "Node did not report its build revision in time",
+          detail: "getNetworkInfo did not answer within 5000 ms",
+          remediation: "Compare the node's Demos build with the verified revision before relying on this doctor's RPC verdict.",
+          data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: null },
+        });
+        expect(code).toBe(5);
+        expect(seen.filter((r) => r.method !== "GET").map((r) => (JSON.parse(r.body) as {
+          params?: Array<{ message?: string }>;
+        }).params?.[0]?.message)).toEqual(["getLastBlockNumber", "getNetworkInfo"]);
       });
     }, 120_000);
 

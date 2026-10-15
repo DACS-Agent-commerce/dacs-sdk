@@ -228,18 +228,42 @@ function reportedNodeBuild(info: unknown): ReportedNodeBuild | null {
   };
 }
 
+/**
+ * demosdk's node calls set no request timeout and cannot be cancelled, so stop
+ * waiting for this non-blocking query after a bounded time rather than let a node
+ * that answers the height call but stalls this one hold the whole report.
+ */
+export const NODE_REVISION_TIMEOUT_MS = 5_000;
+const NODE_REVISION_TIMED_OUT = Symbol("node revision timed out");
+
 async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null): Promise<DoctorCheck> {
   const remediation = "Compare the node's Demos build with the verified revision before relying on this doctor's RPC verdict.";
   if (!adapter.getNetworkInfo) {
     return check(RPC_NODE_REVISION, "skip", "The adapter cannot read the node build revision");
   }
   let reported: ReportedNodeBuild | null = null;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    reported = reportedNodeBuild(await adapter.getNetworkInfo());
+    const answer = await Promise.race([
+      adapter.getNetworkInfo(),
+      new Promise<typeof NODE_REVISION_TIMED_OUT>((resolve) => {
+        timer = setTimeout(resolve, NODE_REVISION_TIMEOUT_MS, NODE_REVISION_TIMED_OUT);
+      }),
+    ]);
+    if (answer === NODE_REVISION_TIMED_OUT) timedOut = true;
+    else reported = reportedNodeBuild(answer);
   } catch {
     // Untrusted transport failures are reported as an unknown build.
+  } finally {
+    clearTimeout(timer);
   }
   const data = { verified: pinned, reported };
+  if (timedOut) {
+    return check(RPC_NODE_REVISION, "warn", "Node did not report its build revision in time", {
+      data, detail: `getNetworkInfo did not answer within ${NODE_REVISION_TIMEOUT_MS} ms`, remediation,
+    });
+  }
   if (!pinned || !reported?.commit) {
     return check(RPC_NODE_REVISION, "warn", "Node build revision could not be compared with the verified revision", {
       data, remediation,

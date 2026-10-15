@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 
 import { formatDoctorText, redactRpcUrl, runDoctor } from "../../src/cli/index.js";
 
-import { runDoctorForCli, VERIFIED_DEMOS_NODE_REVISION } from "../../src/cli/doctor.js";
+import { NODE_REVISION_TIMEOUT_MS, runDoctorForCli, VERIFIED_DEMOS_NODE_REVISION } from "../../src/cli/doctor.js";
 import type { DoctorSecretFile } from "../../src/cli/secretFile.js";
 import { VERSION } from "../../src/version.js";
 
@@ -107,6 +107,16 @@ describe("dacs doctor", () => {
     expect(link.checks.find((c) => c.id === "config.wallet-file.mode")).toMatchObject({
       status: "skip", summary: "Credential file mode check is unavailable because the file was not opened",
     });
+    // A symlink's owner and mode are never judged, even when metadata is present.
+    const linkWithMetadata = await runDoctorForCli({ offline: true }, [{ ...inspectedFile, symlink: true,
+      ownerUid: 1001 }]);
+    expect(linkWithMetadata.checks.filter((c) => c.id.startsWith("config.wallet-file."))).toEqual([
+      { id: "config.wallet-file.symlink", status: "fail", summary: "Credential file is a symbolic link",
+        remediation: "Use a regular credential file directly." },
+      { id: "config.wallet-file.mode", status: "skip",
+        summary: "Credential file mode check is unavailable because the file was not opened" },
+      { id: "config.wallet-file.owner", status: "skip", summary: "Credential file owner check is unavailable" },
+    ]);
   });
 
   it("applies the host's mode rule to Windows files instead of skipping it", async () => {
@@ -456,6 +466,57 @@ describe("dacs doctor", () => {
       expect(await revision()).toEqual({
         id: "rpc.node-revision", status: "skip", summary: "The adapter cannot read the node build revision",
       });
+    });
+
+    it.each([
+      ["a prefixed commit", { commit: `x${VERIFIED_DEMOS_NODE_REVISION}`, version: "0.9.8", dirty: false }],
+      ["a suffixed commit", { commit: `${VERIFIED_DEMOS_NODE_REVISION}\n`, version: "0.9.8", dirty: false }],
+      ["an uppercase commit", { commit: VERIFIED_DEMOS_NODE_REVISION.toUpperCase(), version: "0.9.8", dirty: false }],
+      ["a commit array", { commit: [VERIFIED_DEMOS_NODE_REVISION], version: "0.9.8", dirty: false }],
+    ])("never echoes or accepts %s", async (_label, nodeVersion) => {
+      expect(await revision(build(nodeVersion))).toEqual({
+        id: "rpc.node-revision", status: "warn",
+        summary: "Node build revision could not be compared with the verified revision", remediation,
+        data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: { commit: null, version: "0.9.8", dirty: false } },
+      });
+    });
+
+    it.each([
+      ["a string", "x"], ["a number", 7], ["null", null],
+    ])("reports no build for a nodeVersion that is %s", async (_label, nodeVersion) => {
+      expect((await revision(build(nodeVersion)))?.data).toEqual({
+        verified: VERIFIED_DEMOS_NODE_REVISION, reported: null,
+      });
+    });
+
+    it("stops waiting for a node that never answers and still returns the report", async () => {
+      vi.useFakeTimers();
+      try {
+        let settled = false;
+        const pending = revision(() => new Promise<never>(() => {})).finally(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(NODE_REVISION_TIMEOUT_MS - 1);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await pending).toEqual({
+          id: "rpc.node-revision", status: "warn", summary: "Node did not report its build revision in time",
+          detail: "getNetworkInfo did not answer within 5000 ms", remediation,
+          data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: null },
+        });
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears its deadline once the node answers", async () => {
+      vi.useFakeTimers();
+      try {
+        const check = await revision(build({ commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false }));
+        expect(check?.status).toBe("pass");
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

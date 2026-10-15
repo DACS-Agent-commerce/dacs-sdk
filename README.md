@@ -934,7 +934,9 @@ read-only `getNetworkInfo` node call and compares its commit with the
 (`61b8e75aa8db5e408c49e1c3a89db4d673f45578`). It passes only for that commit
 with a clean build. A different, unreported, or uncommitted build reports
 `warn`, which does not change the exit code: the RPC verdict was not verified
-against that node source.
+against that node source. demosdk sets no request timeout, so the doctor stops
+waiting for this non-blocking call after 5 seconds, reports `warn`, and still
+returns its report.
 
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.
@@ -989,7 +991,7 @@ offline mode, which makes no connections, writes, or payments.
 | `config.{rpc,wallet}-file.owner` | pass, fail, skip (symlink, or no user ID) | `ownerUid`, `currentUid` |
 | `substrate.adapter-load` | pass, fail | none |
 | `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail, skip | `rpc` (redacted) unless skipped; `lastBlockNumber` on pass |
-| `rpc.node-revision` | pass, warn, skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`commit`, `version`, `dirty`, or `null`) |
+| `rpc.node-revision` | pass, warn (including no answer within 5 s), skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`commit`, `version`, `dirty`, or `null`) |
 | `wallet.identity` | pass, skip | `address` |
 | `wallet.balance`, `wallet.nonce`, `storage.binding-resolution`, `anchor.completion`, `cost.estimate` | blocked | none |
 | `rail.availability` | warn, fail, skip | `rail`, `known`, or `availability` |
