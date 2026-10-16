@@ -3,6 +3,10 @@ import { describe, expect, test } from "vitest";
 import {
   canonicalize,
   contentHash,
+  attestationAddress,
+  listingAddress,
+  paymentEvidenceAddress,
+  ratingAddress,
   sha256Hex,
 } from "../../src/canonical/index.js";
 import {
@@ -235,6 +239,66 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       /trimmed and NFC-normalized/,
     );
     expect(backend.writes).toBe(0);
+  });
+
+  test.each(["", " ", "\t"])("rejects an empty logical key %j with an explicit storage name", async (address) => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const writer = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    await expect(writer.write(address, RECORD, { storageName: "opaque" }))
+      .rejects.toThrow("logicalAddress must not be empty");
+    expect(backend.writes).toBe(0);
+    expect(bindings.snapshot()).toEqual([]);
+  });
+
+  test("retains NFC validation for custom logical keys", async () => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const writer = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    expect((await writer.write("custom:café", RECORD)).status).toBe("published");
+    await expect(writer.write("custom:cafe\u0301", RECORD))
+      .rejects.toThrow(/trimmed and NFC-normalized/);
+    expect(backend.writes).toBe(1);
+  });
+
+  test.each([
+    ["colon + combining acute", "did:web:\u0301x"],
+    ["question mark + combining dot", "evm?\u0307x"],
+    ["equals + combining dot", "evm=\u0307x"],
+  ])("publishes and reads exact CF-4 keys with %s", async (_name, value) => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const writer = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    const reader = createBoundArtifactRepository({
+      adapter: fakeAdapter("0xreader", backend), index: bindings, publisher: bindings,
+    });
+    const job = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+    const addresses = [
+      listingAddress(value, "svc", 1),
+      attestationAddress(job, "cci-xm", value, 1),
+      paymentEvidenceAddress(job, value, 0),
+      ratingAddress(job, value),
+    ];
+    for (const address of addresses) {
+      expect(value.normalize("NFC")).toBe(value);
+      expect(address.normalize("NFC")).not.toBe(address);
+      const written = await writer.write(address, RECORD);
+      expect(written.status).toBe("published");
+      expect(written.binding.logicalAddress).toBe(address);
+      expect(backend.anchorMetadata.at(-1)?.logicalAddress).toBe(address);
+      expect(await reader.read(address, SELLER, () => true)).toEqual({
+        status: "verified", nativeAddress: written.anchor.address, record: RECORD,
+      });
+      expect(await reader.read(address.normalize("NFC"), SELLER, () => true))
+        .toEqual({ status: "absent" });
+    }
+    expect(backend.writes).toBe(addresses.length);
   });
 
   test("publication failure is indeterminate and a retry does not duplicate the anchor", async () => {

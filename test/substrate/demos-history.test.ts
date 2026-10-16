@@ -516,6 +516,46 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     });
   });
 
+  test("a boundary hash moved to an older timestamp cannot authorize continuation", async () => {
+    let rows = [
+      row({ hash: "tx-head", timestamp: 9 }),
+      row({ hash: "tx-boundary", timestamp: 5 }),
+      row({ hash: "tx-older", timestamp: 1 }),
+    ];
+    const fetchPage = createDemosHistoryPageFetcher(
+      clientWith(async (_owner, _type, { start, limit }) => rows.slice(start, start + limit)),
+      OWNER,
+    );
+    const first = await fetchPage(null, 2);
+    expect(first.nextCursor).not.toBeNull();
+    rows = [
+      rows[0]!,
+      row({ hash: "tx-replacement", timestamp: 5 }),
+      row({ hash: "tx-boundary", timestamp: 1 }),
+    ];
+    expect(await scanAnchorPage(fetchPage, first.nextCursor, { limit: 2 })).toMatchObject({
+      status: "indeterminate", code: "history-restart-required", cursor: first.nextCursor,
+    });
+  });
+
+  test("an older row reusing an emitted hash still exposes conflicting metadata", async () => {
+    const rows = [
+      row({ hash: "tx-head", timestamp: 9, nativeAddress: NATIVE_2 }),
+      row({ hash: "tx-reused", timestamp: 5, logicalAddress: "dacs1:s:svc:v1" }),
+      row({ hash: "tx-reused", timestamp: 1, logicalAddress: "dacs1:s:other:v1" }),
+    ];
+    const fetchPage = createDemosHistoryPageFetcher(
+      clientWith(async (_owner, _type, { start, limit }) => rows.slice(start, start + limit)),
+      OWNER,
+    );
+    const first = await fetchPage(null, 2);
+    expect(first.nextCursor).not.toBeNull();
+    expect(await scanAnchorPage(fetchPage, first.nextCursor, { limit: 2 })).toEqual({
+      status: "indeterminate", code: "metadata-conflict", cursor: first.nextCursor,
+      reason: `page fetch failed: Demos history assigns conflicting logical metadata to ${NATIVE_1}`,
+    });
+  });
+
   const v2 = (payload: Record<string, unknown>) =>
     `dacs-demos-history-v2.${Buffer.from(JSON.stringify(payload)).toString("base64url")}`;
   const valid = { v: 2, owner: OWNER, offset: 2, boundaryTimestamp: "5", boundaryTxHashes: ["tx-a", "tx-b"] };

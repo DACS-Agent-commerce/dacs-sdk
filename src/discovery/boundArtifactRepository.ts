@@ -20,6 +20,7 @@ import {
   type VerifiedReadDeps,
 } from "./verifiedRead.js";
 import { normalizedBindingOwner } from "./owner.js";
+import { classifyAnchor } from "./scanner.js";
 
 /** Minimal substrate seam needed for binding-aware immutable artifacts. */
 export interface BoundArtifactAdapter {
@@ -234,11 +235,18 @@ export function createBoundArtifactRepository(
 ): BoundArtifactRepository {
   return {
     async write(logicalAddress, artifact, options) {
-      const canonicalLogicalAddress = logicalAddress.trim().normalize("NFC");
-      if (canonicalLogicalAddress.length === 0) {
+      if (logicalAddress.trim().length === 0) {
         throw new Error("logicalAddress must not be empty");
       }
-      if (logicalAddress !== canonicalLogicalAddress) {
+      // CF-4 checks NFC on decoded variable segments. An escape's trailing hex
+      // letter can compose with a following combining mark, so normalizing the
+      // encoded key would change an already-canonical address. Classification
+      // validates those segments; keep the existing NFC rule for other keys.
+      if (
+        logicalAddress !== logicalAddress.trim() ||
+        (logicalAddress.normalize("NFC") !== logicalAddress &&
+          classifyAnchor(logicalAddress) === "unknown")
+      ) {
         throw new Error("logicalAddress must be trimmed and NFC-normalized");
       }
       const owner = deps.adapter.getAddress();

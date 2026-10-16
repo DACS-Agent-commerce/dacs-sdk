@@ -959,6 +959,9 @@ controls (U+0080–U+009F) and lone surrogates in variable identifiers, in addit
 to whitespace, other controls and non-NFC text. Validate inputs before calling
 these builders or handle their `DacsError`. NFC is checked on the decoded value,
 before CF-4 delimiter encoding; discovery applies the same text rule.
+The bound repository applies that segment validation to recognized CF-4 keys
+and publishes the exact encoded address, preserving its bytes even when the
+encoded form itself is not NFC.
 Large timestamp groups still have the 100-row window limit described above;
 repeated boundary restarts require an operational alert.
 
@@ -1249,7 +1252,8 @@ unstable `raw` escape hatch when they intentionally depend on demosdk types.
 
 `npm pack` runs a clean build before it creates the tarball, so a package made
 from a source checkout contains every declared ESM, type, and CLI export. To
-reproduce the release-candidate checks locally:
+reproduce the release-candidate checks locally, install Bun 1.3.14 alongside
+Node and npm. This is the Bun version pinned by the package-artifact CI workflow:
 
 ```sh
 npm ci

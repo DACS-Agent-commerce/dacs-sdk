@@ -47,6 +47,36 @@ describe("CF-4 logical addressing (§6.3.4)", () => {
     expect(listingAddress("a", "b", "v3")).toBe("dacs1:a:b:v3");
   });
 
+  test("accepts bare string versions and the legacy numeric zero version", () => {
+    expect(listingAddress("a", "b", "3")).toBe("dacs1:a:b:v3");
+    expect(listingAddress("a", "b", 0)).toBe("dacs1:a:b:v0");
+  });
+
+  test.each([-1, 1.5])("rejects invalid numeric Listing version %s", (version) => {
+    expect(() => listingAddress("a", "b", version)).toThrow(/non-negative integer/);
+  });
+
+  test.each(["", "cafe\u0301"])("rejects noncanonical structural jobId %j", (job) => {
+    expect(() => attestationAddress(job, "lei", "id", 1)).toThrow(/jobId/);
+    expect(() => paymentEvidenceAddress(job, "rail", 0)).toThrow(/jobId/);
+    expect(() => ratingAddress(job, "rater")).toThrow(/jobId/);
+  });
+
+  test("rejects empty variable values at every strict builder", () => {
+    expect(() => attestationAddress("job", "lei", "", 1)).toThrow(/identifier/);
+    expect(() => paymentEvidenceAddress("job", "", 0)).toThrow(/railId/);
+    expect(() => ratingAddress("job", "")).toThrow(/rater/);
+  });
+
+  test.each(["1lei", "lei!"])("rejects scheme junk %s at either boundary", (scheme) => {
+    expect(() => attestationAddress("job", scheme, "id", 1)).toThrow(/scheme/);
+  });
+
+  test.each([null, 0, 1, "true", {}])("rejects nonboolean resolved flag %j", (resolved) => {
+    expect(() => paymentEvidenceAddress("job", "rail", 0, resolved as boolean))
+      .toThrow(/resolved flag must be boolean/);
+  });
+
   test("assembles DACS-2 attestation addresses with only the identifier encoded", () => {
     expect(
       attestationAddress("job-abc", "cci-xm", "evm:mainnet:0x1234", 3),

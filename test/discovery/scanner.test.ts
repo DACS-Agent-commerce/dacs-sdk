@@ -332,6 +332,15 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
     });
   });
 
+  test("a throwing error code getter stays retryable at the input cursor", async () => {
+    const error = Object.defineProperty(new Error("hidden"), "code", {
+      get() { throw new Error("code trap"); },
+    });
+    expect(await scanAnchorPage(async () => { throw error; }, "start")).toEqual({
+      status: "indeterminate", reason: "page fetch failed: hidden", cursor: "start",
+    });
+  });
+
   test("snapshots logicalMetadata once before checking and retaining metadata", async () => {
     const retained = new Map([["stor-a", "dacs1:s:a:v1"]]);
     const empty = new Map<string, string>();
