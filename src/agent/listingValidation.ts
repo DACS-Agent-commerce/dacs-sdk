@@ -33,6 +33,7 @@ import {
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
+  snapshotCanonicalJsonReceived,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
@@ -428,7 +429,7 @@ export async function checkListingRevocation(
 ): Promise<RevocationCheckResult> {
   try {
     deps = captureRevocationDeps(deps);
-    listing = snapshotCanonicalJson(listing, "revocation Listing");
+    listing = snapshotCanonicalJsonReceived(listing, "revocation Listing");
     if (!isListingEnvelope(listing)) {
       return { disposition: "indeterminate", reason: "malformed-revocation-listing" };
     }
@@ -954,7 +955,7 @@ export async function resolveListingPayloadVerificationCapability(
   }
   let listingSnapshot: Listing | ListingDraft;
   try {
-    listingSnapshot = snapshotCanonicalJson(
+    listingSnapshot = snapshotCanonicalJsonReceived(
       listing,
       "payload verification capability Listing",
     );
@@ -1192,7 +1193,10 @@ export async function validateListingArtifact(
   const deps = captureListingValidationDeps(inputDeps);
   let capturedRaw: Record<string, unknown>;
   try {
-    capturedRaw = snapshotCanonicalJson(raw, "Listing validation artifact");
+    capturedRaw = snapshotCanonicalJsonReceived(
+      raw,
+      "Listing validation artifact",
+    );
   } catch {
     return { disposition: "rejected", step: 1, reason: "schema-invalid" };
   }
@@ -1709,7 +1713,7 @@ export async function assessListingReachability(
   }
   let listing: Listing;
   try {
-    listing = snapshotCanonicalJson(inputListing, "reachability Listing");
+    listing = snapshotCanonicalJsonReceived(inputListing, "reachability Listing");
   } catch {
     return { status: "indeterminate", checkedAt: 0, reason: "listing-malformed" };
   }

@@ -10,6 +10,7 @@ import {
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
+  snapshotCanonicalJsonReceived,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -2775,7 +2776,7 @@ export async function runSessionCore(
   }
   let storedRecord: Record<string, unknown>;
   try {
-    storedRecord = snapshotCanonicalJson(
+    storedRecord = snapshotCanonicalJsonReceived(
       stored as Record<string, unknown>,
       `listing at ${listingRef}`,
     );

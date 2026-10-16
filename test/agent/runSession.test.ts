@@ -14,6 +14,7 @@ import type {
   VerificationDecision,
 } from "../../src/artifacts/types.js";
 import {
+  admitRawJson,
   canonicalize,
   contentHash,
   encodeAddressSegment,
@@ -558,6 +559,46 @@ describe("runSession orchestration (T4)", () => {
     // The reduced Agreement is anchored first; the invalid component signature
     // is rejected before SettlementEvidence or bundle publication.
     expect(anchors).toBe(1);
+  });
+
+  test("starts from a stored Listing whose admitted bytes spell zero as negative zero", async () => {
+    const normative = {
+      ...normativeDpaListing(),
+      futureOptionalMetadata: { floor: 0, weights: [0] },
+    } as Listing;
+    const text = JSON.stringify(normative).replace(
+      '"futureOptionalMetadata":{"floor":0,"weights":[0]}',
+      '"futureOptionalMetadata":{"floor":-0.0,"weights":[-0]}',
+    );
+    expect(text).toContain('"floor":-0.0');
+    const stored = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
+    expect(
+      Object.is((stored.futureOptionalMetadata as { floor: number }).floor, -0),
+    ).toBe(true);
+    const res = await runSessionCore(
+      "stor-normative-v7",
+      {
+        ...TERMS,
+        price: { ...TERMS.price, rail: "x402:default" },
+      },
+      makeDeps({
+        readListing: async () => stored,
+        validateListing: () => verifiedAdmissionFor(normative),
+        settle: async () => ({
+          ok: true,
+          txHash: "0xabc",
+          chainId: "eip155:8453",
+          payer: "0xbob",
+          payee: "0xalice",
+        }),
+      }),
+    );
+    expect(res).toMatchObject({ outcome: "completed" });
+    expect(res.listingPin).toEqual({
+      listingId: "market-data-vendor",
+      version: 7,
+      contentHash: contentHash(normative as unknown as Record<string, unknown>),
+    });
   });
 
   test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {

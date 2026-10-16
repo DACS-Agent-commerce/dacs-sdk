@@ -211,6 +211,18 @@ export function snapshotCanonicalJson<T>(value: T, label: string): T {
 }
 
 /**
+ * Own one received protocol artifact handed directly to a verifier or reader.
+ * This is {@link snapshotCanonicalJson} with one difference: CORE §B.2 admits
+ * negative zero as a JSON number that serialises as `0`, so a CF-5-admitted
+ * `-0.0` is owned as `0` instead of being refused as an authoring alias. The
+ * strict descriptor checks are kept; only {@link snapshotCanonicalJsonRead}
+ * also accepts read-only views returned by storage/callback reads.
+ */
+export function snapshotCanonicalJsonReceived<T>(value: T, label: string): T {
+  return snapshotCanonicalJsonInternal(value, label, false, false, true);
+}
+
+/**
  * Own callback/configuration JSON while treating optional `undefined` object
  * members as absent. Arrays and protocol artifacts remain strict: only this
  * explicit configuration boundary opts into JavaScript's optional-property

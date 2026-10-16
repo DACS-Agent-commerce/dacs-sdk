@@ -21,8 +21,16 @@ import type {
   RevocationBinding,
   RevocationMarker,
 } from "../../src/artifacts/types.js";
-import { ed25519Verify, publicKeyFromRaw } from "../../src/crypto/index.js";
 import {
+  ed25519Sign,
+  ed25519Verify,
+  privateKeyFromSeed,
+  publicKeyFromRaw,
+  publicKeyFromSeed,
+  signedBytes as listingSignedBytes,
+} from "../../src/crypto/index.js";
+import {
+  admitRawJson,
   canonicalize,
   contentHash,
   sha256Hex,
@@ -603,6 +611,97 @@ describe("ordered ListingValidationDisposition", () => {
       revocation: "absent",
       railResolution: { disposition: "verified", reason: "not-applicable" },
     });
+  });
+
+  // CORE §B.2 / CF-5 item 4: an admitted -0 spelling is in-profile and
+  // serialises as 0, so every Listing reader must treat it as its 0 spelling.
+  const negativeZeroSpellings = () => {
+    const seed = Uint8Array.from(Buffer.alloc(32, 46));
+    const listing = fixture() as Listing & {
+      futureOptionalMetadata: Record<string, unknown>;
+    };
+    listing.validity.notBefore = 0;
+    listing.futureOptionalMetadata["weights"] = [0, { floor: 0 }];
+    listing.seller.publicEndpoint = "https://seller.example/.well-known/dacs";
+    listing.signature.value = Buffer.from(
+      ed25519Sign(
+        listingSignedBytes(
+          "dacs-listing:v1:",
+          contentHash(listing as unknown as Record<string, unknown>),
+        ),
+        privateKeyFromSeed(seed),
+      ),
+    ).toString("base64url");
+    const text = JSON.stringify(listing);
+    const negativeText = text
+      .replace(/"notBefore":0(?=[,}])/, '"notBefore":-0.0')
+      .replace('"weights":[0,{"floor":0}]', '"weights":[-0,{"floor":-0e2}]');
+    expect(negativeText).toContain('"weights":[-0,{"floor":-0e2}]');
+    const zero = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
+    const negativeZero = admitRawJson(
+      Buffer.from(negativeText, "utf8"),
+    ) as Record<string, unknown>;
+    expect(
+      Object.is((negativeZero.validity as { notBefore: number }).notBefore, -0),
+    ).toBe(true);
+    const publicKey = publicKeyFromSeed(seed);
+    const deps = (): ListingValidationDeps => ({
+      ...baseDeps(),
+      verifyListingSignature: ({ signedBytes, signature }) =>
+        ed25519Verify(
+          signedBytes,
+          Buffer.from(signature.value, "base64url"),
+          publicKey,
+        ),
+    });
+    return { zero, negativeZero, deps };
+  };
+
+  it("verifies an admitted, validly signed Listing whose zeros are spelled as negative zero", async () => {
+    const { zero, negativeZero, deps } = negativeZeroSpellings();
+    const expected = await validateListingArtifact(zero, deps());
+    expect(expected).toMatchObject({ disposition: "verified", step: 9 });
+
+    const result = await validateListingArtifact(negativeZero, deps());
+    expect(result).toEqual(expected);
+    expect(result.listingContentHash).toBe(contentHash(zero));
+    expect(Object.is(result.listing?.validity.notBefore, 0)).toBe(true);
+
+    const tampered = structuredClone(negativeZero);
+    (tampered.validity as { notBefore: number }).notBefore = 1;
+    await expect(validateListingArtifact(tampered, deps())).resolves.toMatchObject({
+      disposition: "rejected",
+      step: 4,
+    });
+  });
+
+  it("gives the direct revocation, capability and reachability readers the zero verdict", async () => {
+    const { zero, negativeZero } = negativeZeroSpellings();
+    const listingHash = contentHash(zero);
+    const revocation = (listing: Record<string, unknown>) =>
+      checkListingRevocation(listing as unknown as Listing, listingHash, {
+        nowMs: () => 1_790_000_000_000,
+        ...baseDeps().revocation,
+      });
+    const capability = (listing: Record<string, unknown>) =>
+      resolveListingPayloadVerificationCapability(
+        listing as unknown as Listing,
+        "verify",
+        () => ({ disposition: "supported" }),
+      );
+    const reachability = (listing: Record<string, unknown>) =>
+      assessListingReachability(listing as unknown as Listing, {
+        nowMs: () => 1,
+        resolveHost: async () => ["203.0.114.10"],
+        probe: async () => ({ status: 200, bytes: 100, actionable: true }),
+      });
+
+    await expect(revocation(zero)).resolves.toMatchObject({ disposition: "absent" });
+    await expect(revocation(negativeZero)).resolves.toEqual(await revocation(zero));
+    await expect(capability(zero)).resolves.toMatchObject({ disposition: "supported" });
+    await expect(capability(negativeZero)).resolves.toEqual(await capability(zero));
+    await expect(reachability(zero)).resolves.toMatchObject({ status: "reachable" });
+    await expect(reachability(negativeZero)).resolves.toEqual(await reachability(zero));
   });
 
   it("owns the Listing before awaits and returns no caller-owned alias", async () => {

@@ -4,6 +4,8 @@ import {
   isSafeJsonString,
   snapshotCanonicalJson,
   snapshotCanonicalJsonConfig,
+  snapshotCanonicalJsonRead,
+  snapshotCanonicalJsonReceived,
   snapshotWireJsonRead,
 } from "../../src/canonical/snapshot.js";
 
@@ -61,6 +63,23 @@ describe("negative zero by snapshot boundary", () => {
       .toThrow(/signed transaction is not stable wire JSON/);
     expect(causeOf(() => snapshotWireJsonRead(value, "signed transaction")))
       .toBe("not data-only JSON");
+  });
+
+  it("owns received negative zero as zero and keeps strict descriptors", () => {
+    const received = snapshotCanonicalJsonReceived(
+      { n: -0, list: [-0, { m: -0 }] },
+      "received artifact",
+    );
+    expect(received).toEqual({ n: 0, list: [0, { m: 0 }] });
+    expect(Object.is(received.n, 0)).toBe(true);
+    expect(Object.is(received.list[0], 0)).toBe(true);
+    expect(Object.is((received.list[1] as { m: number }).m, 0)).toBe(true);
+
+    const frozen = Object.freeze({ n: -0 });
+    expect(causeOf(() => snapshotCanonicalJsonReceived(frozen, "received artifact")))
+      .toBe("not data-only JSON");
+    expect(Object.is(snapshotCanonicalJsonRead(frozen, "stored artifact").n, 0))
+      .toBe(true);
   });
 });
 
