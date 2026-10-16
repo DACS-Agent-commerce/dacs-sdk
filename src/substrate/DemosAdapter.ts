@@ -1631,16 +1631,23 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     mutations.sort((left, right) =>
       right.blockNumber - left.blockNumber || right.nonce - left.nonce);
+    // `latest` is the history's lastModifiedByTx: kynesyslabs/node sets that
+    // on every owner operation, an ACL change included, so a later ACL change
+    // supersedes an update proof exactly as a served member does. An ACL
+    // change leaves the value alone; the value must come from the newest
+    // other mutation, and only a whole-value write can bind it.
     const latest = mutations[0];
-    if (latest === undefined ||
-        (latest.operation !== "CREATE_STORAGE_PROGRAM" &&
-          latest.operation !== "WRITE_STORAGE")) {
+    const valueWrite = mutations.find((mutation) =>
+      mutation.operation !== "UPDATE_ACCESS_CONTROL");
+    if (latest === undefined || valueWrite === undefined ||
+        (valueWrite.operation !== "CREATE_STORAGE_PROGRAM" &&
+          valueWrite.operation !== "WRITE_STORAGE")) {
       throw new SubstrateError("Demos receipt latest native mutation is unsupported");
     }
     const observedMetadata = nativeObservation.metadata ?? undefined;
-    if (!isJsonObject(latest.data) ||
-        canonicalize(latest.data) !== canonicalize(nativeObservation.data) ||
-        !sameOptionalJsonObject(latest.metadata ?? undefined, observedMetadata)) {
+    if (!isJsonObject(valueWrite.data) ||
+        canonicalize(valueWrite.data) !== canonicalize(nativeObservation.data) ||
+        !sameOptionalJsonObject(valueWrite.metadata ?? undefined, observedMetadata)) {
       throw new SubstrateError("Demos receipt history does not bind the native value");
     }
     const fresh = await this.#demos.storagePrograms.read(nativeAddress) as unknown;

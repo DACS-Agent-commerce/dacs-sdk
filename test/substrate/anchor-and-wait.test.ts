@@ -1704,6 +1704,115 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!)).resolves.toBe(true);
   });
 
+  // The history names the address's create only when it holds exactly one.
+  it("binds a create proof only to a single create in owner history", async () => {
+    const { adapter, raw, created, updated, receipt } =
+      await createThenIdenticalUpdate("proof-history-single-create");
+    const read = raw.storagePrograms.read.getMockImplementation();
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } =
+        await read(address);
+      return rest;
+    });
+    const txCreate = await raw.getTxByHash(created.txRef);
+    const txUpdate = await raw.getTxByHash(updated.txRef);
+    const earlierCreate = { ...txCreate, hash: "tx-earlier-create", blockNumber: 41 };
+    for (const rows of [[txUpdate], [txUpdate, txCreate, earlierCreate]]) {
+      raw.getTransactionHistory = vi.fn(async (
+        _owner: string,
+        _type: string,
+        options: { start: number; limit: number },
+      ) => rows.slice(options.start, options.start + options.limit));
+      await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!))
+        .resolves.toBe(false);
+      await expect(adapter.verifyDemosAnchorReceipt(receipt(created.demosEvidence!)))
+        .resolves.toBe(false);
+      await expect(adapter.verifyDemosWriteEvidence(updated.demosEvidence!))
+        .resolves.toBe(true);
+    }
+  });
+
+  // kynesyslabs/node sets lastModifiedByTx on an ACL change but keeps the
+  // value and createdByTx: an update proof is superseded, a create is not,
+  // whether the node serves the members or only the owner history.
+  it("gives a later ACL change the same verdicts on both provenance paths", async () => {
+    const { adapter, raw, created, updated, receipt } =
+      await createThenIdenticalUpdate("proof-acl-change");
+    const read = raw.storagePrograms.read.getMockImplementation();
+    const verdicts = async () => [
+      await adapter.verifyDemosWriteEvidence(created.demosEvidence!),
+      await adapter.verifyDemosAnchorReceipt(receipt(created.demosEvidence!)),
+      await adapter.verifyDemosWriteEvidence(updated.demosEvidence!),
+      await adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)),
+    ];
+    raw.storagePrograms.read = vi.fn(async (address: string) => ({
+      ...await read(address),
+      lastModifiedByTx: "tx-acl-change",
+      interactionTxs: [created.txRef, updated.txRef, "tx-acl-change"],
+    }));
+    await expect(verdicts()).resolves.toEqual([true, true, false, false]);
+
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } =
+        await read(address);
+      return rest;
+    });
+    const txCreate = await raw.getTxByHash(created.txRef);
+    const txUpdate = await raw.getTxByHash(updated.txRef);
+    const later = (hash: string, payload: Record<string, unknown>) => ({
+      ...txUpdate,
+      hash,
+      content: {
+        ...txUpdate.content,
+        nonce: txUpdate.content.nonce + 1,
+        data: ["storageProgram", {
+          storageAddress: created.address,
+          ...payload,
+        }],
+      },
+    });
+    const serveHistory = (rows: unknown[]) => {
+      raw.getTransactionHistory = vi.fn(async (
+        _owner: string,
+        _type: string,
+        options: { start: number; limit: number },
+      ) => rows.slice(options.start, options.start + options.limit));
+    };
+    serveHistory([
+      later("tx-acl-change", { operation: "UPDATE_ACCESS_CONTROL", acl: { mode: "owner" } }),
+      txUpdate,
+      txCreate,
+    ]);
+    await expect(verdicts()).resolves.toEqual([true, true, false, false]);
+    // A later partial edit leaves the value unattributable: indeterminate.
+    serveHistory([
+      later("tx-set-field", { operation: "SET_FIELD", field: "value", value: 1 }),
+      txUpdate,
+      txCreate,
+    ]);
+    await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!))
+      .rejects.toBeInstanceOf(SubstrateError);
+  });
+
+  // An off-contract 2xx read that reports no success is unanswered, not a
+  // contradiction (docs/demos-node-compatibility.md), even beside a value
+  // that would otherwise verify.
+  it("keeps a Storage Program read reporting failure beside its value indeterminate", async () => {
+    const { adapter, raw, evidence, receipt } = await anchoredProof();
+    const read = raw.storagePrograms.read.getMockImplementation();
+    raw.storagePrograms.read = vi.fn(async (address: string) =>
+      ({ ...await read(address), success: false }));
+    for (const verify of [
+      () => adapter.verifyDemosAnchorReceipt(receipt),
+      () => adapter.verifyDemosWriteEvidence(evidence),
+    ]) {
+      const error = await verify().then(() => undefined, (reason: unknown) => reason);
+      expect(error).toBeInstanceOf(SubstrateError);
+      expect((error as SubstrateError).message)
+        .toBe("Demos write proof observations are unavailable from this node");
+    }
+  });
+
   it("surfaces a failed history read as SubstrateError, not a raw transport error", async () => {
     const { adapter, raw, evidence, receipt } = await anchoredProof();
     const read = raw.storagePrograms.read.getMockImplementation();
