@@ -281,13 +281,13 @@
       "source_range_reachability": {}
     }
   ],
-  "raw_policy": "Original command receipts, logs, locks and copied package sources are retained byte for byte outside the repository. No substitution is made in original raw files.",
+  "raw_policy": "Original command receipts, logs, locks and copied package sources were kept byte for byte outside the repository at collection time. The archives are no longer available (owner decision, 2026-10-16), so these hashes cannot be rechecked now. No substitution was made in original raw files.",
   "raw_archive": {
     "path": "<collection>/evidence-original.tar.gz",
     "sha256": "6c26e3ba48c724252fbcf6fd4a990b6c3527b4fbe6a8b648aa9907fee917b531",
     "bytes": 10594288,
     "raw_files": 587,
-    "location": "Workspace collection, outside the repository; extract into the collection directory."
+    "location": "Workspace collection, outside the repository; no longer available (owner decision, 2026-10-16)."
   },
   "raw_files": [
     {
@@ -3274,8 +3274,8 @@
     },
     {
       "path": "release-checks.json",
-      "sha256": "3d99993ba695b5435d16c4131ddc064eda99203041782187c360352205082270",
-      "bytes": 15784
+      "sha256": "45f0fd128a16114fcd6d22be678c647c6065334de301f5e79f16f72772fa758c",
+      "bytes": 19794
     },
     {
       "path": "sbom-comparison.json",
@@ -3359,8 +3359,8 @@
     },
     {
       "path": "tools/engines-check.cjs",
-      "sha256": "c8e24af70f725086e9e41d12cfc62fe5dc8c91c68516920f7d3006df86d17d95",
-      "bytes": 2035
+      "sha256": "5f88527ec5ab2f51cc61af332dbc7a9f56475ba79345111dba01b8094e7ba9c8",
+      "bytes": 2151
     },
     {
       "path": "tools/native-data-compat.mjs",
@@ -3389,8 +3389,8 @@
     },
     {
       "path": "tools/tools.test.mjs",
-      "sha256": "a36c556a93baa090820c5b87e4974df0939f2c95438a383c8f552d1cf11ce86d",
-      "bytes": 5786
+      "sha256": "a6cdc85f67e1b95767fb06c895f37d81ebec1d640a986f739edf66aa50a19b14",
+      "bytes": 6246
     },
     {
       "path": "tools/trace-full.mjs",
@@ -3404,23 +3404,23 @@
     },
     {
       "path": "tools/validate.py",
-      "sha256": "2b7f3f825be509ca8cde3ba6b8f9d761705e7475ca00e256b9999a8715f640b1",
-      "bytes": 24151
+      "sha256": "7505418c798f7d8eb20e757160d15fdb1297f7881500bec8771fc1c7a80bec59",
+      "bytes": 25205
     },
     {
       "path": "tools/validate_test.py",
-      "sha256": "381e0cf3a6196eeedd0a5fa2a6c0395dc3238555f03f4cf612fd80652de65cbd",
-      "bytes": 7805
+      "sha256": "6f40648698a75f16a1368f534c719a38ba84a0c9ad84f15e8cb321e521f7a968",
+      "bytes": 9178
     },
     {
       "path": "upstream-actions.json",
-      "sha256": "5c5c1722f51f3e7aab98d2d0a40986ccb3d5038d696eb35038539fcd3b671b12",
-      "bytes": 8453
+      "sha256": "0334fa57b2af666319beb609c0320bc799fbae6819f7f9afa56295bac07b27d3",
+      "bytes": 8576
     },
     {
       "path": "validation.json",
-      "sha256": "a8b8848d2be3faff431eea3139bdaf7ba1f15b28db7b12b4470e177e37825fa9",
-      "bytes": 6169
+      "sha256": "9e7940f316ff4cb6f2afab612fe7b85037cc8dc7ef9d648b711770198b91a305",
+      "bytes": 7175
     }
   ],
   "receipt_gaps": [
@@ -4568,7 +4568,7 @@
       }
     ]
   },
-  "report_sha256": "1bd01572687b4642bb24cd96e427bbb75f842cb56bb605ab7869ef5bbe9eaac1",
+  "report_sha256": "9da4bfb9a3e7919d0c6128055f0e8abbb4254b5e3cab401eda0321b516ffdb4e",
   "fix_round2": {
     "collected_utc": "2026-10-15T22:40:45.140219+00:00",
     "collection_root": "<round2-root>",

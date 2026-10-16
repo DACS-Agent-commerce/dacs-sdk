@@ -4,8 +4,9 @@ const path=require('node:path');
 const npmRoot=process.argv[4]||path.resolve(path.dirname(process.execPath),'../lib/node_modules/npm');
 const Arborist=require(path.join(npmRoot,'node_modules/@npmcli/arborist'));
 const semver=require(path.join(npmRoot,'node_modules/semver'));
-// Advertised range floors, the generated Docker base image (node:20.19.1) and the last 22.x release before 22.22.2.
-const PROBES=['20.19.0','20.19.1','22.12.0','22.22.1'];
+// Advertised range floors, the generated Docker base image (node:20.19.1), the last 22.x release before 22.22.2,
+// the first 23.x, 24.x and 25.x releases and the last 24.x minor before 24.15.0.
+const PROBES=['20.19.0','20.19.1','22.12.0','22.22.1','23.0.0','24.0.0','24.14.0','25.0.0'];
 (async()=>{
   const root=process.argv[2];
   const output=process.argv[3];

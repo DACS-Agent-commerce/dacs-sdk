@@ -83,6 +83,22 @@ class Sboms(unittest.TestCase):
         self.assertFalse(result['valid'])
         self.assertEqual(result['duplicate_bom_refs'], {'a@1': 2})
         self.assertIn('dependencies: uniqueItems', result['errors'])
+    def test_shared_reference_on_different_components_fails(self):
+        a = {'bom-ref': 'dup', 'type': 'library', 'name': 'a', 'version': '1.0.0'}
+        b = {'bom-ref': 'dup', 'type': 'library', 'name': 'b', 'version': '2.0.0'}
+        bom = dict(self.bom(a, b), dependencies=[{'ref': 'dup'}])
+        self.assertEqual(validate.schema_result(self.validator, bom),
+                         dict(valid=False, errors=[], duplicate_bom_refs={'dup': 2}))
+    def test_nested_references_count(self):
+        nested = {'bom-ref': 'a@1', 'type': 'library', 'name': 'inner'}
+        outer = {'bom-ref': 'outer', 'type': 'library', 'name': 'outer', 'components': [nested]}
+        a = {'bom-ref': 'a@1', 'type': 'library', 'name': 'a'}
+        bom = dict(self.bom(outer, a))
+        self.assertEqual(validate.schema_result(self.validator, bom)['duplicate_bom_refs'], {'a@1': 2})
+        service = dict(self.bom(a), services=[{'bom-ref': 'a@1', 'name': 'svc'}])
+        self.assertFalse(validate.schema_result(self.validator, service)['valid'])
+        nested['bom-ref'] = 'inner@1'
+        self.assertEqual(validate.schema_result(self.validator, bom), dict(valid=True, errors=[], duplicate_bom_refs={}))
     def test_license_reference_belongs_in_name(self):
         def component(license): return {'bom-ref': 'a@1', 'type': 'library', 'name': 'a', 'licenses': [{'license': license}]}
         self.assertFalse(validate.schema_result(self.validator, self.bom(component({'id': 'LicenseRef-Custom'})))['valid'])
@@ -127,6 +143,8 @@ class Catalog(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         output = json.loads(result.stdout)
         self.assertEqual(output['sbom_schema_invalid'], ['native-candidate.npm.cdx.json'])
+        for key in ['raw_evidence', 'fresh_probes', 'round2_probes']:
+            self.assertEqual(output[key], 'not run: archives unavailable (owner decision, 2026-10-16)')
 
 if __name__ == '__main__':
     unittest.main()

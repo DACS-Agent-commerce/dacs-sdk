@@ -33,7 +33,7 @@ test('engines check lists floor rejections and upper-bound gaps, and fails the g
   assert.equal(checked,3);
   assert.deepEqual(outside.map(r=>[r.location,r.rejected_probes]),[
     ['node_modules/capped',[]],
-    ['node_modules/floor',['20.19.0','20.19.1','22.12.0','22.22.1']],
+    ['node_modules/floor',['20.19.0','20.19.1','22.12.0','22.22.1','23.0.0','24.0.0','24.14.0','25.0.0']],
   ]);
 });
 
@@ -82,8 +82,13 @@ test('full trace attributes files under nameless module stubs to the installed p
 
 test('exact-range matching uses the pinned npm semver, resolved without a fixed install path',()=>{
   const jobs=JSON.stringify([{versions:['8.18.3','8.21.0'],range:'>=8.0.0 <8.21.0',inherited:false},{versions:['1.0.0'],range:'',inherited:true}]);
+  // A copy of the running npm's semver relabelled 7.7.4, so the test also runs where npm bundles another 7.x
+  // (Node 20.19.0 ships 7.6.2); the version check, not the matching code, is what the pin guards.
   const fake=tree({'node_modules/.keep':''});
-  fs.symlinkSync(path.join(npmRoot,'node_modules/semver'),path.join(fake,'node_modules/semver'));
+  const copy=path.join(fake,'node_modules/semver');
+  fs.cpSync(path.join(npmRoot,'node_modules/semver'),copy,{recursive:true});
+  const manifest=JSON.parse(fs.readFileSync(path.join(copy,'package.json'),'utf8'));
+  fs.writeFileSync(path.join(copy,'package.json'),JSON.stringify({...manifest,version:'7.7.4'}));
   const ok=run([path.join(tools,'semver-match.cjs'),fake],{input:jobs});
   assert.equal(ok.status,0,ok.stderr);
   assert.deepEqual(JSON.parse(ok.stdout),[[true,false],[true]]);

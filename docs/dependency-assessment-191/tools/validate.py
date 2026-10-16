@@ -44,23 +44,42 @@ def tap_counts(path):
             for key in ['tests', 'pass', 'fail', 'skipped']}
 
 def schema_validator(folder):
-    """Draft-7 validator for the vendored CycloneDX 1.5 schema and its two referenced schemas."""
+    """Draft-7 validator for the vendored CycloneDX 1.5 schema and its two referenced schemas.
+
+    Checked with jsonschema 4.10.3 and 4.26.0. From 4.18 the referencing registry replaces the deprecated RefResolver."""
     try:
         import jsonschema
     except ImportError:
-        raise SystemExit('The CycloneDX schema check needs the Python jsonschema package.')
+        raise SystemExit('The CycloneDX schema check needs the Python jsonschema package (checked with 4.10.3 and 4.26.0).')
     schema = load(folder / 'bom-1.5.schema.json')
     store = {}
     for name in ['spdx.schema.json', 'jsf-0.82.schema.json']:
         part = load(folder / name)
         store[name] = store[part['$id']] = part
-    return jsonschema.Draft7Validator(schema, resolver=jsonschema.RefResolver.from_schema(schema, store=store))
+    try:
+        from referencing import Registry, Resource
+        from referencing.jsonschema import DRAFT7
+        registry = Registry().with_resources((k, Resource.from_contents(v, default_specification=DRAFT7)) for k, v in store.items())
+        return jsonschema.Draft7Validator(schema, registry=registry)
+    except (ImportError, TypeError):
+        # jsonschema before 4.18 has no registry argument; RefResolver is its supported resolver.
+        return jsonschema.Draft7Validator(schema, resolver=jsonschema.RefResolver.from_schema(schema, store=store))
+def bom_refs(value, found=None):
+    """Every bom-ref in the document, including nested components and services."""
+    found = collections.Counter() if found is None else found
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k == 'bom-ref': found[v] += 1
+            else: bom_refs(v, found)
+    elif isinstance(value, list):
+        for v in value: bom_refs(v, found)
+    return found
 def schema_result(validator, bom):
-    """Schema validity plus repeated component references, which the schema alone does not name."""
-    refs = collections.Counter(c.get('bom-ref') for c in [bom['metadata'].get('component', {}), *bom.get('components', [])])
+    """Schema validity plus repeated references. CycloneDX 1.5 requires every bom-ref to be unique, which the
+    schema cannot express, so a repeated reference makes the document invalid even without a schema error."""
     errors = sorted({'/'.join(map(str, e.absolute_path)) + ': ' + e.validator for e in validator.iter_errors(bom)})
-    return dict(valid=not errors, errors=errors,
-                duplicate_bom_refs={k: n for k, n in sorted(refs.items()) if n > 1})
+    duplicates = {k: n for k, n in sorted(bom_refs(bom).items()) if n > 1}
+    return dict(valid=not errors and not duplicates, errors=errors, duplicate_bom_refs=duplicates)
 
 def package_location(file):
     """Installed package directory that contains a traced file: the last node_modules/<name> segment."""
@@ -362,13 +381,13 @@ def main():
                   sbom_schema_invalid=sorted(n for n in shipped if not schema['files'][n]['valid']),
                   original_raw_files_checked=raw_checked, trees=results, fresh_generated_tests=fresh,
                   raw_evidence='verified, including every package and exact-range row' if args.collection
-                  else 'not checked: pass --collection with retained evidence',
-                  fresh_probes='verified' if args.probe_root else 'not checked: pass --probe-root with fresh scratch evidence',
+                  else 'not run: archives unavailable (owner decision, 2026-10-16)',
+                  fresh_probes='verified' if args.probe_root else 'not run: archives unavailable (owner decision, 2026-10-16)',
                   literal_pin_probes=literal_pins,
-                  round2_probes='verified' if args.round2_root else 'not checked: pass --round2-root with retained round-2 evidence',
+                  round2_probes='verified' if args.round2_root else 'not run: archives unavailable (owner decision, 2026-10-16)',
                   open_checks=['D-2: supporting file dependency specifications is an optional owner decision; no generated doctor defect established.'],
                   blocked=['Primary live npm SBOM commands still fail on optional range conflicts.',
-                           'D-1 also requires the primary output to pass the CycloneDX 1.5 schema with unique component references.',
+                           'D-1 also requires the primary output to pass the CycloneDX 1.5 schema with every bom-ref unique.',
                            'Engines: ' + str(engine_floor['live-buyer']) + ' installed production packages per live tree reject the advertised Node floors.'])
     if args.output: args.output.write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))

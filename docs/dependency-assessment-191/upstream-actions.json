@@ -11,7 +11,7 @@
     "package": "@kynesyslabs/demosdk -> sigstore and its fetch/cache chain",
     "version": "demosdk 4.0.16 declares sigstore ^5.0.0; 16 installed packages declare ^22.22.2 || ^24.15.0 || >=26.0.0",
     "condition": "broad package retained with the generated engines range ^20.19.0 || >=22.12.0",
-    "required_change": "Either our side raises the generated engines range, Dockerfile base image and doctor check to the resolved floor, or the broad package supplies a dependency chain that supports Node 20.19 and 22.12. The narrow candidate has no floor rejection. Separately decide whether the open-ended range should admit Node 26+ while better-sqlite3 12.6.2 declares 20.x to 25.x.",
+    "required_change": "Either our side narrows the generated engines range, Dockerfile base image and doctor check to a subset of ^22.22.2 || ^24.15.0, the live composition's effective range (raising only the floor still admits 24.0.0-24.14.x, 23.x and 25.x), or the broad package supplies a dependency chain that supports the advertised range. The narrow candidate has no floor rejection. Separately decide whether the open-ended range should admit Node 26+ while better-sqlite3 12.6.2 declares 20.x to 25.x.",
     "why": "Collection on Node 22.23.3 hid the mismatch; tools/engines-check.cjs lists the packages and the rejected Node versions in release-checks.json. An engine-strict install fails on the advertised floors and the generated node:20.19.1 image.",
     "status": "open engines gate; owner decision or conditional upstream repair"
   },
