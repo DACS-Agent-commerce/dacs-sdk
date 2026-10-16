@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   assertPositiveAmount,
@@ -6005,6 +6005,60 @@ describe("final review, round 1", () => {
       h.setAfterBroadcast(completed(h.operationHash));
       await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
         .resolves.toMatchObject({ status: "settled" });
+    });
+
+    // Launch review 1: a production process never runs on a volatile store.
+    describe("with NODE_ENV=production", () => {
+      afterEach(() => {
+        vi.unstubAllEnvs();
+      });
+
+      test.each([
+        ["production", () => vi.stubEnv("NODE_ENV", "production")],
+        ["an unreadable environment", () => {
+          const env = Object.getOwnPropertyDescriptor(process, "env") as PropertyDescriptor;
+          Object.defineProperty(process, "env", { configurable: true, get() { throw new Error("no environment"); } });
+          return () => Object.defineProperty(process, "env", env);
+        }],
+      ] as const)("in %s, a volatile store is refused before any claim or signature", async (_label, setEnv) => {
+        const store = createInMemoryLiquidityTankStore(VOLATILE);
+        const calls = (["claim", "isCurrent", "recordSubmission", "recordObservation",
+          "recordRecoveryFailure", "recordRecoveryExpired", "recordSettlement"] as const)
+          .map((method) => vi.spyOn(store, method));
+        const h = harness();
+        h.setAfterBroadcast(completed(h.operationHash));
+        const shared = runner({ store, adapter: h.adapter }).shared;
+        const restore = setEnv();
+        let result;
+        try {
+          result = await advanceLiquidityTankSettlement(shared);
+        } finally {
+          if (typeof restore === "function") restore();
+        }
+        expect(result).toEqual({ status: "indeterminate", reason: "liquidity-tank-store-volatile-in-production" });
+        for (const call of calls) expect(call).not.toHaveBeenCalled();
+        expect(h.prepareSubmission).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+        expect(h.observe).not.toHaveBeenCalled();
+      });
+
+      test.each(["development", "test", ""])("with NODE_ENV=%j a volatile store still settles", async (value) => {
+        vi.stubEnv("NODE_ENV", value);
+        const h = harness();
+        h.setAfterBroadcast(completed(h.operationHash));
+        await expect(advanceLiquidityTankSettlement(runner({
+          store: createInMemoryLiquidityTankStore(VOLATILE), adapter: h.adapter,
+        }).shared)).resolves.toMatchObject({ status: "settled" });
+      });
+
+      test("a store declaring conformance-tested still settles in production", async () => {
+        vi.stubEnv("NODE_ENV", "production");
+        const store = { ...createInMemoryLiquidityTankStore(VOLATILE), restartSafety: "conformance-tested" as const };
+        const h = harness();
+        h.setAfterBroadcast(completed(h.operationHash));
+        await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
+          .resolves.toMatchObject({ status: "settled" });
+      });
     });
 
     test.each([

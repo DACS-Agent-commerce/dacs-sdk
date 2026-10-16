@@ -77,9 +77,10 @@ in the SDK's tests and declares `"conformance-tested"`. The exported in-memory
 store loses everything on restart, refuses to construct without
 `{ acknowledgeVolatile: true }`, and declares itself `"volatile-acknowledged"`.
 It is for tests and development only, never production: the core runs end to
-end on it. The declaration is the host's, and the core does not check it: it
-checks only that the value is one of the two strings, so a non-durable store
-that declares `"conformance-tested"` also runs end to end.
+end on it, except in a process with `NODE_ENV=production`, where the core
+refuses it before any claim. The declaration is the host's, and the core does
+not check it: it checks only that the value is one of the two strings, so a
+non-durable store that declares `"conformance-tested"` also runs end to end.
 
 **A shared tank's balance comes from the bridge, not the core.** The core
 checks one operation at a time. That the bridge never locks more than a tank's
@@ -588,8 +589,8 @@ across restart. A present malformed `recoveryFailure` in a claim fails closed
 as retained-state corruption.
 
 `recordRecoveryExpired` must CAS against the exact observation established by
-the acquired claim or confirmed write, with a current lease and host `now` at
-or after the deadline. For `failed-after-lock`, the evidence must equal the
+the acquired claim or confirmed write, with a current lease and host `now`
+after the deadline. For `failed-after-lock`, the evidence must equal the
 retained failure and its checkpoint must equal the durable one; no new failure
 timestamp is required. A `failed` that carries its own lock and deadline is
 evidence only when it is exactly the durable observation and no failure is
@@ -654,7 +655,7 @@ timely completion replacing a durable failure that carries its lock, a
 failure that carries its lock as expiry evidence only when it is the durable
 observation, a late completion as expiry evidence only for the durable
 checkpoint's or failure's lock and deadline, the contradiction-expiry
-compare-and-set (refused before the
+compare-and-set (refused at or before the
 deadline, at or before the checkpoint, on a live pending or beside retained
 failure evidence), settlement replay, and state that survives `reopenStore`, including the
 bridge-ID index. Two more drive the core through one phase with a worker that
@@ -715,7 +716,11 @@ claim, preparation, signature, observation or broadcast:
   caller has said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile:
   true })` sets it. For tests and development only, never production: the
   core runs end to end on it, and after a restart signs a second bridge
-  operation.
+  operation. When `process.env.NODE_ENV` is `"production"`, or the
+  environment cannot be read, the core refuses it before any claim with
+  `indeterminate` `liquidity-tank-store-volatile-in-production`. That is a
+  backstop for a mis-wired production process, not a check of the store: the
+  core cannot tell production from development any other way.
 
 The field is optional in the TypeScript type so that a store under
 development can run the suite, but the core refuses a store without it. It is
@@ -869,6 +874,9 @@ Host configuration is refused the same way, before any claim or effect:
 - **A store that does not declare `restartSafety`** (see
   [Declaring restart safety](#declaring-restart-safety)) returns
   `liquidity-tank-store-restart-safety-undeclared` on every call.
+- **A store that declares `"volatile-acknowledged"`, in a process with
+  `NODE_ENV=production`**, returns
+  `liquidity-tank-store-volatile-in-production` on every call.
 - **Any other refused owner, lease, clock, store or adapter**, including a
   whole store wrapped in a `Proxy`, returns its refusal message as the reason,
   for example `pay-cross-chain-liquidity-tank: store.claim must be stable
@@ -889,6 +897,9 @@ operator rather than polling:
 - `liquidity-tank-store-recovery-capability-unavailable`;
 - `liquidity-tank-store-restart-safety-undeclared`: the store does not declare
   how it survives a restart;
+- `liquidity-tank-store-volatile-in-production`: a process with
+  `NODE_ENV=production` was given a store that declares
+  `"volatile-acknowledged"`;
 - `liquidity-tank-settlement-store-lease-invalid`: the store's lease is not
   exactly `now + leaseDurationMs`, or a waiting lease is malformed (see
   [Store contract](#store-contract));

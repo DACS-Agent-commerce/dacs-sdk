@@ -412,6 +412,8 @@ export type LiquidityTankStoreWrite =
  *   said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })`
  *   declares it. For tests and development only, never production: the core
  *   runs end to end on it, and a restart then signs a second bridge operation.
+ *   With `NODE_ENV=production` the core refuses it before any claim, as
+ *   `liquidity-tank-store-volatile-in-production`.
  */
 export type LiquidityTankStoreRestartSafety = "conformance-tested" | "volatile-acknowledged";
 
@@ -1966,6 +1968,11 @@ export async function advanceLiquidityTankSettlement(
   if (restartSafety !== "conformance-tested" && restartSafety !== "volatile-acknowledged") {
     return { status: "indeterminate", reason: "liquidity-tank-store-restart-safety-undeclared" };
   }
+  // The core cannot tell production from development; a process that says it
+  // is in production never runs on a store that has said it is volatile.
+  if (restartSafety === "volatile-acknowledged" && declaresProduction()) {
+    return { status: "indeterminate", reason: "liquidity-tank-store-volatile-in-production" };
+  }
   // Without the host's checks the core cannot tell a forged observation or a
   // submission signing another amount from a genuine one, so it refuses
   // before any claim rather than trusting the adapter.
@@ -3083,6 +3090,15 @@ export interface InMemoryLiquidityTankStoreOptions {
    * and loses it on restart. Required, and only `true` is accepted.
    */
   readonly acknowledgeVolatile: true;
+}
+
+/** `NODE_ENV` is `production`; an environment that cannot be read counts as production. */
+function declaresProduction(): boolean {
+  try {
+    return process.env["NODE_ENV"] === "production";
+  } catch {
+    return true;
+  }
 }
 
 function acknowledgesVolatile(options: unknown): boolean {
