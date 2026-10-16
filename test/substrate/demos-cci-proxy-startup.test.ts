@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:http";
+import http, { createServer, type Server } from "node:http";
+import https from "node:https";
 import type { AddressInfo, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,8 +179,12 @@ describe("Demos CCI proxy route decided from Node's actual startup state", () =>
     const state = (dispatchers: Dispatcher[]): NodeRouteState => ({
       fetch: child.builtinFetch ? nodeFetch : () => undefined,
       dispatchers: [rebuilt(dispatchers[0]!), rebuilt(dispatchers[1]!)],
-      agents: child.agents.map(({ name, proxied }) =>
-        Object.assign(named(name) ?? {}, { options: proxied ? { proxyEnv: {} } : {} })),
+      agents: child.agents.map(({ name, proxied }, index) => {
+        if (name !== "Agent") return named(name);
+        const agent = new (index === 0 ? http.Agent : https.Agent)();
+        if (proxied) Object.assign((agent as unknown as { options: object }).options, { proxyEnv: {} });
+        return agent;
+      }),
       execArgv: child.execArgv,
     });
     // The guard, given the child's final environment and the state its Node

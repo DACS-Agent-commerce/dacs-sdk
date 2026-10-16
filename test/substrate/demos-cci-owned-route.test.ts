@@ -4,8 +4,8 @@ import { Agent } from "undici";
 import { afterEach, expect, it, vi } from "vitest";
 import { defaultCciTransport, fetchProxyMismatch, readDemosCciResponse } from "../../src/substrate/demosCciTransport.js";
 
-// Mock only the package's send boundary. The production private Agent and route
-// selection still run; neither copied global closure may receive the request.
+// Mock only the package's send boundary. Lazy private Agent construction and
+// route selection still run; neither copied global closure may receive a read.
 const send = vi.hoisted(() => vi.fn());
 vi.mock("undici", async importOriginal => ({
   ...await importOriginal<typeof import("undici")>(), fetch: send,
