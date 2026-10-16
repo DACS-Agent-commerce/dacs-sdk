@@ -120,6 +120,23 @@ describe("createX402Rail pre-payment preflight", () => {
     expect(peers.signTypedData).not.toHaveBeenCalled();
   });
 
+  // The JID-1 check applies to a jobId the rail is given, not to an unbound
+  // call that has none: that call is not refused for JID-1 and still stops at
+  // its own chain preflight.
+  test("an unbound call with no jobId is not refused for JID-1 and reaches the chain preflight", async () => {
+    peers.chainId = 1;
+    const fetchImpl = vi.fn(async () => new Response("unexpected", { status: 500 }));
+    const rail = await createX402Rail({
+      ...x402Config, requireSessionBinding: false,
+      fetchImpl: fetchImpl as unknown as typeof fetch, transportPolicy: { mode: "insecure-test" },
+    });
+    await expect(rail.settle({
+      paywallUrl: "https://seller.example/r", network: NETWORK, recipientEvm: PAYEE, amount: "1000000", asset: USDC,
+    })).rejects.toThrow(/RPC chain id does not match the negotiated network/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(peers.signTypedData).not.toHaveBeenCalled();
+  });
+
   test.each([0, -1, 1.5])("refuses finalityBlocks=%s at construction", async (finalityBlocks) => {
     await expect(createX402Rail({ ...x402Config, finalityBlocks })).rejects.toThrow(/positive finalityBlocks/);
   });

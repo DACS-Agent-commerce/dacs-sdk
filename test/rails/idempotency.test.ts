@@ -764,6 +764,14 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     );
   });
 
+  test("settlementKey refuses a negative phase index instead of keying `:-1`", () => {
+    for (const phaseIndex of [-1, Number.MIN_SAFE_INTEGER]) {
+      expect(() => settlementKey("pay-dem", "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex)).toThrow(
+        /non-negative phase index/,
+      );
+    }
+  });
+
   test("settlementKey rejects delimiter collisions between rail and job ids", () => {
     expect(settlementKey("x402:default", "01ARZ3NDEKTSV4RRFFQ69G5FAV", 0)).toBe(
       "x402:default:01ARZ3NDEKTSV4RRFFQ69G5FAV:0",

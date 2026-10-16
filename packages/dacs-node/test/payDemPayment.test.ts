@@ -41,7 +41,9 @@ import {
 } from "../src/fixedPricePayDemBuyerPayment.js";
 import {
   createDacsPayDemBuyerPaymentTrackV1,
+  createDacsPayDemPaymentNoticeV1,
   createDacsPayDemWalletSpendRecoveryAuthenticatorV1,
+  DacsPayDemBuyerPaymentError,
   type DacsPayDemBuyerPaymentAuthorityV1,
   type DacsPayDemBuyerPaymentInputV1,
 } from "../src/payDemPayment.js";
@@ -1566,6 +1568,32 @@ describe("native DEM buyer payment track", () => {
       .resolves.toBe(true);
     expect(metadataGetter).not.toHaveBeenCalled();
   });
+
+  // The track's authority must equal the JID-1 order id, so a non-canonical id
+  // can only arrive as retained payment input. JID-1 runs before the key check,
+  // so that input keeps the typed refusal instead of settlementKey's DacsError.
+  it.each(["job-1", "café-job", JOB_ID.toLowerCase()])(
+    "refuses a retained payment input with the non-canonical jobId %j by its typed reason",
+    (jobId) => {
+      const retained = {
+        ...recoveryPayment(),
+        jobId,
+        settlementKey: `${AUTHORITY.railId}:${jobId}:${AUTHORITY.phaseIndex}`,
+      } as DacsPayDemBuyerPaymentInputV1;
+      const settlement = {
+        ok: true, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: PAYEE,
+        finality: { model: "bft-final" }, blockNumber: 42, txRefKind: "demos",
+      } as unknown as Parameters<typeof createDacsPayDemPaymentNoticeV1>[1];
+      let refusal: unknown;
+      try {
+        createDacsPayDemPaymentNoticeV1(retained, settlement);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(DacsPayDemBuyerPaymentError);
+      expect(refusal).toMatchObject({ reasonCode: "pay-dem-payment-input-invalid" });
+    },
+  );
 
   it("rejects DEM recovery option accessors and proxies without invoking them", () => {
     const getter = vi.fn(() => recoveryEvidenceDatabase(recoveryPayment(), true));

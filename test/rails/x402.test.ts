@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
+import { DacsError } from "../../src/errors.js";
 import {
   createX402Rail,
   dacsX402AuthorizationNonce,
@@ -73,6 +74,14 @@ describe("DACS EIP-3009 session binding", () => {
     // idempotencyProcessRestart.test.ts.
     expect(await dacsX402AuthorizationNonce(input)).toBe(expected);
     expect(await dacsX402AuthorizationNonce({ ...input })).toBe(expected);
+  });
+
+  test("a missing derivation input gets the typed JID-1 refusal, not a TypeError", async () => {
+    for (const input of [undefined, null]) {
+      const refusal = dacsX402AuthorizationNonce(input as never);
+      await expect(refusal).rejects.toThrow(DacsError);
+      await expect(refusal).rejects.toThrow(/x402 DACS binding jobId must be a canonical uppercase ULID/);
+    }
   });
 
   test("rejects malformed derivation inputs", async () => {
