@@ -4573,6 +4573,10 @@ const IMAGE_SERVICE_COMMAND = Object.freeze([
 
 // The compose services dacs:up starts, in compose.yaml order.
 const COMPOSE_SERVICES = Object.freeze(["buyer", "seller"]);
+const ROLE_HEALTHCHECK_COMMAND = Object.freeze([
+  "CMD", "node", "-e",
+  "const p=process.env.DACS_ROLE==='buyer'?3101:3102;fetch('http://127.0.0.1:'+p+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+]);
 
 function quotedList(values: readonly string[]): string {
   return "[" + values.map((value) => JSON.stringify(value)).join(", ") + "]";
@@ -4780,6 +4784,13 @@ function foreignContainers(containers) {
     : "compose project " + projectName + " has containers from " +
       (workingDirectoryOf(foreign) ?? "an unknown directory") + ", not from " + projectPath;
 }
+// A compose-run role inherits the actor's writable data and authority. It
+// must be stopped before starting another process for that actor.
+function runningRoleOneOff(containers) {
+  return containers.find((container) => services.includes(serviceOf(container)) &&
+    container.Config?.Labels?.["com.docker.compose.oneoff"] === "True" &&
+    container.State?.Running !== false);
+}
 // The project dacs:up last started from this project's files, if any.
 function recordedProject() {
   let record;
@@ -4846,6 +4857,10 @@ function requireOwnProject() {
             "or remove the containers from any directory with: docker compose " +
             "--project-name " + projectName + " down (both data directories are kept), " +
             "then rerun";
+        } else if (mode === "up") {
+          const oneOff = runningRoleOneOff(containers);
+          if (oneOff !== undefined) refusal = serviceOf(oneOff) +
+            " compose run container is still running; stop it before retrying dacs:up";
         }
       }
     }
@@ -4940,9 +4955,25 @@ function containerPolicyMismatch(container, service, imageEnvironment) {
       JSON.stringify(host.Tmpfs) !== JSON.stringify({ "/tmp": "rw,noexec,nosuid,size=32m" })) {
     return service + " container security or network settings differ from its role policy";
   }
+  const health = config.Healthcheck;
+  if (host.Init !== true || host.PidsLimit !== 128 || host.Memory !== 512 * 1024 * 1024 ||
+      host.RestartPolicy?.Name !== "unless-stopped" ||
+      (host.RestartPolicy?.MaximumRetryCount ?? 0) !== 0 ||
+      host.LogConfig?.Type !== "json-file" ||
+      sorted(Object.entries(host.LogConfig?.Config ?? {}).map(([key, value]) => key + "=" + value)) !==
+        sorted(["max-size=10m", "max-file=3"]) ||
+      !health || JSON.stringify(health.Test) !== JSON.stringify(${quotedList(ROLE_HEALTHCHECK_COMMAND)}) ||
+      health.Interval !== 10_000_000_000 || health.Timeout !== 3_000_000_000 ||
+      health.Retries !== 3 || health.StartPeriod !== 10_000_000_000 ||
+      (health.StartInterval ?? 0) !== 0) {
+    return service + " container resource, restart, logging or health settings differ from its role policy";
+  }
 }
 function startedMismatch(imageId, imageEnvironment) {
   const containers = projectContainers();
+  const oneOff = runningRoleOneOff(containers);
+  if (oneOff !== undefined) return serviceOf(oneOff) +
+    " compose run container is still running; stop it before retrying dacs:up";
   for (const service of services) {
     const created = containers.filter((container) => serviceOf(container) === service &&
       container.Config.Labels["com.docker.compose.oneoff"] !== "True");
@@ -5311,7 +5342,7 @@ x-dacs-role: &dacs-role
       max-size: 10m
       max-file: "3"
   healthcheck:
-    test: ["CMD", "node", "-e", "const p=process.env.DACS_ROLE==='buyer'?3101:3102;fetch('http://127.0.0.1:'+p+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    test: ${quotedList(ROLE_HEALTHCHECK_COMMAND)}
     interval: 10s
     timeout: 3s
     retries: 3

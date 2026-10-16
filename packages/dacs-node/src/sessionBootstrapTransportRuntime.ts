@@ -442,17 +442,9 @@ function consumeChallenge(
   const challenge = kind === "challenge"
     ? (binding.payload as DacsLiveSessionInitPayloadV1).sellerChallenge
     : (binding.payload as DacsSessionChallengePayloadV1).buyerChallenge;
-  const payload: unknown = authenticated.envelope.payload;
-  if (!plainObject(payload)) {
-    throw new DacsSessionBootstrapTransportError("session-challenge-mismatch");
-  }
-  const identity = payload[kind === "challenge" ? "sellerIdentity" : "buyerIdentity"];
-  // A contradictory outer binding must not let a presentation carrying the
-  // issued nonce escape consumption before schema/binding validation.
-  if (payload[kind === "challenge" ? "sellerChallenge" : "buyerChallenge"] !== challenge &&
-      (!plainObject(identity) || identity.sessionNonce !== challenge)) {
-    throw new DacsSessionBootstrapTransportError("session-challenge-mismatch");
-  }
+  // The caller has already authenticated and addressed this job. Its retained
+  // verifier challenge is consumed even if the attempt omits or contradicts
+  // both nonce fields; presentation/schema validation happens afterwards.
   const issued = challengeIssue(context, order, challenge);
   const attempt = context.database.reserveIdentity({
     kind: "session", identity: `session-challenge-attempt:${challenge}`,
