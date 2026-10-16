@@ -114,6 +114,7 @@ async function freshDir(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   trace.root = "";
   trace.linkTarget = "";
   trace.beforeLink = undefined;
@@ -263,7 +264,8 @@ describe("createFsLiquidityTankStore", () => {
     })).resolves.toEqual({ status: "conflict", reason: "liquidity-tank-bridge-cross-settlement-reuse" });
   });
 
-  test("a restarted worker reuses the retained submission instead of signing a second one", async () => {
+  test.each([undefined, "production", "staging"])("with NODE_ENV=%s, a durable restarted worker reuses the retained submission", async (nodeEnv) => {
+    vi.stubEnv("NODE_ENV", nodeEnv);
     const dir = await freshDir();
     let now = T0;
     let observation: LiquidityTankObservation = {

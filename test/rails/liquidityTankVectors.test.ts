@@ -18,6 +18,10 @@ import {
 } from "../../src/rails/liquidityTank.js";
 import * as rails from "../../src/rails/index.js";
 import * as root from "../../src/index.js";
+import {
+  createLiquidityTankEvmFinalityVerifier,
+  LIQUIDITY_TANK_EVM_FINALITY_VERSION,
+} from "../../src/rails/liquidityTankEvmFinality.js";
 
 const AUTH_HASH = "a".repeat(64);
 const BRIDGE_ID = "abc123def456gh78";
@@ -1056,5 +1060,227 @@ describe("the core fences its own effects when the adapter never calls the fence
     const fenceEvent = armed.events.reduce((seen, event, at) =>
       event === "isCurrent" && armed.events.slice(0, at + 1).filter((e) => e === "isCurrent").length === index ? at : seen, -1);
     expect(armed.events.slice(fenceEvent + 1)).not.toContain(scenario.never);
+  });
+});
+
+describe("ST-8 executable Ethereum source-lock finality", () => {
+  const LOCK = `0x${"1".repeat(64)}`;
+  const BLOCK = `0x${"2".repeat(64)}`;
+  const HEAD = `0x${"3".repeat(64)}`;
+  const RPC_URL = "https://sepolia-rpc.example/";
+  const receipt = { transactionHash: LOCK, blockHash: BLOCK, blockNumber: "0x10", status: "0x1" };
+  const canonical = { hash: BLOCK, number: "0x10", transactions: [LOCK] };
+  const finalized = { hash: HEAD, number: "0x11" };
+
+  function rpc(overrides: Record<string, unknown> = {}) {
+    const values: Record<string, unknown> = { chainId: "0xaa36a7", receipt, canonical, finalized, ...overrides };
+    const transport = vi.fn<typeof fetch>(async (_url, init) => {
+      const request = JSON.parse(init?.body as string) as { id: number; method: string; params: unknown[] };
+      const field = request.method === "eth_chainId" ? "chainId"
+        : request.method === "eth_getTransactionReceipt" ? "receipt"
+          : request.params[0] === "finalized" ? "finalized" : "canonical";
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: values[field] }));
+    });
+    const verifier = createLiquidityTankEvmFinalityVerifier({
+      sourceRpcUrl: RPC_URL, verifier: APPROVE, fetch: transport,
+    });
+    return { transport, verifier };
+  }
+
+  function sourceLock() {
+    return { ...locked(PREPARED_AT + 1_000), lockTxHash: LOCK } as LiquidityTankObservation;
+  }
+
+  test.each(["0xf", "0x10", "0x11"])("source inclusion at 0x10 enters ST-8 only if finalized head %s reaches it", async (height) => {
+    const proof = rpc({ finalized: { number: height, hash: height === "0x10" ? BLOCK : HEAD } });
+    const p = phase({ verifier: proof.verifier });
+    p.see(sourceLock());
+    const observationWrite = vi.spyOn(p.store, "recordObservation");
+    const expiryWrite = vi.spyOn(p.store, "recordRecoveryExpired");
+    const settlementWrite = vi.spyOn(p.store, "recordSettlement");
+    if (height === "0xf") {
+      await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+      expect(observationWrite).not.toHaveBeenCalled();
+    } else {
+      await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric", txRef: { lockTxHash: LOCK } });
+      expect(observationWrite).toHaveBeenCalledTimes(1);
+    }
+    expect(expiryWrite).not.toHaveBeenCalled();
+    expect(settlementWrite).not.toHaveBeenCalled();
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+    for (const [url, init] of proof.transport.mock.calls) {
+      expect(url).toBe(RPC_URL);
+      expect(init).toMatchObject({ method: "POST", redirect: "error", credentials: "omit" });
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(JSON.parse(init?.body as string).method).toMatch(/^eth_(chainId|getTransactionReceipt|getBlockByNumber)$/);
+      expect(init?.body).not.toContain("signedSubmission");
+    }
+    expect(proof.transport.mock.calls.map(([, init]) => JSON.parse(init?.body as string).params))
+      .toEqual(height === "0xf" ? [[], [LOCK], ["finalized", false]] : [[], [LOCK], ["finalized", false], ["0x10", false]]);
+  });
+
+  test.each([
+    ["receipt not found", { receipt: null }],
+    ["receipt missing its block hash", { receipt: { ...receipt, blockHash: undefined } }],
+    ["receipt with a noncanonical quantity", { receipt: { ...receipt, blockNumber: "0x010" } }],
+    ["receipt with a numeric block height", { receipt: { ...receipt, blockNumber: 16 } }],
+    ["receipt with trailing whitespace in the block height", { receipt: { ...receipt, blockNumber: "0x10\n" } }],
+    ["receipt with a trailing newline in its block hash", { receipt: { ...receipt, blockHash: `${BLOCK}\n` } }],
+    ["receipt with missing status", { receipt: { ...receipt, status: undefined } }],
+    ["finalized tag not supported", { finalized: null }],
+    ["finalized tag without a hash", { finalized: { number: "0x11" } }],
+    ["finalized head is another block at the receipt height", { finalized: { number: "0x10", hash: HEAD } }],
+    ["canonical block was reorged", { canonical: { ...canonical, hash: HEAD } }],
+    ["canonical block has a different height", { canonical: { ...canonical, number: "0x12" } }],
+    ["canonical block is absent", { canonical: null }],
+    ["canonical block omits this transaction", { canonical: { ...canonical, transactions: [HEAD] } }],
+    ["canonical block omits the transaction list", { canonical: { hash: BLOCK, number: "0x10" } }],
+    ["RPC points to another chain", { chainId: "0x1" }],
+    ["RPC chain is malformed", { chainId: "0XAA36A7" }],
+  ])("%s cannot enter ST-8, expire or settle", async (_label, overrides) => {
+    const proof = rpc(overrides as Record<string, unknown>);
+    const p = phase({ verifier: proof.verifier });
+    p.see(sourceLock());
+    const writes = ["recordObservation", "recordRecoveryFailure", "recordRecoveryExpired", "recordSettlement"] as const;
+    const spies = writes.map((method) => vi.spyOn(p.store, method));
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["reverted source transaction", { ...receipt, status: "0x0" }],
+    ["receipt of another transaction", { ...receipt, transactionHash: HEAD }],
+  ])("%s refuses the bridge claim", async (_label, value) => {
+    const proof = rpc({ receipt: value });
+    const p = phase({ verifier: proof.verifier });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-observation-unauthenticated" });
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["HTTP outage", () => Promise.resolve(new Response("unavailable", { status: 503 }))],
+    ["RPC error", () => Promise.resolve(new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32601 } })))],
+    ["wrong RPC response ID", () => Promise.resolve(new Response(JSON.stringify({ jsonrpc: "2.0", id: 9, result: "0xaa36a7" })))],
+    ["wrong RPC version", () => Promise.resolve(new Response(JSON.stringify({ jsonrpc: "1.0", id: 1, result: "0xaa36a7" })))],
+    ["malformed JSON", () => Promise.resolve(new Response("{"))],
+    ["network exception", () => Promise.reject(new Error("offline"))],
+  ])("%s is unavailable and never broadcasts", async (_label, transport) => {
+    const p = phase({ verifier: createLiquidityTankEvmFinalityVerifier({ sourceRpcUrl: RPC_URL, verifier: APPROVE, fetch: transport }) });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("pre-final lock becomes final on retry without preparing a second submission", async () => {
+    const proof = rpc({ finalized: { hash: HEAD, number: "0xf" } });
+    const p = phase({ verifier: proof.verifier });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toMatchObject({ status: "indeterminate" });
+    proof.transport.mockImplementation(rpc().transport);
+    p.tick();
+    await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric" });
+    expect(p.prepareSubmission).toHaveBeenCalledTimes(1);
+  });
+
+  test("the RPC deadline aborts a stalled finality read", async () => {
+    const transport = vi.fn<typeof fetch>(async (_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    }));
+    const p = phase({ verifier: createLiquidityTankEvmFinalityVerifier({
+      sourceRpcUrl: RPC_URL, verifier: APPROVE, fetch: transport, timeoutMs: 10,
+    }) });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("a retained lock is rechecked before any broadcast or expiry", async () => {
+    const proof = rpc();
+    const p = phase({ verifier: proof.verifier });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric" });
+    proof.transport.mockImplementation(rpc({ receipt: null }).transport);
+    p.at(D + 1);
+    const expiry = vi.spyOn(p.store, "recordRecoveryExpired");
+    await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric", pastDeadline: true });
+    expect(expiry).not.toHaveBeenCalled();
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+    expect(p.prepareSubmission).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([true, false, "unavailable"] as const)("bridge authenticator answer %s is preserved for lock-free reads", async (answer) => {
+    const proof = rpc();
+    const verifier = createLiquidityTankEvmFinalityVerifier({ sourceRpcUrl: RPC_URL, fetch: proof.transport,
+      verifier: { ...APPROVE, authenticateObservation: () => answer } });
+    const p = phase({ verifier });
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: answer === true
+      ? "liquidity-tank-status-transition-unresolved" : answer === false
+        ? "liquidity-tank-observation-unauthenticated" : "liquidity-tank-verifier-unavailable" });
+    expect(proof.transport).not.toHaveBeenCalled();
+  });
+
+  test.each([false, "unavailable"] as const)("a lock refused by the bridge authenticator (%s) never reaches the RPC", async (answer) => {
+    const proof = rpc();
+    const p = phase({ verifier: createLiquidityTankEvmFinalityVerifier({ sourceRpcUrl: RPC_URL, fetch: proof.transport,
+      verifier: { ...APPROVE, authenticateObservation: () => answer } }) });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toMatchObject({ status: "indeterminate" });
+    expect(proof.transport).not.toHaveBeenCalled();
+  });
+
+  test.each(["pending", "failed", "completed"] as const)("%s carrying an unfinalized source lock cannot resolve the phase", async (status) => {
+    const proof = rpc({ finalized: { hash: HEAD, number: "0xf" } });
+    const p = phase({ verifier: proof.verifier });
+    p.see(status === "pending" ? sourceLock() : status === "failed"
+      ? failed(PREPARED_AT + 1_000, { lockTxHash: LOCK, recoveryDeadline: D })
+      : completed(PREPARED_AT + 1_000, { lockTxHash: LOCK }));
+    const settlement = vi.spyOn(p.store, "recordSettlement");
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+    expect(settlement).not.toHaveBeenCalled();
+  });
+
+  test("a finalized source lock permits an authenticated timely completion", async () => {
+    const p = phase({ verifier: rpc().verifier });
+    p.see(completed(PREPARED_AT + 1_000, { lockTxHash: LOCK }));
+    await expect(p.run()).resolves.toMatchObject({ status: "settled", settlement: { txRef: { lockTxHash: LOCK } } });
+  });
+
+  test.each([false, true])("a failed bridge observation with committed lock=%s keeps the ST-8 failure distinction", async (hasLock) => {
+    const proof = rpc();
+    const p = phase({ verifier: proof.verifier });
+    p.see(failed(PREPARED_AT + 1_000, hasLock ? { lockTxHash: LOCK, recoveryDeadline: D } : {}));
+    await expect(p.run()).resolves.toMatchObject(hasLock
+      ? { status: "settle-asymmetric", bridgeStatus: "failed", txRef: { lockTxHash: LOCK } }
+      : { status: "failed", errorClass: "permanent" });
+    expect(proof.transport).toHaveBeenCalledTimes(hasLock ? 4 : 0);
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("submission verification retains the bridge verifier's receiver and result", async () => {
+    const proof = rpc();
+    const verifier = { ...APPROVE, allowed: false, verifySignedSubmission() { return this.allowed; } };
+    const p = phase({ verifier: createLiquidityTankEvmFinalityVerifier({ sourceRpcUrl: RPC_URL, fetch: proof.transport, verifier }) });
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" });
+    expect(proof.transport).not.toHaveBeenCalled();
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each(["http://rpc.example", "https://user:pass@rpc.example", "https://rpc.example/#other"])("refuses unpinned transport %s", (sourceRpcUrl) => {
+    expect(() => createLiquidityTankEvmFinalityVerifier({ sourceRpcUrl, verifier: APPROVE })).toThrow(TypeError);
+  });
+
+  test.each([0, -1, 30_001, 1.5, NaN])("refuses invalid timeout %s", (timeoutMs) => {
+    expect(() => createLiquidityTankEvmFinalityVerifier({ sourceRpcUrl: RPC_URL, verifier: APPROVE, timeoutMs })).toThrow(TypeError);
+  });
+
+  test("finality verifier and pinned contract version are public exports", () => {
+    expect(LIQUIDITY_TANK_EVM_FINALITY_VERSION).toBe("ethereum-finalized-receipt-v1");
+    for (const barrel of [rails, root]) {
+      expect(barrel.createLiquidityTankEvmFinalityVerifier).toBe(createLiquidityTankEvmFinalityVerifier);
+      expect(barrel.LIQUIDITY_TANK_EVM_FINALITY_VERSION).toBe(LIQUIDITY_TANK_EVM_FINALITY_VERSION);
+    }
   });
 });

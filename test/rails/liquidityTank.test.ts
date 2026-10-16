@@ -6008,13 +6008,17 @@ describe("final review, round 1", () => {
     });
 
     // Launch review 1: a production process never runs on a volatile store.
-    describe("with NODE_ENV=production", () => {
+    describe("volatile stores require explicit development/test mode", () => {
       afterEach(() => {
         vi.unstubAllEnvs();
       });
 
       test.each([
         ["production", () => vi.stubEnv("NODE_ENV", "production")],
+        ["no NODE_ENV", () => vi.stubEnv("NODE_ENV", undefined)],
+        ["an empty NODE_ENV", () => vi.stubEnv("NODE_ENV", "")],
+        ["an unknown NODE_ENV", () => vi.stubEnv("NODE_ENV", "staging")],
+        ["a differently cased NODE_ENV", () => vi.stubEnv("NODE_ENV", "Test")],
         ["an unreadable environment", () => {
           const env = Object.getOwnPropertyDescriptor(process, "env") as PropertyDescriptor;
           Object.defineProperty(process, "env", { configurable: true, get() { throw new Error("no environment"); } });
@@ -6042,7 +6046,7 @@ describe("final review, round 1", () => {
         expect(h.observe).not.toHaveBeenCalled();
       });
 
-      test.each(["development", "test", ""])("with NODE_ENV=%j a volatile store still settles", async (value) => {
+      test.each(["development", "test"])("with NODE_ENV=%j a volatile store still settles", async (value) => {
         vi.stubEnv("NODE_ENV", value);
         const h = harness();
         h.setAfterBroadcast(completed(h.operationHash));
