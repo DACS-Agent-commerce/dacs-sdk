@@ -271,12 +271,18 @@ export type HtlcObservedAction =
        * was observed. `open` still holds the funds, `claimed` was spent by the
        * claim in `claimTxRef`, which may be one the core never sent, and
        * `refunded` returned them to the payer. Past the source expiry after a
-       * final reveal, only a lock authenticated `open` or `refunded` ends the
-       * session with the terminal ST-8 expiry.
+       * final reveal, a lock authenticated `open` or `refunded`, or `claimed`
+       * by a claim final only after the expiry, ends the session with the
+       * terminal ST-8 expiry.
        */
       lockState?: "open" | "claimed" | "refunded";
       /** Present exactly when `lockState` is `claimed`: the claim that spent the lock. */
       claimTxRef?: Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>;
+      /**
+       * Present exactly when `lockState` is `claimed`: authenticated
+       * chain-native Unix milliseconds at which `claimTxRef` reached finality.
+       */
+      claimFinalityReachedAt?: number;
       revealedPreimageHex?: string;
       authenticationHash: string;
     } & (
@@ -675,13 +681,19 @@ export type CrossChainHtlcProgress =
        * The reveal is final, the source expiry has passed, no claim the core
        * sent can land, and the adapter authenticates the source lock spent by
        * `sourceClaimTxRef`, a claim the core did not send (the payee's own
-       * agent or another claimer). The payee was paid: the host anchors the
-       * ST-8 `:resolved` record on that claim, and never pays the payee again.
+       * agent or another claimer), final within the window. The payee was
+       * paid: the host anchors the ST-8 `:resolved` record on that claim, and
+       * never pays the payee again. A claim final only after the window is
+       * the terminal ST-8 expiry instead, as for a claim the core sent.
        */
       status: "operator-alert";
       reason: "htlc-source-claimed-outside-core";
       txRefs: readonly Readonly<HtlcTxRef>[];
       sourceClaimTxRef: Readonly<Extract<HtlcTxRef, { kind: "htlc-claim" }>>;
+      /** Unix milliseconds at which that claim reached finality, at or before `recoveryDeadline`. */
+      sourceClaimFinalityReachedAt: number;
+      /** The window bound, `expiry_source`, in Unix milliseconds. */
+      recoveryDeadline: number;
     }
   | {
       /** A retained refund is reported `absent` naming it; the core will not re-send it. */
@@ -1510,6 +1522,11 @@ function validateSnapshot(
       throw new DacsError("pay-cross-chain-htlc: action observation is unauthenticated");
     }
     const action = key as HtlcAction;
+    // A lock's disposition is read from its final observation only.
+    if (observed.state !== "final" && ["lockState", "claimTxRef", "claimFinalityReachedAt"]
+      .some((field) => (observed as Readonly<Record<string, unknown>>)[field] !== undefined)) {
+      throw new DacsError(`pay-cross-chain-htlc: ${action} disposition is invalid`);
+    }
     const retained = prepared.get(action);
     const history = action === "source-claim"
       ? sourceClaimAttemptHistory
@@ -1538,15 +1555,20 @@ function validateSnapshot(
     if (observed.state !== "final") {
       throw new DacsError(`pay-cross-chain-htlc: ${action} state is invalid`);
     }
-    if (observed.lockState !== undefined || observed.claimTxRef !== undefined) {
+    if (observed.lockState !== undefined || observed.claimTxRef !== undefined ||
+        observed.claimFinalityReachedAt !== undefined) {
       const claimRef: unknown = observed.claimTxRef;
       const claimRefValid = claimRef !== null && typeof claimRef === "object" &&
         (claimRef as HtlcTxRef).kind === "htlc-claim" &&
         typeof (claimRef as { claimTxHash?: unknown }).claimTxHash === "string" &&
         (claimRef as { claimTxHash: string }).claimTxHash.length > 0;
+      const claimFinality: unknown = observed.claimFinalityReachedAt;
+      const claimFinalityValid = Number.isSafeInteger(claimFinality) && (claimFinality as number) >= 0;
       if (action !== "source-lock" ||
           !["open", "claimed", "refunded"].includes(observed.lockState as string) ||
-          (observed.lockState === "claimed" ? !claimRefValid : claimRef !== undefined)) {
+          (observed.lockState === "claimed"
+            ? !claimRefValid || !claimFinalityValid
+            : claimRef !== undefined || claimFinality !== undefined)) {
         throw new DacsError(`pay-cross-chain-htlc: ${action} disposition is invalid`);
       }
     }
@@ -2042,21 +2064,37 @@ export async function advanceCrossChainHtlc(
   // common reason a claim reverts is that the payee, or anyone holding the
   // public preimage, already claimed the lock outside the core. Only a lock
   // authenticated unclaimed past the expiry makes the interim record stand
-  // and the session terminal; a lock spent by another claim is that claim's
-  // resolution, and an unreported disposition stays resumable.
+  // and the session terminal. A lock spent by another claim final within the
+  // window is that claim's resolution (ST-8(a)); one final only after it is
+  // the expiry, as for a claim the core sent. An unreported disposition stays
+  // resumable.
   const sourceClaimMissed = (
     latest: Readonly<HtlcLedgerSnapshot>,
     known: Readonly<Partial<Record<HtlcAction, Readonly<HtlcTxRef>>>>,
+    sourceExpiry: number,
   ): CrossChainHtlcProgress => {
     const ownClaimDead = !prepared.has("source-claim") ||
       unlandedActiveClaim("source-claim", latest) !== undefined;
     const lock = latest.actions["source-lock"];
     const lockState = lock?.state === "final" ? lock.lockState : undefined;
-    if (ownClaimDead && (lockState === "open" || lockState === "refunded")) {
-      return { status: "failed", errorClass: "settlement-atomicity", reason: "dest-revealed-source-unclaimed-expired" };
-    }
+    const expired: CrossChainHtlcProgress = {
+      status: "failed",
+      errorClass: "settlement-atomicity",
+      reason: "dest-revealed-source-unclaimed-expired",
+    };
+    if (ownClaimDead && (lockState === "open" || lockState === "refunded")) return expired;
     const txRefs = collectRefs(latest, prepared, [], ["destination-lock"], known);
-    if (ownClaimDead && lock?.state === "final" && lockState === "claimed" && lock.claimTxRef) {
+    if (ownClaimDead && lock?.state === "final" && lockState === "claimed" && lock.claimTxRef &&
+        lock.claimFinalityReachedAt !== undefined) {
+      // A lock spent by a claim the core sent, which this same snapshot
+      // reports unlanded, contradicts itself: neither resolved nor expired.
+      const ownClaimHashes = [prepared.get("source-claim"), ...sourceClaimAttemptHistory.map((entry) => entry.prepared)]
+        .flatMap((own) => own?.txRef.kind === "htlc-claim" ? [own.txRef.claimTxHash] : []);
+      if (ownClaimHashes.includes(lock.claimTxRef.claimTxHash)) {
+        return { status: "indeterminate", reason: "htlc-source-lock-disposition-contradicted" };
+      }
+      const recoveryDeadline = secondsToMilliseconds(sourceExpiry, "source recovery expiry");
+      if (lock.claimFinalityReachedAt > recoveryDeadline) return expired;
       return {
         status: "operator-alert",
         reason: "htlc-source-claimed-outside-core",
@@ -2068,6 +2106,8 @@ export async function advanceCrossChainHtlc(
           action: "source-claim",
           txHash: lock.claimTxRef.claimTxHash,
         }) as Extract<HtlcTxRef, { kind: "htlc-claim" }>,
+        sourceClaimFinalityReachedAt: lock.claimFinalityReachedAt,
+        recoveryDeadline,
       };
     }
     return {
@@ -2828,7 +2868,7 @@ export async function advanceCrossChainHtlc(
     // claim that is pending here and later reaches finality in time still
     // settles on a later call; one that can no longer land ends the session.
     if (readNow() >= secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry")) {
-      return sourceClaimMissed(snapshot, landedReveal);
+      return sourceClaimMissed(snapshot, landedReveal, checkpoint.sourceExpiry);
     }
     const sourceClaimState = snapshot.actions["source-claim"];
     if (!sourceClaimState || sourceClaimState.state === "absent" ||
@@ -2846,7 +2886,7 @@ export async function advanceCrossChainHtlc(
         : await execute("source-claim", { sourceExpiry: checkpoint.sourceExpiry });
       if (!advanced) {
         return sourceClaimExpiryReached
-          ? sourceClaimMissed(snapshot, landedReveal)
+          ? sourceClaimMissed(snapshot, landedReveal, checkpoint.sourceExpiry)
           : sourceClaimReplacementLimitReached
             ? operatorAlert(
               "htlc-source-claim-replacement-limit-reached",

@@ -1789,11 +1789,40 @@ describe("advanceCrossChainHtlc", () => {
     }],
     // The core's claim reverts because the payee already claimed: the payee was
     // paid, so the session is neither terminal nor `failed-counterparty`.
-    ["claimed outside the core", { lockState: "claimed", claimTxRef: outsideClaim }, {
+    ["claimed outside the core within the window", {
+      lockState: "claimed",
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt: 1_400_000,
+    }, {
       status: "operator-alert",
       reason: "htlc-source-claimed-outside-core",
       txRefs: corePathRefs(),
       sourceClaimTxRef: outsideClaim,
+      sourceClaimFinalityReachedAt: 1_400_000,
+      recoveryDeadline: 1_500_000,
+    }],
+    ["claimed outside the core final at the expiry instant", {
+      lockState: "claimed",
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt: 1_500_000,
+    }, {
+      status: "operator-alert",
+      reason: "htlc-source-claimed-outside-core",
+      txRefs: corePathRefs(),
+      sourceClaimTxRef: outsideClaim,
+      sourceClaimFinalityReachedAt: 1_500_000,
+      recoveryDeadline: 1_500_000,
+    }],
+    // ST-8(a) resolves only on a claim final within the window: as for a
+    // claim the core sent, a later one is the expiry.
+    ["claimed outside the core final only after the expiry", {
+      lockState: "claimed",
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt: 1_500_001,
+    }, {
+      status: "failed",
+      errorClass: "settlement-atomicity",
+      reason: "dest-revealed-source-unclaimed-expired",
     }],
     // Without the lock's disposition a claim made outside the core cannot be
     // ruled out: the session stays resumable, and nothing the core sent is pending.
@@ -1866,10 +1895,80 @@ describe("advanceCrossChainHtlc", () => {
       reason: "htlc-source-claim-missed-after-reveal",
       sourceClaimPending: false,
     });
-    h.actions["source-lock"] = { ...h.actions["source-lock"], lockState: "claimed", claimTxRef: outsideClaim } as HtlcObservedAction;
+    h.actions["source-lock"] = {
+      ...h.actions["source-lock"],
+      lockState: "claimed",
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt: 4_000_000,
+    } as HtlcObservedAction;
     const resolved = await advanceCrossChainHtlc(run.nextOwner());
-    expect(resolved).toMatchObject({ status: "operator-alert", reason: "htlc-source-claimed-outside-core", sourceClaimTxRef: outsideClaim });
+    expect(resolved).toMatchObject({
+      status: "operator-alert",
+      reason: "htlc-source-claimed-outside-core",
+      sourceClaimTxRef: outsideClaim,
+      sourceClaimFinalityReachedAt: 4_000_000,
+      recoveryDeadline: 5_000_000,
+    });
     expect(htlcNeedsOperator(resolved)).toBe(true);
+  });
+
+  test("keeps a pending core claim resumable when the lock is reported claimed outside the core", async () => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    h.actions["source-lock"] = {
+      ...h.actions["source-lock"],
+      lockState: "claimed",
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt: 1_400_000,
+    } as HtlcObservedAction;
+    run.setClock(1_500_000);
+    // The core's own claim may still prove final in time: no disposition
+    // decides the session while it can land.
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" })).resolves.toEqual({
+      status: "operator-alert",
+      reason: "htlc-source-claim-missed-after-reveal",
+      txRefs: corePathRefs(),
+      sourceClaimPending: true,
+    });
+  });
+
+  test("settles on the retained reveal checkpoint without writing it again when the reveal is re-observed later", async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+    const recordRevealFinal = vi.fn(base.recordRevealFinal.bind(base));
+    const run = runner({ adapter: h.adapter, store: { ...base, recordRevealFinal } });
+    await toSourceClaimPending(run);
+    expect(recordRevealFinal).toHaveBeenCalledTimes(1);
+    // The store refuses another checkpoint for the session, so writing this
+    // one would leave a session paid on chain unable to settle.
+    h.setObservedAt(1_010_000);
+    h.actions["destination-claim"] = { ...h.actions["destination-claim"], finalityObservedAt: 1_010_000 } as HtlcObservedAction;
+    await h.markFinal("source-claim");
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "settled",
+      settlement: { txRefs: corePathRefs() },
+    });
+    expect(recordRevealFinal).toHaveBeenCalledTimes(1);
+  });
+
+  test("refuses a lock reported claimed by the core's own claim that the same snapshot reports failed", async () => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    const prior = h.broadcastRetained.mock.calls.map(([prepared]) => prepared).find((p) => p.action === "source-claim")!;
+    h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+    h.actions["source-lock"] = {
+      ...h.actions["source-lock"],
+      lockState: "claimed",
+      claimTxRef: prior.txRef,
+      claimFinalityReachedAt: 1_400_000,
+    } as HtlcObservedAction;
+    run.setClock(1_500_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-source-lock-disposition-contradicted",
+    });
   });
 
   test("takes the outside claim's chain and contract from the intent, not the adapter", async () => {
@@ -1882,30 +1981,55 @@ describe("advanceCrossChainHtlc", () => {
       ...h.actions["source-lock"],
       lockState: "claimed",
       claimTxRef: { ...outsideClaim, chainId: 1, contractAddress: "elsewhere" },
+      claimFinalityReachedAt: 1_400_000,
     } as HtlcObservedAction;
     run.setClock(1_500_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" }))
       .resolves.toMatchObject({ reason: "htlc-source-claimed-outside-core", sourceClaimTxRef: outsideClaim });
   });
 
+  // Each `claimed` row is complete but for the defect it names.
+  const claimedAt = { lockState: "claimed", claimFinalityReachedAt: 1_400_000 } as const;
   test.each([
     ["an unknown lock state", "source-lock", { lockState: "spent" }],
-    ["claimed without the claim", "source-lock", { lockState: "claimed" }],
-    ["claimed by a non-claim reference", "source-lock", { lockState: "claimed", claimTxRef: refFor("source-refund") }],
-    ["claimed by a claim without a hash", "source-lock", { lockState: "claimed", claimTxRef: { ...outsideClaim, claimTxHash: "" } }],
+    ["claimed without the claim", "source-lock", { ...claimedAt }],
+    ["claimed by a non-claim reference", "source-lock", { ...claimedAt, claimTxRef: refFor("source-refund") }],
+    ["claimed by a claim without a hash", "source-lock", { ...claimedAt, claimTxRef: { ...outsideClaim, claimTxHash: "" } }],
+    ["claimed by a reference of another kind carrying a claim hash", "source-lock", {
+      ...claimedAt,
+      claimTxRef: { ...refFor("source-refund"), claimTxHash: "tx-wrong-kind" },
+    }],
+    ["claimed by a claim whose hash is not a string", "source-lock", {
+      ...claimedAt,
+      claimTxRef: { ...outsideClaim, claimTxHash: ["tx-array"] },
+    }],
+    ["claimed without the claim's finality", "source-lock", { lockState: "claimed", claimTxRef: outsideClaim }],
+    ["claimed with a negative claim finality", "source-lock", { ...claimedAt, claimTxRef: outsideClaim, claimFinalityReachedAt: -1 }],
+    ["claimed with a fractional claim finality", "source-lock", { ...claimedAt, claimTxRef: outsideClaim, claimFinalityReachedAt: 1.5 }],
+    ["claimed with a claim finality that is a string", "source-lock", {
+      ...claimedAt,
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt: "1400000",
+    }],
     ["a claim reference on an open lock", "source-lock", { lockState: "open", claimTxRef: outsideClaim }],
+    ["a claim finality on an open lock", "source-lock", { lockState: "open", claimFinalityReachedAt: 1_400_000 }],
     ["a claim reference without a state", "source-lock", { claimTxRef: outsideClaim }],
     ["a disposition on the destination lock", "destination-lock", { lockState: "open" }],
+    // Only a final observation carries a disposition.
+    ["a disposition on the failed source claim", "source-claim", { lockState: "open" }],
+    ["a disposition on a pending source lock", "source-lock", { state: "pending", lockState: "open" }],
   ] as const)("refuses a lock disposition with %s and never ends ST-8 on it", async (_name, action, disposition) => {
     const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
     const run = runner({ adapter: h.adapter });
     await toSourceClaimPending(run);
     const prior = h.broadcastRetained.mock.calls.map(([prepared]) => prepared).find((p) => p.action === "source-claim")!;
     h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
-    h.actions[action] ={ ...h.actions[action], ...disposition } as HtlcObservedAction;
+    h.actions[action] ={ ...h.actions[action], ...disposition } as unknown as HtlcObservedAction;
     run.setClock(1_500_000);
-    const result = await advanceCrossChainHtlc({ ...run.shared, owner: "late" });
-    expect(result.status).toBe("indeterminate");
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" })).resolves.toEqual({
+      status: "indeterminate",
+      reason: "htlc-ledger-observation-unavailable",
+    });
   });
 
   test("rejects a final destination claim that reveals another preimage", async () => {
@@ -5135,6 +5259,40 @@ describe("unlanded effects, unusable destination locks and operator paging", () 
     },
   );
 
+  // An `absent` naming nothing says nothing about an action the core never
+  // prepared, so it sends that action: the status alone cannot tell.
+  test("sends the first reveal when the destination claim is reported absent naming nothing", async () => {
+    const h = harness();
+    const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+    let result = await advanceCrossChainHtlc(run.shared);
+    for (let call = 0; call < 6 && !("reason" in result && result.reason === "htlc-destination-claim-not-authorized"); call += 1) {
+      result = await advanceCrossChainHtlc(run.nextOwner());
+    }
+    expect(result).toEqual({ status: "waiting", reason: "htlc-destination-claim-not-authorized" });
+    expect(broadcastsOf(h, "destination-claim")).toHaveLength(0);
+    h.actions["destination-claim"] = { state: "absent", authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), authorizeDestinationClaim: true })).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-claim-finality-pending",
+    });
+    expect(h.prepareAction.mock.calls.filter(([request]) => request.action === "destination-claim")).toHaveLength(1);
+    expect(broadcastsOf(h, "destination-claim")).toHaveLength(1);
+  });
+
+  test("sends the destination lock when it is reported absent naming nothing", async () => {
+    const h = harness({ mode: { "destination-lock": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    expect(h.prepareAction.mock.calls.map(([request]) => request.action)).toEqual(["source-lock"]);
+    h.actions["destination-lock"] = { state: "absent", authenticationHash: AUTH_HASH };
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status: "waiting",
+      reason: "htlc-destination-lock-finality-pending",
+    });
+    expect(h.prepareAction.mock.calls.map(([request]) => request.action)).toEqual(["source-lock", "destination-lock"]);
+    expect(broadcastsOf(h, "destination-lock")).toHaveLength(1);
+  });
+
   test("never replaces a source claim on an absent that does not name it", async () => {
     const h = harness({ mode: { "source-claim": "pending" } });
     const run = runner({ adapter: h.adapter });
@@ -6573,6 +6731,11 @@ describe("retained store rows the core must refuse", () => {
     ["another currency", (s) => ({ ...s, paymentAmount: { ...s.paymentAmount, currency: "USDT" } })],
     ["another finality model", (s) => ({ ...s, settlementFinality: { ...s.settlementFinality, model: "block-depth" } })],
     ["no source expiry", (s) => ({ ...s, settlementFinality: { ...s.settlementFinality, sourceExpiry: 0 } })],
+    // Only the expiry check itself refuses this one.
+    ["no source expiry and finality at time zero", (s) => ({
+      ...s,
+      settlementFinality: { ...s.settlementFinality, sourceExpiry: 0, finalityReachedAt: 0, finalityObservedAt: 0 },
+    })],
     ["finality reached after it was observed", (s) => ({
       ...s,
       settlementFinality: { ...s.settlementFinality, finalityReachedAt: s.settlementFinality.finalityObservedAt + 1 },
