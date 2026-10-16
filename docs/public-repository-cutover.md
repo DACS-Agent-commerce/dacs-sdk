@@ -95,9 +95,13 @@ reported by that run rather than creating a similarly named placeholder.
     path's fingerprint can't be one `.gitleaksignore` line. Each scan fails
     without running Gitleaks if a commit in the history it scans adds, changes
     or deletes such a path, and lists those commits; rewrite that history
-    without the path. As with an octopus merge, a pull request head that has
-    one keeps the audit red until the pull request's branch is rewritten, or
-    GitHub Support removes its `refs/pull` ref once the pull request is closed;
+    without the path. As with an octopus merge, one pull request head that has
+    one, which anyone can open from a fork, stops the audit from scanning
+    anything, on any branch, tag or pull request, until that pull request's
+    branch is rewritten, or GitHub Support removes its `refs/pull` ref once the
+    pull request is closed. Other pull requests' required checks don't reach
+    that head, and push protection doesn't use these scripts, so both still
+    run;
   - a pull request's `secret scan` runs the workflow, scripts, `.gitleaks.toml`
     and `.gitleaksignore` of that pull request's merge commit, as GitHub runs
     every `pull_request` workflow, so a pull request can change what checks
