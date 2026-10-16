@@ -922,17 +922,22 @@ completion currently report `blocked` until the resolver/completion work lands
 
 `rpc.reachable` passes only when the endpoint also answers the read-only Demos
 `getLastBlockNumber` node call with a non-negative integer, so a web server that
-merely answers HTTP `GET` fails it. A node that answers `STATE_NOT_READY` while
-it loads its state also fails, with a "retry later" remediation. The default
-adapter needs `@kynesyslabs/demosdk` 4.0.17 or later: earlier builds use
-directory imports that Node's ESM loader rejects, which `substrate.adapter-load`
-reports as `fail`.
+merely answers HTTP `GET` fails it. It reports a block height and is not a sync
+check: a node with an empty chain answers 0 and passes. A node that answers
+`STATE_NOT_READY` while it loads its state fails, with a "retry later"
+remediation. The default adapter needs `@kynesyslabs/demosdk` 4.0.17 or later:
+earlier builds use directory imports that Node's ESM loader rejects, which
+`substrate.adapter-load` reports as `fail`. The peer range is bounded to the
+checked releases (`>=4.0.17 <4.0.19`) and is widened only after the doctor's
+wire shapes and the pay-d402 settlement semantics are checked again.
 
 After a passing height call, `rpc.node-revision` reads the node's build from the
 read-only `getNetworkInfo` node call and compares its commit with the
 `kynesyslabs/node` revision this doctor was verified against
-(`61b8e75aa8db5e408c49e1c3a89db4d673f45578`). It passes only for that commit
-with a clean build. A different, unreported, or uncommitted build reports
+(`61b8e75aa8db5e408c49e1c3a89db4d673f45578`). It passes only for that commit,
+reported under that revision's package name and version
+(`demos-node-software` `0.9.8`), with a clean build. A different, unreported,
+or uncommitted build, or another package name or version, reports
 `warn`, which does not change the exit code: the RPC verdict was not verified
 against that node source.
 
@@ -984,7 +989,10 @@ not configure. For example, the Standard's `demos-native:DEM` rail is selected
 as `pay-dem`. `pay-d402` reports `warn` because it is experimental and not a
 supported live rail; note that demosdk 4.0.17 and later broadcast real
 `d402_payment` transactions, so an acknowledged experimental settlement can
-move real DEM. Balance, nonce,
+move real DEM (Demos node 61b8e75 applies them through its bundled demosdk
+4.0.12). A pay-d402 payment that is not yet seen in a block stays
+indeterminate: resolve it by hash with `payD402ResumeSettlement`, never by
+paying again. Balance, nonce,
 storage, anchor-completion, and cost checks remain `blocked`, including in
 offline mode, which makes no connections, writes, or payments.
 
@@ -999,7 +1007,7 @@ offline mode, which makes no connections, writes, or payments.
 | `config.{rpc,wallet}-file.owner` | pass, fail, skip (symlink, or no user ID) | `ownerUid`, `currentUid` |
 | `substrate.adapter-load` | pass, fail | none |
 | `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail (including no `GET` or height answer within 5 s), skip | `rpc` (redacted) unless skipped; `lastBlockNumber` on pass |
-| `rpc.node-revision` | pass, warn (including no answer within 5 s), skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`commit`, `version`, `dirty`, or `null`) |
+| `rpc.node-revision` | pass, warn (including no answer within 5 s), skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`name`, `commit`, `version`, `dirty`, or `null`) |
 | `wallet.identity` | pass, skip | `address` |
 | `wallet.balance`, `wallet.nonce`, `storage.binding-resolution`, `anchor.completion`, `cost.estimate` | blocked | none |
 | `rail.availability` | warn, fail, skip | `rail`, `known`, or `availability` |
