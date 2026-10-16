@@ -67,6 +67,11 @@ const SUPPORTED_NODE_RANGE_FALLBACK = "^20.19.0 || >=22.12.0";
  * Update it only after re-verifying that handler at the new commit.
  */
 export const VERIFIED_DEMOS_NODE_REVISION = "61b8e75aa8db5e408c49e1c3a89db4d673f45578";
+/**
+ * `name` and `version` of kynesyslabs/node's package.json at that revision. The
+ * node reports them independently of the commit, so both must match too.
+ */
+export const VERIFIED_DEMOS_NODE_PACKAGE = { name: "demos-node-software", version: "0.9.8" } as const;
 
 function check(
   id: string,
@@ -237,6 +242,7 @@ function isBlockHeight(value: unknown): value is number {
 const STATE_NOT_READY = "STATE_NOT_READY";
 
 interface ReportedNodeBuild {
+  name: string | null;
   commit: string | null;
   version: string | null;
   dirty: boolean | null;
@@ -247,8 +253,9 @@ function reportedNodeBuild(info: unknown): ReportedNodeBuild | null {
   const build = typeof info === "object" && info !== null
     ? (info as { nodeVersion?: unknown }).nodeVersion : undefined;
   if (typeof build !== "object" || build === null) return null;
-  const { commit, version, dirty } = build as Record<string, unknown>;
+  const { name, commit, version, dirty } = build as Record<string, unknown>;
   return {
+    name: typeof name === "string" && /^[0-9a-z._-]{1,64}$/.test(name) ? name : null,
     commit: typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit) ? commit : null,
     version: typeof version === "string" && /^[0-9A-Za-z.+-]{1,64}$/.test(version) ? version : null,
     dirty: typeof dirty === "boolean" ? dirty : null,
@@ -312,6 +319,12 @@ async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null):
   if (reported.commit !== pinned) {
     return check(RPC_NODE_REVISION, "warn", "Node reports a different build than the verified revision", {
       data, remediation,
+    });
+  }
+  const { name, version } = VERIFIED_DEMOS_NODE_PACKAGE;
+  if (reported.name !== name || reported.version !== version) {
+    return check(RPC_NODE_REVISION, "warn", "Node reports the verified revision under another package name or version", {
+      data, detail: `the verified build is ${name} ${version}`, remediation,
     });
   }
   if (reported.dirty === false) {
@@ -508,7 +521,7 @@ export async function runDoctorForCli(
             check(RPC_REACHABLE, "fail", "RPC endpoint did not answer the Demos block-height call", {
               data,
               detail: failure ?? "getLastBlockNumber did not return a non-negative integer",
-              remediation: "Check that the RPC URL points at a reachable, synced Demos node.",
+              remediation: "Check that the RPC URL points at a reachable Demos node.",
             }),
           );
         }

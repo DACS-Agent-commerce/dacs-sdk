@@ -926,7 +926,10 @@ process.stdout.write(JSON.stringify(await runDoctor({ rpc: process.argv[1] })));
       });
     }
 
-    /** Answer like a Demos node: `GET /`, then envelope-wrapped nodeCall responses. */
+    /**
+     * Answer like a Demos node: `GET /`, then envelope-wrapped nodeCall responses.
+     * Like node 61b8e75 (manageNodeCall), an unknown nodeCall is HTTP 200 with result 404.
+     */
     function demosNode(responses: Record<string, unknown>) {
       return (method: string | undefined, body: string): Reply => {
         if (method === "GET") return { status: 200, type: "application/json", body: '{"message":"Hello, World!"}' };
@@ -934,9 +937,25 @@ process.stdout.write(JSON.stringify(await runDoctor({ rpc: process.argv[1] })));
         const message = request.params?.[0]?.message ?? "";
         return request.method === "nodeCall" && Object.hasOwn(responses, message)
           ? { status: 200, type: "application/json", body: JSON.stringify(responses[message]) }
-          : { status: 404, type: "application/json", body: "{}" };
+          : { status: 200, type: "application/json", body: JSON.stringify({
+            result: 404, response: { error: "Unknown message", message }, require_reply: false, extra: null,
+          }) };
       };
     }
+
+    it("warns on the node revision when the node does not know getNetworkInfo", async () => {
+      await withRpc(demosNode({
+        getLastBlockNumber: { result: 200, response: 4242, require_reply: false, extra: null },
+      }), async (url) => {
+        const { code, report } = await runBuiltDoctor(url);
+        expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("pass");
+        expect(report.checks.find((c) => c.id === "rpc.node-revision")).toMatchObject({
+          status: "warn", summary: "Node build revision could not be compared with the verified revision",
+          data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: null },
+        });
+        expect(code).toBe(5);
+      });
+    }, 120_000);
 
     it("passes against a Demos-shaped RPC using only read-only calls", async () => {
       // Envelope shapes as recorded from node2 (build 61b8e75) on 2026-10-15.
@@ -955,8 +974,9 @@ process.stdout.write(JSON.stringify(await runDoctor({ rpc: process.argv[1] })));
         });
         expect(report.checks.find((c) => c.id === "rpc.node-revision")).toEqual({
           id: "rpc.node-revision", status: "pass", summary: "Node reports the verified build revision",
-          data: { verified: VERIFIED_DEMOS_NODE_REVISION,
-            reported: { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false } },
+          data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: {
+            name: "demos-node-software", commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false,
+          } },
         });
         expect(code).toBe(5);
         const posted = seen.filter((r) => r.method !== "GET").map((r) => JSON.parse(r.body) as {

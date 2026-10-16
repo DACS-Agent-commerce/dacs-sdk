@@ -5,7 +5,12 @@ import { randomBytes } from "node:crypto";
 
 import { formatDoctorText, redactRpcUrl, runDoctor } from "../../src/cli/index.js";
 
-import { RPC_CALL_TIMEOUT_MS, runDoctorForCli, VERIFIED_DEMOS_NODE_REVISION } from "../../src/cli/doctor.js";
+import {
+  RPC_CALL_TIMEOUT_MS,
+  runDoctorForCli,
+  VERIFIED_DEMOS_NODE_PACKAGE,
+  VERIFIED_DEMOS_NODE_REVISION,
+} from "../../src/cli/doctor.js";
 import type { DoctorSecretFile } from "../../src/cli/secretFile.js";
 import { VERSION } from "../../src/version.js";
 
@@ -322,7 +327,7 @@ describe("dacs doctor", () => {
       id: "rpc.reachable", status: "fail", summary: "RPC endpoint did not answer the Demos block-height call",
       data: { rpc: "https://node.example/[redacted]" },
       detail: "getLastBlockNumber did not return a non-negative integer",
-      remediation: "Check that the RPC URL points at a reachable, synced Demos node.",
+      remediation: "Check that the RPC URL points at a reachable Demos node.",
     });
     expect(report.checks.find((c) => c.id === "wallet.identity")).toMatchObject({
       status: "skip", summary: "Wallet identity skipped because the Demos RPC check did not pass",
@@ -420,29 +425,52 @@ describe("dacs doctor", () => {
     const remediation =
       "Compare the node's Demos build with the verified revision before relying on this doctor's RPC verdict.";
     const other = "a".repeat(40);
+    const NAME = "demos-node-software";
+    const verified = { name: NAME, commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8" };
 
-    it("passes only for the verified commit with a clean build", async () => {
-      expect(await revision(build({ commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false })))
+    it("pins the verified node package to kynesyslabs/node at the verified revision", () => {
+      expect(VERIFIED_DEMOS_NODE_PACKAGE).toEqual({ name: NAME, version: "0.9.8" });
+    });
+
+    it("passes only for the verified commit, name and version with a clean build", async () => {
+      expect(await revision(build({ ...verified, dirty: false })))
         .toEqual({
           id: "rpc.node-revision", status: "pass", summary: "Node reports the verified build revision",
-          data: { verified: VERIFIED_DEMOS_NODE_REVISION,
-            reported: { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false } },
+          data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: { ...verified, dirty: false } },
         });
     });
 
     it.each([
-      ["a different commit", { commit: other, version: "0.9.9", dirty: false },
+      ["another version", { ...verified, version: "9.9.9", dirty: false }, { ...verified, version: "9.9.9", dirty: false }],
+      ["no version", { name: NAME, commit: VERIFIED_DEMOS_NODE_REVISION, dirty: false },
+        { ...verified, version: null, dirty: false }],
+      ["another package name", { ...verified, name: "other-node", dirty: false },
+        { ...verified, name: "other-node", dirty: false }],
+      ["no package name", { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false },
+        { ...verified, name: null, dirty: false }],
+    ])("warns for the verified commit with %s", async (_label, nodeVersion, reported) => {
+      expect(await revision(build(nodeVersion))).toEqual({
+        id: "rpc.node-revision", status: "warn",
+        summary: "Node reports the verified revision under another package name or version",
+        detail: `the verified build is ${NAME} 0.9.8`, remediation,
+        data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported },
+      });
+    });
+
+    it.each([
+      ["a different commit", { name: NAME, commit: other, version: "0.9.9", dirty: false },
         "Node reports a different build than the verified revision",
-        { commit: other, version: "0.9.9", dirty: false }],
-      ["uncommitted changes", { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: true },
+        { name: NAME, commit: other, version: "0.9.9", dirty: false }],
+      ["uncommitted changes", { ...verified, dirty: true },
         "Node reports the verified revision with uncommitted changes",
-        { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: true }],
-      ["no clean-build flag", { commit: VERIFIED_DEMOS_NODE_REVISION },
+        { ...verified, dirty: true }],
+      ["no clean-build flag", { ...verified },
         "Node reports the verified revision but not whether its build is clean",
-        { commit: VERIFIED_DEMOS_NODE_REVISION, version: null, dirty: null }],
-      ["a short or malformed commit", { commit: VERIFIED_DEMOS_NODE_REVISION.slice(0, 7), version: "x y", dirty: "no" },
+        { ...verified, dirty: null }],
+      ["a short or malformed commit",
+        { name: "Bad Name", commit: VERIFIED_DEMOS_NODE_REVISION.slice(0, 7), version: "x y", dirty: "no" },
         "Node build revision could not be compared with the verified revision",
-        { commit: null, version: null, dirty: null }],
+        { name: null, commit: null, version: null, dirty: null }],
     ])("warns for %s and keeps only well-formed fields", async (_label, nodeVersion, summary, reported) => {
       expect(await revision(build(nodeVersion))).toEqual({
         id: "rpc.node-revision", status: "warn", summary, remediation,
@@ -477,7 +505,7 @@ describe("dacs doctor", () => {
       expect(await revision(build(nodeVersion))).toEqual({
         id: "rpc.node-revision", status: "warn",
         summary: "Node build revision could not be compared with the verified revision", remediation,
-        data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: { commit: null, version: "0.9.8", dirty: false } },
+        data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: { name: null, commit: null, version: "0.9.8", dirty: false } },
       });
     });
 
@@ -517,7 +545,7 @@ describe("dacs doctor", () => {
     it("clears its deadline once the node answers", async () => {
       vi.useFakeTimers();
       try {
-        const check = await revision(build({ commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false }));
+        const check = await revision(build({ ...verified, dirty: false }));
         expect(check?.status).toBe("pass");
         expect(vi.getTimerCount()).toBe(0);
       } finally {
@@ -562,7 +590,7 @@ describe("dacs doctor", () => {
           data: { rpc: "https://node.example/" },
           remediation: stalled === "connect"
             ? "Check the RPC URL and network reachability."
-            : "Check that the RPC URL points at a reachable, synced Demos node.",
+            : "Check that the RPC URL points at a reachable Demos node.",
         });
         expect(report.exitCode).toBe(3);
         expect(signals[stalled]?.aborted).toBe(true);
