@@ -204,6 +204,12 @@ cannot pay twice. Likewise, CORE profile admission (the exact Standard
 release and module tuple both parties accepted) is the session's job, and must
 pass before the caller builds an authority for this core.
 
+Build the authority only from the authenticated agreement and the rail
+descriptor it pins: `agreementHash` and `railDescriptorHash` are their hashes,
+and every other field must match what they carry. The core binds both hashes
+into the settlement key, but it cannot authenticate them or check that the
+other fields came from them.
+
 PC-5 requires `amount.currency` to resolve to the rail's asset symbol. The
 caller checks this before calling, from the pinned agreement and rail, and
 reports a mismatch itself as `ok: false` / `permanent` with nothing paid. The
