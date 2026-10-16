@@ -403,7 +403,7 @@ export async function observePayDemTransferCore(
     status: "included",
     // Only the confirmed transaction record proves execution. The other
     // accepted inclusion labels retain their legacy observation shape.
-    ...(transaction.status.toLowerCase() === "confirmed"
+    ...(transaction.status === "confirmed"
       ? { execution: "executed" as const } : {}),
     txHash: requestedHash,
     payer,

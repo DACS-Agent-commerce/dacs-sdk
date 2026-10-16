@@ -10,6 +10,7 @@ import {
 import { payDemSettle } from "../../src/rails/payDem.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import { isSettlementEvidence } from "../../src/artifacts/validators.js";
 import type {
   IdentityBundle,
@@ -1002,6 +1003,25 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     if (mode === "recovered") corrupted.deps.expectedSettlementPayee = payee;
     await expect(runSessionCore(corrupted.listingRef, demTerms, corrupted.deps, "job-1"))
       .rejects.toThrow(/invalid.*terminal-failure proof|payment remains indeterminate/);
+    if (anchorCommitted) {
+      const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
+      const { signature: _signature, ...unsigned } = kv.get(evidenceRef)!;
+      const wrongKindKv = new Map(kv);
+      wrongKindKv.set(evidenceRef, await signComponentArtifact(JSON.parse(JSON.stringify({
+        ...unsigned,
+        phaseIndex: 0,
+        paymentTxRefs: [{ rail: network, kind: "payment", txHash, blockNumber: 42 }],
+      })), ARTIFACT_SEPARATORS.SettlementEvidence, {
+        algorithm: "ed25519", signer: buyerDid, sign,
+      }) as Record<string, unknown>);
+      const wrongKind = await makeDeps(store, { kv: wrongKindKv,
+        settle: async () => { throw new Error("must not pay for wrong-kind evidence"); },
+        resumeSettlement: async () => { throw new Error("must not reconcile wrong-kind evidence"); },
+      });
+      if (mode === "recovered") wrongKind.deps.expectedSettlementPayee = payee;
+      await expect(runSessionCore(wrongKind.listingRef, demTerms, wrongKind.deps, "job-1"))
+        .rejects.toThrow(/payment remains indeterminate/);
+    }
     const resumed = await makeDeps(store, { kv,
       settle: async () => { throw new Error("must not resubmit"); },
       resumeSettlement: async () => { throw new Error("must not reconcile terminal failure"); },
@@ -1059,7 +1079,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     let transfers = 0;
     const settle = payDemSettle({ address: payer, settle: async () => {
       transfers += 1;
-      return { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer, payee,
+      return { ok: true, execution: "executed", txHash: "cd".repeat(32), chainId: "demos", payer, payee,
         blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs };
     } });
     const first = await makeDeps(store, { kv, settle,
@@ -1084,17 +1104,19 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(kv.get(`stor:${sessionAnchorName.evidence("job-1")}`))
       .toMatchObject({ outcome: "success", settlementFinality: { model: "bft-final" } });
 
-    const corrupted = await makeDeps({ ...store, load: async (jobId) => {
-      const value = await store.load(jobId);
-      if (value.status === "ok") {
-        const cp = value.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
-        cp!.data!.networkFeeOs = "01";
-      }
-      return value;
-    } }, { kv });
-    await expect(runSessionCore(corrupted.listingRef, demTerms, corrupted.deps, "job-1"))
-      .rejects.toThrow(/malformed/);
-    expect(corrupted.settleCalls.n).toBe(0);
+    for (const invalidFee of ["01", 1]) {
+      const corrupted = await makeDeps({ ...store, load: async (jobId) => {
+        const value = await store.load(jobId);
+        if (value.status === "ok") {
+          const cp = value.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
+          cp!.data!.networkFeeOs = invalidFee;
+        }
+        return value;
+      } }, { kv });
+      await expect(runSessionCore(corrupted.listingRef, demTerms, corrupted.deps, "job-1"))
+        .rejects.toThrow(/malformed/);
+      expect(corrupted.settleCalls.n).toBe(0);
+    }
   });
 
   test.each(["01", "-1", "1.5", " 1", 1, null])("rejects noncanonical session network fee %s before evidence publication", async (networkFeeOs) => {
@@ -1358,7 +1380,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(resumed.settleCalls.n).toBe(0);
   });
 
-  test("rejects a conflicting settlement hidden below the newest checkpoint", async () => {
+  test.each([
+    { field: "txHash", value: "0xhidden-conflict" },
+    { field: "networkFeeOs", value: "2" },
+  ])("rejects conflicting $field hidden below the newest checkpoint", async ({ field, value }) => {
     const base = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();
     let submits = 0;
@@ -1372,6 +1397,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           chainId: "eip155:84532",
           payer: "0xbuyer",
           payee: req.expectedPayee,
+          networkFeeOs: "1",
         };
       },
       anchor: async (name, value) => {
@@ -1399,7 +1425,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         record.checkpoints.unshift({
           key: "settle:0",
           stage: "outcome",
-          data: { ...latest.data, txHash: "0xhidden-conflict" },
+          data: { ...latest.data, [field]: value },
         });
         return { status: "ok" as const, record };
       },

@@ -167,8 +167,13 @@ describe("native DEM seller payment evidence composition", () => {
     expect(observeDemosTransfer).toHaveBeenCalledWith(TX_HASH);
   });
 
-  it.each([undefined, "confirmed", "failed", true, null])("does not issue native proof without literal execution (%s)", async (execution) => {
-    const observation = { status: "included", txHash: TX_HASH, payer: BUYER_KEY,
+  it.each([
+    ...[undefined, "confirmed", "failed", true, null].map((execution) => ({
+      status: "included", execution,
+    })),
+    { status: "pending", execution: "executed" },
+  ])("does not issue native proof with status $status and execution $execution", async ({ status, execution }) => {
+    const observation = { status, txHash: TX_HASH, payer: BUYER_KEY,
       payee: SELLER_KEY, amountOs: "1250000000", blockNumber: 123, includedAt: 100,
       ...(execution === undefined ? {} : { execution }) };
     const composed = createDacsFixedPricePayDemSellerPaymentEvidenceV1({

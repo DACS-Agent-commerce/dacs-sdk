@@ -898,10 +898,11 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
   });
 
   it.each([
-    { stage: "valid", execution: "executed" },
+    { stage: "valid", execution: "executed", status: "included" },
     ...["initial", "revalidation"].flatMap((stage) =>
-      [undefined, "confirmed", "failed", true, null].map((execution) => ({ stage, execution }))),
-  ])("requires executed native DEM at $stage with attestation $execution", async ({ stage, execution }) => {
+      [undefined, "confirmed", "failed", true, null].map((execution) => ({ stage, execution, status: "included" }))),
+    ...["initial", "revalidation"].map((stage) => ({ stage, execution: "executed", status: "pending" })),
+  ])("requires executed native DEM at $stage with status $status and attestation $execution", async ({ stage, execution, status }) => {
     const f = await payDemFixture();
     const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-buyer-audit-"));
     roots.push(root);
@@ -1004,7 +1005,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
     } as never;
     const { execution: _execution, ...includedOnly } = observation;
-    const unexecuted = { ...includedOnly, ...(execution === undefined ? {} : { execution }) };
+    const unexecuted = { ...includedOnly, status, ...(execution === undefined ? {} : { execution }) };
     if (stage === "initial") {
       observeDemosTransfer.mockResolvedValueOnce(unexecuted as never);
       await expect(audit.bundleTransport.resolveVerification({

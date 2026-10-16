@@ -180,6 +180,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
       payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
     ).resolves.toEqual({
       ok: true,
+      execution: "executed",
       txHash: TX_HASH,
       chainId: "demos",
       payer: WALLET,

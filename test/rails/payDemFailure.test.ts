@@ -1,16 +1,18 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
+import { hasDefinitiveDemosFailure } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog,
   type SettlementBinding } from "../../src/rails/idempotency.js";
-import { observeDemosExecutionByHash, payDemSettle, payDemSettleCore } from "../../src/rails/payDem.js";
+import { observeDemosExecutionByHash, payDemSettle, payDemSettleCore,
+  type PayDemRailResult } from "../../src/rails/payDem.js";
 
 const txHash = "ab".repeat(32);
 const payer = "11".repeat(32);
 const payee = "22".repeat(32);
 const proof = { kind: "demos-failed-record" as const, txHash, payer, payee,
   nonce: 9, blockNumber: 42, amountOs: "1000000000" };
-const failure: SettleResult = { ok: false, txHash, payer, payee, chainId: "demos",
+const failure: PayDemRailResult = { ok: false, txHash, payer, payee, chainId: "demos",
   errorClass: "permanent", failureProof: proof, blockNumber: 42, txRefKind: "demos" };
 const binding: SettlementBinding = { bindingVersion: "1", railId: "pay-dem",
   jobId: "failure-proof", phaseIndex: 0, phase: "pay-dem", amount: proof.amountOs,
@@ -19,6 +21,19 @@ const binding: SettlementBinding = { bindingVersion: "1", railId: "pay-dem",
 const key = "pay-dem:failure-proof:0";
 
 describe("terminal failed Demos record", () => {
+  it.each(["", " demos", "demos ", "de\u0301mos"])(
+    "refuses noncanonical failure-proof network %j", (chainId) => {
+      expect(hasDefinitiveDemosFailure({ ...failure, chainId }, proof.amountOs)).toBe(false);
+    },
+  );
+  it("binds failure proof to the configured network", () => {
+    expect(hasDefinitiveDemosFailure(failure, proof.amountOs, "demos")).toBe(true);
+    expect(hasDefinitiveDemosFailure(failure, proof.amountOs, "demos:testnet")).toBe(false);
+  });
+  it.each([`z${txHash}`, `${txHash}z`])("refuses extra transaction-hash bytes %s", (hash) => {
+    expect(hasDefinitiveDemosFailure({ ...failure, txHash: hash,
+      failureProof: { ...proof, txHash: hash } }, proof.amountOs)).toBe(false);
+  });
   const vectors: { vectors: Array<{ name: string; input: {
     recordStatus: string; recordNonce: number | null; recordBlock: number;
   }; executionState: string }> } = JSON.parse(readFileSync(new URL("../fixtures/standard-next/pay-dem-execution-v0.1.json", import.meta.url), "utf8"));

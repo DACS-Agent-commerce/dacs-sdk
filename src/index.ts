@@ -1458,6 +1458,7 @@ export {
   payDemSettle,
   payDemSettleCore,
   type PayDemRail,
+  type PayDemRailResult,
   type PayDemRailConfig,
   type PayDemPreparedTransfer,
   type PayDemSettlementRecoveryContext,

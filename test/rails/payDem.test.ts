@@ -565,7 +565,35 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const second = await settle(req());
     expect(transfers).toBe(1);
     expect(second).toEqual(first);
+    expect(first).not.toHaveProperty("execution");
   });
+
+  test.each([undefined, "included", "confirmed", true, null])(
+    "holds a fresh legacy rail success without literal execution (%s)",
+    async (execution) => {
+      const log = createInMemorySettlementLog();
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      const submit = vi.fn(async () => ({
+        ok: true,
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: SELLER_HEX,
+        finality: { model: "bft-final" },
+        blockNumber: 42,
+        txRefKind: "demos",
+        ...(execution === undefined ? {} : { execution }),
+      }));
+      const rail = { address: PAYER, settle: submit } as unknown as PayDemRail;
+      const settle = payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+      });
+      await expect(settle(req())).rejects.toThrow(/does not attest executed/);
+      await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(putOutcome).not.toHaveBeenCalled();
+    },
+  );
 
   test("a tx-bearing timeout holds the intent and never submits a second payment", async () => {
     let transfers = 0;
@@ -1128,6 +1156,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       async settle(input) {
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: input.network ?? "demos",
           payer: PAYER,

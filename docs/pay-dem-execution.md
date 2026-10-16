@@ -36,6 +36,17 @@ continues to describe the agreed transfer amount.
 
 ## Custom native clients
 
+Custom `PayDemRail` implementations return `PayDemRailResult`. A successful
+fresh result must carry `execution: "executed"`, attesting that the rail read
+the transaction record and checked literal `confirmed` status, signed hash,
+nonce, inclusion block, payer, payee and amount. Status-index inclusion alone
+must return a not-ok result retaining the hash. Both `payDemSettle` and the
+dacs-node buyer payment track refuse a fresh success without this literal
+attestation before completing settlement, recording wallet debits or publishing
+a payment notice. The intent remains held for reconciliation. The attestation
+is removed before durable settlement storage and notice publication; stored
+results still require fresh execution authentication when recovered.
+
 `payDemSettleCore` accepts any `DemosNativeClient`. It reports success only
 when the client's result has `ok: true`, `state: "included"`, a block number
 and `execution: "executed"`. `execution: "executed"` is the client's statement

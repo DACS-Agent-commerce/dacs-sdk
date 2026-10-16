@@ -472,19 +472,19 @@ export function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   effectFence?: Readonly<SettlementEffectFence>,
-): Promise<SettleResult>;
+): Promise<PayDemRailResult>;
 export function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   defaultNetwork?: string,
   effectFence?: Readonly<SettlementEffectFence>,
-): Promise<SettleResult>;
+): Promise<PayDemRailResult>;
 export async function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   defaultNetworkOrFence: string | Readonly<SettlementEffectFence> = "demos",
   effectFenceOverride?: Readonly<SettlementEffectFence>,
-): Promise<SettleResult> {
+): Promise<PayDemRailResult> {
   // Capture all caller-controlled values and the effect method before the first
   // await. A mutable parameter/client object must not be able to change the
   // transfer destination and then make the returned evidence attest a different
@@ -690,7 +690,7 @@ export async function payDemSettleCore(
     };
     if (okProperty.value === false && state === "failed" &&
         hasDefinitiveDemosFailure(failed, amount, chainId)) {
-      return failed as SettleResult;
+      return failed as PayDemRailResult;
     }
     return {
       ok: false,
@@ -705,12 +705,12 @@ export async function payDemSettleCore(
 
   return {
     ok: true,
+    execution: "executed",
     txHash,
     chainId,
     payer,
     payee: recipient,
-    // §9.5.9: inclusion IS finality on Demos; the tx is a `demos` ref carrying
-    // the block height that witnesses it.
+    // The confirmed execution is BFT-final at this inclusion block on Demos.
     finality: { model: "bft-final" },
     blockNumber: blockNumber as number,
     txRefKind: "demos",
@@ -793,14 +793,25 @@ export interface PayDemPreparedTransfer {
   recovery?: Readonly<PayDemSettlementRecoveryContext>;
 }
 
+/** Fresh native-rail outcome. Success attests a bound, confirmed record. */
+export type PayDemRailResult = SettleResult & (
+  | { ok: true; execution: "executed" }
+  | { ok: false; execution?: never }
+);
+
 export interface PayDemRail {
   /** The buyer's Demos address. */
   readonly address: string;
-  /** Settle one session's payment via a native DEM transfer. */
+  /**
+   * Settle one payment. Success requires reading the transaction record and
+   * verifying literal `confirmed` status, hash, nonce, inclusion block, payer,
+   * payee and amount, then returning `execution: "executed"`. Status-index
+   * inclusion alone must return a not-ok outcome retaining the signed hash.
+   */
   settle(
     params: PayDemSettleParams,
     effectFence?: Readonly<SettlementEffectFence>,
-  ): Promise<SettleResult>;
+  ): Promise<PayDemRailResult>;
 }
 
 /**
@@ -1976,6 +1987,26 @@ function capturePayDemReconciliation(
   return captured;
 }
 
+function captureFreshPayDemResult(
+  value: unknown,
+  context: Readonly<PayDemSettlementRecoveryContext>,
+): SettleResult {
+  const snapshot = snapshotCanonicalJsonRead(value, "fresh pay-dem settlement");
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new DacsError("fresh pay-dem settlement must be a settlement result object");
+  }
+  const { execution, ...settlement } = snapshot as Record<string, unknown>;
+  const captured = capturePayDemResult(settlement, context, "fresh pay-dem settlement");
+  if (captured.ok && execution !== "executed") {
+    throw new DacsError("fresh pay-dem settlement does not attest executed transaction record; refusing success or rebroadcast");
+  }
+  if (!captured.ok && execution !== undefined) {
+    throw new DacsError("failed pay-dem settlement must not attest successful execution");
+  }
+  // The attestation authenticates this invocation, not a durable cache entry.
+  return captured;
+}
+
 /**
  * Bridge a PayDemRail to the runSession `settle` seam.
  *
@@ -2227,11 +2258,7 @@ export function payDemSettle(
         network,
         recovery: context,
       }, effectFence);
-      const captured = capturePayDemResult(
-        submitted,
-        context,
-        "fresh pay-dem settlement",
-      );
+      const captured = captureFreshPayDemResult(submitted, context);
       authenticatedResults.set(key, { context, result: captured });
       return captured;
     };

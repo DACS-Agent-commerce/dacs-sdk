@@ -136,7 +136,7 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
     },
   );
 
-  it.each(["included", "confirmed", "finalized"])(
+  it.each(["included", "confirmed", "finalized", "CONFIRMED", "Confirmed"])(
     "attests execution only for a confirmed transaction record, not %s alone",
     async (transactionState) => {
       const fixture = includedFixture();
