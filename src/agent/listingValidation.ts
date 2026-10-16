@@ -905,7 +905,10 @@ export function resolveListingRails(
 ): ListingRailResolutionResult {
   let captured: unknown;
   try {
-    captured = snapshotCanonicalJson(input, "Listing rail resolution input");
+    captured = snapshotCanonicalJsonReceived(
+      input,
+      "Listing rail resolution input",
+    );
   } catch {
     return railResult("indeterminate", "malformed-rail-authority");
   }

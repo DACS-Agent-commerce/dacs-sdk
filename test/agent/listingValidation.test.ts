@@ -163,6 +163,61 @@ describe("DACS-1 §6.3.4 LRR-1..LRR-6", () => {
     });
   });
 
+  it("gives an admitted negative-zero rail input the zero verdict", () => {
+    const dem = { railId: "demos-native:DEM", railVersion: 1 };
+    const x402 = {
+      railId: "x402:default",
+      railVersion: 1,
+      parameters: { resource: "https://seller.example/pay", floor: 0 },
+    };
+    const text = JSON.stringify({
+      trustPhase: "PA-2",
+      payPhases: [{ kind: "pay-alternative", alternatives: [dem, x402] }],
+      acceptedRails: [dem, x402],
+      registry: {
+        state: "verified-finalized",
+        entries: [
+          { railId: dem.railId, latestVersion: 1, versions: [1] },
+          { railId: x402.railId, latestVersion: 1, versions: [1] },
+        ],
+        definitions: [
+          {
+            railId: dem.railId,
+            railVersion: 1,
+            phaseHandler: "pay-dem",
+            state: "verified-finalized",
+          },
+          {
+            railId: x402.railId,
+            railVersion: 1,
+            phaseHandler: "pay-x402",
+            state: "verified-finalized",
+          },
+        ],
+      },
+      supportedPaymentHandlers: ["pay-dem", "pay-x402"],
+    });
+    const negativeText = text.replaceAll('"floor":0', '"floor":-0.0');
+    expect(negativeText.split('"floor":-0.0')).toHaveLength(3);
+    const zero = admitRawJson(
+      Buffer.from(text, "utf8"),
+    ) as unknown as ListingRailResolutionInput;
+    const negativeZero = admitRawJson(
+      Buffer.from(negativeText, "utf8"),
+    ) as unknown as ListingRailResolutionInput;
+    const floor = (negativeZero.acceptedRails[1] as { parameters: { floor: number } })
+      .parameters.floor;
+    expect(Object.is(floor, -0)).toBe(true);
+
+    const expected = resolveListingRails(zero);
+    expect(expected).toEqual({
+      disposition: "verified",
+      reason: "verified",
+      authorityBasis: "pa2",
+    });
+    expect(resolveListingRails(negativeZero)).toEqual(expected);
+  });
+
 });
 
 describe("DACS-1 §6.3.4 RB-1..RB-6", () => {
