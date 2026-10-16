@@ -1057,3 +1057,17 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
     expect(deps.stats.creates).toBe(0);
   });
 });
+
+
+test("history prefix remains stable after version-address validation", async () => {
+  const deps = fakeDeps();
+  const scan = deps.scanOwnAnchorsByNamePrefix;
+  const prefixes: string[] = [];
+  deps.scanOwnAnchorsByNamePrefix = async (prefix) => {
+    prefixes.push(prefix);
+    return scan(prefix);
+  };
+  await publishListingCore(listing({ listingId: "my-listing" }), deps);
+  expect(prefixes).toEqual(["dacs1%3Adid%3Ademos%3Aseller%3Amy-listing%3Av"]);
+  expect(deps.stats.creates).toBe(1);
+});
