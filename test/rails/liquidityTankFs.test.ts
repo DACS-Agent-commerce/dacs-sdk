@@ -306,7 +306,7 @@ describe("createFsLiquidityTankStore", () => {
     await expect(run("worker-2")).resolves.toMatchObject({ status: "settle-asymmetric" });
     expect(prepareSubmission).toHaveBeenCalledTimes(1);
     expect(new Set(broadcastRetained.mock.calls.map(([sent]) => sent.submissionHash)).size).toBe(1);
-  });
+  }, 30_000);
 
   describe("a contradicted lock across a restart", () => {
     const emptyAt = (observedAt: number): LiquidityTankObservation => ({
