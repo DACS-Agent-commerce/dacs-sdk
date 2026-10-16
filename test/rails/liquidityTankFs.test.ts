@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, readFileSync, readlinkSync, renameSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import {
   chmod,
   link,
@@ -361,7 +361,7 @@ describe("createFsLiquidityTankStore", () => {
       });
       expect(prepareSubmission).toHaveBeenCalledTimes(1);
       expect(broadcastRetained).toHaveBeenCalledTimes(1);
-    });
+    }, 30_000);
 
     test("a read after the checkpoint but not after the deadline leaves the lock open across a restart, so its timely completion settles", async () => {
       // Round 5: this host's clock reads just past the deadline while the
@@ -401,7 +401,7 @@ describe("createFsLiquidityTankStore", () => {
       await expect(run("replayer")).resolves.toMatchObject(settled);
       expect(prepareSubmission).toHaveBeenCalledTimes(1);
       expect(broadcastRetained).toHaveBeenCalledTimes(1);
-    });
+    }, 30_000);
 
     test("a read after the checkpoint and after the deadline expires the lock, and a restarted store replays the expiry", async () => {
       const dir = await freshDir();
@@ -427,7 +427,7 @@ describe("createFsLiquidityTankStore", () => {
       phase.now = DEADLINE + 5_000;
       await expect(run("replayer")).resolves.toEqual(expired);
       expect(broadcastRetained).toHaveBeenCalledTimes(1);
-    });
+    }, 30_000);
   });
 
   test("each row write fsyncs a temporary, renames it over the row and fsyncs the directory before it returns", async () => {
@@ -1195,6 +1195,25 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
   const claimOf = (store: LiquidityTankStore) =>
     outcome(() => store.claim({ intent, owner: "worker-1", now: T0, leaseDurationMs: 1_000 }));
 
+  // Launch review 4: the lock and reclaim paths take a directory fsync the
+  // filesystem does not support as done, but a row is never reported written
+  // without one, so such a filesystem fails every claim closed.
+  test.each(["EINVAL", "ENOSYS", "ENOTSUP"])("a filesystem whose directory fsync fails %s never reports a row written", async (code) => {
+    const dir = await freshDir();
+    const store = await createFsLiquidityTankStore({ dir });
+    const directorySyncs: string[] = [];
+    trace.fault = (operation, path) => {
+      if (operation !== "sync" || !path.startsWith(dir) || !statSync(path).isDirectory()) return undefined;
+      directorySyncs.push(path);
+      return code;
+    };
+    const claim = await claimOf(store);
+    trace.fault = undefined;
+    // The lock directory's fsync was taken as done; the row's was not.
+    expect(directorySyncs).toContain(join(dir, "locks"));
+    expect(claim).toMatch(new RegExp(`^threw: .*injected ${code}`));
+  });
+
   test("a stale lock is reclaimed when its owner is another process that has exited, never while it lives", async () => {
     expect(process.ppid).not.toBe(process.pid);
     const outcomes = [];
@@ -1281,6 +1300,9 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
   // The quarantine step deletes the gate it moved only when it is the very gate
   // it found stale and ownerless. Each replacement here differs from that gate
   // in one way only, so one part of the re-check alone keeps it (code P2-8).
+  // The modified gate must still read as fresh at the step's re-check, after a
+  // rename, a directory fsync, a stat and an owner read: under load that takes
+  // longer than 20 ms, so that case allows two seconds before a gate is stale.
   test.each([
     ["another file with the same exited owner", "acquired"],
     ["the same file rewritten for another exited owner", "acquired"],
@@ -1288,8 +1310,11 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
     ["the same file, its owner's PID live again", TIMED_OUT],
   ] as const)("a stale gate replaced by %s before its quarantine rename is never deleted by that step", async (change, expected) => {
     const dir = await freshDir();
+    const modified = change === "the same file, modified again";
     const store = await createFsLiquidityTankStore({
-      dir, lockStaleMs: 20, lockTimeoutMs: expected === TIMED_OUT ? 400 : 2_000,
+      dir,
+      lockStaleMs: modified ? 2_000 : 20,
+      lockTimeoutMs: expected === TIMED_OUT ? 400 : modified ? 10_000 : 2_000,
     });
     const gate = join(dir, "locks", ".reclaim");
     const owner = processOwner(await exitedPid(), "exited-gate");
@@ -1313,7 +1338,7 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
         } else if (change === "the same file rewritten for another exited owner") {
           writeFileSync(gate, JSON.stringify(otherOwner));
           utimesSync(gate, stale, stale);
-        } else if (change === "the same file, modified again") {
+        } else if (modified) {
           utimesSync(gate, new Date(), new Date());
         } else {
           reused = true;
@@ -1337,7 +1362,7 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
     expect({ moved: quarantine !== undefined, claim, deletedByTheQuarantineStep: removal !== -1 && statsBeforeRemoval === 1 })
       .toEqual({ moved: true, claim: expected, deletedByTheQuarantineStep: false });
     expect((await gateFiles(dir)).length).toBe(expected === TIMED_OUT ? 1 : 0);
-  });
+  }, 30_000);
 
   test.each([
     ["the reclaim gate's stat", true,

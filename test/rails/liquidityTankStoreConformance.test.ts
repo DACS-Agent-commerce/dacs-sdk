@@ -117,9 +117,10 @@ interface Disk { rows: Map<string, LiquidityTankStore>; bridgeOwners: Map<string
  * The code review's B2 store: rows are durable, but the bridge-ID index is
  * either per handle ("process", lost on every reopen) or read and written
  * around the row write ("racey", so two writes started together both pass).
- * The sweep's N1 store ("moved on refusal") keeps a durable index and checks
- * it atomically, but hands the bridge ID to the settlement whose reuse it
- * refuses, as reference-store mutant 1989 did, so a retry of that reuse lands.
+ * The sweep's N1 store ("moved on refusal") shares the "racey" store's durable
+ * index and its read, row write, index write order; it differs only in handing
+ * the bridge ID to the settlement whose reuse it refuses, as reference-store
+ * mutant 1989 did, so a retry of that reuse lands.
  */
 function rowsWithBridgeIndex(index: "process" | "racey" | "moved on refusal"): LiquidityTankStoreConformanceOptions {
   const disks = new WeakMap<LiquidityTankStore, Disk>();
@@ -315,6 +316,86 @@ function expiringAtTheDeadline(atDeadline: (input: ExpiryInput) => ExpiryInput |
   });
 }
 
+type WriteMethod = "recordSubmission" | "recordObservation" | "recordRecoveryExpired" | "recordSettlement";
+
+/**
+ * Answers `recorded` wherever the reference store refuses a `method` write
+ * that `matches` picks out, given what the database has recorded for that
+ * settlement key so far, so one store breaks one rule only (code P2-9).
+ */
+function acceptingWhere<M extends WriteMethod>(
+  method: M,
+  matches: (input: Parameters<LiquidityTankStore[M]>[0], recorded: ReadonlySet<WriteMethod>) => boolean,
+) {
+  return (inner: LiquidityTankStore): Partial<LiquidityTankStore> => {
+    const recorded = new Map<string, Set<WriteMethod>>();
+    const tracked = (name: WriteMethod) => async (input: { settlementKey: string }) => {
+      const kinds = recorded.get(input.settlementKey) ?? new Set<WriteMethod>();
+      recorded.set(input.settlementKey, kinds);
+      const result = await (inner[name] as (value: unknown) => Promise<{ status: string }>)(input);
+      if (result.status === "recorded" || result.status === "existing") {
+        kinds.add(name);
+        return result;
+      }
+      if (name === method && matches(input as never, kinds)) {
+        kinds.add(name);
+        return { status: "recorded" };
+      }
+      return result;
+    };
+    return {
+      recordSubmission: tracked("recordSubmission") as LiquidityTankStore["recordSubmission"],
+      recordObservation: tracked("recordObservation") as LiquidityTankStore["recordObservation"],
+      recordRecoveryExpired: tracked("recordRecoveryExpired") as LiquidityTankStore["recordRecoveryExpired"],
+      recordSettlement: tracked("recordSettlement") as LiquidityTankStore["recordSettlement"],
+    };
+  };
+}
+
+/**
+ * Answers `recorded` to a refused `method` write that names another bridge
+ * operation than the phase's first recorded submission.
+ */
+function onAnotherBridgeOperation(method: "recordSubmission" | "recordObservation") {
+  return (inner: LiquidityTankStore): Partial<LiquidityTankStore> => {
+    const bridges = new Map<string, string>();
+    return {
+      recordSubmission: async (input) => {
+        const result = await inner.recordSubmission(input);
+        const first = bridges.get(input.settlementKey);
+        if (result.status === "recorded" && first === undefined) {
+          bridges.set(input.settlementKey, input.submission.bridgeId);
+        }
+        return method === "recordSubmission" && result.status === "conflict" &&
+          first !== undefined && first !== input.submission.bridgeId ? { status: "recorded" } : result;
+      },
+      recordObservation: async (input) => {
+        const result = await inner.recordObservation(input);
+        const first = bridges.get(input.settlementKey);
+        return method === "recordObservation" && result.status === "conflict" &&
+          first !== undefined && first !== input.observation.bridgeId ? { status: "recorded" } : result;
+      },
+    };
+  };
+}
+
+/** Ignores lease expiry on `method` writes only, as the 996815e reference store did on all of them. */
+function ignoringLeaseExpiryOn(method: "recordObservation" | "recordSettlement") {
+  return (inner: LiquidityTankStore): Partial<LiquidityTankStore> => {
+    const tracked = trackingLeases(inner);
+    return {
+      claim: tracked.claim,
+      [method]: (input: WriteInput) => {
+        const lease = tracked.lease(input.settlementKey);
+        return (inner[method] as (value: WriteInput) => Promise<unknown>)(
+          lease && lease.owner === input.owner && lease.generation === input.generation &&
+            input.now >= lease.expiresAt ? { ...input, now: lease.expiresAt - 1 } : input,
+        );
+      },
+    };
+  };
+}
+
 type Timed = { status: string; observedAt: number; recoveryDeadline?: number; finalityObservedAt?: number };
 const evidenceOf = (input: ExpiryInput) => input.observation as unknown as Timed & {
   checkpoint?: { recoveryDeadline: number }; contradiction?: Timed;
@@ -419,6 +500,38 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
       recordSettlement: (input) => inner.recordSettlement(beforeExpiry(input)),
     };
   }), /submission after lease expiry: store answered recorded/],
+  [CASE.writeExpiry, "ignores lease expiry on observation writes only",
+    () => database(ignoringLeaseExpiryOn("recordObservation")),
+    /observation after lease expiry: store answered recorded/],
+  [CASE.writeExpiry, "ignores lease expiry on settlement writes only",
+    () => database(ignoringLeaseExpiryOn("recordSettlement")),
+    /settlement after lease expiry: store answered recorded/],
+  [CASE.firstSubmission, "refuses a re-signed replacement but not one on another bridge operation",
+    () => database(onAnotherBridgeOperation("recordSubmission")),
+    /replacement on another bridge operation: store answered recorded/],
+  [CASE.ordering, "records an observation before any submission", () => database(acceptingWhere(
+    "recordObservation", (_input, recorded) => !recorded.has("recordSubmission"),
+  )), /observation before any submission: store answered recorded/],
+  [CASE.ordering, "records an observation of another bridge operation",
+    () => database(onAnotherBridgeOperation("recordObservation")),
+    /observation for another bridge operation: store answered recorded/],
+  [CASE.ordering, "replaces the durable lock with a different one", () => database(acceptingWhere(
+    "recordObservation", (input) => input.observation.status === "pending" &&
+      (input.observation as { lockTxHash?: string }).lockTxHash === "another-lock",
+  )), /a different lock: store answered recorded/],
+  [CASE.settlementExact, "records an observation after the settlement", () => database(acceptingWhere(
+    "recordObservation", (_input, recorded) => recorded.has("recordSettlement"),
+  )), /observation after settlement: store answered recorded/],
+  [CASE.expiryBlocks, "settles after the expiry", () => database(acceptingWhere(
+    "recordSettlement", (_input, recorded) => recorded.has("recordRecoveryExpired"),
+  )), /settlement after expiry: store answered recorded/],
+  [CASE.expiryCas, "expires from a locked pending observed at the deadline", () => database(acceptingWhere(
+    "recordRecoveryExpired", (input) => {
+      const evidence = evidenceOf(input);
+      return evidence.status === "pending" && evidence.observedAt === evidence.recoveryDeadline &&
+        input.now > evidence.observedAt;
+    },
+  )), /expiry from a snapshot at the deadline: store answered recorded/],
   [CASE.firstSubmission, "accepts a replacement submission",
     () => database(accepting("recordSubmission", "liquidity-tank-submission-replacement-forbidden", "existing")),
     /re-signed replacement: store answered existing/],
@@ -578,6 +691,24 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
         : result;
     },
   })), /pending without a lock after the deadline: store answered recorded/],
+  [CASE.contradictionCas, "takes any pending of another lock as a contradiction", () => database(acceptingWhere(
+    "recordRecoveryExpired", (input) => {
+      const { checkpoint, contradiction } = evidenceOf(input) as ReturnType<typeof evidenceOf> & {
+        checkpoint?: { lockTxHash?: string }; contradiction?: { lockTxHash?: string };
+      };
+      return contradiction?.status === "pending" && contradiction.lockTxHash !== undefined &&
+        contradiction.lockTxHash !== checkpoint?.lockTxHash;
+    },
+  )), /pending of another lock inside its own window: store answered recorded/],
+  [CASE.contradictionCas, "expires against a contradiction of another checkpoint", () => database(acceptingWhere(
+    "recordRecoveryExpired", (input) => {
+      const { status, checkpoint } = evidenceOf(input) as ReturnType<typeof evidenceOf> & {
+        checkpoint?: { observedAt?: number };
+      };
+      return status === "contradicted-after-lock" &&
+        checkpoint?.observedAt !== (input.expectedObservation as unknown as Timed).observedAt;
+    },
+  )), /contradiction of another checkpoint: store answered recorded/],
   [CASE.contradictionCas, "takes a contradiction stamped at the deadline as expiry evidence",
     () => database(expiringAtTheDeadline((input) => {
       const { checkpoint, contradiction } = evidenceOf(input);

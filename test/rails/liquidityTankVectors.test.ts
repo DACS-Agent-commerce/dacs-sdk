@@ -451,7 +451,9 @@ describe("store claims", () => {
     ["generation 0", { generation: 0 }],
     ["a fractional generation", { generation: 1.5 }],
     ["an expiry at the claim's now", { expiresAt: PREPARED_AT + 500 }],
+    ["a fractional expiry", { expiresAt: PREPARED_AT + 1_500.5 }],
     ["an empty owner", { owner: "" }],
+    ["a numeric owner", { owner: 7 }],
   ])("a waiting lease with %s is refused", async (_label, lease) => {
     const store = patched((inner) => ({
       claim: async (input) => {
@@ -467,10 +469,25 @@ describe("store claims", () => {
     });
   });
 
+  test("a waiting claim without a lease is refused", async () => {
+    const store = patched((inner) => ({
+      claim: async (input) => {
+        const { lease: _lease, ...rest } = await inner.claim(input) as Record<string, unknown>;
+        return { ...rest, status: "waiting" } as never;
+      },
+    }));
+    await expect(phase({ store }).run()).resolves.toEqual({
+      status: "indeterminate", reason: "liquidity-tank-settlement-store-lease-invalid",
+    });
+  });
+
   test.each([
     ["another owner", { owner: "another-worker" }],
     ["generation 0", { generation: 0 }],
     ["a fractional generation", { generation: 1.5 }],
+    // The phase's clock reads PREPARED_AT + 500 and its lease lasts 10 ms.
+    ["an expiry one millisecond after now + leaseDurationMs", { expiresAt: PREPARED_AT + 511 }],
+    ["an expiry one millisecond before now + leaseDurationMs", { expiresAt: PREPARED_AT + 509 }],
   ])("an acquired lease with %s is refused before any effect", async (_label, lease) => {
     const store = patched((inner) => ({
       claim: async (input) => {
@@ -482,6 +499,39 @@ describe("store claims", () => {
     await expect(p.run()).resolves.toEqual({
       status: "indeterminate", reason: "liquidity-tank-settlement-store-lease-invalid",
     });
+    expect(p.prepareSubmission).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a numeric status", 7],
+    ["a missing status", undefined],
+  ])("a claim with %s is refused before any effect", async (_label, status) => {
+    const store = patched((inner) => ({
+      claim: async (input) => {
+        const { status: _status, ...rest } = await inner.claim(input) as Record<string, unknown>;
+        return (status === undefined ? rest : { ...rest, status }) as never;
+      },
+    }));
+    const p = phase({ store });
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" });
+    expect(p.prepareSubmission).not.toHaveBeenCalled();
+  });
+
+  // An intent echo the canonical encoder cannot encode fails the claim's own
+  // canonical read, before the echo is compared; one that encodes to another
+  // intent is a mismatch.
+  test.each([
+    ["a non-finite amount", { amount: Number.NaN }, "liquidity-tank-settlement-store-claim-invalid"],
+    ["another amount", { amount: "1.26" }, "liquidity-tank-settlement-store-intent-mismatch"],
+  ])("an acquired claim whose intent echo has %s is refused before any effect", async (_label, field, reason) => {
+    const store = patched((inner) => ({
+      claim: async (input) => {
+        const claimed = await inner.claim(input) as { intent: object };
+        return { ...claimed, intent: { ...claimed.intent, ...field } } as never;
+      },
+    }));
+    const p = phase({ store });
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason });
     expect(p.prepareSubmission).not.toHaveBeenCalled();
   });
 
