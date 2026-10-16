@@ -1,3 +1,4 @@
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
@@ -320,6 +321,7 @@ export async function x402SettleCore(
   deps: X402SettleCoreDeps,
   effectFence?: Readonly<X402PaidEffectFence>,
 ): Promise<SettleResult> {
+  requireJid1LiveProfile();
   // Snapshot caller-owned policy and transport scalars before the first
   // callback. A callback may retain the original params object; it must not be
   // able to change the amount, endpoint, token or confirmation depth after the
@@ -679,6 +681,7 @@ export async function verifyDacsX402AuthorizationNonce(
  * SDK core stays importable without the rail's chain deps installed.
  */
 export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> {
+  requireJid1LiveProfile();
   const evmPrivateKey = config.evmPrivateKey;
   const configuredFetchImpl = config.fetchImpl;
   const configuredTransportPolicy = snapshotX402OutboundTransportPolicyV1(
@@ -770,6 +773,7 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
     address: account.address,
     finalityBlocks,
     settle: async (params, effectFence) => {
+      requireJid1LiveProfile();
       const paywallUrl = params.paywallUrl;
       const network = params.network;
       const recipientEvm = params.recipientEvm;
@@ -925,6 +929,7 @@ export function x402Settle(
     throw new CounterpartyError("x402 rail must expose its positive finality policy");
   }
   return (req) => {
+    requireJid1LiveProfile();
     const { amount, asset: agreementAsset, expectedPayee, jobId, phase, rail: railId } = req;
     // JID-3: the jobId keys the SB-3 effect identity and the idempotency record,
     // so it must pass JID-1 before either is derived.

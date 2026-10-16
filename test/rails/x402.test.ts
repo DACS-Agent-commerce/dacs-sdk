@@ -1065,3 +1065,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
     expect(captured?.phaseIndex).toBe(0);
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

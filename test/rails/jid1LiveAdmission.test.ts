@@ -1,0 +1,75 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { UnsupportedCapabilityError } from "../../src/errors.js";
+import { createX402Rail, x402Settle, x402SettleCore } from "../../src/rails/x402.js";
+import { createX402Paywall, x402PaywallCore } from "../../src/rails/x402Paywall.js";
+import { createDacsX402BuyerEvmChallengeClient } from "../../src/rails/x402BuyerDacsEvm.js";
+import { createX402BuyerPaidRequestTransport, prepareX402BuyerSettlement } from "../../src/rails/x402BuyerTransport.js";
+
+const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const MESSAGE = "Live JID-1 actions are unavailable: the pinned Standard has no coordinated corrective release";
+
+describe("unreleased JID-1 live admission", () => {
+  it("refuses production constructors before reading caller pins, loading signers or initializing a facilitator", async () => {
+    const read = vi.fn(() => { throw new Error("caller context was consumed"); });
+    const caller = new Proxy({
+      jobId: JOB_ID,
+      profile: { release: "v0.4", authenticated: true, participants: ["buyer", "seller"] },
+    }, { get: read });
+    for (const operation of [
+      () => createX402Rail(caller as never),
+      () => createX402Paywall(caller as never, caller as never),
+      () => createDacsX402BuyerEvmChallengeClient(caller as never),
+    ]) {
+      await expect(operation()).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+      await expect(operation()).rejects.toThrow(MESSAGE);
+    }
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("refuses a canonical session before the bridge claims or reconciles a payment", () => {
+    const settle = vi.fn();
+    const once = vi.fn();
+    const reconcile = vi.fn();
+    const bridge = x402Settle({ address: `0x${"11".repeat(20)}`, finalityBlocks: 2, settle }, {
+      url: "https://seller.example/deliver", network: "eip155:84532",
+      recipientEvm: `0x${"22".repeat(20)}`, asset: `0x${"33".repeat(20)}`,
+    }, { store: { once } as never, reconcile });
+    expect(() => bridge({ jobId: JOB_ID, phaseIndex: 0 } as never)).toThrow(MESSAGE);
+    expect(settle).not.toHaveBeenCalled();
+    expect(once).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it("refuses the buyer core before any injected client or transport can run", async () => {
+    const read = vi.fn(() => { throw new Error("buyer dependency was consumed"); });
+    const caller = new Proxy({ jobId: JOB_ID }, { get: read });
+    await expect(x402SettleCore(caller as never, caller as never)).rejects.toThrow(MESSAGE);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("refuses the seller core before request parsing, store reads or settlement callbacks", async () => {
+    const read = vi.fn(() => { throw new Error("seller dependency was consumed"); });
+    await expect(x402PaywallCore({ jobId: JOB_ID, phaseIndex: 0 } as never,
+      new Proxy({}, { get: read }) as never)).rejects.toThrow(MESSAGE);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("refuses buyer preparation before challenge requests or caller-supplied signing clients", async () => {
+    const read = vi.fn(() => { throw new Error("preparation context was consumed"); });
+    const caller = new Proxy({}, { get: read });
+    await expect(prepareX402BuyerSettlement(caller as never, caller as never)).rejects.toThrow(MESSAGE);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("refuses submission of a retained authorization before disclosure, DNS or the effect fence", async () => {
+    const transport = createX402BuyerPaidRequestTransport();
+    const read = vi.fn(() => { throw new Error("retained authorization was consumed"); });
+    const assertCurrent = vi.fn();
+    await expect(transport.submitRetained(new Proxy({}, { get: read }) as never,
+      { assertCurrent, settlementKey: "retained-payment", bindingHash: "aa".repeat(32),
+        idempotencyKey: "retained-payment", owner: "worker", generation: 1 })).rejects.toThrow(MESSAGE);
+    expect(read).not.toHaveBeenCalled();
+    expect(assertCurrent).not.toHaveBeenCalled();
+  });
+});

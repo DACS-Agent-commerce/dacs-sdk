@@ -1212,3 +1212,7 @@ describe("buyer/seller SB-3 nonce agreement", () => {
     expect(() => x402Eip3009Nonce("", PHASE_INDEX)).toThrow("jobId");
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

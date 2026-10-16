@@ -9,16 +9,20 @@ calls `jobId` "a ULID"; it has no JID rules.
 independent seller lifecycle. It does not start a server or select a framework.
 Applications provide the framework adapter and host the route themselves.
 
-`handle` first requires a canonical CORE JID-1 `jobId`. Any other value is
-rejected as `invalid-jobId` before the x402 server, settlement or fulfilment
-runs. The rule comes from CORE JID-1/JID-3 and DACS-4 SB-3 at the SDK's
-Standard pin `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, not from the historical
-revision above. At that pin, JID-1 is part of an unreleased corrective
-candidate (PROFILE.md, "Unreleased JID-1 corrective candidate"). It becomes an
-admissible live profile only once the Standard records a coordinated release
-tag or merge commit. Deployments must then pin that identifier for every
-participant. Until then this check only narrows the identifiers the paywall
-accepts; it is not a claim of a released JID-1 profile.
+Live x402 actions are unavailable at the SDK's Standard pin
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`. Its PROFILE still marks JID-1 as an
+unreleased corrective candidate. The production buyer constructors, settlement
+bridge, buyer preparation, retained paid-request transport, seller factory and seller core throw
+`UnsupportedCapabilityError` before protocol work. Caller profile objects,
+labels and configuration cannot enable them.
+
+A future release must record the Standard's coordinated tag or immutable merge
+commit and authenticate that exact release and the complete document tuple for
+every participant, using verifier- or orchestrator-owned authority bound to the
+exact session and participant identity. Until then the protocol helpers and
+mocked offline tests are development evidence only. The sequence below describes
+the implementation exercised beneath that boundary. It still requires canonical
+CORE JID-1 identifiers before deriving DACS-4 SB-3 nonces.
 
 The callback sequence is deliberately:
 

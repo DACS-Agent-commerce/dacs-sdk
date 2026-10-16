@@ -33,8 +33,9 @@ const peers = vi.hoisted(() => ({
   signTypedData: vi.fn(async () => `0x${"44".repeat(65)}`),
 }));
 
-// No wallet or RPC: only the signing/read boundaries are replaced. Both SDK
-// finality verifiers and the production outbound policy execute normally.
+// Offline protocol simulation: signing/read boundaries and the unreleased
+// profile boundary are replaced. Both SDK finality verifiers and the production
+// outbound policy execute normally.
 vi.mock("viem/accounts", () => ({
   privateKeyToAccount: vi.fn(() => ({
     address: `0x${"11".repeat(20)}`,
@@ -537,3 +538,7 @@ describe("x402 production transport positive flow", () => {
     },
   );
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

@@ -8,7 +8,7 @@ import { authorizationTypes } from "@x402/evm";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { keccak256, recoverTypedDataAddress, stringToHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/jcs.js";
 import {
@@ -416,3 +416,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
     expect(proxyTraps).toBe(0);
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

@@ -1,3 +1,4 @@
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
 import { isDeepStrictEqual } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -1144,6 +1145,7 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   input: X402PaywallHandleInput,
   deps: X402PaywallCoreDeps<TAuthorization, T>,
 ): Promise<X402PaywallResult<T>> {
+  requireJid1LiveProfile();
   let captured: X402PaywallCoreDeps<TAuthorization, T>;
   try {
     const server = deps?.server;
@@ -2197,6 +2199,7 @@ export async function createX402Paywall<TAuthorization = unknown, T = unknown>(
   config: X402PaywallConfig,
   handlers: X402PaywallHandlers<TAuthorization, T>,
 ): Promise<X402Paywall<T>> {
+  requireJid1LiveProfile();
   const configSnapshot = captureConfig(config);
   const expected = validateConfig(configSnapshot);
   const capturedConfig = snapshotConfig(configSnapshot, expected);

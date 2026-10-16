@@ -1347,3 +1347,7 @@ describe("createX402Paywall", () => {
     expect(fulfil).toHaveBeenCalledTimes(1);
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

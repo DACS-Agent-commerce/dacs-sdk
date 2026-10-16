@@ -8,6 +8,14 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 > package commands in this repository build and verify release candidates; use a
 > source checkout until the first release is published.
 
+### Live JID-1 availability
+
+The pinned Standard has not released its JID-1 corrective profile. Production
+x402 buyer preparation/signing/submission and seller paywall actions therefore fail with
+`UnsupportedCapabilityError`. There is no configuration override. Offline
+protocol helpers remain available for development; see
+[the profile boundary](docs/x402-seller-paywall.md).
+
 ## What this is
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.
