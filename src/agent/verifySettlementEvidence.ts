@@ -903,6 +903,10 @@ async function evaluateSettlementEvidence(
     );
   } else {
     const signer = sig.signer;
+    if (ctx.attestationRef?.signer !== undefined &&
+        !sameCanonicalClaimIdentity(signer, ctx.attestationRef.signer)) {
+      fail("attestationRef.signer does not match the evidence signer");
+    }
     if (!isCanonicalClaimReference(signer)) {
       fail("evidence signer MUST be a canonical ClaimReference");
     }

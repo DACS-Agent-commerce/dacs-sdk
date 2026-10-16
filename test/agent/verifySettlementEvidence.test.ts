@@ -122,6 +122,22 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — §14 golden fixtures
     await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
       .resolves.toEqual({ decision: "pass", reasons: [] });
   });
+
+  it("binds a supplied attestation signer to the evidence's actual signer", async () => {
+    const context = paymentAuthenticatedContext();
+    context.attestationRef = { ...context.attestationRef, signer: "did:demos:other" };
+    await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
+      .resolves.toMatchObject({ decision: "fail", reasons: expect.arrayContaining([
+        "attestationRef.signer does not match the evidence signer",
+      ]) });
+    context.attestationRef = { ...context.attestationRef, signer: `${ORCH}?role=seller` };
+    await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
+      .resolves.toEqual({ decision: "pass", reasons: [] });
+    const { signer: _signer, ...withoutSigner } = context.attestationRef;
+    context.attestationRef = withoutSigner;
+    await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
+      .resolves.toEqual({ decision: "pass", reasons: [] });
+  });
 });
 
 // ── Decision-by-decision, over constructed mutations of the base records ──
