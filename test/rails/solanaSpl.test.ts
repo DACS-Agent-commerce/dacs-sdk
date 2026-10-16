@@ -1803,12 +1803,14 @@ describe("advanceSolanaSplSettlement pays only the payee's associated token acco
   });
 
   // The values above are copied from the vector; when it is synced
-  // (`npm run conformance:sync`), check they still match it.
+  // (`npm run conformance:sync`, which CI runs before the tests), check they
+  // still match it. Under CI a missing vector fails instead of skipping.
   const VECTOR_PATH = join(
     dirname(fileURLToPath(import.meta.url)),
     "../../vendor/DACS-Standard/conformance/vectors/security/settlement-event-identity-v0.6.json",
   );
-  test.skipIf(!existsSync(VECTOR_PATH))("the copied values match the synced vector", () => {
+  test.skipIf(!existsSync(VECTOR_PATH) && !process.env.CI)("the copied values match the synced vector", () => {
+    expect(existsSync(VECTOR_PATH), "run `npm run conformance:sync`").toBe(true);
     const vector = (JSON.parse(readFileSync(VECTOR_PATH, "utf8")) as {
       vectors: { name: string; phaseIndex: number; verificationContext: { railId: string };
         ledgerEvents: Record<string, unknown>[]; settlementEvidence: Record<string, unknown> }[];
