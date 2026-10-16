@@ -1,9 +1,18 @@
 import http from "node:http";
 import https from "node:https";
+import { Agent, fetch as directFetch } from "undici";
 
 import { DacsError, SubstrateError, TransientError } from "../errors.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
 import { isNodeBuiltinFetch, isNodeDefaultDispatcher } from "./nodeDefaultDispatcher.js";
+
+// Never dispatch automatic reads through global fetch or its global dispatcher.
+// Source/shape checks below cannot establish those functions' closed-over state.
+// Keep this unconfigured direct Agent private, including across signing awaits.
+const directDispatcher = new Agent();
+const directCciFetch = ((input, init) => directFetch(input as string, {
+  ...init, dispatcher: directDispatcher,
+} as Parameters<typeof directFetch>[1])) as typeof fetch;
 
 /** Default and hard maximum for one raw GCR identity response (2 MiB). */
 export const DEMOS_CCI_MAX_RESPONSE_BYTES = DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes;
@@ -313,7 +322,7 @@ function axiosUsesProxy(url: URL, env: NodeJS.ProcessEnv): boolean {
 
 /** What decides the routes of Node's global fetch and of demosdk's Axios. */
 export interface NodeRouteState {
-  /** globalThis.fetch, which the read calls when it is allowed. */
+  /** globalThis.fetch, inspected only as a conservative compatibility filter. */
   fetch: unknown;
   /** The global dispatchers under undici.globalDispatcher.2 and .1, undefined until fetch loads. */
   dispatchers: readonly [unknown, unknown];
@@ -351,10 +360,10 @@ function nodeMayProxyAxios(env: NodeJS.ProcessEnv, state: NodeRouteState): boole
  * environment (proxy-from-env 2.1.0, then axios 1.17's NO_PROXY bypass) and,
  * with Node's proxy switch on, Node's proxy-aware global agents; Node's own
  * fetch follows the global dispatcher. Node's proxy rules differ by release and
- * its startup snapshot can't be read, so none is emulated: global fetch is used
- * only while it is Node's own, the dispatcher is Node's default `new Agent()`
- * (no connector, factory or other option), the switch is off and Axios would
- * connect directly.
+ * its startup snapshot can't be read, so none is emulated. Automatic reads use
+ * a private direct transport, only while the global Fetch/dispatcher shapes are
+ * compatible with Node's defaults, the switch is off and Axios connects directly.
+ * The shape checks are not proof of the globals' closures; neither global is used.
  */
 export function fetchProxyMismatch(
   rpc: string,
@@ -375,15 +384,15 @@ export function fetchProxyMismatch(
 }
 
 /**
- * The transport for a read with no injected identityFetch: the global fetch
- * that fetchProxyMismatch just checked, so a later swap of globalThis.fetch
- * can't change the route. Throws the stable refusal, before signing, otherwise.
+ * The transport for a read with no injected identityFetch: package-owned Fetch
+ * with a private direct Agent. Matching global source text never selects code to
+ * execute. Throws the stable refusal before signing when compatibility fails.
  */
 export function defaultCciTransport(rpc: string): typeof fetch {
   const state = nodeRouteState();
   const mismatch = fetchProxyMismatch(rpc, process.env, state);
   if (mismatch !== undefined) throw new DacsError(mismatch);
-  return state.fetch as typeof fetch;
+  return directCciFetch;
 }
 
 /** One fresh, bounded attempt, including time-bound header construction. */

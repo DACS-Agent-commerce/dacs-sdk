@@ -4143,8 +4143,8 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       return headers;
     };
-    // demosdk's Axios transport honours HTTP(S)_PROXY and ALL_PROXY; Node's own
-    // global fetch is used only where both provably connect directly, and
+    // demosdk's Axios transport honours HTTP(S)_PROXY and ALL_PROXY; our private
+    // direct transport is used only where Axios also connects directly, and
     // otherwise nothing is sent. The message names no URL, which may hold
     // credentials.
     const transport = this.config.identityFetch ?? defaultCciTransport(this.config.rpc);

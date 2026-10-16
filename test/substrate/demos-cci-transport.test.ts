@@ -4,6 +4,7 @@ import nodeHttps from "node:https";
 import type { AddressInfo } from "node:net";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Agent as UndiciAgent } from "undici";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 import type { Demos } from "@kynesyslabs/demosdk/websdk";
 
@@ -17,6 +18,7 @@ import {
   fetchProxyMismatch,
   type NodeRouteState,
 } from "../../src/substrate/demosCciTransport.js";
+import { isNodeBuiltinFetch, isNodeDefaultAgent, isNodeDefaultDispatcher } from "../../src/substrate/nodeDefaultDispatcher.js";
 
 const RPC = "https://node.example/rpc";
 const PRIMARY = `did:demos:agent:${"11".repeat(32)}`;
@@ -644,6 +646,23 @@ describe("Demos CCI proxy route: global fetch against demosdk's Axios", () => {
   const BYPASS = DEMOS_CCI_PROXY_BYPASS;
   const UNVERIFIED = DEMOS_CCI_ROUTE_UNVERIFIED;
 
+  it("accepts actual Node Fetch and a bare Undici Agent without running custom factories", async () => {
+    const agent = new UndiciAgent();
+    const customFactory = vi.fn(function defaultFactory() { throw new Error("must not run"); });
+    const custom = new UndiciAgent({ factory: customFactory });
+    try {
+      expect(() => isNodeBuiltinFetch(globalThis.fetch)).not.toThrow();
+      expect(isNodeBuiltinFetch(globalThis.fetch)).toBe(true);
+      expect(isNodeDefaultAgent(agent)).toBe(true);
+      expect(isNodeDefaultDispatcher([undefined, agent])).toBe(true);
+      expect(isNodeDefaultAgent(custom)).toBe(false);
+      expect(customFactory).not.toHaveBeenCalled();
+    } finally {
+      await agent.destroy();
+      await custom.destroy();
+    }
+  });
+
   // With Node's default dispatcher fetch connects directly, so only a read
   // that Axios would also send directly is allowed.
   it.each(DEFAULT_DISPATCHERS)("with Node's default dispatcher (%s)", (_line, dispatchers) => {
@@ -804,6 +823,12 @@ describe("Demos CCI proxy route: global fetch against demosdk's Axios", () => {
     ["a Proxy of Node's fetch", new Proxy(nodeFetch(), {})],
     ["a function that only mentions Node's undici loader",
       new Function("return function wrapped(input, init) { return \"require('internal/deps/undici/undici')\"; }")()],
+    ["the Node Fetch signature without its loader",
+      new Function("return function fetch(input, init = undefined) { return input; }")()],
+    ["a Node-style wrapper retaining both old fingerprint markers with a custom dispatcher",
+      new Function("require", "dispatcher", "return function fetch(input, init = undefined) {\n" +
+        "  const undiciModule = require('internal/deps/undici/undici');\n" +
+        "  return undiciModule.fetch(input, { ...init, dispatcher });\n}")(() => ({}), {})],
     ["no fetch", undefined],
     ["a non-function", {}],
   ])("refuses %s as global fetch", (_kind, globalFetch) => {
@@ -860,6 +885,26 @@ describe("Demos CCI proxy route: global fetch against demosdk's Axios", () => {
 });
 
 describe("Demos CCI default transport and the environment proxy", () => {
+  let server: Server | undefined;
+  const requests: IncomingHttpHeaders[] = [];
+  async function directRpc() {
+    requests.length = 0;
+    server = createServer((request, response) => {
+      requests.push(request.headers);
+      request.resume().on("end", () => response.writeHead(200, {
+        "Content-Type": "application/json",
+      }).end(JSON.stringify(GCR)));
+    });
+    await new Promise<void>(resolve => server!.listen(0, "127.0.0.1", resolve));
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}/rpc`;
+  }
+
+  afterEach(async () => {
+    server?.closeAllConnections();
+    if (server !== undefined) await new Promise<void>(resolve => server!.close(() => resolve()));
+    server = undefined;
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -946,10 +991,15 @@ describe("Demos CCI default transport and the environment proxy", () => {
     expect(sign).not.toHaveBeenCalled();
   });
 
-  it("refuses a replaced global fetch with Node's default dispatcher and no proxy, before signing or sending", async () => {
+  it.each(["ordinary", "modified Node-style"])("refuses a %s replacement fetch before signing or sending", async (kind) => {
     stubProxyEnvironment({}, [undefined, new Agent()]);
     const replaced = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(GCR)));
-    vi.stubGlobal("fetch", replaced);
+    const replacement = kind === "ordinary" ? replaced : new Function("require", "dispatcher",
+      "return function fetch(input, init = undefined) {\n" +
+      "  const undiciModule = require('internal/deps/undici/undici');\n" +
+      "  return undiciModule.fetch(input, { ...init, dispatcher });\n}",
+    )(() => ({ fetch: replaced }), {});
+    vi.stubGlobal("fetch", replacement);
     const adapter = new DemosAdapter({ rpc: RPC });
     Object.assign(adapter, { connected: true });
     const demos = adapter.raw as unknown as Demos;
@@ -964,12 +1014,12 @@ describe("Demos CCI default transport and the environment proxy", () => {
     expect(sign).not.toHaveBeenCalled();
   });
 
-  it("sends with the global fetch it checked, even if global fetch is replaced while signing", async () => {
+  it("uses its private route when an exact-source Fetch is installed and globals change while signing", async () => {
     stubProxyEnvironment({}, [undefined, new Agent()]);
     const checked = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(GCR)));
     const late = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(GCR)));
     vi.stubGlobal("fetch", nodeFetch(checked));
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = new DemosAdapter({ rpc: await directRpc() });
     Object.assign(adapter, { connected: true });
     const demos = adapter.raw as unknown as Demos;
     vi.spyOn(demos, "walletConnected", "get").mockReturnValue(true);
@@ -980,8 +1030,33 @@ describe("Demos CCI default transport and the environment proxy", () => {
     });
 
     await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
-    expect(checked).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ signature: "0x010203", timestamp: expect.any(String) });
+    expect(checked).not.toHaveBeenCalled();
     expect(late).not.toHaveBeenCalled();
+  });
+
+  it("never invokes an exact-source global Agent factory with substituted closed-over constructors", async () => {
+    const construct = vi.fn();
+    const factory = new Function("Client", "Pool", `return ${undiciDefaultFactory.toString()}`)(construct, construct);
+    const custom = new UndiciAgent({ factory });
+    try {
+      stubProxyEnvironment({}, [undefined, custom]);
+      const copiedFetch = vi.fn<typeof fetch>();
+      vi.stubGlobal("fetch", nodeFetch(copiedFetch));
+      const rpc = await directRpc();
+      // Both copied bodies pass the compatibility filter. Neither supplies the
+      // read's transport: the request must reach the actual local origin.
+      expect(fetchProxyMismatch(rpc)).toBeUndefined();
+      const adapter = new DemosAdapter({ rpc });
+      Object.assign(adapter, { connected: true });
+      await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
+      expect(requests).toHaveLength(1);
+      expect(construct).not.toHaveBeenCalled();
+      expect(copiedFetch).not.toHaveBeenCalled();
+    } finally {
+      await custom.destroy();
+    }
   });
 
   it("reads Node's live http.globalAgent as well as its https agent", () => {
@@ -1000,20 +1075,21 @@ describe("Demos CCI default transport and the environment proxy", () => {
   });
 
   it.each([
-    { kind: "NO_PROXY", env: { HTTPS_PROXY: "http://proxy.example:3128", NO_PROXY: "node.example" },
+    { kind: "NO_PROXY", env: { HTTP_PROXY: "http://proxy.example:3128", NO_PROXY: "127.0.0.1" },
       dispatchers: [undefined, new Agent()] as Dispatchers },
     { kind: "no proxy", env: {}, dispatchers: [undefined, new Agent()] as Dispatchers },
     { kind: "no proxy, before fetch loads its dispatcher", env: {}, dispatchers: [undefined, undefined] as Dispatchers },
     { kind: "Node 24's default dispatcher", env: {}, dispatchers: [new Agent(), new Agent()] as Dispatchers },
     { kind: "Node 26's default dispatcher", env: {}, dispatchers: [new Agent(), new Dispatcher1Wrapper()] as Dispatchers },
-  ])("uses global fetch with $kind", async ({ env, dispatchers }) => {
+  ])("uses the private direct transport with $kind", async ({ env, dispatchers }) => {
     stubProxyEnvironment(env, dispatchers);
     const globalFetch = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(GCR)));
     vi.stubGlobal("fetch", nodeFetch(globalFetch));
-    const adapter = new DemosAdapter({ rpc: RPC });
+    const adapter = new DemosAdapter({ rpc: await directRpc() });
     Object.assign(adapter, { connected: true });
     await expect(adapter.resolveIdentity("subject")).resolves.toHaveProperty("raw", GCR);
-    expect(globalFetch).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(1);
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 
   it("fails an unparseable RPC URL with the stable error, never echoing its credentials", async () => {

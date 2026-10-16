@@ -103,7 +103,8 @@ const nodeDefaultAgent = () => Object.assign(new ({ Agent: class extends Dispatc
 });
 // Where the child's real check found Node's own fetch, a stand-in with its source.
 const nodeFetch = new Function("return function fetch(input, init = undefined) {\n" +
-  "  const undiciModule = require('internal/deps/undici/undici');\n  return undiciModule.fetch(input, init);\n}")() as unknown;
+  "  if (!fetchImpl) {\n    const undiciModule = require('internal/deps/undici/undici');\n" +
+  "    fetchImpl = undiciModule.fetch;\n  }\n  return fetchImpl(input, init);\n}")() as unknown;
 const rebuilt = (dispatcher: Dispatcher) =>
   dispatcher?.nodeDefault === true ? nodeDefaultAgent() : named(dispatcher?.name ?? null);
 const SWITCH_FLAG = process.allowedNodeEnvironmentFlags.has("--use-env-proxy");

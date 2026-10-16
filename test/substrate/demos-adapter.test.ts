@@ -1,5 +1,3 @@
-import nodeHttp from "node:http";
-import nodeHttps from "node:https";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
@@ -29,55 +27,11 @@ const makeAdapter = (
   writeJournal,
 });
 
-const DISPATCHERS = [Symbol.for("undici.globalDispatcher.2"), Symbol.for("undici.globalDispatcher.1")];
-const restoreNodeRoute: Array<() => void> = [];
-
-// Stub global fetch with a function that has the source of Node's own fetch
-// (the default transport refuses any other) and calls `impl`.
-function stubNodeFetch(impl: typeof fetch) {
-  vi.stubGlobal("fetch", new Function("fetchImpl",
-    "return function fetch(input, init = undefined) {\n" +
-    "    if (!fetchImpl) fetchImpl = require('internal/deps/undici/undici').fetch;\n" +
-    "    return fetchImpl(input, init);\n  }")(impl));
-}
-
-// The default identity transport reads only where it and demosdk's Axios both
-// connect directly: no environment proxy, Node's proxy switch off, and Node's
-// default dispatcher and global agents. Pin that state; global fetch is stubbed.
-function withoutEnvironmentProxy() {
-  for (const name of ["http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
-    vi.stubEnv(name, "");
-    vi.stubEnv(name.toUpperCase(), "");
-  }
-  vi.stubEnv("NODE_USE_ENV_PROXY", undefined);
-  vi.stubEnv("NODE_OPTIONS", undefined);
-  const globals = globalThis as Record<symbol, unknown>;
-  for (const symbol of DISPATCHERS) {
-    const had = Object.hasOwn(globals, symbol);
-    const previous = globals[symbol];
-    globals[symbol] = undefined;
-    restoreNodeRoute.push(() => {
-      if (had) globals[symbol] = previous;
-      else delete globals[symbol];
-    });
-  }
-  const [httpAgent, httpsAgent, execArgv] = [nodeHttp.globalAgent, nodeHttps.globalAgent, process.execArgv];
-  nodeHttp.globalAgent = new nodeHttp.Agent();
-  nodeHttps.globalAgent = new nodeHttps.Agent();
-  process.execArgv = [];
-  restoreNodeRoute.push(() => {
-    nodeHttp.globalAgent = httpAgent;
-    nodeHttps.globalAgent = httpsAgent;
-    process.execArgv = execArgv;
-  });
-}
-
 describe("DemosAdapter", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
-    for (const restore of restoreNodeRoute.splice(0).reverse()) restore();
   });
 
   it("requires an rpc url", () => {
@@ -413,13 +367,11 @@ describe("DemosAdapter", () => {
   });
 
   it("retains GCR resolution for identities that are not self-certifying", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
     const raw = { result: 200, response: { web2: {} } };
     const registryLookup = vi.fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify(raw)));
-    stubNodeFetch(registryLookup);
-    withoutEnvironmentProxy();
+    const adapter = new DemosAdapter({ rpc: RPC, identityFetch: registryLookup });
+    Object.assign(adapter, { connected: true });
 
     await expect(adapter.resolveIdentity("legacy-demos-address")).resolves.toEqual({
       ref: "legacy-demos-address",
@@ -439,8 +391,6 @@ describe("DemosAdapter", () => {
   });
 
   it("bounds decoded GCR responses at the Demos adapter boundary", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
     const raw = {
       response: {
         web2: {
@@ -450,9 +400,11 @@ describe("DemosAdapter", () => {
         },
       },
     };
-    stubNodeFetch(vi.fn<typeof fetch>()
-      .mockResolvedValue(new Response(JSON.stringify(raw))));
-    withoutEnvironmentProxy();
+    const adapter = new DemosAdapter({
+      rpc: RPC,
+      identityFetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(raw))),
+    });
+    Object.assign(adapter, { connected: true });
 
     await expect(adapter.resolveIdentity("subject")).rejects.toThrow(
       /maxArrayLength/,

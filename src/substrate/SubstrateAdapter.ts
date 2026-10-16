@@ -38,8 +38,9 @@ export interface DemosAdapterConfig {
   identityTotalTimeoutMs?: number;
   /**
    * Raw Fetch transport for CCI reads; the adapter enforces bounds before JSON decoding.
-   * The default, global fetch, is used only where it and demosdk's Axios both connect
-   * directly: Node's own global fetch (a replaced or wrapped one counts as custom),
+   * The default uses imported Undici Fetch with a private direct Agent, only where
+   * demosdk's Axios also connects directly. Conservative compatibility checks require
+   * Node-shaped global fetch (a replaced or wrapped one counts as custom),
    * Node's default dispatcher (a bare `new Agent()`; one with a connector, factory or
    * other stored option counts as custom), no NODE_USE_ENV_PROXY=1 or
    * --use-env-proxy, plain global agents, and no environment proxy that Axios applies

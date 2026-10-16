@@ -96,8 +96,8 @@ describe("Demos identity transient retries", () => {
     await vi.advanceTimersByTimeAsync(249);
     expect(transport).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1);
-    await expect(result).resolves.toHaveProperty("raw", GCR);
     expect(transport).toHaveBeenCalledTimes(2);
+    await expect(result).resolves.toHaveProperty("raw", GCR);
   });
 
   it("exhausts three timeouts within 3 × timeout + 2,750 ms and cancels every body", async () => {
@@ -217,8 +217,8 @@ describe("Demos identity transient retries", () => {
     await vi.advanceTimersByTimeAsync(249);
     expect(transport).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1);
-    await expect(result).resolves.toHaveProperty("raw", GCR);
     expect(transport).toHaveBeenCalledTimes(2);
+    await expect(result).resolves.toHaveProperty("raw", GCR);
   });
 
   it.each([

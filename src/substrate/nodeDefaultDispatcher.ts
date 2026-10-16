@@ -15,8 +15,13 @@ const DEFAULT_FACTORY_SOURCE = compact(`function defaultFactory (origin, opts) {
 }`);
 // Node 20-26 define global fetch in lib/internal/bootstrap/web/exposed-window-or-worker.js
 // as this function, which loads Node's own undici on first call.
-const NODE_FETCH_PREFIX = "function fetch(input, init = undefined) {";
-const NODE_FETCH_LOADER = "require('internal/deps/undici/undici')";
+const NODE_FETCH_SOURCE = compact(`function fetch(input, init = undefined) {
+  if (!fetchImpl) {
+    const undiciModule = require('internal/deps/undici/undici');
+    fetchImpl = undiciModule.fetch;
+  }
+  return fetchImpl(input, init);
+}`);
 
 // An own data property keyed by a symbol with this description, as undici 6-8's
 // Agent keeps its constructor options and factory.
@@ -47,7 +52,8 @@ function className(value: unknown): unknown {
  * given a `connect` function (fetch-socks), a `factory`, a socket path, TLS or
  * any other option is not Node's default, whatever route it takes. The factory
  * is judged by its source text, so another function named `defaultFactory`
- * is refused; nothing here runs the object's code.
+ * is refused; nothing here runs the object's code. This is a compatibility
+ * filter, not proof of its closures: automatic reads use a private Agent.
  */
 export function isNodeDefaultAgent(value: unknown): boolean {
   if (className(value) !== "Agent" || Object.hasOwn(value as object, "dispatch") ||
@@ -69,14 +75,14 @@ export function isNodeDefaultAgent(value: unknown): boolean {
 }
 
 /**
- * Whether `value` is Node's own global fetch, which sends by the global
- * dispatcher, judged by its source text. A wrapper, a bound or Proxy fetch, or
- * any other replacement may route anywhere, whatever dispatcher is installed.
+ * Whether `value` has Node's complete global-fetch source, ignoring comments,
+ * whitespace and semicolons. Matching text cannot establish its closures;
+ * this compatibility filter never authorizes calling it for automatic reads.
  */
 export function isNodeBuiltinFetch(value: unknown): boolean {
   if (typeof value !== "function" || types.isProxy(value)) return false;
   const source = sourceOf(value);
-  return source.startsWith(NODE_FETCH_PREFIX) && source.includes(NODE_FETCH_LOADER);
+  return compact(source.replace(/\/\/[^\n]*/g, "")) === NODE_FETCH_SOURCE;
 }
 
 /**
