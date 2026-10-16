@@ -56,8 +56,8 @@ assumes an ordinary directory: a file-system snapshot, clone or rollback at
 the same path with the same device and inode counts as this directory.
 
 The supported toolchain is Docker CLI and Engine 24.x through 28.x and Compose
-2.10.x through 2.40.x. Doctor checks the CLI, Engine and Compose versions; every
-lifecycle Compose call also checks the plugin version. CI builds the unmodified
+2.10.x through 2.40.x. Doctor checks the CLI, Engine and Compose versions; each
+lifecycle invocation also checks the plugin version. CI builds the unmodified
 generated Dockerfile and runs its zero-spend image smoke for both x402 and
 pay-dem, using Docker 24.0.9 / Compose 2.10.2 and Docker 28.5.1 / Compose 2.40.3.
 The CI lock uses this checkout's packed release set, served over loopback during

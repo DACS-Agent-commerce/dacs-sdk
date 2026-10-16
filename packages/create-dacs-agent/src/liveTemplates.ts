@@ -689,6 +689,15 @@ function decimalAtMost(value: string, ceiling: string): boolean {
   return units(left) <= units(right);
 }
 
+function x402CapabilityMatches(supported: unknown, network: string): boolean {
+  if (supported === null || typeof supported !== "object" || !("kinds" in supported) ||
+      !Array.isArray(supported.kinds)) return false;
+  return supported.kinds.some((kind: unknown) => kind !== null && typeof kind === "object" &&
+    "x402Version" in kind && kind.x402Version === 2 &&
+    "scheme" in kind && kind.scheme === "exact" &&
+    "network" in kind && kind.network === network);
+}
+
 async function x402FacilitatorSupported(url: string): Promise<unknown> {
   // The non-literal optional import keeps DEM-only generated projects free of
   // x402 packages while retaining an exact runtime capability check when x402
@@ -1496,7 +1505,8 @@ function baseProbes(
             ]);
             const finality = head as { chainId?: unknown };
             return finality !== null && typeof finality === "object" &&
-                finality.chainId === actors.buyer.evmIdentity.chainId && supported !== null
+                finality.chainId === actors.buyer.evmIdentity.chainId &&
+                x402CapabilityMatches(supported, "eip155:" + actors.buyer.evmIdentity.chainId)
               ? pass({
                   resourceOrigin: resource.origin,
                   facilitatorOrigin: facilitator.origin,
@@ -1691,10 +1701,8 @@ export async function runGeneratedDoctor(
       enabledRailProfiles,
       ...(operation === undefined ? {} : { operationRailProfile: operation.rail }),
       probes,
-      // A Demos block is approximately ten seconds. Registry resolution can
-      // legitimately cross one block boundary during node catch-up, so the
-      // start gate must not abort an otherwise healthy shared read task at
-      // half a consensus round.
+      // Allow RPC/index catch-up during shared registry resolution. This is
+      // an operational read allowance, independent of the chain's block time.
       probeTimeoutMs: 30_000,
     };
     const report = phase === "post-start" && scope === "start" && actors !== undefined &&
@@ -4594,6 +4602,33 @@ const X402_PROBE_ENTRY_POINTS = Object.freeze([
 // A compose project name that compose accepts without normalising it.
 const COMPOSE_PROJECT_NAME_PATTERN = "/^[a-z0-9][a-z0-9_-]*$/";
 
+// Extract only our own fixed template, never operator-supplied YAML. This also
+// makes the inspection policy follow rail-specific environment and mount removal.
+function dockerRolePolicy(options: LiveProjectTemplateOptions) {
+  const publicEnvironment: Record<string, string> = {};
+  const policy: Record<string, { environment: Record<string, string>; mounts: {
+    source: string; target: string; readOnly: boolean;
+  }[] }> = {};
+  let role: string | undefined;
+  let publicSection = true;
+  for (const line of compose(options).split("\n")) {
+    if (line.startsWith("x-dacs-role:")) publicSection = false;
+    const publicValue = publicSection && /^  (DACS_[A-Z0-9_]+): (.*)$/.exec(line);
+    if (publicValue) publicEnvironment[publicValue[1]!] = publicValue[2]!;
+    const service = /^  (buyer|seller):$/.exec(line);
+    if (service) {
+      role = service[1]!;
+      policy[role] = { environment: { ...publicEnvironment }, mounts: [] };
+    }
+    if (role === undefined) continue;
+    const value = /^      (DACS_[A-Z0-9_]+): (.*)$/.exec(line);
+    if (value) policy[role]!.environment[value[1]!] = value[2]!;
+    const mount = /^      - (\$\{[^}]+\}):(\/[^:]+)(:ro)?$/.exec(line);
+    if (mount) policy[role]!.mounts.push({ source: mount[1]!, target: mount[2]!, readOnly: mount[3] === ":ro" });
+  }
+  return policy;
+}
+
 function dockerRuntimeSmoke(options: LiveProjectTemplateOptions): string {
   const probeVersions = JSON.stringify(productionDependencies(options));
   const entryPoints = [
@@ -4650,7 +4685,7 @@ const mode = {
 // .env that mentions COMPOSE_ at all is refused. Neither COMPOSE_FILE,
 // COMPOSE_PROJECT_NAME nor an override file such as compose.override.yaml can
 // add a service, replace the image or move the project.
-const projectIdentity = "${options.projectIdentity}";
+const projectIdentity = ${JSON.stringify(options.projectIdentity)};
 const directoryName = basename(projectPath);
 const projectName = directoryName + "-" +
   createHash("sha256").update(projectIdentity + projectPath).digest("hex").slice(0, 12);
@@ -4669,6 +4704,14 @@ function directoryIdentity() {
   return { device: String(stat.dev), inode: String(stat.ino) };
 }
 const services = ${quotedList(COMPOSE_SERVICES)};
+const approvedCompose = ${JSON.stringify(compose(options))};
+const rolePolicy = ${JSON.stringify(dockerRolePolicy(options))};
+const composeHash = createHash("sha256").update(approvedCompose).digest("hex");
+function requireApprovedCompose() {
+  if (readFileSync(join(projectPath, "compose.yaml"), "utf8") !== approvedCompose) {
+    throw new Error("compose.yaml differs from the generated role policy; regenerate the project before starting");
+  }
+}
 const composeArguments = [
   "compose",
   "--file", join(projectPath, "compose.yaml"),
@@ -4818,7 +4861,19 @@ function requireOwnProject() {
 }
 
 if (mode === "stop" || mode === "down" || mode === "decommission") requireOwnProject();
-if (mode === "stop") process.exit(compose(["stop"]));
+if (mode === "stop") {
+  const stopped = compose(["stop"]);
+  if (stopped !== 0) process.exit(stopped);
+  // Compose stop excludes compose-run one-offs. Maintenance needs every
+  // project container quiescent before touching either actor directory.
+  const running = projectContainers().find((container) => container.State?.Running !== false);
+  if (running !== undefined) {
+    process.stderr.write("maintenance refused: " + serviceOf(running) +
+      " is still running (including compose run containers)\\n");
+    process.exit(5);
+  }
+  process.exit(0);
+}
 if (mode === "down") process.exit(compose(["down"]));
 if (mode === "decommission") process.exit(compose(["down", "--remove-orphans"]));
 
@@ -4840,7 +4895,53 @@ const user = uid + ":" + gid;
 const immutableImageId = /^sha256:[0-9a-f]{64}$/;
 
 // Why the started project is not exactly one buyer and one seller from imageId.
-function startedMismatch(imageId) {
+function expandPolicy(value) {
+  return value.replace(/\\$\\{([A-Z0-9_]+)(?:(:-|:\\?)([^}]*))?\\}/g, (_match, name, operator, fallback) => {
+    const configured = setting(name);
+    if (configured !== undefined) return configured;
+    if (operator === ":-") return fallback;
+    throw new Error("missing compose setting " + name);
+  });
+}
+const sorted = (values) => JSON.stringify([...values].sort());
+function containerPolicyMismatch(container, service, imageEnvironment) {
+  const config = container.Config;
+  const host = container.HostConfig;
+  const policy = rolePolicy[service];
+  const environment = new Map(imageEnvironment.map((entry) => {
+    const split = entry.indexOf("=");
+    return [entry.slice(0, split), entry.slice(split + 1)];
+  }));
+  for (const [name, value] of Object.entries(policy.environment)) environment.set(name, expandPolicy(value));
+  if (config.User !== user || config.WorkingDir !== ${JSON.stringify(IMAGE_WORKING_DIRECTORY)} ||
+      JSON.stringify(config.Cmd) !== JSON.stringify(${quotedList(IMAGE_SERVICE_COMMAND)}) ||
+      (config.Entrypoint != null && JSON.stringify(config.Entrypoint) !== "[]") ||
+      sorted(config.Env ?? []) !== sorted([...environment].map(([name, value]) => name + "=" + value))) {
+    return service + " container environment, command or user differs from its role policy";
+  }
+  const mounts = policy.mounts.map((mount) => JSON.stringify({
+    type: "bind", source: resolve(projectPath, expandPolicy(mount.source)),
+    target: mount.target, readOnly: mount.readOnly,
+  }));
+  const observed = (container.Mounts ?? []).filter((mount) => mount.Type !== "tmpfs").map((mount) => JSON.stringify({
+    type: mount.Type, source: mount.Source, target: mount.Destination, readOnly: mount.RW === false,
+  }));
+  if (sorted(observed) !== sorted(mounts) ||
+      (container.Mounts ?? []).some((mount) => mount.Type === "tmpfs" && mount.Destination !== "/tmp")) {
+    return service + " container mounts differ from its role policy";
+  }
+  if (!host || host.ReadonlyRootfs !== true || host.Privileged !== false ||
+      host.NetworkMode !== "host" || sorted(host.CapDrop ?? []) !== sorted(["ALL"]) ||
+      sorted(host.SecurityOpt ?? []) !== sorted(["no-new-privileges:true"]) ||
+      (host.CapAdd ?? []).length !== 0 || (host.Devices ?? []).length !== 0 ||
+      (host.DeviceRequests ?? []).length !== 0 || (host.VolumesFrom ?? []).length !== 0 ||
+      (host.PidMode ?? "") !== "" || (host.UsernsMode ?? "") !== "" ||
+      (host.GroupAdd ?? []).length !== 0 ||
+      JSON.stringify(host.Tmpfs) !== JSON.stringify({ "/tmp": "rw,noexec,nosuid,size=32m" })) {
+    return service + " container security or network settings differ from its role policy";
+  }
+}
+function startedMismatch(imageId, imageEnvironment) {
   const containers = projectContainers();
   for (const service of services) {
     const created = containers.filter((container) => serviceOf(container) === service &&
@@ -4851,6 +4952,8 @@ function startedMismatch(imageId) {
     if (created[0].Image !== imageId) {
       return "the " + service + " container runs " + created[0].Image;
     }
+    const policyMismatch = containerPolicyMismatch(created[0], service, imageEnvironment);
+    if (policyMismatch !== undefined) return policyMismatch;
   }
   const unexpected = containers.find((container) =>
     !services.includes(serviceOf(container)) && container.State?.Running === true);
@@ -4858,8 +4961,9 @@ function startedMismatch(imageId) {
     : "service " + serviceOf(unexpected) + " is also running in compose project " + projectName;
 }
 // Stops both roles and confirms neither still runs; otherwise says why not.
-// Compose stops every buyer and seller in the project, so nothing is stopped
-// once the project also has containers compose created for another directory.
+// Compose stops ordinary buyer and seller services; the check also sees one-offs.
+// Nothing is stopped once the project also has containers compose created
+// for another directory.
 function stopRoles(settings) {
   try {
     const foreign = foreignContainers(projectContainers());
@@ -4886,11 +4990,13 @@ if (mode === "up") {
   }
   if (!immutableImageId.test(imageId) ||
       receipt === null || typeof receipt !== "object" || receipt.receiptVersion !== 1 ||
-      receipt.image !== image || receipt.imageId !== imageId || receipt.user !== user) {
+      receipt.image !== image || receipt.imageId !== imageId || receipt.user !== user ||
+      receipt.composeHash !== composeHash || !Array.isArray(receipt.imageEnvironment)) {
     process.stderr.write("DACS_IMAGE and the runtime user do not match the image ID that " +
       "last passed dacs:image:smoke; rebuild if needed and rerun npm run dacs:image:smoke\\n");
     process.exit(5);
   }
+  requireApprovedCompose();
   requireOwnProject();
   mkdirSync(receiptDirectory, { recursive: true, mode: 0o700 });
   const temporaryRecord = new URL("compose-project.json." + process.pid + ".tmp",
@@ -4916,7 +5022,7 @@ if (mode === "up") {
       failure = "compose up exited " + started;
       failureStatus = started;
     } else {
-      failure = startedMismatch(imageId);
+      failure = startedMismatch(imageId, receipt.imageEnvironment);
     }
   } catch (error) {
     failure = "could not check the started containers: " +
@@ -4949,6 +5055,7 @@ if (mode === "up") {
 
 // A new smoke attempt withdraws the previous pass before inspecting anything.
 rmSync(receiptPath, { force: true });
+requireApprovedCompose();
 const imageId = docker(["image", "inspect", "--format", "{{.Id}}", image]);
 if (!immutableImageId.test(imageId)) {
   throw new Error("image reference did not resolve to an immutable Docker image ID");
@@ -5091,6 +5198,8 @@ const receipt = {
   imageId,
   user,
   command: config.Cmd,
+  composeHash,
+  imageEnvironment: config.Env ?? [],
 };
 mkdirSync(receiptDirectory, { recursive: true, mode: 0o700 });
 const temporaryReceipt = new URL("docker-image-smoke.json." + process.pid + ".tmp",
@@ -5599,7 +5708,9 @@ first. A container still running after \`DACS_IMAGE_SMOKE_TIMEOUT_SECONDS\`
 
 Docker \`dacs:up\` reads that record and refuses to start unless
 \`DACS_IMAGE\` still names the recorded image ID and the runtime user is
-unchanged. It then runs compose with \`DACS_IMAGE\` set to that image ID rather
+unchanged. The receipt also binds the generated Compose bytes. Smoke and startup
+require the generated \`compose.yaml\`; regenerate the project to change that
+policy. It then runs compose with \`DACS_IMAGE\` set to that image ID rather
 than the tag, so rebuilding or retagging after the check cannot change what
 starts. Compose gets this project's \`compose.yaml\` as its only file, this
 directory as its project directory, \`--no-build --pull never\`, and exactly the
@@ -5648,7 +5759,11 @@ environment, refuse to run while \`.env\` mentions \`COMPOSE_\` anywhere, and
 never read override files such as \`compose.override.yaml\`. Other compose
 settings still come from the shell and \`.env\`. Once compose returns,
 \`dacs:up\` checks that the buyer and seller containers were created from the
-recorded image ID and that no other service runs in the project. If compose
+recorded image ID and that no other service runs in the project. It also checks
+each role's mounts, environment, user, command, network and security settings
+against the generated policy. Maintenance refuses to open backups or replace
+actor directories while any project container remains running, including
+one-offs started with \`compose run\`. If compose
 fails, the check fails or the containers do not match, it stops both roles,
 confirms neither still runs and exits non-zero. If it cannot stop them, or the
 project now has a container that compose created for another directory, it
@@ -5656,7 +5771,7 @@ stops nothing more, says so and exits 1.
 
 The supported toolchain is Docker CLI and Engine 24.x through 28.x with
 Compose 2.10.x through 2.40.x. Doctor checks both Docker versions and Compose;
-each compose command also checks \`docker compose version\` and refuses a
+each lifecycle invocation checks \`docker compose version\` and refuses a
 plugin outside that range. CI builds this Dockerfile for x402 and pay-dem with
 Docker 24.0.9 / Compose 2.10.2 and Docker 28.5.1 / Compose 2.40.3, then runs its
 image smoke. The smoke accepts the image configuration that Docker CLI

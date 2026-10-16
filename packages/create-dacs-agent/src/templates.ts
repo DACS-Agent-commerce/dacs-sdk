@@ -327,6 +327,10 @@ export function projectTemplates(
     if (options.role === "demo-all") {
       throw new TypeError("live templates require an authority-separated role");
     }
+    if (options.projectIdentity !== undefined &&
+        (typeof options.projectIdentity !== "string" || !/^[0-9a-f]{32}$/.test(options.projectIdentity))) {
+      throw new TypeError("projectIdentity must be 32 lower-case hex digits");
+    }
     return liveProjectTemplates({
       packageName: options.packageName,
       deployment: options.deployment,

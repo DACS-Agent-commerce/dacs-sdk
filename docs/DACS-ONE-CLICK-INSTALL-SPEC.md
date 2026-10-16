@@ -291,7 +291,7 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
 
 The supported toolchain is Docker CLI and Engine 24.x through 28.x, and
 Compose 2.10.x through 2.40.x. Doctor MUST check both Docker versions and the
-Compose version. The lifecycle also checks Compose before each compose call.
+Compose version. Each lifecycle invocation also checks Compose before its first compose call.
 CI builds the generated Dockerfile and runs its zero-spend image smoke for
 x402 and pay-dem on Docker 24.0.9 / Compose 2.10.2 and Docker 28.5.1 / Compose
 2.40.3. It uses this checkout's packed release set in the build lock while
