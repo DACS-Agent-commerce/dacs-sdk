@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   canonicalize,
@@ -22,6 +22,8 @@ import {
   rawPublicKey,
   respondToFixedPriceAgreementProposalDurable,
   sha256Hex,
+  DacsError,
+  SubstrateError,
   type AttestationRef,
   type DurableSellerFixedPriceAgreementDurability,
   type DurableSellerFixedPriceAgreementInput,
@@ -1469,8 +1471,18 @@ describe("seller responder proposal integrity and durable-effect guards", () => 
   }
 
   test.each<[string, (record: SessionRecordValue) => void]>([
+    ...["contextJson", "proposalJson", "planJson", "transportIdentityJson"].map(
+      (member): [string, (record: SessionRecordValue) => void] => [
+        `substituted proposal ${member}`,
+        corruptCheckpoint(KEY.proposal, member, JSON.stringify({ substituted: true })),
+      ],
+    ),
     ["substituted seller signature authority",
       corruptCheckpoint(KEY.sellerSignature, "idempotencyKey", "f".repeat(64))],
+    ["substituted seller signature contribution hash",
+      corruptCheckpoint(KEY.sellerSignature, "contributionHash", "f".repeat(64))],
+    ["substituted seller signature contribution data",
+      corruptCheckpoint(KEY.sellerSignature, "contributionJson", JSON.stringify({ substituted: true }))],
     ["substituted publication contribution",
       corruptCheckpoint(KEY.publication, "contributionHash", "f".repeat(64))],
     ["publication not marked published", corruptCheckpoint(KEY.publication, "published", false)],
@@ -1524,5 +1536,584 @@ describe("seller responder proposal integrity and durable-effect guards", () => 
     const result = await respond(h);
     expect(result.disposition).not.toBe("complete");
     expectNoEffects(h, "conflicting agreement hash");
+  });
+});
+
+// Public-boundary cases deliberately vary one member at a time. In particular,
+// a valid detached contribution can still belong to another role or plan.
+describe("seller response transport validation", () => {
+  type Response = Extract<Awaited<ReturnType<typeof respondToFixedPriceAgreementProposalDurable>>, { disposition: "complete" }>["result"];
+  type MutableResponse = { -readonly [K in keyof Response]: Response[K] };
+  type Change = (value: MutableResponse) => unknown;
+  const changedIdentity = (key: string, value: unknown): Change => (response) => {
+    response.transportIdentity = { ...response.transportIdentity, [key]: value };
+    return response;
+  };
+  const cases: [string, Change][] = [
+    ["null", () => null], ["array", () => []], ["primitive", () => "response"],
+    ["wrong response version", (r) => ({ ...r, responseVersion: "2" })],
+    ["extra response member", (r) => ({ ...r, extra: true })],
+    ["null identity", (r) => ({ ...r, transportIdentity: null })],
+    ["array identity", (r) => ({ ...r, transportIdentity: [] })],
+    ["null contribution", (r) => ({ ...r, sellerContribution: null })],
+    ["buyer contribution", (r) => {
+      const { contributionHash: _hash, ...material } = { ...r.sellerContribution, role: "buyer" };
+      return { ...r, sellerContribution: { ...material, contributionHash: sha256Hex(canonicalize(material)) } };
+    }],
+    ["different seller", changedIdentity("seller", OTHER_SELLER)],
+    ["same buyer and seller", (r) => changedIdentity("buyer", r.transportIdentity.seller)(r)],
+    ["different plan", changedIdentity("planHash", "f".repeat(64))],
+    ["extra identity member", changedIdentity("extra", true)],
+  ];
+  for (const key of ["responseVersion", "transportIdentity", "sellerContribution"] as const) {
+    cases.push([`missing ${key}`, (r) => { const copy: Record<string, unknown> = { ...r }; delete copy[key]; return copy; }]);
+  }
+  for (const key of ["jobId", "buyer", "seller", "planHash", "agreementHash", "proposalHash"] as const) {
+    cases.push([`missing identity ${key}`, (r) => {
+      const identity = { ...r.transportIdentity } as Record<string, unknown>;
+      delete identity[key];
+      return { ...r, transportIdentity: identity };
+    }]);
+    for (const value of [null, 1, ""]) cases.push([`${key}=${JSON.stringify(value)}`, changedIdentity(key, value)]);
+    if (["jobId", "buyer", "seller"].includes(key)) {
+      for (const value of [" padded", "padded ", "e\u0301"]) cases.push([`${key} noncanonical ${value}`, changedIdentity(key, value)]);
+    } else {
+      for (const value of ["a".repeat(63), "a".repeat(65), "A".repeat(64), "g".repeat(64)]) {
+        cases.push([`${key} malformed hash ${value}`, changedIdentity(key, value)]);
+      }
+    }
+  }
+
+  test.each(cases)("refuses %s independently", async (_name, change) => {
+    const h = await harness();
+    const completed = await respondToFixedPriceAgreementProposalDurable(h.request.input, h.durability);
+    expect(completed.disposition).toBe("complete");
+    if (completed.disposition !== "complete") throw new Error("response fixture did not complete");
+    expect(isDurableSellerFixedPriceAgreementResponse(completed.result)).toBe(true);
+    expect(isDurableSellerFixedPriceAgreementResponse(change(structuredClone(completed.result)))).toBe(false);
+  });
+
+  test("rejects an accessor without evaluating it", async () => {
+    let calls = 0;
+    expect(isDurableSellerFixedPriceAgreementResponse({
+      get responseVersion() { calls += 1; return "1"; },
+    })).toBe(false);
+    expect(calls).toBe(0);
+  });
+});
+
+describe("seller responder callback outcome mapping", () => {
+  const respond = (h: Awaited<ReturnType<typeof harness>>) =>
+    respondToFixedPriceAgreementProposalDurable(h.request.input, h.durability);
+
+  test.each([null, [], "proposal"])("malformed envelope %j is rejected without effects", async (value) => {
+    const h = await harness();
+    expect(await respondToFixedPriceAgreementProposalDurable(value as never, h.durability))
+      .toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expect(h.state.calls.context).toBe(0);
+    expect(h.state.calls.signature).toBe(0);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each(["buyer", "seller"] as const)("maps every %s verifier outcome", async (role) => {
+    for (const [verdict, expected] of [
+      ["invalid", "rejected"], ["indeterminate", "indeterminate"], ["error", "indeterminate"],
+      ["unknown", "indeterminate"], [null, "indeterminate"],
+    ] as const) {
+      const h = await harness();
+      const verify = h.durability.verifyContribution;
+      h.durability.verifyContribution = (check) => check.role === role ? verdict as never : verify(check);
+      expect(await respond(h), String(verdict)).toMatchObject({
+        disposition: expected, stage: role === "buyer" ? "buyer-contribution" : "seller-signature",
+      });
+      expect(h.state.calls.signature).toBe(role === "buyer" ? 0 : 1);
+      expect(h.state.calls.publication).toBe(0);
+    }
+  });
+
+  const invalidResolutions: [string, unknown][] = [
+    ["null", null], ["array", []], ["missing disposition", {}],
+    ["unknown disposition", { disposition: "unknown", reason: "unknown" }],
+    ["present without value", { disposition: "present" }],
+    ["present with reason", { disposition: "present", value: {}, reason: "unexpected" }],
+    ["absent without reason", { disposition: "absent" }],
+    ["absent with value", { disposition: "absent", reason: "absent", value: {} }],
+    ["rejected with value", { disposition: "rejected", reason: "rejected", value: {} }],
+    ["indeterminate with value", { disposition: "indeterminate", reason: "unknown", value: {} }],
+    ["empty reason", { disposition: "absent", reason: "" }],
+    ["non-string reason", { disposition: "absent", reason: 1 }],
+    ["padded reason", { disposition: "absent", reason: " absent " }],
+    ["NFD reason", { disposition: "absent", reason: "e\u0301" }],
+    ["extra key", { disposition: "absent", reason: "absent", extra: true }],
+  ];
+
+  test.each(invalidResolutions)("malformed context resolution: %s", async (_name, value) => {
+    const h = await harness();
+    h.durability.resolveAuthenticatedAgreementContext = () => value as never;
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "context" });
+    expect(h.state.calls.signature).toBe(0);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each(invalidResolutions)("malformed publication reconciliation: %s", async (_name, value) => {
+    const h = await harness();
+    h.durability.transport.reconcileSellerContributionPublication = () => value as never;
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "contribution-publication" });
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each(invalidResolutions)("malformed signature reconciliation: %s", async (_name, value) => {
+    const h = await harness();
+    h.state.failBeforeStore.add("signature");
+    expect((await respond(h)).disposition).toBe("indeterminate");
+    h.durability.reconcileSellerSignature = () => value as never;
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "seller-signature" });
+    expect(h.state.calls.signature).toBe(1);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each([
+    ["rejected", { disposition: "rejected", reason: "publisher refused" }, "rejected"],
+    ["indeterminate", { disposition: "indeterminate", reason: "publisher unsure" }, "indeterminate"],
+    ["null", null, "indeterminate"],
+    ["unknown", { disposition: "unknown", reason: "unknown" }, "indeterminate"],
+    ["submitted with reason", { disposition: "submitted", reason: "unexpected" }, "indeterminate"],
+    ["rejected without reason", { disposition: "rejected" }, "indeterminate"],
+    ["indeterminate without reason", { disposition: "indeterminate" }, "indeterminate"],
+    ["rejected empty reason", { disposition: "rejected", reason: "" }, "indeterminate"],
+    ["indeterminate non-string reason", { disposition: "indeterminate", reason: 1 }, "indeterminate"],
+    ["extra member", { disposition: "submitted", extra: true }, "indeterminate"],
+  ])("maps publication submission %s", async (_name, submission, expected) => {
+    const h = await harness();
+    h.durability.transport.publishSellerContribution = () => {
+      h.state.calls.publication += 1;
+      return submission as never;
+    };
+    expect(await respond(h)).toMatchObject({ disposition: expected, stage: "contribution-publication" });
+    expect(h.state.calls.publication).toBe(1);
+    const loaded = await h.store.load(h.context.jobId);
+    expect(loaded.status).toBe("ok");
+    if (loaded.status === "ok") expect(loaded.record.checkpoints.some((c) =>
+      c.key === durableSellerFixedPriceAgreementCheckpointKey.result)).toBe(false);
+  });
+
+  test.each(["absent", "rejected", "indeterminate"] as const)(
+    "maps %s after a submitted publication without redriving", async (disposition) => {
+      const h = await harness();
+      let reconciles = 0;
+      h.durability.transport.reconcileSellerContributionPublication = () => ({
+        disposition: ++reconciles === 1 ? "absent" : disposition,
+        reason: "authoritative publication state",
+      });
+      expect(await respond(h)).toMatchObject({
+        disposition: disposition === "rejected" ? "rejected" : "indeterminate",
+        stage: "contribution-publication",
+      });
+      expect(reconciles).toBe(2);
+      expect(h.state.calls.signature).toBe(1);
+      expect(h.state.calls.publication).toBe(1);
+    },
+  );
+
+  test.each([false, 1, null, [], {}, new Int8Array(64), "not-base64!"])(
+    "maps malformed signer output %j without publication", async (value) => {
+      const h = await harness();
+      h.request.input.seller.sign = () => value as never;
+      expect(await respond(h)).toMatchObject({
+        disposition: typeof value === "string" ? "rejected" : "indeterminate", stage: "seller-signature",
+      });
+      expect(h.state.calls.publication).toBe(0);
+    },
+  );
+
+  test.each(["base64url", "Buffer"] as const)("accepts intrinsic signature output as %s", async (format) => {
+    const h = await harness();
+    h.request.input.seller.sign = (bytes) => {
+      const signature = ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED));
+      return format === "Buffer" ? Buffer.from(signature) : Buffer.from(signature).toString("base64url");
+    };
+    expect((await respond(h)).disposition).toBe("complete");
+  });
+
+  test("uses the default clock for leases when no clock is supplied", async () => {
+    const h = await harness();
+    delete h.durability.leaseNowMs;
+    const now = vi.spyOn(Date, "now").mockReturnValue(NOW + 1234);
+    try {
+      expect((await respond(h)).disposition).toBe("complete");
+      expect(now).toHaveBeenCalled();
+      const loaded = await h.store.load(h.context.jobId);
+      expect(loaded.status).toBe("ok");
+      if (loaded.status === "ok") expect(loaded.record.createdAt).toBe(NOW + 1234);
+      if (loaded.status === "ok") expect(loaded.record.updatedAt).toBe(NOW + 1234);
+    } finally { now.mockRestore(); }
+  });
+});
+
+describe("seller responder durable state and CAS recovery", () => {
+  type RecordValue = Extract<Awaited<ReturnType<FencedSessionStoreV2["load"]>>, { status: "ok" }>["record"];
+  const KEY = durableSellerFixedPriceAgreementCheckpointKey;
+  const respond = (h: Awaited<ReturnType<typeof harness>>) =>
+    respondToFixedPriceAgreementProposalDurable(h.request.input, h.durability);
+  function wrap(inner: FencedSessionStoreV2, overrides: Partial<FencedSessionStoreV2>): FencedSessionStoreV2 {
+    return {
+      apiVersion: inner.apiVersion,
+      create: (value) => inner.create(value), load: (value) => inner.load(value),
+      transition: (value) => inner.transition(value), claimCheckpoint: (value) => inner.claimCheckpoint(value),
+      acquireLease: (value) => inner.acquireLease(value), renewLease: (value) => inner.renewLease(value),
+      bindSessionAuthorization: (value) => inner.bindSessionAuthorization(value), bindHash: (value) => inner.bindHash(value),
+      list: (value) => inner.list(value), ...overrides,
+    };
+  }
+
+  test.each(Object.values(KEY))("retries a revision mismatch while completing %s", async (key) => {
+    const inner = createInMemoryFencedSessionStore();
+    let attempts = 0;
+    const h = await harness({ store: wrap(inner, {
+      transition: async (value) => {
+        if (value.checkpoint?.key === key && value.checkpoint.stage === "outcome" && ++attempts === 1) {
+          return { ok: false, reason: "revision-mismatch" };
+        }
+        return inner.transition(value);
+      },
+    }) });
+    expect((await respond(h)).disposition).toBe("complete");
+    expect(attempts).toBe(2);
+    expect(h.state.calls.signature).toBe(1);
+    expect(h.state.calls.publication).toBe(1);
+    expect(await respond(h)).toMatchObject({ disposition: "complete", recovered: true });
+  });
+
+  test.each(Object.values(KEY))("accepts an identical concurrent outcome for %s", async (key) => {
+    const inner = createInMemoryFencedSessionStore();
+    let raced = false;
+    const h = await harness({ store: wrap(inner, {
+      transition: async (value) => {
+        const result = await inner.transition(value);
+        if (!raced && value.checkpoint?.key === key && value.checkpoint.stage === "outcome" && result.ok) {
+          raced = true;
+          return { ok: false, reason: "checkpoint-state", record: result.record };
+        }
+        return result;
+      },
+    }) });
+    expect((await respond(h)).disposition).toBe("complete");
+    expect(raced).toBe(true);
+    expect(await respond(h)).toMatchObject({ disposition: "complete", recovered: true });
+    expect(h.state.calls.signature).toBe(1);
+    expect(h.state.calls.publication).toBe(1);
+  });
+
+  test.each([false, true])("an outcome already stored during the claim is checked (conflicting=%s)", async (conflicting) => {
+    const inner = createInMemoryFencedSessionStore();
+    let raced = false;
+    const h = await harness({ store: wrap(inner, {
+      claimCheckpoint: async (value) => {
+        const claimed = await inner.claimCheckpoint(value);
+        if (!raced && value.key === KEY.proposal && claimed.ok) {
+          raced = true;
+          const completed = await inner.transition({
+            jobId: value.jobId, expectedRevision: claimed.record.revision,
+            leaseToken: value.leaseToken, now: value.now,
+            checkpoint: { key: value.key, stage: "outcome", data: {
+              ...value.data, ...(conflicting ? { contextHash: "f".repeat(64) } : {}),
+            } },
+          });
+          expect(completed.ok).toBe(true);
+        }
+        return claimed;
+      },
+    }) });
+    expect(await respond(h)).toMatchObject({ disposition: conflicting ? "rejected" : "complete" });
+    expect(raced).toBe(true);
+    expect(h.state.calls.signature).toBe(conflicting ? 0 : 1);
+    expect(h.state.calls.publication).toBe(conflicting ? 0 : 1);
+  });
+
+  test.each(["missing", "conflicting"] as const)("refuses a %s durable intent during completion", async (fault) => {
+    const inner = createInMemoryFencedSessionStore();
+    let claimed = false;
+    const h = await harness({ store: wrap(inner, {
+      claimCheckpoint: async (value) => {
+        const result = await inner.claimCheckpoint(value);
+        if (value.key === KEY.proposal) claimed = true;
+        return result;
+      },
+      load: async (jobId) => {
+        const loaded = await inner.load(jobId);
+        if (!claimed || loaded.status !== "ok") return loaded;
+        const record = structuredClone(loaded.record);
+        if (fault === "missing") record.checkpoints = [];
+        else record.checkpoints.push({ key: KEY.proposal, stage: "outcome", data: { contextHash: "substituted" } });
+        return { ...loaded, record };
+      },
+    }) });
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expect(h.state.calls.signature).toBe(0);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test("binds a fresh unbound session to this agreement before signing", async () => {
+    const h = await harness();
+    await h.store.create({ jobId: h.context.jobId, now: NOW });
+    expect((await respond(h)).disposition).toBe("complete");
+    const loaded = await h.store.load(h.context.jobId);
+    expect(loaded.status).toBe("ok");
+    if (loaded.status === "ok") expect(loaded.record.agreementHash).toBe(h.request.plan.agreementHash);
+  });
+
+  test.each(["generation", "checkpoints"] as const)("refuses rebinding an unbound session with prior %s", async (prior) => {
+    const inner = createInMemoryFencedSessionStore();
+    const h = await harness({ store: wrap(inner, {
+      load: async (jobId) => {
+        const loaded = await inner.load(jobId);
+        if (loaded.status !== "ok") return loaded;
+        const record = structuredClone(loaded.record);
+        if (prior === "generation") record.leaseGeneration = 1;
+        else record.checkpoints.push({ key: "unrelated", stage: "intent" });
+        return { ...loaded, record };
+      },
+    }) });
+    await inner.create({ jobId: h.context.jobId, now: NOW });
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expect(h.state.calls.signature).toBe(0);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each([
+    { ok: false }, { ok: false, boundTo: SUBSTITUTE_JOB_ID }, { ok: true, boundTo: SUBSTITUTE_JOB_ID },
+  ])("refuses an unbound session when bindHash returns %j", async (binding) => {
+    const inner = createInMemoryFencedSessionStore();
+    const h = await harness({ store: wrap(inner, { bindHash: async () => binding }) });
+    await inner.create({ jobId: h.context.jobId, now: NOW });
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expect(h.state.calls.signature).toBe(0);
+  });
+
+  test.each([
+    ["substrate", new SubstrateError("store unavailable"), "indeterminate"],
+    ["DACS", new DacsError("invalid durable binding"), "rejected"],
+  ] as const)("maps a %s error without signing", async (_name, error, disposition) => {
+    const inner = createInMemoryFencedSessionStore();
+    const h = await harness({ store: wrap(inner, { load: async () => { throw error; } }) });
+    expect(await respond(h)).toMatchObject({ disposition, stage: disposition === "rejected" ? "proposal" : "lease" });
+    expect(h.state.calls.signature).toBe(0);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test("propagates an unexpected store error", async () => {
+    const inner = createInMemoryFencedSessionStore();
+    const error = new Error("unexpected store error");
+    const h = await harness({ store: wrap(inner, { load: async () => { throw error; } }) });
+    await expect(respond(h)).rejects.toBe(error);
+    expect(h.state.calls.signature).toBe(0);
+  });
+
+  test.each(["corrupt", "unsupported"] as const)("maps %s store data to indeterminate", async (status) => {
+    const inner = createInMemoryFencedSessionStore();
+    const h = await harness({ store: wrap(inner, {
+      load: async () => status === "corrupt" ? { status, reason: "broken record" } : { status, version: 99 },
+    }) });
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "lease" });
+    expect(h.state.calls.signature).toBe(0);
+  });
+
+  test("a create race recovers the winner's session", async () => {
+    const inner = createInMemoryFencedSessionStore();
+    const h = await harness({ store: wrap(inner, { create: async (value) => {
+      await inner.create(value);
+      throw new SubstrateError("another creator won");
+    } }) });
+    expect((await respond(h)).disposition).toBe("complete");
+    expect(h.state.calls.signature).toBe(1);
+  });
+
+  test.each(["not-found", "lease-fenced"] as const)("maps acquisition failure %s to indeterminate", async (reason) => {
+    const inner = createInMemoryFencedSessionStore();
+    const h = await harness({ store: wrap(inner, { acquireLease: async () => ({ ok: false, reason }) }) });
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "lease" });
+    expect(h.state.calls.signature).toBe(0);
+  });
+
+  test.each(["not-found", "lease-fenced"] as const)("maps checkpoint claim failure %s to indeterminate", async (reason) => {
+    const inner = createInMemoryFencedSessionStore();
+    const h = await harness({ store: wrap(inner, { claimCheckpoint: async () => ({ ok: false, reason }) }) });
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "lease" });
+    expect(h.state.calls.signature).toBe(0);
+  });
+
+  test.each(["proposal", "sellerSignature", "publication", "result"] as const)(
+    "terminal recovery requires both data and an outcome for %s", async (member) => {
+      for (const missing of ["data", "outcome"] as const) {
+        const inner = createInMemoryFencedSessionStore();
+        let tamper = false;
+        const h = await harness({ store: wrap(inner, { load: async (jobId) => {
+          const loaded = await inner.load(jobId);
+          if (!tamper || loaded.status !== "ok") return loaded;
+          const record: RecordValue = structuredClone(loaded.record);
+          const key = KEY[member];
+          if (missing === "outcome") record.checkpoints = record.checkpoints.filter((c) => c.key !== key || c.stage !== "outcome");
+          else for (const c of record.checkpoints) if (c.key === key && c.stage === "outcome") delete c.data;
+          return { ...loaded, record };
+        } }) });
+        expect((await respond(h)).disposition).toBe("complete");
+        tamper = true;
+        expect(await respond(h), `${member} ${missing}`).toMatchObject({ disposition: "rejected", stage: "proposal" });
+        expect(h.state.calls.signature).toBe(1);
+        expect(h.state.calls.publication).toBe(1);
+      }
+    },
+  );
+});
+
+describe("seller responder remaining boundary outcomes", () => {
+  const respond = (h: Awaited<ReturnType<typeof harness>>) =>
+    respondToFixedPriceAgreementProposalDurable(h.request.input, h.durability);
+
+  test.each(["proposal", "transportIdentity"] as const)("malformed nested %s is rejected before context resolution", async (key) => {
+    for (const value of [null, [], "malformed"]) {
+      const h = await harness();
+      Object.assign(h.request.input, { [key]: value });
+      expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+      expect(h.state.calls.context).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+      expect(h.state.calls.publication).toBe(0);
+    }
+  });
+
+  test.each(["jobId", "verifiedListing", "buyer", "seller", "generatedAt"] as const)(
+    "a context missing %s is indeterminate before derivation", async (key) => {
+      const h = await harness();
+      const context: Record<string, unknown> = structuredClone(h.context) as unknown as Record<string, unknown>;
+      delete context[key];
+      h.durability.resolveAuthenticatedAgreementContext = () => ({ disposition: "present", value: context as never });
+      expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "context" });
+      expect(h.state.calls.verifyBuyer).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+      expect(h.state.calls.publication).toBe(0);
+    },
+  );
+
+  test.each([null, [], "context"])("a present context containing %j is malformed", async (value) => {
+    const h = await harness();
+    h.durability.resolveAuthenticatedAgreementContext = () => ({ disposition: "present", value: value as never });
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "context" });
+    expect(h.state.calls.signature).toBe(0);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each<[string, () => unknown]>([
+    ["Proxy", () => new Proxy(new Uint8Array(64), {})],
+    ["subclass", () => new (class extends Uint8Array {})(64)],
+  ])("refuses a %s signature object without invoking its traps", async (_label, value) => {
+    const h = await harness();
+    h.request.input.seller.sign = () => value() as never;
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "seller-signature" });
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test("a rehashed proposal with an extra buyer contribution member is refused before verification", async () => {
+    const h = await harness();
+    const material = {
+      proposalVersion: "1" as const,
+      plan: h.request.plan,
+      buyerContribution: { ...h.request.buyerContribution, extra: true },
+    };
+    const proposalHash = sha256Hex(canonicalize(material));
+    h.request.input.proposal = { ...material, proposalHash };
+    h.request.input.transportIdentity = { ...h.request.input.transportIdentity, proposalHash };
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "buyer-contribution" });
+    expect(h.state.calls.verifyBuyer).toBe(0);
+    expect(h.state.calls.signature).toBe(0);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each(["context", "buyer verifier", "seller verifier", "signature reconciliation", "publication reconciliation"] as const)(
+    "a thrown %s error stays indeterminate", async (source) => {
+      const h = await harness();
+      const fail = () => { throw new Error("callback unavailable"); };
+      if (source === "context") h.durability.resolveAuthenticatedAgreementContext = fail;
+      if (source === "buyer verifier") h.durability.verifyContribution = fail;
+      if (source === "seller verifier") {
+        const verify = h.durability.verifyContribution;
+        h.durability.verifyContribution = (value) => value.role === "seller" ? fail() : verify(value);
+      }
+      if (source === "signature reconciliation") {
+        h.state.lost.add("signature");
+        expect((await respond(h)).disposition).toBe("indeterminate");
+        h.durability.reconcileSellerSignature = fail;
+      }
+      if (source === "publication reconciliation") h.durability.transport.reconcileSellerContributionPublication = fail;
+      expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage:
+        source === "context" ? "context" : source === "buyer verifier" ? "buyer-contribution" :
+          source === "publication reconciliation" ? "contribution-publication" : "seller-signature",
+      });
+      expect(h.state.calls.signature).toBe(["seller verifier", "signature reconciliation", "publication reconciliation"].includes(source) ? 1 : 0);
+      expect(h.state.calls.publication).toBe(0);
+    },
+  );
+
+  test("a substituted contribution observed after submission is rejected", async () => {
+    const h = await harness();
+    const reconcile = h.durability.transport.reconcileSellerContributionPublication;
+    let calls = 0;
+    h.durability.transport.reconcileSellerContributionPublication = (...args) => {
+      if (++calls === 1) return reconcile(...args);
+      return { disposition: "present", value: { substituted: true } };
+    };
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "contribution-publication" });
+    expect(h.state.calls.signature).toBe(1);
+    expect(h.state.calls.publication).toBe(1);
+  });
+
+  test.each(["string", "Uint8Array", "Buffer"] as const)("restores a retained signature encoded as %s", async (format) => {
+    const h = await harness();
+    h.state.lost.add("signature");
+    expect((await respond(h)).disposition).toBe("indeterminate");
+    const bytes = h.state.signature as Uint8Array;
+    h.durability.reconcileSellerSignature = () => ({ disposition: "present", value:
+      format === "string" ? Buffer.from(bytes).toString("base64url") : format === "Buffer" ? Buffer.from(bytes) : bytes,
+    });
+    expect((await respond(h)).disposition).toBe("complete");
+    expect(h.state.calls.signature).toBe(1);
+    expect(h.state.calls.publication).toBe(1);
+  });
+
+  test.each([null, [], {}, new Int8Array(64)])("a present reconciliation with invalid signature %j is indeterminate", async (value) => {
+    const h = await harness();
+    h.state.lost.add("signature");
+    expect((await respond(h)).disposition).toBe("indeterminate");
+    h.durability.reconcileSellerSignature = () => ({ disposition: "present", value: value as never });
+    expect(await respond(h)).toMatchObject({ disposition: "indeterminate", stage: "seller-signature" });
+    expect(h.state.calls.signature).toBe(1);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each([-1, -0, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])("invalid lease clock %s is refused before effects", async (value) => {
+    const h = await harness();
+    h.durability.leaseNowMs = () => value;
+    expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    expect(h.state.calls.signature).toBe(0);
+    expect(h.state.calls.publication).toBe(0);
+  });
+
+  test.each(["party", "algorithm"] as const)("malformed local seller %s is rejected before context resolution", async (key) => {
+    for (const value of [null, 1, "", " unsupported "]) {
+      const h = await harness();
+      Object.assign(h.request.input.seller, { [key]: value });
+      expect(await respond(h)).toMatchObject({ disposition: "rejected", stage: "proposal" });
+      expect(h.state.calls.context).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+    }
+  });
+
+  test.each(["workerId", "leaseTtlMs"] as const)("malformed durability %s is a configuration error", async (key) => {
+    for (const value of key === "workerId" ? ["", " padded ", 1, null] : [0, -1, 0.5, "100"]) {
+      const h = await harness();
+      Object.assign(h.durability, { [key]: value });
+      await expect(respond(h)).rejects.toThrow(/workerId and positive leaseTtlMs/);
+      expect(h.state.calls.context).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+    }
   });
 });
