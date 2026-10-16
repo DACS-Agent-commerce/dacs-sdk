@@ -676,7 +676,12 @@ cursor is owner-bound and at-least-once: `historyPageSize` counts raw history
 rows, a page can contain no Listings, and `nextCursor: null` means only that the
 current traversal reached its end. Upsert results idempotently by
 `(logicalAddress, contentHash, ref)`. Restart from a null cursor to see a binding
-repaired after its history page was already consumed.
+repaired after its history page was already consumed. Every `dacs1:` history row
+goes through the same address parser as `readListing`, including a legacy
+Listing whose `serviceId` falls outside the CF-4 `listingId` grammar (which
+`classifyAnchor` reports as `unknown`): enumeration returns what a direct read
+authenticates, and an address that read refuses is an `invalid-address`
+diagnostic, never a silent skip.
 
 For other artifact kinds, `createScanningArtifactRepository` composes the bound
 repository with `scanAnchorPage` and `resolveAndRead`. Supply the adapter,
@@ -700,7 +705,8 @@ behind the cursor, are seen only by a new traversal. These ordering, status,
 row-shape and not-found assumptions were checked against the `kynesyslabs/node`
 source at commit `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`,
 `@kynesyslabs/demosdk` 4.0.16, and node2 testnet responses recorded on
-2026-10-15 (`test/fixtures/demos-node2-history.json`). The deployed node is
+2026-10-15 and 2026-10-16, including a real DACS create row
+(`test/fixtures/demos-node2-history.json`). The deployed node is
 newer than `ac8f45f`: its rows carry fields that source does not produce, and
 it records failed transactions. The node reports no version, so the fetcher
 cannot check one; a node whose ordering, status or row shape differs from these
