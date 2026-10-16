@@ -253,6 +253,12 @@ only `ed25519` contexts naming the runtime's exact canonical authority, so
 agreement, evidence, delivery and bundle builders can share the wallet without
 receiving its secret or substituting another signer identity.
 
+`addressNonce()` uses the uncoerced `raw.nodeCall("getAddressNonce", { address })`
+response and accepts only a safe non-negative integer or its canonical decimal
+string. Custom Demos adapters must expose `raw.nodeCall` for this probe; an
+unavailable method or malformed response fails readiness. The demosdk convenience
+method's fallback zero is never treated as a successful read.
+
 `createDacsFixedPriceX402OperationSetV1()` admits only the complete set of
 role-owned coordinator tracks. Core coordinators continue to support partial
 maps for focused recovery and tests, while the host production boundary rejects
