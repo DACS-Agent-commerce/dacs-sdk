@@ -37,6 +37,31 @@ describe("secret scan suppressions", () => {
     expect(configProblems(config)).toEqual([]);
   });
 
+  it.each([
+    ["an absent keyword", 'keywords = ["never-a-source-token"]', "keywords"],
+    ["a different regex", "regex = '''NEVER_MATCH_THIS_MARKER'''", "regex"],
+    ["a different capture group", "secretGroup = 0", "secretGroup"],
+    ["missing keywords", "", "keywords"],
+    ["a missing regex", "", "regex"],
+    ["a missing capture group", "", "secretGroup"],
+  ])("rejects the mnemonic rule with %s", (_description, replacement, key) => {
+    const changed = config.replace(new RegExp(`^${key} = .*\\n?`, "m"), `${replacement}\n`);
+    expect(configProblems(changed)).toContain(`mnemonic rule ${key}`);
+  });
+
+  it("requires the reviewed mnemonic rule even if it is removed or renamed", () => {
+    const withoutRule = config.replace(/\[\[rules\]\][\s\S]*/, "");
+    const renamedRule = config.replace('id = "dacs-mnemonic-assignment"', 'id = "dacs-other"');
+    for (const changed of [withoutRule, renamedRule]) {
+      expect(configProblems(changed)).toContain("expected one reviewed mnemonic rule");
+    }
+  });
+
+  it.each(["regex", "secretGroup", "keywords"])("rejects a repeated mnemonic %s setting", (key) => {
+    const setting = config.split("\n").find((line) => line.startsWith(`${key} = `))!;
+    expect(configProblems(`${config}\n${setting}\n`)).toContain(`mnemonic rule ${key}`);
+  });
+
   it("rejects every config setting that suppresses more than an exact fingerprint", () => {
     const rule = `[[rules]]\nid = "dacs-extra"\nregex = '''x'''\n`;
     expect(configProblems(`${config}\n${rule}keywords = ["x"]\n`)).toEqual([]);
@@ -105,6 +130,13 @@ const tomlString = String.raw`"(?:[^"\\\n]|\\.)*"|'''(?:(?!''')[^\n])*'''|'[^'\n
 const tomlValue = new RegExp(
   String.raw`^(?:${tomlString}|true|false|-?\d+(?:\.\d+)?|\[\s*(?:(?:${tomlString})\s*,\s*)*(?:(?:${tomlString})\s*)?\])$`,
 );
+// Allowed keys alone cannot keep a rule active: changing its keyword prefilter or regex can
+// silently stop detection. Keep the reviewed mnemonic rule's detection settings exact, too.
+const mnemonicSettings = new Map([
+  ["regex", String.raw`'''(?i)(?:mnemonic|seed[_ -]?phrase)\s*(?:=|:)\s*["'\x60]([a-z]+(?:\s+[a-z]+){11,23})["'\x60]'''`],
+  ["secretGroup", "1"],
+  ["keywords", '["mnemonic", "seed_phrase", "seed phrase"]'],
+]);
 
 // The .gitleaks.toml lines that widen what the scan skips, read table by table the way TOML does.
 function configProblems(text: string) {
@@ -126,9 +158,18 @@ function configProblems(text: string) {
   // Only the default rules: without `useDefault = true`, gitleaks runs this file's rules alone.
   if (JSON.stringify(settings("[extend]")) !== JSON.stringify([[["useDefault", "true"]]])) problems.push("extend");
   // A rule with a default rule's id, or another local rule's, replaces that rule.
-  const ids = settings("[[rules]]").map((rule) => rule.filter(([key]) => key === "id").map(([, value]) => value));
+  const rules = settings("[[rules]]");
+  const ids = rules.map((rule) => rule.filter(([key]) => key === "id").map(([, value]) => value));
   problems.push(...ids.flat().filter((id) => !/^"dacs-[a-z0-9-]+"$/.test(id)).map((id) => `rule id ${id}`));
   problems.push(...ids.flat().filter((id, i, all) => all.indexOf(id) !== i).map((id) => `duplicate rule id ${id}`));
   if (ids.some((rule) => rule.length === 0)) problems.push("rule without id");
+  const mnemonic = rules.filter((rule) => rule.some(([key, value]) => key === "id" && value === '"dacs-mnemonic-assignment"'));
+  if (mnemonic.length !== 1) problems.push("expected one reviewed mnemonic rule");
+  else {
+    for (const [key, expected] of mnemonicSettings) {
+      const values = mnemonic[0]!.filter(([name]) => name === key).map(([, value]) => value);
+      if (values.length !== 1 || values[0] !== expected) problems.push(`mnemonic rule ${key}`);
+    }
+  }
   return problems;
 }
