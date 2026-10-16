@@ -173,8 +173,13 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * Return `completed` only when the node's transaction record for the
    * prepared hash shows the transfer executed. A status-index `included`
    * alone is not execution: a node reports it for a transaction whose record
-   * `failed` (#338). The reconciler from
-   * `createDacsFixedPricePayDemBuyerReconciliationV1` reads the record.
+   * `failed` (#338). Unlike the SDK's `PayDemSettlementReconcile`, the
+   * `completed` settlement here must not carry `execution`: this track does
+   * not check that field, and refuses a settlement that has it as
+   * `pay-dem-settlement-invalid`. The rule above is the caller's to keep. The
+   * reconciler from `createDacsFixedPricePayDemBuyerReconciliationV1` keeps it
+   * when its observer reads the record, as the default observer of
+   * `createDacsFixedPricePayDemBuyerLiveV1` does.
    */
   reconcile(input: Readonly<{
     payment: Readonly<DacsPayDemBuyerPaymentInputV1>;

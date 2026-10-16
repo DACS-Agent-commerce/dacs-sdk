@@ -81,8 +81,11 @@ Re-check this table when the deployed node moves to another commit.
   it into terminal failure evidence on its own; an EVM revert, which surfaces
   as an error after broadcast, is held the same way. A failed pay-dem record
   is therefore reported like an indeterminate one: the intent stays held
-  until the caller's `reconcile` capability, or an operator, resolves it. The verdict is one node's record, not
-  an independent proof, so it is not used to close the session as failed.
+  until an operator resolves it. The `reconcile` capability cannot release
+  it, because it must throw on a `failed` record (see "Custom native
+  clients"), and that throw keeps the intent held. The verdict is one node's
+  record, not an independent proof, so it is not used to close the session
+  as failed.
 
 ## Liveness
 
