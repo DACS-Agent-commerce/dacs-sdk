@@ -697,6 +697,23 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     mutate(ev);
     expect((await verify(ev, { rail: htlcRail })).decision).toBe("fail");
   });
+  // Two references, so the exact-two rule holds and only the role check can refuse.
+  const NO_REVEAL = "HTLC-9 interim evidence MUST include the htlc-reveal txRef (HTLC-9(b))";
+  const NO_LOCK = "HTLC-9 interim evidence MUST carry exactly the source htlc-lock";
+  describe.each([
+    ["with the rail context", { rail: htlcRail }],
+    ["without any context", {}],
+  ] as const)("htlc9 interim of two references %s", (_ctx, ctx) => {
+    test.each([
+      ["the source lock and a source refund", NO_REVEAL, (ev: Record<string, any>) => [ev.paymentTxRefs[0], htlcRefund(ev, 84532)]],
+      ["a destination refund and the reveal", NO_LOCK, (ev: Record<string, any>) => [htlcRefund(ev, 80002), ev.paymentTxRefs[1]]],
+      ["a source refund and the reveal", NO_LOCK, (ev: Record<string, any>) => [htlcRefund(ev, 84532), ev.paymentTxRefs[1]]],
+    ])("that carries %s → fail for the missing role alone", async (_name, reason, refs) => {
+      const ev = htlcInterim();
+      ev.paymentTxRefs = refs(ev);
+      expect(await verify(ev, ctx as EvidenceContext)).toEqual({ decision: "fail", reasons: [reason] });
+    });
+  });
   test.each([
     ["with the rail context", { rail: htlcRail }],
     ["without any context", {}],
