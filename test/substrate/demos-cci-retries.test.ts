@@ -229,6 +229,30 @@ describe("Demos identity transient retries", () => {
     await expectRetryCalls("1994-11-06T08:49:37Z", retryAfter, calls);
   });
 
+  // Positive witnesses span every month/weekday and all three wire grammars,
+  // including valid February dates in leap and non-leap years.
+  it.each([
+    { now: "2026-01-01T00:00:00Z", dates: ["Thu, 01 Jan 2026 00:00:01 GMT", "Thursday, 01-Jan-26 00:00:01 GMT", "Thu Jan  1 00:00:01 2026"] },
+    { now: "2026-02-01T00:00:00Z", dates: ["Sun, 01 Feb 2026 00:00:01 GMT", "Sunday, 01-Feb-26 00:00:01 GMT", "Sun Feb  1 00:00:01 2026"] },
+    { now: "2026-03-01T00:00:00Z", dates: ["Sun, 01 Mar 2026 00:00:01 GMT", "Sunday, 01-Mar-26 00:00:01 GMT", "Sun Mar  1 00:00:01 2026"] },
+    { now: "2026-04-01T00:00:00Z", dates: ["Wed, 01 Apr 2026 00:00:01 GMT", "Wednesday, 01-Apr-26 00:00:01 GMT", "Wed Apr  1 00:00:01 2026"] },
+    { now: "2026-05-01T00:00:00Z", dates: ["Fri, 01 May 2026 00:00:01 GMT", "Friday, 01-May-26 00:00:01 GMT", "Fri May  1 00:00:01 2026"] },
+    { now: "2026-06-01T00:00:00Z", dates: ["Mon, 01 Jun 2026 00:00:01 GMT", "Monday, 01-Jun-26 00:00:01 GMT", "Mon Jun  1 00:00:01 2026"] },
+    { now: "2026-07-01T00:00:00Z", dates: ["Wed, 01 Jul 2026 00:00:01 GMT", "Wednesday, 01-Jul-26 00:00:01 GMT", "Wed Jul  1 00:00:01 2026"] },
+    { now: "2026-08-01T00:00:00Z", dates: ["Sat, 01 Aug 2026 00:00:01 GMT", "Saturday, 01-Aug-26 00:00:01 GMT", "Sat Aug  1 00:00:01 2026"] },
+    { now: "2026-09-01T00:00:00Z", dates: ["Tue, 01 Sep 2026 00:00:01 GMT", "Tuesday, 01-Sep-26 00:00:01 GMT", "Tue Sep  1 00:00:01 2026"] },
+    { now: "2026-10-01T00:00:00Z", dates: ["Thu, 01 Oct 2026 00:00:01 GMT", "Thursday, 01-Oct-26 00:00:01 GMT", "Thu Oct  1 00:00:01 2026"] },
+    { now: "2026-11-01T00:00:00Z", dates: ["Sun, 01 Nov 2026 00:00:01 GMT", "Sunday, 01-Nov-26 00:00:01 GMT", "Sun Nov  1 00:00:01 2026"] },
+    { now: "2026-12-01T00:00:00Z", dates: ["Tue, 01 Dec 2026 00:00:01 GMT", "Tuesday, 01-Dec-26 00:00:01 GMT", "Tue Dec  1 00:00:01 2026"] },
+    { now: "2024-02-29T00:00:00Z", dates: ["Thu, 29 Feb 2024 00:00:01 GMT", "Thursday, 29-Feb-24 00:00:01 GMT", "Thu Feb 29 00:00:01 2024"] },
+    { now: "2026-02-28T00:00:00Z", dates: ["Sat, 28 Feb 2026 00:00:01 GMT", "Saturday, 28-Feb-26 00:00:01 GMT", "Sat Feb 28 00:00:01 2026"] },
+  ].flatMap(({ now, dates }) => dates.map(retryAfter => ({ now, retryAfter }))))(
+    "waits exactly one second for valid HTTP-date $retryAfter",
+    async ({ now, retryAfter }) => {
+      await expectRetryCalls(now, [retryAfter], [1_000]);
+    },
+  );
+
   // Each month name maps to its own month: June's last second, then 1 July.
   it("waits until 1 July from the last second of June", async () => {
     await expectRetryCalls("2026-06-30T23:59:59Z", ["Wed, 01 Jul 2026 00:00:00 GMT"], [1_000]);
@@ -617,6 +641,40 @@ describe("Demos identity deadline under a delayed event loop", () => {
     return { adapter, transport };
   }
 
+  it("checks the attempt deadline before sending when synchronous headers delay its timer", async () => {
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => success());
+    const buildHeaders = vi.fn(async () => {
+      busyUntil(performance.now() + 40);
+      return {};
+    });
+    const error = await readDemosCciResponse(
+      "https://node.example/rpc", "subject", buildHeaders, transport,
+      DEMOS_CCI_MAX_RESPONSE_BYTES, 5, 200,
+    ).catch(caught => caught);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("disposes a response delivered after its attempt deadline inside the overall budget", async () => {
+    const bodies: ReturnType<typeof stalledBody>[] = [];
+    const transport = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const body = stalledBody();
+      bodies.push(body);
+      busyUntil(performance.now() + 40);
+      return body.response;
+    });
+    const error = await readDemosCciResponse(
+      "https://node.example/rpc", "subject", async () => ({}), transport,
+      DEMOS_CCI_MAX_RESPONSE_BYTES, 5, 200,
+    ).catch(caught => caught);
+    expect(error).toBeInstanceOf(TransientError);
+    expect(error).toMatchObject({ message: TIMEOUT, category: "transient" });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(bodies[0]!.cancel).toHaveBeenCalledOnce();
+    expect(bodies[0]!.response.body?.locked).toBe(false);
+  });
+
   it("starts no second request when a 503 backoff callback runs after the deadline", async () => {
     const { adapter, transport } = realSetup();
     const start = performance.now();
@@ -716,6 +774,47 @@ describe("Demos identity monotonic expiry checks", () => {
     expect(transport).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it.each(["headers", "response", "body", "decode"] as const)(
+    "checks the attempt clock after %s even when timers have not fired",
+    async (phase) => {
+      vi.useFakeTimers();
+      let clock = 0;
+      const cancel = vi.fn(async () => undefined);
+      const response = phase === "body"
+        ? new Response(new ReadableStream<Uint8Array>({
+            pull(controller) {
+              clock = 5;
+              controller.enqueue(new TextEncoder().encode(JSON.stringify(GCR)));
+              controller.close();
+            },
+          }, { highWaterMark: 0 }))
+        : new Response(JSON.stringify(GCR));
+      if (phase === "decode") {
+        const decode = TextDecoder.prototype.decode;
+        vi.spyOn(TextDecoder.prototype, "decode").mockImplementation(function (this: TextDecoder, ...args) {
+          clock = 5;
+          return decode.apply(this, args);
+        });
+      }
+      if (phase === "response") vi.spyOn(response.body!, "cancel").mockImplementation(cancel);
+      const transport = vi.fn<typeof fetch>().mockImplementation(async () => {
+        if (phase === "response") clock = 5;
+        return response;
+      });
+      const result = readDemosCciResponse(
+        "https://node.example/rpc", "subject", async () => {
+          if (phase === "headers") clock = 5;
+          return {};
+        }, transport, DEMOS_CCI_MAX_RESPONSE_BYTES, 5, 200, () => clock,
+      ).catch(error => error);
+      // A 250 ms backoff cannot fit, so no timers or retries are needed.
+      expect(await result).toMatchObject({ message: TIMEOUT, category: "transient" });
+      expect(transport).toHaveBeenCalledTimes(phase === "headers" ? 0 : 1);
+      if (phase === "response") expect(cancel).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 
   it("accepts a response read just before expiry", async () => {
     vi.useFakeTimers();

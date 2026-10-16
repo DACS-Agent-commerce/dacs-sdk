@@ -175,7 +175,8 @@ async function consumeBoundedBody(
   }
   if (response.body === null) return new Uint8Array();
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+  // One owned allocation bounds overhead even for arbitrarily tiny/empty chunks.
+  const combined = new Uint8Array(maxBytes);
   let total = 0;
   const abort = () => {
     void reader.cancel(signal.reason).catch(() => undefined);
@@ -190,21 +191,15 @@ async function consumeBoundedBody(
       if (next.done) break;
       const prospectiveTotal = total + next.value.byteLength;
       if (prospectiveTotal > maxBytes) throw responseTooLarge();
-      chunks.push(Uint8Array.from(next.value));
+      if (next.value.byteLength === 0) continue;
+      combined.set(next.value, total);
       total = prospectiveTotal;
     }
-    const combined = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return combined;
+    return combined.subarray(0, total);
   } catch (error) {
     void reader.cancel(error).catch(() => undefined);
     throw error;
   } finally {
-    chunks.length = 0;
     signal.removeEventListener("abort", abort);
     reader.releaseLock();
   }
@@ -453,8 +448,10 @@ async function readAttempt(
   timeoutMs: number,
   overallSignal: AbortSignal,
   expired: () => boolean,
+  now: () => number,
   backoffMs: number,
 ): Promise<unknown> {
+  const expiresAt = now() + timeoutMs;
   const controller = new AbortController();
   const timeoutError = new TransientError(TIMED_OUT);
   let rejectDeadline: ((reason: unknown) => void) | undefined;
@@ -464,6 +461,15 @@ async function readAttempt(
   const abort = (reason: unknown) => {
     controller.abort(reason);
     rejectDeadline?.(reason);
+  };
+  const attemptExpired = () => {
+    if (!controller.signal.aborted && now() >= expiresAt) abort(timeoutError);
+    return controller.signal.aborted;
+  };
+  const assertLive = () => {
+    if (expired()) throw overallSignal.reason;
+    attemptExpired();
+    controller.signal.throwIfAborted();
   };
   const overallAbort = () => abort(overallSignal.reason);
   const timer = setTimeout(() => abort(timeoutError), timeoutMs);
@@ -475,8 +481,7 @@ async function readAttempt(
   try {
     const operation = async (): Promise<unknown> => {
       const headers = await buildHeaders();
-      if (expired()) throw overallSignal.reason;
-      controller.signal.throwIfAborted();
+      assertLive();
       phase = "send";
       const response = await transport(endpoint.url, {
         method: "POST",
@@ -492,7 +497,7 @@ async function readAttempt(
         }),
       });
       phase = "read";
-      if (controller.signal.aborted) {
+      if (expired() || attemptExpired()) {
         // An injected transport may resolve after ignoring abort. Dispose of
         // that late body without reading or decoding it.
         void response.body?.cancel().catch(() => undefined);
@@ -514,7 +519,7 @@ async function readAttempt(
         throw new SubstrateError(`Demos GCR identity read failed with HTTP ${response.status}`);
       }
       const bytes = await consumeBoundedBody(response, maxBytes, controller.signal);
-      controller.signal.throwIfAborted();
+      assertLive();
       try {
         return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
       } catch {
@@ -522,11 +527,11 @@ async function readAttempt(
       }
     };
     const result = await Promise.race([operation(), deadline]);
-    if (expired()) throw overallSignal.reason;
+    assertLive();
     return result;
   } catch (error) {
     if (expired()) throw overallSignal.reason;
-    if (controller.signal.aborted) throw new RetryableFailure(timeoutError, backoffMs);
+    if (attemptExpired()) throw new RetryableFailure(timeoutError, backoffMs);
     // The SDK's own status and validation errors are already sanitized.
     if (phase === "sign" || error instanceof RetryableFailure || error instanceof DacsError) {
       throw error;
@@ -584,7 +589,7 @@ export async function readDemosCciResponse(
       try {
         return await readAttempt(
           endpoint, address, buildHeaders, transport, maxBytes, timeoutMs,
-          overall.signal, expired, 250 * 2 ** attempt,
+          overall.signal, expired, now, 250 * 2 ** attempt,
         );
       } catch (error) {
         if (!(error instanceof RetryableFailure)) throw error;

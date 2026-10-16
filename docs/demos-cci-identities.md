@@ -145,9 +145,10 @@ message `Demos GCR identity response redirect refused`.
 
 `DemosAdapterConfig.identityMaxResponseBytes` can tighten the raw ceiling to a
 positive safe integer; values above the hard maximum of 2,097,152 are rejected
-at construction. The default is also the hard maximum. A read holds at most
-about twice the ceiling in memory (the streamed chunks, then one combined copy)
-plus the one transport chunk that is checked before it is kept. Structural
+at construction. The default is also the hard maximum. The raw reader retains
+one buffer of the configured ceiling, plus the one transport chunk that is
+checked before it is copied. Empty chunks are discarded, and tiny chunks do
+not add retained allocations. Structural
 limits remain fixed. `DemosAdapterConfig.identityFetch` optionally injects a Fetch-compatible
 raw response transport for CCI reads; it must return a streamed `Response`,
 without decoding or prebuffering the body. The adapter owns byte counting and
@@ -236,9 +237,9 @@ The wallet authentication headers are those of demosdk's `rpcCall`: a test
 compares them with the installed demosdk and requires the locked 4.0.16. They
 match the node verifier of `kynesyslabs/node` commit `3e62225` with the
 `nonceEnforcement` fork active, which checks a signature over
-`identity:timestamp` within five minutes. The verifier on that repository's
-`testnet` branch (`ac8f45f`) checks a signature over the public key alone and
-answers a wallet-connected read with HTTP 401; demosdk's own `getIdentities`
+`UTF8(SHA256hex(identity + ":" + timestamp))`, with the timestamp within five
+minutes. The verifier on that repository's `testnet` branch (`ac8f45f`) checks a
+signature over the public key alone and answers a wallet-connected read with HTTP 401; demosdk's own `getIdentities`
 gets the same answer from such a node. Reads without a connected wallet send
 no signature. An opt-in live check, `DACS_DEMOS_CCI_LIVE_RPC` with
 `DACS_DEMOS_CCI_LIVE_ADDRESS` (an address that already has a GCR account),

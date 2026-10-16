@@ -16,6 +16,7 @@ import {
   DEMOS_CCI_PROXY_BYPASS,
   DEMOS_CCI_ROUTE_UNVERIFIED,
   fetchProxyMismatch,
+  readDemosCciResponse,
   type NodeRouteState,
 } from "../../src/substrate/demosCciTransport.js";
 import { isNodeBuiltinFetch, isNodeDefaultAgent, isNodeDefaultDispatcher } from "../../src/substrate/nodeDefaultDispatcher.js";
@@ -155,6 +156,41 @@ describe("Demos CCI raw response boundary", () => {
         params: [{ method: "getIdentities", params: ["subject"] }],
       }),
     });
+  });
+
+  it("bounds retained allocations for one-byte and empty transport chunks", async () => {
+    const limit = 32_768;
+    const byte = Uint8Array.of(0x20);
+    const empty = new Uint8Array();
+    let delivered = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (delivered === 2 * limit) { controller.close(); return; }
+        const index = delivered++;
+        if (index % 2 === 0) { controller.enqueue(empty); return; }
+        const offset = Math.floor(index / 2);
+        byte[0] = offset === 0 ? 0x7b : offset === limit - 1 ? 0x7d : 0x20;
+        controller.enqueue(byte);
+      },
+    }, { highWaterMark: 0 });
+    const response = new Response(body);
+    const allocations: number[] = [];
+    vi.stubGlobal("Uint8Array", new Proxy(Uint8Array, {
+      construct(target, args) {
+        const buffer = Reflect.construct(target, args) as Uint8Array;
+        allocations.push(buffer.byteLength);
+        return buffer;
+      },
+    }));
+
+    await expect(readDemosCciResponse(
+      RPC, "subject", async () => ({}), async () => response, limit, 5_000, 12_000,
+    )).resolves.toEqual({});
+
+    expect(delivered).toBe(2 * limit);
+    expect(allocations.length).toBeLessThanOrEqual(4);
+    expect(allocations.reduce((sum, size) => sum + size, 0)).toBeLessThanOrEqual(2 * limit);
+    expect(response.body?.locked).toBe(false);
   });
 
   it("counts UTF-8 bytes rather than characters", async () => {
