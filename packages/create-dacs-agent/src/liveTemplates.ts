@@ -4187,6 +4187,12 @@ test("authenticated lifecycle backup restores both roles and rejects tampering",
     paths,
   });
   assert.equal(backup.backupId, "11111111-1111-4111-8111-111111111111");
+  for (const sdkVersion of ["0.0.0", "999.0.0", "invalid", ""]) {
+    assert.throws(() => assertGeneratedBackupRestorableV1({
+      ...backup,
+      release: { ...backup.release, sdkVersion },
+    }), /restore-backup-release-incompatible/);
+  }
   assert.equal((await inspectGeneratedBackupV1({
     backupDirectory,
     authKeyFile,
