@@ -78,6 +78,7 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
     await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
       status: "completed",
       settlement: {
+        execution: "executed",
         ok: true,
         txHash: prepared.txHash,
         chainId: "demos",

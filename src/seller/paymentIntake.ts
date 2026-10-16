@@ -252,7 +252,7 @@ export type DemosTransferObservation =
       /**
        * Attest successful execution only after reading a `confirmed` record
        * bound to this hash, block, payer, payee and amount. Inclusion alone is
-       * insufficient. Required by fixed-price buyer payment reconciliation.
+       * insufficient. Required before delivery or payment recovery accounting.
        */
       execution?: "executed";
       txHash: string;
@@ -1371,7 +1371,7 @@ function isDemosTransferObservationValue(
     return hasOnlyKeys(value, ["status", "reason"]) &&
       (value.reason === undefined || typeof value.reason === "string");
   }
-  return value.status === "included" && hasExactKeys(value, [
+  return value.status === "included" && value.execution === "executed" && hasExactKeys(value, [
     "status",
     "txHash",
     "payer",
@@ -1379,7 +1379,7 @@ function isDemosTransferObservationValue(
     "amountOs",
     "blockNumber",
     "includedAt",
-    ...(value.execution === "executed" ? ["execution"] : []),
+    "execution",
   ]) &&
     typeof value.txHash === "string" &&
     typeof value.payer === "string" &&

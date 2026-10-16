@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
@@ -327,6 +327,7 @@ function makeContext(
       };
   const demosObservation: DemosTransferObservation = {
     status: "included",
+    execution: "executed",
     txHash: DEMOS_TX,
     payer: "aa".repeat(32),
     payee: "bb".repeat(32),
@@ -814,7 +815,7 @@ describe("verifySellerPaymentIntake", () => {
     });
   });
 
-  it.each(["failed", "unknown", null, true, "confirmed"])(
+  it.each([undefined, "failed", "unknown", null, true, "confirmed"])(
     "rejects an included observation with execution %s before fulfilment",
     async (execution) => {
       const ctx = makeContext("pay-dem");
@@ -829,6 +830,18 @@ describe("verifySellerPaymentIntake", () => {
       expect(result.evidenceInput).toBeUndefined();
     },
   );
+
+  it("refuses a field-free included observation before claiming delivery", async () => {
+    const ctx = makeContext("pay-dem");
+    const store = ctx.deps.receiptStore;
+    const claim = vi.fn(store.claim.bind(store));
+    ctx.deps.receiptStore = { ...store, claim };
+    delete (ctx.demosObservation as { execution?: string }).execution;
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+    expect(result).toMatchObject({ disposition: "error", fulfilment: "none" });
+    expect(result.evidenceInput).toBeUndefined();
+    expect(claim).not.toHaveBeenCalled();
+  });
 
   it.each([
     {

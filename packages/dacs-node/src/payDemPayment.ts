@@ -151,7 +151,7 @@ export interface DacsPayDemPaymentNoticeV1 {
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | {
       status: "completed";
-      settlement: Readonly<Omit<PayDemReconciledSettlement, "execution">>;
+      settlement: Readonly<PayDemReconciledSettlement>;
     }
   | { status: "absent"; absenceProofHash: string }
   | { status: "indeterminate"; reasonCode: string; retryAt?: number }
@@ -173,14 +173,11 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * Return `completed` only when the node's transaction record for the
    * prepared hash shows the transfer executed. A status-index `included`
    * alone is not execution: a node reports it for a transaction whose record
-   * `failed` (#338). Unlike the SDK's `PayDemSettlementReconcile`, the
-   * `completed` settlement here must not carry `execution`: this track does
-   * not check that field, and refuses a settlement that has it as
-   * `pay-dem-settlement-invalid`. Custom reconcilers must keep the rule above.
-   * `createDacsFixedPricePayDemBuyerReconciliationV1` requires its included
-   * observation to carry `execution: "executed"`; the default observer of
-   * `createDacsFixedPricePayDemBuyerLiveV1` sets it only after checking a bound
-   * confirmed record. Missing or other execution evidence stays indeterminate.
+   * `failed` (#338). Every completed settlement must attest
+   * `execution: "executed"` after checking a bound confirmed record. The track
+   * checks and removes that attestation before storing the settlement or
+   * publishing its notice. Missing or other execution evidence stays
+   * indeterminate without changing wallet accounting or publishing a notice.
    */
   reconcile(input: Readonly<{
     payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
@@ -478,7 +475,8 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
         return false;
       }
       const chain = await observeDemosTransfer(prepared.txHash);
-      if (chain.status !== "included" || chain.txHash !== prepared.txHash ||
+      if (chain.status !== "included" || chain.execution !== "executed" ||
+          chain.txHash !== prepared.txHash ||
           chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
           chain.amountOs !== payment.amountOs) {
         return false;
@@ -730,8 +728,13 @@ function captureChainReconciliation(
     if (!plainObject(raw) || raw.amountOs !== payment.amountOs) {
       throw new DacsPayDemBuyerPaymentError("pay-dem-reconciliation-invalid");
     }
+    if (raw.execution !== "executed") {
+      return Object.freeze({ status: "indeterminate",
+        reasonCode: "pay-dem-chain-execution-unconfirmed" });
+    }
     const settlement = { ...raw };
     delete settlement.amountOs;
+    delete settlement.execution;
     return Object.freeze({
       status: "completed",
       result: result(captureSettlement(settlement, payment)),

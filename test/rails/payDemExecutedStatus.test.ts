@@ -206,7 +206,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     ).resolves.toMatchObject({ ok: true, blockNumber: BLOCK });
   });
 
-  it("does not report an included transfer whose record failed as ok", async () => {
+  it("classifies a bound failed record as permanent without settlement finality", async () => {
     sdk.getTxByHash.mockImplementation(recordReturning((record) => {
       record.status = "failed";
       record.attrs = {
@@ -219,7 +219,11 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
 
     await expect(
       payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
-    ).resolves.toEqual(NOT_OK);
+    ).resolves.toEqual({
+      ...NOT_OK, errorClass: "permanent", blockNumber: BLOCK, txRefKind: "demos",
+      failureProof: { kind: "demos-failed-record", txHash: TX_HASH, nonce: NONCE,
+        blockNumber: BLOCK, payer: "ab".repeat(32), payee: "cd".repeat(32), amountOs: AMOUNT_OS },
+    });
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
@@ -812,18 +816,28 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     ["a malformed record", () => {
       sdk.getTxByHash.mockResolvedValue("Transaction not found");
     }],
-  ])("keeps the settlement held after %s", async (_case, arrange) => {
+  ])("retains a failed or uncertain payment without rebroadcast after %s", async (_case, arrange) => {
     arrange();
     const settle = payDemSettle(await rail(), { network: "demos" });
 
-    await expect(settle(request)).resolves.toEqual({
+    const expected = {
       ok: false,
       txHash: TX_HASH,
       chainId: "demos",
       payer: "ab".repeat(32),
       payee: request.expectedPayee,
-    });
-    await expect(settle(request)).rejects.toThrow(/refusing to resubmit/);
+      ...(_case === "a failed record" ? {
+        errorClass: "permanent", blockNumber: BLOCK, txRefKind: "demos",
+        failureProof: { kind: "demos-failed-record", txHash: TX_HASH, nonce: NONCE,
+          blockNumber: BLOCK, payer: "ab".repeat(32), payee: request.expectedPayee, amountOs: AMOUNT_OS },
+      } : {}),
+    };
+    await expect(settle(request)).resolves.toEqual(expected);
+    if (_case === "a failed record") {
+      await expect(settle(request)).resolves.toEqual(expected);
+    } else {
+      await expect(settle(request)).rejects.toThrow(/refusing to resubmit/);
+    }
     expect(sdk.transfer).toHaveBeenCalledTimes(1);
     expect(sdk.confirm).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);

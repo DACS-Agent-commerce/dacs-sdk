@@ -1,5 +1,6 @@
 import { types as nodeTypes } from "node:util";
 
+import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import {
@@ -7,8 +8,8 @@ import {
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { parseCanonicalClaimReference } from "../identity/claimReference.js";
-import { canonicalDemosAgentPublicKey } from "../identity/demos.js";
+import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
+export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -150,44 +151,6 @@ function canonicalDemosTxHash(value: unknown): string | null {
 }
 
 /**
- * The Demos address a DACS primary claim settles to. In the Demos model a CCI
- * *is* the ed25519 public-key hex, so a Demos claim resolves INTRINSICALLY to its
- * address — no external mapping is trusted. Accepts only the exact
- * `did:demos:agent:<64-lowercase-hex>` profile or the DACS-1
- * `cci-xm:demos:<subchain>:0x<64-hex>` profile. ClaimReference parameters do not
- * contribute to identity and are ignored after the complete native address.
- *
- * STRICT (#32): a non-Demos scheme that merely *ends* in 64 hex — `did:ethr:…`,
- * `cci-xm:evm:mainnet:0x…`, `web2:…:…` — is NOT Demos-bound and returns null, so
- * pay-dem refuses to transfer rather than treating a foreign-scheme claim as an
- * intrinsic Demos destination. A claim that embeds no Demos key returns null too.
- */
-export function demosAddressFromClaim(claim: string): string | null {
-  // This is a ClaimReference boundary, not the explicit native-address config
-  // boundary below. Never trim, case-fold, reorder, or otherwise repair signed
-  // protocol bytes before applying CF-2.
-  const parsed = parseCanonicalClaimReference(claim);
-  if (!parsed) return null;
-  const did = canonicalDemosAgentPublicKey(claim);
-  if (did) return Buffer.from(did).toString("hex");
-  const cci = parsed.identity.scheme === "cci-xm"
-    ? /^demos:[^:]+:0x([0-9a-fA-F]{64})$/.exec(
-        parsed.identity.identifier,
-      )
-    : null;
-  if (cci) {
-    return cci[1]!.toLowerCase();
-  }
-  return null;
-}
-
-/** Strict native Demos rail-address normalisation (not a ClaimReference parser). */
-export function normalizeDemosNativeAddress(address: string): string | null {
-  const native = address.trim().match(/^(?:0x)?([0-9a-fA-F]{64})$/);
-  return native ? native[1]!.toLowerCase() : null;
-}
-
-/**
  * pay-dem settlement rail — native DEM transfer (DACS-4 §9.5.9, SR-4).
  *
  * The plain native path: the buyer submits a `demos.transfer` of the agreed DEM
@@ -300,12 +263,20 @@ export interface PayDemReconciledSettlement extends SettleResult {
  * hash and finding it `confirmed` at the inclusion block for this payer, payee
  * and amount, and set `execution: "executed"`. A node reports `included` in its
  * status index for a transaction whose record `failed` (#338), so inclusion
- * alone must not be returned as a settlement. A `failed` record, and any
- * indeterminate or non-final observation, must throw.
+ * alone must not be returned as a settlement. A bound `failed` record may
+ * return `PayDemReconciledFailure` with a permanent class and exact failure
+ * proof. Indeterminate or non-final observations must throw.
  */
+export interface PayDemReconciledFailure extends SettleResult {
+  ok: false;
+  amountOs: string;
+  errorClass: "permanent";
+  failureProof: DemosFailedRecordProof;
+}
+
 export type PayDemSettlementReconcile = (
   context: Readonly<PayDemSettlementRecoveryContext>,
-) => Promise<PayDemReconciledSettlement | null>;
+) => Promise<PayDemReconciledSettlement | PayDemReconciledFailure | null>;
 
 /** The result of submitting a native transfer and independently observing finality. */
 export interface DemosTransferResult {
@@ -328,6 +299,8 @@ export interface DemosTransferResult {
    * status index fails closed.
    */
   execution?: "executed";
+  /** Bound terminal failed record; a status-index failure alone cannot issue it. */
+  failureProof?: DemosFailedRecordProof;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
   /** Confirmed transfer amount plus network fee, in integer OS. */
@@ -665,6 +638,9 @@ export async function payDemSettleCore(
     "totalDebitOs",
     "pay-dem transfer result totalDebitOs",
   );
+  const failureProperty = stableDataProperty(response, "failureProof", "pay-dem failure proof");
+  const failureProof = failureProperty.value === undefined ? undefined :
+    snapshotCanonicalJsonRead(failureProperty.value, "pay-dem failure proof");
   const txHash = hashProperty.found
     ? canonicalDemosTxHash(hashProperty.value)
     : null;
@@ -707,6 +683,15 @@ export async function payDemSettleCore(
     (blockNumber as number) >= 0;
 
   if (!observedFinal) {
+    const failed = {
+      ok: false, txHash, chainId, payer, payee: recipient,
+      errorClass: "permanent" as const, failureProof,
+      blockNumber, txRefKind: "demos",
+    };
+    if (okProperty.value === false && state === "failed" &&
+        hasDefinitiveDemosFailure(failed, amount)) {
+      return failed as SettleResult;
+    }
     return {
       ok: false,
       txHash,
@@ -1260,8 +1245,8 @@ type ObservedDemosExecution =
  * node2 records in `test/fixtures/demos-node2-records.json` pin this shape;
  * see `docs/pay-dem-execution.md`.
  *
- * @internal Exported for tests, because `settle()` maps `failed` and
- * `indeterminate` to the same not-ok result; not re-exported from the rails
+ * @internal Exported for tests; terminal failed-record proof is issued only
+ * after these binding checks. Not re-exported from the rails
  * index or the package root.
  */
 export async function observeDemosExecutionByHash(
@@ -1723,6 +1708,12 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           state: "failed",
           hash: txHash,
           blockNumber: terminal.blockNumber,
+          failureProof: {
+            kind: "demos-failed-record",
+            txHash, nonce: signedNonce, blockNumber: terminal.blockNumber,
+            payer: normalizeDemosNativeAddress(address)!,
+            payee: normalizeDemosNativeAddress(to)!, amountOs: amountOs.toString(),
+          },
           message: "pay-dem transaction was included but its record reports it failed",
         };
       }
@@ -1791,6 +1782,8 @@ const PAY_DEM_RESULT_KEYS = new Set([
   "blockNumber",
   "txRefKind",
   "networkFeeOs",
+  "errorClass",
+  "failureProof",
 ]);
 
 function sameRecoveryContext(
@@ -1809,6 +1802,8 @@ function sameRecoveryContext(
 
 function samePayDemResult(left: SettleResult, right: SettleResult): boolean {
   return left.ok === right.ok &&
+    left.errorClass === right.errorClass &&
+    JSON.stringify(left.failureProof) === JSON.stringify(right.failureProof) &&
     left.txHash === right.txHash &&
     left.chainId === right.chainId &&
     left.payer === right.payer &&
@@ -1870,6 +1865,10 @@ function capturePayDemResult(
     );
   }
 
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
+      !hasDefinitiveDemosFailure(result as unknown as SettleResult, context.amountOs)) {
+    throw new DacsError(`${label} has an invalid terminal-failure proof`);
+  }
   const blockNumber = result.blockNumber;
   if (
     blockNumber !== undefined &&
@@ -1915,6 +1914,8 @@ function capturePayDemResult(
 
   return {
     ok: result.ok,
+    ...(result.errorClass === "permanent" ? { errorClass: "permanent" as const,
+      failureProof: result.failureProof as DemosFailedRecordProof } : {}),
     txHash,
     chainId: context.network,
     payer: context.payer,
@@ -1956,7 +1957,7 @@ function capturePayDemReconciliation(
     context,
     "pay-dem reconciliation result",
   );
-  if (!captured.ok) {
+  if (!captured.ok && !hasDefinitiveDemosFailure(captured, context.amountOs)) {
     throw new DacsError(
       "pay-dem reconciliation is indeterminate; a definitive finalized result is required",
     );
@@ -1964,7 +1965,10 @@ function capturePayDemReconciliation(
   // Inclusion is not execution (#338): a reconciler written when `included`
   // alone meant success must not turn an included-but-failed transfer into a
   // settlement on recovery.
-  if (record.execution !== "executed") {
+  if (!captured.ok && record.execution !== undefined) {
+    throw new DacsError("pay-dem permanent failure must not attest successful execution");
+  }
+  if (captured.ok && record.execution !== "executed") {
     throw new DacsError(
       "pay-dem reconciliation does not attest that the transaction record shows the transfer executed (#338); refusing reuse or rebroadcast",
     );
@@ -2274,6 +2278,9 @@ export function payDemSettle(
         );
       }
       const reconciled = capturePayDemReconciliation(recovered, context);
+      if (captured.errorClass === "permanent" && !samePayDemResult(captured, reconciled)) {
+        throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
+      }
       if (
         reconciled.txHash !== captured.txHash ||
         reconciled.blockNumber !== captured.blockNumber

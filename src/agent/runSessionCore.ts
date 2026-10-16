@@ -1,6 +1,12 @@
 import { types as nodeTypes } from "node:util";
+export type { DemosFailedRecordProof } from "./settlementFailure.js";
+import {
+  hasDefinitiveDemosFailure,
+  type DemosFailedRecordProof,
+} from "./settlementFailure.js";
 
 import {
+  baseUnits,
   canonicalize,
   contentHash,
   encodeAddressSegment,
@@ -154,6 +160,9 @@ export interface SettlementRecoveryAttempt {
 
 export interface SettleResult {
   ok: boolean;
+  /** Permanent only with a bound terminal-failure proof; never permits rebroadcast. */
+  errorClass?: "permanent";
+  failureProof?: DemosFailedRecordProof;
   txHash: string;
   chainId: string;
   payer: string;
@@ -529,6 +538,8 @@ interface DurableSettlementOutcomeBase {
   payer: string;
   payee: string;
   ok: boolean;
+  errorClass?: "permanent";
+  failureProofJson?: string;
   blockNumber?: number;
   txRefKind?: string;
   /** Canonical JSON encoding preserves the discriminated current reference in the primitive WAL. */
@@ -881,6 +892,8 @@ function durableSettlementCheckpointData(
     payee: outcome.payee,
     ok: outcome.ok,
   };
+  if (outcome.errorClass !== undefined) data.errorClass = outcome.errorClass;
+  if (outcome.failureProofJson !== undefined) data.failureProofJson = outcome.failureProofJson;
   if (outcome.finalityModel !== undefined) {
     data.finalityModel = outcome.finalityModel;
   }
@@ -933,6 +946,8 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
   const result = snapshot as Record<string, unknown>;
   const allowed = new Set([
     "ok",
+    "errorClass",
+    "failureProof",
     "txHash",
     "chainId",
     "payer",
@@ -968,6 +983,10 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
         result.txRefKind.trim() !== result.txRefKind))
   ) {
     throw new CounterpartyError(`${label} returned a malformed result`);
+  }
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
+      !hasDefinitiveDemosFailure(result as unknown as SettleResult)) {
+    throw new CounterpartyError(`${label} returned an invalid terminal-failure proof`);
   }
   const parsedFinality = parseSettlementFinalityParameters(result.finality);
   if (result.finality !== undefined) {
@@ -2087,6 +2106,11 @@ function validateSettlementResultBinding(
   request: SettleRequest,
   label: string,
 ): void {
+  if (result.errorClass !== undefined &&
+      (request.phase !== "pay-dem" || request.asset !== "DEM" ||
+        !hasDefinitiveDemosFailure(result, baseUnits(request.amount, 9)))) {
+    throw new CounterpartyError(`${label} terminal failure does not bind the payment amount and rail`);
+  }
   if (result.payee !== request.expectedPayee) {
     throw new CounterpartyError(
       `${label} returned payee ${result.payee}, expected the request-bound destination ${request.expectedPayee}`,
@@ -2112,6 +2136,8 @@ function durableSettlementOutcome(
     payer: result.payer,
     payee: result.payee,
     ok,
+    ...(result.errorClass === undefined ? {} : { errorClass: result.errorClass,
+      failureProofJson: canonicalize(result.failureProof) }),
     ...durableFinalityFields(finality),
     ...(result.blockNumber !== undefined ? { blockNumber: result.blockNumber } : {}),
     ...(result.txRefKind !== undefined ? { txRefKind: result.txRefKind } : {}),
@@ -2149,6 +2175,8 @@ function sameSettlementOutcome(
     left.payer === right.payer &&
     left.payee === right.payee &&
     left.ok === right.ok &&
+    left.errorClass === right.errorClass &&
+    left.failureProofJson === right.failureProofJson &&
     left.finalityModel === right.finalityModel &&
     left.finalityBlocks === right.finalityBlocks &&
     left.finalityCommitmentLevel === right.finalityCommitmentLevel &&
@@ -2344,6 +2372,21 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
       phaseIndex: phaseIndex as number,
     };
     if (data.outcomeSource === "rail-result") {
+      if (data.errorClass !== undefined || data.failureProofJson !== undefined) {
+        try {
+          if (data.errorClass !== "permanent" || typeof data.failureProofJson !== "string" ||
+              phase !== "pay-dem" || asset !== "DEM" ||
+              !hasDefinitiveDemosFailure({
+                ...data, ok, txHash, chainId,
+                payer: data.payer as string, payee: data.payee as string,
+                failureProof: JSON.parse(data.failureProofJson),
+              }, baseUnits(amount, 9))) {
+            return { status: "invalid", reason: "invalid durable terminal-failure proof" };
+          }
+        } catch {
+          return { status: "invalid", reason: "invalid durable terminal-failure proof" };
+        }
+      }
       const {
         payer,
         payee,
@@ -2364,6 +2407,8 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         "payer",
         "payee",
         "ok",
+        "errorClass",
+        "failureProofJson",
         "finalityModel",
         "finalityBlocks",
         "finalityCommitmentLevel",
@@ -2417,6 +2462,8 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           payer,
           payee,
           ok,
+          ...(data.errorClass === "permanent" ? { errorClass: "permanent" as const,
+            failureProofJson: data.failureProofJson as string } : {}),
           ...durableFinalityFields(finality),
           ...(typeof blockNumber === "number" ? { blockNumber } : {}),
           ...(typeof txRefKind === "string" ? { txRefKind } : {}),
@@ -2547,6 +2594,7 @@ function isValidSettlementOutcomeProgression(
           prior.outcome.chainId === next.outcome.chainId &&
           prior.outcome.ok === next.outcome.ok) ||
           (prior.outcome.ok === false &&
+            prior.outcome.errorClass !== "permanent" &&
             prior.outcome.txHash.length > 0 &&
             next.outcome.ok === true))
       );
@@ -2555,6 +2603,7 @@ function isValidSettlementOutcomeProgression(
       sameSettlementOutcome(prior.outcome, next.outcome) ||
       (sameSettlementBinding(prior.outcome, next.outcome) &&
         prior.outcome.ok === false &&
+        prior.outcome.errorClass !== "permanent" &&
         prior.outcome.txHash.length > 0 &&
         ((prior.outcome.txHash === next.outcome.txHash &&
           prior.outcome.chainId === next.outcome.chainId) ||
@@ -4076,6 +4125,7 @@ export async function runSessionCore(
       const canResolveAmbiguous =
         sameSettlementBinding(prior.outcome, outcome) &&
         prior.outcome.ok === false &&
+        prior.outcome.errorClass !== "permanent" &&
         prior.outcome.txHash.length > 0 &&
         ((prior.outcome.txHash === outcome.txHash &&
           prior.outcome.chainId === outcome.chainId) ||
@@ -4206,11 +4256,11 @@ export async function runSessionCore(
         );
       }
     }
-    // A returned transaction without definitive success is still ambiguous. It
-    // may have landed, so bind it for anti-replay but retain the unresolved
-    // intent and require another reconciliation; never mint failure evidence.
+    // A transaction without successful execution or a bound terminal failure
+    // remains ambiguous. Bind it for anti-replay and retain unresolved intent
+    // until reconciliation provides definitive evidence.
     await bindSettlementTransaction(outcome);
-    if (!outcome.ok && outcome.txHash.length > 0) {
+    if (!outcome.ok && outcome.txHash.length > 0 && outcome.errorClass !== "permanent") {
       // A tx-bearing non-success is not terminal evidence, but it is essential
       // recovery history. Persist it before throwing so a process restart can
       // audit the exact latest transaction instead of retaining only an opaque
@@ -4258,7 +4308,7 @@ export async function runSessionCore(
         `settlement for ${jobId} is not bound to the requested rail, Agreement, terms, phase, and destination`,
       );
     }
-    if (!outcome.ok && outcome.txHash.length > 0) {
+    if (!outcome.ok && outcome.txHash.length > 0 && outcome.errorClass !== "permanent") {
       return recoverRailOutcome(
         "transaction-bearing failure remains indeterminate",
         outcome,
@@ -4336,7 +4386,7 @@ export async function runSessionCore(
             expectedSettlementBinding,
           );
           await bindSettlementTransaction(settlement);
-          if (!settlement.ok && settlement.txHash.length > 0) {
+          if (!settlement.ok && settlement.txHash.length > 0 && settlement.errorClass !== "permanent") {
             await completeSettlement(settlement, "settling");
             throw new CounterpartyError(
               `settlement ${settlement.chainId}:${settlement.txHash} remains indeterminate; refusing terminal failure evidence until reconciliation is definitive`,

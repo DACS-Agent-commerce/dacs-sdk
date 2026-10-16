@@ -386,6 +386,7 @@ export {
   type PayDemPreparedTransfer,
   type PayDemSettlementRecoveryContext,
   type PayDemReconciledSettlement,
+  type PayDemReconciledFailure,
   type PayDemSettlementReconcile,
   type PayDemSettleParams,
   type DemosNativeClient,

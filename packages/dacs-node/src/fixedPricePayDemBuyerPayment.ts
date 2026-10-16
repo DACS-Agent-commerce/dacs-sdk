@@ -261,6 +261,7 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
       return Object.freeze({
         status: "completed" as const,
         settlement: Object.freeze({
+          execution: "executed" as const,
           ok: true,
           txHash: observation.txHash,
           chainId: "demos",

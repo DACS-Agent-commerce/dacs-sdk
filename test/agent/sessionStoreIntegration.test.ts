@@ -935,6 +935,81 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     ).toBe(0);
   });
 
+  test.each(["fresh", "recovered"])("persists a %s permanent DEM failure across an evidence-write crash without rebroadcast", async (mode) => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+      supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    const payer = "ab".repeat(32);
+    const payee = sellerDid.split(":").at(-1)!;
+    const txHash = "cd".repeat(32);
+    const failure: SettleResult = { ok: false, txHash, chainId: "demos", payer,
+      payee: mode === "fresh" ? sellerDid : payee,
+      blockNumber: 42, txRefKind: "demos", errorClass: "permanent",
+      failureProof: { kind: "demos-failed-record", txHash, payer, payee,
+        nonce: 9, blockNumber: 42, amountOs: "1000000000" } };
+    let submissions = 0;
+    let recoveries = 0;
+    const first = await makeDeps(store, { kv,
+      settle: async () => {
+        submissions += 1;
+        if (mode === "recovered") throw new Error("response lost");
+        return failure;
+      },
+      resumeSettlement: async () => { recoveries += 1; return failure; },
+      anchor: async (name, value) => {
+        if (name === sessionAnchorName.evidence("job-1")) throw new Error("evidence storage unavailable");
+        const ref = `stor:${name}`; kv.set(ref, value as Record<string, unknown>); return ref;
+      },
+    });
+    if (mode === "recovered") first.deps.expectedSettlementPayee = payee;
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+      .rejects.toThrow(mode === "fresh" ? /evidence storage unavailable/ : /response lost/);
+    if (mode === "recovered") {
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps, "job-1"))
+        .rejects.toThrow(/evidence storage unavailable/);
+    }
+    const loaded = await store.load("job-1");
+    if (loaded.status !== "ok") throw new Error("missing session");
+    const outcome = loaded.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
+    expect(outcome?.data).toMatchObject({ ok: false, errorClass: "permanent", txHash,
+      failureProofJson: expect.any(String) });
+    expect(JSON.parse(outcome!.data!.failureProofJson as string)).toEqual(failure.failureProof);
+    const corruptedStore: NonNullable<SessionDeps["sessionStore"]> = {
+      ...store,
+      load: async (jobId) => {
+        const value = await store.load(jobId);
+        if (value.status !== "ok") return value;
+        const record = structuredClone(value.record);
+        const checkpoint = record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
+        checkpoint!.data!.failureProofJson = JSON.stringify({ ...failure.failureProof, amountOs: "1" });
+        return { status: "ok" as const, record };
+      },
+    };
+    const corrupted = await makeDeps(corruptedStore, { kv,
+      settle: async () => { throw new Error("must not pay with corrupted proof"); },
+      resumeSettlement: async () => { throw new Error("must not reconcile corrupted proof"); },
+    });
+    if (mode === "recovered") corrupted.deps.expectedSettlementPayee = payee;
+    await expect(runSessionCore(corrupted.listingRef, demTerms, corrupted.deps, "job-1"))
+      .rejects.toThrow(/invalid.*terminal-failure proof/);
+    const resumed = await makeDeps(store, { kv,
+      settle: async () => { throw new Error("must not resubmit"); },
+      resumeSettlement: async () => { throw new Error("must not reconcile terminal failure"); },
+    });
+    if (mode === "recovered") resumed.deps.expectedSettlementPayee = payee;
+    await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+      .resolves.toMatchObject({ outcome: "failed" });
+    expect(submissions).toBe(1);
+    expect(recoveries).toBe(mode === "recovered" ? 1 : 0);
+    const evidence = kv.get(`stor:${sessionAnchorName.evidence("job-1")}`);
+    expect(evidence).toMatchObject({ outcome: "failure" });
+    expect(evidence).not.toHaveProperty("settlementFinality");
+    await expect(store.bindHash({ hash: txHash, jobId: "another-job", kind: "transaction" }))
+      .resolves.toEqual({ ok: false, boundTo: "job-1" });
+  });
+
   test("a transaction-bearing ok:false is durably recorded until reconciliation proves a terminal result", async () => {
     const store = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();

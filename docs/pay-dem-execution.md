@@ -18,8 +18,12 @@ payee or amount does not match, or a read that stalls, is indeterminate at
 once. A missing, pending, unreadable or malformed record, or a record that
 carries another hash, is read again every `inclusionPollIntervalMs` until
 `transactionRecordTimeoutMs` (default 30 seconds) ends, then it is
-indeterminate. Every not-ok result keeps the transaction hash, so the
-settlement intent stays held, and no path broadcasts again.
+indeterminate. Every not-ok result keeps the transaction hash. A bound failed
+record carries `errorClass: "permanent"` and a `failureProof` containing its
+hash, signed nonce, block, payer, payee and OS amount. Rail and session stores
+persist this terminal outcome and return it on resume without another debit.
+Unproven or conflicting results keep the intent held. Neither path broadcasts
+again; terminal failure does not authorize a replacement payment.
 
 ## Custom native clients
 
@@ -37,9 +41,11 @@ The same rule applies to the `reconcile` capability that `payDemSettle` uses
 after a restart. A `PayDemSettlementReconcile` returns a settlement only after
 it reads the node's transaction record for the hash and finds it `confirmed`
 at the inclusion block for the payer, payee and amount, and the settlement
-must carry `execution: "executed"`. A `failed` record must throw, like any
-other indeterminate observation. `payDemSettle` refuses a reconciliation
-without the attestation, so a reconciler written before #338 cannot turn an
+must carry `execution: "executed"`. A bound `failed` record may instead return
+`ok: false`, `errorClass: "permanent"`, the exact requested `amountOs`, and the
+same `failureProof` described above. An indeterminate observation must throw.
+`payDemSettle` refuses a successful reconciliation without the execution
+attestation, so a reconciler written before #338 cannot turn an
 included-but-failed transfer into a settlement on recovery; the intent stays
 held and nothing is rebroadcast. The attestation is not persisted with the
 settlement.
@@ -51,8 +57,10 @@ hash, block, payer, payee and amount have been checked against the confirmed
 block and native send payload. Custom observers must do the same check.
 Missing or other execution evidence returns `indeterminate` with
 `pay-dem-chain-execution-unconfirmed`, keeping the payment held. The
-reconciler consumes the attestation; its `completed` settlement omits it to
-match the host payment track's storage contract.
+reconciler forwards the attestation with its `completed` settlement. The host
+payment track checks it and removes it before settlement storage and notice
+publication. Seller intake and wallet recovery authentication also require
+literal `execution: "executed"` before delivery or settlement accounting.
 
 ## Node behaviour this depends on
 
@@ -83,19 +91,15 @@ Re-check this table when the deployed node moves to another commit.
   block. An implementation that follows the text literally reports a failed
   payment as settled. The Standard needs a revision that defines Demos
   `included` this way, and a vector that pairs an `included` status with a
-  `failed` record.
-- **Failure class.** §9.5.9 classifies a terminal `failed` transaction as
-  `permanent`, and PC-4 requires `ok: false` to carry an `errorClass`.
-  `SettleResult` has no `errorClass` for any rail. The session runner holds
-  every transaction-bearing not-ok result for reconciliation and never turns
-  it into terminal failure evidence on its own; an EVM revert, which surfaces
-  as an error after broadcast, is held the same way. A failed pay-dem record
-  is therefore reported like an indeterminate one: the intent stays held
-  until an operator resolves it. The `reconcile` capability cannot release
-  it, because it must throw on a `failed` record (see "Custom native
-  clients"), and that throw keeps the intent held. The verdict is one node's
-  record, not an independent proof, so it is not used to close the session
-  as failed.
+  `failed` record. The proposed cross-repository change is in
+  [standard-next/pay-dem-execution.patch](standard-next/pay-dem-execution.patch);
+  it must be published by the Standard repository before the SDK pin can move.
+- **Failure class.** A bound terminal failed record now preserves `permanent`
+  through the rail result, durable outcome and session resume. The proof is
+  an authenticated node observation under the rail's existing trust model;
+  malformed or mismatched proof cannot close a session. Failure evidence omits
+  settlement finality. This does not release wallet reservations automatically:
+  a failed transaction can have fee effects that require separate accounting.
 
 ## Liveness
 
