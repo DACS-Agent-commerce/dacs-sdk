@@ -136,6 +136,37 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
     },
   );
 
+  it.each(["included", "confirmed", "finalized"])(
+    "attests execution only for a confirmed transaction record, not %s alone",
+    async (transactionState) => {
+      const fixture = includedFixture();
+      fixture.transaction.status = transactionState;
+      const observation = await observePayDemTransferCore(HASH, fixtureClient(fixture));
+
+      expect(observation).toEqual({
+        status: "included",
+        ...(transactionState === "confirmed" ? { execution: "executed" } : {}),
+        txHash: HASH,
+        payer: PAYER,
+        payee: PAYEE,
+        amountOs: "2398",
+        blockNumber: BLOCK_NUMBER,
+        includedAt: BLOCK_TIMESTAMP_SECONDS * 1_000,
+      });
+    },
+  );
+
+  it("rejects an included status whose transaction record failed", async () => {
+    const fixture = includedFixture();
+    fixture.transaction.status = "failed";
+
+    await expect(observePayDemTransferCore(HASH, fixtureClient(fixture)))
+      .resolves.toEqual({
+        status: "invalid",
+        reason: "transaction body does not represent included finality",
+      });
+  });
+
   it("rejects a projected numeric amount that does not exactly match the post-fork OS payload", async () => {
     const fixture = includedFixture(1);
     fixture.transaction.content.data[1] = {

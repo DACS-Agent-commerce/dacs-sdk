@@ -176,10 +176,11 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * `failed` (#338). Unlike the SDK's `PayDemSettlementReconcile`, the
    * `completed` settlement here must not carry `execution`: this track does
    * not check that field, and refuses a settlement that has it as
-   * `pay-dem-settlement-invalid`. The rule above is the caller's to keep. The
-   * reconciler from `createDacsFixedPricePayDemBuyerReconciliationV1` keeps it
-   * when its observer reads the record, as the default observer of
-   * `createDacsFixedPricePayDemBuyerLiveV1` does.
+   * `pay-dem-settlement-invalid`. Custom reconcilers must keep the rule above.
+   * `createDacsFixedPricePayDemBuyerReconciliationV1` requires its included
+   * observation to carry `execution: "executed"`; the default observer of
+   * `createDacsFixedPricePayDemBuyerLiveV1` sets it only after checking a bound
+   * confirmed record. Missing or other execution evidence stays indeterminate.
    */
   reconcile(input: Readonly<{
     payment: Readonly<DacsPayDemBuyerPaymentInputV1>;

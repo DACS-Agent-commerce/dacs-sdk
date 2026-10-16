@@ -803,6 +803,33 @@ describe("SellerFulfilmentHandoff runtime guard", () => {
 });
 
 describe("verifySellerPaymentIntake", () => {
+  it("accepts the default observer's successful execution attestation", async () => {
+    const ctx = makeContext("pay-dem");
+    if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+    ctx.demosObservation.execution = "executed";
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+    });
+  });
+
+  it.each(["failed", "unknown", null, true, "confirmed"])(
+    "rejects an included observation with execution %s before fulfilment",
+    async (execution) => {
+      const ctx = makeContext("pay-dem");
+      ctx.demosObservation = { ...ctx.demosObservation, execution } as never;
+
+      const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+      expect(result).toMatchObject({
+        disposition: "error",
+        reason: "demos-observation-invalid-result",
+        fulfilment: "none",
+      });
+      expect(result.evidenceInput).toBeUndefined();
+    },
+  );
+
   it.each([
     {
       name: "an explicitly undefined optional field",

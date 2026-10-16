@@ -44,6 +44,16 @@ included-but-failed transfer into a settlement on recovery; the intent stays
 held and nothing is rebroadcast. The attestation is not persisted with the
 settlement.
 
+The dacs-node fixed-price buyer reconciler also requires an included
+`DemosTransferObservation` to carry `execution: "executed"`. The default
+observer sets it only after the transaction record is `confirmed` and its
+hash, block, payer, payee and amount have been checked against the confirmed
+block and native send payload. Custom observers must do the same check.
+Missing or other execution evidence returns `indeterminate` with
+`pay-dem-chain-execution-unconfirmed`, keeping the payment held. The
+reconciler consumes the attestation; its `completed` settlement omits it to
+match the host payment track's storage contract.
+
 ## Node behaviour this depends on
 
 The mapping was verified against kynesyslabs/node

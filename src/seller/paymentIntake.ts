@@ -249,6 +249,12 @@ export type DemosTransferObservation =
   | { status: "failed" | "invalid"; reason?: string }
   | {
       status: "included";
+      /**
+       * Attest successful execution only after reading a `confirmed` record
+       * bound to this hash, block, payer, payee and amount. Inclusion alone is
+       * insufficient. Required by fixed-price buyer payment reconciliation.
+       */
+      execution?: "executed";
       txHash: string;
       payer: string;
       payee: string;
@@ -1373,6 +1379,7 @@ function isDemosTransferObservationValue(
     "amountOs",
     "blockNumber",
     "includedAt",
+    ...(value.execution === "executed" ? ["execution"] : []),
   ]) &&
     typeof value.txHash === "string" &&
     typeof value.payer === "string" &&
