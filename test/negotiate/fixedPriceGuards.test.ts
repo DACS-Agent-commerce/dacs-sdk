@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test } from "vitest";
 
 import {
@@ -263,10 +265,12 @@ describe("DACS-3 §8.5 exactly one Agreement discriminator", () => {
     const agreement = await signed(input());
     expect(isAgreementDocument(agreement)).toBe(true);
     for (const member of ["payeeBoundAgreementVersion", ...IDENTITY_BOUND]) {
-      const ambiguous = { ...agreement, [member]: "1" };
-      expect(isAgreementDocument(ambiguous), member).toBe(false);
-      expect(isPayeeBoundAgreementDocument(ambiguous), member).toBe(false);
-      expect(isAgreementArtifact(ambiguous), member).toBe(false);
+      for (const version of ["1", "2", null, 1]) {
+        const ambiguous = { ...agreement, [member]: version };
+        expect(isAgreementDocument(ambiguous), member).toBe(false);
+        expect(isPayeeBoundAgreementDocument(ambiguous), member).toBe(false);
+        expect(isAgreementArtifact(ambiguous), member).toBe(false);
+      }
     }
   });
 
@@ -274,10 +278,12 @@ describe("DACS-3 §8.5 exactly one Agreement discriminator", () => {
     const agreement = await signed(payeeBoundInput());
     expect(isPayeeBoundAgreementDocument(agreement)).toBe(true);
     for (const member of ["agreementVersion", ...IDENTITY_BOUND]) {
-      const ambiguous = { ...agreement, [member]: "1" };
-      expect(isAgreementDocument(ambiguous), member).toBe(false);
-      expect(isPayeeBoundAgreementDocument(ambiguous), member).toBe(false);
-      expect(isAgreementArtifact(ambiguous), member).toBe(false);
+      for (const version of ["1", "2", null, 1]) {
+        const ambiguous = { ...agreement, [member]: version };
+        expect(isAgreementDocument(ambiguous), member).toBe(false);
+        expect(isPayeeBoundAgreementDocument(ambiguous), member).toBe(false);
+        expect(isAgreementArtifact(ambiguous), member).toBe(false);
+      }
     }
   });
 
@@ -303,6 +309,45 @@ describe("DACS-3 §8.5 exactly one Agreement discriminator", () => {
       (await signed(input())) as unknown as Record<string, unknown>;
     for (const member of IDENTITY_BOUND) {
       expect(isAgreementArtifact({ ...rest, [member]: "1" }), member).toBe(false);
+    }
+  });
+
+  test("documents the existing reader refusal of parsed negative zero", async () => {
+    const agreement = await signed(input());
+    const additionalTerms: unknown = JSON.parse('{"acme:rating:v1":-0}');
+    expect(Object.is((additionalTerms as Record<string, unknown>)["acme:rating:v1"], -0)).toBe(true);
+    expect(isAgreementArtifact({ ...agreement, terms: { ...agreement.terms, additionalTerms } })).toBe(false);
+  });
+
+  test("replays every discriminator rejection in the pinned IBH vector set", () => {
+    // DACS-Standard d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20.
+    const vectors = JSON.parse(readFileSync(new URL(
+      "../../vendor/DACS-Standard/conformance/vectors/security/identity-bundle-hash-binding-v0.1.json",
+      import.meta.url,
+    ), "utf8")) as {
+      scenarios: Record<string, { agreement: Record<string, unknown> }>;
+      vectors: { name: string; scenario: string; expected: string; mutations: {
+        op: string; path: string[]; value?: unknown;
+      }[] }[];
+    };
+    const discriminators = vectors.vectors.filter((v) => v.name.startsWith("discriminator-"));
+    expect(discriminators).toHaveLength(6);
+    for (const vector of discriminators) {
+      expect(vector.expected).toBe("fail");
+      const agreement = structuredClone(vectors.scenarios[vector.scenario]!.agreement);
+      for (const mutation of vector.mutations) {
+        expect(mutation.path).toHaveLength(2);
+        expect(mutation.path[0]).toBe("agreement");
+        const member = mutation.path[1]!;
+        if (mutation.op === "delete") delete agreement[member];
+        else {
+          expect(mutation.op).toBe("set");
+          agreement[member] = mutation.value;
+        }
+      }
+      expect(isAgreementDocument(agreement), vector.name).toBe(false);
+      expect(isPayeeBoundAgreementDocument(agreement), vector.name).toBe(false);
+      expect(isAgreementArtifact(agreement), vector.name).toBe(false);
     }
   });
 });

@@ -380,9 +380,10 @@ const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
  *   are re-sent at each exchange step. It is well inside the Storage Program
  *   limit (128 KB in the pinned Standard; 1 MiB enforced by demosdk 4.0.16)
  *   and half of the 16 KiB DACS-1 LR-2 Listing cap.
- * - U+0000 is refused in every string and member name. The Demos node stores
- *   anchored data as PostgreSQL `jsonb`, which rejects it, so an Agreement
- *   carrying it could be co-signed but never anchored.
+ * - U+0000 is refused in every string and member name. Demos node
+ *   ac8f45f02fc9c25082ce9b83595c2e3916b49c5a stores anchored data as PostgreSQL
+ *   `jsonb`, which rejects it, so an Agreement carrying it could be co-signed
+ *   but never anchored.
  * - Nesting is capped at 8 container levels, counting the record itself,
  *   so independent readers recurse a bounded amount.
  * - `__proto__`, `constructor`, and `prototype` member names are refused at

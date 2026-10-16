@@ -35,11 +35,12 @@ DACS-3 §8.5 gives every Agreement artifact shape an open
 those shapes, `AgreementDocument` and `PayeeBoundAgreementDocument`; it does not
 implement the identity-bound shapes (see
 [presence conformance adoption](presence-conformance-adoption.md)), and its
-readers refuse an artifact that carries one of their discriminators alongside
-its own. `FixedPriceAgreementInput` accepts the record as `additionalTerms` and
-`deriveFixedPriceAgreement` copies its canonical snapshot into
-`terms.additionalTerms`. The snapshot NFC-normalises string values (CORE §B.2
-CF-1) and leaves member names unchanged, so an NFD value comes back NFC. It is therefore inside the §8.5.1 canonical form,
+readers refuse an artifact that carries an identity-bound discriminator
+alongside its own. `FixedPriceAgreementInput` accepts the record as
+`additionalTerms`; `deriveFixedPriceAgreement` copies its canonical snapshot
+into `terms.additionalTerms`. The snapshot NFC-normalises string values (CORE §B.2
+CF-1) and leaves member names unchanged, so an NFD value comes back NFC. The
+record is therefore inside the §8.5.1 canonical form,
 the agreement hash, and both signatures. No price, deliverable, rail, deadline,
 metered quantity, or payout check reads it.
 
@@ -141,9 +142,9 @@ quantity, unit equal to the Listing's). The resolver must decide the quantity
 from seller policy; any difference from the buyer's quantity rejects the
 proposal at the `context` stage before any signature.
 
-Readers keep the Standard's rule. `isAgreementArtifact` and
-`validateFixedPriceAgreementBinding` accept any exact JSON record in
-`terms.additionalTerms`, including one another conforming producer signed
+`isAgreementArtifact` and `validateFixedPriceAgreementBinding` accept exact
+JSON records in `terms.additionalTerms`, including one another conforming producer signed
 outside this profile (for example an in-bound fraction such as `4.5`), and
-refuse anything else. The profile above binds what
-this SDK produces, not what it can verify.
+refuse anything else. One existing reader limitation remains: a parsed `-0`
+is refused, although CORE CF-5 permits negative zero. The producer profile
+above describes what this SDK produces; readers also admit in-bound fractions.
