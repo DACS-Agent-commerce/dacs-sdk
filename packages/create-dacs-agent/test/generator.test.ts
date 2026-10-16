@@ -445,9 +445,13 @@ describe("create-dacs-agent", () => {
     const range = core.peerDependencies["@kynesyslabs/demosdk"];
     // npm refuses to install a generated project whose exact pin falls outside
     // this peerOptional range (ERESOLVE), so keep the two in step.
-    const caret = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range);
-    expect(caret, `unsupported peer range ${range}`).not.toBeNull();
-    const floor = caret!.slice(1).map(Number);
+    // The core bounds the range to the demosdk releases it was checked against.
+    const bounded = /^>=(\d+)\.(\d+)\.(\d+) <(\d+)\.(\d+)\.(\d+)$/.exec(range);
+    expect(bounded, `unsupported peer range ${range}`).not.toBeNull();
+    const floor = bounded!.slice(1, 4).map(Number);
+    const ceiling = bounded!.slice(4).map(Number);
+    const below = (a: number[], b: number[]) =>
+      a[0]! < b[0]! || (a[0] === b[0] && (a[1]! < b[1]! || (a[1] === b[1] && a[2]! < b[2]!)));
     const parent = await temporaryDirectory();
     for (const rails of ["pay-dem", "x402", "both"] as const) {
       const target = join(parent, `pin-${rails}`);
@@ -465,11 +469,8 @@ describe("create-dacs-agent", () => {
       const exact = /^(\d+)\.(\d+)\.(\d+)$/.exec(pinned);
       expect(exact, `${rails} pin ${pinned} is not exact`).not.toBeNull();
       const version = exact!.slice(1).map(Number);
-      expect(version[0], `${rails} pin ${pinned} vs ${range}`).toBe(floor[0]);
-      expect(
-        version[1]! > floor[1]! || (version[1] === floor[1] && version[2]! >= floor[2]!),
-        `${rails} pin ${pinned} is below ${range}`,
-      ).toBe(true);
+      expect(below(version, floor), `${rails} pin ${pinned} is below ${range}`).toBe(false);
+      expect(below(version, ceiling), `${rails} pin ${pinned} is not below the ceiling of ${range}`).toBe(true);
     }
   });
 
