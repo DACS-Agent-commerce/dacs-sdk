@@ -134,6 +134,54 @@ describe("classifyAnchor (§6.3.4 logical-address kinds)", () => {
     expect(classifyAnchor(`dacs1:${CLAIM}:${"Az09._~-".repeat(16)}:v1`)).toBe("listing");
   });
 
+  // Every pattern is anchored at both ends: a prefixed `xdacs4:payment:…` must
+  // never reach a verifier as settlement evidence.
+  test.each([
+    ["listing-revocation", `dacs1-revoked:${CLAIM}:svc:v1`],
+    ["listing", `dacs1:${CLAIM}:svc:v1`],
+    ["verification-composite", `dacs2:composite:${JOB}:${CLAIM}`],
+    ["verification-result", `dacs2:${JOB}:cci-xm:evm%3Amainnet%3A0x1234:v1`],
+    ["agreement-commitment", `dacs3:commit:${JOB}`],
+    ["settlement-evidence", `dacs4:payment:${JOB}:evm-erc20%3A1%3AUSDC:0`],
+    ["payment-disposition", `dacs4:payment-disposition:${JOB}:3:${HASH}`],
+    ["payload-attestation", `dacs4:payload-attestation:${JOB}:${HASH}:0`],
+    ["deliverable", `dacs4:deliverable:${JOB}`],
+    ["entitlement", `dacs4:entitlement:${JOB}:0`],
+    ["settlement-amendment", `dacs4:amendment:${JOB}:${HASH}:0`],
+    ["bundle", `stor-${HASH}`],
+    ["rating", `dacs5:rating:${JOB}:${CLAIM}`],
+  ])("%s: junk before or after the address is unknown", (kind, address) => {
+    expect(classifyAnchor(address)).toBe(kind);
+    expect(classifyAnchor(`x${address}`)).toBe("unknown");
+    // A trailing variable segment absorbs a plain suffix; only `:x` is junk there.
+    if (kind !== "verification-composite" && kind !== "rating") {
+      expect(classifyAnchor(`${address}x`)).toBe("unknown");
+    }
+    expect(classifyAnchor(`${address}:x`)).toBe("unknown");
+  });
+
+  test.each(["1cci", "-cci", "cci%2dxm", "cci_xm", "cci.xm"])(
+    "scheme %j is not a lowercase token, so the verification result is unknown",
+    (scheme) => {
+      expect(classifyAnchor(`dacs2:${JOB}:${scheme}:evm%3Amainnet%3A0x1:v1`)).toBe("unknown");
+    },
+  );
+
+  test.each(["café", "l".repeat(129), "my%3Alisting", "a b"])(
+    "revocation listingId %j follows the listing grammar, so it is unknown",
+    (listingId) => {
+      expect(classifyAnchor(`dacs1-revoked:${CLAIM}:${listingId}:v1`)).toBe("unknown");
+    },
+  );
+
+  test.each([
+    ["an unknown payment suffix", `dacs4:payment:${JOB}:pay-x402:0:other`],
+    ["a suffix that extends resolved", `dacs4:payment:${JOB}:pay-x402:0:resolvedx`],
+    ["a 65-hex dispositionId", `dacs4:payment-disposition:${JOB}:3:${HASH}a`],
+  ])("%s is unknown", (_name, address) => {
+    expect(classifyAnchor(address)).toBe("unknown");
+  });
+
   // CORE JID-1: malformed job IDs are never repaired, so never classified.
   test.each([
     ["not a ULID", "not-a-ulid"],
@@ -431,12 +479,26 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
       entries: [],
       nextCursor: null,
     }));
-    await expect(scanAnchorPage(fetch, null, { limit: 0 })).resolves.toMatchObject({
-      status: "indeterminate",
-      code: "invalid-limit",
-      cursor: null,
-    });
+    for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+      await expect(scanAnchorPage(fetch, null, { limit }), String(limit)).resolves.toMatchObject({
+        status: "indeterminate",
+        code: "invalid-limit",
+        cursor: null,
+      });
+    }
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test("an entry that carries no owner is still an anchor, without an owner", async () => {
+    const res = await scanAnchorPage(
+      async () => ({ entries: [{ nativeAddress: "stor-a", logicalAddress: "dacs1:x:svc:v1" }], nextCursor: null }),
+      null,
+    );
+    expect(res).toEqual({
+      status: "page",
+      anchors: [{ nativeAddress: "stor-a", logicalAddress: "dacs1:x:svc:v1", kind: "listing" }],
+      nextCursor: null,
+    });
   });
 
   test("unknown kinds are dropped by default, kept with includeUnknown", async () => {

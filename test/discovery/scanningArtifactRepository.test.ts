@@ -595,6 +595,7 @@ describe("createScanningArtifactRepository (#54)", () => {
       `dacs4:payment:${JOB}:evm-erc20%3a1%3aUSDC:0`,
       `dacs4:payment:${JOB}:evm-erc20?asset=USDC:0`,
       `dacs1:${OWNER}:bad listing:v1`,
+      `xdacs4:payment:${JOB}:evm-erc20%3A1%3AUSDC:0`,
     ];
     const resolve = vi.fn(async () => ({ status: "absent" as const }));
     const verifyArtifact = vi.fn(() => true);
@@ -607,6 +608,19 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(resolve).not.toHaveBeenCalled();
     expect(fixture.readAnchor).not.toHaveBeenCalled();
     expect(verifyArtifact).not.toHaveBeenCalled();
+  });
+
+  test("a history row without an owner is still resolved against expectedOwner and verified", async () => {
+    const fixture = setup(["a"]);
+    fixture.fetchPage.mockResolvedValue({
+      entries: [{ nativeAddress: "stor-a", logicalAddress: logical("a") }], nextCursor: null,
+    });
+    const result = await fixture.repo.scanPage();
+    expect(result.results).toMatchObject([{
+      anchor: { nativeAddress: "stor-a", logicalAddress: logical("a"), kind: "listing" },
+      outcome: { status: "verified" },
+    }]);
+    expect("owner" in result.results[0]!.anchor).toBe(false);
   });
 
   test("a verifier that rewrites the anchor it receives cannot change the reported row", async () => {
@@ -1198,6 +1212,8 @@ describe("createScanningArtifactRepository (#54)", () => {
     ["a three-part seen entry", { seen: [["stor-a", logical("a"), "extra"]] }],
     ["null metadata", { metadata: null }],
     ["non-string metadata value", { metadata: new Map([["stor-a", 7]]) }],
+    ["a two-character string metadata entry", { metadata: ["ab"] }],
+    ["a numeric metadata key", { metadata: new Map([[7, logical("a")]]) }],
     // Otherwise consistent, so only the element check refuses it.
     ["non-string consumed cursor", { consumedCursors: new Set([7]), pagesConsumed: 2 }],
     ["throwing iterator", { consumedCursors: { [Symbol.iterator]() { throw new Error("trap"); } } }],
@@ -1291,6 +1307,14 @@ describe("createScanningArtifactRepository (#54)", () => {
     ["a later page retrying a row", { cursor: "c3", pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]), ...pendingA }],
     ["one exhausted page", { cursor: null, pagesConsumed: 1, exhausted: true }],
     ["several exhausted pages", { cursor: null, pagesConsumed: 3, consumedCursors: new Set(["c1", "c2"]), exhausted: true }],
+    // The owner is optional on a history row, so it is optional on a deferred one.
+    ["a deferred row without an owner", {
+      metadata: new Map([["stor-z", logical("z")]]),
+      deferred: [{
+        anchor: { nativeAddress: "stor-z", logicalAddress: logical("z"), kind: "listing" },
+        code: "read-indeterminate", reason: "r", attempts: 5,
+      }],
+    }],
   ])("consistent persisted state (%s) is resumed", async (_name, consistent) => {
     const fixture = setup(["a"]);
     const input = { ...state("next"), ...consistent };
