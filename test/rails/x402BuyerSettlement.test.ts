@@ -1723,6 +1723,23 @@ describe("filesystem x402 buyer settlement recovery", () => {
       generation: 1,
       intent: { bindingHash: intent.bindingHash },
     });
+
+    // Another storeVersion is unsupported (not corrupt) and is left in place.
+    const otherVersion = JSON.stringify({ ...parsed, storeVersion: 2 });
+    await writeFile(recordPath, otherVersion, "utf8");
+    await expect(store.load(intent.settlementKey))
+      .resolves.toEqual({ status: "unsupported", version: 2 });
+    await expect(store.claim({ intent, owner: "next", now: 2_000, leaseDurationMs: 100 }))
+      .resolves.toEqual({ status: "unsupported", version: 2 });
+    await expect(readFile(recordPath, "utf8")).resolves.toBe(otherVersion);
+
+    // A record without a storeVersion is corrupt.
+    const { storeVersion: _storeVersion, ...unversioned } = parsed;
+    await writeFile(recordPath, JSON.stringify(unversioned), "utf8");
+    await expect(store.load(intent.settlementKey)).resolves.toEqual({
+      status: "corrupt",
+      reason: "record is missing storeVersion",
+    });
   });
 });
 

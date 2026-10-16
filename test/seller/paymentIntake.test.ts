@@ -2758,13 +2758,16 @@ describe("verifySellerPaymentIntake SB-1 payer, asset and party-bundle bindings"
     });
   });
 
+  // The agreement binding check refuses a payee-bound agreement that does not
+  // cover each Listing pay phase exactly once, before the intake's own
+  // payout-binding filter (a second layer) is reached.
   it("rejects an agreement whose only payout binding is for another phase", async () => {
     const ctx = makeContext("pay-dem");
     const terms = ctx.agreement.terms as { payoutBindings: Array<{ phaseIndex: number }> };
     terms.payoutBindings[0]!.phaseIndex += 1;
     refreshCommitment(ctx);
     await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
-      disposition: "rejected", fulfilment: "none",
+      disposition: "rejected", reason: "agreement-listing-conformance-failed", fulfilment: "none",
     });
   });
 
