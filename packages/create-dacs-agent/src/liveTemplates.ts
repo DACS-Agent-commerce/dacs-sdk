@@ -4573,7 +4573,7 @@ function dockerRuntimeSmoke(options: LiveProjectTemplateOptions): string {
   ];
   return `import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
@@ -4628,8 +4628,16 @@ const projectName = directoryName + "-" +
 // dacs:up records the project it starts here. Moving the directory changes the
 // project name, so until the recorded project's containers are gone, no compose
 // call runs from the new directory: it would neither stop the old roles nor
-// keep a second pair from starting on the same data.
+// keep a second pair from starting on the same data. The record also names
+// this directory's device and inode, which a move keeps and a copy does not,
+// so a copy put where the project was moved from gets its project name but
+// runs no compose call while that project has containers.
 const projectRecordPath = new URL("compose-project.json", receiptDirectory);
+// The directory as the file system knows it, rather than by its path.
+function directoryIdentity() {
+  const { dev, ino } = statSync(projectPath, { bigint: true });
+  return { device: String(dev), inode: String(ino) };
+}
 const services = ${quotedList(COMPOSE_SERVICES)};
 const composeArguments = [
   "compose",
@@ -4711,14 +4719,27 @@ function recordedProject() {
   }
   if (record === null || typeof record !== "object" || record.recordVersion !== 1 ||
       typeof record.project !== "string" || !${COMPOSE_PROJECT_NAME_PATTERN}.test(record.project) ||
-      typeof record.directory !== "string") {
+      typeof record.directory !== "string" ||
+      typeof record.device !== "string" || !/^[0-9]+$/.test(record.device) ||
+      typeof record.inode !== "string" || !/^[0-9]+$/.test(record.inode)) {
     throw new Error(".dacs-runtime/compose-project.json is not a compose project record");
   }
   return record;
 }
+// Whether the record shows that dacs:up started this project from this
+// directory, rather than from another one that was at this path before.
+function recordedHere(record) {
+  if (record === undefined || record.project !== projectName ||
+      record.directory !== projectPath) {
+    return false;
+  }
+  const { device, inode } = directoryIdentity();
+  return record.device === device && record.inode === inode;
+}
 // Exits before any compose call unless compose is v2.10 or later, the project
-// dacs:up last started from another directory has no containers left, and
-// every container in this project was created by compose for this directory.
+// dacs:up last started from another directory has no containers left, every
+// container in this project was created by compose for this directory, and,
+// if the project has any, dacs:up started it from this very directory.
 function requireOwnProject() {
   let refusal;
   try {
@@ -4737,10 +4758,18 @@ function requireOwnProject() {
           " is another project that is still in use (this directory is a copy of it), " +
           "delete .dacs-runtime/compose-project.json here instead";
       } else {
-        const foreign = foreignContainers(projectContainers());
+        const containers = projectContainers();
+        const foreign = foreignContainers(containers);
         if (foreign !== undefined) {
           refusal = foreign + "; this project's commands act only on containers compose " +
             "created for this directory, so remove the others or move this directory";
+        } else if (containers.length > 0 && !recordedHere(record)) {
+          refusal = "compose project " + projectName + " has containers, but " +
+            ".dacs-runtime/compose-project.json does not show that dacs:up started them " +
+            "from this directory: it may be a copy of a project that was moved from " +
+            projectPath + " while its roles ran. Run that project's commands from where " +
+            "it is now. If these containers are this directory's own, remove them with: " +
+            "docker compose --project-name " + projectName + " down, then rerun";
         }
       }
     }
@@ -4837,7 +4866,8 @@ if (mode === "up") {
     recordVersion: 1,
     project: projectName,
     directory: projectPath,
-  }) + "\\n", { mode: 0o600, flag: "wx" });
+    ...directoryIdentity(),
+  }) +"\\n", { mode: 0o600, flag: "wx" });
   renameSync(temporaryRecord, projectRecordPath);
   const runtimeSettings = { DACS_IMAGE: imageId, DACS_RUNTIME_UID: uid, DACS_RUNTIME_GID: gid };
   // Report success only once each role's container was created from that ID.
@@ -5556,9 +5586,15 @@ containers with \`docker compose --project-name <recorded project> down\`, which
 works from any directory and keeps both data directories, then rerun; if the
 recorded directory is another project that is still in use (this directory is
 a copy of it), delete this directory's \`.dacs-runtime/compose-project.json\`
-instead. A copy or clone of this project shares its identity, so do not put
-one at a path this project was moved from while the containers started there
-still exist: it would get their project name. Remove them first.
+instead. A copy or clone of this project shares its identity, so one put at a
+path this project was moved from gets the project name of the containers
+started there. The record therefore also names this directory's device and
+inode, which a move keeps and a copy, clone or restore does not, and while the
+project has containers these commands run only from the directory whose
+\`dacs:up\` started them. Elsewhere, including in a copy without
+\`.dacs-runtime/\`, they refuse; run them from the project that started the
+containers, or, if the containers are this directory's own, remove them with
+\`docker compose --project-name <project> down\` and rerun.
 
 These commands also set \`COMPOSE_PROJECT_NAME\` to the project name, remove
 every other \`COMPOSE_*\` variable, including \`COMPOSE_FILE\`, from compose's

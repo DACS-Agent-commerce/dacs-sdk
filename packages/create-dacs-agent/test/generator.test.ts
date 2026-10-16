@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
+  cp,
   lstat,
   mkdtemp,
   mkdir,
@@ -10,11 +11,13 @@ import {
   realpath,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { isMainThread } from "node:worker_threads";
 
 import { afterEach, describe, expect, test } from "vitest";
 
@@ -608,6 +611,12 @@ async function generatedComposeArguments(target: string): Promise<string[]> {
   ];
 }
 
+// The device and inode the Docker lifecycle records for a project directory.
+async function directoryIdentity(target: string): Promise<{ device: string; inode: string }> {
+  const { dev, ino } = await stat(target, { bigint: true });
+  return { device: String(dev), inode: String(ino) };
+}
+
 // A compose command on the project, rather than `docker compose version`.
 const isComposeInvocation = (args: readonly string[]) =>
   args[0] === "compose" && args[1] === "--file";
@@ -953,30 +962,48 @@ process.exit(JSON.parse(fs.readFileSync(${JSON.stringify(npmScenario)}, "utf8"))
         process.env.PATH = inheritedPath;
       }
 
-      // Under a permissive umask and as root, the files stay owner-only, both
-      // role data directories are private, and compose never runs as root.
-      const inheritedUmask = process.umask(0o022);
+      // Generated as root, compose never runs as root.
       const getuid = process.getuid;
       const getgid = process.getgid;
       process.getuid = () => 0;
       process.getgid = () => 0;
-      const target = join(parent, "private");
+      const target = join(parent, "as-root");
       try {
         await createDacsAgentProject({ ...live, targetDirectory: target, install: false });
       } finally {
-        process.umask(inheritedUmask);
         process.getuid = getuid;
         process.getgid = getgid;
-      }
-      expect((await lstat(join(target, "package.json"))).mode & 0o777).toBe(0o600);
-      for (const role of ["buyer", "seller"]) {
-        expect((await lstat(join(target, "data", role))).mode & 0o777, role).toBe(0o700);
       }
       const environment = await readFile(join(target, ".env.example"), "utf8");
       expect(environment).toMatch(/^DACS_RUNTIME_UID=10001$/m);
       expect(environment).toMatch(/^DACS_RUNTIME_GID=10001$/m);
     },
     SPAWNING_TEST_TIMEOUT_MS * 2,
+  );
+
+  // Node sets the umask only on the main thread, so a thread pool skips this.
+  test.runIf(isMainThread && process.platform !== "win32")(
+    "keeps generated files owner-only and role data private under a permissive umask",
+    async () => {
+      const target = join(await temporaryDirectory(), "private");
+      const inheritedUmask = process.umask(0o022);
+      try {
+        await createDacsAgentProject({
+          targetDirectory: target,
+          mode: "live-demos",
+          profile: "dacs-sdk:fixed-price-x402:v1",
+          role: "buyer",
+          install: false,
+        });
+      } finally {
+        process.umask(inheritedUmask);
+      }
+      expect((await lstat(join(target, "package.json"))).mode & 0o777).toBe(0o600);
+      for (const role of ["buyer", "seller"]) {
+        expect((await lstat(join(target, "data", role))).mode & 0o777, role).toBe(0o700);
+      }
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
   );
 
   test.runIf(process.platform !== "win32")(
@@ -1075,6 +1102,9 @@ process.exit(1);
     for (const invalid of ["A".repeat(32), "a".repeat(31), "a".repeat(33), "g".repeat(32)]) {
       expect(() => script(invalid)).toThrow("projectIdentity must be 32 lower-case hex digits");
     }
+    // A non-string whose text would pass the pattern is refused as well.
+    expect(() => projectTemplates({ ...options, projectIdentity: ["a".repeat(32)] as never }))
+      .toThrow("projectIdentity must be 32 lower-case hex digits");
   });
 
   test("renders compose, .env and README around the one image the smoke checks", async () => {
@@ -1113,9 +1143,11 @@ process.exit(1);
     expect(readme).toContain("the first 12 hex digits of the SHA-256 of this project's identity\n" +
       "followed by the directory's full path");
     expect(readme).toContain("nor does a\nnew project generated at a path this one was moved from");
-    expect(readme).toContain("A copy or clone of this project shares its identity, so do not put\n" +
-      "one at a path this project was moved from while the containers started there\n" +
-      "still exist");
+    expect(readme).toContain("The record therefore also names this directory's device and\n" +
+      "inode, which a move keeps and a copy, clone or restore does not, and while the\n" +
+      "project has containers these commands run only from the directory whose\n" +
+      "`dacs:up` started them.");
+    expect(readme).toContain("including in a copy without\n`.dacs-runtime/`, they refuse");
     expect(readme).toContain("If you moved the project, remove the old\ncontainers with " +
       "`docker compose --project-name <recorded project> down`");
     expect(readme).not.toContain("never share one");
@@ -1397,12 +1429,14 @@ process.exit(1);
         project: projectName,
         services: ["buyer", "seller"],
       });
-      // The project it started is recorded in the project, owner-only.
+      // The project it started is recorded in the project, owner-only, with the
+      // directory that started it.
       const recordPath = join(target, ".dacs-runtime", "compose-project.json");
       expect(JSON.parse(await readFile(recordPath, "utf8"))).toEqual({
         recordVersion: 1,
         project: projectName,
         directory: await realpath(target),
+        ...await directoryIdentity(target),
       });
       expect((await lstat(recordPath)).mode & 0o777).toBe(0o600);
       expect(started.invocations.filter(isComposeInvocation)).toEqual([[
@@ -1913,15 +1947,18 @@ process.exit(1);
         recordVersion: 1,
         project: movedProject,
         directory: await realpath(moved),
+        ...await directoryIdentity(moved),
       });
 
       // A copy whose original still runs proceeds once its copied record is gone,
       // and never touches the original's containers.
-      await writeFile(recordPath, JSON.stringify({
+      const copiedRecord = {
         recordVersion: 1,
         project: originalProject,
         directory: originalPath,
-      }), "utf8");
+        ...await directoryIdentity(moved),
+      };
+      await writeFile(recordPath, JSON.stringify(copiedRecord), "utf8");
       expect((await runGeneratedDockerSmoke(moved, passingDockerScenario({
         containers: running,
       }), { args: ["--down"] })).status).toBe(2);
@@ -1935,10 +1972,18 @@ process.exit(1);
       // A record this script cannot read stops every compose command.
       for (const [source, message] of [
         ["{", ".dacs-runtime/compose-project.json is unreadable: "],
-        [JSON.stringify({ recordVersion: 2, project: originalProject, directory: originalPath }),
-          ".dacs-runtime/compose-project.json is not a compose project record"],
-        [JSON.stringify({ recordVersion: 1, project: "Agent X", directory: originalPath }),
-          ".dacs-runtime/compose-project.json is not a compose project record"],
+        ...[
+          { recordVersion: 2 },
+          { project: "Agent X" },
+          { directory: 1 },
+          { device: undefined },
+          { device: 1 },
+          { device: "1a" },
+          { inode: undefined },
+          { inode: 1 },
+          { inode: "" },
+        ].map((change) => [JSON.stringify({ ...copiedRecord, ...change }),
+          ".dacs-runtime/compose-project.json is not a compose project record"]),
       ]) {
         await writeFile(recordPath, source!, "utf8");
         const failed = await runGeneratedDockerSmoke(moved, passingDockerScenario(), {
@@ -1975,6 +2020,7 @@ process.exit(1);
         recordVersion: 1,
         project: originalProject,
         directory: await realpath(original),
+        ...await directoryIdentity(original),
       });
 
       const moved = join(await temporaryDirectory(), "agent");
@@ -2050,6 +2096,90 @@ process.exit(1);
         .toEqual([newProject, newProject]);
     },
     SPAWNING_TEST_TIMEOUT_MS * 2,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "runs no compose command from a copy put where a running project was moved from",
+    async () => {
+      const original = await generatedDockerProject("agent");
+      const originalPath = await realpath(original);
+      const project = await generatedProjectName(original);
+      expect((await runGeneratedDockerSmoke(original, passingDockerScenario())).status).toBe(0);
+      const started = await runGeneratedDockerSmoke(original, passingDockerScenario(), {
+        args: ["--up"],
+      });
+      expect(started.status).toBe(0);
+      const running = started.containers!;
+      const stopped = running.map((container) => ({ ...container, running: false }));
+      // The directory that started them stops them.
+      const own = await runGeneratedDockerSmoke(original, passingDockerScenario({
+        containers: running,
+      }), { args: ["--stop"] });
+      expect(own.status).toBe(0);
+      expect(own.containers).toEqual(stopped);
+
+      // The project moves while its roles run, and a copy of it, with or
+      // without its .dacs-runtime/ records, is put back where it was.
+      const moved = join(await temporaryDirectory(), "agent");
+      await rename(original, moved);
+      const refusal = `compose project ${project} has containers, but ` +
+        ".dacs-runtime/compose-project.json does not show that dacs:up started them from " +
+        `this directory: it may be a copy of a project that was moved from ${originalPath} ` +
+        "while its roles ran. Run that project's commands from where it is now. If these " +
+        "containers are this directory's own, remove them with: docker compose " +
+        `--project-name ${project} down, then rerun`;
+      for (const runtime of ["copied", "omitted"]) {
+        await cp(moved, original, { recursive: true });
+        if (runtime === "omitted") await rm(join(original, ".dacs-runtime"), { recursive: true });
+        // Smoked again, so that only the project check stands between it and compose.
+        expect((await runGeneratedDockerSmoke(original, passingDockerScenario())).status)
+          .toBe(0);
+        expect(await realpath(original)).toBe(originalPath);
+        expect(await generatedProjectName(original)).toBe(project);
+        for (const containers of [running, stopped, [running[0]!]]) {
+          for (const args of [["--up"], ["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
+            const label = `${runtime} ${args.join(" ")}`;
+            const refused = await runGeneratedDockerSmoke(original, passingDockerScenario({
+              containers,
+            }), { args });
+            expect(refused.status, label).toBe(2);
+            expect(refused.stderr, label).toContain(refusal);
+            expect(refused.invocations.filter(isComposeInvocation), label).toEqual([]);
+            expect(refused.containers ?? containers, label).toEqual(containers);
+          }
+        }
+        // Once the moved project's containers are gone, the copy starts as its own.
+        const fresh = await runGeneratedDockerSmoke(original, passingDockerScenario({
+          containers: [],
+        }), { args: ["--up"] });
+        expect(fresh.stderr).toBe("");
+        expect(fresh.status, runtime).toBe(0);
+        expect(JSON.parse(await readFile(
+          join(original, ".dacs-runtime", "compose-project.json"), "utf8",
+        ))).toEqual({
+          recordVersion: 1,
+          project,
+          directory: originalPath,
+          ...await directoryIdentity(original),
+        });
+        await rm(original, { recursive: true });
+      }
+
+      // Moved back into place, the project that started them stops and removes them.
+      await rename(moved, original);
+      const stoppedAgain = await runGeneratedDockerSmoke(original, passingDockerScenario({
+        containers: running,
+      }), { args: ["--stop"] });
+      expect(stoppedAgain.stderr).toBe("");
+      expect(stoppedAgain.status).toBe(0);
+      expect(stoppedAgain.containers).toEqual(stopped);
+      const removed = await runGeneratedDockerSmoke(original, passingDockerScenario({
+        containers: running,
+      }), { args: ["--down"] });
+      expect(removed.status).toBe(0);
+      expect(removed.containers).toEqual([]);
+    },
+    SPAWNING_TEST_TIMEOUT_MS * 4,
   );
 
   test.runIf(process.platform !== "win32")(

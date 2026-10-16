@@ -48,7 +48,10 @@ name never share a project, and nor does a new project generated where a
 moved one used to be. Its lifecycle commands
 refuse a compose project with containers from another directory, and, after
 the directory is moved, refuse to run until the project started from the old
-location has no containers left; the generated README gives the recovery.
+location has no containers left. While the project has containers they run
+only from the directory whose `dacs:up` started them, identified by its device
+and inode, so a copy put where the project was moved from cannot stop or
+remove the moved project's roles. The generated README gives the recovery.
 
 This package's tests run the generated `dacs:image:smoke`, `dacs:up` and
 `dacs:down` script against a test-only `docker` that models the Docker CLI and

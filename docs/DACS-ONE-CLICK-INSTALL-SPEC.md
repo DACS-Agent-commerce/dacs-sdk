@@ -270,13 +270,16 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
   generator gives the project and the directory's full path, so that
   directories with the same name never share a project, and nor does a new
   project generated at a path another project was moved from;
-- record the project it starts inside the project directory;
+- record the project it starts inside the project directory, with the
+  directory's device and inode;
 - ignore `COMPOSE_*` environment variables and compose override files, and
   refuse to run while `.env` mentions `COMPOSE_`, while Compose is older than
   v2.10, while the compose project has a container created for another
-  project directory, or while a project recorded from another directory still
-  has containers, as the generated `dacs:down` and maintenance stops also
-  MUST, and name that project and the recovery; and
+  project directory, while a project recorded from another directory still
+  has containers, or while the compose project has containers and the record
+  does not name this project, path, device and inode (as for a copy put at a
+  path the project was moved from), as the generated `dacs:down` and
+  maintenance stops also MUST, and name that project and the recovery; and
 - stop both roles and fail unless compose started and created each from the
   recorded image ID and the started containers could be checked, stop nothing
   once the project has a container created for another directory, and report a
