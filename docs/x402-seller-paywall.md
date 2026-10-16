@@ -8,12 +8,17 @@ revision pinned by the fixed-price coordinator.
 independent seller lifecycle. It does not start a server or select a framework.
 Applications provide the framework adapter and host the route themselves.
 
-The `jobId` must be a canonical CORE JID-1 ULID (26 uppercase Crockford
-Base32 characters). Any other value, including a Unicode or lowercase
-spelling, is rejected as `invalid-jobId` before the request is read or any
-key, nonce, store or facilitator call sees it (CORE JID-3).
+The `jobId` must be a canonical CORE JID-1 ULID: 26 uppercase Crockford
+Base32 characters whose first character is `0`–`7`, so the value fits in
+128 bits. Any other value, including a Unicode or lowercase spelling, is
+rejected as `invalid-jobId` before the request is read or any key, nonce,
+store or facilitator call sees it (CORE JID-3).
 `x402PaywallSettlementKey`, `x402PaywallFulfilmentKey` and
-`x402Eip3009Nonce` refuse such a value in the same way.
+`x402Eip3009Nonce` derive nothing from such a value: they throw a
+`TypeError`. Called directly, the seller spine's `authorizeSettlement`
+rejects it as `seller-session-request-invalid` before it reads the request
+or queries `resolveCommittedSession`, and `recoverPaymentAuthorization`
+rejects it as `seller-recovery-scope-invalid` before any key or store read.
 
 The callback sequence is deliberately:
 
