@@ -1,3 +1,15 @@
+diff --git a/conformance/vectors/security/README.md b/conformance/vectors/security/README.md
+index 39acb16..7e77cd8 100644
+--- a/conformance/vectors/security/README.md
++++ b/conformance/vectors/security/README.md
+@@ -61,6 +61,7 @@ promotion path — is specified in [CROSS-RUN.md](CROSS-RUN.md).
+ | [`metered-pricing-v0.3.json`](metered-pricing-v0.3.json) | DACS-3 §8.5.2 MTR-1..MTR-5; DACS-4 §9.4 PricingSpec | 22 | `accept` / `reject` |
+ | [`mixed-version-reconciliation-v0.3.json`](mixed-version-reconciliation-v0.3.json) | DACS-5 §10.4.3 mixed-version rule + §10.5.1 authoritative selection | 8 | `fail` / `pass` |
+ | [`outsider-binding-flooding-v0.3.json`](outsider-binding-flooding-v0.3.json) | DACS-5 §10.4.2 BB-6 authorized-candidate multiplicity + BB-7 side-level exhaustion (round-6 blocker #3) | 11 | `indeterminate` / `pass` |
++| [`pay-dem-execution-v0.1.json`](pay-dem-execution-v0.1.json) | DACS-4 §9.5.9; PC-4; PC-7 | 8 | `fail` / `indeterminate` / `pass` |
+ | [`payee-destination-binding-v0.1.json`](payee-destination-binding-v0.1.json) | DACS-3 §8.5/§8.6 PayeeBoundAgreementDocument compatibility; DACS-4 §9.5.1 PB-1..PB-3 | 28 | `error` / `fail` / `indeterminate` / `pass` |
+ | [`payload-attestation-binding-v0.1.json`](payload-attestation-binding-v0.1.json) | DACS-4 §9.6.3 DPA-1..DPA-9; §9.7; CORE §B.7; Demos §A.3 | 22 | `fail` / `indeterminate` / `pass` |
+ | [`phase-kind-divergence-v0.3.json`](phase-kind-divergence-v0.3.json) | DACS-5 §10.4.3 / §10.5.1 guard (ii) shared-index phase-kind divergence | 1 | `reject` |
 diff --git a/spec/DACS-4-SETTLE.md b/spec/DACS-4-SETTLE.md
 index d193e63..0e3f4fd 100644
 --- a/spec/DACS-4-SETTLE.md
