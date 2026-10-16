@@ -326,13 +326,14 @@ export type LiquidityTankRecoveryCheckpoint = Readonly<
 
 /**
  * Authenticated evidence that the release missed `recoveryDeadline`: the
- * locked pending checkpoint observed at or after it, a completion finalized at
- * or after it, a terminal bridge failure bound to the exact lock (retained
- * beside the checkpoint, or, without one, the durable observation itself), or
- * a read that contradicts the durable checkpoint, observed strictly after it
- * and at or after `recoveryDeadline`, unless it is a `pending` that leaves the
- * operation live: one without a lock, or with another lock observed before
- * that lock's own deadline.
+ * locked pending checkpoint observed after it, a completion finalized after
+ * it, a terminal bridge failure bound to the exact lock (retained beside the
+ * checkpoint, or, without one, the durable observation itself), or a read
+ * that contradicts the durable checkpoint, observed strictly after it and
+ * after `recoveryDeadline`, unless it is a `pending` that leaves the
+ * operation live: one without a lock, or with another lock observed at or
+ * before that lock's own deadline. A release final exactly at
+ * `recoveryDeadline` is timely.
  * A terminal failure need not refresh its transition timestamp.
  * `observedAt` is the bridge's authenticated time of the status snapshot.
  */
@@ -500,14 +501,15 @@ export interface LiquidityTankStore {
    * consistent with `expectedObservation`, the identified lease is current at
    * `now`, and no completion or settlement won. `expectedObservation` is the
    * exact durable observation established by the claim or a confirmed write,
-   * if one existed. `now` must reach `recoveryDeadline`. Pending snapshots also
-   * need `observedAt >= recoveryDeadline`; completions need late finality.
-   * Terminal failure evidence must equal the one retained by
+   * if one existed. `now` must be after `recoveryDeadline`. Pending snapshots
+   * also need `observedAt > recoveryDeadline`; completions need
+   * `finalityObservedAt > recoveryDeadline` (one final at the deadline is
+   * timely). Terminal failure evidence must equal the one retained by
    * `recordRecoveryFailure` and bind its authenticated lock hash/deadline to
    * the exact durable checkpoint. A contradiction needs the exact durable
    * checkpoint and no retained failure, must be observed after the
-   * checkpoint and at or after `recoveryDeadline`, and must not be a
-   * `pending` that leaves the operation live.
+   * checkpoint and after `recoveryDeadline`, and must not be a `pending`
+   * that leaves the operation live.
    */
   recordRecoveryExpired(input: {
     settlementKey: string;
@@ -570,7 +572,7 @@ export type LiquidityTankProgress =
       }>;
       /**
        * Set exactly when `reason` is `tank-released-after-recovery-deadline`:
-       * the authenticated completion that finalized at or after
+       * the authenticated completion that finalized after
        * `recoveryDeadline`. The phase is `failed-substrate`, but the release
        * reached the payee, so the buyer has paid: do not authorize another
        * payment for the phase, and reconcile from this evidence. Also set
@@ -596,23 +598,25 @@ export type LiquidityTankProgress =
       /** Exact Unix-millisecond timestamp from the authenticated checkpoint. */
       recoveryDeadline: number;
       /**
-       * The host clock read during this call was at or after `recoveryDeadline`
-       * but no expiry evidence was accepted. The lock is overdue: alert if this
-       * persists rather than polling silently.
+       * The host clock read during this call was after `recoveryDeadline` but
+       * no expiry evidence was accepted. The lock is overdue: alert if this
+       * persists rather than polling silently. At the deadline itself a
+       * release is still timely, so this is `false` there.
        */
       pastDeadline: boolean;
       /**
        * Set when this call's authenticated bridge status could not move the
        * lock: `failed` is retained terminal evidence, expiring when the host
-       * clock reaches `recoveryDeadline`; `conflicting` contradicts the
-       * checkpoint. Once the host clock reaches the deadline, a contradiction
-       * observed after the checkpoint and at or after the deadline expires
-       * the lock as `tank-lock-contradicted-recovery-expired`, unless it is a
+       * clock passes `recoveryDeadline`; `conflicting` contradicts the
+       * checkpoint. Once the host clock passes the deadline, a contradiction
+       * observed after the checkpoint and after the deadline expires the
+       * lock as `tank-lock-contradicted-recovery-expired`, unless it is a
        * `pending` that leaves the operation live (without a lock, or with
-       * another lock observed before that lock's own deadline). Past the
-       * deadline such a read, or one observed before the deadline or at or
-       * before the checkpoint, reports `lock-contradicted`: the lock is still
-       * open, so do not pay for the phase again, and it needs an operator.
+       * another lock observed at or before that lock's own deadline). Past
+       * the deadline such a read, or one observed at or before the deadline
+       * or at or before the checkpoint, reports `lock-contradicted`: the lock
+       * is still open, so do not pay for the phase again, and it needs an
+       * operator.
        */
       bridgeStatus?: "failed" | "conflicting";
       txRef: Readonly<{
@@ -895,6 +899,16 @@ function recoveryDeadlineUnixMs(value: unknown): number {
 }
 
 /**
+ * The recovery window includes `recoveryDeadline` itself: a release final at
+ * that millisecond is "within" it (DACS-4 §9.5.5), and the window "passes"
+ * (DACS-5 ST-8) only after it. So a finality, a bridge snapshot or a host
+ * clock reading shows the deadline missed only when it is strictly later.
+ */
+function pastRecoveryDeadline(time: number, recoveryDeadline: number): boolean {
+  return time > recoveryDeadline;
+}
+
+/**
  * A bridge time too far before the submission it describes, such as one sent
  * in seconds; `reason` names the field.
  */
@@ -1156,7 +1170,7 @@ function captureSettlement(
     settlementFinality.finalityObservedAt,
     "stored finalityObservedAt",
   );
-  if (finalityObservedAt >= recoveryDeadline) {
+  if (pastRecoveryDeadline(finalityObservedAt, recoveryDeadline)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: stored settlement missed recovery deadline");
   }
   return Object.freeze({
@@ -1517,10 +1531,10 @@ function progressFromDurableObservation(
   const status = lock.status === "failed" ? "failed" : bridgeStatus;
   return {
     status: "settle-asymmetric",
-    reason: status === "conflicting" && now >= lock.recoveryDeadline
+    reason: status === "conflicting" && pastRecoveryDeadline(now, lock.recoveryDeadline)
       ? "lock-contradicted" : "tank-locked-unreleased",
     recoveryDeadline: lock.recoveryDeadline,
-    pastDeadline: now >= lock.recoveryDeadline,
+    pastDeadline: pastRecoveryDeadline(now, lock.recoveryDeadline),
     ...(status === undefined ? {} : { bridgeStatus: status }),
     txRef: lockTxRef(intent, lock),
   };
@@ -1561,13 +1575,15 @@ function contradictsCheckpoint(
 /**
  * A `pending` the bridge reports as still live: without a lock the bridge may
  * still lock it, and another lock may still be released until its own
- * deadline. Such a contradiction never expires the checkpoint's lock.
+ * deadline, that millisecond included. Such a contradiction never expires the
+ * checkpoint's lock.
  */
 function leavesOperationLive(
   contradiction: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
 ): boolean {
   return contradiction.status === "pending" &&
-    (contradiction.recoveryDeadline === undefined || contradiction.observedAt < contradiction.recoveryDeadline);
+    (contradiction.recoveryDeadline === undefined ||
+      !pastRecoveryDeadline(contradiction.observedAt, contradiction.recoveryDeadline));
 }
 
 /**
@@ -1583,16 +1599,16 @@ function postdatesCheckpoint(
 }
 
 /**
- * A contradiction the bridge stamped at or after the lock's deadline. One
- * stamped earlier says nothing about the deadline, since the lock may still
+ * A contradiction the bridge stamped after the lock's deadline. One stamped
+ * at or before it says nothing about the deadline, since the lock may still
  * be released between that read and it, so it never expires the lock: this
  * host's clock, however late, never stands in for the bridge's.
  */
-function reachesRecoveryDeadline(
+function passesRecoveryDeadline(
   contradiction: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
   checkpoint: LiquidityTankRecoveryCheckpoint,
 ): boolean {
-  return contradiction.observedAt >= checkpoint.recoveryDeadline;
+  return pastRecoveryDeadline(contradiction.observedAt, checkpoint.recoveryDeadline);
 }
 
 function failedAfterLock(
@@ -1610,26 +1626,27 @@ function recoveryEvidenceDeadline(evidence: LiquidityTankRecoveryEvidence): numb
 }
 
 /**
- * Pending snapshots must describe the bridge at/after the deadline; a
- * terminal non-completion bound to the exact lock remains valid evidence. So
- * does a contradiction of the lock observed strictly after the checkpoint and,
- * like a pending snapshot, at or after the deadline, except a `pending` that
- * leaves the operation live. The core's finalize, the store CAS and the claim
- * replay all decide here; the host-clock deadline is checked separately by each.
+ * Pending snapshots must describe the bridge after the deadline, and a
+ * completion must have finalized after it; a terminal non-completion bound to
+ * the exact lock remains valid evidence. So does a contradiction of the lock
+ * observed strictly after the checkpoint and, like a pending snapshot, after
+ * the deadline, except a `pending` that leaves the operation live. The core's
+ * finalize, the store CAS and the claim replay all decide here; the host-clock
+ * deadline is checked separately by each.
  */
 function provesRecoveryExpiry(evidence: LiquidityTankRecoveryEvidence): boolean {
   if (evidence.status === "completed") {
-    return evidence.finalityObservedAt >= evidence.recoveryDeadline;
+    return pastRecoveryDeadline(evidence.finalityObservedAt, evidence.recoveryDeadline);
   }
   if (evidence.status === "failed") return lockBearingFailure(evidence) !== undefined;
   if (evidence.status === "contradicted-after-lock") {
     return contradictsCheckpoint(evidence.contradiction, evidence.checkpoint) &&
       postdatesCheckpoint(evidence.contradiction, evidence.checkpoint) &&
-      reachesRecoveryDeadline(evidence.contradiction, evidence.checkpoint) &&
+      passesRecoveryDeadline(evidence.contradiction, evidence.checkpoint) &&
       !leavesOperationLive(evidence.contradiction);
   }
   return evidence.status === "pending"
-    ? evidence.observedAt >= evidence.recoveryDeadline
+    ? pastRecoveryDeadline(evidence.observedAt, evidence.recoveryDeadline)
     : failedAfterLock(evidence.failure, evidence.checkpoint);
 }
 
@@ -1706,7 +1723,7 @@ function retainedStateRefusal(error: unknown): LiquidityTankProgress {
 
 /**
  * The committed expiry, from the authenticated evidence it committed. A
- * completion finalized at or after the deadline is still `failed-substrate`,
+ * completion finalized after the deadline is still `failed-substrate`,
  * as DACS-4 §9.5.5 requires, but the release did reach the payee: it is
  * reported apart, with the transaction evidence to reconcile from. Every
  * expiry carries the lock it ends (the checkpoint's when there is one), so a
@@ -2115,11 +2132,11 @@ export async function advanceLiquidityTankSettlement(
     }
     if (expiryUnchecked) return verifierUnavailable();
     // A terminal failure carries no time of its own, and a contradiction's
-    // time is checked above: this host's clock must also have reached the
+    // time is checked above: this host's clock must also have passed the
     // deadline before the expiry is reported.
     if ((evidence.status === "failed-after-lock" || evidence.status === "failed" ||
         evidence.status === "contradicted-after-lock") &&
-        claimNow < recoveryEvidenceDeadline(evidence)) {
+        !pastRecoveryDeadline(claimNow, recoveryEvidenceDeadline(evidence))) {
       return { status: "indeterminate", reason: "liquidity-tank-recovery-expiry-not-due" };
     }
     return recoveryExpiredProgress(intent, evidence);
@@ -2368,8 +2385,8 @@ export async function advanceLiquidityTankSettlement(
       return { status: "indeterminate", reason: "liquidity-tank-clock-invalid" };
     }
     // Snapshot freshness is required for pending, but a terminal failure
-    // remains evidence without a refreshed timestamp. The host must reach D.
-    if (recoveryNow < recoveryEvidenceDeadline(observation) ||
+    // remains evidence without a refreshed timestamp. The host must pass D.
+    if (!pastRecoveryDeadline(recoveryNow, recoveryEvidenceDeadline(observation)) ||
         !provesRecoveryExpiry(observation)) {
       if (observation.status === "completed") {
         return {
@@ -2418,7 +2435,7 @@ export async function advanceLiquidityTankSettlement(
   };
 
   if (durableObservation?.status === "completed") {
-    return durableObservation.finalityObservedAt < durableObservation.recoveryDeadline
+    return !pastRecoveryDeadline(durableObservation.finalityObservedAt, durableObservation.recoveryDeadline)
       ? await persistSettlement(durableObservation)
       : await persistRecoveryExpired(durableObservation, durableObservation) ?? {
           status: "indeterminate",
@@ -2552,13 +2569,13 @@ export async function advanceLiquidityTankSettlement(
         }
         return await persistRecoveryExpired(durableFailure, durableObservation);
       }
-      // Once this host's clock reaches the deadline, a contradiction the
-      // bridge stamped after the checkpoint and at or after the deadline
-      // expires the lock, reported apart. One stamped at or before the
-      // checkpoint (it may be cached) or before the deadline (the lock may
-      // still be released in time), or a `pending` that leaves the operation
-      // live (no lock, or another lock before its own deadline), never does:
-      // it stays `lock-contradicted`.
+      // Once this host's clock passes the deadline, a contradiction the
+      // bridge stamped after the checkpoint and after the deadline expires
+      // the lock, reported apart. One stamped at or before the checkpoint (it
+      // may be cached) or at or before the deadline (the lock may still be
+      // released in time), or a `pending` that leaves the operation live (no
+      // lock, or another lock at or before its own deadline), never does: it
+      // stays `lock-contradicted`.
       if (checkpoint && !durableFailure && contradictsCheckpoint(observation, checkpoint)) {
         type Contradicted = Extract<LiquidityTankRecoveryEvidence, { status: "contradicted-after-lock" }>;
         const contradicted = validateRecoveryEvidence({
@@ -2587,7 +2604,7 @@ export async function advanceLiquidityTankSettlement(
       return await resolveDurableProgress();
     }
     if (observation.status === "completed" &&
-        observation.finalityObservedAt >= observation.recoveryDeadline) {
+        pastRecoveryDeadline(observation.finalityObservedAt, observation.recoveryDeadline)) {
       return await persistRecoveryExpired(observation, durableObservation) ?? {
         status: "indeterminate",
         reason: "liquidity-tank-recovery-expiry-persistence-uncertain",
@@ -2828,7 +2845,7 @@ function recordObservationTransition(
     return { result: { status: "conflict", reason: "liquidity-tank-observation-invalid" } };
   }
   if (observation.status === "completed" &&
-      observation.finalityObservedAt >= observation.recoveryDeadline) {
+      pastRecoveryDeadline(observation.finalityObservedAt, observation.recoveryDeadline)) {
     return { result: { status: "conflict", reason: "liquidity-tank-completion-after-recovery-deadline" } };
   }
   const prior = record.observation;
@@ -2928,7 +2945,7 @@ function recordRecoveryExpiredTransition(
   }
   // The evidence carries its own authenticated time, so the CAS re-checks
   // it as well as the store clock.
-  if (expiryNow < recoveryEvidenceDeadline(evidence) || !provesRecoveryExpiry(evidence)) {
+  if (!pastRecoveryDeadline(expiryNow, recoveryEvidenceDeadline(evidence)) || !provesRecoveryExpiry(evidence)) {
     return { result: { status: "conflict", reason: "liquidity-tank-recovery-expiry-not-due" } };
   }
   const expectedObservationMatches = record.observation === undefined

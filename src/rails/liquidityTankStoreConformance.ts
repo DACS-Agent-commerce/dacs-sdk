@@ -54,6 +54,9 @@ type WriteAuthority = {
 
 const T0 = 1_700_000_000_000;
 const DEADLINE = T0 + 86_400_000;
+// A release final at the deadline is timely: the first millisecond after it is
+// the earliest a finality, a bridge snapshot or a host clock shows it missed.
+const DUE = DEADLINE + 1;
 const LEASE_MS = 1_000;
 // The store is not the authenticator, so a well-formed hash is enough here.
 const AUTHENTICATION_HASH = "a".repeat(64);
@@ -380,13 +383,13 @@ const TAKEOVER_RACES: readonly (readonly [string, (store: LiquidityTankStore, fi
     };
   }],
   ["recordRecoveryExpired", async (store, fixture) => {
-    // The lease runs out one millisecond after the deadline, when expiry is due.
-    const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE + 1 - LEASE_MS, LEASE_MS, DEADLINE);
+    // The lease runs out one millisecond after expiry falls due.
+    const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DUE + 1 - LEASE_MS, LEASE_MS, DUE);
     return {
       write: (handle) => handle.recordRecoveryExpired({
-        ...write, now: DEADLINE, expectedObservation: checkpoint, observation: checkpoint,
+        ...write, now: DUE, expectedObservation: checkpoint, observation: checkpoint,
       }),
-      takeoverAt: DEADLINE + 1,
+      takeoverAt: DUE + 1,
       shows: (claimed) => claimed.status === "recovery-expired" && same(claimed.observation, checkpoint),
     };
   }],
@@ -522,25 +525,38 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
       "after a restart, the acquired claim does not return the first submission write's now as submissionRecordedAt");
 
     const expiring = new Fixture(tag, 1);
-    const { write: expiryWrite, checkpoint } = await lockWith(store, expiring, "owner-c", DEADLINE - 10, LEASE_MS, DEADLINE);
+    const { write: expiryWrite, checkpoint } = await lockWith(store, expiring, "owner-c", DEADLINE - 10, LEASE_MS, DUE);
     await record("expiry", store.recordRecoveryExpired({
-      ...expiryWrite, now: DEADLINE, expectedObservation: checkpoint, observation: checkpoint,
+      ...expiryWrite, now: DUE, expectedObservation: checkpoint, observation: checkpoint,
     }), true);
     const expired = await claim(await reopen(store), expiring.intent, "owner-d", DEADLINE + LEASE_MS);
     check(expired.status === "recovery-expired" && expired.submissionRecordedAt === DEADLINE - 10,
       "after a restart, the recovery-expired claim does not return the first submission write's now as submissionRecordedAt");
   }],
 
-  ["a bridge operation serves one settlement only", async (store, tag) => {
+  ["a bridge operation serves one settlement only", async (store, tag, reopen) => {
     const first = new Fixture(tag, 0);
     const second = new Fixture(tag, 1);
     const firstWrite = await acquire(store, first.intent, "owner-a", T0);
     await record("first settlement's submission",
       store.recordSubmission({ ...firstWrite, submission: first.submission }), true);
     const secondWrite = await acquire(store, second.intent, "owner-b", T0);
-    await record("second settlement reusing the bridge ID", store.recordSubmission({
-      ...secondWrite, submission: retained(signedSubmission(second.intent, first.bridgeId, 1)),
-    }), false);
+    const reuse = retained(signedSubmission(second.intent, first.bridgeId, 1));
+    await record("second settlement reusing the bridge ID",
+      store.recordSubmission({ ...secondWrite, submission: reuse }), false);
+    // A refusal moves nothing: the bridge ID stays with the first settlement,
+    // so the core's retry of a refused write is refused again.
+    await record("second settlement reusing the bridge ID again",
+      store.recordSubmission({ ...secondWrite, submission: reuse }), false);
+    await record("first settlement's submission replayed after the refused reuse",
+      store.recordSubmission({ ...firstWrite, submission: first.submission }), true);
+    const reopened = await reopen(store);
+    const resumed = await acquire(reopened, second.intent, "owner-c", T0 + LEASE_MS);
+    await record("after a restart, the second settlement reusing the bridge ID",
+      reopened.recordSubmission({ ...resumed, submission: reuse }), false);
+    const inspected = await claim(reopened, second.intent, "inspector", T0 + LEASE_MS * 2);
+    check(inspected.status === "acquired" && inspected.submission === undefined,
+      "a refused reuse of another settlement's bridge ID was retained");
   }],
 
   ["observations need the retained submission and never regress", async (store, tag) => {
@@ -564,16 +580,20 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
       "the checkpoint did not survive the refused writes");
   }],
 
-  ["a completion at or after the deadline is never recorded as an observation", async (store, tag) => {
+  ["a completion after the deadline is never recorded as an observation; one at the deadline is timely", async (store, tag) => {
     const fixture = new Fixture(tag);
     const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10);
-    await record("completion finalized at the deadline",
-      store.recordObservation({ ...write, observation: fixture.completed(DEADLINE) }), false);
-    await record("completion finalized after the deadline",
-      store.recordObservation({ ...write, observation: fixture.completed(DEADLINE + 1) }), false);
+    await record("completion finalized a millisecond after the deadline",
+      store.recordObservation({ ...write, observation: fixture.completed(DUE) }), false);
+    await record("completion finalized later after the deadline",
+      store.recordObservation({ ...write, observation: fixture.completed(DUE + 1) }), false);
     const reclaimed = await claim(store, fixture.intent, "owner-b", DEADLINE - 10 + LEASE_MS);
     check(reclaimed.status === "acquired" && same(reclaimed.observation, checkpoint),
       "a late completion replaced the checkpoint");
+    await record("completion finalized at the deadline", store.recordObservation({
+      ...write, owner: "owner-b", generation: reclaimed.lease.generation, now: DEADLINE - 10 + LEASE_MS,
+      observation: fixture.completed(DEADLINE),
+    }), true);
   }],
 
   ["a settlement needs a durable timely completion", async (store, tag) => {
@@ -612,7 +632,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     await record("timely completion", store.recordObservation({ ...write, observation: completion }), true);
     await record("settlement", store.recordSettlement({ ...write, settlement: fixture.settlement(completion) }), true);
     await record("expiry after the settlement", store.recordRecoveryExpired({
-      ...write, now: DEADLINE + 1, expectedObservation: completion, observation: fixture.completed(DEADLINE),
+      ...write, now: DUE, expectedObservation: completion, observation: fixture.completed(DUE),
     }), false);
     const later = await claim(store, fixture.intent, "owner-b", DEADLINE + LEASE_MS);
     check(later.status === "settled", `expiry after settlement left the phase ${later.status}`);
@@ -624,23 +644,23 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const completion = fixture.completed(DEADLINE - 5);
     await record("timely completion", store.recordObservation({ ...write, observation: completion }), true);
     await record("expiry from a late completion", store.recordRecoveryExpired({
-      ...write, now: DEADLINE + 1, expectedObservation: completion, observation: fixture.completed(DEADLINE),
+      ...write, now: DUE, expectedObservation: completion, observation: fixture.completed(DUE),
     }), false);
     await record("settlement", store.recordSettlement({
-      ...write, now: DEADLINE + 1, settlement: fixture.settlement(completion),
+      ...write, now: DUE, settlement: fixture.settlement(completion),
     }), true);
   }],
 
   ["recovery expiry is a compare-and-swap on the exact durable checkpoint", async (store, tag) => {
     const fixture = new Fixture(tag);
-    const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10, LEASE_MS, DEADLINE);
+    const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10, LEASE_MS, DUE);
     const expire = (input: Partial<Parameters<LiquidityTankStore["recordRecoveryExpired"]>[0]>) =>
       store.recordRecoveryExpired({
-        ...write, now: DEADLINE, expectedObservation: checkpoint, observation: checkpoint, ...input,
+        ...write, now: DUE, expectedObservation: checkpoint, observation: checkpoint, ...input,
       });
-    await record("expiry before the host clock reaches the deadline", expire({ now: DEADLINE - 1 }), false);
-    await record("expiry from a snapshot older than the deadline",
-      expire({ observation: fixture.lockedPending(DEADLINE - 1) }), false);
+    await record("expiry with the host clock at the deadline", expire({ now: DEADLINE }), false);
+    await record("expiry from a snapshot at the deadline",
+      expire({ observation: fixture.lockedPending(DEADLINE) }), false);
     await record("expiry against another expected observation",
       expire({ expectedObservation: fixture.empty() }), false);
     await record("expiry after the lease expired", expire({ now: DEADLINE - 10 + LEASE_MS }), false);
@@ -653,9 +673,9 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
 
   ["recovery expiry blocks a later completion and settlement", async (store, tag) => {
     const fixture = new Fixture(tag);
-    const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10, LEASE_MS, DEADLINE);
+    const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10, LEASE_MS, DUE);
     await record("expiry", store.recordRecoveryExpired({
-      ...write, now: DEADLINE, expectedObservation: checkpoint, observation: checkpoint,
+      ...write, now: DUE, expectedObservation: checkpoint, observation: checkpoint,
     }), true);
     const completion = fixture.completed(DEADLINE - 5);
     await record("completion after expiry", store.recordObservation({ ...write, observation: completion }), false);
@@ -697,8 +717,11 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const waiting = await claim(store, fixture.intent, "owner-b", DEADLINE - 100);
     check(waiting.status === "waiting" && same(waiting.recoveryFailure, evidence) &&
       same(waiting.observation, checkpoint), "a claim does not return the retained failure");
-    await record("expiry from the retained failure", store.recordRecoveryExpired({
+    await record("expiry from the retained failure with the host clock at the deadline", store.recordRecoveryExpired({
       ...write, now: DEADLINE, expectedObservation: checkpoint, observation: evidence,
+    }), false);
+    await record("expiry from the retained failure", store.recordRecoveryExpired({
+      ...write, now: DUE, expectedObservation: checkpoint, observation: evidence,
     }), true);
   }],
 
@@ -715,7 +738,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const completion = fixture.completed(DEADLINE - 1);
     await record("timely completion", store.recordObservation({ ...write, observation: completion }), true);
     await record("expiry from the cleared failure", store.recordRecoveryExpired({
-      ...write, now: DEADLINE, expectedObservation: completion, observation: evidence,
+      ...write, now: DUE, expectedObservation: completion, observation: evidence,
     }), false);
     await record("settlement", store.recordSettlement({
       ...write, now: DEADLINE, settlement: fixture.settlement(completion),
@@ -737,10 +760,10 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     await record("timely completion of that failure's lock",
       store.recordObservation({ ...write, observation: completion }), true);
     await record("expiry from the replaced failure", store.recordRecoveryExpired({
-      ...write, now: DEADLINE, expectedObservation: failure, observation: failure,
+      ...write, now: DUE, expectedObservation: failure, observation: failure,
     }), false);
     await record("expiry from the replaced failure against the completion", store.recordRecoveryExpired({
-      ...write, now: DEADLINE, expectedObservation: completion, observation: failure,
+      ...write, now: DUE, expectedObservation: completion, observation: failure,
     }), false);
     await record("settlement", store.recordSettlement({
       ...write, now: DEADLINE, settlement: fixture.settlement(completion),
@@ -753,10 +776,10 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     await record("first submission", store.recordSubmission({ ...write, submission: durable.submission }), true);
     const failure = durable.failedAfterLock(DEADLINE - 200);
     await record("failure carrying its lock", store.recordObservation({ ...write, observation: failure }), true);
-    const expire = (observation: LiquidityTankRecoveryEvidence, now = DEADLINE) =>
+    const expire = (observation: LiquidityTankRecoveryEvidence, now = DUE) =>
       store.recordRecoveryExpired({ ...write, now, expectedObservation: failure, observation });
-    await record("expiry from the durable failure before the host clock reaches the deadline",
-      expire(failure, DEADLINE - 1), false);
+    await record("expiry from the durable failure with the host clock at the deadline",
+      expire(failure, DEADLINE), false);
     await record("expiry from a failure that is not the durable one", expire(durable.failedAfterLock(DEADLINE - 199)), false);
     await record("expiry from the durable failure", expire(failure), true);
     await record("exact expiry replay", expire(failure), true);
@@ -768,22 +791,24 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const kept = await store.recordRecoveryFailure({ ...locked.write, recoveryFailure: evidence });
     check(succeeded(kept), `failure retention answered ${kept.status}`);
     await record("expiry from a bare failure retained beside a checkpoint", store.recordRecoveryExpired({
-      ...locked.write, now: DEADLINE, expectedObservation: locked.checkpoint, observation: retainedFailure,
+      ...locked.write, now: DUE, expectedObservation: locked.checkpoint, observation: retainedFailure,
     }), false);
     await record("expiry from the retained failure", store.recordRecoveryExpired({
-      ...locked.write, now: DEADLINE, expectedObservation: locked.checkpoint, observation: evidence,
+      ...locked.write, now: DUE, expectedObservation: locked.checkpoint, observation: evidence,
     }), true);
   }],
 
   ["a late completion is expiry evidence only for the durable lock and its deadline", async (store, tag) => {
     const expireAgainst = async (label: string, fixture: Fixture, write: WriteAuthority, durable: ObservationValue) => {
-      const late = fixture.completed(DEADLINE);
+      const late = fixture.completed(DUE);
       const expire = (observation: LiquidityTankRecoveryEvidence) =>
-        store.recordRecoveryExpired({ ...write, now: DEADLINE, expectedObservation: durable, observation });
+        store.recordRecoveryExpired({ ...write, now: DUE, expectedObservation: durable, observation });
       await record(`late completion of another lock against ${label}`,
         expire({ ...late, lockTxHash: "another-lock" }), false);
       await record(`late completion of the lock with another deadline against ${label}`,
         expire({ ...late, recoveryDeadline: DEADLINE - 100 }), false);
+      await record(`completion of the lock finalized at the deadline against ${label}`,
+        expire(fixture.completed(DEADLINE)), false);
       await record(`late completion of the lock against ${label}`, expire(late), true);
     };
     const checkpointed = new Fixture(tag, 0);
@@ -798,28 +823,31 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     await expireAgainst("a durable failure that carries its lock", failing, write, failure);
   }],
 
-  ["a contradiction expires a lock only when stamped after its checkpoint and at or after the deadline, never while the operation is live",
+  ["a contradiction expires a lock only when stamped after its checkpoint and after the deadline, never while the operation is live",
     async (store, tag) => {
       const contradicted = (checkpoint: ObservationValue, contradiction: ObservationValue) =>
         ({ status: "contradicted-after-lock", checkpoint, contradiction }) as LiquidityTankRecoveryEvidence;
       const fixture = new Fixture(tag, 0);
       const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10, LEASE_MS, DEADLINE - 500);
-      const expire = (contradiction: ObservationValue, now = DEADLINE, against = checkpoint) =>
+      const expire = (contradiction: ObservationValue, now = DUE, against = checkpoint) =>
         store.recordRecoveryExpired({
           ...write, now, expectedObservation: checkpoint, observation: contradicted(against, contradiction),
         });
-      const { lockTxHash: _lock, recoveryDeadline: _deadline, ...unlocked } = fixture.lockedPending(DEADLINE);
-      await record("contradiction stamped before the deadline", expire(fixture.empty(DEADLINE - 1)), false);
-      await record("contradiction at the deadline before the host clock reaches it",
-        expire(fixture.empty(DEADLINE), DEADLINE - 1), false);
-      await record("pending without a lock at the deadline", expire(unlocked as ObservationValue), false);
+      const { lockTxHash: _lock, recoveryDeadline: _deadline, ...unlocked } = fixture.lockedPending(DUE);
+      await record("contradiction stamped at the deadline", expire(fixture.empty(DEADLINE)), false);
+      await record("contradiction after the deadline with the host clock at it",
+        expire(fixture.empty(DUE), DEADLINE), false);
+      await record("pending without a lock after the deadline", expire(unlocked as ObservationValue), false);
       await record("pending of another lock inside its own window", expire({
-        ...fixture.lockedPending(DEADLINE), lockTxHash: "another-lock", recoveryDeadline: DEADLINE + 1_000,
+        ...fixture.lockedPending(DUE), lockTxHash: "another-lock", recoveryDeadline: DEADLINE + 1_000,
+      }), false);
+      await record("pending of another lock at its own deadline", expire({
+        ...fixture.lockedPending(DUE), lockTxHash: "another-lock", recoveryDeadline: DUE,
       }), false);
       await record("contradiction of another checkpoint",
-        expire(fixture.empty(DEADLINE), DEADLINE, fixture.lockedPending(DEADLINE - 499)), false);
-      await record("contradiction stamped after the checkpoint at the deadline", expire(fixture.empty(DEADLINE)), true);
-      await record("exact contradiction expiry replay", expire(fixture.empty(DEADLINE)), true);
+        expire(fixture.empty(DUE), DUE, fixture.lockedPending(DEADLINE - 499)), false);
+      await record("contradiction stamped after the checkpoint and the deadline", expire(fixture.empty(DUE)), true);
+      await record("exact contradiction expiry replay", expire(fixture.empty(DUE)), true);
 
       const late = new Fixture(tag, 1);
       const lateLock = await lockWith(store, late, "owner-a", DEADLINE + 50, LEASE_MS, DEADLINE + 100);
@@ -839,8 +867,8 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
       });
       check(succeeded(kept), `failure retention answered ${kept.status}`);
       await record("contradiction beside retained failure evidence", store.recordRecoveryExpired({
-        ...failingLock.write, now: DEADLINE, expectedObservation: failingLock.checkpoint,
-        observation: contradicted(failingLock.checkpoint, failing.empty(DEADLINE)),
+        ...failingLock.write, now: DUE, expectedObservation: failingLock.checkpoint,
+        observation: contradicted(failingLock.checkpoint, failing.empty(DUE)),
       }), false);
     }],
 
@@ -860,9 +888,9 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     }), true);
 
     const expiring = new Fixture(tag, 1);
-    const expiry = await lockWith(reopened, expiring, "owner-c", DEADLINE - 10, LEASE_MS, DEADLINE);
+    const expiry = await lockWith(reopened, expiring, "owner-c", DEADLINE - 10, LEASE_MS, DUE);
     await record("expiry", reopened.recordRecoveryExpired({
-      ...expiry.write, now: DEADLINE, expectedObservation: expiry.checkpoint, observation: expiry.checkpoint,
+      ...expiry.write, now: DUE, expectedObservation: expiry.checkpoint, observation: expiry.checkpoint,
     }), true);
     reopened = await reopen(reopened);
     const settled = await claim(reopened, locked.intent, "owner-d", DEADLINE + LEASE_MS);
@@ -968,14 +996,14 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     for (let index = 0; index < ORDERS.length; index += 1) {
       const order = ORDERS[index] as Order;
       const fixture = new Fixture(tag, index);
-      // Observed at the deadline, the checkpoint makes expiry due while the completion is still timely.
-      const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10, LEASE_MS, DEADLINE);
+      // Observed after the deadline, the checkpoint makes expiry due while the completion is still timely.
+      const { write, checkpoint } = await lockWith(store, fixture, "owner-a", DEADLINE - 10, LEASE_MS, DUE);
       const other = await reopen(store);
       const completion = fixture.completed(DEADLINE - 1);
-      const atDeadline = { ...write, now: DEADLINE };
+      const due = { ...write, now: DUE };
       const writes = await race(order,
-        () => store.recordObservation({ ...atDeadline, observation: completion }),
-        () => other.recordRecoveryExpired({ ...atDeadline, expectedObservation: checkpoint, observation: checkpoint }));
+        () => store.recordObservation({ ...due, observation: completion }),
+        () => other.recordRecoveryExpired({ ...due, expectedObservation: checkpoint, observation: checkpoint }));
       check(successes(...writes) === 1,
         `${successes(...writes)} of a concurrent timely completion and recovery expiry were recorded (${order})`);
       const completionWon = succeeded(writes[0]);
@@ -996,12 +1024,12 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
         const completion = fixture.completed(DEADLINE - 5);
         await record("timely completion", store.recordObservation({ ...write, observation: completion }), true);
         const other = await reopen(store);
-        const afterDeadline = { ...write, now: DEADLINE + 1 };
+        const afterDeadline = { ...write, now: DUE };
         const settlement = fixture.settlement(completion);
         const [settled, expired] = await race(order,
           () => store.recordSettlement({ ...afterDeadline, settlement }),
           () => other.recordRecoveryExpired({
-            ...afterDeadline, expectedObservation: completion, observation: fixture.completed(DEADLINE),
+            ...afterDeadline, expectedObservation: completion, observation: fixture.completed(DUE),
           }));
         const outcome = succeeded(expired)
           ? (succeeded(settled) ? "both the settlement and the expiry were recorded" : "the expiry won")
@@ -1218,10 +1246,11 @@ async function phaseSequence(
     let progress = await run("worker-1");
     check(progress.status === "settle-asymmetric", `locked bridge read returned ${progress.status}`);
     await restart();
-    now = DEADLINE - 1;
+    // At the deadline a release is still timely: the lock is not yet overdue.
+    now = DEADLINE;
     progress = await run("worker-2");
     check(progress.status === "settle-asymmetric" && !progress.pastDeadline,
-      `a lock before its deadline returned ${progress.status}`);
+      `a lock at its deadline returned ${progress.status}${progress.status === "settle-asymmetric" ? " past its deadline" : ""}`);
     await restart();
     now = DEADLINE + LEASE_MS;
     progress = await run("worker-3");

@@ -280,7 +280,7 @@ describe("a stored settlement is checked field by field before it is reported", 
     ["another currency", at("paymentAmount", { currency: "USDT" })],
     ["another finality model", at("settlementFinality", { model: "htlc" })],
     ["an authentication hash that is not 64 hex", (s: Settlement) => ({ ...s, authenticationHash: "a".repeat(63) })],
-    ["finality at the recovery deadline", at("settlementFinality", { finalityObservedAt: D })],
+    ["finality a millisecond after the recovery deadline", at("settlementFinality", { finalityObservedAt: D + 1 })],
   ])("%s is refused", async (_label, rewrite) => {
     let rewriting = false;
     const store = patched((inner) => ({
@@ -330,9 +330,9 @@ describe("a replayed expiry re-authenticates its evidence of every kind", () => 
     };
     const p = phase({ verifier });
     if (kind === "pending") {
-      await lockDurably(p, D);
+      await lockDurably(p, D + 1);
       p.at(D + 100);
-      p.see(locked(D));
+      p.see(locked(D + 1));
       await expect(p.run()).resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate" });
     } else if (kind === "completed") {
       await lockDurably(p);
@@ -393,16 +393,16 @@ describe("failure retention counts only a successful write with an exact, readab
 });
 
 describe("a late release with no prior durable observation", () => {
-  test("a first read that is a completion finalized at the deadline commits its expiry, with the lock and the release", async () => {
+  test("a first read that is a completion finalized a millisecond after the deadline commits its expiry, with the lock and the release", async () => {
     const p = phase();
     p.at(D + 100);
     p.prepareWith({ preparedAt: D + 100 });
-    p.see(completed(D));
+    p.see(completed(D + 1));
     const lock = {
       kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
       lockTxHash: "source-lock-tx", recoveryDeadline: D,
     };
-    const release = { txRef: { ...lock, releaseTxHash: "destination-release-tx" }, finalityObservedAt: D };
+    const release = { txRef: { ...lock, releaseTxHash: "destination-release-tx" }, finalityObservedAt: D + 1 };
     const result = await p.run();
     expect(result).toEqual({
       status: "failed", errorClass: "failed-substrate", reason: "tank-released-after-recovery-deadline",
@@ -500,9 +500,9 @@ describe("store claims", () => {
   test("a recovery-expired claim whose submission is corrupt is reported, not thrown", async () => {
     const inner = createInMemoryLiquidityTankStore(VOLATILE);
     const p = phase({ store: inner });
-    await lockDurably(p, D);
+    await lockDurably(p, D + 1);
     p.at(D + 100);
-    p.see(locked(D));
+    p.see(locked(D + 1));
     await expect(p.run()).resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate" });
     const store: LiquidityTankStore = {
       ...inner,
@@ -531,10 +531,10 @@ describe("reasons", () => {
     });
   });
 
-  test("a late completion read before the host clock reaches the deadline is neither settled nor expired", async () => {
+  test("a late completion read before the host clock passes the deadline is neither settled nor expired", async () => {
     const p = phase();
     await lockDurably(p);
-    p.see(completed(D));
+    p.see(completed(D + 1));
     p.at(D - 100);
     const recordSettlement = vi.spyOn(p.store, "recordSettlement");
     const recordRecoveryExpired = vi.spyOn(p.store, "recordRecoveryExpired");
@@ -548,9 +548,9 @@ describe("reasons", () => {
   test("an expiry write that throws is uncertain persistence, not a terminal result", async () => {
     const store = patched(() => ({ recordRecoveryExpired: async () => { throw new Error("database unavailable"); } }));
     const p = phase({ store });
-    await lockDurably(p, D);
+    await lockDurably(p, D + 1);
     p.at(D + 100);
-    p.see(locked(D));
+    p.see(locked(D + 1));
     await expect(p.run()).resolves.toEqual({
       status: "indeterminate", reason: "liquidity-tank-recovery-expiry-persistence-uncertain",
     });
@@ -586,8 +586,8 @@ describe("reasons", () => {
         },
       }));
       const p = phase({ store });
-      await lockDurably(p, D);
-      p.see(locked(D));
+      await lockDurably(p, D + 1);
+      p.see(locked(D + 1));
       p.clockFrom(() => {
         readings += 1;
         if (readings === failAt) throw new Error("clock unavailable");
@@ -602,6 +602,166 @@ describe("reasons", () => {
       result: { status: "indeterminate", reason: "liquidity-tank-clock-invalid" },
       readingAtExpiry: undefined,
     });
+  });
+});
+
+// DACS-4 §9.5.5 releases a lock "within" recoveryDeadline and DACS-5 ST-8
+// expires it once the window "passes": the deadline millisecond is inside the
+// window. Each vector polls once with the bridge's last locked snapshot, then
+// reads the release; each fails where the deadline millisecond counts as missed.
+describe("a release final at recoveryDeadline is timely; the window passes only after it", () => {
+  const LOCK = {
+    kind: "liquidity-tank", bridgeId: BRIDGE_ID, sourceChainId: 11_155_111, destChainId: 80_002,
+    lockTxHash: "source-lock-tx", recoveryDeadline: D,
+  } as const;
+
+  test("deadline - 1: polled at the deadline the lock is not yet overdue, and a release final before it settles", async () => {
+    const p = phase();
+    await lockDurably(p);
+    p.at(D);
+    p.see(locked(D - 1));
+    await expect(p.run()).resolves.toEqual({
+      status: "settle-asymmetric", reason: "tank-locked-unreleased", recoveryDeadline: D, pastDeadline: false, txRef: LOCK,
+    });
+    p.at(D + 11);
+    p.see(completed(D - 1));
+    await expect(p.run()).resolves.toMatchObject({ status: "settled", settlement: { settlementFinality: { finalityObservedAt: D - 1 } } });
+  });
+
+  test("deadline: a snapshot at the deadline expires nothing, and a release final at it settles: never pay the phase again", async () => {
+    const p = phase();
+    await lockDurably(p);
+    const recordRecoveryExpired = vi.spyOn(p.store, "recordRecoveryExpired");
+    p.at(D);
+    p.see(locked(D));
+    await expect(p.run()).resolves.toEqual({
+      status: "settle-asymmetric", reason: "tank-locked-unreleased", recoveryDeadline: D, pastDeadline: false, txRef: LOCK,
+    });
+    p.at(D + 11);
+    p.see(completed(D));
+    const result = await p.run();
+    expect(result).toEqual({
+      status: "settled",
+      settlement: {
+        txRef: { ...LOCK, releaseTxHash: "destination-release-tx" },
+        paymentAmount: { amount: "1.25", currency: "USDC" },
+        settlementFinality: { model: "liquidity-tank", finalityObservedAt: D },
+        authenticationHash: AUTH_HASH,
+      },
+    });
+    expect(liquidityTankPhaseOutcome(result)).toEqual({ kind: "result", ok: true, evidenceOutcome: "success" });
+    expect(recordRecoveryExpired).not.toHaveBeenCalled();
+  });
+
+  test("deadline + 1: a snapshot at the deadline still proves nothing; a release final after it is paid late, with its release", async () => {
+    const p = phase();
+    await lockDurably(p);
+    const recordRecoveryExpired = vi.spyOn(p.store, "recordRecoveryExpired");
+    p.at(D + 1);
+    p.see(locked(D));
+    await expect(p.run()).resolves.toEqual({
+      status: "settle-asymmetric", reason: "tank-locked-unreleased", recoveryDeadline: D, pastDeadline: true, txRef: LOCK,
+    });
+    expect(recordRecoveryExpired).not.toHaveBeenCalled();
+    p.at(D + 12);
+    p.see(completed(D + 1));
+    const release = { txRef: { ...LOCK, releaseTxHash: "destination-release-tx" }, finalityObservedAt: D + 1 };
+    const result = await p.run();
+    expect(result).toEqual({
+      status: "failed", errorClass: "failed-substrate", reason: "tank-released-after-recovery-deadline",
+      reputationNeutral: true, lockTxRef: LOCK, ...release,
+    });
+    expect(liquidityTankPhaseOutcome(result)).toMatchObject({ interimTxRef: LOCK, release });
+  });
+});
+
+// DACS-4 L647-648 lists a failed status after a committed lock under both
+// `permanent` and the asymmetric source lock. DACS-5 ST-8 says a committed
+// lock whose recovery path is still open "is not a terminal failure", so the
+// SDK reads the two bullets that way (clarification: DACS-Standard#422).
+describe("ST-8: a failure after a committed lock is not terminal while the lock can still release", () => {
+  test("a lock-bearing failed read is settle-asymmetric, maps to the interim record, and the lock's timely release settles once", async () => {
+    const p = phase();
+    // A host that pays a phase again on any terminal failure.
+    let replacementPayments = 0;
+    const host = async () => {
+      const progress = await p.run();
+      if (liquidityTankPhaseOutcome(progress).kind === "result" && progress.status === "failed") replacementPayments += 1;
+      return progress;
+    };
+    p.seeAfterBroadcast(lockBearingFailure());
+    const failedRead = await host();
+    expect(failedRead).toMatchObject({ status: "settle-asymmetric", reason: "tank-locked-unreleased", bridgeStatus: "failed" });
+    expect(failedRead).not.toMatchObject({ errorClass: "permanent" });
+    expect(liquidityTankPhaseOutcome(failedRead)).toMatchObject({ kind: "interim", evidenceReason: "tank-locked-unreleased" });
+    p.tick();
+    p.see(completed(PREPARED_AT + 3_000));
+    await expect(host()).resolves.toMatchObject({ status: "settled" });
+    expect(replacementPayments).toBe(0);
+    expect(p.broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The reference store's rows with a durable bridge-ID index that hands the
+ * ID to a settlement whose reuse it refuses (the sweep's N1 store).
+ */
+function reservationMovedOnRefusal(): LiquidityTankStore {
+  const rows = new Map<string, LiquidityTankStore>();
+  const owners = new Map<string, string>();
+  const row = (key: string): LiquidityTankStore => {
+    if (!rows.has(key)) rows.set(key, createInMemoryLiquidityTankStore(VOLATILE));
+    return rows.get(key) as LiquidityTankStore;
+  };
+  return {
+    restartSafety: "volatile-acknowledged",
+    claim: (input) => row(input.intent.settlementKey).claim(input),
+    isCurrent: (input) => row(input.settlementKey).isCurrent(input),
+    recordSubmission: async (input) => {
+      const owner = owners.get(input.submission.bridgeId);
+      if (owner !== undefined && owner !== input.settlementKey) {
+        owners.set(input.submission.bridgeId, input.settlementKey);
+        return { status: "conflict", reason: "liquidity-tank-bridge-cross-settlement-reuse" };
+      }
+      const result = await row(input.settlementKey).recordSubmission(input);
+      if (result.status === "recorded") owners.set(input.submission.bridgeId, input.settlementKey);
+      return result;
+    },
+    recordObservation: (input) => row(input.settlementKey).recordObservation(input),
+    recordRecoveryFailure: (input) => row(input.settlementKey).recordRecoveryFailure(input),
+    recordRecoveryExpired: (input) => row(input.settlementKey).recordRecoveryExpired(input),
+    recordSettlement: (input) => row(input.settlementKey).recordSettlement(input),
+  };
+}
+
+describe("one bridge operation settles one phase (sweep N1)", () => {
+  // Phases 2 and 3 of one job move the same amount between the same addresses
+  // and tanks, so they share an operation hash, and this adapter gives both
+  // the same bridge ID.
+  const twoPhases = async (store: LiquidityTankStore) => {
+    const second = phase({ store });
+    second.seeAfterBroadcast(completed(PREPARED_AT + 2_000));
+    await expect(second.run()).resolves.toMatchObject({ status: "settled" });
+    const third = phase({ store, auth: authority({ phaseIndex: 3 }) });
+    expect(createLiquidityTankIntent(authority({ phaseIndex: 3 })).operationHash).toBe(OP);
+    third.see(completed(PREPARED_AT + 2_000));
+    const first = await third.run();
+    third.tick();
+    const retry = await third.run();
+    return { first, retry, broadcasts: third.broadcastRetained.mock.calls.length };
+  };
+
+  test("the shipped store refuses the second phase's reuse on every attempt, so it never settles on the first phase's operation", async () => {
+    const refused = { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
+    await expect(twoPhases(createInMemoryLiquidityTankStore(VOLATILE)))
+      .resolves.toEqual({ first: refused, retry: refused, broadcasts: 0 });
+  });
+
+  test("a store whose refusal moves the reservation settles the second phase unpaid, which the conformance case refuses", async () => {
+    const { first, retry, broadcasts } = await twoPhases(reservationMovedOnRefusal());
+    expect(first).toEqual({ status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" });
+    expect(retry).toMatchObject({ status: "settled", settlement: { txRef: { bridgeId: BRIDGE_ID } } });
+    expect(broadcasts).toBe(0);
   });
 });
 

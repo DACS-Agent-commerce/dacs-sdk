@@ -5,11 +5,11 @@ The SDK exposes a dependency-injected
 binds the current DACS v0.1 route—ETH Sepolia to Polygon Amoy, USDC,
 unidirectional—and refuses silent substitution to HTLC or any other mechanism.
 A lock whose bridge reads contradict it expires at its deadline like any other,
-once the bridge reports the contradiction at or after the deadline, and is
+once the bridge reports the contradiction after the deadline, and is
 reported apart; it does not conform to §9.5.5 or ST-8 only while the bridge
 reports the operation still live, pending without a lock or under another lock
-inside its own window, or while every contradicting read is stamped before the
-deadline or no later than the lock's checkpoint (see
+inside its own window, or while every contradicting read is stamped at or
+before the deadline or no later than the lock's checkpoint (see
 [Contradicted locks](#contradicted-locks)).
 
 **It is a core, not a phase handler.** It drives one phase's bridge operation
@@ -56,8 +56,11 @@ The core:
   pending and completed adapter observations, durable checkpoints, settlement
   replay records, progress and transaction evidence;
   seconds-scale values are not converted or heuristically reinterpreted (see
-  [Timestamp units](#timestamp-units)). A completion is timely only when
-  `finalityObservedAt < recoveryDeadline`; equality is expired. Expiry needs
+  [Timestamp units](#timestamp-units)). A completion is timely when
+  `finalityObservedAt <= recoveryDeadline`: a release final at the deadline
+  millisecond is "within" it (DACS-4 §9.5.5), and the window "passes" (DACS-5
+  ST-8) only after it. So every expiry check below, on a bridge time or on the
+  host clock, needs a time strictly after `recoveryDeadline`. Expiry needs
   authenticated evidence; see below.
 
 **Restart safety comes from the store, and the core runs only on a store that
@@ -151,25 +154,25 @@ while only a genuinely absent submission authorizes fresh preparation.
 
 Recovery expiry needs authenticated evidence bound to the exact checkpoint:
 
-- a locked pending snapshot with `observedAt >= recoveryDeadline`;
+- a locked pending snapshot with `observedAt > recoveryDeadline`;
 - a terminal `failed` with either `empty -> pending -> failed` or
   `empty -> failed` history, whose authenticated `lockTxHash` and
   `recoveryDeadline` match the durable lock, or which carries them itself
   when no checkpoint was stored;
 - a read that contradicts the durable checkpoint, observed strictly after it
-  (its `observedAt` later than the checkpoint's) and at or after the deadline
-  (its `observedAt >= recoveryDeadline`): an `empty`, a
+  (its `observedAt` later than the checkpoint's) and after the deadline
+  (its `observedAt > recoveryDeadline`): an `empty`, a
   `capacity-unavailable`, a `failed` not bound to the lock, a completion of
-  another lock, or a `pending` of another lock observed at or after that
-  lock's own deadline; never a `pending` that leaves the operation live (see
+  another lock, or a `pending` of another lock observed after that lock's own
+  deadline; never a `pending` that leaves the operation live (see
   [Contradicted locks](#contradicted-locks)); or
-- a completion with `finalityObservedAt >= recoveryDeadline`.
+- a completion with `finalityObservedAt > recoveryDeadline`.
 
 For pending snapshots and contradictions alike, `observedAt` is the time the
 bridge snapshot describes, not the time the adapter served it. A cached
 pre-deadline snapshot is insufficient, even when requested after the deadline.
 There is no clock-skew allowance: both the snapshot and the host clock must
-reach the deadline, so a host clock running ahead of the bridge's never
+pass the deadline, so a host clock running ahead of the bridge's never
 expires a lock early on either. A contradiction's `observedAt` must also be
 later than the checkpoint's, so a cached read from before the lock never
 counts (see [Contradicted locks](#contradicted-locks)).
@@ -180,7 +183,7 @@ The core retains the first authenticated failure immediately as
 operation hash, lock hash, deadline and history. The failure observation must
 carry the authenticated lock hash and deadline; the core does not invent these
 fields from the checkpoint. Before the deadline it reports
-`bridgeStatus: "failed"`. Once the host clock reaches the deadline, a progress
+`bridgeStatus: "failed"`. Once the host clock passes the deadline, a progress
 call or restarted worker can commit reputation-neutral `failed-substrate`
 from that retained evidence, including when the next bridge read is unavailable
 or contradictory. A timely completion observed before the expiry commit still
@@ -192,17 +195,26 @@ after the bridge reported the lock, a `failed` observation that itself carries
 `lockTxHash` and `recoveryDeadline` is handled the same way: it is stored as
 the durable observation, reports the lock's `settle-asymmetric` progress with
 `bridgeStatus: "failed"` (also through a bridge-read or verifier outage), and
-expires to reputation-neutral `failed-substrate` once the host clock reaches
+expires to reputation-neutral `failed-substrate` once the host clock passes
 the deadline. A timely completion of the same lock still settles before then,
 and a late one commits the late release. So crash timing no longer changes
 the class of a post-lock failure. Only a failure without a lock (`empty ->
 failed`, or `empty -> pending -> failed` without `lockTxHash`) is `permanent`.
 
+DACS-4 §9.5.5 lists a `failed` status after a committed lock under two
+overlapping bullets: as `permanent`, and as the asymmetric source lock. The
+SDK reads them through DACS-5 ST-8, which says a committed tank lock whose
+recovery path is still open "is not a terminal failure" and is watched until
+`recoveryDeadline`. Reporting `permanent` while the lock can still release
+would let a host pay the phase a second time. A vector pins this reading; the
+Standard-side clarification is
+[DACS-Standard#422](https://github.com/DACS-Agent-commerce/DACS-Standard/issues/422).
+
 Without retained terminal evidence, the lock remains open when the status is
 unavailable, an observation write fails, or a pending snapshot is stale.
 
 **A late release is reported apart.** When the expiry evidence is a
-completion with `finalityObservedAt >= recoveryDeadline`, the core still
+completion with `finalityObservedAt > recoveryDeadline`, the core still
 commits reputation-neutral `failed-substrate`, as §9.5.5 requires, but returns
 the reason `tank-released-after-recovery-deadline` instead of
 `tank-locked-unreleased-recovery-expired`. That result carries `txRef`
@@ -270,7 +282,7 @@ milliseconds from the bridge's authenticated record. The core cannot catch a
 value that is too large, such as one in microseconds: a deadline in
 microseconds never arrives, so the lock stays open and any release reads as
 timely; a finality in microseconds reads as late, so once the host clock
-reaches the deadline a timely release is expired as `failed-substrate`. A
+passes the deadline a timely release is expired as `failed-substrate`. A
 retained `preparedAt` is only as well bound as its receipt: a store that
 stamps the receipt from its own clock, in its own unit, breaks the check, and
 store conformance refuses one that does. A settled row carries no
@@ -398,10 +410,10 @@ come from a lagging replica while locked funds can still move, so it never
 settles the phase or replaces the checkpoint. Before the deadline it returns
 the lock's progress with `bridgeStatus: "conflicting"`.
 
-**A contradiction the bridge reports at or after the deadline expires the
-lock, reported apart.** Once this host's clock has reached `recoveryDeadline`,
-a contradiction whose `observedAt` is later than the checkpoint's and at or
-after `recoveryDeadline` commits reputation-neutral `failed-substrate`, as
+**A contradiction the bridge reports after the deadline expires the lock,
+reported apart.** Once this host's clock has passed `recoveryDeadline`, a
+contradiction whose `observedAt` is later than the checkpoint's and later
+than `recoveryDeadline` commits reputation-neutral `failed-substrate`, as
 §9.5.5 and ST-8 require, with the reason
 `tank-lock-contradicted-recovery-expired`. That is a terminal `failed`
 (`errorClass: "failed-substrate"`, `reputationNeutral: true`) that every later
@@ -410,10 +422,11 @@ authenticated again, and both the host clock and the read's time checked
 again, on every replay. Retained failure evidence for the lock outranks a
 contradiction and expires the lock as `tank-locked-unreleased-recovery-expired`.
 
-**A read before the deadline, or no later than the checkpoint, never expires
-the lock.** A contradiction whose `observedAt` is before `recoveryDeadline`
-describes the bridge before the deadline, and the lock may still be released
-between that read and the deadline: for example an `empty` stamped two minutes
+**A read at or before the deadline, or no later than the checkpoint, never
+expires the lock.** A contradiction whose `observedAt` is at or before
+`recoveryDeadline` describes the bridge inside the window, and the lock may
+still be released between that read and the deadline: for example an `empty`
+stamped two minutes
 before it, read by a host whose clock runs two minutes ahead of the bridge's,
 while the release lands thirty seconds before the deadline. One whose
 `observedAt` is at or before the checkpoint's (the last locked `pending` of
@@ -425,20 +438,20 @@ past the deadline, such a read keeps the lock open with `lock-contradicted`,
 `bridgeStatus: "conflicting"` and `pastDeadline: true`, writes nothing, and
 never starts a new payment or broadcast; each later call reads the bridge
 again, so the lock's timely completion still settles the phase, and a
-contradiction stamped at or after the deadline still expires it. The core's
-check, the store's `recordRecoveryExpired` and the claim replay all apply this
-rule, so a replayed expiry whose contradiction is before the deadline or not
+contradiction stamped after the deadline still expires it. The core's check,
+the store's `recordRecoveryExpired` and the claim replay all apply this rule,
+so a replayed expiry whose contradiction is not after the deadline or not
 later than its checkpoint is refused as `liquidity-tank-retained-state-corrupt`.
 
 **A live pending never expires the lock.** The one exception is a `pending`
 that leaves the operation live: one without a lock, since the bridge may
 still lock it, or one under another lock whose authenticated `observedAt` is
-before that lock's own `recoveryDeadline`, since that lock can still be
+at or before that lock's own `recoveryDeadline`, since that lock can still be
 released. Past the deadline it keeps the lock open with the distinct reason
 `lock-contradicted`, `bridgeStatus: "conflicting"` and `pastDeadline: true`.
-A `pending` of another lock observed at or after that lock's own deadline is
-no longer live, and expires the lock like any other contradiction stamped at
-or after the deadline. A contradiction latches nothing: a later read that
+A `pending` of another lock observed after that lock's own deadline is no
+longer live, and expires the lock like any other contradiction stamped after
+the deadline. A contradiction latches nothing: a later read that
 carries expiry evidence, or a timely completion of the lock, resolves the
 phase as usual.
 
@@ -458,7 +471,7 @@ that completion's `txRef` (bridge ID, chains, its `lockTxHash`,
 reports that this release reached the payee: treat it like
 `tank-released-after-recovery-deadline` and reconcile from it. A lock whose
 release landed before the deadline can still expire this way only if the
-bridge, in a read stamped at or after the deadline and after the checkpoint,
+bridge, in a read stamped after the deadline and after the checkpoint,
 reports a status that contradicts that release: a bridge fault, a reorg of
 the lock transaction, or an adapter that stamps the time it served a cached
 snapshot instead of the time the snapshot describes. A host clock running
@@ -470,10 +483,10 @@ state by `recoveryDeadline`; SR-5 (§9.8) requires both legs to succeed
 together or never take effect within a bounded time. While the bridge keeps
 reporting the operation live, pending without a lock or under another lock
 that no read has yet shown past its own deadline, or keeps serving only
-contradictions stamped before the deadline or no later than the checkpoint,
-this rail keeps the lock open past its deadline, so for those cases it does
-not conform to §9.5.5 or ST-8. A bridge or replica that never serves a read
-stamped at or after the deadline therefore keeps the phase open until an
+contradictions stamped at or before the deadline or no later than the
+checkpoint, this rail keeps the lock open past its deadline, so for those
+cases it does not conform to §9.5.5 or ST-8. A bridge or replica that never
+serves a read stamped after the deadline therefore keeps the phase open until an
 operator resolves it from the bridge's record. Hosts must treat
 `lock-contradicted` as a readiness failure that needs an operator, not as
 ordinary waiting. The SDK has no runtime rail-readiness
@@ -584,10 +597,11 @@ retained beside a checkpoint. `contradicted-after-lock` evidence
 (`{ checkpoint, contradiction }`) needs its checkpoint to equal the durable
 one, no retained failure, and a contradiction that neither preserves nor fails
 the lock (a completion of another lock is one), whose `observedAt` is
-strictly later than the checkpoint's and at or after the deadline, and which
-is not a `pending` that leaves the operation live: without a lock, or with
-another lock and an `observedAt` before that lock's own deadline. Both the
-contradiction's own `observedAt` and the host `now` must reach the deadline.
+strictly later than the checkpoint's and after the deadline, and which is
+not a `pending` that leaves the operation live: without a lock, or with
+another lock and an `observedAt` at or before that lock's own deadline. Both
+the contradiction's own `observedAt` and the host `now` must be after the
+deadline.
 Pending expiry still re-checks snapshot freshness, and completed expiry still
 re-checks late finality. A completed
 observation carries its authenticated deadline even without a prior
@@ -602,9 +616,9 @@ and deadline in place of a durable `failed` that carries them, and refuse any
 other observation after it. Whichever
 eligible terminal transition commits first wins; the loser must report a
 non-successful write. Once expiry commits, every claim from a host whose clock
-is at or after the deadline returns the same terminal state and no later
+is after the deadline returns the same terminal state and no later
 completion may settle. A replayed `failed-after-lock` expiry carries no time of
-its own, so a worker whose clock has not reached the deadline reports the
+its own, so a worker whose clock has not passed the deadline reports the
 retry-safe `liquidity-tank-recovery-expiry-not-due` instead. A terminal result
 is final: hosts must act on it and not re-poll, since a host clock that steps
 back across the deadline would briefly report that retry-safe result again.
@@ -1078,28 +1092,27 @@ atomically, and pass `runLiquidityTankStoreConformance`.
 - the no-double-pay argument for a deposit-first flow, where the value-moving
   EVM deposit is outside the signed Demos bytes the core retains;
 - the Standard's decisions on: the bridge-ID grammar (§9.5.5's "16-char hash"
-  against its own `"tank-308"` vector); whether a `finalityObservedAt` equal
-  to `recoveryDeadline` is timely (the core treats it as expired and reports
-  `tank-released-after-recovery-deadline`, so the buyer is told not to pay
-  again); and a mechanism mismatch, which §9.5.5 and PC-5 make `permanent` but
+  against its own `"tank-308"` vector); and a mechanism mismatch, which
+  §9.5.5 and PC-5 make `permanent` but
   the core returns as `indeterminate`, because the settlement key binds only
   `jobId`, `railId` and `phaseIndex` and the phase may already hold a lock
   (see [Refusals before any claim](#refusals-before-any-claim));
 - a contradicted lock now expires past D only on a contradiction the bridge
-  stamped after its checkpoint and at or after D, and not a live `pending`, as
+  stamped after its checkpoint and after D, and not a live `pending`, as
   `tank-lock-contradicted-recovery-expired` (with its `txRef` when it is a
   completion of another lock). One whose only reads past D are live pendings
   (without a lock, or under another lock inside its own window) or
-  contradictions stamped before D or no later than the checkpoint still
+  contradictions stamped at or before D or no later than the checkpoint still
   reports `lock-contradicted` and stays open, so a bridge or replica that
-  never serves a read stamped at or after D keeps the phase open until an
+  never serves a read stamped after D keeps the phase open until an
   operator resolves it. An authoritative reconciliation operation that could
   decide such a lock without a fresh bridge read, or the spec's decision on a
   terminal "payment disposition unknown" outcome for it, is open as
   [DACS-Standard#422](https://github.com/DACS-Agent-commerce/DACS-Standard/issues/422); and
-- confirm with the DACS-4 §9.5.5 owner whether a `failed` after a committed
-  lock should settle via ST-8 (neutral `failed-substrate` at D, as now) or
-  immediately as `permanent` (the §9.5.5 failure-mode list). Today every
-  failure that carries a lock hash and deadline, with or without a stored
-  checkpoint, resolves through D to `failed-substrate`; only a failure
-  without a lock is `permanent`.
+- the Standard-side wording for a `failed` after a committed lock, which
+  §9.5.5 lists both as `permanent` and as the asymmetric source lock. The SDK
+  follows ST-8 ("not a terminal failure" while the recovery path is open):
+  every failure that carries a lock hash and deadline, with or without a
+  stored checkpoint, resolves through D to `failed-substrate`, and only a
+  failure without a lock is `permanent`. The clarification goes through
+  [DACS-Standard#422](https://github.com/DACS-Agent-commerce/DACS-Standard/issues/422).

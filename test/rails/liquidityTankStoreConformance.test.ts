@@ -29,7 +29,7 @@ const CASE = {
   receipt: "the first submission's receipt is its write's now, kept across replays and restarts",
   bridge:"a bridge operation serves one settlement only",
   ordering: "observations need the retained submission and never regress",
-  lateCompletion: "a completion at or after the deadline is never recorded as an observation",
+  lateCompletion: "a completion after the deadline is never recorded as an observation; one at the deadline is timely",
   settlementNeedsCompletion: "a settlement needs a durable timely completion",
   settlementExact: "a settlement is exact, replayable and terminal",
   settlementBlocksExpiry: "a settlement blocks recovery expiry",
@@ -41,7 +41,7 @@ const CASE = {
   failureLockCompletion: "a timely completion of the lock a durable failure carries replaces it and blocks expiry",
   failureEvidence: "a failure that carries its lock is expiry evidence only as the durable observation",
   completionLock: "a late completion is expiry evidence only for the durable lock and its deadline",
-  contradictionCas: "a contradiction expires a lock only when stamped after its checkpoint and at or after the deadline, never while the operation is live",
+  contradictionCas: "a contradiction expires a lock only when stamped after its checkpoint and after the deadline, never while the operation is live",
   restart: "retained state survives a restart",
   settles: "through the core, crashes and restarts never double-send, lock more than the intent or settle an expired phase",
   expires: "through the core, an expired phase stays expired across restarts and a late release",
@@ -54,7 +54,7 @@ const CASE = {
   coreRace: "through the core, two workers starting one phase at once broadcast at most once",
 } as const;
 
-const RESTART_CASES = [CASE.receipt, CASE.restart, CASE.settles, CASE.expires];
+const RESTART_CASES = [CASE.receipt, CASE.bridge, CASE.restart, CASE.settles, CASE.expires];
 const RACE_CASES = [
   CASE.claimRace, CASE.submissionRace, CASE.bridgeRace, CASE.completionExpiryRace,
   CASE.settlementExpiryRace, CASE.takeoverRace, CASE.coreRace,
@@ -117,11 +117,14 @@ interface Disk { rows: Map<string, LiquidityTankStore>; bridgeOwners: Map<string
  * The code review's B2 store: rows are durable, but the bridge-ID index is
  * either per handle ("process", lost on every reopen) or read and written
  * around the row write ("racey", so two writes started together both pass).
+ * The sweep's N1 store ("moved on refusal") keeps a durable index and checks
+ * it atomically, but hands the bridge ID to the settlement whose reuse it
+ * refuses, as reference-store mutant 1989 did, so a retry of that reuse lands.
  */
-function rowsWithBridgeIndex(index: "process" | "racey"): LiquidityTankStoreConformanceOptions {
+function rowsWithBridgeIndex(index: "process" | "racey" | "moved on refusal"): LiquidityTankStoreConformanceOptions {
   const disks = new WeakMap<LiquidityTankStore, Disk>();
   const open = (disk: Disk): LiquidityTankStore => {
-    const owners = index === "racey" ? disk.bridgeOwners : new Map<string, string>();
+    const owners = index === "process" ? new Map<string, string>() : disk.bridgeOwners;
     const row = (key: string): LiquidityTankStore => {
       let store = disk.rows.get(key);
       if (!store) {
@@ -136,6 +139,7 @@ function rowsWithBridgeIndex(index: "process" | "racey"): LiquidityTankStoreConf
       recordSubmission: async (input) => {
         const owner = owners.get(input.submission.bridgeId);
         if (owner !== undefined && owner !== input.settlementKey) {
+          if (index === "moved on refusal") owners.set(input.submission.bridgeId, input.settlementKey);
           return { status: "conflict", reason: "liquidity-tank-bridge-cross-settlement-reuse" };
         }
         const result = await row(input.settlementKey).recordSubmission(input);
@@ -290,6 +294,32 @@ function skippingCompletionLockCas(
   };
 }
 
+type ExpiryInput = Parameters<LiquidityTankStore["recordRecoveryExpired"]>[0];
+
+/**
+ * The boundary before the deadline ruling, where the deadline millisecond
+ * itself already counted as missed: wherever the reference store refuses an
+ * expiry as not due and `atDeadline` finds the time that sits exactly on a
+ * deadline, the store records the expiry the reference store gives that input
+ * moved one millisecond later.
+ */
+function expiringAtTheDeadline(atDeadline: (input: ExpiryInput) => ExpiryInput | undefined) {
+  return (inner: LiquidityTankStore): Partial<LiquidityTankStore> => ({
+    recordRecoveryExpired: async (input) => {
+      const result = await inner.recordRecoveryExpired(input);
+      const later = result.status === "conflict" && result.reason === "liquidity-tank-recovery-expiry-not-due"
+        ? atDeadline(input)
+        : undefined;
+      return later === undefined ? result : inner.recordRecoveryExpired(later);
+    },
+  });
+}
+
+type Timed = { status: string; observedAt: number; recoveryDeadline?: number; finalityObservedAt?: number };
+const evidenceOf = (input: ExpiryInput) => input.observation as unknown as Timed & {
+  checkpoint?: { recoveryDeadline: number }; contradiction?: Timed;
+};
+
 /** Claims that overlap both read a free phase: the one that resumes first is granted a lease the store never wrote. */
 function raceyClaims(inner: LiquidityTankStore): Partial<LiquidityTankStore> {
   let inFlight = 0;
@@ -421,12 +451,25 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
   [CASE.bridge, "lets a second settlement reuse a bridge ID",
     () => database(accepting("recordSubmission", "liquidity-tank-bridge-cross-settlement-reuse")),
     /second settlement reusing the bridge ID: store answered recorded/],
+  [CASE.bridge, "hands the bridge ID to a settlement whose reuse it refuses (sweep N1)",
+    () => rowsWithBridgeIndex("moved on refusal"),
+    /second settlement reusing the bridge ID again: store answered recorded/],
+  [CASE.bridge, "forgets its bridge-ID index on a restart", () => rowsWithBridgeIndex("process"),
+    /after a restart, the second settlement reusing the bridge ID: store answered recorded/],
   [CASE.ordering, "accepts a status regression",
     () => database(accepting("recordObservation", "liquidity-tank-status-regression")),
     /regression to empty: store answered recorded/],
   [CASE.lateCompletion, "records a late completion as an observation",
     () => database(accepting("recordObservation", "liquidity-tank-completion-after-recovery-deadline")),
-    /completion finalized at the deadline: store answered recorded/],
+    /completion finalized a millisecond after the deadline: store answered recorded/],
+  [CASE.lateCompletion, "refuses a completion finalized at the deadline", () => database((inner) => ({
+    recordObservation: async (input) => {
+      const observation = input.observation as unknown as Timed;
+      return observation.status === "completed" && observation.finalityObservedAt === observation.recoveryDeadline
+        ? { status: "conflict", reason: "liquidity-tank-completion-after-recovery-deadline" }
+        : inner.recordObservation(input);
+    },
+  })), /completion finalized at the deadline: store answered conflict; expected recorded or existing/],
   [CASE.settlementNeedsCompletion, "settles with only the lock durable",
     () => database(accepting("recordSettlement", "liquidity-tank-settlement-before-completion")),
     /settlement while only the lock is durable: store answered recorded/],
@@ -453,6 +496,12 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
       },
     };
   }), /expiry after the lease expired: store answered recorded/],
+  [CASE.expiryCas, "expires once the host clock reaches the deadline", () => database(expiringAtTheDeadline((input) => {
+    const evidence = evidenceOf(input);
+    return input.now === (evidence.checkpoint?.recoveryDeadline ?? evidence.recoveryDeadline)
+      ? { ...input, now: input.now + 1 }
+      : undefined;
+  })), /expiry with the host clock at the deadline: store answered recorded/],
   [CASE.expiryBlocks, "records an observation after expiry",
     () => database(accepting("recordObservation", "liquidity-tank-observation-after-terminal")),
     /completion after expiry: store answered recorded/],
@@ -500,9 +549,21 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
   [CASE.completionLock, "checks a late completion against a checkpoint but not against a durable failure",
     () => database(skippingCompletionLockCas((prior) => prior.status === "failed")),
     /late completion of another lock against a durable failure that carries its lock: store answered recorded/],
+  [CASE.completionLock, "refuses every late completion as expiry evidence (sweep N2)", () => database((inner) => ({
+    recordRecoveryExpired: async (input) => evidenceOf(input).status === "completed"
+      ? { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" }
+      : inner.recordRecoveryExpired(input),
+  })), /late completion of the lock against a checkpoint: store answered conflict/],
+  [CASE.completionLock, "takes a completion finalized at the deadline as expiry evidence",
+    () => database(expiringAtTheDeadline((input) => {
+      const { status, finalityObservedAt, recoveryDeadline } = evidenceOf(input);
+      return status === "completed" && finalityObservedAt !== undefined && finalityObservedAt === recoveryDeadline
+        ? { ...input, observation: { ...input.observation, finalityObservedAt: finalityObservedAt + 1 } as never }
+        : undefined;
+    })), /completion of the lock finalized at the deadline against a checkpoint: store answered recorded/],
   [CASE.contradictionCas, "records any contradiction expiry without its CAS",
     () => database(acceptingAnyContradictionExpiry),
-    /contradiction stamped before the deadline: store answered recorded/],
+    /contradiction stamped at the deadline: store answered recorded/],
   [CASE.contradictionCas, "checks only the deadline on a contradiction", () => database((inner) => ({
     recordRecoveryExpired: async (input) => {
       const result = await inner.recordRecoveryExpired(input);
@@ -512,11 +573,27 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
       const deadline = evidence.checkpoint?.recoveryDeadline ?? Infinity;
       return evidence.status === "contradicted-after-lock" && result.status === "conflict" &&
         result.reason === "liquidity-tank-recovery-expiry-not-due" &&
-        input.now >= deadline && (evidence.contradiction?.observedAt ?? 0) >= deadline
+        input.now > deadline && (evidence.contradiction?.observedAt ?? 0) > deadline
         ? { status: "recorded" }
         : result;
     },
-  })), /pending without a lock at the deadline: store answered recorded/],
+  })), /pending without a lock after the deadline: store answered recorded/],
+  [CASE.contradictionCas, "takes a contradiction stamped at the deadline as expiry evidence",
+    () => database(expiringAtTheDeadline((input) => {
+      const { checkpoint, contradiction } = evidenceOf(input);
+      return contradiction !== undefined && contradiction.observedAt === checkpoint?.recoveryDeadline
+        ? { ...input, observation: { ...input.observation,
+            contradiction: { ...contradiction, observedAt: contradiction.observedAt + 1 } } as never }
+        : undefined;
+    })), /contradiction stamped at the deadline: store answered recorded/],
+  [CASE.contradictionCas, "takes another lock's pending at its own deadline as past it",
+    () => database(expiringAtTheDeadline((input) => {
+      const { contradiction } = evidenceOf(input);
+      return contradiction?.status === "pending" && contradiction.observedAt === contradiction.recoveryDeadline
+        ? { ...input, observation: { ...input.observation,
+            contradiction: { ...contradiction, recoveryDeadline: contradiction.observedAt - 1 } } as never }
+        : undefined;
+    })), /pending of another lock at its own deadline: store answered recorded/],
   [CASE.contradictionCas, "accepts a contradiction beside retained failure evidence", () => database((inner) => {
     const failures = new Set<string>();
     return {
