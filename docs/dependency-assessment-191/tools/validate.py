@@ -1,4 +1,4 @@
-"""Validate the portable catalog, optionally with retained collection and fresh probes."""
+"""Validate the portable catalog and optional historical or replacement evidence."""
 from pathlib import Path
 import argparse
 import collections
@@ -141,10 +141,15 @@ def compare_rows(expected, committed, label):
     for k in want:
         assert want[k] == have[k], (label, k, {f: (want[k][f], have[k][f]) for f in want[k] if want[k][f] != have[k][f]})
 
-def check_engines(checks, summaries, boms):
-    """Each recorded engines row is an installed instance of that tree, and the summary counts agree."""
+def check_engines(checks, summaries, boms, npm_root=None):
+    """Check installed rows, every rejected probe and exact equality of the effective stable Node range."""
     engines = checks['engines']
+    computed = semver_matcher(npm_root)(engines)
     by_tree = {t['tree']: t for t in engines['trees']}
+    for tree, actual in zip(engines['trees'], computed):
+        assert actual['effective_range_equal'], (tree['tree'], 'effective_node_range')
+        assert all(actual['outside']), (tree['tree'], 'outside range')
+        assert [r['rejected_probes'] for r in tree['outside']] == actual['rejected_probes'], (tree['tree'], 'rejected_probes')
     for summary in summaries:
         recorded = summary.get('engines')
         assert (recorded is None) == (summary['tree'] not in by_tree), summary['tree']
@@ -160,13 +165,122 @@ def check_engines(checks, summaries, boms):
             assert set(row['rejected_probes']) <= set(engines['probes'])
     return {t['tree']: sum(bool(r['rejected_probes']) for r in t['outside']) for t in engines['trees']}
 
+def check_evidence_files(root, evidence):
+    """Verify both the loose inputs and the same bytes inside the retained archive, without extracting it."""
+    paths = [entry['path'] for entry in evidence['files']]
+    assert len(paths) == len(set(paths)), 'duplicate evidence path'
+    archive = root.parent / evidence['archive']['path']
+    assert digest(archive) == evidence['archive']['sha256'], 'replacement archive'
+    with tarfile.open(archive) as tar:
+        for entry in evidence['files']:
+            relative = Path(entry['path'])
+            assert not relative.is_absolute() and '..' not in relative.parts, entry['path']
+            path = root / relative
+            assert path.is_file() and digest(path) == entry['sha256'], entry['path']
+            assert path.stat().st_size == entry['bytes'], entry['path']
+            member = tar.getmember(entry['path'])
+            assert member.isfile() and member.size == entry['bytes'], entry['path']
+            assert hashlib.sha256(tar.extractfile(member).read()).hexdigest() == entry['sha256'], entry['path']
+    return len(paths)
+
+def canonical_inventory(entries, match):
+    """Use npm's loose-version normalization for comparison with its CycloneDX output; raw bytes stay intact."""
+    entries = [entry for entry in entries if entry['location']]
+    versions = match(dict(canonical_versions=[entry['version'] for entry in entries]))
+    return {entry['location']: (entry['name'], version) for entry, version in zip(entries, versions)}
+
+def check_recollection(root, evidence, out, summaries, rollup, ranges, boms, validator, match):
+    """Re-derive the current catalog from a replacement collection; historical receipts stay unavailable."""
+    checked = check_evidence_files(root, evidence)
+    assert evidence['source_head'] == SOURCE and evidence['npm'] == '10.9.9'
+    assert set(evidence['trees']) == {s['tree'] for s in summaries}
+    recorded = {entry['path'] for entry in evidence['files']}
+    for folder in ['raw', 'sources', 'tarballs']:
+        assert {str(p.relative_to(root)) for p in (root / folder).rglob('*') if p.is_file()} <= recorded, folder
+    results = []
+    for summary in summaries:
+        name = summary['tree']
+        raw = root / 'raw' / name
+        package = load(raw / 'package.json')
+        lock = load(raw / 'package-lock.json')
+        assert 'overrides' not in package
+        assert digest(raw / 'package-lock.json') == evidence['trees'][name]['lock_sha256'] == summary['lock_sha256']
+        assert (raw / 'npm-audit.json').read_bytes() == (raw / 'audit.stdout.log').read_bytes()
+        inventory = canonical_inventory(load(raw / 'physical-inventory.json'), match)
+        assert inventory == bom_inventory(boms[name]), (name, 'installed inventory')
+        fresh_bom = load(raw / 'sbom-installed.cdx.json')
+        assert normalize_bom(fresh_bom) == boms[name], (name, 'physical SBOM raw source')
+        assert bom_inventory(fresh_bom) == inventory
+        check_bom(fresh_bom, len(inventory))
+        assert schema_result(validator, fresh_bom)['valid'], name
+        packages, exact = expected_rows(name, audit_items(load(raw / 'npm-audit.json')), lock['packages'], set(inventory), match)
+        compare_rows(packages, [r for r in rollup if r['tree'] == name], name + ' replacement package rows')
+        compare_rows(exact, [r for r in ranges if r['tree'] == name], name + ' replacement exact-range rows')
+        for command in ['install', 'physical-export']:
+            assert load(raw / (command + '.command.json'))['exit_code'] == 0
+        assert load(raw / 'audit.command.json')['exit_code'] == bool(packages)
+        if name.startswith('bare-'):
+            assert load(raw / 'public-import.command.json')['exit_code'] == 0
+        assert load(raw / 'sbom.command.json')['exit_code'] == summary['primary_sbom_exit']
+        if summary['primary_sbom_exit']:
+            assert 'ESBOMPROBLEMS' in (raw / 'sbom.stderr.log').read_text()
+        else:
+            assert normalize_bom(load(raw / 'sbom.stdout.log')) == load(out / 'sboms' / (name + '.npm.cdx.json'))
+            assert schema_result(validator, load(raw / 'sbom.stdout.log')) == schema_result(
+                validator, load(out / 'sboms' / (name + '.npm.cdx.json')))
+        engine_tree = next((t for t in load(out / 'release-checks.json')['engines']['trees'] if t['tree'] == name), None)
+        if engine_tree:
+            actual = load(raw / 'engines.json')
+            assert all(actual[k] == engine_tree[k] for k in ['advertised', 'checked', 'outside']), (name, 'engines')
+            assert load(raw / 'engines.command.json')['exit_code'] == bool(engine_tree['outside'])
+        if name.startswith('live-'):
+            for command in ['generate', 'static-imports', 'typecheck', 'build', 'sqlite-rebuild']:
+                assert load(raw / (command + '.command.json'))['exit_code'] == 0, (name, command)
+            generated = load(root / 'sources' / name / 'package.json')
+            assert generated == load(raw / 'generated-package.json')
+            assert len(re.findall(r'^test\(', (root / 'sources' / name / 'test/live-bootstrap.test.ts').read_text(), re.M)) == 10
+            for dep in ['@kynesyslabs/dacs', '@kynesyslabs/dacs-node']:
+                assert generated['dependencies'][dep] == '0.1.0-alpha.0'
+            counts = tap_counts(raw / 'generated-tests.stdout.log')
+            assert counts == evidence['trees'][name]['generated_tests']
+            assert counts['tests'] == 10 and counts['skipped'] == 0
+            assert load(raw / 'generated-tests.command.json')['exit_code'] == bool(counts['fail'])
+            literal = tap_counts(raw / 'literal-pin-tests.stdout.log')
+            assert literal == evidence['trees'][name]['literal_pin_tests']
+            assert literal['tests'] == 10 and literal['skipped'] == 0
+            assert load(raw / 'literal-pin-tests.command.json')['exit_code'] == bool(literal['fail'])
+            comparison = load(raw / 'literal-pin-comparison.json')
+            assert comparison['manifest_restored'] and comparison['installed_modules_unchanged']
+            assert comparison['lock_sha256_before'] == comparison['lock_sha256_after'] == digest(raw / 'package-lock.json')
+            installed_audit = load(raw / 'audit-installed.stdout.log')
+            counts = next(v for v in installed_audit['metadata'].values() if isinstance(v, dict) and 'critical' in v)
+            assert counts == summary['audit_omit_optional_counts']
+            assert load(raw / 'audit-installed.command.json')['exit_code'] == bool(counts['total'])
+            assert load(raw / 'npm-ls.command.json')['exit_code'] == 1
+            assert load(raw / 'sbom-lock.command.json')['exit_code'] == 0
+        results.append(dict(tree=name, package_rows=len(packages), source_range_rows=len(exact), installed=len(inventory)))
+    for pack in [*load(out / 'packs.json'), load(out / 'manifest.json')['native_artifact']]:
+        assert digest(root / 'tarballs' / Path(pack['tarball']).name) == pack['sha256']
+    for label, counts in [('pure-data-tests', 3), ('nonce-tests', 2)]:
+        raw = root / 'raw/native-compatibility'
+        assert tap_counts(raw / (label + '.stdout.log')) == dict(tests=counts, **{'pass': counts, 'fail': 0, 'skipped': 0})
+        assert load(raw / (label + '.command.json'))['exit_code'] == 0
+    assert (root / 'raw/npm11/npm11-version.stdout.log').read_text().strip() == '11.19.0'
+    assert load(root / 'raw/live-buyer/npm11-sbom.command.json')['exit_code'] == 1
+    assert 'ESBOMPROBLEMS' in (root / 'raw/live-buyer/npm11-sbom.stderr.log').read_text()
+    assert load(root / 'raw/native-candidate/npm11-sbom.command.json')['exit_code'] == 0
+    candidate11 = load(root / 'raw/native-candidate/npm11-sbom.stdout.log')
+    assert len(candidate11['components']) == 76 and schema_result(validator, candidate11)['valid']
+    return dict(files_checked=checked, trees=results, status='verified replacement collection; historical archive gap preserved')
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument('--collection', type=Path, help='Retained directory containing raw/ and tarballs/.')
     parser.add_argument('--probe-root', type=Path, help='Fix-round scratch directory containing raw/ and consumers/.')
     parser.add_argument('--round2-root', type=Path, help='Extracted round-2 evidence containing raw/ and consumers/.')
-    parser.add_argument('--npm-root', type=Path, help='npm 10.9.9 installation for exact-range matching with --collection.')
+    parser.add_argument('--recollection', type=Path, help='Replacement collection with raw/, sources/, tarballs/ and its archive alongside it.')
+    parser.add_argument('--npm-root', type=Path, help='npm 10.9.9 installation for pinned semver checks in every mode.')
     parser.add_argument('--output', type=Path, help='Optional result file; default is stdout only.')
     args = parser.parse_args()
     REPO = args.repo.resolve()
@@ -223,7 +337,7 @@ def main():
     summaries = load(OUT / 'summary.json')
     boms = {}
     results = []
-    match = semver_matcher(args.npm_root) if args.collection else None
+    match = semver_matcher(args.npm_root) if args.collection or args.recollection else None
     for summary in summaries:
         name = summary['tree']
         rows = [r for r in rollup if r['tree'] == name]
@@ -262,8 +376,10 @@ def main():
         results.append(dict(tree=name, physical_components=summary['physical_components'],
                             package_rows=len(rows), source_range_rows=summary['source_range_rows'],
                             primary_sbom_exit=summary['primary_sbom_exit']))
-    engine_floor = check_engines(checks, summaries, boms)
+    engine_floor = check_engines(checks, summaries, boms, args.npm_root)
     assert engine_floor['native-candidate'] == 0
+    replacement = check_recollection(args.recollection, load(OUT / 'recollection-2026-10-16.json'), OUT,
+                                    summaries, rollup, ranges, boms, validator, match) if args.recollection else None
 
     raw_checked = 0
     if args.collection:
@@ -380,6 +496,7 @@ def main():
                   sbom_schema_checked=len(shipped),
                   sbom_schema_invalid=sorted(n for n in shipped if not schema['files'][n]['valid']),
                   original_raw_files_checked=raw_checked, trees=results, fresh_generated_tests=fresh,
+                  replacement_evidence=replacement or 'not run: supply --recollection to verify the replacement inputs',
                   raw_evidence='verified, including every package and exact-range row' if args.collection
                   else 'not run: archives unavailable (owner decision, 2026-10-16)',
                   fresh_probes='verified' if args.probe_root else 'not run: archives unavailable (owner decision, 2026-10-16)',

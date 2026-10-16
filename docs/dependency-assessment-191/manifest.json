@@ -29,7 +29,7 @@
   "trees": [
     {
       "tree": "bare-core",
-      "lock_sha256": "abd2ffefa9e2173745d15de53850cc10d7dad251da9524824a3269a4ec3f76dd",
+      "lock_sha256": "cc78ef8359cce3fad66d094e9fedf70edd993176a0f6d2c0006b5a9b6164dc79",
       "audit_package_counts": {
         "info": 0,
         "low": 0,
@@ -60,7 +60,7 @@
     },
     {
       "tree": "bare-node",
-      "lock_sha256": "2e1ba5fa8fcca15d744443210a9f7395c7ce7038f90b6bc5e470bfbe50b92a2b",
+      "lock_sha256": "c358ca8de20ed88ca06529df109714fd1156672fd7529a4586a961c9b5b331a9",
       "audit_package_counts": {
         "info": 0,
         "low": 0,
@@ -91,7 +91,7 @@
     },
     {
       "tree": "bare-generator",
-      "lock_sha256": "911e70da63aa6291ebec2180ea391e1e6b95619f91265270c24dd18f94d68a09",
+      "lock_sha256": "41646aa4d9b2d831b06ed49fe26fc28f6e4112c58c075ca037d99efd4044ee34",
       "audit_package_counts": {
         "info": 0,
         "low": 0,
@@ -122,7 +122,7 @@
     },
     {
       "tree": "live-buyer",
-      "lock_sha256": "ad117112661823db6bd9584ffbdcf7bc6ff2953af30c75ac628cfcb40332653d",
+      "lock_sha256": "1ca37a5300bcc6ae04a7bdcd8d7c075c8e351e37baf35deac1d2bb48a98c700d",
       "audit_package_counts": {
         "info": 0,
         "low": 31,
@@ -167,11 +167,17 @@
         "no static import path found; affected operation not established": 96,
         "conditional Demos feature; inherited finding": 2,
         "module import path present; affected operation not established": 6
+      },
+      "engines": {
+        "advertised": "^20.19.0 || >=22.12.0",
+        "outside_advertised": 17,
+        "rejects_advertised_floor": 16,
+        "catalog": "release-checks.json"
       }
     },
     {
       "tree": "live-seller",
-      "lock_sha256": "faa5f33d3a5807b2b17c0926e42c37b3e21178edc5950cb1565383798226639a",
+      "lock_sha256": "7ea79eb16063513d16843b0903ad56f0284f6c26913cc466c7e6f2b27afce6d0",
       "audit_package_counts": {
         "info": 0,
         "low": 31,
@@ -216,11 +222,17 @@
         "no static import path found; affected operation not established": 96,
         "conditional Demos feature; inherited finding": 2,
         "module import path present; affected operation not established": 6
+      },
+      "engines": {
+        "advertised": "^20.19.0 || >=22.12.0",
+        "outside_advertised": 17,
+        "rejects_advertised_floor": 16,
+        "catalog": "release-checks.json"
       }
     },
     {
       "tree": "native-alpha2",
-      "lock_sha256": "ecda612edd69e651dcd48b0bf92a06aade37f4ace038d5a9b5f88dfac6527064",
+      "lock_sha256": "71eb7603b3194de1f8b6a353b5444cd49007bc1a550f42b4135aec4dd67f799b",
       "audit_package_counts": {
         "info": 0,
         "low": 0,
@@ -251,7 +263,7 @@
     },
     {
       "tree": "native-candidate",
-      "lock_sha256": "8981c1756c8900ce161989486598cebc9bb954d7ec0f6f6fcc2af7f77bd6b331",
+      "lock_sha256": "b0ee22d97a8a370a249faa86b352208fb7554a55216e00a02bd41b32fc05fdbe",
       "audit_package_counts": {
         "info": 0,
         "low": 0,
@@ -278,10 +290,16 @@
         "not reachable": 0,
         "needs an upstream repair (U-03)": 0
       },
-      "source_range_reachability": {}
+      "source_range_reachability": {},
+      "engines": {
+        "advertised": "^20.19.0 || >=22.12.0",
+        "outside_advertised": 1,
+        "rejects_advertised_floor": 0,
+        "catalog": "release-checks.json"
+      }
     }
   ],
-  "raw_policy": "Original command receipts, logs, locks and copied package sources were kept byte for byte outside the repository at collection time. The archives are no longer available (owner decision, 2026-10-16), so these hashes cannot be rechecked now. No substitution was made in original raw files.",
+  "raw_policy": "raw_files, raw_archive, fix_round and fix_round2 describe unavailable historical inputs. The current catalog uses the separately retained replacement collection indexed by recollection-2026-10-16.json; every replacement file and its archive are hash-checked with --recollection. Original historical raw files were never substituted.",
   "raw_archive": {
     "path": "<collection>/evidence-original.tar.gz",
     "sha256": "6c26e3ba48c724252fbcf6fd4a990b6c3527b4fbe6a8b648aa9907fee917b531",
@@ -3264,13 +3282,23 @@
     },
     {
       "path": "package-findings.json",
-      "sha256": "e4485b4cf43766900e25582b0daf6965bbd1e54d62ebc7c48d9c4c599bfc962c",
-      "bytes": 1866045
+      "sha256": "c3b6d1c526bfdb7678c7c030fc78bad6cc0608b32db0f3c079ab526f367caed7",
+      "bytes": 1865782
     },
     {
       "path": "packs.json",
       "sha256": "5e439497c5db5a21368def5082350bd3b5f8a6cecfb1530b6066c5231e05902f",
       "bytes": 761
+    },
+    {
+      "path": "recollection-2026-10-16.json",
+      "sha256": "e1d96bf3241318bd35eb41f100cd18734de76a032f2a1bf9445c55a9365eba79",
+      "bytes": 59398
+    },
+    {
+      "path": "recollection-validation.json",
+      "sha256": "3fefcd6ae884538fa6fe9ffe8bf850cb1cf84ec9a3963a639bb3d151ad3303c5",
+      "bytes": 3296
     },
     {
       "path": "release-checks.json",
@@ -3284,72 +3312,72 @@
     },
     {
       "path": "sboms/bare-core.npm.cdx.json",
-      "sha256": "ad595273bbbe68a1d3429f929c8767dd27a3226bf3631784092b5930ef0debf7",
-      "bytes": 23673
+      "sha256": "763fe6c00735a5ad3b8c15652c4e341765360c373003154aff0400d47f8d372e",
+      "bytes": 23661
     },
     {
       "path": "sboms/bare-core.physical.cdx.json",
-      "sha256": "f67fc1bfd9c3beee07f64a24a491405b380c0475083d26ab970881e867a1b045",
-      "bytes": 24682
+      "sha256": "d7f15ca0c749484c058139c23ad0898d0a998219d7ac4230c934b8fed5280744",
+      "bytes": 24678
     },
     {
       "path": "sboms/bare-generator.npm.cdx.json",
-      "sha256": "a0ae66b3cb497243020e3a802d6307f78ce66b19e817dd0f13e672af9506029f",
-      "bytes": 2552
+      "sha256": "5cac05de79b953683c97300d0f86709a475a6c223f1fdc1716aee99f67bc3c2e",
+      "bytes": 2540
     },
     {
       "path": "sboms/bare-generator.physical.cdx.json",
-      "sha256": "a376154264c31aad32d7c36210bfa93fa550ff7126454ff20375f36aa1e9613c",
-      "bytes": 2966
+      "sha256": "65c70cb9634c6b0479117d8143f6715152c401f20f378b603afcafc3d918819c",
+      "bytes": 2962
     },
     {
       "path": "sboms/bare-node.npm.cdx.json",
-      "sha256": "c87f6e8704746dd8a865964cc65b1140051506103d8e0da78aec879f7831c7ef",
-      "bytes": 78827
+      "sha256": "18e4648b77c410cc736135aa57a835664e8d681d4b14fbb9035534c83624c24e",
+      "bytes": 78815
     },
     {
       "path": "sboms/bare-node.physical.cdx.json",
-      "sha256": "6566fb4f362c88374d0a252eca89de5283b8b77521dcf69e45be8006e5306441",
-      "bytes": 81206
+      "sha256": "14b47e056256c1699faed17e8a37656b194687a1c382b6c57da61be5a984b9f9",
+      "bytes": 81202
     },
     {
       "path": "sboms/live-buyer.physical.cdx.json",
-      "sha256": "bb9badbe6eed7d4698662f32afc6a9b2cccffdb8600a1a74b55068ecf7cbc166",
-      "bytes": 1463956
+      "sha256": "5ed14dc0d691e34091bd8b147ba3f1368315e2c3e1e79339952faa8c6693b5e0",
+      "bytes": 1463953
     },
     {
       "path": "sboms/live-seller.physical.cdx.json",
-      "sha256": "ede63534706d1435c3cf43b51d53bd6e435716a1222c319a7d1637df8dd0735e",
-      "bytes": 1463958
+      "sha256": "0a33b9aedae5873353d46dc08c2980deb464abc4e4f0eee835509282902a1da6",
+      "bytes": 1463955
     },
     {
       "path": "sboms/native-alpha2.npm.cdx.json",
-      "sha256": "c45904373a89778eb251436cd291d143b5c74620a09664139f61085c2d5d2b9b",
-      "bytes": 6830
+      "sha256": "aa181a4f915a7fc426639fa4489715759ac1b437c03d64c7ad163116c6020a52",
+      "bytes": 6789
     },
     {
       "path": "sboms/native-alpha2.physical.cdx.json",
-      "sha256": "b6cdf95364c7f98eec0c7dfb7179af2369b31724d028f6511f10f0a1d8834ada",
-      "bytes": 7342
+      "sha256": "57a1983fba34e7e2da24de1e52d9324f51727cf25beab13b23524d479f78d973",
+      "bytes": 7309
     },
     {
       "path": "sboms/native-candidate.npm.cdx.json",
-      "sha256": "52df81cc15b2f7f6885dd869314bfa25b9cdb705247ac2736d354b6ef31c4f61",
-      "bytes": 114589
+      "sha256": "bfa49fc74e2ed8fcbf3dd49323b605f39f196d6a6023e8410cad5f9557004455",
+      "bytes": 114530
     },
     {
       "path": "sboms/native-candidate.physical.cdx.json",
-      "sha256": "fb193c32a306fe57d806ee820183bb0dcce2976754ad6da08a587084c6e677b4",
-      "bytes": 118364
+      "sha256": "b248a5afdd072650a9f9cdc13addabae62a57dadce229d37d0d153e9b2277cf0",
+      "bytes": 118325
     },
     {
       "path": "source-range-findings.json",
-      "sha256": "50cae71cbaa4e600f152ba34fcf38ef9176ee90f214462e180742c9ff4b1e65b",
-      "bytes": 2699268
+      "sha256": "dd45124879ca06b0e0c810845fde50d2bc24d329de1c993bcbbd0d27ecec4e21",
+      "bytes": 2699031
     },
     {
       "path": "summary.json",
-      "sha256": "0d3a2c5488b387641f976b73db52c8329c9dc2d8ad7ba97c47881c323e16bca4",
+      "sha256": "4b5717a00278310b83a2958173d670c74e3fe7fd9e8472afa6ae30324bb0fd10",
       "bytes": 7629
     },
     {
@@ -3378,9 +3406,14 @@
       "bytes": 3393
     },
     {
+      "path": "tools/requirements-validation.txt",
+      "sha256": "aa1fc8926c4a6b6f682fee7e6c19e62fa79db2b3e8fe927bb2dc51e897b4e82c",
+      "bytes": 224
+    },
+    {
       "path": "tools/semver-match.cjs",
-      "sha256": "8295415d0fcc1de354e3d9df76bcd44d0f28d2feb69a7ae8b56cceeb3e602998",
-      "bytes": 964
+      "sha256": "790f625eec857a9984524e301d48628821ee8c84de22e9bd1165f466663215bf",
+      "bytes": 3446
     },
     {
       "path": "tools/supplement.py",
@@ -3404,13 +3437,13 @@
     },
     {
       "path": "tools/validate.py",
-      "sha256": "7505418c798f7d8eb20e757160d15fdb1297f7881500bec8771fc1c7a80bec59",
-      "bytes": 25205
+      "sha256": "a9467cf99e97d884ede845bb49c0014fe5261da280db2081c9b8ddf2fa6d6021",
+      "bytes": 34128
     },
     {
       "path": "tools/validate_test.py",
-      "sha256": "6f40648698a75f16a1368f534c719a38ba84a0c9ad84f15e8cb321e521f7a968",
-      "bytes": 9178
+      "sha256": "ebce9be141a27cf2868394fdfe78529505e02682474ab36eb634cfefbc0e7478",
+      "bytes": 12576
     },
     {
       "path": "upstream-actions.json",
@@ -3419,8 +3452,8 @@
     },
     {
       "path": "validation.json",
-      "sha256": "9e7940f316ff4cb6f2afab612fe7b85037cc8dc7ef9d648b711770198b91a305",
-      "bytes": 7175
+      "sha256": "8ec1077432e7c6426b7b0aa9664deb206b459dd22d6c48d91bd4169e6f3e2cf9",
+      "bytes": 7129
     }
   ],
   "receipt_gaps": [
@@ -4568,7 +4601,7 @@
       }
     ]
   },
-  "report_sha256": "9da4bfb9a3e7919d0c6128055f0e8abbb4254b5e3cab401eda0321b516ffdb4e",
+  "report_sha256": "b3e6ad0bd48b38719c6f90410e35ffc874fde8b3d09b3e50420f7e2b038e6afd",
   "fix_round2": {
     "collected_utc": "2026-10-15T22:40:45.140219+00:00",
     "collection_root": "<round2-root>",
@@ -6765,5 +6798,263 @@
       }
     ],
     "scope": "Read-only reruns, actual retained generated source inputs, literal-pin manifest comparisons and trace failure probes. No dependency or generator source change."
-  }
+  },
+  "historical_trees": [
+    {
+      "tree": "bare-core",
+      "lock_sha256": "abd2ffefa9e2173745d15de53850cc10d7dad251da9524824a3269a4ec3f76dd",
+      "audit_package_counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "physical_components": 16,
+      "primary_sbom_exit": 0,
+      "install_exit": 0,
+      "package_rows": 0,
+      "package_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "package_reachability": {},
+      "source_range_rows": 0,
+      "source_range_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "source_range_reachability": {}
+    },
+    {
+      "tree": "bare-node",
+      "lock_sha256": "2e1ba5fa8fcca15d744443210a9f7395c7ce7038f90b6bc5e470bfbe50b92a2b",
+      "audit_package_counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "physical_components": 55,
+      "primary_sbom_exit": 0,
+      "install_exit": 0,
+      "package_rows": 0,
+      "package_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "package_reachability": {},
+      "source_range_rows": 0,
+      "source_range_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "source_range_reachability": {}
+    },
+    {
+      "tree": "bare-generator",
+      "lock_sha256": "911e70da63aa6291ebec2180ea391e1e6b95619f91265270c24dd18f94d68a09",
+      "audit_package_counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "physical_components": 1,
+      "primary_sbom_exit": 0,
+      "install_exit": 0,
+      "package_rows": 0,
+      "package_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "package_reachability": {},
+      "source_range_rows": 0,
+      "source_range_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "source_range_reachability": {}
+    },
+    {
+      "tree": "live-buyer",
+      "lock_sha256": "ad117112661823db6bd9584ffbdcf7bc6ff2953af30c75ac628cfcb40332653d",
+      "audit_package_counts": {
+        "info": 0,
+        "low": 31,
+        "moderate": 44,
+        "high": 65,
+        "critical": 5,
+        "total": 145
+      },
+      "physical_components": 959,
+      "primary_sbom_exit": 1,
+      "install_exit": 0,
+      "audit_omit_optional_counts": {
+        "info": 0,
+        "low": 21,
+        "moderate": 14,
+        "high": 37,
+        "critical": 3,
+        "total": 75
+      },
+      "package_rows": 145,
+      "package_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 75,
+        "not reachable": 70,
+        "needs an upstream repair (U-03)": 0
+      },
+      "package_reachability": {
+        "not installed": 70,
+        "no static import path found; affected operation not established": 67,
+        "conditional Demos feature; inherited finding": 2,
+        "module import path present; affected operation not established": 6
+      },
+      "source_range_rows": 195,
+      "source_range_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 104,
+        "not reachable": 91,
+        "needs an upstream repair (U-03)": 0
+      },
+      "source_range_reachability": {
+        "not installed": 91,
+        "no static import path found; affected operation not established": 96,
+        "conditional Demos feature; inherited finding": 2,
+        "module import path present; affected operation not established": 6
+      }
+    },
+    {
+      "tree": "live-seller",
+      "lock_sha256": "faa5f33d3a5807b2b17c0926e42c37b3e21178edc5950cb1565383798226639a",
+      "audit_package_counts": {
+        "info": 0,
+        "low": 31,
+        "moderate": 44,
+        "high": 65,
+        "critical": 5,
+        "total": 145
+      },
+      "physical_components": 959,
+      "primary_sbom_exit": 1,
+      "install_exit": 0,
+      "audit_omit_optional_counts": {
+        "info": 0,
+        "low": 21,
+        "moderate": 14,
+        "high": 37,
+        "critical": 3,
+        "total": 75
+      },
+      "package_rows": 145,
+      "package_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 75,
+        "not reachable": 70,
+        "needs an upstream repair (U-03)": 0
+      },
+      "package_reachability": {
+        "not installed": 70,
+        "no static import path found; affected operation not established": 67,
+        "conditional Demos feature; inherited finding": 2,
+        "module import path present; affected operation not established": 6
+      },
+      "source_range_rows": 195,
+      "source_range_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 104,
+        "not reachable": 91,
+        "needs an upstream repair (U-03)": 0
+      },
+      "source_range_reachability": {
+        "not installed": 91,
+        "no static import path found; affected operation not established": 96,
+        "conditional Demos feature; inherited finding": 2,
+        "module import path present; affected operation not established": 6
+      }
+    },
+    {
+      "tree": "native-alpha2",
+      "lock_sha256": "ecda612edd69e651dcd48b0bf92a06aade37f4ace038d5a9b5f88dfac6527064",
+      "audit_package_counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "physical_components": 4,
+      "primary_sbom_exit": 0,
+      "install_exit": 0,
+      "package_rows": 0,
+      "package_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "package_reachability": {},
+      "source_range_rows": 0,
+      "source_range_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "source_range_reachability": {}
+    },
+    {
+      "tree": "native-candidate",
+      "lock_sha256": "8981c1756c8900ce161989486598cebc9bb954d7ec0f6f6fcc2af7f77bd6b331",
+      "audit_package_counts": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "physical_components": 80,
+      "primary_sbom_exit": 0,
+      "install_exit": 0,
+      "package_rows": 0,
+      "package_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "package_reachability": {},
+      "source_range_rows": 0,
+      "source_range_dispositions": {
+        "upgrade available and safe": 0,
+        "narrow entry point": 0,
+        "not reachable": 0,
+        "needs an upstream repair (U-03)": 0
+      },
+      "source_range_reachability": {}
+    }
+  ],
+  "active_evidence": "recollection-2026-10-16.json",
+  "historical_catalog_head": "2ee2fe41844487f9195d8ae42c97fed55227b12a",
+  "catalog_refreshed_utc": "2026-10-16T15:05:04.780025+00:00"
 }

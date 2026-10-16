@@ -2,10 +2,10 @@
   "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:6dd4481b-e87a-476d-8dc6-de598454d8df",
+  "serialNumber": "urn:uuid:21d2b95e-cfcf-4238-923f-baee599a31d5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-15T17:39:31.569Z",
+    "timestamp": "2026-10-16T14:51:44.278Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -19,12 +19,12 @@
       }
     ],
     "component": {
-      "bom-ref": "s55-bare-node@1.0.0",
+      "bom-ref": "bare-node@1.0.0",
       "type": "library",
       "name": "bare-node",
       "version": "1.0.0",
       "scope": "required",
-      "purl": "pkg:npm/s55-bare-node@1.0.0",
+      "purl": "pkg:npm/bare-node@1.0.0",
       "properties": [
         {
           "name": "cdx:npm:package:path",
@@ -2615,7 +2615,7 @@
   ],
   "dependencies": [
     {
-      "ref": "s55-bare-node@1.0.0",
+      "ref": "bare-node@1.0.0",
       "dependsOn": [
         "@kynesyslabs/dacs@0.1.0-alpha.0",
         "@kynesyslabs/dacs-node@0.1.0-alpha.0"

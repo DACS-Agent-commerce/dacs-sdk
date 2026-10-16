@@ -2,10 +2,10 @@
   "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:8948fb51-ea2b-43d2-970b-2342cbb0ff4d",
+  "serialNumber": "urn:uuid:918e2168-a832-4b12-966a-a0bfa581b362",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-15T17:45:00.919Z",
+    "timestamp": "2026-10-16T14:56:10.205Z",
     "lifecycles": [
       {
         "phase": "build"
@@ -29,7 +29,7 @@
       "name": "native-candidate",
       "version": "0.1.0",
       "scope": "required",
-      "purl": "pkg:npm/s55-native-candidate@0.1.0",
+      "purl": "pkg:npm/live-buyer@0.1.0",
       "properties": [
         {
           "name": "cdx:npm:package:path",
@@ -118,7 +118,7 @@
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/@demosnetwork/demos-native/-/demos-native-0.1.0-alpha.2.tgz"
+          "url": "file:tarballs/demosnetwork-demos-native-0.1.0-alpha.2.tgz"
         },
         {
           "type": "vcs",

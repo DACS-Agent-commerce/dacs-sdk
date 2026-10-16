@@ -6,6 +6,8 @@ import json
 import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
@@ -119,8 +121,10 @@ class Trace(unittest.TestCase):
 
 class Engines(unittest.TestCase):
     def setUp(self):
-        self.checks = dict(engines=dict(probes=['20.19.0'], trees=[dict(tree='t', advertised='>=20', checked=1, outside=[
-            dict(location='node_modules/a', name='a', version='1.0.0', engines_node='>=22', rejected_probes=['20.19.0'])])]))
+        self.checks = dict(engines=dict(probes=['20.19.0', '24.0.0'], trees=[dict(
+            tree='t', advertised='>=20', effective_node_range='>=22 <24 || >=25', checked=1, outside=[
+            dict(location='node_modules/a', name='a', version='1.0.0', engines_node='>=22 <24 || >=25',
+                 rejected_probes=['20.19.0', '24.0.0'])])]))
         self.summary = [dict(tree='t', physical_components=1, engines=dict(
             advertised='>=20', outside_advertised=1, rejects_advertised_floor=1, catalog='release-checks.json'))]
         self.boms = {'t': dict(components=[dict(name='a', version='1.0.0', properties=[
@@ -135,6 +139,19 @@ class Engines(unittest.TestCase):
         self.summary[0]['engines']['rejects_advertised_floor'] = 0
         with self.assertRaises(AssertionError):
             validate.check_engines(self.checks, self.summary, self.boms)
+    def test_missing_rejected_probe_fails_without_changing_floor_count(self):
+        self.checks['engines']['trees'][0]['outside'][0]['rejected_probes'].remove('24.0.0')
+        with self.assertRaises(AssertionError):
+            validate.check_engines(self.checks, self.summary, self.boms)
+    def test_incorrect_effective_range_fails(self):
+        for effective in ['>=0', '>=22 <24', '>=22 <24 || >=25 <99', '>=22']:
+            with self.subTest(effective=effective):
+                self.checks['engines']['trees'][0]['effective_node_range'] = effective
+                with self.assertRaises(AssertionError):
+                    validate.check_engines(self.checks, self.summary, self.boms)
+    def test_equivalent_effective_range_passes(self):
+        self.checks['engines']['trees'][0]['effective_node_range'] = '>=22 <23 || 23.x || >=25'
+        self.assertEqual(validate.check_engines(self.checks, self.summary, self.boms), {'t': 1})
 
 class Catalog(unittest.TestCase):
     def test_catalog_mode_passes(self):
@@ -143,8 +160,47 @@ class Catalog(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         output = json.loads(result.stdout)
         self.assertEqual(output['sbom_schema_invalid'], ['native-candidate.npm.cdx.json'])
+        self.assertEqual(output['replacement_evidence'], 'not run: supply --recollection to verify the replacement inputs')
         for key in ['raw_evidence', 'fresh_probes', 'round2_probes']:
             self.assertEqual(output[key], 'not run: archives unavailable (owner decision, 2026-10-16)')
+
+class EvidenceFiles(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / 'collection'
+        self.root.mkdir()
+        self.raw = self.root / 'audit.json'
+        self.raw.write_text('{"metadata": {}}\n')
+        self.archive = self.root.parent / 'evidence.tar.gz'
+        with tarfile.open(self.archive, 'w:gz') as tar:
+            tar.add(self.raw, arcname='audit.json')
+        self.evidence = dict(archive=dict(path=self.archive.name, sha256=validate.digest(self.archive)),
+                             files=[dict(path=self.raw.name, sha256=validate.digest(self.raw), bytes=self.raw.stat().st_size)])
+    def test_original_inputs_and_archive_pass(self):
+        self.assertEqual(validate.check_evidence_files(self.root, self.evidence), 1)
+    def test_missing_or_changed_input_fails(self):
+        self.raw.write_text('{}')
+        with self.assertRaises(AssertionError):
+            validate.check_evidence_files(self.root, self.evidence)
+        self.raw.unlink()
+        with self.assertRaises(AssertionError):
+            validate.check_evidence_files(self.root, self.evidence)
+    def test_archive_bytes_must_match_loose_inputs(self):
+        self.raw.write_text('{"metadata": []}\n')
+        self.evidence['files'][0]['sha256'] = validate.digest(self.raw)
+        with self.assertRaises(AssertionError):
+            validate.check_evidence_files(self.root, self.evidence)
+    def test_archive_hash_must_match(self):
+        self.archive.write_bytes(b'changed archive')
+        with self.assertRaises(AssertionError):
+            validate.check_evidence_files(self.root, self.evidence)
+    def test_inventory_versions_match_npm_canonical_versions(self):
+        entries = [dict(location='', name='consumer', version='1.0.0'),
+                   dict(location='node_modules/a', name='a', version='1.0.01'),
+                   dict(location='node_modules/b', name='b', version='3.1.0')]
+        self.assertEqual(validate.canonical_inventory(entries, validate.semver_matcher()), {
+            'node_modules/a': ('a', '1.0.1'), 'node_modules/b': ('b', '3.1.0')})
 
 if __name__ == '__main__':
     unittest.main()

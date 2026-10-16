@@ -29301,7 +29301,6 @@
       "GHSA-584q-6j8j-r5pm",
       "GHSA-58qx-3vcg-4xpx",
       "GHSA-5c9x-8gcm-mpgx",
-      "GHSA-5qjj-4xww-7phc",
       "GHSA-62hf-57xw-28j9",
       "GHSA-66ff-xgx4-vchm",
       "GHSA-685m-2w69-288q",
@@ -29358,7 +29357,6 @@
       "GHSA-vf2m-468p-8v99",
       "GHSA-vh66-26gq-q6x8",
       "GHSA-vmf3-w455-68vh",
-      "GHSA-vqpr-j7v3-hqw9",
       "GHSA-w5hq-g745-h8pq",
       "GHSA-w8wr-v893-vjvp",
       "GHSA-w9j2-pvgh-6h63",
@@ -29435,7 +29433,6 @@
       "GHSA-584q-6j8j-r5pm",
       "GHSA-58qx-3vcg-4xpx",
       "GHSA-5c9x-8gcm-mpgx",
-      "GHSA-5qjj-4xww-7phc",
       "GHSA-62hf-57xw-28j9",
       "GHSA-66ff-xgx4-vchm",
       "GHSA-685m-2w69-288q",
@@ -29492,7 +29489,6 @@
       "GHSA-vf2m-468p-8v99",
       "GHSA-vh66-26gq-q6x8",
       "GHSA-vmf3-w455-68vh",
-      "GHSA-vqpr-j7v3-hqw9",
       "GHSA-w5hq-g745-h8pq",
       "GHSA-w8wr-v893-vjvp",
       "GHSA-w9j2-pvgh-6h63",
@@ -29569,7 +29565,6 @@
       "GHSA-584q-6j8j-r5pm",
       "GHSA-58qx-3vcg-4xpx",
       "GHSA-5c9x-8gcm-mpgx",
-      "GHSA-5qjj-4xww-7phc",
       "GHSA-62hf-57xw-28j9",
       "GHSA-66ff-xgx4-vchm",
       "GHSA-685m-2w69-288q",
@@ -29626,7 +29621,6 @@
       "GHSA-vf2m-468p-8v99",
       "GHSA-vh66-26gq-q6x8",
       "GHSA-vmf3-w455-68vh",
-      "GHSA-vqpr-j7v3-hqw9",
       "GHSA-w5hq-g745-h8pq",
       "GHSA-w8wr-v893-vjvp",
       "GHSA-w9j2-pvgh-6h63",
@@ -30655,7 +30649,7 @@
       "@mysten/window-wallet-core",
       "valibot"
     ],
-    "npm_fix_available": false,
+    "npm_fix_available": true,
     "id": [
       "GHSA-5qjj-4xww-7phc",
       "GHSA-vqpr-j7v3-hqw9"
@@ -30754,7 +30748,7 @@
     "via_packages": [
       "valibot"
     ],
-    "npm_fix_available": false,
+    "npm_fix_available": true,
     "id": [
       "GHSA-5qjj-4xww-7phc",
       "GHSA-vqpr-j7v3-hqw9"
@@ -37784,7 +37778,7 @@
       "@mysten/wallet-standard",
       "@mysten/zksend"
     ],
-    "npm_fix_available": false,
+    "npm_fix_available": true,
     "id": [
       "GHSA-5qjj-4xww-7phc",
       "GHSA-vqpr-j7v3-hqw9"
@@ -45260,7 +45254,6 @@
       "@solana/spl-token",
       "@solana/web3.js",
       "@solflare-wallet/utl-sdk",
-      "@suiet/wallet-sdk",
       "@teleportdao/teleswap-sdk",
       "@viaprotocol/router-sdk",
       "iziswap-sdk",
@@ -45289,7 +45282,6 @@
       "GHSA-584q-6j8j-r5pm",
       "GHSA-58qx-3vcg-4xpx",
       "GHSA-5c9x-8gcm-mpgx",
-      "GHSA-5qjj-4xww-7phc",
       "GHSA-62hf-57xw-28j9",
       "GHSA-6chq-wfr3-2hj9",
       "GHSA-6rw7-vpxm-498p",
@@ -45334,7 +45326,6 @@
       "GHSA-vf2m-468p-8v99",
       "GHSA-vh66-26gq-q6x8",
       "GHSA-vmf3-w455-68vh",
-      "GHSA-vqpr-j7v3-hqw9",
       "GHSA-w5hq-g745-h8pq",
       "GHSA-w8wr-v893-vjvp",
       "GHSA-w9j2-pvgh-6h63",
@@ -47873,7 +47864,7 @@
     "severity": "high",
     "kind": "direct or mixed",
     "via_packages": [],
-    "npm_fix_available": false,
+    "npm_fix_available": true,
     "id": [
       "GHSA-5qjj-4xww-7phc",
       "GHSA-vqpr-j7v3-hqw9"
