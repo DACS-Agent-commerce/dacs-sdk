@@ -603,15 +603,26 @@ a runtime store lacks the method. `recordPrepared` remains immutable for every
 ordinary action. The exported in-memory store is for tests and development
 only and requires `{ acknowledgeVolatile: true }`.
 
-`checkCrossChainHtlcStore(makeStore)` runs this contract against a host
-store and returns one `{ name, ok, detail }` per case, so a host can assert it
-from its own test runner. `makeStore` must return a new, empty store each
-time. The cases cover lease ownership and generations, stale writes, binding
-and salt conflicts, write-once rows and checkpoints (`existing` only for the
-identical row), cross-session effect and transaction reuse, a destination
-lock's source-finality binding, the reveal/refund exclusion, both replacement
-CASes and concurrent workers. They do not prove durability, encryption or
-atomicity across processes, which remain the host's to test.
+`checkCrossChainHtlcStore(makeStore, { reopen })` runs this contract against
+a host store and returns one `{ name, ok, detail }` per case, so a host can
+assert it from its own test runner. `makeStore` must return a new, empty store
+each time. The cases cover lease ownership and generations, stale writes,
+binding and salt conflicts, write-once rows and checkpoints (`existing` only
+for the identical row), cross-session effect and transaction reuse, a
+destination lock's source-finality binding, the reveal/refund exclusion, both
+replacement CASes and concurrent workers.
+
+`reopen(store)` must close `store` and return a new store over the same
+durable state, as a process restart would. Only with it does the kit run its
+restart case. That case retains a session with a replaced reveal, a replaced
+source claim and both checkpoints, plus a settled session, then reopens the
+store. The reopened store must return the same live lease, intent, rows,
+checkpoints, claim histories and settlement, and give a takeover a higher
+generation. It must still refuse a write from the old generation, another
+salt or preimage, a reused salt, effect or transaction, and a second row or
+checkpoint. Without `reopen` the kit does not check durability at all. No case
+proves encryption or atomicity across processes; those remain the host's to
+test.
 
 When preparing a replacement of either claim, the adapter receives
 `replacement` context with the new attempt number, prior effect
@@ -898,7 +909,8 @@ map as follows:
 
 - Supply a durable, atomic, encrypted `CrossChainHtlcStore` that survives the
   process. Restart safety depends on it; the in-memory store does not provide
-  it. Run `checkCrossChainHtlcStore` against it in the host's tests.
+  it. Run `checkCrossChainHtlcStore` against it in the host's tests, with a
+  `reopen` hook so that its restart case runs.
 - Never discard the buyer salt while the session can still be driven. Keep
   it encrypted and durable until the session is terminal: settlement is
   recorded, both legs are refunded, or the core returned a permanent `failed`

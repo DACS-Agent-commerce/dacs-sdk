@@ -1343,6 +1343,7 @@ export {
   type CrossChainHtlcRailSelection,
   checkCrossChainHtlcStore,
   type CrossChainHtlcStoreCheck,
+  type CrossChainHtlcStoreCheckOptions,
   solanaSplSettlementKey,
   createSolanaSplSettlementIntent,
   advanceSolanaSplSettlement,

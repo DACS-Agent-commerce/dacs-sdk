@@ -188,6 +188,7 @@ export {
 export {
   checkCrossChainHtlcStore,
   type CrossChainHtlcStoreCheck,
+  type CrossChainHtlcStoreCheckOptions,
 } from "./crossChainHtlcStoreConformance.js";
 export {
   solanaSplSettlementKey,

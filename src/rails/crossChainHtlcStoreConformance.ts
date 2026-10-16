@@ -26,12 +26,22 @@ export interface CrossChainHtlcStoreCheck {
   detail?: string;
 }
 
+/** Options of `checkCrossChainHtlcStore`. */
+export interface CrossChainHtlcStoreCheckOptions {
+  /**
+   * Close `store` and return a new store over the same durable state, as a
+   * process restart would. The kit never uses `store` again. When supplied,
+   * the restart case runs.
+   */
+  reopen?: (store: CrossChainHtlcStore) => CrossChainHtlcStore | Promise<CrossChainHtlcStore>;
+}
+
 const AUTH_HASH = "c".repeat(64);
 const NOW = 1_000_000;
 const LEASE_MS = 10_000;
 /** Source expiry in Unix seconds, well after `NOW`. */
 const SOURCE_EXPIRY = 10_000;
-const JOB_IDS = ["01J8ME0SXKQ4T9V2RC5HJ6WX7F", "01J8ME0SXKQ4T9V2RC5HJ6WX7G"] as const;
+const JOB_IDS = ["01J8ME0SXKQ4T9V2RC5HJ6WX7F", "01J8ME0SXKQ4T9V2RC5HJ6WX7G", "01J8ME0SXKQ4T9V2RC5HJ6WX7H"] as const;
 
 const HASHLOCKS = {
   deriveHashlock({ chainId, preimage }: { chainId: number; preimage: Uint8Array }): string {
@@ -137,13 +147,17 @@ function revealCheckpoint(
   };
 }
 
-function settlement(intent: Readonly<CrossChainHtlcIntent>, sourceExpiry = SOURCE_EXPIRY): CrossChainHtlcSettlement {
+function settlement(
+  intent: Readonly<CrossChainHtlcIntent>,
+  sourceExpiry = SOURCE_EXPIRY,
+  hashSuffix = "",
+): CrossChainHtlcSettlement {
   return {
     txRefs: [
-      txRef(intent, "source-lock", "lock-s"),
-      txRef(intent, "destination-lock", "lock-d"),
-      txRef(intent, "destination-claim", "reveal-1"),
-      txRef(intent, "source-claim", "claim-1"),
+      txRef(intent, "source-lock", `lock-s${hashSuffix}`),
+      txRef(intent, "destination-lock", `lock-d${hashSuffix}`),
+      txRef(intent, "destination-claim", `reveal-1${hashSuffix}`),
+      txRef(intent, "source-claim", `claim-1${hashSuffix}`),
     ],
     paymentAmount: { amount: intent.amount, currency: intent.currency },
     settlementFinality: {
@@ -216,6 +230,21 @@ async function retainedPrepared(s: Leased): Promise<readonly Readonly<HtlcPrepar
   });
   if (claimed.status !== "waiting") throw new ContractViolation(`read during a live lease returned ${claimed.status}`);
   return claimed.prepared;
+}
+
+/** A claim's intent, rows (in action order), claim histories and checkpoints, canonicalized. */
+function retainedState(claimed: HtlcStoreClaim): string {
+  if (claimed.status !== "waiting" && claimed.status !== "acquired") {
+    throw new ContractViolation(`read of the retained state returned ${claimed.status}`);
+  }
+  return canonicalize({
+    intent: claimed.intent,
+    prepared: [...claimed.prepared].sort((x, y) => x.action.localeCompare(y.action)),
+    sourceClaimAttemptHistory: claimed.sourceClaimAttemptHistory,
+    destinationClaimAttemptHistory: claimed.destinationClaimAttemptHistory,
+    sourceFinalityCheckpoint: claimed.sourceFinalityCheckpoint ?? null,
+    revealCheckpoint: claimed.revealCheckpoint ?? null,
+  });
 }
 
 type Case = (makeStore: () => CrossChainHtlcStore | Promise<CrossChainHtlcStore>) => Promise<void>;
@@ -500,7 +529,7 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
     expectStatus(await store.recordPrepared({ ...writer(refunded.s), prepared: prepared(refunded.s.intent, "destination-refund", "refund-d") }),
       ["recorded"], "destination refund");
     expectStatus(await refunded.cas(1, 2), REFUSED, "replacement after a refund");
-    const revealed = await setup("01J8ME0SXKQ4T9V2RC5HJ6WX7H", true);
+    const revealed = await setup(JOB_IDS[2], true);
     expectStatus(await revealed.cas(1, 1), REFUSED, "replacement equal to the prior");
     expectStatus(await revealed.cas(1, 2, { effect: 3, ref: 1 }), REFUSED,
       "replacement naming the prior's reference under another effect");
@@ -522,6 +551,110 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
   }],
 ];
 
+function restartCase(reopen: NonNullable<CrossChainHtlcStoreCheckOptions["reopen"]>): readonly [string, Case] {
+  return ["restart: a reopened store keeps the lease, rows, checkpoints, claim histories, secret bindings and settlement", async (make) => {
+    const store = await make();
+    const a = await acquire(store, session(JOB_IDS[0]));
+    const lock = prepared(a.intent, "source-lock", "lock-s");
+    const finality = sourceFinality(lock);
+    const reveal = (n: number) => prepared(a.intent, "destination-claim", `reveal-${n}`);
+    const claim = (n: number) => prepared(a.intent, "source-claim", `claim-${n}`);
+    const failed = (p: Readonly<HtlcPreparedAction>) => ({
+      state: "failed" as const,
+      txRef: p.txRef,
+      authenticationHash: AUTH_HASH,
+    });
+    expectStatus(await store.recordPrepared({ ...writer(a), prepared: lock }), ["recorded"], "source lock");
+    expectStatus(await store.recordSourceFinality({ ...writer(a), checkpoint: finality }), ["recorded"], "source finality");
+    expectStatus(await store.recordPrepared({
+      ...writer(a),
+      prepared: prepared(a.intent, "destination-lock", "lock-d", crossChainHtlcSourceFinalityCheckpointHash(finality)),
+    }), ["recorded"], "destination lock");
+    expectStatus(await store.recordPrepared({ ...writer(a), prepared: reveal(1) }), ["recorded"], "reveal");
+    expectStatus(await store.replacePreparedDestinationClaim({
+      ...writer(a), now: NOW, priorEffectHash: reveal(1).effectHash,
+      priorTxRef: reveal(1).txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+      failedObservation: failed(reveal(1)), replacement: reveal(2),
+    }), ["recorded"], "reveal replacement");
+    expectStatus(await store.recordRevealFinal({ ...writer(a), checkpoint: revealCheckpoint(reveal(2)) }),
+      ["recorded"], "reveal checkpoint");
+    expectStatus(await store.recordPrepared({ ...writer(a), prepared: claim(1) }), ["recorded"], "source claim");
+    expectStatus(await store.replacePreparedSourceClaim({
+      ...writer(a), now: NOW, priorEffectHash: claim(1).effectHash,
+      priorTxRef: claim(1).txRef as Extract<HtlcTxRef, { kind: "htlc-claim" }>,
+      failedObservation: failed(claim(1)), replacement: claim(2),
+    }), ["recorded"], "source-claim replacement");
+    const settled = await acquire(store, session(JOB_IDS[1]), "worker-c");
+    const settledReveal = prepared(settled.intent, "destination-claim", "reveal-1-two");
+    const done = settlement(settled.intent, SOURCE_EXPIRY, "-two");
+    expectStatus(await store.recordPrepared({ ...writer(settled), prepared: settledReveal }), ["recorded"], "second reveal");
+    expectStatus(await store.recordRevealFinal({ ...writer(settled), checkpoint: revealCheckpoint(settledReveal) }),
+      ["recorded"], "second reveal checkpoint");
+    expectStatus(await store.recordSettlement({ ...writer(settled), settlement: done }), ["recorded"], "settlement");
+    const read = (from: CrossChainHtlcStore) => from.claim({
+      intent: a.intent, secrets: a.secrets, owner: "reader", now: a.lease.expiresAt - 1, leaseDurationMs: LEASE_MS,
+    });
+    const before = retainedState(await read(store));
+
+    const reopened = await reopen(store);
+    const waiting = await read(reopened);
+    expectStatus(waiting, ["waiting"], "claim during the live lease after reopening");
+    if (waiting.status === "waiting") {
+      expectTrue(canonicalize(waiting.lease) === canonicalize(a.lease), "the live lease survives unchanged");
+    }
+    expectTrue(retainedState(waiting) === before, "the intent, rows, checkpoints and claim histories survive unchanged");
+    expectTrue(await reopened.isCurrent({ ...writer(a), now: NOW }), "the lease holder is still current");
+    for (const [label, secrets] of [
+      ["salt", { ...a.secrets, buyerSaltHash: "f".repeat(64) }],
+      ["preimage", { ...a.secrets, preimageHash: "f".repeat(64) }],
+    ] as const) {
+      expectStatus(await reopened.claim({
+        intent: a.intent, secrets, owner: "worker-x", now: a.lease.expiresAt, leaseDurationMs: LEASE_MS,
+      }), ["conflict"], `claim with another ${label} after reopening`);
+    }
+    const reused = session(JOB_IDS[2], a.secrets.buyerSalt);
+    expectStatus(await reopened.claim({
+      intent: reused.intent, secrets: reused.secrets, owner: "worker-x", now: NOW, leaseDurationMs: LEASE_MS,
+    }), ["conflict"], "another session with the same salt after reopening");
+
+    const takeover = await reopened.claim({
+      intent: a.intent, secrets: a.secrets, owner: "worker-b", now: a.lease.expiresAt, leaseDurationMs: LEASE_MS,
+    });
+    expectStatus(takeover, ["acquired"], "takeover after reopening");
+    if (takeover.status !== "acquired") throw new ContractViolation("unreachable");
+    expectTrue(takeover.lease.generation > a.lease.generation, "a takeover after reopening gets a higher generation");
+    expectTrue(retainedState(takeover) === before, "a takeover after reopening returns the same retained state");
+    const b: Leased = { ...a, store: reopened, lease: takeover.lease };
+    expectStatus(await reopened.recordPrepared({ ...writer(a), prepared: prepared(a.intent, "destination-refund", "refund-d") }),
+      ["stale"], "a write from the generation before the restart");
+    expectStatus(await reopened.recordPrepared({ ...writer(b), prepared: lock }), ["existing"], "the retained source lock again");
+    expectStatus(await reopened.recordPrepared({ ...writer(b), prepared: prepared(a.intent, "source-lock", "lock-other") }),
+      REFUSED, "another source lock");
+    expectStatus(await reopened.recordSourceFinality({ ...writer(b), checkpoint: { ...finality, finalityObservedAt: NOW + 900 } }),
+      REFUSED, "another source-finality checkpoint");
+    expectStatus(await reopened.recordRevealFinal({
+      ...writer(b), checkpoint: { ...revealCheckpoint(reveal(2)), finalityObservedAt: NOW + 900 },
+    }), REFUSED, "another reveal checkpoint");
+    expectStatus(await reopened.recordPrepared({ ...writer(b), prepared: prepared(a.intent, "source-refund", "refund-s") }),
+      REFUSED, "a source refund after the retained reveal checkpoint");
+
+    const other = await acquire(reopened, session(JOB_IDS[2]), "worker-d");
+    expectStatus(await reopened.recordPrepared({ ...writer(other), prepared: prepared(other.intent, "source-lock", "lock-s") }),
+      REFUSED, "another session's row with a retained transaction");
+    expectStatus(await reopened.recordPrepared({
+      ...writer(other),
+      prepared: { ...prepared(other.intent, "source-lock", "lock-three"), effectHash: lock.effectHash },
+    }), REFUSED, "another session's row under a retained effect hash");
+    const settledClaim = await reopened.claim({
+      intent: settled.intent, secrets: settled.secrets, owner: "worker-e", now: settled.lease.expiresAt, leaseDurationMs: LEASE_MS,
+    });
+    expectStatus(settledClaim, ["settled"], "claim of the settled session after reopening");
+    if (settledClaim.status === "settled") {
+      expectTrue(canonicalize(settledClaim.settlement) === canonicalize(done), "the settlement survives unchanged");
+    }
+  }];
+}
+
 /**
  * Run the `CrossChainHtlcStore` contract against a host store. `makeStore`
  * must return a new, empty store on every call. Each case reports `ok`, or
@@ -531,12 +664,25 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
  * effect and transaction reuse, the source-finality binding of a destination
  * lock, the reveal/refund exclusion, both replacement CASes and concurrent
  * workers. A store that fails any case can make the core send twice.
+ *
+ * Only with `options.reopen` does the kit check a restart. That case drives
+ * one session to a replaced reveal and a replaced source claim with both
+ * checkpoints, and settles another, then reopens the store. The reopened store
+ * must return the same live lease, intent, rows, checkpoints and claim
+ * histories, a higher generation on takeover, and the same settlement. It
+ * must still refuse the old generation, another salt or preimage, a reused
+ * salt, effect or transaction, and a second row or checkpoint. Without
+ * `reopen` nothing here shows that state survives a restart. No case proves
+ * encryption or atomicity across processes; those remain the host's to test.
  */
 export async function checkCrossChainHtlcStore(
   makeStore: () => CrossChainHtlcStore | Promise<CrossChainHtlcStore>,
+  options: Readonly<CrossChainHtlcStoreCheckOptions> = {},
 ): Promise<readonly CrossChainHtlcStoreCheck[]> {
   const results: CrossChainHtlcStoreCheck[] = [];
-  for (const [name, run] of CASES) {
+  const reopen = options?.reopen;
+  const cases = reopen === undefined ? CASES : [...CASES, restartCase(reopen)];
+  for (const [name, run] of cases) {
     try {
       await run(makeStore);
       results.push(Object.freeze({ name, ok: true }));
