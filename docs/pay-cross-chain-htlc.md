@@ -93,19 +93,23 @@ does not reveal merely because both locks exist. Once the destination claim is
 final, the preimage is public and the source refund path is forbidden. If the
 payee's source claim is not yet final, the result is `settle-asymmetric`, not a
 refund or terminal ordinary failure. If the source expiry passes without that
-claim, the session follows ST-8's expiry only once the source lock is known
-to be unclaimed: no claim the core sent can land (it holds none, or the
-adapter authenticates the active one `failed`, or `absent` naming it), and the
+claim, the session follows ST-8's expiry once the source lock is known to be
+unclaimed: no claim the core sent can land (it holds none, or the adapter
+authenticates the active one `failed`, or `absent` naming it), and the
 adapter authenticates the source lock's `lockState` as `open` or `refunded`.
 The result is then the terminal `failed` with `errorClass`
-`settlement-atomicity` and reason `dest-revealed-source-unclaimed-expired`. A
-claim usually reverts because the lock was already claimed outside the core,
-by the payee's own agent or anyone holding the public preimage. When the
-adapter reports the lock `claimed` by such a claim and that claim reached
-finality at or before the source expiry, the result is `operator-alert` with
-reason `htlc-source-claimed-outside-core` and that claim's reference. As for a
-claim the core sent, one final only after the source expiry is the same
-terminal ST-8 expiry. While a claim may still prove final in time, or the lock's
+`settlement-atomicity` and reason `dest-revealed-source-unclaimed-expired`.
+The same terminal expiry follows a lock `claimed` by a claim that reached
+finality only after the source expiry, whoever sent it; that result carries
+the claim (`sourceClaimTxRef`, `sourceClaimFinalityReachedAt`,
+`recoveryDeadline`), because the payee holds the source funds. A claim
+usually reverts because the lock was already claimed outside the core, by the
+payee's own agent or anyone holding the public preimage. When the adapter
+reports the lock `claimed` by such a claim and that claim reached finality at
+or before the source expiry, the result is `operator-alert` with reason
+`htlc-source-claimed-outside-core` and that claim's reference, even while a
+claim the core sent is still pending: that claim can no longer spend the lock.
+While a claim the core sent may still prove final in time, or the lock's
 disposition is not reported, it is `operator-alert` with reason
 `htlc-source-claim-missed-after-reveal` (see Operator alerts and Settlement
 evidence).
@@ -381,24 +385,35 @@ if the chain has changed. The reasons are:
   the host finalises ST-8 as expired (`settle-failed`, `failed-counterparty`)
   and arranges the payee's payment outside the core, for example by having
   the payer refund the source and pay the payee under the agreement. If it
-  was claimed, the payee was paid: the host anchors the `:resolved` record on
-  that claim and never pays the payee again. An adapter that reports
-  `lockState` lets the core make this decision itself.
+  was claimed, the payee was paid and is never paid again. The operator then
+  reads that claim's source-chain finality time: only a claim final at or
+  before the source expiry (`recoveryDeadline` of the earlier
+  `settle-asymmetric`) lets the host anchor the `:resolved` record on it. A
+  claim final after it is ST-8's expiry: the interim record stands and the
+  session goes `settle-failed`, but the host keeps that claim for financial
+  reconciliation and never blames the payee for an unpaid source. An adapter
+  that reports `lockState` lets the core make this decision itself.
 - `htlc-source-claimed-outside-core`: the payer's reveal is final, the
-  source expiry has passed, no claim the core sent can land, and the adapter
-  authenticates the source lock `claimed` by another transaction,
+  source expiry has passed, and the adapter authenticates the source lock
+  `claimed` by another transaction, so no claim the core sent can land, even
+  one still `pending`. The lock names
   `sourceClaimTxRef` (its chain and contract are the intent's; only the hash
   is the adapter's), final at `sourceClaimFinalityReachedAt`, at or before
   `recoveryDeadline` (the source expiry, Unix milliseconds). ST-8 resolves
   only on a claim final within the window, so the core returns this alert
   only then; a claim final after it gives the terminal ST-8 expiry (`failed`,
   `settlement-atomicity`, `dest-revealed-source-unclaimed-expired`), exactly
-  as a claim the core sent. The payee was paid. The host verifies that
-  claim's finality and anchors the ST-8 `:resolved` success record on it; it
-  never records `failed-counterparty` for it and never pays the payee again.
-  A lock reported `claimed` by a claim the core itself sent, which the same
-  snapshot reports unlanded, contradicts itself: the result is the resumable
-  `indeterminate` with reason `htlc-source-lock-disposition-contradicted`.
+  as a claim the core sent, and that result carries the same three fields.
+  The payee was paid. The host verifies that claim's finality and anchors the
+  ST-8 `:resolved` success record on it; it never records
+  `failed-counterparty` for it and never pays the payee again. A lock
+  reported `claimed` by a claim the core itself sent contradicts itself when
+  the same snapshot reports that claim unlanded, or when it is an attempt the
+  core replaced (each was authenticated unlanded first): the result is the
+  resumable `indeterminate` with reason
+  `htlc-source-lock-disposition-contradicted`, which pages an operator. A
+  lock reported `claimed` by the active claim while it is still `pending`
+  waits for that claim's own report.
 - `htlc-destination-claim-failed-preimage-public`: a reveal failed on chain,
   so the preimage is public, and the core cannot send another one: the
   destination-claim window has closed, the absolute margin is gone, or three
@@ -481,10 +496,15 @@ only when:
   locked; or
 - the HTLC-9 window closed without settlement (`errorClass`
   `settlement-atomicity`, reason `dest-revealed-source-unclaimed-expired`):
-  the source claim is final but reached finality after the source expiry, or
-  the source expiry has passed, no claim the core sent can land, and the
-  adapter authenticates the source lock's `lockState` as `open` or
-  `refunded`.
+  the source claim is final but reached finality after the source expiry; or
+  the adapter authenticates the source lock `claimed` by a claim the core did
+  not send that reached finality after it; or the source expiry has passed,
+  no claim the core sent can land, and the adapter authenticates the source
+  lock's `lockState` as `open` or `refunded`. In the first two cases the
+  lock was spent: the result carries `sourceClaimTxRef`,
+  `sourceClaimFinalityReachedAt` and `recoveryDeadline`, the payee holds the
+  source funds, and the host must not pay the payee again or treat them as
+  unpaid.
 
 These need an operator to reconcile the record, not a retry. A missing or different buyer salt is never `failed` (see
 `htlc-salt-missing` and `htlc-salt-mismatch` above). Every other non-final
@@ -682,8 +702,10 @@ optional `lockState` (`open`, `claimed` or `refunded`) and, when `claimed`,
 its `claimTxRef` and `claimFinalityReachedAt` (the authenticated
 chain-native Unix milliseconds at which that claim reached finality, which
 decides ST-8's window as `finalityReachedAt` does for the core's own claim).
-Any other combination, or any of these fields on another action or on an
-observation that is not `final`, makes the snapshot invalid. Report `lockState` only from the source chain's
+`claimFinalityReachedAt` must be no earlier than the lock's `includedAt` and
+no later than the snapshot's `observedAt`. Any other combination, any other
+time, or any of these fields on another action or on an observation that is
+not `final`, makes the snapshot invalid. Report `lockState` only from the source chain's
 own contract state at the observation. The core rejects an observation of a
 transaction it did not prepare: the whole snapshot is unavailable, the result is `indeterminate`
 with reason `htlc-ledger-observation-unavailable`, and nothing is replaced,
@@ -860,7 +882,11 @@ ST-8 maps onto the core's results as follows:
 - `settled`: ST-8 resolved; anchor the superseding success record.
 - `failed` with `settlement-atomicity` and
   `dest-revealed-source-unclaimed-expired`: ST-8 expired. The interim record
-  stands, and the session goes `settle-failed` → `failed-counterparty`.
+  stands, and the session goes `settle-failed`. Without `sourceClaimTxRef` the
+  lock is authenticated unclaimed, and the session goes on to
+  `failed-counterparty`. With it the lock was spent by a claim final after the
+  window: the payee holds the source funds, so the host reconciles on that
+  claim instead of compensating the payer or blaming the payee.
 - `operator-alert` `htlc-source-claim-missed-after-reveal`: still
   `settle-asymmetric`; see `sourceClaimPending` under Operator alerts.
 - `operator-alert` `htlc-source-claimed-outside-core`: ST-8 resolved by a
@@ -869,7 +895,7 @@ ST-8 maps onto the core's results as follows:
   superseding success record on `sourceClaimTxRef` once that claim's finality
   is verified. A claim made outside the core that is final only after the
   window never produces this alert: the core returns the terminal ST-8
-  expiry above.
+  expiry above, with that claim.
 
 ## Authority fields and the pinned rail
 
@@ -980,6 +1006,10 @@ map as follows:
     (normally recorded from `observeSourceLeg`), an adapter fault; nothing
     moves forward until `observe` reports the checkpointed facts, but the
     payer's source refund is still driven on the source leg at its expiry;
+  - `indeterminate` with reason `htlc-source-lock-disposition-contradicted`:
+    past the source expiry the adapter reports the source lock claimed by a
+    claim the core sent that it also reports unlanded, or by one the core
+    replaced, an adapter fault that polling does not clear;
   - `indeterminate` with reason `htlc-call-input-invalid`: the call's owner,
     lease, authority or hashlock deriver is unusable, a host error; correct
     the input and call again, keeping the salt;

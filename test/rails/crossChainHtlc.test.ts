@@ -1814,7 +1814,8 @@ describe("advanceCrossChainHtlc", () => {
       recoveryDeadline: 1_500_000,
     }],
     // ST-8(a) resolves only on a claim final within the window: as for a
-    // claim the core sent, a later one is the expiry.
+    // claim the core sent, a later one is the expiry. The payee still holds
+    // the source funds, so the result keeps the claim for reconciliation.
     ["claimed outside the core final only after the expiry", {
       lockState: "claimed",
       claimTxRef: outsideClaim,
@@ -1823,6 +1824,9 @@ describe("advanceCrossChainHtlc", () => {
       status: "failed",
       errorClass: "settlement-atomicity",
       reason: "dest-revealed-source-unclaimed-expired",
+      sourceClaimTxRef: outsideClaim,
+      sourceClaimFinalityReachedAt: 1_500_001,
+      recoveryDeadline: 1_500_000,
     }],
     // Without the lock's disposition a claim made outside the core cannot be
     // ruled out: the session stays resumable, and nothing the core sent is pending.
@@ -1859,6 +1863,7 @@ describe("advanceCrossChainHtlc", () => {
     };
     h.actions["source-lock"] = { ...h.actions["source-lock"], ...disposition } as HtlcObservedAction;
     run.setClock(1_500_000);
+    h.setObservedAt(1_600_000);
     // No claim the core sent can complete within the window any more. Only a
     // lock authenticated unclaimed makes the interim record stand and the
     // session terminal (ST-8 expiry, `failed-counterparty`).
@@ -1890,6 +1895,7 @@ describe("advanceCrossChainHtlc", () => {
     for (let call = 0; call < 5; call += 1) result = await advanceCrossChainHtlc(run.nextOwner());
     expect(result).toMatchObject({ status: "operator-alert", reason: "htlc-source-claim-replacement-limit-reached" });
     run.setClock(5_000_000);
+    h.setObservedAt(5_000_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "after-expiry" })).resolves.toMatchObject({
       status: "operator-alert",
       reason: "htlc-source-claim-missed-after-reveal",
@@ -1912,7 +1918,7 @@ describe("advanceCrossChainHtlc", () => {
     expect(htlcNeedsOperator(resolved)).toBe(true);
   });
 
-  test("keeps a pending core claim resumable when the lock is reported claimed outside the core", async () => {
+  test("resolves on a final outside claim while the core's own claim stays pending", async () => {
     const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
     const run = runner({ adapter: h.adapter });
     await toSourceClaimPending(run);
@@ -1923,8 +1929,39 @@ describe("advanceCrossChainHtlc", () => {
       claimFinalityReachedAt: 1_400_000,
     } as HtlcObservedAction;
     run.setClock(1_500_000);
-    // The core's own claim may still prove final in time: no disposition
-    // decides the session while it can land.
+    h.setObservedAt(1_500_000);
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    // The lock is spent, so the pending core claim can never land: it does
+    // not hold a paid session in the alert, however long it stays pending.
+    for (let call = 0; call < 3; call += 1) {
+      expect(h.actions["source-claim"]).toMatchObject({ state: "pending" });
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+        status: "operator-alert",
+        reason: "htlc-source-claimed-outside-core",
+        txRefs: corePathRefs(),
+        sourceClaimTxRef: outsideClaim,
+        sourceClaimFinalityReachedAt: 1_400_000,
+        recoveryDeadline: 1_500_000,
+      });
+    }
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+  });
+
+  test("leaves a lock reported claimed by the pending core claim to that claim's own report", async () => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    const active = h.broadcastRetained.mock.calls.map(([prepared]) => prepared).find((p) => p.action === "source-claim")!;
+    h.actions["source-lock"] = {
+      ...h.actions["source-lock"],
+      lockState: "claimed",
+      claimTxRef: active.txRef,
+      claimFinalityReachedAt: 1_400_000,
+    } as HtlcObservedAction;
+    run.setClock(1_500_000);
+    h.setObservedAt(1_500_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" })).resolves.toEqual({
       status: "operator-alert",
       reason: "htlc-source-claim-missed-after-reveal",
@@ -1965,6 +2002,40 @@ describe("advanceCrossChainHtlc", () => {
       claimFinalityReachedAt: 1_400_000,
     } as HtlcObservedAction;
     run.setClock(1_500_000);
+    h.setObservedAt(1_500_000);
+    const result = await advanceCrossChainHtlc({ ...run.shared, owner: "late" });
+    expect(result).toEqual({
+      status: "indeterminate",
+      reason: "htlc-source-lock-disposition-contradicted",
+    });
+    // Only an adapter breaking its contract reports this, past the source
+    // expiry: polling alone never clears it.
+    expect(htlcNeedsOperator(result)).toBe(true);
+  });
+
+  test.each([
+    ["failed", "failed"],
+    ["pending", "pending"],
+  ] as const)("refuses a lock reported claimed by a replaced core claim while the active one is %s", async (_name, activeState) => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    const replaced = h.broadcastRetained.mock.calls.map(([prepared]) => prepared).find((p) => p.action === "source-claim")!;
+    h.actions["source-claim"] = { state: "failed", txRef: replaced.txRef, authenticationHash: AUTH_HASH };
+    await advanceCrossChainHtlc(run.nextOwner());
+    const active = h.prepareAction.mock.calls.filter(([request]) => request.action === "source-claim");
+    expect(active).toHaveLength(2);
+    const activeRef = refFor("source-claim", `-attempt-${active[1]![0].replacement!.attempt}`);
+    expect(h.actions["source-claim"]).toMatchObject({ state: "pending", txRef: activeRef });
+    h.actions["source-claim"] = { state: activeState, txRef: activeRef, authenticationHash: AUTH_HASH };
+    h.actions["source-lock"] = {
+      ...h.actions["source-lock"],
+      lockState: "claimed",
+      claimTxRef: replaced.txRef,
+      claimFinalityReachedAt: 1_400_000,
+    } as HtlcObservedAction;
+    run.setClock(1_500_000);
+    h.setObservedAt(1_500_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" })).resolves.toEqual({
       status: "indeterminate",
       reason: "htlc-source-lock-disposition-contradicted",
@@ -1984,6 +2055,7 @@ describe("advanceCrossChainHtlc", () => {
       claimFinalityReachedAt: 1_400_000,
     } as HtlcObservedAction;
     run.setClock(1_500_000);
+    h.setObservedAt(1_500_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" }))
       .resolves.toMatchObject({ reason: "htlc-source-claimed-outside-core", sourceClaimTxRef: outsideClaim });
   });
@@ -2011,6 +2083,17 @@ describe("advanceCrossChainHtlc", () => {
       claimTxRef: outsideClaim,
       claimFinalityReachedAt: "1400000",
     }],
+    // The lock was included at 1 000 000 and the snapshot is observed at 1 500 000.
+    ["claimed by a claim final before the lock's inclusion", "source-lock", {
+      ...claimedAt,
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt: 999_999,
+    }],
+    ["claimed by a claim final after the snapshot reporting it", "source-lock", {
+      ...claimedAt,
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt: 1_500_001,
+    }],
     ["a claim reference on an open lock", "source-lock", { lockState: "open", claimTxRef: outsideClaim }],
     ["a claim finality on an open lock", "source-lock", { lockState: "open", claimFinalityReachedAt: 1_400_000 }],
     ["a claim reference without a state", "source-lock", { claimTxRef: outsideClaim }],
@@ -2026,9 +2109,35 @@ describe("advanceCrossChainHtlc", () => {
     h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
     h.actions[action] ={ ...h.actions[action], ...disposition } as unknown as HtlcObservedAction;
     run.setClock(1_500_000);
+    h.setObservedAt(1_500_000);
     await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" })).resolves.toEqual({
       status: "indeterminate",
       reason: "htlc-ledger-observation-unavailable",
+    });
+  });
+
+  test.each([
+    ["at the lock's inclusion", 1_000_000],
+    ["at the snapshot reporting it", 1_500_000],
+  ] as const)("accepts an outside claim final exactly %s", async (_name, claimFinalityReachedAt) => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    const prior = h.broadcastRetained.mock.calls.map(([prepared]) => prepared).find((p) => p.action === "source-claim")!;
+    h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+    expect(h.actions["source-lock"]).toMatchObject({ state: "final", includedAt: 1_000_000 });
+    h.actions["source-lock"] = {
+      ...h.actions["source-lock"],
+      lockState: "claimed",
+      claimTxRef: outsideClaim,
+      claimFinalityReachedAt,
+    } as HtlcObservedAction;
+    run.setClock(1_500_000);
+    h.setObservedAt(1_500_000);
+    await expect(advanceCrossChainHtlc({ ...run.shared, owner: "late" })).resolves.toMatchObject({
+      status: "operator-alert",
+      reason: "htlc-source-claimed-outside-core",
+      sourceClaimFinalityReachedAt: claimFinalityReachedAt,
     });
   });
 
@@ -4361,10 +4470,14 @@ describe("advanceCrossChainHtlc", () => {
           },
         });
       } else {
+        // The late claim paid the payee: the expiry keeps it for reconciliation.
         expect(result).toEqual({
           status: "failed",
           errorClass: "settlement-atomicity",
           reason: "dest-revealed-source-unclaimed-expired",
+          sourceClaimTxRef: refFor("source-claim"),
+          sourceClaimFinalityReachedAt: 1_500_001,
+          recoveryDeadline: 1_500_000,
         });
       }
     },
@@ -4406,10 +4519,14 @@ describe("advanceCrossChainHtlc", () => {
           },
         });
       } else {
+        // The late claim paid the payee: the expiry keeps it for reconciliation.
         expect(result).toEqual({
           status: "failed",
           errorClass: "settlement-atomicity",
           reason: "dest-revealed-source-unclaimed-expired",
+          sourceClaimTxRef: refFor("source-claim"),
+          sourceClaimFinalityReachedAt: 1_500_001,
+          recoveryDeadline: 1_500_000,
         });
       }
     },
