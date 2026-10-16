@@ -1525,7 +1525,13 @@ describe("seller responder proposal integrity and durable-effect guards", () => 
     const h = await harness({ store });
     expect((await respond(h)).disposition, name).toBe("complete");
     tamper = true;
-    expect((await respond(h)).disposition, name).not.toBe("complete");
+    const result = await respond(h);
+    expect(result, name).toMatchObject({ disposition: "rejected", stage: "proposal" });
+    if (name.startsWith("substituted proposal ")) {
+      expect(result, name).toMatchObject({
+        reason: "persisted seller agreement proposal binding is substituted",
+      });
+    }
     expect(h.state.calls.signature, name).toBe(1);
     expect(h.state.calls.publication, name).toBe(1);
   });

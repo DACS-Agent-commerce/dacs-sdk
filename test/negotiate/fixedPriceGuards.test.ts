@@ -261,30 +261,28 @@ describe("DACS-3 §8.5 exactly one Agreement discriminator", () => {
     "identityBoundPayeeAgreementVersion",
   ] as const;
 
-  test("a legacy Agreement carrying any second discriminator is refused", async () => {
+  const SECOND_VERSIONS = ["1", "2", null, 1] as const;
+
+  test.each(["payeeBoundAgreementVersion", ...IDENTITY_BOUND].flatMap(
+    (member) => SECOND_VERSIONS.map((version) => [member, version] as const),
+  ))("a legacy Agreement refuses %s=%j", async (member, version) => {
     const agreement = await signed(input());
     expect(isAgreementDocument(agreement)).toBe(true);
-    for (const member of ["payeeBoundAgreementVersion", ...IDENTITY_BOUND]) {
-      for (const version of ["1", "2", null, 1]) {
-        const ambiguous = { ...agreement, [member]: version };
-        expect(isAgreementDocument(ambiguous), member).toBe(false);
-        expect(isPayeeBoundAgreementDocument(ambiguous), member).toBe(false);
-        expect(isAgreementArtifact(ambiguous), member).toBe(false);
-      }
-    }
+    const ambiguous = { ...agreement, [member]: version };
+    expect(isAgreementDocument(ambiguous)).toBe(false);
+    expect(isPayeeBoundAgreementDocument(ambiguous)).toBe(false);
+    expect(isAgreementArtifact(ambiguous)).toBe(false);
   });
 
-  test("a payee-bound Agreement carrying any second discriminator is refused", async () => {
+  test.each(["agreementVersion", ...IDENTITY_BOUND].flatMap(
+    (member) => SECOND_VERSIONS.map((version) => [member, version] as const),
+  ))("a payee-bound Agreement refuses %s=%j", async (member, version) => {
     const agreement = await signed(payeeBoundInput());
     expect(isPayeeBoundAgreementDocument(agreement)).toBe(true);
-    for (const member of ["agreementVersion", ...IDENTITY_BOUND]) {
-      for (const version of ["1", "2", null, 1]) {
-        const ambiguous = { ...agreement, [member]: version };
-        expect(isAgreementDocument(ambiguous), member).toBe(false);
-        expect(isPayeeBoundAgreementDocument(ambiguous), member).toBe(false);
-        expect(isAgreementArtifact(ambiguous), member).toBe(false);
-      }
-    }
+    const ambiguous = { ...agreement, [member]: version };
+    expect(isAgreementDocument(ambiguous)).toBe(false);
+    expect(isPayeeBoundAgreementDocument(ambiguous)).toBe(false);
+    expect(isAgreementArtifact(ambiguous)).toBe(false);
   });
 
   test("an omitted or unsupported discriminator version is refused", async () => {

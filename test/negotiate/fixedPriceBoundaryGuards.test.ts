@@ -35,6 +35,18 @@ describe("metered price input guards", () => {
       .toEqual({ amount: total, currency: "USDC" });
   });
 
+  test.each([
+    ["9", "0.00001"],
+    ["10", "0.00001"],
+    ["11", "0.000011"],
+  ])("applies a small minimum exactly at quantity %s", (count, total) => {
+    const value = pricing();
+    value.unitPrice.amount = "0.000001";
+    value.minTotal = { amount: "0.00001", currency: "USDC" };
+    expect(deriveMeteredPriceTerm(value, { ...quantity(), quantity: count }))
+      .toEqual({ amount: total, currency: "USDC" });
+  });
+
   test.each<[string, (p: MeteredPricing) => void, RegExp]>([
     ["wrong kind", (p) => { p.kind = "fixed" as never; }, /non-empty unit/],
     ["non-string unit", (p) => { p.unit = 1 as never; }, /non-empty unit/],

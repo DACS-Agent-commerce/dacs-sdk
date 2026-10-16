@@ -212,19 +212,19 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
     expect(draft.terms.additionalTerms).toEqual(SERVICE_REQUEST_TERMS);
   });
 
-  test("accepts namespaced keys that only resemble reserved names", () => {
-    for (const key of [
-      REQUEST_KEY,
-      "com.example:price-quote:v1",
-      "dacs.example:request:v2",
-      "acme:prices:v10",
-      "acme:prices:v100",
-      "a1:b2:v1",
-      // Exactly the 128-character cap.
-      `${"a".repeat(117)}:request:v1`,
-    ]) {
+  test.each([
+    REQUEST_KEY,
+    "com.example:price-quote:v1",
+    "dacs.example:request:v2",
+    "acme:prices:v10",
+    "acme:prices:v100",
+    "a1:b2:v1",
+    // Exactly the 128-character cap.
+    `${"a".repeat(117)}:request:v1`,
+  ])("accepts namespaced key %s unchanged", (key) => {
+    for (const [, build] of VARIANTS) {
       expect(
-        deriveFixedPriceAgreement(withTerms(input(), { [key]: true })).terms
+        deriveFixedPriceAgreement(withTerms(build(), { [key]: true })).terms
           .additionalTerms,
         key,
       ).toEqual({ [key]: true });
@@ -297,62 +297,58 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
         .toThrow(/additionalTerms must be omitted rather than empty/);
     });
 
-    test("keys outside <namespace>:<name>:v<n>", () => {
-      for (const key of [
-        "request",
-        "Acme:request:v1",
-        "acme:Request:v1",
-        "acme:request:V1",
-        "acme:request",
-        "acme:request:v0",
-        "acme:request:v01",
-        "acme:request:1",
-        "acme::v1",
-        ":request:v1",
-        "acme:request:v1:extra",
-        "acme_co:request:v1",
-        "acme:request_body:v1",
-        "acme.:request:v1",
-        "acme:-request:v1",
-        " acme:request:v1",
-        "acme:request:v1 ",
-        "ácme:request:v1",
-        "acme:request:v1​",
-        `${"a".repeat(120)}:request:v1`,
-        // One past the 128-character cap.
-        `${"a".repeat(118)}:request:v1`,
-        "acme:re.quest:v1",
-        "__proto__",
-        "constructor",
-      ]) {
-        const terms = JSON.parse(`{${JSON.stringify(key)}:true}`) as unknown;
-        expect(() => deriveFixedPriceAgreement(withTerms(build(), terms)), key)
-          .toThrow(/additionalTerms keys must be <namespace>:<name>:v<n>/);
-      }
+    test.each([
+      "request",
+      "Acme:request:v1",
+      "acme:Request:v1",
+      "acme:request:V1",
+      "acme:request",
+      "acme:request:v0",
+      "acme:request:v01",
+      "acme:request:1",
+      "acme::v1",
+      ":request:v1",
+      "acme:request:v1:extra",
+      "acme_co:request:v1",
+      "acme:request_body:v1",
+      "acme.:request:v1",
+      "acme:-request:v1",
+      " acme:request:v1",
+      "acme:request:v1 ",
+      "ácme:request:v1",
+      "acme:request:v1​",
+      `${"a".repeat(120)}:request:v1`,
+      // One past the 128-character cap.
+      `${"a".repeat(118)}:request:v1`,
+      "acme:re.quest:v1",
+      "__proto__",
+      "constructor",
+    ])("refuses malformed namespaced key %s", (key) => {
+      const terms = JSON.parse(`{${JSON.stringify(key)}:true}`) as unknown;
+      expect(() => deriveFixedPriceAgreement(withTerms(build(), terms)), key)
+        .toThrow(/additionalTerms keys must be <namespace>:<name>:v<n>/);
     });
 
-    test("keys that shadow an agreement term or the dacs namespace", () => {
-      for (const key of [
-        "acme:deliverable:v1",
-        "acme:price:v1",
-        "acme:metered-quantity:v1",
-        "acme:rail:v1",
-        "acme:deadline:v2",
-        "acme:price-anchor:v1",
-        "acme:fee-schedule:v1",
-        "acme:payout-bindings:v1",
-        "acme:prior-payment-disposition-ref:v1",
-        "acme:additional-terms:v1",
-        "dacs:request:v1",
-      ]) {
-        expect(
-          () => deriveFixedPriceAgreement(withTerms(build(), {
-            ...SERVICE_REQUEST_TERMS,
-            [key]: { amount: "0", currency: "USDC" },
-          })),
-          key,
-        ).toThrow(/shadows a DACS-3 §8.5 agreement term or the reserved dacs namespace/);
-      }
+    test.each([
+      "acme:deliverable:v1",
+      "acme:price:v1",
+      "acme:metered-quantity:v1",
+      "acme:rail:v1",
+      "acme:deadline:v2",
+      "acme:price-anchor:v1",
+      "acme:fee-schedule:v1",
+      "acme:payout-bindings:v1",
+      "acme:prior-payment-disposition-ref:v1",
+      "acme:additional-terms:v1",
+      "dacs:request:v1",
+    ])("refuses reserved namespaced key %s", (key) => {
+      expect(
+        () => deriveFixedPriceAgreement(withTerms(build(), {
+          ...SERVICE_REQUEST_TERMS,
+          [key]: { amount: "0", currency: "USDC" },
+        })),
+        key,
+      ).toThrow(/shadows a DACS-3 §8.5 agreement term or the reserved dacs namespace/);
     });
 
     test("canonical UTF-8 above 8,192 bytes", () => {
@@ -406,17 +402,18 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
       ).toEqual({ "acme:x:v1": "\u0001\t\n" });
     });
 
-    test("prototype member names at any depth", () => {
-      for (const json of [
-        `{"acme:x:v1":{"__proto__":{"polluted":true}}}`,
-        `{"acme:x:v1":{"constructor":"x"}}`,
-        `{"acme:x:v1":[{"prototype":1}]}`,
-        `{"acme:x:v1":{"a":{"b":{"__proto__":null}}}}`,
-      ]) {
-        const terms = JSON.parse(json) as unknown;
-        expect(() => deriveFixedPriceAgreement(withTerms(build(), terms)), json)
-          .toThrow(/additionalTerms must not use a prototype member name/);
-      }
+    test.each([
+      `{"acme:x:v1":{"__proto__":{"polluted":true}}}`,
+      `{"acme:x:v1":{"constructor":"x"}}`,
+      `{"acme:x:v1":[{"prototype":1}]}`,
+      `{"acme:x:v1":{"a":{"b":{"__proto__":null}}}}`,
+    ])("refuses nested prototype member in %s", (json) => {
+      const terms = JSON.parse(json) as unknown;
+      expect(() => deriveFixedPriceAgreement(withTerms(build(), terms)), json)
+        .toThrow(/additionalTerms must not use a prototype member name/);
+    });
+
+    test("refuses non-plain prototypes", () => {
       // A literal __proto__ in source sets a prototype instead of a member.
       expect(() => deriveFixedPriceAgreement(withTerms(build(), {
         __proto__: { "acme:x:v1": true },
