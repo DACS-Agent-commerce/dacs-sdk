@@ -342,6 +342,44 @@ function provider(
 }
 
 describe("verifyFinalizedSessionSettlement", () => {
+  it.each(["2", "", 1, null])("rejects unsupported contextVersion %j before authentication", async (contextVersion) => {
+    const { settlement, proof } = fixture();
+    const authenticateContext = vi.fn(() => ({ disposition: "pass" as const }));
+    const result = await verifyFinalizedSessionSettlement(
+      { ...context(), contextVersion } as never,
+      settlement,
+      provider(proof, { authenticateContext }),
+    );
+    expect(result).toMatchObject({ disposition: "error" });
+    expect(authenticateContext).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { ok: "true" }, { ok: true, extra: 1 }])(
+    "rejects malformed phaseResult %j before authentication", async (phaseResult) => {
+      const { settlement, proof } = fixture();
+      const authenticateContext = vi.fn(() => ({ disposition: "pass" as const }));
+      const result = await verifyFinalizedSessionSettlement(
+        { ...context(), phaseResult } as never,
+        settlement,
+        provider(proof, { authenticateContext }),
+      );
+      expect(result).toMatchObject({ disposition: "error" });
+      expect(authenticateContext).not.toHaveBeenCalled();
+    },
+  );
+
+  it("admits exact successful handler refs as context and verifies settlement", async () => {
+    const { settlement, proof } = fixture();
+    const authenticateContext = vi.fn(() => ({ disposition: "pass" as const }));
+    const result = await verifyFinalizedSessionSettlement(
+      { ...context(), phaseResult: { ok: true, txRefs: settlement.evidence.paymentTxRefs } },
+      settlement,
+      provider(proof, { authenticateContext }),
+    );
+    expect(result).toMatchObject({ disposition: "verified" });
+    expect(authenticateContext).toHaveBeenCalledOnce();
+  });
+
   it("authenticates exact evidence, anchor, proof, and live finality", async () => {
     const { settlement, proof } = fixture();
     expect(isSettlementEvidence(settlement.evidence)).toBe(true);

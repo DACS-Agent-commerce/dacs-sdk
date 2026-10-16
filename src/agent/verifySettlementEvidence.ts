@@ -11,6 +11,7 @@ import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonConfig,
   snapshotCanonicalJsonRead,
+  snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -387,7 +388,14 @@ async function evaluateSettlementEvidence(
   let recordSnapshot: unknown;
   let contextSnapshot: EvidenceContext;
   try {
-    recordSnapshot = snapshotCanonicalJsonRead(record, "settlement evidence");
+    const wireSnapshot = snapshotWireJsonRead(record, "settlement evidence");
+    // CORE JID-1/JID-3 prohibit repairing the original spelling. Own data
+    // without NFC first so, for example, U+212A cannot be admitted as ASCII K.
+    if (!historicalReplay && isObj(wireSnapshot) &&
+        !isCanonicalJobId(wireSnapshot["jobId"])) {
+      return { decision: "error", reasons: ["current evidence jobId MUST be a canonical uppercase ULID"] };
+    }
+    recordSnapshot = snapshotCanonicalJsonRead(wireSnapshot, "settlement evidence");
     contextSnapshot = snapshotCanonicalJsonConfig(
       ctx,
       "settlement evidence context",
@@ -451,10 +459,6 @@ async function evaluateSettlementEvidence(
   if (!isObj(record)) return { decision: "error", reasons: ["evidence is not an object"] };
 
   const ev = stripSignature(record);
-  // CORE JID-1/JID-3: reject before deriving a locator or resolving any key.
-  if (!historicalReplay && !isCanonicalJobId(ev["jobId"])) {
-    return { decision: "error", reasons: ["current evidence jobId MUST be a canonical uppercase ULID"] };
-  }
   const phase = ev["phase"];
   const outcome = ev["outcome"];
   const isPayment = isStr(phase) && PAYMENT_PHASES.has(phase);

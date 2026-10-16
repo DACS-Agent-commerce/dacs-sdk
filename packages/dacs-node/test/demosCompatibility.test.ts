@@ -12,6 +12,33 @@ const cleanBuild = () => ({ ...fixture.networkInfo,
   nodeVersion: { ...fixture.networkInfo.nodeVersion, dirty: false } });
 
 describe("pinned Demos RPC compatibility", () => {
+  it.each([null, undefined, false, 42, "node", []])("rejects non-object metadata %j without throwing", (metadata) => {
+    expect(() => inspectDacsDemosNodeCompatibilityV1(metadata)).not.toThrow();
+    expect(inspectDacsDemosNodeCompatibilityV1(metadata)).toEqual({
+      compatible: false, reasonCode: "demos-node-build-unidentified",
+    });
+  });
+
+  it.each(["commit", "version"])("distinguishes unidentified %s from an unsupported revision", (field) => {
+    const info = cleanBuild();
+    info.nodeVersion[field] = 42;
+    expect(inspectDacsDemosNodeCompatibilityV1(info)).toEqual({
+      compatible: false, reasonCode: "demos-node-build-unidentified",
+    });
+    info.nodeVersion[field] = "unsupported";
+    expect(inspectDacsDemosNodeCompatibilityV1(info)).toEqual({
+      compatible: false, reasonCode: "demos-node-revision-unsupported",
+    });
+  });
+
+  it("rejects foreign software with otherwise pinned metadata", () => {
+    const info = cleanBuild();
+    info.nodeVersion.name = "foreign-node-software";
+    expect(inspectDacsDemosNodeCompatibilityV1(info)).toEqual({
+      compatible: false, reasonCode: "demos-node-build-unidentified",
+    });
+  });
+
   it("rejects the captured dirty deployment and admits only the identified clean reference build", () => {
     expect(fixture.networkInfo.nodeVersion.commit).toBe(DACS_NODE_DEMOS_RPC_COMPATIBILITY_V1.nodeSourceRevision);
     expect(inspectDacsDemosNodeCompatibilityV1(fixture.networkInfo)).toEqual({
