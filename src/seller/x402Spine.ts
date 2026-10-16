@@ -14,6 +14,7 @@ import type {
   SellerVerificationResult,
 } from "../agent/runFulfilmentCore.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { x402PaywallSettlementKey } from "../rails/x402Paywall.js";
 import type {
   X402PaywallAuthorizationContext,
@@ -1068,7 +1069,8 @@ export function createX402SellerSpine<T = unknown>(
 
   const recoverPaymentAuthorization: X402SellerSpine<T>["recoverPaymentAuthorization"] =
     async ({ jobId, phaseIndex }) => {
-      if (!isNonEmpty(jobId) || !isSafeUint(phaseIndex)) {
+      // CORE JID-3: a non-canonical job id reaches neither the key nor the store.
+      if (!isCanonicalJobId(jobId) || !isSafeUint(phaseIndex)) {
         return { disposition: "rejected", reason: "seller-recovery-scope-invalid" };
       }
       const settlementKey = x402PaywallSettlementKey({ jobId, phaseIndex });

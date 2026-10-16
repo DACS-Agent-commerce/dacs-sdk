@@ -8,6 +8,13 @@ revision pinned by the fixed-price coordinator.
 independent seller lifecycle. It does not start a server or select a framework.
 Applications provide the framework adapter and host the route themselves.
 
+The `jobId` must be a canonical CORE JID-1 ULID (26 uppercase Crockford
+Base32 characters). Any other value, including a Unicode or lowercase
+spelling, is rejected as `invalid-jobId` before the request is read or any
+key, nonce, store or facilitator call sees it (CORE JID-3).
+`x402PaywallSettlementKey`, `x402PaywallFulfilmentKey` and
+`x402Eip3009Nonce` refuse such a value in the same way.
+
 The callback sequence is deliberately:
 
 1. verify the x402 v2 authorization;

@@ -2298,20 +2298,24 @@ describe("verifySellerPaymentIntake", () => {
       if (vector.validationScope === "full-input") expect(isCanonicalJobId(vector.jobId), vector.name).toBe(true);
       const input = { jobId: vector.jobId, phaseIndex: vector.phaseIndex as number };
       // CONFORMANCE-PLAN's pre-JID-1 boundary: a derivation-only vector
-      // reproduces only through the named legacy helper; the payment-path
-      // helper refuses its job id before hashing (CORE JID-3).
+      // reproduces only through the named legacy helper; the buyer's and the
+      // seller's payment-path helpers refuse its job id before hashing (CORE JID-3).
       const legacy = vector.validationScope === "derivation-only";
       const buyerNonce = legacy ? legacyDacsX402AuthorizationNonce : dacsX402AuthorizationNonce;
-      if (legacy) await expect(dacsX402AuthorizationNonce(input), vector.name).rejects.toThrow(/canonical uppercase ULID/);
+      if (legacy) {
+        await expect(dacsX402AuthorizationNonce(input), vector.name).rejects.toThrow(/canonical uppercase ULID/);
+        expect(() => x402Eip3009Nonce(input.jobId, input.phaseIndex), vector.name).toThrow(/canonical uppercase ULID/);
+      }
       if (vector.op === "derive") {
         expect([vector.expected, vector.want.binding], vector.name).toEqual(["error", "malformed-input"]);
         expect(() => x402Eip3009Nonce(input.jobId, input.phaseIndex), vector.name).toThrow();
         await expect(buyerNonce(input), vector.name).rejects.toThrow();
         continue;
       }
-      // Seller verification and the buyer's signing rail derive the same bytes.
-      const derived = x402Eip3009Nonce(input.jobId, input.phaseIndex);
-      expect(await buyerNonce(input), vector.name).toBe(derived);
+      // Seller verification and the buyer's signing rail derive the same bytes
+      // for a full-input vector; a legacy vector's bytes come from the legacy helper.
+      const derived = legacy ? await buyerNonce(input) : x402Eip3009Nonce(input.jobId, input.phaseIndex);
+      if (!legacy) expect(await buyerNonce(input), vector.name).toBe(derived);
       if (vector.expectedNonce) expect(derived, vector.name).toBe(vector.expectedNonce);
       if (vector.want.derivedNonce) expect(derived, vector.name).toBe(vector.want.derivedNonce);
       if (vector.op === "verify-binding") {

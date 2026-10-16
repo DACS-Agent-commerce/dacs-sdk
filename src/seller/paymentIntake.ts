@@ -18,6 +18,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { finalityCommitmentAddress } from "../negotiate/commitment.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import {
   demosAddressFromClaim,
   normalizeDemosNativeAddress,
@@ -1821,13 +1822,13 @@ export function canonicalSellerSettlementId(input:
   return `evm:${input.chainId}:${txHash}:${input.logIndex}`;
 }
 
-/** DACS-4 §9.5.8 byte-exact EIP-3009 SB-3 nonce. */
+/**
+ * DACS-4 §9.5.8 byte-exact EIP-3009 SB-3 nonce. CORE JID-3: the job id must
+ * pass JID-1 before it is hashed.
+ */
 export function x402Eip3009Nonce(jobId: string, phaseIndex: number): string {
-  if (
-    typeof jobId !== "string" ||
-    jobId.length === 0
-  ) {
-    throw new TypeError("jobId must be a non-empty string");
+  if (!isCanonicalJobId(jobId)) {
+    throw new TypeError("jobId must be a canonical uppercase ULID");
   }
   if (!isSafeUint(phaseIndex)) throw new TypeError("phaseIndex must be a safe unsigned integer");
   return `0x${sha256Hex(`dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`)}`;

@@ -27,7 +27,7 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAY_TO = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX_HASH = `0x${"ab".repeat(32)}`;
-const JOB_ID = "seller-paywall-job";
+const JOB_ID = "01K0SE11ERPAYWA11J0B000001";
 const PHASE_INDEX = 2;
 const AMOUNT = "250000";
 

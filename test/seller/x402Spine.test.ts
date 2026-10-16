@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type {
   AnchorReceipt,
@@ -225,6 +225,7 @@ interface Harness {
   resolvedScope: X402SellerCommittedSessionScope;
   installAuthorization(authorization: SellerPaymentAuthorization): void;
   retainSettlement(sessionAuthorization: unknown): void;
+  settlementStore: TestSettlementStore;
   runThroughPaywallCore(): Promise<unknown>;
   setObservation(observation: X402TransferObservation): void;
   resumeFinalisation(authorization: X402SellerPaymentPermitAuthorization): Promise<unknown>;
@@ -904,6 +905,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
       authorization,
     }),
     resolvedScope,
+    settlementStore: retainedSettlementStore,
     installAuthorization(value) {
       activeAuthorization = structuredClone(value);
     },
@@ -1063,6 +1065,29 @@ describe("createX402SellerSpine", () => {
     expect(replay).toEqual(first);
     expect(harness.counts.delivery).toBe(0);
   });
+
+  // CORE JID-3: recovery derives a settlement key and reads the store, so a
+  // non-canonical job id (including a Unicode alias) is refused before either.
+  it.each(["job-1", "café-job", JOB_ID.toLowerCase(), ` ${JOB_ID}`])(
+    "refuses recovery for the non-canonical job id %j before any key or store read",
+    async (jobId) => {
+      const harness = makeHarness();
+      const pre = await harness.spine.authorizeSettlement(harness.preContext);
+      if (pre.disposition !== "authorized") throw new Error(pre.reason);
+      harness.retainSettlement(pre.authorization);
+      const load = vi.spyOn(harness.settlementStore, "load");
+
+      await expect(harness.spine.recoverPaymentAuthorization({
+        jobId,
+        phaseIndex: PAYMENT_PHASE_INDEX,
+      })).resolves.toEqual({
+        disposition: "rejected",
+        reason: "seller-recovery-scope-invalid",
+      });
+      expect(load).not.toHaveBeenCalled();
+      expect(harness.counts.delivery).toBe(0);
+    },
+  );
 
   it("runs real #119 and generation-fenced #120/#121 with one irreversible delivery", async () => {
     const harness = makeHarness();

@@ -5,6 +5,7 @@ import { dacsX402AuthorizationNonce, legacyDacsX402AuthorizationNonce } from "..
 import {
   createX402Paywall,
   x402PaywallCore,
+  x402PaywallFulfilmentKey,
   x402PaywallSettlementKey,
   type X402PaywallConfig,
   type X402PaywallCoreDeps,
@@ -26,7 +27,7 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAY_TO = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX_HASH = `0x${"ab".repeat(32)}`;
-const JOB_ID = "seller-paywall-adversarial-job";
+const JOB_ID = "01K0SE11ERPAYWA11ADVERSA01";
 const PHASE_INDEX = 7;
 const AMOUNT = "250000";
 
@@ -1153,23 +1154,75 @@ describe("createX402Paywall adversarial capture", () => {
 });
 
 describe("buyer/seller SB-3 nonce agreement", () => {
-  it("keeps the buyer async and seller sync derivations byte-identical for Unicode and phase boundaries", async () => {
+  it("keeps the buyer async and seller sync derivations byte-identical across phase boundaries", async () => {
     const vectors = [
-      { jobId: "plain-job", phaseIndex: 0 },
-      { jobId: "cafe\u0301-job", phaseIndex: 3 },
-      { jobId: "caf\u00e9-job", phaseIndex: 3 },
-      { jobId: "\ud83e\udd16-\u4f9b\u7d66-\ud83d\ude80", phaseIndex: 42 },
-      { jobId: "max-safe-phase", phaseIndex: Number.MAX_SAFE_INTEGER },
+      { jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 0 },
+      { jobId: "00000000000000000000000000", phaseIndex: 3 },
+      { jobId: "7ZZZZZZZZZZZZZZZZZZZZZZZZZ", phaseIndex: 42 },
+      { jobId: JOB_ID, phaseIndex: Number.MAX_SAFE_INTEGER },
     ];
-    // Pre-JID-1 labels: the buyer reproduces them only through its legacy helper.
     for (const vector of vectors) {
-      expect(await legacyDacsX402AuthorizationNonce(vector)).toBe(
+      expect(await dacsX402AuthorizationNonce(vector)).toBe(
         x402Eip3009Nonce(vector.jobId, vector.phaseIndex),
       );
     }
-    expect(x402Eip3009Nonce("cafe\u0301-job", 3)).toBe(
-      x402Eip3009Nonce("caf\u00e9-job", 3),
-    );
+  });
+
+  // CORE JID-3 on the seller side: a pre-JID-1 label, including both Unicode
+  // spellings that NFC would alias, reaches no seller key, nonce, request
+  // getter, store or facilitator. Only the buyer's named legacy helper still
+  // reproduces the frozen derivation-only bytes.
+  it.each([
+    ["descriptive label", "job-1"],
+    ["decomposed Unicode", "cafe\u0301-job"],
+    ["precomposed Unicode", "caf\u00e9-job"],
+    ["lowercase ULID", "01arz3ndektsv4rrffq69g5fav"],
+    ["padded ULID", " 01ARZ3NDEKTSV4RRFFQ69G5FAV"],
+  ])("refuses a %s job id at every seller derivation and at paywall admission", async (_name, jobId) => {
+    expect(() => x402Eip3009Nonce(jobId, PHASE_INDEX)).toThrow(/canonical uppercase ULID/);
+    expect(() => x402PaywallSettlementKey({ jobId, phaseIndex: PHASE_INDEX }))
+      .toThrow(/canonical uppercase ULID/);
+    expect(() => x402PaywallFulfilmentKey({ jobId, phaseIndex: PHASE_INDEX }))
+      .toThrow(/canonical uppercase ULID/);
+    await expect(dacsX402AuthorizationNonce({ jobId, phaseIndex: PHASE_INDEX }))
+      .rejects.toThrow(/canonical uppercase ULID/);
+    await expect(legacyDacsX402AuthorizationNonce({ jobId, phaseIndex: PHASE_INDEX }))
+      .resolves.toMatch(/^0x[0-9a-f]{64}$/);
+
+    const { payload, requirements } = paymentFixture();
+    const server = mockServer({
+      process: verifiedProcess(payload, requirements),
+      settlement: successfulSettlement(requirements),
+    });
+    const getters = vi.fn();
+    const source = paidRequest(payload);
+    const watched = Object.fromEntries(Object.entries(source).map(([name, fn]) => [
+      name,
+      (...args: unknown[]) => {
+        getters(name);
+        return (fn as (...a: unknown[]) => unknown)(...args);
+      },
+    ])) as unknown as X402PaywallHttpAdapter;
+    const store = settlementStore();
+    const load = vi.spyOn(store, "load");
+    const claim = vi.spyOn(store, "claim");
+    const authorizeSettlement = vi.fn();
+    const fulfil = vi.fn();
+    await expect(x402PaywallCore(
+      { jobId, phaseIndex: PHASE_INDEX, request: watched },
+      coreDeps(server, { settlementStore: store, authorizeSettlement, fulfil }),
+    )).resolves.toMatchObject({
+      disposition: "rejected",
+      settled: false,
+      reason: "invalid-jobId",
+    });
+    expect(getters).not.toHaveBeenCalled();
+    expect(server.processHTTPRequest).not.toHaveBeenCalled();
+    expect(server.processSettlement).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(authorizeSettlement).not.toHaveBeenCalled();
+    expect(fulfil).not.toHaveBeenCalled();
   });
 
   it("rejects negative zero consistently and keeps the paywall fail-closed", async () => {
