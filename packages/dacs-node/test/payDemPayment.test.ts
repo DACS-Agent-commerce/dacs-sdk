@@ -399,6 +399,7 @@ describe("native DEM buyer payment track", () => {
     directory: string,
     innerRail: Readonly<PayDemRail>,
     events: string[],
+    reconcileWalletJournal?: DacsDemosAdapterV1["reconcileWalletJournal"],
   ): Promise<Readonly<{
     rail: Readonly<PayDemRail>;
     journal: DemosWriteJournal;
@@ -412,7 +413,7 @@ describe("native DEM buyer payment track", () => {
     });
     let journal!: DemosWriteJournal;
     const adapter = generatedDemosAdapter(PAYER, {
-      async reconcileWalletJournal(lease) {
+      reconcileWalletJournal: reconcileWalletJournal ?? (async (lease) => {
         const intent = lease.snapshot.records.find((record) =>
           record.kind === "native-transfer" && record.stage === "broadcast-intent");
         if (intent === undefined) return;
@@ -426,7 +427,7 @@ describe("native DEM buyer payment track", () => {
           finalityProofHash: "b".repeat(64),
           updatedAt: Date.now(),
         });
-      },
+      }),
     });
     const runtime = await createDacsDemosActorRuntimeV1({
       config: payDemRuntimeConfig(directory),
@@ -736,6 +737,124 @@ describe("native DEM buyer payment track", () => {
     expect(retained.snapshot.records).toMatchObject([{
       stage: "canonical-confirmed",
       txRef: TX_HASH,
+    }]);
+    await retained.release();
+  });
+
+  it.each([
+    { name: "rejects successful rail results for a transaction other than the prepared wallet record", mode: "mismatch" },
+    { name: "rejects ok:true unless the exact prepared wallet record became canonical-confirmed", mode: "pending" },
+    { name: "rejects ok:true when the exact prepared wallet record is missing", mode: "missing" },
+  ] as const)("$name", async ({ mode }) => {
+    const directory = root();
+    const database = await open(join(directory, "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    const events: string[] = [];
+    const checkpoint = vi.spyOn(database, "recordEffectCheckpoint");
+    const completed = vi.spyOn(database, "recordEffectCompleted");
+    const publishNotice = vi.fn();
+    let activeLease!: DemosWriteJournalLease;
+    const innerRail: PayDemRail = {
+      address: PAYER,
+      async settle(input, effectFence) {
+        await effectFence!.assertCurrent();
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 7,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          denomination: "os",
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        await effectFence!.assertCurrent();
+        if (mode === "mismatch") {
+          // A really is final; only the rail's substitution of B is wrong.
+          await activeLease.put({
+            ...activeLease.snapshot.records[0]!,
+            stage: "canonical-confirmed",
+            blockNumber: 42,
+            blockHash: "a".repeat(64),
+            blockTimestamp: 1_780_000_000_000,
+            finalityProof: "test-only-finality-proof",
+            finalityProofHash: "b".repeat(64),
+            updatedAt: Date.now(),
+          });
+        }
+        return {
+          ok: true,
+          txHash: mode === "mismatch" ? "4".repeat(64) : TX_HASH,
+          chainId: "demos",
+          payer: PAYER,
+          payee: PAYEE,
+          finality: { model: "bft-final" },
+          blockNumber: 42,
+          txRefKind: "demos",
+          networkFeeOs: "1000000000",
+        };
+      },
+    };
+    const generated = await composedGeneratedRail(directory, innerRail, events, async (lease) => {
+      activeLease = lease;
+      if (mode === "missing" && lease.snapshot.records.length > 0) {
+        // Simulate an unavailable retained record without erasing durable evidence.
+        const snapshot = lease.snapshot;
+        Object.defineProperty(lease, "snapshot", {
+          get: () => ({ ...snapshot, records: [] }),
+        });
+      }
+      // No finality upgrade: an ok:true response alone is insufficient.
+    });
+    const settle = vi.fn(generated.rail.settle.bind(generated.rail));
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER,
+      chainId: "demos",
+      asset: "DEM",
+      maximumConcurrentEffects: 1,
+    });
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database,
+      workerId: "buyer-dem-untrusted-success",
+      rail: markDacsSdkPreparedPayDemRailV1({ address: PAYER, settle }),
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+      publishNotice,
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-untrusted-success",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+
+    expect(settle).toHaveBeenCalledOnce();
+    await expect(settle.mock.results[0]!.value).rejects.toThrow(mode === "mismatch"
+      ? "demos-pay-dem-result-record-mismatch"
+      : "demos-pay-dem-wallet-finality-unavailable");
+    expect(checkpoint.mock.calls.map(([input]) => input.name))
+      .toEqual(["pay-dem-prepared-transfer"]);
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect(completed.mock.calls.filter(([input]) => input.kind === "payment")).toEqual([]);
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+      .toMatchObject({ state: "indeterminate" });
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 1,
+      retainedReservations: 1,
+      assets: [{ cumulativeSettledDebit: "0" }],
+    });
+    const retained = await generated.journal.acquire({
+      chainIdentity: "pay-dem-composition-chain", wallet: PAYER,
+    });
+    expect(retained.snapshot.records).toMatchObject([{
+      txRef: TX_HASH,
+      stage: mode === "mismatch" ? "canonical-confirmed" : "broadcast-intent",
     }]);
     await retained.release();
   });
