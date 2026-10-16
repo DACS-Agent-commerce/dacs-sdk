@@ -117,8 +117,8 @@ result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
 | `waiting` | `solana-spl-settlement-held`, `solana-spl-reconciliation-pending`, `solana-spl-broadcast-not-yet-visible` |
 | `indeterminate`, before the store is read | `solana-spl-authority-invalid`, `solana-spl-runtime-policy-invalid`, `solana-spl-dependencies-invalid`, `solana-spl-settlement-store-unavailable` |
 | `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
-| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable`, `solana-spl-predecessor-landed-failed` |
-| `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain`, `solana-spl-other-attempt-unresolved`, `solana-spl-multiple-settlements` |
+| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable`, `solana-spl-predecessor-landed-failed`, `solana-spl-other-attempt-unresolved` |
+| `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain`, `solana-spl-multiple-settlements` |
 | `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-payee-ata-not-associated`, `solana-spl-payer-rent-state-unknown`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
 
 A store `conflict` (another binding already holds the same job, rail and
@@ -134,8 +134,14 @@ expiry evidence from an earlier version that the chain has since refused at
 `finalized`, with no matching settlement found among its successors. Recovery
 checks every successor without broadcasting or signing. A matching settlement
 may close the key only after all other attempts have finalized expiry or
-finalized refusal evidence. `solana-spl-other-attempt-unresolved` means another
-attempt may still land; `solana-spl-multiple-settlements` means at least two
+finalized refusal evidence. If every attempt was conclusively refused or expired
+and none paid, this legacy recovery path still leaves the key open. Reconcile
+and close the key manually through the durable store, under its current lease,
+retaining finalized refusal or expiry evidence for every attempt before
+authorizing another payment route. Repeating the same call alone cannot
+resolve this case. `solana-spl-other-attempt-unresolved` means another
+attempt may still land after either a payment or a refusal;
+`solana-spl-multiple-settlements` means at least two
 matching payments were observed. Both keep the key open for reconciliation
 or out-of-band resolution, with no new payment authorized.
 
