@@ -85,27 +85,11 @@ export function deriveAp2IdempotencyKey(
   phaseIndex: number,
 ): string {
   requireCanonicalJobId(jobId, "pay-ap2: jobId");
-  return legacyDeriveAp2IdempotencyKey(jobId, phaseIndex);
-}
-
-/**
- * Pre-JID-1 AP2-6 derivation for the Standard's frozen derivation-only vectors
- * (for example the Unicode NFC label). It establishes no provider or payment
- * authority; the handler uses {@link deriveAp2IdempotencyKey}.
- */
-export function legacyDeriveAp2IdempotencyKey(
-  jobId: string,
-  phaseIndex: number,
-): string {
-  if (typeof jobId !== "string" || jobId.length === 0) {
-    throw new DacsError("pay-ap2: jobId must be a non-empty string");
-  }
   if (!Number.isSafeInteger(phaseIndex) || phaseIndex < 0) {
     throw new DacsError("pay-ap2: phaseIndex must be a non-negative safe integer");
   }
-  return sha256Hex(
-    `dacs-ap2-idem:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
-  );
+  // A JID-1 id is ASCII, so it is already in NFC.
+  return sha256Hex(`dacs-ap2-idem:v1:${jobId}:${phaseIndex}`);
 }
 
 /**

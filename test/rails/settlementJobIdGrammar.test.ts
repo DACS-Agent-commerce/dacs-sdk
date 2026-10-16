@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
-import { deriveAp2IdempotencyKey, legacyDeriveAp2IdempotencyKey } from "../../src/rails/ap2.js";
+import { sha256Hex } from "../../src/canonical/index.js";
+import { deriveAp2IdempotencyKey } from "../../src/rails/ap2.js";
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
 import { settlementKey, type SettlementIdempotencyStore } from "../../src/rails/idempotency.js";
 import { solanaSplSettlementKey } from "../../src/rails/solanaSpl.js";
@@ -110,15 +111,15 @@ describe("jobId-specific derivations admit only a canonical JID-1 jobId", () => 
     expect(solanaSplSettlementKey({ jobId, railId: "solana-devnet-usdc", phaseIndex: 3 })).toMatch(/^[0-9a-f]{64}$/);
     await expect(dacsX402AuthorizationNonce({ jobId, phaseIndex: 3 }))
       .resolves.toBe(await legacyDacsX402AuthorizationNonce({ jobId, phaseIndex: 3 }));
-    expect(deriveAp2IdempotencyKey(jobId, 3)).toBe(legacyDeriveAp2IdempotencyKey(jobId, 3));
+    expect(deriveAp2IdempotencyKey(jobId, 3)).toBe(sha256Hex(`dacs-ap2-idem:v1:${jobId}:3`));
   });
 
-  test("the frozen pre-JID-1 derivation vectors stay reproducible only through the named legacy helpers", async () => {
+  test("the frozen pre-JID-1 x402 derivation vectors stay reproducible only through the named legacy helper", async () => {
     await expect(dacsX402AuthorizationNonce({ jobId: "practice-dacs-0001", phaseIndex: 3 })).rejects.toThrow(/canonical/);
     expect(await legacyDacsX402AuthorizationNonce({ jobId: "practice-dacs-0001", phaseIndex: 3 }))
       .toBe("0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff");
+    // The pinned AP2 corpus withdrew its Unicode key vector: the current
+    // vector expects an error, and no AP2 legacy derivation exists.
     expect(() => deriveAp2IdempotencyKey("café-job", 0)).toThrow(/canonical/);
-    expect(legacyDeriveAp2IdempotencyKey("café-job", 0))
-      .toBe("2128576ea9daf4765462705820c909c9f40cad744fa7b46298e495579c4eb184");
   });
 });
