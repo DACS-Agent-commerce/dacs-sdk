@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { DacsError } from "../../src/errors.js";
 
 import {
   isSafeJsonString,
@@ -18,6 +20,27 @@ const causeOf = (run: () => unknown): string => {
   throw new Error("expected the snapshot to throw");
 };
 
+// Keep a broken surrogate traversal from hanging a table row before its verdict.
+const boundedStringVerdict = (value: string): { accepted: boolean; reads: number } => {
+  const charCodeAt = String.prototype.charCodeAt;
+  let reads = 0;
+  const spy = vi.spyOn(String.prototype, "charCodeAt").mockImplementation(function (
+    this: string,
+    index: number,
+  ) {
+    if (this === value && ++reads > value.length + 1) {
+      expect(reads, "surrogate traversal exceeded one pass")
+        .toBeLessThanOrEqual(value.length + 1);
+    }
+    return charCodeAt.call(this, index);
+  });
+  try {
+    return { accepted: isSafeJsonString(value), reads };
+  } finally {
+    spy.mockRestore();
+  }
+};
+
 describe("isSafeJsonString", () => {
   it.each([
     "",
@@ -27,7 +50,7 @@ describe("isSafeJsonString", () => {
     "\ud800\udfff",
     "a\ud800\udc00b",
   ])("accepts %j", (value) => {
-    expect(isSafeJsonString(value)).toBe(true);
+    expect(boundedStringVerdict(value).accepted).toBe(true);
   });
 
   it.each([
@@ -40,7 +63,14 @@ describe("isSafeJsonString", () => {
     "\udbff",
     "\udc00\ud800",
   ])("rejects lone surrogate %j", (value) => {
-    expect(isSafeJsonString(value)).toBe(false);
+    expect(boundedStringVerdict(value).accepted).toBe(false);
+  });
+
+  it("accepts a surrogate pair without revisiting its code units", () => {
+    const input = "\ud800\udc00";
+    const verdict = boundedStringVerdict(input);
+    expect(verdict.accepted).toBe(true);
+    expect(verdict.reads).toBeLessThanOrEqual(input.length + 1);
   });
 });
 
@@ -107,6 +137,148 @@ describe("strict canonical snapshot", () => {
     expect(causeOf(() =>
       snapshotCanonicalJsonConfig({ get x() { return 1; } }, "config"),
     )).toBe("not data-only JSON");
+  });
+
+  it("rejects proxy constructors without invoking their descriptor trap", () => {
+    let descriptorReads = 0;
+    const constructor = new Proxy(Object, {
+      getOwnPropertyDescriptor(target, key) {
+        descriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    const input = Object.create({ constructor });
+
+    expect(causeOf(() => snapshotCanonicalJson(input, "artifact")))
+      .toBe("not data-only JSON");
+    expect(descriptorReads).toBe(0);
+  });
+
+  it("rejects a custom prototype borrowing the Object constructor", () => {
+    const input = Object.create({ constructor: Object });
+
+    expect(causeOf(() => snapshotCanonicalJson(input, "artifact")))
+      .toBe("not data-only JSON");
+  });
+
+  it("accepts both inclusive safe magnitude endpoints", () => {
+    const input = { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER };
+
+    expect(snapshotCanonicalJson(input, "artifact")).toEqual(input);
+    expect(snapshotWireJsonRead(input, "wire")).toEqual(input);
+  });
+
+  it("rejects a keyless callable while accepting a null-prototype object", () => {
+    const callable = () => 1;
+    for (const key of Reflect.ownKeys(callable)) {
+      Reflect.deleteProperty(callable, key);
+    }
+    Object.setPrototypeOf(callable, null);
+    expect(Reflect.ownKeys(callable)).toEqual([]);
+
+    expect(causeOf(() => snapshotWireJsonRead(callable, "wire")))
+      .toBe("not data-only JSON");
+    const input = Object.assign(Object.create(null), { n: 1 });
+    expect(snapshotWireJsonRead(input, "wire")).toEqual({ n: 1 });
+    expect(snapshotCanonicalJson(input, "artifact")).toEqual({ n: 1 });
+  });
+
+  it("rejects an array with only its length made read-only", () => {
+    const input = [1];
+    Object.defineProperty(input, "length", { writable: false });
+
+    expect(causeOf(() => snapshotCanonicalJson(input, "artifact")))
+      .toBe("not data-only JSON");
+    expect(causeOf(() => snapshotCanonicalJsonReceived(input, "received")))
+      .toBe("not data-only JSON");
+    expect(snapshotCanonicalJsonRead(input, "stored")).toEqual([1]);
+  });
+
+  it("rejects extra array properties before cloning can drop them", () => {
+    const input = Object.assign([1], { extra: 2 });
+
+    expect(causeOf(() => snapshotCanonicalJson(input, "artifact")))
+      .toBe("not data-only JSON");
+    expect(causeOf(() => snapshotWireJsonRead(input, "wire")))
+      .toBe("not data-only JSON");
+  });
+
+  it.each(["writable", "configurable", "enumerable"])(
+    "rejects an array index with only %s disabled",
+    (attribute) => {
+      const input = [1];
+      Object.defineProperty(input, "0", { [attribute]: false });
+
+      expect(causeOf(() => snapshotCanonicalJson(input, "artifact")))
+        .toBe("not data-only JSON");
+      expect(causeOf(() => snapshotCanonicalJsonReceived(input, "received")))
+        .toBe("not data-only JSON");
+      if (attribute !== "enumerable") {
+        expect(snapshotCanonicalJsonRead(input, "stored")).toEqual([1]);
+      }
+    },
+  );
+
+  it.each(["writable", "configurable"])(
+    "rejects an object member with only %s disabled",
+    (attribute) => {
+      const input = { n: 1 };
+      Object.defineProperty(input, "n", { [attribute]: false });
+
+      expect(causeOf(() => snapshotCanonicalJson(input, "artifact")))
+        .toBe("not data-only JSON");
+      expect(causeOf(() => snapshotCanonicalJsonReceived(input, "received")))
+        .toBe("not data-only JSON");
+      expect(snapshotCanonicalJsonRead(input, "stored")).toEqual({ n: 1 });
+    },
+  );
+
+  it("rejects a cycle without repeatedly reading its descriptors", () => {
+    const input: { self?: unknown } = {};
+    input.self = input;
+    const getDescriptors = Object.getOwnPropertyDescriptors;
+    let reads = 0;
+    const spy = vi.spyOn(Object, "getOwnPropertyDescriptors").mockImplementation((value) => {
+      if (value === input && ++reads > 1) {
+        throw new Error("repeated cycle traversal");
+      }
+      return getDescriptors(value);
+    });
+    let cause: string;
+    try {
+      cause = causeOf(() => snapshotCanonicalJson(input, "artifact"));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(cause).toBe("not data-only JSON");
+    expect(reads).toBe(1);
+  });
+});
+
+describe("snapshot errors", () => {
+  it("preserves the initial data-only TypeError as the cause", () => {
+    for (const snapshot of [
+      snapshotCanonicalJson,
+      snapshotCanonicalJsonConfig,
+      snapshotCanonicalJsonRead,
+      snapshotCanonicalJsonReceived,
+      snapshotWireJsonRead,
+    ]) {
+      let caught: unknown;
+      try {
+        snapshot({ nested: [undefined] }, "input");
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(DacsError);
+      expect((caught as Error).cause).toBeInstanceOf(TypeError);
+      expect(((caught as Error).cause as Error).message).toBe("not data-only JSON");
+    }
+
+    // The configuration boundary alone may omit undefined object members.
+    expect(causeOf(() => snapshotWireJsonRead({ n: undefined }, "wire")))
+      .toBe("not data-only JSON");
+    expect(snapshotCanonicalJsonConfig({ n: undefined }, "config")).toEqual({});
   });
 });
 

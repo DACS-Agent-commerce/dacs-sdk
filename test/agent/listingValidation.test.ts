@@ -163,7 +163,7 @@ describe("DACS-1 §6.3.4 LRR-1..LRR-6", () => {
     });
   });
 
-  it("gives an admitted negative-zero rail input the zero verdict", () => {
+  it.each(["-0", "-0.0", "-0e5"])("gives an admitted %s rail input the zero verdict", (spelling) => {
     const dem = { railId: "demos-native:DEM", railVersion: 1 };
     const x402 = {
       railId: "x402:default",
@@ -197,8 +197,9 @@ describe("DACS-1 §6.3.4 LRR-1..LRR-6", () => {
       },
       supportedPaymentHandlers: ["pay-dem", "pay-x402"],
     });
-    const negativeText = text.replaceAll('"floor":0', '"floor":-0.0');
-    expect(negativeText.split('"floor":-0.0')).toHaveLength(3);
+    const negativeFloor = `"floor":${spelling}`;
+    const negativeText = text.replaceAll('"floor":0', negativeFloor);
+    expect(negativeText.split(negativeFloor)).toHaveLength(3);
     const zero = admitRawJson(
       Buffer.from(text, "utf8"),
     ) as unknown as ListingRailResolutionInput;
