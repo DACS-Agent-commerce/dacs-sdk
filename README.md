@@ -651,6 +651,17 @@ pinned. No-repayment across a whole-process crash additionally requires a durabl
 alone cannot prove whether a lost rail response moved value. The legacy native-ref
 input remains available for callers with a separate trusted pin.
 
+`createIdempotencyStore` defaults to `createInMemorySettlementLog()`, the only
+`SettlementLog` the SDK ships, and that log is process-local. The SDK ships no
+durable `SettlementLog`: recovery across process restarts needs an
+application-supplied adapter that implements every transition as a
+compare-and-set transaction and also binds the agreement identity (see
+`src/rails/idempotency.ts`). The repository's process-restart tests run the
+recovery protocol over a test-only filesystem log that is held to the same
+contract suite as the in-memory log. They show what the store, the rail wrappers
+and `runSessionCore` do when the log is durable; they do not certify any
+production log.
+
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write
 authority is absent. Its top-level `ref` exists only on a `published` or
