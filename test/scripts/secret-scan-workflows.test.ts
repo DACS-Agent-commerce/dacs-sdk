@@ -379,6 +379,7 @@ describe("secret scan git log options", () => {
     const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
     let stub: string;
     let calls: string;
+    let markerConfig: string;
 
     // A directory holding a `git` that runs `shellCode` and then the real git.
     async function gitShim(name: string, shellCode: string) {
@@ -408,6 +409,8 @@ describe("secret scan git log options", () => {
     beforeAll(async () => {
       stub = join(directory, "gitleaks-stub");
       calls = join(directory, "gitleaks-calls");
+      markerConfig = join(directory, "markers.toml");
+      await writeFile(markerConfig, '[[rules]]\nid = "marker"\nregex = "marker-[a-z-]+"\n');
       await writeFile(
         stub,
         [
@@ -503,9 +506,41 @@ describe("secret scan git log options", () => {
         STUB_STDERR: 'ERR [git] fatal: early EOF\nERR error="stderr is not empty"\nINF no leaks found\n',
       });
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("INF no leaks found\nThe scan is partial: git failed during Gitleaks' run.\n");
+      expect(result.stderr).toContain("INF no leaks found\nThe scan is partial: git failed during Gitleaks' run or wrote to stderr.\n");
       expect(await stubCalls()).toHaveLength(3);
     });
+
+    for (const real of [false, true]) {
+      it.skipIf(real && !process.env.GITLEAKS)(`fails on a git warning only during ${real ? "pinned Gitleaks'" : "the stub's"} own log`, async () => {
+        // Gitleaks 8.30.1 explicitly accepts this diagnostic as a warning, even though the
+        // workflows require every git log to finish with nothing on stderr.
+        const warning = "warning: exhaustive rename detection was skipped due to too many files.";
+        const shim = await gitShim(
+          `warning-git-${real}`,
+          `if [ "$1 $3" = "-C log" ]; then printf '%s\\n' '${warning}' >&2; fi`,
+        );
+        for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+          const report = join(directory, `warning-${real}.json`);
+          const result = runScript(origin, scanScriptPath, [
+            real ? process.env.GITLEAKS ?? "" : stub,
+            `--config=${markerConfig}`, "--exit-code=0", "--no-banner",
+            "--report-format=json", `--report-path=${report}`,
+          ], { LOG_OPTS: logOpts, ...shim });
+          expect(result.status).toBe(1);
+          expect(result.stderr).toContain(warning);
+          expect(result.stderr).toContain("The scan is partial: git failed during Gitleaks' run or wrote to stderr.");
+          if (real) {
+            expect(result.stderr).not.toContain("stderr is not empty");
+            const findings = JSON.parse(await readFile(report, "utf8"));
+            expect(findings.map((finding: { Secret: string }) => finding.Secret).sort()).toEqual(
+              (logOpts === AUDIT_LOG_OPTS ? [...markers, pullOnly] : [...markers]).sort(),
+            );
+          } else {
+            expect(await stubCalls()).toHaveLength(8);
+          }
+        }
+      });
+    }
 
     it("fails when Gitleaks' git log dies without a word on stderr, or never runs", async () => {
       // A git that prints part of Gitleaks' log and is then killed, as the OOM killer would.
@@ -636,73 +671,99 @@ describe("secret scan git log options", () => {
       expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`]);
     });
 
-    it("refuses a path containing a newline wherever the scanned history has one, and lists its commits", async () => {
-      const refusal =
-        "Nothing was scanned: after a path containing a newline, Gitleaks can report a finding under another commit or file. Rewrite the history without it; these commits add, change or delete one:\n";
-      const newlinePath = "nl\ncommit.txt";
-      // In the root commit, which has no parent to compare with.
-      const root = join(directory, "newline-root");
-      await mkdir(root);
-      git(root, ["init", "-q", "-b", "main"]);
-      await commitFile(root, newlinePath, "root\n", "root");
-      const rootSha = git(root, ["rev-parse", "HEAD"]);
-      await commitFile(root, "README", "fixture\n", "readme");
-      // Added only by a merge, which git log shows no paths for without a merge diff.
-      const merge = join(directory, "newline-merge");
-      await mkdir(merge);
-      git(merge, ["init", "-q", "-b", "main"]);
-      await commitFile(merge, "README", "fixture\n", "base");
-      git(merge, ["checkout", "-q", "-b", "side"]);
-      await commitFile(merge, "side.txt", "side\n", "side");
-      git(merge, ["checkout", "-q", "main"]);
-      await commitFile(merge, "main.txt", "main\n", "main");
-      run(merge, ["merge", "-q", "--no-ff", "--no-commit", "side"]);
-      await commitFile(merge, newlinePath, "merged\n", "merge");
-      const mergeSha = git(merge, ["rev-parse", "HEAD"]);
-      // In a directory, which git diff-tree lists as only `src` unless it recurses.
-      const nested = join(directory, "newline-nested");
-      await mkdir(join(nested, "src"), { recursive: true });
-      git(nested, ["init", "-q", "-b", "main"]);
-      await commitFile(nested, "README", "fixture\n", "base");
-      await commitFile(nested, `src/${newlinePath}`, "nested\n", "nested");
-      const nestedSha = git(nested, ["rev-parse", "HEAD"]);
-      await commitFile(nested, "README", "changed\n", "readme");
-      // Each case also with a `wc` that pads its counts, as BSD and macOS `wc` do.
-      const padding = await wcShim();
-      for (const env of [{}, padding]) {
-        for (const [repository, sha] of [
-          [root, rootSha],
-          [merge, mergeSha],
-          [nested, nestedSha],
-        ] as const) {
-          for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
-            const result = runScript(repository, scanScriptPath, [stub], { LOG_OPTS: logOpts, ...env });
-            expect(result.status).toBe(1);
-            expect(result.stderr).toBe(`${refusal}${sha}\n`);
+    for (const [kind, unsupportedPath, reason] of [
+      ["newline", "nl\ncommit.txt", "after a path containing a newline, Gitleaks can report a finding under another commit or file"],
+      ["trailing-backslash", "hidden\\", "Gitleaks can't read a path ending in a backslash"],
+    ] as const) {
+      it(`refuses a ${kind} path wherever the scanned history has one, and lists its commits`, async () => {
+        const refusal = `Nothing was scanned: ${reason}. Rewrite the history without it; these commits add, change or delete one:\n`;
+        // In the root commit, which has no parent to compare with.
+        const root = join(directory, `${kind}-root`);
+        await mkdir(root);
+        git(root, ["init", "-q", "-b", "main"]);
+        await commitFile(root, unsupportedPath, "root\n", "root");
+        const rootSha = git(root, ["rev-parse", "HEAD"]);
+        await commitFile(root, "README", "fixture\n", "readme");
+        // Refuse the history even after the unsupported path is gone from the current tree.
+        git(root, ["rm", "--", unsupportedPath]);
+        git(root, ["commit", "-q", "-m", "delete unsupported path"]);
+        const deleteSha = git(root, ["rev-parse", "HEAD"]);
+        // Added only by a merge, which git log shows no paths for without a merge diff.
+        const merge = join(directory, `${kind}-merge`);
+        await mkdir(merge);
+        git(merge, ["init", "-q", "-b", "main"]);
+        await commitFile(merge, "README", "fixture\n", "base");
+        git(merge, ["checkout", "-q", "-b", "side"]);
+        await commitFile(merge, "side.txt", "side\n", "side");
+        git(merge, ["checkout", "-q", "main"]);
+        await commitFile(merge, "main.txt", "main\n", "main");
+        run(merge, ["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        await commitFile(merge, unsupportedPath, "merged\n", "merge");
+        const mergeSha = git(merge, ["rev-parse", "HEAD"]);
+        // In a directory, which git diff-tree lists as only `src` unless it recurses.
+        const nested = join(directory, `${kind}-nested`);
+        await mkdir(join(nested, "src"), { recursive: true });
+        git(nested, ["init", "-q", "-b", "main"]);
+        await commitFile(nested, "README", "fixture\n", "base");
+        await commitFile(nested, `src/${unsupportedPath}`, "nested\n", "nested");
+        const nestedSha = git(nested, ["rev-parse", "HEAD"]);
+        await commitFile(nested, "README", "changed\n", "readme");
+        // Each case also with a `wc` that pads its counts, as BSD and macOS `wc` do.
+        const padding = await wcShim();
+        for (const env of [{}, padding]) {
+          for (const [repository, sha] of [
+            [root, `${deleteSha}\n${rootSha}`],
+            [merge, mergeSha],
+            [nested, nestedSha],
+          ] as const) {
+            for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+              const result = runScript(repository, scanScriptPath, [stub], { LOG_OPTS: logOpts, ...env });
+              expect(result.status).toBe(1);
+              expect(result.stderr).toBe(`${refusal}${sha}\n`);
+            }
           }
         }
-      }
-      expect(await stubCalls()).toEqual([]);
+        expect(await stubCalls()).toEqual([]);
 
-      // Changed only on a pull request head: the audit refuses it, the required scan doesn't reach it.
-      const pull = join(directory, "newline-pull");
-      await mkdir(pull);
-      git(pull, ["init", "-q", "-b", "main"]);
-      await commitFile(pull, "README", "fixture\n", "base");
-      git(pull, ["checkout", "-q", "-b", "pull"]);
-      await commitFile(pull, newlinePath, "pull\n", "pull");
-      const pullSha = git(pull, ["rev-parse", "HEAD"]);
-      git(pull, ["update-ref", "refs/pull/9/head", "HEAD"]);
-      git(pull, ["checkout", "-q", "main"]);
-      git(pull, ["branch", "-q", "-D", "pull"]);
-      const audit = runScript(pull, scanScriptPath, [stub], { LOG_OPTS: AUDIT_LOG_OPTS });
-      expect(audit.status).toBe(1);
-      expect(audit.stderr).toBe(`${refusal}${pullSha}\n`);
-      expect(await stubCalls()).toEqual([]);
-      for (const env of [{}, padding]) {
-        const required = runScript(pull, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...env });
-        expect(required.status).toBe(0);
-        expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`]);
+        // Changed only on a pull request head: the audit refuses it, the required scan doesn't reach it.
+        const pull = join(directory, `${kind}-pull`);
+        await mkdir(pull);
+        git(pull, ["init", "-q", "-b", "main"]);
+        await commitFile(pull, "README", "fixture\n", "base");
+        git(pull, ["checkout", "-q", "-b", "pull"]);
+        await commitFile(pull, unsupportedPath, "pull\n", "pull");
+        const pullSha = git(pull, ["rev-parse", "HEAD"]);
+        git(pull, ["update-ref", "refs/pull/9/head", "HEAD"]);
+        git(pull, ["checkout", "-q", "main"]);
+        git(pull, ["branch", "-q", "-D", "pull"]);
+        const audit = runScript(pull, scanScriptPath, [stub], { LOG_OPTS: AUDIT_LOG_OPTS });
+        expect(audit.status).toBe(1);
+        expect(audit.stderr).toBe(`${refusal}${pullSha}\n`);
+        expect(await stubCalls()).toEqual([]);
+        for (const env of [{}, padding]) {
+          const required = runScript(pull, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...env });
+          expect(required.status).toBe(0);
+          expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`]);
+        }
+      });
+    }
+
+    it.skipIf(!process.env.GITLEAKS)("refuses a history containing only a trailing-backslash path before pinned Gitleaks can return an empty report", async () => {
+      const repository = join(directory, "trailing-only");
+      await mkdir(repository);
+      git(repository, ["init", "-q", "-b", "main"]);
+      await commitFile(repository, "hidden\\", "marker-hidden\n", "hidden");
+      const sha = git(repository, ["rev-parse", "HEAD"]);
+      for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+        const report = join(directory, "trailing-only.json");
+        const result = runScript(repository, scanScriptPath, [
+          process.env.GITLEAKS ?? "", `--config=${markerConfig}`, "--exit-code=0", "--no-banner",
+          "--report-format=json", `--report-path=${report}`,
+        ], { LOG_OPTS: logOpts });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(`Gitleaks can't read a path ending in a backslash.`);
+        expect(result.stderr).toContain(`\n${sha}\n`);
+        expect(existsSync(report)).toBe(false);
       }
     });
 
@@ -776,7 +837,7 @@ describe("secret scan git log options", () => {
           expect(result.stderr).not.toContain("self-test:");
           expect(result.status).toBe(0);
           expect(result.stdout).toBe(
-            `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge and a path containing a newline are refused.\n`,
+            `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge, a path containing a newline and a path ending in a backslash are refused.\n`,
           );
         });
       }

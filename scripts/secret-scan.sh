@@ -59,9 +59,37 @@ if ! [ "$newlines" -eq 0 ]; then
   exit 1
 fi
 
+# Gitleaks 8.30.1's patch parser silently skips a quoted path ending in an escaped
+# backslash. Check the raw, NUL-delimited paths, including deleted paths and each merge
+# parent, rather than the quoted patch headers or just the current tree.
+count_trailing_backslashes() {
+  local path count=0
+  while IFS= read -r -d '' path; do
+    case "$path" in *\\) count=$((count + 1));; esac
+  done
+  echo "$count"
+}
+# shellcheck disable=SC2086
+if ! backslashes=$(git log --format=%H $LOG_OPTS --diff-merges=off |
+  git diff-tree --stdin -r -z --name-only --root -m --no-commit-id | count_trailing_backslashes); then
+  echo "Nothing was scanned: git failed to list the history's paths." >&2
+  exit 1
+fi
+if ! [ "$backslashes" -eq 0 ]; then
+  echo "Nothing was scanned: Gitleaks can't read a path ending in a backslash. Rewrite the history without it; these commits add, change or delete one:" >&2
+  # shellcheck disable=SC2086
+  git log --format=%H $LOG_OPTS --diff-merges=off | while read -r commit; do
+    if ! [ "$(git diff-tree -r -z --name-only --root -m --no-commit-id "$commit" | count_trailing_backslashes)" -eq 0 ]; then
+      echo "$commit"
+    fi
+  done >&2
+  exit 1
+fi
+
 # Gitleaks runs the first git on its PATH, so it gets this one, which runs the real git and
-# records the exit status of Gitleaks' `git -C . log`: Gitleaks passes even if git dies without
-# a word on stderr. It also drops git's `remerge ...` lines, which describe a merge's
+# records stderr and the exit status of Gitleaks' `git -C . log`: Gitleaks accepts some git
+# warnings, and passes even if git dies without a word on stderr. It also drops git's
+# `remerge ...` lines, which describe a merge's
 # conflicts. Gitleaks 8.30.1 reads such a line as the start of a new commit if it contains the
 # text `commit`, and then drops the merge's commit from that file's fingerprint and every later
 # file's. git can continue a `remerge` line on lines of its own: for a path containing a
@@ -71,7 +99,7 @@ fi
 # as git's own header lines do are kept; none of git's holds file content. Elsewhere only
 # `remerge ` lines are dropped: patch lines start with `+`, `-`, ` ` or `\`, and commit
 # messages are indented.
-export SECRET_SCAN_GIT SECRET_SCAN_GIT_STATUS="$temp/git-log.status"
+export SECRET_SCAN_GIT SECRET_SCAN_GIT_STATUS="$temp/git-log.status" SECRET_SCAN_GIT_STDERR="$temp/git-log.stderr"
 SECRET_SCAN_GIT=$(command -v git)
 mkdir "$temp/bin"
 cat > "$temp/bin/git" <<'EOF'
@@ -79,12 +107,13 @@ cat > "$temp/bin/git" <<'EOF'
 if [ "${1-} ${3-}" != "-C log" ]; then exec "$SECRET_SCAN_GIT" "$@"; fi
 set -o pipefail
 status=0
-"$SECRET_SCAN_GIT" "$@" | LC_ALL=C sed -E '
+"$SECRET_SCAN_GIT" "$@" 2> "$SECRET_SCAN_GIT_STDERR" | LC_ALL=C sed -E '
 /^diff --git /,/^(@@|Binary files |GIT binary patch|commit |$)/{
 /^(diff --git |old mode |new mode |deleted file mode |new file mode |copy from |copy to |rename from |rename to |similarity index |dissimilarity index |index |--- |\+\+\+ |@@|Binary files |GIT binary patch|commit |$)/!d
 }
 /^remerge /d
 ' || status=$?
+cat "$SECRET_SCAN_GIT_STDERR" >&2
 echo "$status" > "$SECRET_SCAN_GIT_STATUS"
 exit "$status"
 EOF
@@ -93,9 +122,9 @@ chmod +x "$temp/bin/git"
 status=0
 PATH="$temp/bin:$PATH" "$gitleaks" git . --log-opts="$LOG_OPTS" "$@" 2> "$temp/gitleaks.log" || status=$?
 cat "$temp/gitleaks.log" >&2
-# Gitleaks logs this when git writes to stderr during its own run, then stops and passes.
-if grep -qF "stderr is not empty" "$temp/gitleaks.log"; then
-  echo "The scan is partial: git failed during Gitleaks' run." >&2
+# Check git's own stderr, including warnings Gitleaks accepts without reporting an error.
+if [ -s "$SECRET_SCAN_GIT_STDERR" ] || grep -qF "stderr is not empty" "$temp/gitleaks.log"; then
+  echo "The scan is partial: git failed during Gitleaks' run or wrote to stderr." >&2
   exit 1
 fi
 if [ "$(cat "$SECRET_SCAN_GIT_STATUS" 2> /dev/null)" != 0 ]; then

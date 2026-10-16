@@ -90,15 +90,21 @@ reported by that run rather than creating a similarly named placeholder.
     parents), so nothing it changes itself would be scanned. Each scan fails
     without running Gitleaks if the history it scans has one, and lists it;
     merge one branch at a time instead;
+  - Gitleaks 8.30.1 silently skips a file whose path ends in a backslash.
+    Each scan fails before running Gitleaks if any commit in its history adds,
+    changes or deletes such a path, and lists those commits; rewrite that
+    history without it. A backslash elsewhere in a path is supported, and the
+    self-test checks its exact fingerprint;
   - git prints a path containing a newline unquoted in a merge's `remerge`
     lines (see below), where it can pass for a line Gitleaks reads, and such a
     path's fingerprint can't be one `.gitleaksignore` line. Each scan fails
     without running Gitleaks if a commit in the history it scans adds, changes
     or deletes such a path, and lists those commits; rewrite that history
-    without the path. As with an octopus merge, one pull request head that has
-    one, which anyone can open from a fork, stops the audit from scanning
-    anything, on any branch, tag or pull request, until that pull request's
-    branch is rewritten, or GitHub Support removes its `refs/pull` ref once the
+    without the path. As with an octopus merge or a path ending in a backslash,
+    one pull request head that has one, which anyone can open from a fork,
+    stops the audit from scanning anything, on any branch, tag or pull request,
+    until that pull request's branch is rewritten, or GitHub Support removes
+    its `refs/pull` ref once the
     pull request is closed. Other pull requests' required checks don't reach
     that head, and push protection doesn't use these scripts, so both still
     run;
@@ -222,7 +228,8 @@ reported by that run rather than creating a similarly named placeholder.
   first hunk, the scan also drops any line that doesn't start as one of git's
   header lines. The self-test checks that the fingerprints of a conflict in
   `commitment.txt` and of a later file keep their commit and the file's own
-  path, and that a path containing a newline is refused. Pin every finding as
+  path, and that paths containing a newline or ending in a backslash are
+  refused. Pin every finding as
   `commit:file:rule:line`; the
   `.gitleaksignore` test rejects any other entry. An entry without a commit
   would hide that file, rule and line in every commit, so don't pin a finding
