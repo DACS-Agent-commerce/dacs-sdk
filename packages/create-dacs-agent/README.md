@@ -62,7 +62,10 @@ npm run dacs:uninstall -- --backup ../backups/final-YYYYMMDD
 
 Backup manifests are HMAC-authenticated by a separate operator key, contain
 independent buyer/seller trees, and are rehashed before restore. Restore checks
-the Standard, configuration and SQLite migration compatibility, requires its
+the exact creating SDK version (including patch releases), Standard, configuration
+and SQLite migration compatibility. Reinstall the retained creating project and
+its exact lockfile with `npm ci` before restore; after recovery, follow the
+supported upgrade procedure. Restore requires its
 own ephemeral confirmation, creates a safety backup, and rolls both role trees
 back on a partial replacement. Uninstall is deliberately a non-destructive
 decommission: it stops the deployment and backs it up but retains the actor

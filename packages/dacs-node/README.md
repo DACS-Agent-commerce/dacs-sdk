@@ -477,3 +477,49 @@ identity resolver must use verified Demos identity material and retain its
 evidence hash; the payload validator must invoke the corresponding public SDK
 validator/verifier with independently resolved session facts. Neither callback
 may trust the HTTP body as identity or authorization evidence.
+
+### Demos RPC compatibility
+
+`DACS_NODE_DEMOS_RPC_COMPATIBILITY_V1` identifies the source-reviewed contract:
+Demos node `0.9.8` at
+[`61b8e75aa8db5e408c49e1c3a89db4d673f45578`](https://github.com/kynesyslabs/node/tree/61b8e75aa8db5e408c49e1c3a89db4d673f45578),
+with demosdk `4.0.16` at published source revision
+[`d3620ae24f657ae7442e63e7adaefef7094b22e2`](https://github.com/kynesyslabs/sdks/tree/d3620ae24f657ae7442e63e7adaefef7094b22e2).
+Generated live doctor gates require this exact node revision and version, the
+`demos-node-software` identity, and `dirty: false`. Missing build metadata,
+dirty trees and other revisions block readiness. The endpoint URL is not a
+compatibility pin. Build metadata describes compatibility; independently
+verified transaction and block evidence still establish settlement.
+
+The read-only capture from node2 on 2026-10-16 reports `dirty: true`. It is a
+response-shape reference, **not an approved reproducible deployment**. Operators
+must build the pinned source from a clean tree, retain its build inputs and
+artifact digest, configure both roles to that node, rerun read-only doctor and
+contract probes, and retain those results before launch. A change to the node
+revision requires reviewing and updating the contract and fixtures together;
+a same-version rebuild with another commit is not automatically compatible.
+
+The pinned response contract is:
+
+| Read | Required interpretation |
+| --- | --- |
+| `getNetworkInfo` | SDK-unwrapped object with exact `nodeVersion` build identity; denomination fork metadata is evaluated separately. |
+| `getAddressNonce` | SDK-unwrapped nonnegative safe integer or canonical decimal integer string. No partial parsing, fallback zero, or RPC error envelope is accepted. This is the retained nonce; the SDK reserves the next nonce separately. |
+| `getTransactionStatus` | `included` plus a block number is inclusion. `unknown` is not evidence of payment. Transport errors remain unavailable. |
+| `getTxByHash` | Native send payload contains canonical OS amount and matching payer/payee. A numeric outer amount may be a projection; `confirmed` in the transaction body alone does not prove payment. |
+| `getBlockByNumber` | A confirmed block must contain the selected transaction. Block timestamps are seconds and are converted to milliseconds. Native inclusion uses `bft-final`, without waiting for depth. |
+| Denomination and fees | One DEM is `1000000000` OS after the denomination fork. Fee components in transaction evidence are OS; observed fee values are not fixed future fee quotes. Spending remains bounded by the configured limits. |
+
+Sanitized response fixtures are retained in
+`test/fixtures/demos-rpc-v1.json`; tests replay nonce/error handling and native
+inclusion/unknown-state responses through the production runtime and observer.
+They omit signatures, peer inventories and unrelated transaction data. The
+synthetic clean metadata used in admission tests tests policy only; it does
+not claim that node2 has been redeployed.
+
+The x402 integration's reviewed standards snapshots are
+[EIP-712 at `0b06de5e1203b35f1338d9e61d1ccc6965face91`](https://github.com/ethereum/EIPs/blob/0b06de5e1203b35f1338d9e61d1ccc6965face91/EIPS/eip-712.md)
+and
+[ERC-3009 at `7c9338feb41279b037700259c631ff6f51b0df3d`](https://github.com/ethereum/ERCs/blob/7c9338feb41279b037700259c631ff6f51b0df3d/ERCS/erc-3009.md).
+DACS-specific signing and session-binding rules remain governed by the
+Standard revision in the package release metadata.

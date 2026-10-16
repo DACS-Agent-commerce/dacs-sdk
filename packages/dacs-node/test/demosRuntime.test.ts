@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -201,6 +201,21 @@ describe("role-owned Demos runtime", () => {
     expect(existsSync(join(directory, "demos-write-journal"))).toBe(false);
     await expect(journal!.acquire({ chainIdentity: "test", wallet: "0xactor" }))
       .rejects.toMatchObject({ reasonCode: "demos-write-disabled" });
+  });
+
+  it("replays the captured nonce contract through the raw SDK boundary", async () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("./fixtures/demos-rpc-v1.json", import.meta.url), "utf8",
+    ));
+    const mock = adapter();
+    const opened = await runtime(root(), mock);
+    vi.mocked(mock.raw.nodeCall!).mockResolvedValue(fixture.nonce.response);
+    await expect(opened.addressNonce()).resolves.toBe(0);
+    for (const response of [fixture.nonceError.response, fixture.nonceError]) {
+      vi.mocked(mock.raw.nodeCall!).mockResolvedValue(response);
+      await expect(opened.addressNonce()).rejects.toMatchObject({ reasonCode: "demos-nonce-unavailable" });
+    }
+    expect(mock.raw.getAddressNonce).not.toHaveBeenCalled();
   });
 
   it.each([0, 7, Number.MAX_SAFE_INTEGER, "0", "7", "9007199254740991"])(

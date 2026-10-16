@@ -545,6 +545,7 @@ import {
   establishDacsRoleServiceReadinessV1,
   estimateDacsFixedPriceDemosCostV1,
   inspectDacsDemosBalanceHeadroomV1,
+  inspectDacsDemosNodeCompatibilityV1,
   inspectDacsNodePackageIntegrityV1,
   inspectDacsX402AssetBalanceV1,
   inspectDacsX402GasBalanceV1,
@@ -1277,7 +1278,13 @@ function baseProbes(
     "local.deployment-runtime": dockerRuntime,
     "demos.rpc-chain": actors === undefined ? actorUnavailable : async () => {
       try {
-        await Promise.all([actors.buyer.runtime.networkInfo(), actors.seller.runtime.networkInfo()]);
+        const infos = await Promise.all([
+          actors.buyer.runtime.networkInfo(), actors.seller.runtime.networkInfo(),
+        ]);
+        for (const info of infos) {
+          const compatibility = inspectDacsDemosNodeCompatibilityV1(info);
+          if (!compatibility.compatible) return blocked(compatibility.reasonCode);
+        }
         return pass({ actorCount: 2 });
       } catch { return fail("demos-rpc-unavailable"); }
     },
@@ -4922,7 +4929,10 @@ Backup stops both services and writes separate buyer/seller data trees plus a
 keyed manifest into a new directory. Restore is plan-only unless
 \`DACS_RESTORE_CONFIRM=1\` is supplied for that invocation; it authenticates and
 rehashes every file, creates a separate safety backup, then replaces both actor
-directories with rollback on partial failure. Example:
+directories with rollback on partial failure. Restore requires the exact creating
+SDK version, including patch releases. Reinstall the retained creating project
+and exact lockfile with \`npm ci\` before restore, then follow the supported
+upgrade procedure after recovery. Example:
 
 \`\`\`bash
 npm run dacs:restore -- --from ../backups/agent-YYYYMMDD \\
