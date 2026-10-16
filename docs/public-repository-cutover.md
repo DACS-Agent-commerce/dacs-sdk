@@ -90,6 +90,14 @@ reported by that run rather than creating a similarly named placeholder.
     parents), so nothing it changes itself would be scanned. Each scan fails
     without running Gitleaks if the history it scans has one, and lists it;
     merge one branch at a time instead;
+  - git prints a path containing a newline unquoted in a merge's `remerge`
+    lines (see below), where it can pass for a line Gitleaks reads, and such a
+    path's fingerprint can't be one `.gitleaksignore` line. Each scan fails
+    without running Gitleaks if a commit in the history it scans adds, changes
+    or deletes such a path, and lists those commits; rewrite that history
+    without the path. As with an octopus merge, a pull request head that has
+    one keeps the audit red until the pull request's branch is rewritten, or
+    GitHub Support removes its `refs/pull` ref once the pull request is closed;
   - a pull request's `secret scan` runs the workflow, scripts, `.gitleaks.toml`
     and `.gitleaksignore` of that pull request's merge commit, as GitHub runs
     every `pull_request` workflow, so a pull request can change what checks
@@ -153,8 +161,9 @@ reported by that run rather than creating a similarly named placeholder.
 
   To spot a new finding while the audit is red, first check the scan step's
   log: if it says `Nothing was scanned` or `The scan is partial`,
-  `scripts/secret-scan.sh` failed the step because git failed or the history
-  has an octopus merge, and findings may be missing. Compare the run with the last
+  `scripts/secret-scan.sh` failed the step because git failed, or the history
+  has an octopus merge or a path containing a newline, and findings may be
+  missing. Compare the run with the last
   run whose findings were all reviewed, not just with the previous run. An ID
   that wasn't among that run's findings, or a higher count for an ID, is new.
   Findings at the same commit, file, rule and line share one ID, so only its
@@ -197,16 +206,20 @@ reported by that run rather than creating a similarly named placeholder.
   run to compare.
 
   In a merge's patch, git prints a `remerge CONFLICT` line for each
-  conflicted file, and continues it on another line for a path containing a
-  newline. Gitleaks 8.30.1 reads the file's path after such a line as
+  conflicted file. Gitleaks 8.30.1 reads the file's path after such a line as
   `b/<path>`, and if the line contains the text `commit` (as for a path such
   as `src/negotiate/commitment.ts`, or a parent whose subject mentions a
   commit), it also drops the merge's commit from that file's fingerprint and
   from every later file of the merge. So `scripts/secret-scan.sh` gives
-  Gitleaks the log without git's `remerge` lines, and keeps only git's own
-  header lines between each `diff --git` line and the file's first hunk. The
-  self-test checks that the fingerprints of both cases keep their commit and
-  the file's own path. Pin every finding as `commit:file:rule:line`; the
+  Gitleaks the log without git's `remerge` lines. git continues such a line on
+  lines of its own for a path containing a newline, which a crafted path can
+  make look like any header line, a commit's included; that is why the scans
+  refuse those paths (above). Between each `diff --git` line and the file's
+  first hunk, the scan also drops any line that doesn't start as one of git's
+  header lines. The self-test checks that the fingerprints of a conflict in
+  `commitment.txt` and of a later file keep their commit and the file's own
+  path, and that a path containing a newline is refused. Pin every finding as
+  `commit:file:rule:line`; the
   `.gitleaksignore` test rejects any other entry. An entry without a commit
   would hide that file, rule and line in every commit, so don't pin a finding
   shown as `no-commit`: it means git printed a header line the scan doesn't
@@ -234,7 +247,14 @@ reported by that run rather than creating a similarly named placeholder.
       `main`'s `.gitleaksignore`, so it reports their findings until then.
       #332 is one: its head reaches findings that only its own branch pins.
       #268 is another: a commit pushed to it after #346 reaches a finding
-      that no branch pins yet.
+      that no branch pins yet. Closed pull requests count too: #353, closed
+      without merging, has a head that reaches findings no branch pins.
+- [ ] Before #345 merges, decide which git the scans run. They use the
+      `ubuntu-24.04` image's git, which GitHub updates, and the per-run
+      self-test is what catches a git that changes what the scans see. Either
+      install a checksum-pinned git build in both workflows, as they install
+      Gitleaks, or record that the image's git is accepted, with the
+      approver, in the cutover record.
 - [ ] After #345 merges, dispatch **Actions → Secret scan (all branches)** on
       `main`. Its first run is also the first Gitleaks scan of every pull
       request head. Review every finding it lists, rotate any real credential,
