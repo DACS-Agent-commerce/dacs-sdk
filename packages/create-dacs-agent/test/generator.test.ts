@@ -17,8 +17,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
+import ts from "typescript";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { createDacsAgentProject, projectTemplates } from "../src/index.js";
@@ -64,6 +66,11 @@ const GENERATED_SERVICE_COMMAND = [
   "dist/src/service.js",
 ];
 const GENERATED_ROLE_CHECK_REPORT = JSON.stringify({
+  event: "dacs.live-service.failed",
+  reasonCode: "service-role-unconfigured",
+});
+// What the generated service reports for any other failure without a reason code.
+const GENERATED_GENERIC_FAILURE_REPORT = JSON.stringify({
   event: "dacs.live-service.failed",
   reasonCode: "role-runtime-unavailable",
 });
@@ -515,6 +522,79 @@ process.getgid = () => seen.gid;
 Object.defineProperty(process, "versions", { value: { ...process.versions, node: seen.node } });
 `;
 
+// Preloaded into the generated script: stat reports the project directory with
+// its device number or inode shifted, as after a remount renumbers its file
+// system, or for another directory put at its path.
+const TEST_ONLY_STAT_SHIFT_SHIM = `import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const shift = JSON.parse(process.env.CREATE_DACS_AGENT_TEST_STAT_SHIFT);
+const statSync = fs.statSync;
+fs.statSync = (path, options) => {
+  const stats = statSync(path, options);
+  if (options?.bigint === true && String(path) === shift.path) {
+    stats.dev += BigInt(shift.dev);
+    stats.ino += BigInt(shift.ino);
+  }
+  return stats;
+};
+syncBuiltinESMExports();
+`;
+
+// Environment that runs the generated script under TEST_ONLY_STAT_SHIFT_SHIM.
+async function statShiftEnvironment(
+  target: string,
+  shift: Readonly<{ dev: number; ino: number }>,
+): Promise<Record<string, string>> {
+  const shim = join(await temporaryDirectory(), "stat-shift-shim.mjs");
+  await writeFile(shim, TEST_ONLY_STAT_SHIFT_SHIM, "utf8");
+  return {
+    NODE_OPTIONS: `--import=${pathToFileURL(shim).href}`,
+    CREATE_DACS_AGENT_TEST_STAT_SHIFT: JSON.stringify({ path: await realpath(target), ...shift }),
+  };
+}
+
+// Runs the generated src/service.ts, transpiled, on the host Node with every
+// module it imports replaced by a stub whose exports throw, and reports how it
+// exited. env is the service's whole environment apart from PATH.
+async function runGeneratedService(target: string, env: Record<string, string>) {
+  const root = await temporaryDirectory();
+  const service = ts.transpileModule(
+    await readFile(join(target, "src", "service.ts"), "utf8"),
+    { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const files: Record<string, string> = {
+    "package.json": JSON.stringify({ type: "module" }),
+    [join("dist", "src", "service.js")]: service,
+  };
+  for (const [, names, specifier] of service.matchAll(/import\s*\{([^}]*)\}\s*from\s*"([^"]+)"/g)) {
+    const local = specifier!.startsWith("./");
+    files[local ? join("dist", "src", specifier!) : entryPointModule(specifier!)] = names!
+      .split(",").map((name) => name.trim().split(/\s+as\s+/)[0]!).filter(Boolean)
+      .map((name) => `export const ${name} = () => { throw new Error("test-only stub"); };\n`)
+      .join("");
+    if (!local) {
+      const parts = specifier!.split("/");
+      const name = parts.slice(0, specifier!.startsWith("@") ? 2 : 1).join("/");
+      files[join("node_modules", name, "package.json")] = JSON.stringify({
+        name,
+        type: "module",
+        exports: { ".": "./index.js", "./*": "./*.js" },
+      });
+    }
+  }
+  for (const [path, source] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), source, "utf8");
+  }
+  const result = spawnSync(process.execPath, [join(root, "dist", "src", "service.js")], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: process.env.PATH ?? "", ...env },
+  });
+  return { status: result.status, stderr: result.stderr };
+}
+
 // umask: run the script under this file-creation mask rather than the test's.
 type SmokeOptions = Readonly<{ args?: string[]; env?: Record<string, string>; umask?: string }>;
 
@@ -611,10 +691,9 @@ async function generatedComposeArguments(target: string): Promise<string[]> {
   ];
 }
 
-// The device and inode the Docker lifecycle records for a project directory.
-async function directoryIdentity(target: string): Promise<{ device: string; inode: string }> {
-  const { dev, ino } = await stat(target, { bigint: true });
-  return { device: String(dev), inode: String(ino) };
+// The inode the Docker lifecycle records for a project directory.
+async function directoryInode(target: string): Promise<{ inode: string }> {
+  return { inode: String((await stat(target, { bigint: true })).ino) };
 }
 
 // A compose command on the project, rather than `docker compose version`.
@@ -1137,17 +1216,24 @@ process.exit(1);
     expect(readme).not.toContain("my-dacs-agent:local");
     expect(readme).not.toContain("must pass before an installer reports success");
     expect(readme).toContain("the image's configured service command");
+    expect(readme).toContain("stop\nat its missing-role check, reporting that check's own reason " +
+      "code,\n`service-role-unconfigured`.");
     expect(readme).toContain("with `DACS_IMAGE` set to that image ID rather\nthan the tag");
     expect(readme).toContain("refuse to run while `.env` mentions `COMPOSE_` anywhere");
     expect(readme).toContain("refuse to run while the project has a container\nthat compose created for another directory");
     expect(readme).toContain("the first 12 hex digits of the SHA-256 of this project's identity\n" +
       "followed by the directory's full path");
     expect(readme).toContain("nor does a\nnew project generated at a path this one was moved from");
-    expect(readme).toContain("The record therefore also names this directory's device and\n" +
-      "inode, which a move keeps and a copy, clone or restore does not, and while the\n" +
-      "project has containers these commands run only from the directory whose\n" +
-      "`dacs:up` started them.");
-    expect(readme).toContain("including in a copy without\n`.dacs-runtime/`, they refuse");
+    expect(readme).toContain("The record therefore also names this directory's inode, which\n" +
+      "a move within one file system keeps and a copy, clone or restore does not, and\n" +
+      "while the project has containers these commands run only from the directory\n" +
+      "whose `dacs:up` started them. (The record leaves out the file system's device\n" +
+      "number, which a reboot or remount can change.)");
+    expect(readme).toContain("including in a copy\nwithout `.dacs-runtime/`, they refuse: " +
+      "move the project that started the\ncontainers back to run its commands, or remove " +
+      "the containers from any\ndirectory with `docker compose --project-name <project> down`");
+    expect(readme).not.toContain("from where it is now");
+    expect(readme).not.toContain("run them from the project that started");
     expect(readme).toContain("If you moved the project, remove the old\ncontainers with " +
       "`docker compose --project-name <recorded project> down`");
     expect(readme).not.toContain("never share one");
@@ -1436,7 +1522,7 @@ process.exit(1);
         recordVersion: 1,
         project: projectName,
         directory: await realpath(target),
-        ...await directoryIdentity(target),
+        ...await directoryInode(target),
       });
       expect((await lstat(recordPath)).mode & 0o777).toBe(0o600);
       expect(started.invocations.filter(isComposeInvocation)).toEqual([[
@@ -1947,7 +2033,7 @@ process.exit(1);
         recordVersion: 1,
         project: movedProject,
         directory: await realpath(moved),
-        ...await directoryIdentity(moved),
+        ...await directoryInode(moved),
       });
 
       // A copy whose original still runs proceeds once its copied record is gone,
@@ -1956,7 +2042,7 @@ process.exit(1);
         recordVersion: 1,
         project: originalProject,
         directory: originalPath,
-        ...await directoryIdentity(moved),
+        ...await directoryInode(moved),
       };
       await writeFile(recordPath, JSON.stringify(copiedRecord), "utf8");
       expect((await runGeneratedDockerSmoke(moved, passingDockerScenario({
@@ -1976,12 +2062,10 @@ process.exit(1);
           { recordVersion: 2 },
           { project: "Agent X" },
           { directory: 1 },
-          { device: undefined },
-          { device: 1 },
-          { device: "1a" },
           { inode: undefined },
           { inode: 1 },
           { inode: "" },
+          { inode: "1a" },
         ].map((change) => [JSON.stringify({ ...copiedRecord, ...change }),
           ".dacs-runtime/compose-project.json is not a compose project record"]),
       ]) {
@@ -2020,7 +2104,7 @@ process.exit(1);
         recordVersion: 1,
         project: originalProject,
         directory: await realpath(original),
-        ...await directoryIdentity(original),
+        ...await directoryInode(original),
       });
 
       const moved = join(await temporaryDirectory(), "agent");
@@ -2125,9 +2209,9 @@ process.exit(1);
       const refusal = `compose project ${project} has containers, but ` +
         ".dacs-runtime/compose-project.json does not show that dacs:up started them from " +
         `this directory: it may be a copy of a project that was moved from ${originalPath} ` +
-        "while its roles ran. Run that project's commands from where it is now. If these " +
-        "containers are this directory's own, remove them with: docker compose " +
-        `--project-name ${project} down, then rerun`;
+        "while its roles ran. Move that project back here to run its commands, or remove " +
+        "the containers from any directory with: docker compose " +
+        `--project-name ${project} down (both data directories are kept), then rerun`;
       for (const runtime of ["copied", "omitted"]) {
         await cp(moved, original, { recursive: true });
         if (runtime === "omitted") await rm(join(original, ".dacs-runtime"), { recursive: true });
@@ -2160,7 +2244,7 @@ process.exit(1);
           recordVersion: 1,
           project,
           directory: originalPath,
-          ...await directoryIdentity(original),
+          ...await directoryInode(original),
         });
         await rm(original, { recursive: true });
       }
@@ -2183,6 +2267,63 @@ process.exit(1);
   );
 
   test.runIf(process.platform !== "win32")(
+    "keeps running the project's own commands after a remount renumbers its file system",
+    async () => {
+      const target = await generatedDockerProject("agent");
+      const project = await generatedProjectName(target);
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      const started = await runGeneratedDockerSmoke(target, passingDockerScenario(), {
+        args: ["--up"],
+      });
+      expect(started.status).toBe(0);
+      const running = started.containers!;
+
+      // Another directory at this path, with another inode, is still refused,
+      // so the shifted stat reaches the script.
+      const other = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        containers: running,
+      }), { args: ["--stop"], env: await statShiftEnvironment(target, { dev: 0, ino: 1 }) });
+      expect(other.status).toBe(2);
+      expect(other.stderr).toContain(`compose project ${project} has containers, but ` +
+        ".dacs-runtime/compose-project.json does not show that dacs:up started them");
+      expect(other.invocations.filter(isComposeInvocation)).toEqual([]);
+
+      // The same directory and inode on a file system with another device number.
+      const env = await statShiftEnvironment(target, { dev: 1, ino: 0 });
+      for (const args of [["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
+        const result = await runGeneratedDockerSmoke(target, passingDockerScenario({
+          containers: running,
+        }), { args, env });
+        expect(result.stderr, args.join(" ")).toBe("");
+        expect(result.status, args.join(" ")).toBe(0);
+        expect(result.invocations.filter(isComposeInvocation), args.join(" ")).toEqual([[
+          ...await generatedComposeArguments(target),
+          ...(args[0] === "--stop" ? ["stop"] : ["down", ...args.slice(1)]),
+        ]]);
+      }
+      const restarted = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        containers: [],
+      }), { args: ["--up"], env });
+      expect(restarted.stderr).toBe("");
+      expect(restarted.status).toBe(0);
+
+      // A record that also names a device, which this directory no longer has.
+      const recordPath = join(target, ".dacs-runtime", "compose-project.json");
+      const record = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
+      const device = (await stat(target, { bigint: true })).dev + 1n;
+      await writeFile(recordPath, JSON.stringify({ ...record, device: String(device) }), "utf8");
+      const stale = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        containers: running,
+      }), { args: ["--stop"] });
+      expect(stale.stderr).toBe("");
+      expect(stale.status).toBe(0);
+      expect(stale.invocations.filter(isComposeInvocation))
+        .toEqual([[...await generatedComposeArguments(target), "stop"]]);
+    },
+    SPAWNING_TEST_TIMEOUT_MS * 2,
+  );
+
+  test.runIf(process.platform !== "win32")(
     "requires the image's configured service command to load and stop at its role check",
     async () => {
       const target = await generatedDockerProject("service-command-agent");
@@ -2196,6 +2337,8 @@ process.exit(1);
         },
         { status: 125, stderr: GENERATED_ROLE_CHECK_REPORT + "\n" },
         { status: 1, stderr: "" },
+        // The service's generic failure line does not show which check failed.
+        { status: 1, stderr: GENERATED_GENERIC_FAILURE_REPORT + "\n" },
       ]) {
         const result = await runGeneratedDockerSmoke(
           target,
@@ -2215,6 +2358,35 @@ process.exit(1);
         },
       }));
       expect(warned.status).toBe(0);
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "passes the smoke only on the line the generated service's role check reports",
+    async () => {
+      const target = await generatedDockerProject("role-check-agent");
+      // With no role, as the smoke runs the image's command, the service stops
+      // at its role check and reports that check's own reason code.
+      const unconfigured = await runGeneratedService(target, {});
+      expect(unconfigured).toEqual({ status: 1, stderr: GENERATED_ROLE_CHECK_REPORT + "\n" });
+      // Past the role check, a failure without a reason code reports the generic line.
+      const failed = await runGeneratedService(target, { DACS_ROLE: "buyer" });
+      expect(failed).toEqual({ status: 1, stderr: GENERATED_GENERIC_FAILURE_REPORT + "\n" });
+
+      const passed = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        service: { status: unconfigured.status!, stderr: unconfigured.stderr },
+      }));
+      expect(passed.status).toBe(0);
+      expect(passed.receipt).toBeDefined();
+      const refused = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        service: { status: failed.status!, stderr: failed.stderr },
+      }));
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr).toContain(
+        "configured service command did not load and stop at its role check",
+      );
+      expect(refused.receipt).toBeUndefined();
     },
     SPAWNING_TEST_TIMEOUT_MS,
   );

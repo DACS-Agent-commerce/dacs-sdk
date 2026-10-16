@@ -3705,6 +3705,11 @@ main().catch(() => {
 });
 `;
 
+// The reason code the generated service reports only when it starts without a
+// buyer or seller role, as dacs:image:smoke runs the image's command; any other
+// failure in its main() reports its own reason code or role-runtime-unavailable.
+const SERVICE_ROLE_CHECK_REASON = "service-role-unconfigured";
+
 const SERVICE_SOURCE = `import {
   RAIL_REGISTRY_INDEX_ADDRESS,
   baseUnits,
@@ -3762,7 +3767,10 @@ function loopbackHostname(hostname: string): boolean {
 async function main(): Promise<void> {
   const role = process.env.DACS_ROLE;
   if (role !== "buyer" && role !== "seller") {
-    throw new Error("live service requires an authority-separated buyer or seller role");
+    throw Object.assign(
+      new Error("live service requires an authority-separated buyer or seller role"),
+      { reasonCode: ${JSON.stringify(SERVICE_ROLE_CHECK_REASON)} },
+    );
   }
   const peerRole = role === "buyer" ? "seller" : "buyer";
   const config = loadRoleConfig(role);
@@ -4629,14 +4637,15 @@ const projectName = directoryName + "-" +
 // project name, so until the recorded project's containers are gone, no compose
 // call runs from the new directory: it would neither stop the old roles nor
 // keep a second pair from starting on the same data. The record also names
-// this directory's device and inode, which a move keeps and a copy does not,
-// so a copy put where the project was moved from gets its project name but
-// runs no compose call while that project has containers.
+// this directory's inode, which a move within one file system keeps and a copy
+// does not, so a copy put where the project was moved from gets its project
+// name but runs no compose call while that project has containers. It leaves
+// out the file system's device number, which a reboot or remount can change
+// under the same directory.
 const projectRecordPath = new URL("compose-project.json", receiptDirectory);
 // The directory as the file system knows it, rather than by its path.
-function directoryIdentity() {
-  const { dev, ino } = statSync(projectPath, { bigint: true });
-  return { device: String(dev), inode: String(ino) };
+function directoryInode() {
+  return String(statSync(projectPath, { bigint: true }).ino);
 }
 const services = ${quotedList(COMPOSE_SERVICES)};
 const composeArguments = [
@@ -4720,7 +4729,6 @@ function recordedProject() {
   if (record === null || typeof record !== "object" || record.recordVersion !== 1 ||
       typeof record.project !== "string" || !${COMPOSE_PROJECT_NAME_PATTERN}.test(record.project) ||
       typeof record.directory !== "string" ||
-      typeof record.device !== "string" || !/^[0-9]+$/.test(record.device) ||
       typeof record.inode !== "string" || !/^[0-9]+$/.test(record.inode)) {
     throw new Error(".dacs-runtime/compose-project.json is not a compose project record");
   }
@@ -4733,8 +4741,7 @@ function recordedHere(record) {
       record.directory !== projectPath) {
     return false;
   }
-  const { device, inode } = directoryIdentity();
-  return record.device === device && record.inode === inode;
+  return record.inode === directoryInode();
 }
 // Exits before any compose call unless compose is v2.10 or later, the project
 // dacs:up last started from another directory has no containers left, every
@@ -4767,9 +4774,10 @@ function requireOwnProject() {
           refusal = "compose project " + projectName + " has containers, but " +
             ".dacs-runtime/compose-project.json does not show that dacs:up started them " +
             "from this directory: it may be a copy of a project that was moved from " +
-            projectPath + " while its roles ran. Run that project's commands from where " +
-            "it is now. If these containers are this directory's own, remove them with: " +
-            "docker compose --project-name " + projectName + " down, then rerun";
+            projectPath + " while its roles ran. Move that project back here to run its " +
+            "commands, or remove the containers from any directory with: docker compose " +
+            "--project-name " + projectName + " down (both data directories are kept), " +
+            "then rerun";
         }
       }
     }
@@ -4866,8 +4874,8 @@ if (mode === "up") {
     recordVersion: 1,
     project: projectName,
     directory: projectPath,
-    ...directoryIdentity(),
-  }) +"\\n", { mode: 0o600, flag: "wx" });
+    inode: directoryInode(),
+  }) + "\\n", { mode: 0o600, flag: "wx" });
   renameSync(temporaryRecord, projectRecordPath);
   const runtimeSettings = { DACS_IMAGE: imageId, DACS_RUNTIME_UID: uid, DACS_RUNTIME_GID: gid };
   // Report success only once each role's container was created from that ID.
@@ -5040,10 +5048,12 @@ if (runtime.node !== ${JSON.stringify(IMAGE_NODE_VERSION)}) {
 // The image's own command, with no role configured, loads the service's
 // modules and then stops at its first check, before any secret, data or
 // network access. Any other exit means the configured command cannot start.
+// Only that check reports this reason code; the service's other failures,
+// including the generic role-runtime-unavailable, do not pass.
 const service = runContainer([imageId]);
 const roleCheckReport = JSON.stringify({
   event: "dacs.live-service.failed",
-  reasonCode: "role-runtime-unavailable",
+  reasonCode: ${JSON.stringify(SERVICE_ROLE_CHECK_REASON)},
 });
 if (service.status !== 1 ||
     !service.stderr.split("\\n").some((line) => line.trim() === roleCheckReport)) {
@@ -5552,7 +5562,8 @@ no network, a read-only root, no capabilities and compose's memory, process and
 every production dependency, imports the SDK, host-kit and payment entry points
 the service loads and opens an in-memory SQLite database, and
 the image's configured service command, which must load its modules and stop
-at its missing-role check. The smoke never starts a serving role, reads secrets
+at its missing-role check, reporting that check's own reason code,
+\`${SERVICE_ROLE_CHECK_REASON}\`. The smoke never starts a serving role, reads secrets
 or contacts a network. On success it records the image ID and user in
 \`.dacs-runtime/docker-image-smoke.json\`; a new attempt removes that record
 first. A container still running after \`DACS_IMAGE_SMOKE_TIMEOUT_SECONDS\`
@@ -5588,13 +5599,15 @@ recorded directory is another project that is still in use (this directory is
 a copy of it), delete this directory's \`.dacs-runtime/compose-project.json\`
 instead. A copy or clone of this project shares its identity, so one put at a
 path this project was moved from gets the project name of the containers
-started there. The record therefore also names this directory's device and
-inode, which a move keeps and a copy, clone or restore does not, and while the
-project has containers these commands run only from the directory whose
-\`dacs:up\` started them. Elsewhere, including in a copy without
-\`.dacs-runtime/\`, they refuse; run them from the project that started the
-containers, or, if the containers are this directory's own, remove them with
-\`docker compose --project-name <project> down\` and rerun.
+started there. The record therefore also names this directory's inode, which
+a move within one file system keeps and a copy, clone or restore does not, and
+while the project has containers these commands run only from the directory
+whose \`dacs:up\` started them. (The record leaves out the file system's device
+number, which a reboot or remount can change.) Elsewhere, including in a copy
+without \`.dacs-runtime/\`, they refuse: move the project that started the
+containers back to run its commands, or remove the containers from any
+directory with \`docker compose --project-name <project> down\`, which keeps both
+data directories, and rerun.
 
 These commands also set \`COMPOSE_PROJECT_NAME\` to the project name, remove
 every other \`COMPOSE_*\` variable, including \`COMPOSE_FILE\`, from compose's

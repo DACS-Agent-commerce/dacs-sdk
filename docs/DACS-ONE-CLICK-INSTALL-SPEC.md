@@ -255,8 +255,10 @@ runtime user, with no network, secrets or serving role. Its probe MUST check the
 exact version of every generated production dependency, import the entry points
 the service loads, including those of each enabled payment rail, open a
 SQLite database, and report the image's Node.js release, which MUST be the
-release the generated Dockerfile's digest-pinned base image provides. An unset
-entrypoint MUST be accepted whether Docker reports it as absent, `null` or empty. Only a pass may record the image ID and runtime
+release the generated Dockerfile's digest-pinned base image provides. The
+image's configured command, run with no role, MUST load and exit 1 at its
+missing-role check, which reports a reason code that no other service failure
+reports. An unset entrypoint MUST be accepted whether Docker reports it as absent, `null` or empty. Only a pass may record the image ID and runtime
 user, and a new attempt MUST withdraw the previous record first. In a Docker
 deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
 
@@ -271,13 +273,14 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
   directories with the same name never share a project, and nor does a new
   project generated at a path another project was moved from;
 - record the project it starts inside the project directory, with the
-  directory's device and inode;
+  directory's inode but not its file system's device number, which a reboot or
+  remount can change;
 - ignore `COMPOSE_*` environment variables and compose override files, and
   refuse to run while `.env` mentions `COMPOSE_`, while Compose is older than
   v2.10, while the compose project has a container created for another
   project directory, while a project recorded from another directory still
   has containers, or while the compose project has containers and the record
-  does not name this project, path, device and inode (as for a copy put at a
+  does not name this project, path and inode (as for a copy put at a
   path the project was moved from), as the generated `dacs:down` and
   maintenance stops also MUST, and name that project and the recovery; and
 - stop both roles and fail unless compose started and created each from the
