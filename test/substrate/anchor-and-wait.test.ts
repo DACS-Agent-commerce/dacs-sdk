@@ -178,7 +178,6 @@ async function makeAdapter(options?: {
     string,
     { payload: Record<string, unknown>; nonce?: number }
   >();
-  let lastObservedTxRef = "";
 
   raw.connect = vi.fn().mockResolvedValue(undefined);
   raw.getAddress = vi.fn(() => wallet);
@@ -186,6 +185,8 @@ async function makeAdapter(options?: {
     status: "absent",
   });
   raw.getAddressNonce = vi.fn(async () => signedCount);
+  raw.getTransactionHistory = vi.fn(async () => { throw rpcFailure(); });
+  (adapter as any).resolveAnchorByIndex = vi.fn(async () => ({ status: "absent" }));
   raw.storagePrograms.read = vi.fn(async (address: string) => {
     const entry = [...signedPayloads.entries()]
       .reverse()
@@ -225,7 +226,6 @@ async function makeAdapter(options?: {
     .fn()
     .mockResolvedValue({ state: "included", blockNumber: 42 });
   raw.getTxByHash = vi.fn(async (txRef: string) => {
-    lastObservedTxRef = txRef;
     const signed = signedPayloads.get(txRef);
     return {
       hash: txRef,
@@ -250,11 +250,13 @@ async function makeAdapter(options?: {
     status: "confirmed",
     content: {
       timestamp: 120,
-      ordered_transactions: [
-        (adapter as unknown as {
-          activeWriteRecord?: { txRef?: string };
-        }).activeWriteRecord?.txRef ?? lastObservedTxRef,
-      ],
+      ordered_transactions: [...new Set([
+        ...(blockNumber === 42 ? [...signedPayloads.keys()] : []),
+        ...(raw.testHistoryRows ?? []).filter((row: any) => row.blockNumber === blockNumber)
+          .map((row: any) => row.hash).reverse(),
+        ...((adapter as unknown as { activeWriteRecord?: { txRef?: string } })
+          .activeWriteRecord?.txRef ? [(adapter as any).activeWriteRecord.txRef] : []),
+      ])],
     },
     validation_data: { signatures: ["validator-test-signature"] },
   }));
@@ -271,6 +273,15 @@ async function makeAdapter(options?: {
       nonce?: number,
     ) => signedPayloads.set(txRef, { payload, nonce }),
   };
+}
+
+/** History is newest first; the fake block independently exposes execution order. */
+function serveStorageHistory(raw: any, rows: any[]): void {
+  raw.testHistoryRows = rows;
+  raw.getTransactionHistory = vi.fn(async (
+    address: string, _type: string, options: { start: number; limit: number },
+  ) => rows.filter((row) => row.content.to === address)
+    .slice(options.start, options.start + options.limit));
 }
 
 function asAnchorError(error: unknown): AnchorWaitError {
@@ -741,10 +752,14 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).not.toHaveBeenCalled();
   });
 
-  it("distinguishes genuine 404 absence from transient read failures", async () => {
+  it("keeps ordinary 404 and NOT_FOUND reads indeterminate and permits retry", async () => {
     const { adapter, raw } = await makeAdapter();
 
-    await expect(adapter.readAnchor("missing")).resolves.toBeNull();
+    await expect(adapter.readAnchor("missing")).rejects.toBeInstanceOf(SubstrateError);
+    raw.storagePrograms.read.mockResolvedValueOnce({ success: false, errorCode: "NOT_FOUND" });
+    await expect(adapter.readAnchor("missing")).rejects.toBeInstanceOf(SubstrateError);
+    raw.storagePrograms.read.mockResolvedValueOnce({ success: true, data: { recovered: true } });
+    await expect(adapter.readAnchor("missing")).resolves.toEqual({ recovered: true });
     raw.storagePrograms.read.mockRejectedValue(rpcFailure());
     await expect(adapter.readAnchor("uncertain")).rejects.toThrow(
       /read anchor uncertain failed/,
@@ -1244,11 +1259,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       adapter.verifyDemosAnchorReceipt(portableReceipt),
     ).rejects.toBeInstanceOf(SubstrateError);
     const historyTransaction = await raw.getTxByHash(anchored.txRef);
-    raw.getTransactionHistory = vi.fn(async (
-      _owner: string,
-      _type: string,
-      options: { start: number; limit: number },
-    ) => options.start === 0 ? [historyTransaction] : []);
+    serveStorageHistory(raw, [historyTransaction]);
     await expect(
       adapter.verifyDemosWriteEvidence(anchored.demosEvidence!),
     ).resolves.toBe(true);
@@ -1256,11 +1267,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       adapter.verifyDemosAnchorReceipt(portableReceipt),
     ).resolves.toBe(true);
     // History that attributes the value to another create contradicts the proof.
-    raw.getTransactionHistory = vi.fn(async (
-      _owner: string,
-      _type: string,
-      options: { start: number; limit: number },
-    ) => options.start === 0 ? [{ ...historyTransaction, hash: "tx-other-create" }] : []);
+    serveStorageHistory(raw, [{ ...historyTransaction, hash: "tx-other-create" }]);
     await expect(
       adapter.verifyDemosWriteEvidence(anchored.demosEvidence!),
     ).resolves.toBe(false);
@@ -1296,11 +1303,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       programName: name,
       data: value,
     });
-    raw.getTransactionHistory = vi.fn(async (
-      _owner: string,
-      _type: string,
-      options: { start: number; limit: number },
-    ) => options.start === 0 ? [historyTransaction] : []);
+    serveStorageHistory(raw, [historyTransaction]);
     await expect(adapter.resolveDemosAnchorReceipt({
       logicalAddress: name,
       nativeAddress: anchored.address,
@@ -1313,7 +1316,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       state: "finalized",
     });
     expect(raw.getTransactionHistory).toHaveBeenCalledWith(
-      wallet,
+      address,
       "storageProgram",
       { start: 0, limit: 100 },
     );
@@ -1518,7 +1521,7 @@ describe("DemosAdapter.anchorAndWait", () => {
 
   // CORE SR2-5: a mismatch in any available binding makes the receipt invalid.
   // Both verifiers must still refuse when the node read, like node2's, carries
-  // no provenance and the owner's history is served.
+  // no provenance and the native-address history is served.
   it("refuses a receipt for one write that cites another write's transaction", async () => {
     const fixture = await makeAdapter();
     const a = await fixture.adapter.anchorWriteOnce("proof-cross-a", { value: "a" }, {
@@ -1542,11 +1545,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     });
     const txA = await raw.getTxByHash(a.txRef);
     const txB = await raw.getTxByHash(b.txRef);
-    raw.getTransactionHistory = vi.fn(async (
-      _owner: string,
-      _type: string,
-      options: { start: number; limit: number },
-    ) => [txB, txA].slice(options.start, options.start + options.limit));
+    serveStorageHistory(raw, [txB, txA]);
     const proof = JSON.parse(Buffer.from(receiptA.evidence.value, "base64url").toString("utf8"));
     proof.signedTransactionHash = demosSignedTransactionProofHash(txB);
     const forged = {
@@ -1660,8 +1659,8 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   // On a provenance-free (node2-shaped) read, a create proof binds to the
-  // history's single create and an update proof to the latest owner mutation.
-  it("binds create and update proofs to owner history by operation", async () => {
+  // history's single create and an update proof to the latest mutation.
+  it("binds create and update proofs to native-address history by operation", async () => {
     const { adapter, raw, created, updated, receipt } =
       await createThenIdenticalUpdate("proof-history-ops");
     const read = raw.storagePrograms.read.getMockImplementation();
@@ -1673,11 +1672,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     const txCreate = await raw.getTxByHash(created.txRef);
     const txUpdate = await raw.getTxByHash(updated.txRef);
     const serveHistory = (rows: unknown[]) => {
-      raw.getTransactionHistory = vi.fn(async (
-        _owner: string,
-        _type: string,
-        options: { start: number; limit: number },
-      ) => rows.slice(options.start, options.start + options.limit));
+      serveStorageHistory(raw, rows);
     };
     serveHistory([txUpdate, txCreate]);
     // The create stays verified after a later identical-content update.
@@ -1705,7 +1700,7 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   // The history names the address's create only when it holds exactly one.
-  it("binds a create proof only to a single create in owner history", async () => {
+  it("binds a create proof only to a single create in native-address history", async () => {
     const { adapter, raw, created, updated, receipt } =
       await createThenIdenticalUpdate("proof-history-single-create");
     const read = raw.storagePrograms.read.getMockImplementation();
@@ -1718,11 +1713,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     const txUpdate = await raw.getTxByHash(updated.txRef);
     const earlierCreate = { ...txCreate, hash: "tx-earlier-create", blockNumber: 41 };
     for (const rows of [[txUpdate], [txUpdate, txCreate, earlierCreate]]) {
-      raw.getTransactionHistory = vi.fn(async (
-        _owner: string,
-        _type: string,
-        options: { start: number; limit: number },
-      ) => rows.slice(options.start, options.start + options.limit));
+      serveStorageHistory(raw, rows);
       await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!))
         .resolves.toBe(false);
       await expect(adapter.verifyDemosAnchorReceipt(receipt(created.demosEvidence!)))
@@ -1734,7 +1725,7 @@ describe("DemosAdapter.anchorAndWait", () => {
 
   // kynesyslabs/node sets lastModifiedByTx on an ACL change but keeps the
   // value and createdByTx: an update proof is superseded, a create is not,
-  // whether the node serves the members or only the owner history.
+  // whether the node serves the members or only the native-address history.
   it("gives a later ACL change the same verdicts on both provenance paths", async () => {
     const { adapter, raw, created, updated, receipt } =
       await createThenIdenticalUpdate("proof-acl-change");
@@ -1772,11 +1763,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       },
     });
     const serveHistory = (rows: unknown[]) => {
-      raw.getTransactionHistory = vi.fn(async (
-        _owner: string,
-        _type: string,
-        options: { start: number; limit: number },
-      ) => rows.slice(options.start, options.start + options.limit));
+      serveStorageHistory(raw, rows);
     };
     serveHistory([
       later("tx-acl-change", { operation: "UPDATE_ACCESS_CONTROL", acl: { mode: "owner" } }),
@@ -1792,6 +1779,86 @@ describe("DemosAdapter.anchorAndWait", () => {
     ]);
     await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!))
       .rejects.toBeInstanceOf(SubstrateError);
+  });
+
+  it.each([false, true])("refuses an obsolete update after a delegated identical write (served=%s)", async (served) => {
+    const { adapter, raw, created, updated, receipt } =
+      await createThenIdenticalUpdate("proof-delegated-write");
+    const read = raw.storagePrograms.read.getMockImplementation();
+    const txCreate = await raw.getTxByHash(created.txRef);
+    const txUpdate = await raw.getTxByHash(updated.txRef);
+    const delegated = {
+      ...txUpdate, hash: "tx-delegated-write",
+      content: { ...txUpdate.content, from: `0x${"cd".repeat(32)}`, nonce: 0 },
+    };
+    serveStorageHistory(raw, [delegated, txUpdate, txCreate]);
+    // Querying the owner omits this permitted writer. Only the native address
+    // returns every mutation. The delegate's lower nonce must not sort first.
+    const history = raw.getTransactionHistory.getMockImplementation();
+    raw.getTransactionHistory = vi.fn(async (address: string, type: string, options: any) =>
+      address === created.address ? history(address, type, options)
+        : [txUpdate, txCreate].slice(options.start, options.start + options.limit));
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } = await read(address);
+      return served ? { ...rest, createdByTx: created.txRef, lastModifiedByTx: delegated.hash } : rest;
+    });
+    for (const verify of [
+      () => adapter.verifyDemosWriteEvidence(updated.demosEvidence!),
+      () => adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)),
+    ]) await expect(verify()).resolves.toBe(false);
+    await expect(adapter.verifyDemosWriteEvidence(created.demosEvidence!)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt(created.demosEvidence!))).resolves.toBe(true);
+    if (!served) expect(raw.getTransactionHistory).toHaveBeenCalledWith(
+      created.address, "storageProgram", { start: 0, limit: 100 });
+    // Retrying against a recovered current view succeeds; no stale rejection is cached.
+    serveStorageHistory(raw, [txUpdate, txCreate]);
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } = await read(address);
+      return rest;
+    });
+    await expect(adapter.verifyDemosWriteEvidence(updated.demosEvidence!)).resolves.toBe(true);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!))).resolves.toBe(true);
+    raw.getBlockByNumber.mockResolvedValue({ number: 42, hash: "block-42", status: "confirmed",
+      content: { timestamp: 120, ordered_transactions: [updated.txRef] },
+      validation_data: { signatures: ["validator-test-signature"] } });
+    // The history's create has no canonical inclusion: both public paths are indeterminate.
+    await expect(adapter.verifyDemosWriteEvidence(updated.demosEvidence!)).rejects.toBeInstanceOf(SubstrateError);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!))).rejects.toBeInstanceOf(SubstrateError);
+  });
+
+  it("keeps a same-value write arriving during native readback indeterminate", async () => {
+    const { adapter, raw, created, updated, receipt } =
+      await createThenIdenticalUpdate("proof-history-race");
+    const read = raw.storagePrograms.read.getMockImplementation();
+    const txCreate = await raw.getTxByHash(created.txRef);
+    const txUpdate = await raw.getTxByHash(updated.txRef);
+    const delegated = { ...txUpdate, hash: "tx-arriving-delegated-write",
+      content: { ...txUpdate.content, from: `0x${"cd".repeat(32)}`, nonce: 0 } };
+    for (const verify of [
+      () => adapter.verifyDemosWriteEvidence(updated.demosEvidence!),
+      () => adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)),
+    ]) {
+      serveStorageHistory(raw, [txUpdate, txCreate]);
+      let reads = 0;
+      raw.storagePrograms.read = vi.fn(async (address: string) => {
+        const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } = await read(address);
+        if (++reads === 2) serveStorageHistory(raw, [delegated, txUpdate, txCreate]);
+        return rest;
+      });
+      await expect(verify()).rejects.toMatchObject({
+        name: "SubstrateError", message: "Demos receipt history changed during verification",
+      });
+    }
+  });
+
+  it.each(["404", "NOT_FOUND"])("keeps receipt recovery indeterminate on %s and succeeds after recovery", async (failure) => {
+    const { adapter, raw, evidence } = await anchoredProof();
+    const input = { logicalAddress: evidence.logicalName, nativeAddress: evidence.nativeAddress,
+      contentHash: evidence.nativeRead.valueHash, writer: `did:demos:agent:${evidence.writer.replace(/^0x/, "")}` };
+    if (failure === "404") raw.storagePrograms.read.mockRejectedValueOnce(notFound());
+    else raw.storagePrograms.read.mockResolvedValueOnce({ success: false, errorCode: "NOT_FOUND" });
+    await expect(adapter.resolveDemosAnchorReceipt(input)).rejects.toBeInstanceOf(SubstrateError);
+    await expect(adapter.resolveDemosAnchorReceipt(input)).resolves.toMatchObject({ state: "finalized" });
   });
 
   // An off-contract 2xx read that reports no success is unanswered, not a
@@ -1827,11 +1894,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       return rest;
     });
     const tx = await raw.getTxByHash(evidence.transactionRef);
-    raw.getTransactionHistory = vi.fn(async (
-      _owner: string,
-      _type: string,
-      options: { start: number; limit: number },
-    ) => options.start === 0 ? [tx] : []);
+    serveStorageHistory(raw, [tx]);
     for (const verify of [
       () => adapter.verifyDemosAnchorReceipt(receipt),
       () => adapter.verifyDemosWriteEvidence(evidence),
@@ -1842,7 +1905,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     }
   });
 
-  it("refuses a contradicted proof without reading the owner history", async () => {
+  it("refuses a contradicted proof without reading the native-address history", async () => {
     const { adapter, raw, evidence, receipt } = await anchoredProof();
     const read = raw.storagePrograms.read.getMockImplementation();
     raw.storagePrograms.read = vi.fn(async (address: string) => {

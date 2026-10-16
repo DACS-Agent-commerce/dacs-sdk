@@ -1386,18 +1386,12 @@ export class DemosAdapter implements SubstrateAdapter {
     try {
       nativeObservation = await this.#demos.storagePrograms.read(input.nativeAddress);
     } catch (error) {
-      if (httpStatus(error) === 404) return null;
       throw new SubstrateError("Demos receipt native read failed", { cause: error });
     }
     if (!isRecord(nativeObservation)) {
       throw new SubstrateError("Demos receipt native read is malformed");
     }
-    const nativeMarker =
-      `${nativeObservation.errorCode ?? ""} ${nativeObservation.error ?? ""}`.toLowerCase();
     if (nativeObservation.success !== true) {
-      if (nativeMarker.includes("not_found") || nativeMarker.includes("not found")) {
-        return null;
-      }
       throw new SubstrateError("Demos receipt native read is indeterminate");
     }
     if (nativeObservation.storageAddress !== input.nativeAddress ||
@@ -1524,10 +1518,10 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * Older public nodes omit `createdByTx`/`lastModifiedByTx` from otherwise
-   * complete Storage Program reads. Recover the latest owner mutation, and the
-   * one create, from a stable, exhaustively paged owner history; any malformed
-   * row, moving head, unsupported latest operation or post-scan native change
-   * fails closed.
+   * complete Storage Program reads. Recover every writer's latest mutation
+   * and the owner's one create from stable, exhaustively paged native-address
+   * history. Malformed rows, a moving head, unsupported latest operations or a
+   * post-scan native change fail closed.
    */
   private async resolveDemosProvenanceFromHistory(
     nativeAddress: string,
@@ -1537,13 +1531,12 @@ export class DemosAdapter implements SubstrateAdapter {
     if (owner === undefined) {
       throw new SubstrateError("Demos receipt native owner is invalid");
     }
-    const ownerAddress = `0x${owner}`;
     const rows: unknown[] = [];
     let firstHash: string | undefined;
     for (let page = 0; page < RECEIPT_HISTORY_MAX_PAGES; page += 1) {
       const start = page * RECEIPT_HISTORY_PAGE_SIZE;
       const raw = await this.#demos.getTransactionHistory(
-        ownerAddress,
+        nativeAddress,
         "storageProgram",
         { start, limit: RECEIPT_HISTORY_PAGE_SIZE },
       ) as unknown;
@@ -1560,7 +1553,7 @@ export class DemosAdapter implements SubstrateAdapter {
       rows.push(...raw);
       if (raw.length < RECEIPT_HISTORY_PAGE_SIZE) {
         const lookahead = await this.#demos.getTransactionHistory(
-          ownerAddress,
+          nativeAddress,
           "storageProgram",
           { start: start + raw.length, limit: 1 },
         ) as unknown;
@@ -1577,7 +1570,7 @@ export class DemosAdapter implements SubstrateAdapter {
       throw new SubstrateError("Demos receipt native provenance is unavailable");
     }
     const headCheck = await this.#demos.getTransactionHistory(
-      ownerAddress,
+      nativeAddress,
       "storageProgram",
       { start: 0, limit: 1 },
     ) as unknown;
@@ -1589,11 +1582,13 @@ export class DemosAdapter implements SubstrateAdapter {
     const mutations: Array<Readonly<{
       hash: string;
       blockNumber: number;
-      nonce: number;
+      transactionIndex: number;
       operation: string;
       data: unknown;
       metadata: unknown;
     }>> = [];
+    const blocks = new Map<number, readonly string[]>();
+    const seen = new Set<string>();
     for (const [index, raw] of rows.entries()) {
       if (!isRecord(raw) || typeof raw.hash !== "string" || raw.hash.length === 0 ||
           typeof raw.status !== "string") {
@@ -1604,12 +1599,17 @@ export class DemosAdapter implements SubstrateAdapter {
           raw.content.type !== "storageProgram") {
         throw new SubstrateError(`Demos receipt history row ${index} is not canonical`);
       }
-      if (normalizedDemosAddress(raw.content.from) !== owner) continue;
+      const sender = normalizedDemosAddress(raw.content.from);
+      if (sender === undefined) {
+        throw new SubstrateError("Demos receipt history sender is malformed");
+      }
       const tuple = Array.isArray(raw.content.data) ? raw.content.data : [];
       const payload = isRecord(tuple[1]) ? tuple[1] : undefined;
       const touchesNative = raw.content.to === nativeAddress ||
         payload?.storageAddress === nativeAddress;
-      if (!touchesNative) continue;
+      if (!touchesNative) {
+        throw new SubstrateError("Demos receipt history is not scoped to the native address");
+      }
       if (tuple[0] !== "storageProgram" || payload === undefined ||
           raw.content.to !== nativeAddress || payload.storageAddress !== nativeAddress ||
           typeof payload.operation !== "string") {
@@ -1620,19 +1620,45 @@ export class DemosAdapter implements SubstrateAdapter {
       if (blockNumber === undefined || nonce === undefined) {
         throw new SubstrateError("Demos receipt history mutation lacks ordering evidence");
       }
+      if (seen.has(raw.hash) ||
+          (payload.operation === "CREATE_STORAGE_PROGRAM" && sender !== owner)) {
+        throw new SubstrateError("Demos receipt history has inconsistent create or duplicate provenance");
+      }
+      seen.add(raw.hash);
+      let ordered = blocks.get(blockNumber);
+      if (ordered === undefined) {
+        const observation = await this.#demos.getBlockByNumber(blockNumber) as unknown;
+        const block = isRecord(observation) && isRecord(observation.response)
+          ? observation.response : observation;
+        const content = isRecord(block) && isRecord(block.content) ? block.content : undefined;
+        const transactions = content?.ordered_transactions;
+        if (!isRecord(block) || block.status !== "confirmed" || block.number !== blockNumber ||
+            typeof block.hash !== "string" || block.hash.length === 0 ||
+            block.validation_data === undefined || !Array.isArray(transactions) ||
+            transactions.some((hash) => typeof hash !== "string" || hash.length === 0) ||
+            new Set(transactions).size !== transactions.length) {
+          throw new SubstrateError("Demos receipt history lacks canonical block ordering");
+        }
+        ordered = transactions as string[];
+        blocks.set(blockNumber, ordered);
+      }
+      const transactionIndex = ordered.indexOf(raw.hash);
+      if (transactionIndex < 0) {
+        throw new SubstrateError("Demos receipt history mutation is absent from its canonical block");
+      }
       mutations.push({
         hash: raw.hash,
         blockNumber,
-        nonce,
+        transactionIndex,
         operation: payload.operation,
         data: payload.data,
         metadata: payload.metadata,
       });
     }
     mutations.sort((left, right) =>
-      right.blockNumber - left.blockNumber || right.nonce - left.nonce);
+      right.blockNumber - left.blockNumber || right.transactionIndex - left.transactionIndex);
     // `latest` is the history's lastModifiedByTx: kynesyslabs/node sets that
-    // on every owner operation, an ACL change included, so a later ACL change
+    // on every permitted operation, an ACL change included, so a later ACL change
     // supersedes an update proof exactly as a served member does. An ACL
     // change leaves the value alone; the value must come from the newest
     // other mutation, and only a whole-value write can bind it.
@@ -1659,6 +1685,13 @@ export class DemosAdapter implements SubstrateAdapter {
         canonicalize(fresh.data) !== canonicalize(nativeObservation.data) ||
         !sameOptionalJsonObject(fresh.metadata ?? undefined, observedMetadata)) {
       throw new SubstrateError("Demos receipt native value changed during verification");
+    }
+    const finalHead = await this.#demos.getTransactionHistory(
+      nativeAddress, "storageProgram", { start: 0, limit: 1 },
+    ) as unknown;
+    if (!Array.isArray(finalHead) || finalHead.length !== 1 ||
+        !isRecord(finalHead[0]) || finalHead[0].hash !== firstHash) {
+      throw new SubstrateError("Demos receipt history changed during verification");
     }
     const creates = mutations.filter((mutation) =>
       mutation.operation === "CREATE_STORAGE_PROGRAM");
@@ -4023,18 +4056,12 @@ export class DemosAdapter implements SubstrateAdapter {
         errorCode?: string;
       };
       if (res?.success && res.data != null) return res.data;
-      const marker =
-        `${res?.errorCode ?? ""} ${res?.error ?? ""}`.toLowerCase();
-      if (marker.includes("not_found") || marker.includes("not found")) {
-        return null;
-      }
       throw new SubstrateError(
         `read anchor ${address} returned an indeterminate response`,
       );
     } catch (error) {
-      // demosdk/Axios throws on a genuine 404. Every other failure remains
-      // indeterminate so callers never turn a transient RPC fault into absence.
-      if (httpStatus(error) === 404) return null;
+      // The binding defines no authoritative absence response; even a 404
+      // remains indeterminate and retryable.
       if (error instanceof SubstrateError) throw error;
       throw new SubstrateError(`read anchor ${address} failed`, {
         cause: error,

@@ -25,18 +25,20 @@ tests and reviews were checked against.
 | Transport failure | `{ result: 500, response: Error }` | indeterminate |
 | `getTxByHash`, found | `hash`, `status: "confirmed"`, numeric `blockNumber`, `content` object | compared member by member |
 | `getBlockByNumber`, found | `number`, `hash`, `status`, `content.ordered_transactions`, `content.timestamp` in **seconds**, `validation_data.signatures` | compared; a block without `validation_data` is indeterminate |
-| `GET /storage-program/:address`, found | 12 members; **no** `createdByTx`, `lastModifiedByTx` or `interactionTxs` | provenance is recovered from the owner's Storage Program history. Without that history the read is indeterminate, never verified. A node that does serve the write's `createdByTx` (create) or `lastModifiedByTx` (update) is held to it exactly; `interactionTxs` never overrides it. |
-| `getTransactionHistory(owner, "storageProgram", { start, limit })` | HTTP 200 `{ result: 200, response: [rows] }`, newest first, paged by `start`/`limit`. Each row: `hash` (64 hex, no `0x`), `status: "confirmed"`, numeric `blockNumber`, `content.type: "storageProgram"`, `content.from` (owner), `content.to` (`stor-…`), `content.nonce` as a decimal string, `content.data: ["storageProgram", { operation, storageAddress, data, … }]` | a create proof must be the address's single `CREATE_STORAGE_PROGRAM`; an update proof must be its latest owner mutation of any kind, as `lastModifiedByTx` is. The value must equal the newest mutation other than an `UPDATE_ACCESS_CONTROL`, and that one must be a `CREATE_STORAGE_PROGRAM` or `WRITE_STORAGE`. It is read only after every other observation matches. A malformed row, a newer partial edit (`SET_FIELD` and the like) or delete, a head that moves during the scan, more than 100 pages of 100, or a value that changes after the scan is indeterminate. |
+| `GET /storage-program/:address`, found | 12 members; **no** `createdByTx`, `lastModifiedByTx` or `interactionTxs` | provenance is recovered from the native Storage Program address's complete transaction history. Without that history the read is indeterminate, never verified. A node that does serve the write's `createdByTx` (create) or `lastModifiedByTx` (update) is held to it exactly; `interactionTxs` never overrides it. |
+| `getTransactionHistory(nativeAddress, "storageProgram", { start, limit })` | HTTP 200 `{ result: 200, response: [rows] }`, newest first, paged by `start`/`limit`. The address lookup includes transactions sent to the program, including delegated writers. Each row: `hash` (64 hex, no `0x`), `status: "confirmed"`, numeric `blockNumber`, `content.type: "storageProgram"`, `content.from` (owner or ACL-authorized writer), `content.to` (`stor-…`), `content.nonce` as a decimal string, `content.data: ["storageProgram", { operation, storageAddress, data, … }]` | a create proof must be the address's single `CREATE_STORAGE_PROGRAM`; an update proof must be its latest mutation by any permitted writer of any kind, as `lastModifiedByTx` is. The value must equal the newest mutation other than an `UPDATE_ACCESS_CONTROL`, and that one must be a `CREATE_STORAGE_PROGRAM` or `WRITE_STORAGE`. Ordering is authenticated using each confirmed block's `ordered_transactions`; wallet nonces do not order different writers. Create identity remains tied to the program owner. It is read only after every other observation matches. A malformed row, a newer partial edit (`SET_FIELD` and the like) or delete, a head that moves during the scan, more than 100 pages of 100, a row missing from its canonical block, or a value that changes after the scan is indeterminate. |
 
-On both paths an update receipt verifies only until the program's next owner
+On both paths an update receipt verifies only until the program's next permitted
 operation. Node `ac8f45f` (`GCRStorageProgramRoutines.ts`) sets
-`lastModifiedByTx` on every owner operation, so a later write or ACL change
+`lastModifiedByTx` on every permitted operation, so a later write or ACL change
 makes the update receipt invalid. An ACL change keeps the value and
 `createdByTx`, so a create receipt still verifies after one.
 
 `test/substrate/anchor-and-wait.test.ts` replays the recorded not-found reads
 through both verifiers. The history row shape was read from node2 (read-only,
-owner `storageProgram` history) in the same review round. A node release that changes any row above has to be
+owner `storageProgram` history) in the earlier review round. Complete native-address
+lookup and delegated-write semantics are pinned to both reviewed node source
+commits; no live delegated transaction was sent. A node release that changes any row above has to be
 re-recorded and re-pinned here before it is supported. A response outside this
 contract is treated as unanswered: it is indeterminate and never verified.
 
@@ -54,3 +56,11 @@ contract is treated as unanswered: it is indeterminate and never verified.
 
 The SDK constants were compared with these texts. No changed-path mismatch was
 found.
+
+## Signed finality profile
+
+The portable Demos proof emits and accepts only `demos-bft-final`, matching
+DEMOS-MAPPING §A.2 at the pinned Standard revision. The owner confirmed there
+are no legacy users or retained signed proofs requiring the former spelling.
+This is an intentional pre-release format correction; no migration or alias is
+provided. Earlier spellings remain invalid rather than being silently rewritten.
