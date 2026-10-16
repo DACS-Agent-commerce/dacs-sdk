@@ -16,8 +16,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseEnv } from "node:util";
+import { parse as parseYaml } from "yaml";
 import { isMainThread } from "node:worker_threads";
 
 import ts from "typescript";
@@ -85,6 +87,7 @@ interface FakeContainer {
   workingDir?: string;
   // Created by `compose run` rather than as the service.
   oneoff?: boolean;
+  inspection?: Record<string, unknown>;
 }
 
 // The image's Node release, which the Dockerfile's base image pins.
@@ -135,6 +138,7 @@ interface FakeDockerScenario {
   // Another compose creates these while the first compose up runs.
   composeUpAdds?: FakeContainer[];
   containers?: FakeContainer[];
+  inspectChanges?: Record<string, Record<string, unknown>>;
 }
 
 function passingDockerScenario(
@@ -318,14 +322,15 @@ function compose(rest) {
       const Id = "container-" + project + "-" + service;
       const kept = state.filter((container) => container.Id !== Id);
       state.length = 0;
-      state.push(...kept, { Id, Image, project, service, running: true, workingDir: directory });
+      state.push(...kept, { Id, Image, project, service, running: true, workingDir: directory,
+        inspection: scenario.inspection[service] });
     }
     if (once("up-adds")) state.push(...(scenario.composeUpAdds ?? []));
     saveContainers(state);
     if (scenario.composeUpStatus !== undefined) process.exit(scenario.composeUpStatus);
   } else if (subcommand === "stop" && !scenario.stopLeavesRunning) {
     for (const container of state) {
-      if (container.project === project && selected.includes(container.service)) {
+      if (container.project === project && selected.includes(container.service) && !container.oneoff) {
         container.running = false;
       }
     }
@@ -379,10 +384,16 @@ if (args[0] === "image" && args[1] === "inspect" && args[3] === "{{.Id}}") {
   const state = containers();
   process.stdout.write(JSON.stringify(args.slice(2).map((id) => {
     const container = state.find((candidate) => candidate.Id === id);
+    const original = container.inspection ?? {};
+    const changed = scenario.inspectChanges?.[container.service] ?? {};
+    const inspection = { ...original, ...changed,
+      Config: { ...original.Config, ...changed.Config },
+      HostConfig: { ...original.HostConfig, ...changed.HostConfig } };
     return {
+      ...inspection,
       Id: id,
       Image: container.Image,
-      Config: { Labels: {
+      Config: { ...inspection.Config, Labels: {
         "com.docker.compose.project": container.project,
         "com.docker.compose.service": container.service,
         "com.docker.compose.oneoff": container.oneoff ? "True" : "False",
@@ -414,7 +425,7 @@ async function writeFakeExecutable(directory: string, name: string, source: stri
   await chmod(join(directory, name), 0o700);
 }
 
-async function generatedDockerProject(name: string): Promise<string> {
+async function generatedDockerProject(name: string, rails: "both" | "x402" | "pay-dem" = "both"): Promise<string> {
   const parent = await temporaryDirectory();
   const target = join(parent, name);
   await createDacsAgentProject({
@@ -423,14 +434,24 @@ async function generatedDockerProject(name: string): Promise<string> {
     profile: "dacs-sdk:fixed-price-x402:v1",
     role: "buyer",
     deployment: "docker",
-    rails: "both",
+    rails,
     install: false,
   });
   // The README's `cp .env.example .env`, with a fixed compose runtime user.
   const environment = (await readFile(join(target, ".env.example"), "utf8"))
     .replace(/^DACS_RUNTIME_UID=.*$/m, `DACS_RUNTIME_UID=${TEST_ONLY_RUNTIME_UID}`)
     .replace(/^DACS_RUNTIME_GID=.*$/m, `DACS_RUNTIME_GID=${TEST_ONLY_RUNTIME_GID}`);
-  await writeFile(join(target, ".env"), environment, "utf8");
+  const values = parseEnv(environment);
+  const compose = await readFile(join(target, "compose.yaml"), "utf8");
+  let configured = environment;
+  for (const [, name] of compose.matchAll(/\$\{([A-Z0-9_]+):\?[^}]*\}/g)) {
+    if (values[name!] === undefined || values[name!] === "") {
+      const value = join(target, "fixture-" + name!.toLowerCase());
+      configured = configured.replace(new RegExp("^" + name + "=.*$", "m"), name + "=" + value);
+      values[name!] = value;
+    }
+  }
+  await writeFile(join(target, ".env"), configured, "utf8");
   return target;
 }
 
@@ -614,9 +635,32 @@ async function runGeneratedDockerSmoke(
     ) as { dependencies: Record<string, string> };
     await writeProductionTree(appRoot, dependencies, scenario.app);
     await writeFile(containerShim, TEST_ONLY_CONTAINER_SHIM, "utf8");
+    const values = { ...parseEnv(await readFile(join(target, ".env"), "utf8").catch(() => "")), ...options.env };
+    const interpolate = (value: string) => value.replace(/\$\{([A-Z0-9_]+)(?:(:-|:\?)([^}]*))?\}/g,
+      (_match, name, operator, fallback) => values[name] || (operator === ":-" ? fallback : ""));
+    const compose = parseYaml(await readFile(join(target, "compose.yaml"), "utf8"), { merge: true });
+    const inspection = Object.fromEntries(Object.entries(compose.services).map(([role, raw]) => {
+      const service = raw as any;
+      const environment = new Map((Array.isArray(scenario.config.Env) ? scenario.config.Env as string[] : []).map((entry) => {
+        const split = entry.indexOf("=");
+        return [entry.slice(0, split), entry.slice(split + 1)];
+      }));
+      for (const [name, value] of Object.entries(service.environment)) environment.set(name, interpolate(String(value)));
+      return [role, {
+        Config: { User: interpolate(service.user), WorkingDir: "/app", Cmd: GENERATED_SERVICE_COMMAND,
+          Env: [...environment].map(([name, value]) => name + "=" + value), Entrypoint: [] },
+        Mounts: service.volumes.map((volume: string) => {
+          const [source, destination, mode] = interpolate(volume).split(":");
+          return { Type: "bind", Source: resolve(target, source!), Destination: destination, RW: mode !== "ro" };
+        }),
+        HostConfig: { ReadonlyRootfs: service.read_only, Privileged: false,
+          NetworkMode: service.network_mode, CapDrop: service.cap_drop,
+          SecurityOpt: service.security_opt, Tmpfs: { "/tmp": "rw,noexec,nosuid,size=32m" } },
+      }];
+    }));
     await writeFile(
       scenarioPath,
-      JSON.stringify({ ...scenario, appRoot, containerShim }),
+      JSON.stringify({ ...scenario, appRoot, containerShim, inspection }),
       "utf8",
     );
     await writeFakeExecutable(fakeBin, "docker", TEST_ONLY_FAKE_DOCKER_SOURCE);
@@ -656,7 +700,7 @@ async function runGeneratedDockerSmoke(
     composeVariables: string[];
   }[];
   const containers = await readFile(`${dockerLog}.containers.json`, "utf8")
-    .then((source) => JSON.parse(source) as FakeContainer[], () => undefined);
+    .then((source) => (JSON.parse(source) as FakeContainer[]).map(({ inspection: _inspection, ...container }) => container), () => undefined);
   const receipt = await readFile(
     join(target, ".dacs-runtime", "docker-image-smoke.json"),
     "utf8",
@@ -717,6 +761,40 @@ function localImageReferenceOf(environment: string): string {
 }
 
 describe("create-dacs-agent", () => {
+  test.each(["x402", "pay-dem"] as const)("starts the exact generated role policy for %s alone", async (rails) => {
+    const target = await generatedDockerProject(`policy-${rails}-agent`, rails);
+    const smoked = await runGeneratedDockerSmoke(target, passingDockerScenario());
+    expect(smoked.status, smoked.stderr).toBe(0);
+    const started = await runGeneratedDockerSmoke(target, passingDockerScenario(), { args: ["--up"] });
+    expect(started.status, started.stderr).toBe(0);
+    expect(JSON.parse(started.stdout).services).toEqual(["buyer", "seller"]);
+  }, SPAWNING_TEST_TIMEOUT_MS);
+
+  test("rejects malformed public project identities before rendering executable code", () => {
+    for (const projectIdentity of ["", "A".repeat(32), "f".repeat(31), '";throw new Error(); //', "a\nb"]) {
+      expect(() => projectTemplates({ packageName: "agent", mode: "live-demos", deployment: "docker",
+        projectIdentity })).toThrow("projectIdentity must be 32 lower-case hex digits");
+    }
+  });
+
+  test("refuses a changed role secret mount both before smoke and after its receipt", async () => {
+    const target = await generatedDockerProject("mount-policy-agent");
+    expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+    const path = join(target, "compose.yaml");
+    const approved = await readFile(path, "utf8");
+    await writeFile(path, approved.replace(
+      "- ${DACS_SELLER_DEMOS_SECRET_FILE:?set DACS_SELLER_DEMOS_SECRET_FILE}:",
+      "- ${DACS_BUYER_DEMOS_SECRET_FILE:?set DACS_BUYER_DEMOS_SECRET_FILE}:",
+    ));
+    for (const args of [["--up"], []]) {
+      const refused = await runGeneratedDockerSmoke(target, passingDockerScenario(), { args });
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr).toContain("compose.yaml differs from the generated role policy");
+      expect(refused.invocations.filter(isComposeInvocation)).toEqual([]);
+      expect(refused.containers).toBeUndefined();
+    }
+  });
+
   test("builds publishable files from source during pack and publish", async () => {
     const packageSource = JSON.parse(
       await readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -1458,6 +1536,8 @@ process.exit(1);
         imageId: TEST_ONLY_FAKE_IMAGE_ID,
         user,
         command: GENERATED_SERVICE_COMMAND,
+        composeHash: createHash("sha256").update(await readFile(join(target, "compose.yaml"), "utf8")).digest("hex"),
+        imageEnvironment: passingDockerScenario().config.Env,
       });
       // Only the project's owner can read the record or its directory.
       const receiptDirectory = join(target, ".dacs-runtime");
@@ -1714,6 +1794,15 @@ process.exit(1);
         workingDir: await realpath(target),
       };
       const refused: [Partial<FakeDockerScenario>, string][] = [
+        [{ inspectChanges: { seller: { Mounts: [] } } }, "seller container mounts differ"],
+        [{ inspectChanges: { seller: { Config: { User: "0:0", Env: [] } } } }, "seller container environment"],
+        ...[
+          { Privileged: true }, { ReadonlyRootfs: false }, { NetworkMode: "bridge" },
+          { CapDrop: [] }, { CapAdd: ["SYS_ADMIN"] }, { SecurityOpt: [] },
+          { PidMode: "host" }, { Devices: [{ PathOnHost: "/dev/test" }] },
+          { Tmpfs: { "/tmp": "rw,exec" } },
+        ].map((HostConfig) => [{ inspectChanges: { seller: { HostConfig } } },
+          "seller container security"] as [Partial<FakeDockerScenario>, string]),
         [{ composeCreatesImage: TEST_ONLY_REPLACEMENT_IMAGE_ID },
           `the buyer container runs ${TEST_ONLY_REPLACEMENT_IMAGE_ID}`],
         [{ composeSkips: ["seller"] }, "compose created 0 seller containers"],
@@ -1810,7 +1899,8 @@ process.exit(1);
         .toEqual(["up"]);
       expect(raced.containers?.find(({ Id }) => Id === late.Id)?.running).toBe(true);
     },
-    SPAWNING_TEST_TIMEOUT_MS,
+    // Each independent container-policy vector starts and checks real Node children.
+    SPAWNING_TEST_TIMEOUT_MS * 2,
   );
 
   test.runIf(process.platform !== "win32")(
@@ -1831,7 +1921,8 @@ process.exit(1);
           env,
         });
         expect(result.status, args.join(" ")).toBe(0);
-        expect(result.invocations).toEqual([...checks, [...prefix, ...compose]]);
+        expect(result.invocations).toEqual([...checks, [...prefix, ...compose],
+          ...(args[0] === "--stop" ? [checks[1]] : [])]);
         expect(result.composeEnvironments[0]).toMatchObject({
           COMPOSE_PROJECT_NAME: await generatedProjectName(target),
           composeVariables: ["COMPOSE_PROJECT_NAME"],

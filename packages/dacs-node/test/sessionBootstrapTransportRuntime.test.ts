@@ -63,6 +63,7 @@ const roots: string[] = [];
 const databases: DacsNodeSqliteDatabase[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const database of databases.splice(0)) database.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -323,11 +324,144 @@ async function fixture() {
     admitInit,
   });
   return { buyerKeys, sellerKeys, buyer, seller, pair, buyerDatabase, sellerDatabase,
-    buyerRuntime, sellerRuntime, buyerOperation: operation(loadedBuyer.record),
+    buyerRuntime, sellerRuntime, buyerContext, sellerContext, root, buyerOperation: operation(loadedBuyer.record),
     sellerStore, startOrder, admitInit, buyerEvmPrivateKey };
 }
 
+async function presentationFixture() {
+  const value = await fixture();
+  const init = { bootstrapVersion: "1" as const, order: value.pair.buyer,
+    application: APPLICATION, sellerChallenge: "c".repeat(64) };
+  await value.buyerRuntime.publishInit(value.buyerOperation, init);
+  const inbound = { role: "seller", coordinator: { startOrder: value.startOrder } } as never;
+  await value.sellerRuntime.handleMessage(await authenticated("session-init", init, {
+    sender: value.buyer, audience: value.seller, privateKey: value.buyerKeys.privateKey,
+    role: "buyer", nonceByte: 61,
+  }), inbound);
+  const loaded = await value.sellerStore.load("seller", JOB_ID);
+  if (loaded.status !== "ok") throw new Error("seller fixture missing");
+  const sellerOperation = operation(loaded.record);
+  const challenge = { bootstrapVersion: "1" as const, initPayloadHash: dacsHttpPayloadHashV1(init),
+    sellerChallenge: init.sellerChallenge, buyerChallenge: "d".repeat(64),
+    sellerIdentity: sessionIdentity(value.seller, value.sellerKeys.privateKey, init.sellerChallenge) };
+  await value.sellerRuntime.publishChallenge(sellerOperation, challenge);
+  const challengeEnvelope = await authenticated("session-challenge", challenge, {
+    sender: value.seller, audience: value.buyer, privateKey: value.sellerKeys.privateKey,
+    role: "seller", nonceByte: 62,
+  });
+  const presentation = { bootstrapVersion: "1" as const, challengePayloadHash: dacsHttpPayloadHashV1(challenge),
+    buyerChallenge: challenge.buyerChallenge,
+    buyerIdentity: await buyerSessionIdentity(value.buyer, value.buyerKeys.privateKey,
+      challenge.buyerChallenge, value.buyerEvmPrivateKey) };
+  const presentationEnvelope = (payload = presentation, nonceByte = 63) => authenticated("session-presentation", payload, {
+    sender: value.buyer, audience: value.seller, privateKey: value.buyerKeys.privateKey,
+    role: "buyer", nonceByte,
+  });
+  return { ...value, init, challenge, challengeEnvelope, presentation, presentationEnvelope, sellerOperation, inbound };
+}
+
 describe("pre-agreement session bootstrap transport", () => {
+  it.each((["buyer", "seller"] as const).flatMap((role) =>
+    (["shape", "signature", "binding", "nonce-binding"] as const).map((fault) => ({ role, fault })),
+  ))("$role consumes a $fault attempt before validation and retains it on restart", async ({ role, fault }) => {
+    const value = await presentationFixture();
+    const runtime = role === "buyer" ? value.buyerRuntime : value.sellerRuntime;
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    const identityKey = role === "buyer" ? "sellerIdentity" : "buyerIdentity";
+    const payload = structuredClone(envelope.envelope.payload) as unknown as Record<string, any>;
+    if (fault === "shape") payload[identityKey] = null;
+    else if (fault === "signature") {
+      const signature = payload[identityKey].presentation.signatures[0];
+      signature.signature = (signature.signature.startsWith("A") ? "B" : "A") + signature.signature.slice(1);
+    } else if (fault === "binding") payload[role === "buyer" ? "initPayloadHash" : "challengePayloadHash"] = "0".repeat(64);
+    else payload[role === "buyer" ? "sellerChallenge" : "buyerChallenge"] = "0".repeat(64);
+    const invalid = await authenticated(envelope.envelope.type as "session-challenge", payload as never, {
+      sender: envelope.envelope.sender, audience: envelope.envelope.audience,
+      privateKey: role === "buyer" ? value.sellerKeys.privateKey : value.buyerKeys.privateKey,
+      role: role === "buyer" ? "seller" : "buyer", nonceByte: 64,
+    });
+    expect(await runtime.validatePayload({ type: invalid.envelope.type as "session-challenge",
+      payload: invalid.envelope.payload, jobId: JOB_ID, sender: invalid.envelope.sender,
+      audience: invalid.envelope.audience })).toEqual({ status: "valid" });
+    await expect(runtime.handleMessage(invalid, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+    const old = role === "buyer" ? value.buyerDatabase : value.sellerDatabase;
+    old.close();
+    databases.splice(databases.indexOf(old), 1);
+    const reopened = await openDacsNodeSqliteDatabase({ databasePath: join(value.root, `${role}.sqlite`),
+      mode: "live-demos", profile: DACS_NODE_LIVE_PROFILE, role, authority: value[role] });
+    databases.push(reopened);
+    const restarted = role === "buyer"
+      ? createDacsBuyerSessionBootstrapTransportRuntimeV1({ role, database: reopened } as never)
+      : createDacsSellerSessionBootstrapTransportRuntimeV1({ context: { role, database: reopened } as never,
+        admitInit: value.admitInit });
+    await expect(restarted.handleMessage(envelope, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+    await expect(restarted.handleMessage(invalid, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+  });
+
+  it.each(["buyer", "seller"] as const)("%s rejects an expired pending challenge without extending its deadline on retry", async (role) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_900_000_000_000);
+    const value = await presentationFixture();
+    clock.mockReturnValue(1_900_000_300_000);
+    // Republishing the local verifier's message must not refresh issuance.
+    if (role === "buyer") await value.buyerRuntime.publishInit(value.buyerOperation, value.init);
+    else await value.sellerRuntime.publishChallenge(value.sellerOperation, value.challenge);
+    const runtime = role === "buyer" ? value.buyerRuntime : value.sellerRuntime;
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+  });
+
+  it("deduplicates accepted delivery but rejects fresh and re-signed presentation attempts", async () => {
+    const value = await presentationFixture();
+    const accepted = await value.presentationEnvelope();
+    await expect(value.sellerRuntime.handleMessage(accepted, value.inbound)).resolves.toEqual({ disposition: "accepted" });
+    await expect(value.sellerRuntime.handleMessage(accepted, value.inbound)).resolves.toEqual({ disposition: "accepted" });
+    await expect(value.sellerRuntime.handleMessage(await value.presentationEnvelope(value.presentation, 65), value.inbound))
+      .resolves.toMatchObject({ disposition: "rejected" });
+    const identity = { ...structuredClone(value.presentation.buyerIdentity),
+      presentedAt: value.presentation.buyerIdentity.presentedAt + 1 };
+    if (identity.presentation.kind !== "per-claim") throw new Error();
+    const bytes = signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(identity));
+    identity.presentation.signatures[0]!.signature = sign(null, bytes, value.buyerKeys.privateKey).toString("base64url");
+    identity.presentation.signatures[1]!.signature = await privateKeyToAccount(value.buyerEvmPrivateKey)
+      .signMessage({ message: { raw: bytes } });
+    await expect(value.sellerRuntime.handleMessage(await value.presentationEnvelope({
+      ...value.presentation, buyerIdentity: identity,
+    }, 66), value.inbound)).resolves.toMatchObject({ disposition: "rejected" });
+  });
+
+  it("rejects issuance of the same challenge to the other presenter", async () => {
+    const value = await presentationFixture();
+    await expect(value.sellerRuntime.publishChallenge(value.sellerOperation, {
+      ...value.challenge, buyerChallenge: value.init.sellerChallenge,
+    })).rejects.toMatchObject({ reasonCode: "session-challenge-binding-mismatch" });
+  });
+
+  it("atomically admits at most one of two concurrent presentation attempts", async () => {
+    const value = await presentationFixture();
+    const [first, second] = await Promise.all([
+      value.presentationEnvelope(value.presentation, 68), value.presentationEnvelope(value.presentation, 69),
+    ]);
+    const results = await Promise.all([value.sellerRuntime.handleMessage(first, value.inbound),
+      value.sellerRuntime.handleMessage(second, value.inbound)]);
+    expect(results.filter((result) => result.disposition === "accepted")).toHaveLength(1);
+    expect(results.filter((result) => result.disposition === "rejected")).toHaveLength(1);
+  });
+
+  it("binds issuance to the job and presenter, and does not consume another nonce", async () => {
+    const value = await presentationFixture();
+    const valid = await value.presentationEnvelope();
+    for (const patch of [{ jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E" }, { sender: value.seller }]) {
+      await expect(value.sellerRuntime.handleMessage({ ...valid, envelope: {
+        ...valid.envelope, ...patch,
+      } } as never, value.inbound)).resolves.toMatchObject({ disposition: "rejected" });
+    }
+    await expect(value.sellerRuntime.handleMessage(await value.presentationEnvelope({
+      ...value.presentation, buyerChallenge: "e".repeat(64),
+      buyerIdentity: { ...value.presentation.buyerIdentity, sessionNonce: "e".repeat(64) },
+    }, 67), value.inbound)).resolves.toMatchObject({ disposition: "rejected" });
+    await expect(value.sellerRuntime.handleMessage(valid, value.inbound)).resolves.toEqual({ disposition: "accepted" });
+  });
+
   it("retains an authenticated, replay-safe linked transcript across both role stores", async () => {
     const value = await fixture();
     const sellerChallenge = "5".repeat(64);
@@ -395,34 +529,6 @@ describe("pre-agreement session bootstrap transport", () => {
     });
     await expect(value.buyerRuntime.publishPresentation(value.buyerOperation, presentation))
       .resolves.toBe("acknowledged");
-    const forgedBuyerIdentity = structuredClone(presentation.buyerIdentity);
-    if (forgedBuyerIdentity.presentation.kind !== "per-claim") throw new Error();
-    const evmProof = forgedBuyerIdentity.presentation.signatures[1]!;
-    evmProof.signature = `${evmProof.signature.slice(0, -1)}${
-      evmProof.signature.endsWith("0") ? "1" : "0"
-    }`;
-    const forgedPresentation = Object.freeze({
-      ...presentation,
-      buyerIdentity: forgedBuyerIdentity,
-    });
-    const forgedPresentationEnvelope = await authenticated(
-      "session-presentation",
-      forgedPresentation,
-      {
-        sender: value.buyer,
-        audience: value.seller,
-        privateKey: value.buyerKeys.privateKey,
-        role: "buyer",
-        nonceByte: 30,
-      },
-    );
-    await expect(value.sellerRuntime.handleMessage(
-      forgedPresentationEnvelope,
-      sellerInbound,
-    )).resolves.toEqual({
-      disposition: "rejected",
-      reasonCode: "session-message-binding-invalid",
-    });
     const presentationEnvelope = await authenticated("session-presentation", presentation, {
       sender: value.buyer,
       audience: value.seller,
@@ -503,7 +609,7 @@ describe("pre-agreement session bootstrap transport", () => {
     expect(value.buyerRuntime.resolveAdmission(value.buyerOperation)).toEqual(admission);
   });
 
-  it("runs a native DEM transcript with Demos-only buyer identity", async () => {
+  it.each([false, true])("runs native DEM identity admission with a prior incompatible attempt: %s", async (firstInvalid) => {
     const buyerKeys = generateKeyPairSync("ed25519");
     const sellerKeys = generateKeyPairSync("ed25519");
     const buyer = demosAgentClaimRef(rawPublicKey(buyerKeys.publicKey));
@@ -625,7 +731,7 @@ describe("pre-agreement session bootstrap transport", () => {
       buyerChallenge,
       buyerIdentity: x402Identity,
     });
-    await expect(sellerRuntime.handleMessage(await authenticated(
+    if (firstInvalid) await expect(sellerRuntime.handleMessage(await authenticated(
       "session-presentation",
       wrongPresentation,
       {
@@ -655,8 +761,9 @@ describe("pre-agreement session bootstrap transport", () => {
         role: "buyer",
         nonceByte: 43,
       },
-    ), { role: "seller" } as never)).resolves.toEqual({ disposition: "accepted" });
-    expect(sellerRuntime.resolvePresentation(sellerOperation)).toEqual(presentation);
+    ), { role: "seller" } as never)).resolves.toEqual(firstInvalid ? { disposition: "rejected",
+      reasonCode: "session-message-binding-invalid" } : { disposition: "accepted" });
+    expect(sellerRuntime.resolvePresentation(sellerOperation)).toEqual(firstInvalid ? undefined : presentation);
   });
 
   it("fails closed on pre-admission shape errors and transcript substitution", async () => {

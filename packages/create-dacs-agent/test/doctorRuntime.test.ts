@@ -101,3 +101,28 @@ test.runIf(process.platform !== "win32")("doctor blocks failed or timed out tool
   expect(local.report.status).toBe("pass");
   expect(local.calls).toEqual([]);
 }, 15_000);
+
+
+test("facilitator preflight requires v2 exact capabilities for the configured network", () => {
+  const source = projectTemplates({ packageName: "agent", mode: "live-demos", role: "buyer",
+    deployment: "docker", rails: "x402" })["src/doctor.ts"]!;
+  const parsed = ts.createSourceFile("doctor.ts", source, ts.ScriptTarget.ES2022, true);
+  const declaration = parsed.statements.find((statement) => ts.isFunctionDeclaration(statement) &&
+    statement.name?.text === "x402CapabilityMatches");
+  expect(declaration).toBeDefined();
+  const js = ts.transpileModule(declaration!.getText(parsed), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+  }).outputText;
+  const matches = new Function(js + "; return x402CapabilityMatches;")() as
+    (supported: unknown, network: string) => boolean;
+  const expected = { x402Version: 2, scheme: "exact", network: "eip155:84532" };
+  for (const supported of [null, {}, { kinds: [] }, { kinds: [null] },
+    { kinds: [{ ...expected, x402Version: 1 }] },
+    { kinds: [{ ...expected, scheme: "upto" }] },
+    { kinds: [{ ...expected, network: "eip155:1" }] }]) {
+    expect(matches(supported, expected.network), JSON.stringify(supported)).toBe(false);
+  }
+  expect(matches({ kinds: [expected] }, expected.network)).toBe(true);
+  expect(matches({ kinds: [{ ...expected, network: "eip155:1" }, expected] }, expected.network)).toBe(true);
+  expect(source).toContain('x402CapabilityMatches(supported, "eip155:" + actors.buyer.evmIdentity.chainId)');
+});
