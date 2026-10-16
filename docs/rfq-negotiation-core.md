@@ -102,8 +102,14 @@ is added to a role-local outbox in the same compare-and-swap transition as its
 new local state, before transport publication.
 
 The injected store MUST authenticate persisted bytes and isolate role
-authority. The injected transport returns `acknowledged` only after the exact
-packet is durably accepted by the confidential member transport. If publish is
+authority. Its compare-and-swap MUST refuse any write that
+`durableRfqLifecycleTransitionViolation()` refuses. That gate is append-only
+and monotonic, with one exception: a buyer's unfinalized agreement
+contribution may be replaced, not only appended, when the same write adds an
+`agreement-proposal` outbox entry that carries exactly the stored plan and
+the new contribution (below). The injected transport returns `acknowledged`
+only after the exact packet is durably accepted by the confidential member
+transport. If publish is
 ambiguous, `resumeOutbox()` reconciles the original packet ID and bytes; it may
 redrive only an authenticated `absent` result. A permanent transport rejection
 or trusted-clock timeout is retained as a terminal lifecycle failure.
@@ -126,8 +132,20 @@ contribution `timeoutMs` after the buyer generated the proposal's plan. Once
 the step a member waits on is overdue, `sendAbort()`, any other send call, or
 `startAgreement()` answers `rejected` with "RFQ agreement timeout elapsed
 (RFQ-4)" and stores the `timeout` failure; the session stays `accepted` and
-nothing is signed or published. A proposal the seller receives after its
-deadline records the timeout before the seller signs anything. A contribution
+nothing is signed or published. `startAgreement()` reads the trusted clock
+once, after verifying any stored contribution, and uses that one reading both
+for the deadline and as the new plan's `generatedAt`; if the clock fails it
+answers `indeterminate` and signs nothing. A send call on the member's own
+overdue turn records the timeout before the channel signer is called. A
+proposal the seller receives after its deadline, or whose plan the buyer dated
+after it, records the timeout before the seller signs anything.
+
+A record accepted by an SDK before this rule kept the last proposal's time in
+`awaitingSince`. The member that sent the accept counts its window from that
+accept's `sentAt`, its own trusted clock, so its window is unchanged. The
+member that received the accept has no stored receipt time, so its window
+runs from the last proposal and may end up to one `timeoutMs` early: finish an
+in-flight agreement exchange before upgrading. A contribution
 the buyer receives late still finalizes while the buyer has recorded no
 timeout, because the seller finalized when it sent it; after the buyer has
 recorded one, it is refused, and the two records disagree, as any timeout
@@ -256,13 +274,30 @@ SR-4 channel. It does not provide:
   authenticated binding of that member to the messaging key it registers.
   `resolveMember(channelId, subnetMemberId, rpcUrl)` maps a subnet member ID
   to a claim, not to a messaging key, so the second binding is the host's.
-  Never fill either callback from an unauthenticated directory.
+  Those demosdk helpers accept only `demos:` claims: `createMembershipBinding`
+  refuses any other ClaimReference scheme and `verifyMembershipBinding`
+  answers false for one. A member whose primary claim uses another DACS-1
+  scheme needs a host binding profile for that scheme; until the host has
+  one, it cannot bind that member and MUST NOT start the transport for it.
+  Never fill either callback from an unauthenticated directory. The
+  transport checks only that the two callbacks agree, so a reciprocal pair
+  of wrong answers routes the RFQ to the wrong messaging key.
 - the §8.3.4 member acknowledgement. An acknowledgement here is the node's
   statement that it stored the frame (below), not a receipt from the other
   member. The member waiting on a reply detects a silent or censored channel
   through the RFQ-4 timeout instead, during the turns and during the
   agreement exchange: once it has elapsed, `sendAbort()` records the timeout
-  as the job's terminal failure (above).
+  as the job's terminal failure (above). A terminal reject or abort expects
+  no reply, so its receipt by the other member is never confirmed: that
+  member ends in its own RFQ-4 timeout instead. Treat an `acknowledged`
+  outbox entry as "stored by the node", never as delivery; any SR-4 delivery
+  or quorum claim needs a host phase handler that collects member receipts.
+- detection of contradictory views from different sources (§8.3.4), such as
+  an operator that shows each member a different history. The agreement
+  catches a split only at agreement time: the seller re-derives the plan,
+  whose transcript hook is the hash of its own last accepted turn, and
+  refuses a buyer plan that differs, so no Agreement is made and the job ends
+  in the timeout. Nothing records the fork itself as evidence.
 - a normative channel-signature profile. Signing and verification stay with
   the lifecycle's callbacks until DACS-Standard#349 settles the framing.
 
@@ -585,6 +620,12 @@ The limits of this evidence:
   and `974b1abe8ad57d3eecc0f91c489b0491a44f31ae36b6e54da4e231343b75d0f2`, as
   in 4.0.16 through 4.0.18. The SDK's own tests check those two hashes
   against the locked demosdk.
+  A node that reports `dirty: true`, or another commit, fails that check even
+  when the commit matches: its storage, dedup and history behaviour is not
+  the reviewed source. Run these checks in the consuming host at startup,
+  not only in this repository's tests; the transport performs neither.
+  Against a node that fails them, the absence-then-resend evidence above
+  does not hold.
   The duplicate handling above keys on the node's exact "Duplicate message"
   text.
 
