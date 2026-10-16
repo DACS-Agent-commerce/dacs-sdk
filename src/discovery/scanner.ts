@@ -26,6 +26,7 @@
 import {
   decodeAddressSegment,
   encodeAddressSegment,
+  isCanonicalAddressSegmentValue,
 } from "../canonical/addressing.js";
 import { describeError } from "./describeError.js";
 
@@ -52,12 +53,14 @@ export type AnchorKind =
  * encoder produces for its decoded value: the reserved delimiters are escaped
  * with uppercase hex, nothing else is escaped, and the value is non-empty,
  * NFC-normalized text without whitespace, control characters or lone surrogates.
+ * Check NFC before encoding: a delimiter escape's final hex letter can compose
+ * with a following combining mark even when the decoded value is already NFC.
  */
 function isCanonicalVariableSegment(segment: string): boolean {
+  const value = decodeAddressSegment(segment);
   return (
-    /^[^\s\p{Cc}\p{Cs}]+$/u.test(segment) &&
-    segment.normalize("NFC") === segment &&
-    encodeAddressSegment(decodeAddressSegment(segment)) === segment
+    isCanonicalAddressSegmentValue(value) &&
+    encodeAddressSegment(value) === segment
   );
 }
 

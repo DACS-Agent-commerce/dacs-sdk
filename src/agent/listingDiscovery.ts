@@ -19,6 +19,7 @@ import { normalizedBindingOwner } from "../discovery/owner.js";
 import {
   scanAnchorPage,
   type AnchorHistoryPageFetcher,
+  type ScanPageCode,
 } from "../discovery/scanner.js";
 import { parseCanonicalClaimReference } from "../identity/claimReference.js";
 import { DEMOS_HISTORY_MAX_PAGE_SIZE } from "../substrate/demosHistory.js";
@@ -785,11 +786,23 @@ export type ListingEnumerationResult =
       reason: string;
     }
   | {
+      /** Permanent history fault: alert or repair the source before starting again. */
+      status: "history-error";
+      stage: "history";
+      code: Exclude<ScanPageCode, "history-restart-required">;
+      listings: readonly [];
+      diagnostics: readonly [];
+      reason: string;
+      cursor: string | null;
+    }
+  | {
       status: "indeterminate";
       stage: "history" | "index" | "read" | "verification" | "validation";
       listings: readonly [];
       diagnostics: readonly [];
       reason: string;
+      /** Present when the history traversal must restart from null. */
+      code?: "history-restart-required";
       retryCursor: string | null;
     };
 
@@ -892,12 +905,24 @@ export async function enumerateListingsForSeller(
       : { limit: historyPageSize }),
   });
   if (scan.status === "indeterminate") {
+    if (scan.code !== undefined && scan.code !== "history-restart-required") {
+      return {
+        status: "history-error",
+        stage: "history",
+        code: scan.code,
+        listings: [],
+        diagnostics: [],
+        reason: scan.reason,
+        cursor,
+      };
+    }
     return {
       status: "indeterminate",
       stage: "history",
       listings: [],
       diagnostics: [],
       reason: scan.reason,
+      ...(scan.code === undefined ? {} : { code: scan.code }),
       // A cursor the fetcher can no longer resume never succeeds on retry.
       retryCursor: scan.code === "history-restart-required" ? null : cursor,
     };

@@ -68,13 +68,17 @@ function requireStructuralSegment(value: string, label: string): void {
   }
 }
 
-// The same text rule as the scanner's CF-4 variable-segment check.
+/** Shared CF-4 text rule, applied to the raw (decoded) variable-segment value. */
+export function isCanonicalAddressSegmentValue(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.normalize("NFC") === value &&
+    !/[\s\p{Cc}\p{Cs}]/u.test(value)
+  );
+}
+
 function requireVariableSegment(value: string, label: string): void {
-  if (
-    value.length === 0 ||
-    value.normalize("NFC") !== value ||
-    /[\s\p{Cc}\p{Cs}]/u.test(value)
-  ) {
+  if (!isCanonicalAddressSegmentValue(value)) {
     throw new DacsError(`${label} must be non-empty canonical text`);
   }
 }

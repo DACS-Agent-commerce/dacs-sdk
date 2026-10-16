@@ -397,6 +397,25 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     });
   });
 
+  test("restarting a separate fetcher does not clear an active traversal's conflict memory", async () => {
+    const rows = [
+      row({ hash: "tx-first", nativeAddress: NATIVE_1, logicalAddress: "dacs1:s:before:v1" }),
+      row({ hash: "tx-other", nativeAddress: NATIVE_1, logicalAddress: "dacs1:s:after:v1" }),
+    ];
+    const client = clientWith(async (_owner, _type, { start, limit }) => rows.slice(start, start + limit));
+    const active = createDemosHistoryPageFetcher(client, OWNER);
+    const independent = createDemosHistoryPageFetcher(client, OWNER);
+    const first = await active(null, 1);
+    await independent(null, 1);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(scanAnchorPage(active, first.nextCursor, { limit: 1 })).resolves.toMatchObject({
+        status: "indeterminate",
+        code: "metadata-conflict",
+        cursor: first.nextCursor,
+      });
+    }
+  });
+
   test("failed, updated, foreign-owner, and legacy records advance but emit nothing", async () => {
     const client = clientWith(async () => [
       row({ hash: "failed", status: "failed" }),

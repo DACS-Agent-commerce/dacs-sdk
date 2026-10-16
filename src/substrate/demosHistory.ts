@@ -248,6 +248,9 @@ async function fetchRows(
  *
  * Conflicting logical metadata for one native address is remembered from the
  * first page (null cursor) of a traversal, so a new traversal starts clean.
+ * Use a separate fetcher instance for each concurrent traversal: a null-cursor
+ * call resets this instance's metadata memory. Callers sharing an instance must
+ * retain their own traversal-specific logical metadata in the scanner.
  *
  * Only confirmed CREATE_STORAGE_PROGRAM transactions carrying explicit logical
  * metadata are candidates. Program names are deliberately ignored: DACS makes

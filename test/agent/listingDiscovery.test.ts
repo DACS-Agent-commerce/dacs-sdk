@@ -30,6 +30,7 @@ import {
   type AnchorBinding,
   type BindingIndex,
 } from "../../src/discovery/index.js";
+import { createDemosHistoryPageFetcher } from "../../src/substrate/demosHistory.js";
 
 const seller = (seedByte: number) => {
   const seed = Uint8Array.from(Buffer.alloc(32, seedByte));
@@ -873,6 +874,81 @@ describe("enumerateListingsForSeller (#54)", () => {
     });
   });
 
+  test.each([
+    {
+      code: "metadata-conflict",
+      entries: [
+        { nativeAddress: "stor-shared", logicalAddress: "dacs1:x:first:v1" },
+        { nativeAddress: "stor-shared", logicalAddress: "dacs1:x:other:v1" },
+      ],
+      nextCursor: "next",
+      limit: 2,
+    },
+    { code: "cursor-cycle", entries: [], nextCursor: "failing-cursor", limit: 2 },
+    {
+      code: "page-limit-exceeded",
+      entries: [{ nativeAddress: "stor-first" }, { nativeAddress: "stor-second" }],
+      nextCursor: "next",
+      limit: 1,
+    },
+  ])("reports $code as a terminal history fault without a retry cursor", async ({ code, entries, nextCursor, limit }) => {
+    const resolve = vi.fn();
+    const readAnchor = vi.fn();
+    const result = await enumerateListingsForSeller(SELLER.did, depsFor([], {
+      index: { resolve },
+      readAnchor,
+      createHistoryPageFetcher: () => async () => ({ entries, nextCursor }),
+    }), { cursor: "failing-cursor", historyPageSize: limit });
+    expect(result).toEqual({
+      status: "history-error",
+      stage: "history",
+      code,
+      reason: expect.any(String),
+      listings: [],
+      diagnostics: [],
+      cursor: "failing-cursor",
+    });
+    expect("retryCursor" in result).toBe(false);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(readAnchor).not.toHaveBeenCalled();
+  });
+
+  test("conflicting camelCase and snake_case Demos metadata is a terminal enumeration fault", async () => {
+    const nativeAddress = `stor-${"1".repeat(40)}`;
+    const result = await enumerateListingsForSeller(SELLER.did, depsFor([], {
+      createHistoryPageFetcher: (owner) => createDemosHistoryPageFetcher({
+        getTransactionHistory: async () => [{
+          hash: "tx-conflict",
+          status: "confirmed",
+          blockNumber: 42,
+          content: {
+            timestamp: 1,
+            type: "storageProgram",
+            from: owner,
+            to: nativeAddress,
+            data: ["storageProgram", {
+              operation: "CREATE_STORAGE_PROGRAM",
+              storageAddress: nativeAddress,
+              metadata: {
+                logicalAddress: listingAddress(SELLER.did, "first", 1),
+                logical_address: listingAddress(SELLER.did, "other", 1),
+              },
+            }],
+          },
+        }],
+      }, owner),
+    }), { historyPageSize: 1 });
+    expect(result).toStrictEqual({
+      status: "history-error",
+      stage: "history",
+      code: "metadata-conflict",
+      reason: "page fetch failed: Demos history row 0 has conflicting logical metadata",
+      listings: [],
+      diagnostics: [],
+      cursor: null,
+    });
+  });
+
   test("history and mid-page index/read uncertainty are atomic and retry the input cursor", async () => {
     const first = await listingFixture({ serviceId: "first" });
     const second = await listingFixture({ serviceId: "second" });
@@ -918,6 +994,7 @@ describe("enumerateListingsForSeller (#54)", () => {
       stage: "history",
       listings: [],
       retryCursor: null,
+      code: "history-restart-required",
     });
 
     const baseIndex = createInMemoryBindingIndex([first.binding, second.binding]);

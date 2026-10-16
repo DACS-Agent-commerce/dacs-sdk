@@ -101,4 +101,21 @@ describe("CF-4 logical addressing (§6.3.4)", () => {
     expect(address).toBe("dacs5:rating:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did%3Aweb%3A😀.example");
     expect(classifyAnchor(address)).toBe("rating");
   });
+
+  // CF-2 normalization precedes CF-4 delimiter encoding.
+  test.each([
+    ["colon + combining acute", "did:web:\u0301x"],
+    ["question mark + combining dot", "evm?\u0307x"],
+    ["equals + combining dot", "evm=\u0307x"],
+  ])("discovers builder output with %s", (_name, value) => {
+    const job = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+    expect(value.normalize("NFC")).toBe(value);
+    const encoded = encodeAddressSegment(value);
+    expect(encoded.normalize("NFC")).not.toBe(encoded);
+    expect(decodeAddressSegment(encoded)).toBe(value);
+    expect(classifyAnchor(ratingAddress(job, value))).toBe("rating");
+    expect(classifyAnchor(paymentEvidenceAddress(job, value, 0))).toBe("settlement-evidence");
+    expect(classifyAnchor(attestationAddress(job, "cci-xm", value, 1))).toBe("verification-result");
+    expect(classifyAnchor(listingAddress(value, "svc", 1))).toBe("listing");
+  });
 });

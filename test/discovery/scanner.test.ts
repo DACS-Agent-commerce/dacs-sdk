@@ -494,7 +494,7 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
       async () => ({ entries: [{ nativeAddress: "stor-a", logicalAddress: "dacs1:x:svc:v1" }], nextCursor: null }),
       null,
     );
-    expect(res).toEqual({
+    expect(res).toStrictEqual({
       status: "page",
       anchors: [{ nativeAddress: "stor-a", logicalAddress: "dacs1:x:svc:v1", kind: "listing" }],
       nextCursor: null,

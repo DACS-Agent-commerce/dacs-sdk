@@ -690,6 +690,10 @@ artifact verifier. Scanning only reads; `write` retains the bound repository's
 explicit publication path. A connected Demos adapter supplies the fetcher through
 `adapter.createAnchorHistoryPageFetcher(expectedOwner)`; the helper never connects
 or selects a service itself.
+Create a separate Demos fetcher for each concurrent traversal. A null-cursor call
+resets that instance's conflict memory; callers sharing an instance must keep
+their own traversal-specific scanner metadata. The scanning repository already
+keeps this metadata, and Listing enumeration creates a fetcher on each call.
 
 The Demos node pages address history by offset, ordered only by the transaction
 timestamp the signer set, so rows that share a timestamp can come back in a
@@ -876,7 +880,7 @@ final `unclassified`: it is neither resolved, read nor verified. That includes
 a DACS address whose job ID is not a canonical uppercase ULID, which is never
 repaired, and one that is not canonical CF-4: a variable segment (such as a
 claim or rail ID) with a lowercase or unneeded `%` escape, a raw `?`, `&`, `=`
-or `%`, whitespace, a control character or non-NFC text, or a fixed segment
+or `%`, whitespace, a control character or decoded non-NFC text, or a fixed segment
 outside its grammar (a `listingId` that is not 1 to 128 URL-safe ASCII
 characters, or a `scheme` that is not a lowercase token). The CF-2 form of a
 ClaimReference inside a segment is left to the verifier. A DACS-5 bundle row (`stor-` and 64 hex characters, a shape a DACS-1
@@ -939,9 +943,24 @@ operational pre-filters, never validity or trust evidence.
 
 Handle enumeration results by status. A `page` may contain permanent candidate
 `diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
-it returns no Listings or diagnostics, and the caller retries its unchanged
-`retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
+it returns no Listings or diagnostics, and the caller retries `retryCursor`.
+`code: "history-restart-required"` sets `retryCursor: null` to restart the
+traversal; uncoded uncertainty preserves the input cursor. A `history-error`
+is a terminal page fault with `code` (`metadata-conflict`, `cursor-cycle`,
+`page-limit-exceeded` or `invalid-limit`), the failing `cursor`, and no
+`retryCursor`. Alert or repair the source or fetcher before starting again;
+retrying that cursor cannot resolve the fault. It also returns no Listings or
+diagnostics. `invalid-seller` and `invalid-options` are caller errors;
 `historyPageSize`, when supplied, must be an integer from 1 through 100.
+
+When upgrading, handle the new `history-error` enumeration status explicitly.
+`attestationAddress`, `paymentEvidenceAddress` and `ratingAddress` reject C1
+controls (U+0080–U+009F) and lone surrogates in variable identifiers, in addition
+to whitespace, other controls and non-NFC text. Validate inputs before calling
+these builders or handle their `DacsError`. NFC is checked on the decoded value,
+before CF-4 delimiter encoding; discovery applies the same text rule.
+Large timestamp groups still have the 100-row window limit described above;
+repeated boundary restarts require an operational alert.
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
 
