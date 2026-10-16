@@ -502,6 +502,9 @@ describe("pay-dem node reads take time and are polled at the configured interval
       await vi.advanceTimersByTimeAsync(499);
       expect(statusReads()).toBe(1);
       await vi.advanceTimersByTimeAsync(1);
+      // Asserted before awaiting, so a longer default fails here rather than
+      // on the test timeout.
+      expect(statusReads()).toBe(2);
       await expect(settlement).resolves.toMatchObject({ ok: true, blockNumber: BLOCK });
       expect(statusReads()).toBe(2);
     } finally {
