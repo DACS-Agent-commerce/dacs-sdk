@@ -464,6 +464,61 @@ describe("HTLC-1..HTLC-8 authority and secret binding", () => {
     expect(h.prepareAction).not.toHaveBeenCalled();
   });
 
+  test.each(([
+    ["store", "claim"],
+    ["store", "isCurrent"],
+    ["store", "recordPrepared"],
+    ["store", "replacePreparedSourceClaim"],
+    ["store", "recordRevealFinal"],
+    ["store", "recordSettlement"],
+    ["adapter", "observe"],
+    ["adapter", "prepareAction"],
+    ["adapter", "broadcastRetained"],
+  ] as const).flatMap(([dependency, method]) => [undefined, null, {}].map((value) => [
+    dependency, method, value,
+  ] as const)))(
+    "keeps malformed %s.%s (%j) resumable before any dependency call",
+    async (dependency, method, value) => {
+      const store = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+      const claim = vi.spyOn(store, "claim");
+      const h = harness();
+      const deriveHashlock = vi.fn(hashlocks.deriveHashlock);
+      const run = runner({ store, adapter: h.adapter, hashlocks: { deriveHashlock } });
+      const target = run.shared[dependency];
+      const original = Reflect.get(target, method);
+      if (value === undefined) Reflect.deleteProperty(target, method);
+      else Reflect.set(target, method, value);
+
+      const result = await advanceCrossChainHtlc(run.shared);
+      expect(result).toEqual({ status: "indeterminate", reason: "htlc-call-input-invalid" });
+      expect(htlcNeedsOperator(result)).toBe(true);
+      expect(claim).not.toHaveBeenCalled();
+      expect(deriveHashlock).not.toHaveBeenCalled();
+      for (const callback of [h.observe, h.observeSourceLeg, h.prepareAction, h.broadcastRetained]) {
+        expect(callback).not.toHaveBeenCalled();
+      }
+
+      // Fixing the dependency resumes the same session and salt.
+      Reflect.set(target, method, original);
+      await expect(advanceCrossChainHtlc(run.shared)).resolves.toEqual({
+        status: "waiting", reason: "htlc-source-lock-finality-pending",
+      });
+    },
+  );
+
+  test.each(["store", "adapter"] as const)("returns structured input failure for an absent %s", async (dependency) => {
+    const run = runner();
+    for (const value of [undefined, null]) {
+      await expect(advanceCrossChainHtlc({ ...run.shared, [dependency]: value } as unknown as AdvanceCrossChainHtlcInput))
+        .resolves.toEqual({ status: "indeterminate", reason: "htlc-call-input-invalid" });
+    }
+  });
+
+  test.each([undefined, null])("returns structured input failure for absent input %s", async (input) => {
+    await expect(advanceCrossChainHtlc(input as unknown as AdvanceCrossChainHtlcInput))
+      .resolves.toEqual({ status: "indeterminate", reason: "htlc-call-input-invalid" });
+  });
+
   test("uses an unambiguous structured settlement-key preimage", () => {
     expect(crossChainHtlcSettlementKey({ jobId: JOB_ID, railId: "c", phaseIndex: 1 }))
       .not.toBe(crossChainHtlcSettlementKey({

@@ -1675,9 +1675,24 @@ function storedSettlementMatchesIntent(
 export async function advanceCrossChainHtlc(
   input: Readonly<AdvanceCrossChainHtlcInput>,
 ): Promise<CrossChainHtlcProgress> {
+  const inputInvalid: CrossChainHtlcProgress = { status: "indeterminate", reason: "htlc-call-input-invalid" };
+  if (input == null) return inputInvalid;
   const authorizeDestinationClaim = input.authorizeDestinationClaim === true;
   const store = input.store;
   const adapter = input.adapter;
+  // Check callback shape before binding or claiming a session. A host can
+  // correct these dependencies and resume with the same retained salt.
+  if (!store || !adapter || [
+    store.claim,
+    store.isCurrent,
+    store.recordPrepared,
+    store.replacePreparedSourceClaim,
+    store.recordRevealFinal,
+    store.recordSettlement,
+    adapter.observe,
+    adapter.prepareAction,
+    adapter.broadcastRetained,
+  ].some((callback) => typeof callback !== "function")) return inputInvalid;
   const claimSettlement = store.claim.bind(store);
   const isCurrentSettlement = store.isCurrent.bind(store);
   const recordPrepared = store.recordPrepared.bind(store);
@@ -1703,7 +1718,6 @@ export async function advanceCrossChainHtlc(
   // never `failed`, which would tell the host the session and its salt can
   // go. The host pages and retries with corrected input; nothing is read or
   // moved until then.
-  const inputInvalid: CrossChainHtlcProgress = { status: "indeterminate", reason: "htlc-call-input-invalid" };
   let owner: string;
   let leaseDurationMs: number;
   try {
