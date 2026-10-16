@@ -1,3 +1,4 @@
+import { DacsError } from "../errors.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import { attestationAddress, paymentEvidenceAddress, ratingAddress, bundleAddress } from "./addressing.js";
 
@@ -22,5 +23,8 @@ export function jid1RatingAddress(jobId: string, rater: string): string {
 /** CORE §B.1 JID-3: validate before hashing the role-specific bundle preimage. */
 export function jid1BundleAddress(jobId: string, role: "buyer" | "seller" | "orchestrator"): string {
   requireCanonicalJobId(jobId, "bundle address jobId");
+  if (role !== "buyer" && role !== "seller" && role !== "orchestrator") {
+    throw new DacsError("bundle address role must be buyer, seller, or orchestrator");
+  }
   return bundleAddress(jobId, role);
 }
