@@ -195,15 +195,18 @@ export function isVerifiedListingAdmission(
     result.step !== 9 ||
     !result.listing ||
     !result.listingContentHash ||
-    !isListing(raw) ||
     !isListing(result.listing)
   ) {
     return false;
   }
   try {
+    // Apply the same received-number policy as the ordered reader before its
+    // shape check, retaining every signed extension in the owned comparison.
+    const capturedRaw = snapshotCanonicalJsonRead(raw, "admitted Listing");
     if (
-      canonicalize(result.listing) !== canonicalize(raw) ||
-      contentHash(raw) !== result.listingContentHash ||
+      !isListing(capturedRaw) ||
+      canonicalize(result.listing) !== canonicalize(capturedRaw) ||
+      contentHash(capturedRaw) !== result.listingContentHash ||
       contentHash(result.listing as unknown as Record<string, unknown>) !==
         result.listingContentHash
     ) {

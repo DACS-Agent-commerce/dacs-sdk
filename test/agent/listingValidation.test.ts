@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { sizedListing, verifySizedListingSignature } from "../fixtures/sizedListing.js";
 
 import {
   assessListingReachability,
@@ -653,6 +655,58 @@ describe("ordered ListingValidationDisposition", () => {
         verificationMethodHash: sha256Hex(canonicalize(method)),
       },
     });
+  });
+
+  it.each([
+    ["direct", undefined],
+    ["nested", { omitted: undefined }],
+  ])("rejects %s undefined members at step 1 before authorization callbacks", async (_label, value) => {
+    const listing = fixture() as unknown as Record<string, unknown>;
+    listing.unrecognised = value;
+    const signature = vi.fn(() => true);
+    const identity = vi.fn(() => true);
+    const control = vi.fn(() => true);
+    const result = await validateListingArtifact(listing, {
+      ...baseDeps(),
+      verifyListingSignature: signature,
+      verifyIdentityPresentation: identity,
+      verifySellerControl: control,
+    });
+    expect(result).toEqual({ disposition: "rejected", step: 1, reason: "schema-invalid" });
+    expect(signature).not.toHaveBeenCalled();
+    expect(identity).not.toHaveBeenCalled();
+    expect(control).not.toHaveBeenCalled();
+  });
+
+  it.each([16_384, 16_385])("enforces the inclusive Listing size cap at %i canonical UTF-8 bytes", async (bytes) => {
+    const listing = sizedListing(fixture(), bytes) as unknown as Record<string, unknown>;
+    expect(Buffer.byteLength(canonicalize(listing), "utf8")).toBe(bytes);
+    expect(canonicalize(listing).length).toBeLessThan(bytes);
+    // The over-limit case is still validly signed: its failure must be LR-2.
+    expect(verifySizedListingSignature({
+      signedBytes: listingSignedBytes("dacs-listing:v1:", contentHash(listing)),
+      signature: listing.signature as { value: string },
+    })).toBe(true);
+    const signature = vi.fn(verifySizedListingSignature);
+    const identity = vi.fn(baseDeps().verifyIdentityPresentation);
+    const control = vi.fn(() => true);
+    const result = await validateListingArtifact(listing, {
+      ...baseDeps(),
+      verifyListingSignature: signature,
+      verifyIdentityPresentation: identity,
+      verifySellerControl: control,
+    });
+    if (bytes === 16_384) {
+      expect(result).toMatchObject({ disposition: "verified", step: 9, listingContentHash: contentHash(listing) });
+      expect(signature).toHaveBeenCalledOnce();
+      expect(identity).toHaveBeenCalledOnce();
+      expect(control).toHaveBeenCalledOnce();
+    } else {
+      expect(result).toEqual({ disposition: "rejected", step: 1, reason: "schema-invalid" });
+      expect(signature).not.toHaveBeenCalled();
+      expect(identity).not.toHaveBeenCalled();
+      expect(control).not.toHaveBeenCalled();
+    }
   });
 
   it("returns verified only after every applicable step succeeds", async () => {

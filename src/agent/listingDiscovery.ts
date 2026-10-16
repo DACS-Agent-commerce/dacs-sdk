@@ -10,6 +10,7 @@ import {
   decodeAddressSegment,
   listingAddress,
 } from "../canonical/index.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import type {
   AnchorBinding,
@@ -527,6 +528,9 @@ export async function readListingByLogicalAddress(
 
   let actualContentHash: string;
   try {
+    // Shape checks and hashing must see the same owned received JSON, including
+    // negative-zero normalization and all unknown signed members.
+    record = snapshotCanonicalJsonRead(record, "anchored Listing");
     actualContentHash = contentHash(record);
   } catch (error) {
     return rejected(

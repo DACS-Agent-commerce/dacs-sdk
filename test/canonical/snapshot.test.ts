@@ -76,6 +76,16 @@ describe("isSafeJsonString", () => {
 
 describe("negative zero by snapshot boundary", () => {
   it.each([
+    ["direct", { omitted: undefined }],
+    ["nested", { nested: { omitted: undefined } }],
+  ])("rejects %s undefined members at the received boundary instead of erasing them", (_label, value) => {
+    expect(() => snapshotCanonicalJsonReceived(value, "received artifact"))
+      .toThrow("received artifact is not stable canonical JSON");
+    expect(causeOf(() => snapshotCanonicalJsonReceived(value, "received artifact")))
+      .toBe("not data-only JSON");
+  });
+
+  it.each([
     ["top-level", -0],
     ["object member", { n: -0 }],
     ["array element", { n: [-0] }],

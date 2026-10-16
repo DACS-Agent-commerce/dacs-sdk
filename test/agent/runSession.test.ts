@@ -1,4 +1,6 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+
+import { sizedListing } from "../fixtures/sizedListing.js";
 
 import {
   runSessionCore,
@@ -599,6 +601,36 @@ describe("runSession orchestration (T4)", () => {
       version: 7,
       contentHash: contentHash(normative as unknown as Record<string, unknown>),
     });
+  });
+
+  test.each([16_384, 16_385])("gates new sessions at %i canonical Listing bytes before effects", async (bytes) => {
+    const listing = sizedListing(normativeDpaListing(), bytes);
+    expect(Buffer.byteLength(canonicalize(listing), "utf8")).toBe(bytes);
+    const deps = makeDeps({ readListing: async () => listing });
+    const sign = vi.fn(deps.sign);
+    const anchor = vi.fn(deps.anchor);
+    const settle = vi.fn(deps.settle);
+    const newJobId = vi.fn(deps.newJobId);
+    const validateListing = vi.fn(deps.validateListing);
+    const session = runSessionCore("stor-sized-listing", {
+      ...TERMS,
+      price: { ...TERMS.price, rail: "x402:default" },
+    }, { ...deps, sign, anchor, settle, newJobId, validateListing });
+    if (bytes === 16_384) {
+      await expect(session).resolves.toMatchObject({
+        outcome: "completed",
+        listingPin: { contentHash: contentHash(listing as unknown as Record<string, unknown>) },
+      });
+      expect(validateListing).toHaveBeenCalledOnce();
+      expect(settle).toHaveBeenCalledOnce();
+    } else {
+      await expect(session).rejects.toThrow("listing not found or invalid at stor-sized-listing");
+      expect(validateListing).not.toHaveBeenCalled();
+      expect(sign).not.toHaveBeenCalled();
+      expect(anchor).not.toHaveBeenCalled();
+      expect(settle).not.toHaveBeenCalled();
+      expect(newJobId).not.toHaveBeenCalled();
+    }
   });
 
   test("pins the exact normative Listing tuple once for the whole session (LR-1)", async () => {

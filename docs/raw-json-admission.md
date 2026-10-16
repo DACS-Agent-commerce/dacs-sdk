@@ -45,7 +45,9 @@ and their owned snapshots hold `0`: `contentHash`, `stripSignature`,
 `canonicalSignedScope`, `signArtifact` and `verifyArtifact`, the
 component-signature and Listing verifiers, the ordered DACS-1 §6.3.4 reader
 `validateListingArtifact` with its revocation, payload-capability and
-reachability helpers, and the rail resolver `resolveListingRails`. Each of
+reachability helpers, the rail resolver `resolveListingRails`, anchored
+discovery through `readListingByLogicalAddress`, and the result binder
+`isVerifiedListingAdmission` used by seller payment intake. Each of
 these also normalises an in-memory `-0` it is handed directly. Other entry
 points that take received data are not covered by this list. Channel admission
 (`admitChannelMessage`) still refuses an in-memory `-0` as malformed, and the
