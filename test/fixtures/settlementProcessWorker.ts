@@ -16,7 +16,9 @@ import {
   dacsX402AuthorizationNonce, x402Settle, x402SettleCore, type X402ClientLike,
 } from "../../src/rails/x402.js";
 import { createTestFsSettlementLog } from "./settlementLogFs.js";
-import { RESTART_JOB_ID, waitForFiles, type RailRecord, type WorkerOptions } from "./settlementProcess.js";
+import {
+  RESTART_JOB_ID, waitForFiles, X402_SIGNED_WINDOW, type RailRecord, type WorkerOptions,
+} from "./settlementProcess.js";
 
 const [root, id, rawOptions] = process.argv.slice(2);
 if (!root || !id || !rawOptions) throw new Error("settlement worker arguments are missing");
@@ -145,7 +147,12 @@ async function lookup(key: string, fence?: Readonly<SettlementEffectFence>): Pro
   if (found.state === "cancelled") {
     throw new DacsError("SB-3 authorization nonce is cancelled; refusing a fresh nonce for this phase");
   }
-  if (found.to !== PAYEE || found.value !== req.amount || !found.txHash) {
+  // Resume only the authorization this phase signed: the same transfer and the
+  // same signed validity window. A record that cannot show both bounds is not
+  // proof of that authorization, so it fails closed as well.
+  if (found.to !== PAYEE || found.value !== req.amount || !found.txHash ||
+      found.validAfter !== X402_SIGNED_WINDOW.validAfter ||
+      found.validBefore !== X402_SIGNED_WINDOW.validBefore) {
     throw new DacsError("SB-3 authorization nonce was used by a different transfer; refusing a fresh nonce for this phase");
   }
   return success(found.txHash);
@@ -233,7 +240,7 @@ function x402HttpClient(nonce: string): X402ClientLike {
         payload: {
           authorization: {
             from: PAYER, to: requirements.payTo, value: requirements.amount,
-            validAfter: "0", validBefore: "4102444800", nonce,
+            ...X402_SIGNED_WINDOW, nonce,
           },
           signature: `0x${"44".repeat(65)}`,
         },
@@ -265,11 +272,14 @@ const x402 = x402Settle({
       // chain and token contract of the requirement it was signed for.
       const { accepted, payload: { authorization } } = JSON.parse(Buffer.from(signature, "base64").toString("utf8")) as {
         accepted: { network: string; asset: string };
-        payload: { authorization: { from: string; nonce: string; to: string; value: string } };
+        payload: { authorization: {
+          from: string; nonce: string; to: string; value: string; validAfter: string; validBefore: string;
+        } };
       };
       await effect({
         rail: "x402", txHash: TX, network: accepted.network, asset: accepted.asset, from: authorization.from,
         nonce: authorization.nonce, state: "used", to: authorization.to, value: authorization.value,
+        validAfter: authorization.validAfter, validBefore: authorization.validBefore,
       });
       return new Response("delivered", { status: 200, headers: {
         "PAYMENT-RESPONSE": encode({ success: true, transaction: TX, network: NETWORK, payer: PAYER, amount: req.amount }),

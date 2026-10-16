@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { dacsX402AuthorizationNonce } from "../../src/rails/x402.js";
 import {
-  createSettlementProcessHarness, RESTART_JOB_ID, type RailMode, type RailRecord,
+  createSettlementProcessHarness, RESTART_JOB_ID, X402_SIGNED_WINDOW, type RailMode, type RailRecord,
   type SettlementProcessHarness, type WorkerOptions,
 } from "../fixtures/settlementProcess.js";
 
@@ -80,7 +80,9 @@ async function expectRailEffects(h: SettlementProcessHarness, mode: RailMode, co
   expect(effects).toHaveLength(count);
   for (const effect of effects) {
     expect(effect.rail).toBe(mode);
-    if (effect.rail === "x402") expect(effect).toMatchObject({ ...NONCE_SCOPE, nonce: NONCE, state: "used", to: PAYEE });
+    if (effect.rail === "x402") {
+      expect(effect).toMatchObject({ ...NONCE_SCOPE, ...X402_SIGNED_WINDOW, nonce: NONCE, state: "used", to: PAYEE });
+    }
     if (effect.rail === "generic") expect(effect.identity).toBe(IDENTITY.generic);
   }
   for (const reconcile of await h.lines<{ identity?: string }>("reconciles")) {
@@ -242,6 +244,42 @@ describe("x402 SB-3 retry identity across a real restart (#43)", () => {
     const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
     expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
     expect(restarted.error?.message).toMatch(REASON.different);
+    await expectRailEffects(h, "x402", 0, 1);
+    expect(await h.count("grants")).toBe(0);
+  }, 30_000);
+
+  // DACS-4 §9.5.8 resumes only the same authorization. Both validity bounds are
+  // signed, so a same-scope, same-transfer record with either bound changed, or
+  // one that cannot show the window at all, is not this phase's authorization.
+  test.each([
+    ["validBefore", { ...X402_SIGNED_WINDOW, validBefore: "4102444700" }],
+    ["validAfter", { ...X402_SIGNED_WINDOW, validAfter: "1" }],
+    ["window (absent)", {}],
+  ] as const)("used under a different signed %s is refused, with no fresh nonce", async (_name, window) => {
+    const h = await harness();
+    await crash(h, "x402", "before-effect");
+    await seed(h, [{
+      rail: "x402", txHash: `0x${"a".repeat(64)}`, ...NONCE_SCOPE, nonce: NONCE, state: "used", to: PAYEE,
+      value: "1000000", ...window,
+    }]);
+    const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
+    expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
+    expect(restarted.error?.message).toMatch(REASON.different);
+    await expectRailEffects(h, "x402", 0, 1);
+    expect(await h.count("grants")).toBe(0);
+  }, 30_000);
+
+  // Control for the cases above: the same record with the exact signed window
+  // is this phase's authorization, so only the window decides those refusals.
+  test("used under the exact signed window resumes the existing transfer", async () => {
+    const h = await harness();
+    await crash(h, "x402", "before-effect");
+    await seed(h, [{
+      rail: "x402", txHash: `0x${"a".repeat(64)}`, ...NONCE_SCOPE, nonce: NONCE, state: "used", to: PAYEE,
+      value: "1000000", ...X402_SIGNED_WINDOW,
+    }]);
+    const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
+    expect(restarted).toMatchObject({ ok: true, value: RECONCILED });
     await expectRailEffects(h, "x402", 0, 1);
     expect(await h.count("grants")).toBe(0);
   }, 30_000);

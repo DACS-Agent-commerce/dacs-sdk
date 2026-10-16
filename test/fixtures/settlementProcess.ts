@@ -27,16 +27,23 @@ export interface WorkerOptions {
 }
 
 /**
+ * The EIP-3009 validity window the worker's signer puts in every authorization.
+ * Both bounds are signed, so they are part of the authorization SB-3 resumes.
+ */
+export const X402_SIGNED_WINDOW = { validAfter: "0", validBefore: "4102444800" } as const;
+
+/**
  * One line of the test rail's authoritative ledger, written as the effect lands.
  * An EIP-3009 nonce's state lives on one token contract on one chain, per
- * authorizer, so an x402 record carries that whole scope.
+ * authorizer, so an x402 record carries that whole scope, and a used nonce
+ * carries the signed transfer it executed, validity window included.
  */
 export type RailRecord =
   | { rail: "generic"; txHash: string; identity: string }
   | { rail: "evm"; txHash: string; token: string; from: string; to: string; value: string }
   | {
     rail: "x402"; txHash?: string; network: string; asset: string; from: string; nonce: string;
-    state: "used" | "cancelled"; to?: string; value?: string;
+    state: "used" | "cancelled"; to?: string; value?: string; validAfter?: string; validBefore?: string;
   };
 
 export interface WorkerResult {
