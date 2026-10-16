@@ -389,6 +389,19 @@ describe("secret scan git log options", () => {
       return { PATH: `${shim}:${process.env.PATH ?? ""}` };
     }
 
+    // A directory holding a `wc` that pads each count as BSD and macOS `wc` do (" %7ju"), e.g. "       0".
+    async function wcShim() {
+      const realWc = spawnSync("sh", ["-c", "command -v wc"], { encoding: "utf8" }).stdout.trim();
+      const shim = join(directory, "padding-wc");
+      await mkdir(shim);
+      await writeFile(
+        join(shim, "wc"),
+        ["#!/bin/sh", `out=$('${realWc}' "$@") || exit`, 'for n in $out; do printf " %7s" "$n"; done', 'printf "\\n"', ""].join("\n"),
+        { mode: 0o755 },
+      );
+      return { PATH: `${shim}:${process.env.PATH ?? ""}` };
+    }
+
     // A stand-in for Gitleaks: records its arguments, runs `git log` as Gitleaks does (unless
     // STUB_SKIP_GIT is set) and saves what it read to STUB_LOG, writes STUB_REPORT to
     // --report-path, STUB_STDERR to stderr, and exits with STUB_STATUS.
@@ -646,14 +659,27 @@ describe("secret scan git log options", () => {
       run(merge, ["merge", "-q", "--no-ff", "--no-commit", "side"]);
       await commitFile(merge, newlinePath, "merged\n", "merge");
       const mergeSha = git(merge, ["rev-parse", "HEAD"]);
-      for (const [repository, sha] of [
-        [root, rootSha],
-        [merge, mergeSha],
-      ] as const) {
-        for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
-          const result = runScript(repository, scanScriptPath, [stub], { LOG_OPTS: logOpts });
-          expect(result.status).toBe(1);
-          expect(result.stderr).toBe(`${refusal}${sha}\n`);
+      // In a directory, which git diff-tree lists as only `src` unless it recurses.
+      const nested = join(directory, "newline-nested");
+      await mkdir(join(nested, "src"), { recursive: true });
+      git(nested, ["init", "-q", "-b", "main"]);
+      await commitFile(nested, "README", "fixture\n", "base");
+      await commitFile(nested, `src/${newlinePath}`, "nested\n", "nested");
+      const nestedSha = git(nested, ["rev-parse", "HEAD"]);
+      await commitFile(nested, "README", "changed\n", "readme");
+      // Each case also with a `wc` that pads its counts, as BSD and macOS `wc` do.
+      const padding = await wcShim();
+      for (const env of [{}, padding]) {
+        for (const [repository, sha] of [
+          [root, rootSha],
+          [merge, mergeSha],
+          [nested, nestedSha],
+        ] as const) {
+          for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+            const result = runScript(repository, scanScriptPath, [stub], { LOG_OPTS: logOpts, ...env });
+            expect(result.status).toBe(1);
+            expect(result.stderr).toBe(`${refusal}${sha}\n`);
+          }
         }
       }
       expect(await stubCalls()).toEqual([]);
@@ -673,9 +699,11 @@ describe("secret scan git log options", () => {
       expect(audit.status).toBe(1);
       expect(audit.stderr).toBe(`${refusal}${pullSha}\n`);
       expect(await stubCalls()).toEqual([]);
-      const required = runScript(pull, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS });
-      expect(required.status).toBe(0);
-      expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`]);
+      for (const env of [{}, padding]) {
+        const required = runScript(pull, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...env });
+        expect(required.status).toBe(0);
+        expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`]);
+      }
     });
 
     it("self-test fails unless Gitleaks reports exactly the expected fingerprints", async () => {
@@ -753,7 +781,7 @@ describe("secret scan git log options", () => {
 
     for (const [name, from, to, message] of [
       ["doesn't refuse octopus merges", 'if [ -n "$octopus" ]; then', "if false; then", "an octopus merge"],
-      ["doesn't refuse paths containing a newline", 'if [ "$newlines" != 0 ]; then', "if false; then", "a path containing a newline"],
+      ["doesn't refuse paths containing a newline", 'if ! [ "$newlines" -eq 0 ]; then', "if false; then", "a path containing a newline"],
       ["refuses a path containing a newline without naming its commits", '      echo "$commit"\n', "      :\n", "a path containing a newline"],
     ] as const) {
       it.skipIf(!process.env.GITLEAKS)(`self-test fails with a scan that ${name}`, async () => {

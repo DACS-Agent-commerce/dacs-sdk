@@ -39,18 +39,20 @@ fi
 # any line Gitleaks reads, a commit header included. Gitleaks would then report a finding under
 # another commit or file, and such a path's fingerprint can't be one .gitleaksignore line. So
 # the scan refuses any history in which a commit adds, changes or deletes such a path, a merge
-# compared with each parent: every path of every scanned commit's tree is then checked.
+# compared with each parent: every path of every scanned commit's tree is then checked. The
+# counts are compared as numbers, as BSD and macOS `wc` pad them with spaces, and anything but a
+# number refuses.
 # shellcheck disable=SC2086
 if ! newlines=$(git log --format=%H $LOG_OPTS --diff-merges=off |
   git diff-tree --stdin -r -z --name-only --root -m --no-commit-id | tr -cd '\n' | wc -c); then
   echo "Nothing was scanned: git failed to list the history's paths." >&2
   exit 1
 fi
-if [ "$newlines" != 0 ]; then
+if ! [ "$newlines" -eq 0 ]; then
   echo "Nothing was scanned: after a path containing a newline, Gitleaks can report a finding under another commit or file. Rewrite the history without it; these commits add, change or delete one:" >&2
   # shellcheck disable=SC2086
   git log --format=%H $LOG_OPTS --diff-merges=off | while read -r commit; do
-    if [ "$(git diff-tree -r -z --name-only --root -m --no-commit-id "$commit" | tr -cd '\n' | wc -c)" != 0 ]; then
+    if ! [ "$(git diff-tree -r -z --name-only --root -m --no-commit-id "$commit" | tr -cd '\n' | wc -c)" -eq 0 ]; then
       echo "$commit"
     fi
   done >&2
