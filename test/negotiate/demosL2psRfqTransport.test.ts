@@ -1,4 +1,4 @@
-import { createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -1396,10 +1396,14 @@ describe("Demos L2PS durable RFQ transport", () => {
       claimForPeer,
       onError: vi.fn(),
     };
-    for (const localPeerKey of ["b".repeat(64), `0x${"B".repeat(64)}`]) {
+    for (const localPeerKey of ["b".repeat(64), `0x${"B".repeat(64)}`, "b".repeat(130)]) {
       expect(() => createDemosL2psRfqTransport({ ...base, localPeerKey })).not.toThrow();
     }
-    for (const localPeerKey of ["b".repeat(63), `0x${"b".repeat(63)}`, "b".repeat(40), "0x"]) {
+    for (const localPeerKey of [
+      "b".repeat(63), `0x${"b".repeat(63)}`, "b".repeat(40), "0x",
+      // The whole key is hex, not only a 64-digit run at either end.
+      `z${"b".repeat(64)}`, `${"b".repeat(64)}z`,
+    ]) {
       expect(() => createDemosL2psRfqTransport({ ...base, localPeerKey }))
         .toThrow("localPeerKey must be a hex public key");
     }
@@ -1428,6 +1432,7 @@ describe("Demos L2PS durable RFQ transport", () => {
   test("round 8: a real demosdk peer on plain ws:// is accepted only for a loopback IP literal", async () => {
     for (const serverUrl of [
       "ws://127.0.0.1:3006", "ws://127.8.9.10", "ws://127.1:3006", "WS://127.0.0.1",
+      "ws://127.255.255.254", "ws://127.10.200.3",
       "ws://[::1]:3006", "ws://[0:0:0:0:0:0:0:1]",
     ]) {
       expect(constructionError(channelOptions(await demosPeer(demosConfig(serverUrl))))).toBeUndefined();
@@ -4664,4 +4669,320 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
       fixture.transport.stop();
     },
   );
+});
+
+/**
+ * Frame-admission and recovery guards pinned at the transport boundary: each
+ * refused frame reaches neither the codec nor the lifecycle, and each control
+ * shows the same frame is delivered or acknowledged when well formed.
+ */
+describe("Demos L2PS RFQ frame admission guards", () => {
+  const ROUTE = { fromPeer: BUYER_PEER, toPeer: SELLER_PEER };
+
+  /** The buyer's offer under a new channel signature, with its packetId recomputed. */
+  function signedVariant(fixture: InboundFixture, signature: string): BuyerPacket {
+    if (fixture.packet.kind !== "turn") throw new Error("expected a turn packet");
+    const { packetId: _packetId, ...material } = structuredClone(fixture.packet);
+    const changed = { ...material, message: { ...material.message, signature } };
+    return { ...changed, packetId: rfqLifecyclePacketId(changed) } as BuyerPacket;
+  }
+
+  function canonicalBytes(packet: BuyerPacket): Buffer {
+    return Buffer.from(canonicalize(packet as unknown as Record<string, unknown>), "utf8");
+  }
+
+  async function sealFor(fixture: InboundFixture, packet: BuyerPacket, bytes: Uint8Array) {
+    return fixture.baseCodec.seal(bytes, { messageHash: packet.packetId, ...ROUTE });
+  }
+
+  async function deliverLive(fixture: InboundFixture, packet: BuyerPacket, bytes: Uint8Array) {
+    fixture.emit({ from: BUYER_PEER, encrypted: await sealFor(fixture, packet, bytes), messageHash: packet.packetId });
+    await fixture.transport.drain();
+  }
+
+  test.each(["live", "recovery"] as const)("CF-5: %s refuses an authenticated packet whose plaintext starts with a BOM", async (path) => {
+    const fixture = await inboundReceiver();
+    try {
+      const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), canonicalBytes(fixture.packet)]);
+      const encrypted = await sealFor(fixture, fixture.packet, bom);
+      if (path === "live") {
+        fixture.emit({ ...fixture.payload, encrypted });
+        await fixture.transport.drain();
+        expect(fixture.errors.map((error) => error.message)).toEqual(["Demos L2PS RFQ plaintext is not valid UTF-8 JSON"]);
+      } else {
+        fixture.hub.messages[0]!.encrypted = encrypted;
+        await expect(fixture.transport.resumeInbound(BUYER)).resolves.toMatchObject({ status: "indeterminate", delivered: 0 });
+      }
+      expect(fixture.receive).not.toHaveBeenCalled();
+    } finally { fixture.transport.stop(); }
+  });
+
+  test.each(["live", "recovery"] as const)("CF-5 control: %s delivers the same authenticated packet without a BOM", async (path) => {
+    const fixture = await inboundReceiver();
+    try {
+      const encrypted = await sealFor(fixture, fixture.packet, canonicalBytes(fixture.packet));
+      if (path === "live") {
+        fixture.emit({ ...fixture.payload, encrypted });
+        await fixture.transport.drain();
+        expect(fixture.errors).toEqual([]);
+      } else {
+        fixture.hub.messages[0]!.encrypted = encrypted;
+        await expect(fixture.transport.resumeInbound(BUYER)).resolves.toMatchObject({ status: "complete", delivered: 1 });
+      }
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+    } finally { fixture.transport.stop(); }
+  });
+
+  test.each(["live", "recovery"] as const)("CF-1: %s refuses valid JSON with a noncanonical wire spelling", async (path) => {
+    const fixture = await inboundReceiver();
+    try {
+      const canonical = canonicalize(fixture.packet as unknown as Record<string, unknown>);
+      const spaced = Buffer.from(`{ ${canonical.slice(1)}`, "utf8");
+      expect(JSON.parse(spaced.toString("utf8"))).toEqual(JSON.parse(canonical));
+      const encrypted = await sealFor(fixture, fixture.packet, spaced);
+      if (path === "live") {
+        fixture.emit({ ...fixture.payload, encrypted });
+        await fixture.transport.drain();
+        expect(fixture.errors.map((error) => error.message)).toEqual(["Demos L2PS RFQ plaintext is not canonical JCS"]);
+      } else {
+        fixture.hub.messages[0]!.encrypted = encrypted;
+        await expect(fixture.transport.resumeInbound(BUYER)).resolves.toMatchObject({ delivered: 0 });
+      }
+      expect(fixture.receive).not.toHaveBeenCalled();
+    } finally { fixture.transport.stop(); }
+  });
+
+  test("CF-5: refuses ill-formed UTF-8 that a replacing decoder would turn into the exact canonical packet", async () => {
+    const fixture = await inboundReceiver();
+    try {
+      const packet = signedVariant(fixture, "buyer:�");
+      const wellFormed = canonicalBytes(packet);
+      const at = wellFormed.indexOf(Buffer.from([0xef, 0xbf, 0xbd]));
+      expect(at).toBeGreaterThan(0);
+      // A lone 0xFF decodes to U+FFFD only when the decoder is not fatal.
+      const illFormed = Buffer.concat([wellFormed.subarray(0, at), Buffer.from([0xff]), wellFormed.subarray(at + 3)]);
+      expect(new TextDecoder().decode(illFormed)).toBe(wellFormed.toString("utf8"));
+      await deliverLive(fixture, packet, illFormed);
+      expect(fixture.errors.map((error) => error.message)).toEqual(["Demos L2PS RFQ plaintext is not valid UTF-8 JSON"]);
+      expect(fixture.receive).not.toHaveBeenCalled();
+      // Control: the well-formed bytes reach the lifecycle.
+      await deliverLive(fixture, packet, wellFormed);
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+    } finally { fixture.transport.stop(); }
+  });
+
+  test.each([
+    ["a Uint16Array view of the canonical bytes", (bytes: Uint8Array) => new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2)],
+    ["a string", (bytes: Uint8Array) => Buffer.from(bytes).toString("utf8")],
+  ] as const)("refuses a codec plaintext that is %s", async (_name, reshape) => {
+    const fixture = await inboundReceiver({ open: (base) => async (encrypted, context) => {
+      // A fresh, aligned copy, so a 16-bit view of it is always possible.
+      const opened = Uint8Array.from(await base.open(encrypted, context));
+      return reshape(opened) as unknown as Uint8Array;
+    } });
+    try {
+      // An even-length signature keeps the canonical packet a whole number of 16-bit units.
+      let packet = signedVariant(fixture, "buyer:even");
+      if (canonicalBytes(packet).byteLength % 2 !== 0) packet = signedVariant(fixture, "buyer:odd");
+      expect(canonicalBytes(packet).byteLength % 2).toBe(0);
+      await deliverLive(fixture, packet, canonicalBytes(packet));
+      expect(fixture.errors.map((error) => error.message)).toEqual(["Demos L2PS RFQ plaintext exceeds the wire size limit"]);
+      expect(fixture.receive).not.toHaveBeenCalled();
+    } finally { fixture.transport.stop(); }
+  });
+
+  test("refuses a codec plaintext over the wire size limit, even when it is a canonical packet", async () => {
+    let large: Uint8Array | undefined;
+    const fixture = await inboundReceiver({ open: (base) => async (encrypted, context) => {
+      await base.open(encrypted, context);
+      return large!;
+    } });
+    try {
+      const packet = signedVariant(fixture, `buyer:${"s".repeat(100_000)}`);
+      large = Uint8Array.from(canonicalBytes(packet));
+      expect(large.byteLength).toBeGreaterThan(98_288);
+      await deliverLive(fixture, packet, Buffer.from("{}"));
+      expect(fixture.errors.map((error) => error.message)).toEqual(["Demos L2PS RFQ plaintext exceeds the wire size limit"]);
+      expect(fixture.receive).not.toHaveBeenCalled();
+    } finally { fixture.transport.stop(); }
+  });
+
+  test.each([
+    ["a canonical 65-byte nonce (88 characters)", () => Buffer.alloc(65, 7).toString("base64")],
+    ["a nonce that decodes to nothing", () => "===="],
+    ["a nonce with a trailing newline", (nonce: string) => `${nonce}\n`],
+  ] as const)("refuses %s before the codec opens it", async (_name, nonceOf) => {
+    const opens = vi.fn();
+    const fixture = await inboundReceiver({ open: (base) => (encrypted, context) => {
+      opens();
+      return base.open(encrypted, context);
+    } });
+    try {
+      const nonce = nonceOf(fixture.payload.encrypted.nonce);
+      expect(nonce.length).toBeLessThanOrEqual(88);
+      fixture.emit({ ...fixture.payload, encrypted: { ...fixture.payload.encrypted, nonce } });
+      await fixture.transport.drain();
+      expect(fixture.errors.map((error) => error.message)).toEqual(["nonce must be canonical Base64"]);
+      expect(opens).not.toHaveBeenCalled();
+      expect(fixture.receive).not.toHaveBeenCalled();
+      // Control: the unchanged frame is opened and delivered.
+      fixture.emit(fixture.payload);
+      await fixture.transport.drain();
+      expect(opens).toHaveBeenCalledTimes(1);
+      expect(fixture.receive).toHaveBeenCalledTimes(1);
+    } finally { fixture.transport.stop(); }
+  });
+
+  /** Our own stored frame, re-encrypted under the shared key with this IV length. */
+  function ownFrame(sharedKey: Buffer, packet: BuyerPacket, ivBytes: number) {
+    const iv = randomBytes(ivBytes);
+    const cipher = createCipheriv("aes-256-gcm", sharedKey, iv, { authTagLength: 16 });
+    cipher.setAAD(Buffer.from(canonicalize({ wireDomain: "dacs-rfq-l2ps-wire:v1", messageHash: packet.packetId, ...ROUTE }), "utf8"));
+    const sealed = Buffer.concat([cipher.update(canonicalBytes(packet)), cipher.final(), cipher.getAuthTag()]);
+    return { ciphertext: sealed.toString("base64"), nonce: iv.toString("base64") };
+  }
+
+  test("an authenticated AES-GCM frame with an 8-byte IV is a definite conflict, never our acknowledgement", async () => {
+    const { hub, sharedKey, transport, packet } = await buyerWithSentOffer();
+    hub.messages[0]!.encrypted = ownFrame(sharedKey, packet, 8);
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "rejected",
+      reason: "Demos L2PS history binds packetId to different bytes or route",
+    });
+    // Control: the same bytes under a 12-byte IV are our frame.
+    hub.messages[0]!.encrypted = ownFrame(sharedKey, packet, 12);
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+  });
+
+  test("a stored frame shorter than the AES-GCM tag is a definite conflict", async () => {
+    const { hub, sharedKey, transport, packet } = await buyerWithSentOffer();
+    const frame = ownFrame(sharedKey, packet, 12);
+    hub.messages[0]!.encrypted = { ...frame, ciphertext: Buffer.from(frame.ciphertext, "base64").subarray(0, 8).toString("base64") };
+    await expect(transport.reconcile(packet)).resolves.toEqual({
+      disposition: "rejected",
+      reason: "Demos L2PS history binds packetId to different bytes or route",
+    });
+  });
+
+  test("an own frame whose shared open budget is already spent is never acknowledged without opening it", async () => {
+    const opens = vi.fn();
+    const { transport, packet } = await buyerWithSentOffer({
+      operationTimeoutMs: 20,
+      codec: (base) => ({ ...base, open(encrypted, context) { opens(); return base.open(encrypted, context); } }),
+    });
+    // The budget's deadline is read once; every later reading is past it.
+    let reads = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => (reads++ === 0 ? 1_000 : 2_000));
+    try {
+      await expect(transport.reconcile(packet)).resolves.toEqual({
+        disposition: "indeterminate", reason: "Demos L2PS RFQ history decryption failed",
+      });
+      expect(opens).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+    // Control: with time left the same frame opens and is ours.
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+    expect(opens).toHaveBeenCalledTimes(1);
+  });
+
+  test("once an open times out early, no later own frame in that reconcile is opened", async () => {
+    let opens = 0;
+    const { hub, transport, packet, own } = await buyerWithSentOffer({
+      operationTimeoutMs: 20,
+      codec: (base) => ({ ...base, open() { opens += 1; return new Promise<Uint8Array>(() => {}); } }),
+    });
+    hub.messages.push({ ...structuredClone(own), id: "own-again", timestamp: own.timestamp + 1 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // The shared deadline never passes on this clock; only the open's own timer fires.
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    try {
+      let result: unknown;
+      void transport.reconcile(packet).then((value) => { result = value; });
+      await settle();
+      expect(opens).toBe(1);
+      vi.advanceTimersByTime(20);
+      await settle();
+      expect(opens).toBe(1);
+      expect(result).toEqual({ disposition: "indeterminate", reason: "Demos L2PS RFQ history decryption failed" });
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  test.each([
+    ["negative", -1_000_000],
+    ["fractional", 1.5],
+    ["null", null],
+  ] as const)("a stored %s attemptEndedAtMs never authorizes a resend", async (_name, attemptEndedAtMs) => {
+    const fixture = await delayedSendFixture();
+    try {
+      await fixture.timeout();
+      const id = fixture.packet().packetId;
+      const entry = await fixture.outboxStore.load(id) as Parameters<typeof fixture.outboxStore.save>[1];
+      const forged = { ...entry, generation: entry.generation + 1, attemptEndedAtMs } as unknown as typeof entry;
+      await expect(fixture.outboxStore.save(id, forged, entry.generation)).resolves.toBe(true);
+      fixture.restart();
+      // Long past any grace measured from a valid end time.
+      fixture.setTicks(10_000_000);
+      await expect(fixture.client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "indeterminate" });
+      expect(fixture.submissions).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  test.each(["nonce", "ephemeralKey"] as const)("node-sized foreign %s values cannot exhaust history admission", async (field) => {
+    let page: DemosL2psRfqHistoryPage | undefined;
+    const { transport, packet, own } = await buyerWithSentOffer({
+      history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
+    });
+    // The node bounds the ciphertext and the raw frame, not these fields.
+    const encrypted = { ciphertext: "A".repeat(120_000), nonce: "QUFB", [field]: "A".repeat(120_000) };
+    const rows = Array.from({ length: 99 }, (_, i) => ({
+      ...structuredClone(own), id: `foreign-${i}`, from: SELLER_PEER, to: BUYER_PEER,
+      messageHash: (i + 1).toString(16).padStart(64, "0"), encrypted,
+    }));
+    expect(Buffer.byteLength(JSON.stringify({ type: "send", payload: { to: BUYER_PEER, encrypted, messageHash: rows[0]!.messageHash } }))).toBeLessThan(256 * 1024);
+    page = { messages: [...rows, structuredClone(own)], hasMore: false };
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+  }, 60_000);
+
+  test("a custom frame's maximum nonce and ephemeralKey survive history capture", async () => {
+    const { transport, packet } = await buyerWithSentOffer({ codec: (base) => ({
+      codecId: "max-fields-v1",
+      async seal(plaintext, context) {
+        const frame = await base.seal(plaintext, context);
+        return { ...frame, nonce: Buffer.concat([Buffer.from(frame.nonce, "base64"), Buffer.alloc(52)]).toString("base64"), ephemeralKey: "e".repeat(4096) };
+      },
+      open(encrypted, context) {
+        return base.open({ ciphertext: encrypted.ciphertext, nonce: Buffer.from(encrypted.nonce, "base64").subarray(0, 12).toString("base64") }, context);
+      },
+    }) });
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+  });
+
+  test("a custom frame's ephemeralKey with a well-formed surrogate pair is retained", async () => {
+    const { transport, packet } = await buyerWithSentOffer({ codec: (base) => ({
+      codecId: "surrogate-key-v1",
+      async seal(plaintext, context) {
+        return { ...(await base.seal(plaintext, context)), ephemeralKey: "key-😀" };
+      },
+      open(encrypted, context) {
+        return base.open({ ciphertext: encrypted.ciphertext, nonce: encrypted.nonce }, context);
+      },
+    }) });
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+  });
+
+  test.each(["nonce", "ephemeralKey"] as const)("a foreign row whose %s holds a lone surrogate is kept without a frame", async (field) => {
+    let page: DemosL2psRfqHistoryPage | undefined;
+    const { transport, packet, own } = await buyerWithSentOffer({
+      history: (base) => async (peerKey, options) => page ?? base(peerKey, options),
+    });
+    const foreign = {
+      ...structuredClone(own), id: "foreign-surrogate", from: SELLER_PEER, to: BUYER_PEER,
+      messageHash: "e".repeat(64),
+      encrypted: { ...structuredClone(own.encrypted), [field]: field === "nonce" ? "QUFB\ud800" : "key-\udc00" },
+    };
+    page = { messages: [foreign, structuredClone(own)], hasMore: false };
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+  });
 });

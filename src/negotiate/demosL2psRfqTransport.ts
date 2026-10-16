@@ -914,7 +914,9 @@ function decodePacket<TSignature>(bytes: Uint8Array) {
   let text: string;
   let parsed: unknown;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    // ignoreBOM keeps a leading byte-order mark in the text, so the frame
+    // fails here or at the canonical check instead of being stripped (CF-5).
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
     parsed = JSON.parse(text) as unknown;
   } catch {
     throw new DacsError("Demos L2PS RFQ plaintext is not valid UTF-8 JSON");
