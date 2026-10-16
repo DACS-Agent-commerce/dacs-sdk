@@ -68,11 +68,12 @@ function requireStructuralSegment(value: string, label: string): void {
   }
 }
 
+// The same text rule as the scanner's CF-4 variable-segment check.
 function requireVariableSegment(value: string, label: string): void {
   if (
     value.length === 0 ||
     value.normalize("NFC") !== value ||
-    /[\s\u0000-\u001f\u007f]/.test(value)
+    /[\s\p{Cc}\p{Cs}]/u.test(value)
   ) {
     throw new DacsError(`${label} must be non-empty canonical text`);
   }

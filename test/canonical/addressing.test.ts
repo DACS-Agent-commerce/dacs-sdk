@@ -8,6 +8,7 @@ import {
   paymentEvidenceAddress,
   ratingAddress,
 } from "../../src/canonical/addressing.js";
+import { classifyAnchor } from "../../src/discovery/scanner.js";
 
 describe("CF-4 logical addressing (§6.3.4)", () => {
   // Golden vector: cf4-encode-delimiters
@@ -28,10 +29,18 @@ describe("CF-4 logical addressing (§6.3.4)", () => {
   });
 
   // Golden vector: cf4-dacs1-listing-address
-  test("assembles a dacs1 listing address with encoded variable segments", () => {
-    expect(listingAddress("cci-xm:evm:mainnet:0x1234", "rfq:lot?x=1", 3)).toBe(
-      "dacs1:cci-xm%3Aevm%3Amainnet%3A0x1234:rfq%3Alot%3Fx%3D1:v3",
-    );
+  test("assembles a dacs1 listing address with the claim encoded and the URL-safe listingId as is", () => {
+    const address = listingAddress("cci-xm:evm:mainnet:0x1234", "rfq-lot-x-1", 3);
+    expect(address).toBe("dacs1:cci-xm%3Aevm%3Amainnet%3A0x1234:rfq-lot-x-1:v3");
+    expect(classifyAnchor(address)).toBe("listing");
+  });
+
+  // Not a Standard vector: a legacy serviceId may hold reserved bytes, which the
+  // legacy read arm addresses this way. CF-4 does not classify it as a listing.
+  test("encodes a legacy serviceId that holds reserved delimiters", () => {
+    const address = listingAddress("cci-xm:evm:mainnet:0x1234", "rfq:lot?x=1", 3);
+    expect(address).toBe("dacs1:cci-xm%3Aevm%3Amainnet%3A0x1234:rfq%3Alot%3Fx%3D1:v3");
+    expect(classifyAnchor(address)).toBe("unknown");
   });
 
   test("accepts a pre-formatted version segment", () => {
@@ -72,5 +81,24 @@ describe("CF-4 logical addressing (§6.3.4)", () => {
     expect(() => paymentEvidenceAddress("job-abc", "pay-x402", -1)).toThrow(
       /phaseIndex/,
     );
+  });
+
+  // The builders refuse what classifyAnchor refuses in a variable segment.
+  test.each([
+    ["a C1 control", "evm\u0085erc20"],
+    ["a lone high surrogate", "evm\ud800erc20"],
+    ["a lone low surrogate", "evm\udc00erc20"],
+    ["a tab", "evm\terc20"],
+    ["non-NFC text", "café"],
+  ])("rejects a variable segment with %s", (_name, value) => {
+    expect(() => attestationAddress("job-abc", "lei", value, 3)).toThrow(/identifier/);
+    expect(() => paymentEvidenceAddress("job-abc", value, 0)).toThrow(/railId/);
+    expect(() => ratingAddress("job-abc", value)).toThrow(/rater/);
+  });
+
+  test("accepts a paired surrogate, and the classifier agrees", () => {
+    const address = ratingAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "did:web:😀.example");
+    expect(address).toBe("dacs5:rating:01J8ME0SXKQ4T9V2RC5HJ6WX7D:did%3Aweb%3A😀.example");
+    expect(classifyAnchor(address)).toBe("rating");
   });
 });
