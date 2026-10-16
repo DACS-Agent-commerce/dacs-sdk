@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, readFileSync, readlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, renameSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import {
   chmod,
   link,
@@ -520,6 +520,57 @@ describe("createFsLiquidityTankStore", () => {
         .resolves.toEqual({ status: "corrupt", reason: "liquidity-tank-fs-record-corrupt" });
       expect(await readFile(row, "utf8")).toBe(corruption);
     }
+  });
+
+  // Each row is spelled exactly as the store writes one, so only the record
+  // check refuses it, and each trips one of that check's guards (code P2-6).
+  describe("a well-spelled row that the store's transitions could not have written reads as corrupt", () => {
+    type Row = Record<string, unknown> & { intent: Record<string, unknown>; lease: Record<string, unknown> };
+    type Rows = { claimed: Row; submitted: Row; observed: Row };
+    const rebound = (fields: Record<string, unknown>) => {
+      const { bindingHash: _hash, ...unsigned } = { ...intent, ...fields };
+      return { ...unsigned, bindingHash: sha256Hex(canonicalize(unsigned)) };
+    };
+    test.each<[string, (rows: Rows) => Row]>([
+      ["an intent of another version, its binding hash recomputed",
+        ({ claimed }) => ({ ...claimed, intent: rebound({ intentVersion: "2" }) })],
+      ["another phase's intent", ({ claimed }) => ({ ...claimed, intent: { ...createLiquidityTankIntent(authority(1)) } })],
+      ["an intent changed under its binding hash", ({ claimed }) => ({ ...claimed, intent: { ...claimed.intent, phaseIndex: 1 } })],
+      ["a lease owner that is not a string", ({ claimed }) => ({ ...claimed, lease: { ...claimed.lease, owner: 7 } })],
+      ["a lease of generation 0", ({ claimed }) => ({ ...claimed, lease: { ...claimed.lease, generation: 0 } })],
+      ["a lease that expires before the epoch", ({ claimed }) => ({ ...claimed, lease: { ...claimed.lease, expiresAt: -1 } })],
+      ["a submission receipt without a submission", ({ claimed }) => ({ ...claimed, submissionRecordedAt: T0 })],
+      ["a submission without its receipt", ({ submitted }) => {
+        const { submissionRecordedAt: _receipt, ...row } = submitted;
+        return row as Row;
+      }],
+      ["an observation without a submission", ({ claimed, observed }) => ({ ...claimed, observation: observed.observation })],
+      ["a recovery failure without a submission", ({ claimed, observed }) => ({ ...claimed, recoveryFailure: observed.observation })],
+      ["a recovery expiry without a submission", ({ claimed, observed }) => ({ ...claimed, recoveryExpired: observed.observation })],
+      ["an observation of another operation", ({ observed }) => ({
+        ...observed, observation: { ...(observed.observation as object), operationHash: "f".repeat(64) },
+      })],
+      ["a recovery failure that is not a failure after the lock", ({ observed }) => ({ ...observed, recoveryFailure: observed.observation })],
+      ["a recovery expiry that is not recovery evidence", ({ observed }) => ({ ...observed, recoveryExpired: { status: "unknown" } })],
+      ["a settlement that is not one", ({ submitted }) => ({ ...submitted, settlement: { txRef: {} } })],
+    ])("%s", async (_label, change) => {
+      const dir = await freshDir();
+      const store = await createFsLiquidityTankStore({ dir });
+      const row = join(dir, "records", `${sha256Hex(intent.settlementKey)}.json`);
+      const read = async () => JSON.parse(await readFile(row, "utf8")) as Row;
+      const { write } = await acquire(store, "worker-1", T0);
+      const claimed = await read();
+      await store.recordSubmission({ ...write, submission: submission() });
+      const submitted = await read();
+      await store.recordObservation({ ...write, now: T0 + 5, observation: lockedPending() });
+      const observed = await read();
+      const corruption = JSON.stringify(change({ claimed, submitted, observed }));
+      await writeFile(row, corruption, { mode: 0o600 });
+      const restarted = await createFsLiquidityTankStore({ dir });
+      await expect(restarted.claim({ intent, owner: "worker-2", now: T0 + 5_000, leaseDurationMs: 1_000 }))
+        .resolves.toEqual({ status: "corrupt", reason: "liquidity-tank-fs-record-corrupt" });
+      expect(await readFile(row, "utf8")).toBe(corruption);
+    });
   });
 
   test("refuses a group- or world-writable directory and a symlinked one", async () => {
@@ -1225,6 +1276,67 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
     const left = await gateFiles(dir);
     expect({ replaced, claim, left: left.length }).toEqual({ replaced: true, claim: TIMED_OUT, left: 1 });
     expect(JSON.parse(await readFile(join(dir, "locks", left[0] as string), "utf8"))).toEqual(replacement);
+  });
+
+  // The quarantine step deletes the gate it moved only when it is the very gate
+  // it found stale and ownerless. Each replacement here differs from that gate
+  // in one way only, so one part of the re-check alone keeps it (code P2-8).
+  test.each([
+    ["another file with the same exited owner", "acquired"],
+    ["the same file rewritten for another exited owner", "acquired"],
+    ["the same file, modified again", "acquired"],
+    ["the same file, its owner's PID live again", TIMED_OUT],
+  ] as const)("a stale gate replaced by %s before its quarantine rename is never deleted by that step", async (change, expected) => {
+    const dir = await freshDir();
+    const store = await createFsLiquidityTankStore({
+      dir, lockStaleMs: 20, lockTimeoutMs: expected === TIMED_OUT ? 400 : 2_000,
+    });
+    const gate = join(dir, "locks", ".reclaim");
+    const owner = processOwner(await exitedPid(), "exited-gate");
+    const otherOwner = processOwner(await exitedPid(), "other-exited-gate");
+    await plantStaleLock(dir, processOwner(await exitedPid(), "exited-lock"));
+    await plantGateFile(gate, owner);
+    const kill = process.kill.bind(process);
+    let reused = false;
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => reused && pid === owner.pid ? true : kill(pid, signal));
+    const stale = new Date(Date.now() - 60_000);
+    let quarantine: string | undefined;
+    const onQuarantine: string[] = [];
+    trace.fault = (operation, path) => {
+      if (quarantine === undefined && operation === "rename" && path.startsWith(`${gate} -> `) && path.endsWith(".quarantine")) {
+        quarantine = path.slice(`${gate} -> `.length);
+        if (change === "another file with the same exited owner") {
+          // Moved away, as another reclaimer would, the old gate keeps its inode number from the new one.
+          renameSync(gate, join(dirname(dir), "moved-gate"));
+          writeFileSync(gate, JSON.stringify(owner), { flag: "wx", mode: 0o600 });
+          utimesSync(gate, stale, stale);
+        } else if (change === "the same file rewritten for another exited owner") {
+          writeFileSync(gate, JSON.stringify(otherOwner));
+          utimesSync(gate, stale, stale);
+        } else if (change === "the same file, modified again") {
+          utimesSync(gate, new Date(), new Date());
+        } else {
+          reused = true;
+        }
+      } else if (path === quarantine) {
+        onQuarantine.push(operation);
+      }
+      return undefined;
+    };
+    let claim;
+    try {
+      claim = await claimOf(store);
+    } finally {
+      trace.fault = undefined;
+      vi.restoreAllMocks();
+    }
+    // The step's own stat comes first; a later one is the next poll's scan of live quarantines.
+    const removal = onQuarantine.indexOf("unlink");
+    const statsBeforeRemoval = onQuarantine.slice(0, removal === -1 ? undefined : removal)
+      .filter((operation) => operation === "stat").length;
+    expect({ moved: quarantine !== undefined, claim, deletedByTheQuarantineStep: removal !== -1 && statsBeforeRemoval === 1 })
+      .toEqual({ moved: true, claim: expected, deletedByTheQuarantineStep: false });
+    expect((await gateFiles(dir)).length).toBe(expected === TIMED_OUT ? 1 : 0);
   });
 
   test.each([
