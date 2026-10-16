@@ -756,6 +756,11 @@ describe("live payment-evidence runtime", () => {
       disposition: "indeterminate",
       reason: "authenticated x402 native proof unavailable",
     });
+    // Exactly the echoed depth meets the floor.
+    observedConfirmations = 3;
+    await expect(resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: paymentAuthorization as never,
+    })).resolves.toEqual(firstProof);
 
     // DACS-4 §9.7: evidence without the optional echo yields a proof with no
     // depth member at all (never an undefined one), stable across replays.

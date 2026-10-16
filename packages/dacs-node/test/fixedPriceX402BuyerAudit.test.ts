@@ -907,6 +907,15 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
         authenticated,
         request,
       });
+      // The consumed authorization carries the signed shape: no own depth
+      // member at all when the evidence omits the echo.
+      const consumedFinality = preliminary.input.fulfilment.consumedPaymentAuthorization
+        .evidenceInput.settlementFinality;
+      if (finalityBlocks === undefined) {
+        expect(consumedFinality).not.toHaveProperty("finalityBlocks");
+      } else {
+        expect(consumedFinality).toHaveProperty("finalityBlocks", finalityBlocks);
+      }
       const exactRequest = prepareCompletedSellerBundleCounterSignatureRequest({
         ...preliminary.input,
         seller: {

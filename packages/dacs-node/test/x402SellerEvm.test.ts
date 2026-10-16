@@ -17,7 +17,10 @@ import {
   EIP3009_AUTHORIZATION_USED_TOPIC,
   ERC20_TRANSFER_TOPIC,
 } from "@kynesyslabs/dacs";
-import { createDacsX402SellerEvmObserverV1 } from "../src/x402SellerEvm.js";
+import {
+  classifyDacsAuthenticatedX402ChainV1,
+  createDacsX402SellerEvmObserverV1,
+} from "../src/x402SellerEvm.js";
 
 const ASSET = `0x${"44".repeat(20)}`;
 const PAYER = `0x${"55".repeat(20)}`;
@@ -308,6 +311,24 @@ describe("seller x402 canonical EVM observation", () => {
       disposition: "unsupported",
       reason: "settlement-chain-unregistered",
     });
+  });
+
+  // The public classifier holds its own chain operand to the rail's chain,
+  // even when the candidate rail is an exact clone.
+  it.each([1, 8453])("classifies no chain but the rail's own (chain %i)", (chainId) => {
+    const authenticatedRail = rail();
+    const classify = classifyDacsAuthenticatedX402ChainV1(authenticatedRail as never);
+    expect(classify({
+      chainId,
+      rail: structuredClone(authenticatedRail) as never,
+    })).toEqual({
+      disposition: "unsupported",
+      reason: "settlement-chain-unregistered",
+    });
+    expect(classify({
+      chainId: 84532,
+      rail: structuredClone(authenticatedRail) as never,
+    })).toEqual({ disposition: "l2" });
   });
 });
 
