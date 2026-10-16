@@ -939,12 +939,14 @@ async function dockerRuntime(
       !Number.isSafeInteger(runtimeGid) || runtimeGid <= 0) {
     return fail("docker-runtime-identity-unsafe");
   }
-  return new Promise((resolve) => {
-    const child = spawn("docker", ["version", "--format", "{{.Server.Version}}"], {
-      stdio: ["ignore", "ignore", "ignore"], shell: false,
+  const inspect = (args: string[]): Promise<string | undefined> => new Promise((resolve) => {
+    if (context.signal.aborted) { resolve(undefined); return; }
+    const child = spawn("docker", args, {
+      stdio: ["ignore", "pipe", "ignore"], shell: false,
     });
+    let output = "";
     let settled = false;
-    const finish = (result: Readonly<DacsLiveDoctorProbeResultV1>) => {
+    const finish = (result: string | undefined) => {
       if (settled) return;
       settled = true;
       context.signal.removeEventListener("abort", onAbort);
@@ -952,15 +954,34 @@ async function dockerRuntime(
     };
     const onAbort = () => {
       child.kill("SIGTERM");
-      finish(blocked("docker-runtime-timeout"));
+      finish(undefined);
     };
+    child.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+      if (output.length > 256) { child.kill("SIGTERM"); finish(undefined); }
+    });
     context.signal.addEventListener("abort", onAbort, { once: true });
     if (context.signal.aborted) onAbort();
-    child.once("error", () => finish(blocked("docker-runtime-unavailable")));
-    child.once("exit", (code) => finish(code === 0
-      ? pass({ servicePortCount: endpoints.length })
-      : blocked("docker-runtime-unavailable")));
+    child.once("error", () => finish(undefined));
+    child.once("close", (code) => finish(code === 0 ? output.trim() : undefined));
   });
+  const runtime = await inspect(["version", "--format", "{{.Client.Version}} {{.Server.Version}}"]);
+  if (runtime === undefined) return blocked(context.signal.aborted
+    ? "docker-runtime-timeout" : "docker-runtime-unavailable");
+  const versions = runtime.split(/\\s+/);
+  if (versions.length !== 2 || versions.some((value) => {
+    const version = /^v?(\\d+)\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$/.exec(value);
+    return version === null || Number(version[1]) < 24 || Number(version[1]) > 28;
+  })) return fail("docker-version-unsupported");
+  const compose = await inspect(["compose", "version", "--short"]);
+  if (compose === undefined) return blocked(context.signal.aborted
+    ? "docker-runtime-timeout" : "docker-compose-unavailable");
+  const version = /^v?(\\d+)\\.(\\d+)\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$/.exec(compose);
+  if (version === null || Number(version[1]) !== 2 ||
+      Number(version[2]) < 10 || Number(version[2]) > 40) {
+    return fail("docker-compose-version-unsupported");
+  }
+  return pass({ servicePortCount: endpoints.length, dockerVersion: runtime, composeVersion: compose });
 }
 
 async function versionBindings() {
@@ -4637,15 +4658,15 @@ const projectName = directoryName + "-" +
 // project name, so until the recorded project's containers are gone, no compose
 // call runs from the new directory: it would neither stop the old roles nor
 // keep a second pair from starting on the same data. The record also names
-// this directory's inode, which a move within one file system keeps and a copy
-// does not, so a copy put where the project was moved from gets its project
-// name but runs no compose call while that project has containers. It leaves
-// out the file system's device number, which a reboot or remount can change
-// under the same directory.
+// this directory's device and inode. A changed device fails closed, including
+// after a remount: a device change cannot distinguish a remount from a copy on
+// another file system with the same inode. Recovery removes the old containers
+// explicitly before a fresh dacs:up records the directory again.
 const projectRecordPath = new URL("compose-project.json", receiptDirectory);
 // The directory as the file system knows it, rather than by its path.
-function directoryInode() {
-  return String(statSync(projectPath, { bigint: true }).ino);
+function directoryIdentity() {
+  const stat = statSync(projectPath, { bigint: true });
+  return { device: String(stat.dev), inode: String(stat.ino) };
 }
 const services = ${quotedList(COMPOSE_SERVICES)};
 const composeArguments = [
@@ -4729,7 +4750,9 @@ function recordedProject() {
   if (record === null || typeof record !== "object" || record.recordVersion !== 1 ||
       typeof record.project !== "string" || !${COMPOSE_PROJECT_NAME_PATTERN}.test(record.project) ||
       typeof record.directory !== "string" ||
-      typeof record.inode !== "string" || !/^[0-9]+$/.test(record.inode)) {
+      typeof record.inode !== "string" || !/^[0-9]+$/.test(record.inode) ||
+      (record.device !== undefined &&
+        (typeof record.device !== "string" || !/^[0-9]+$/.test(record.device)))) {
     throw new Error(".dacs-runtime/compose-project.json is not a compose project record");
   }
   return record;
@@ -4741,19 +4764,20 @@ function recordedHere(record) {
       record.directory !== projectPath) {
     return false;
   }
-  return record.inode === directoryInode();
+  const current = directoryIdentity();
+  return record.device === current.device && record.inode === current.inode;
 }
-// Exits before any compose call unless compose is v2.10 or later, the project
+// Exits before any compose call unless compose is in the supported range, the project
 // dacs:up last started from another directory has no containers left, every
 // container in this project was created by compose for this directory, and,
 // if the project has any, dacs:up started it from this very directory.
 function requireOwnProject() {
   let refusal;
   try {
-    const version = /^v?(\\d+)\\.(\\d+)\\./.exec(docker(["compose", "version", "--short"]));
-    if (version === null || Number(version[1]) < 2 ||
-        (Number(version[1]) === 2 && Number(version[2]) < 10)) {
-      refusal = "this project needs the Docker Compose plugin v2.10 or later";
+    const version = /^v?(\\d+)\\.(\\d+)\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$/.exec(
+      docker(["compose", "version", "--short"]));
+    if (version === null || Number(version[1]) !== 2 || Number(version[2]) < 10 || Number(version[2]) > 40) {
+      refusal = "this project needs the Docker Compose plugin v2.10 through v2.40";
     } else {
       const record = recordedProject();
       if (record !== undefined && record.project !== projectName &&
@@ -4774,8 +4798,9 @@ function requireOwnProject() {
           refusal = "compose project " + projectName + " has containers, but " +
             ".dacs-runtime/compose-project.json does not show that dacs:up started them " +
             "from this directory: it may be a copy of a project that was moved from " +
-            projectPath + " while its roles ran. Move that project back here to run its " +
-            "commands, or remove the containers from any directory with: docker compose " +
+            projectPath + " while its roles ran, or its device changed after a remount. " +
+            "Move this directory aside and that project back here to run its commands, " +
+            "or remove the containers from any directory with: docker compose " +
             "--project-name " + projectName + " down (both data directories are kept), " +
             "then rerun";
         }
@@ -4874,7 +4899,7 @@ if (mode === "up") {
     recordVersion: 1,
     project: projectName,
     directory: projectPath,
-    inode: directoryInode(),
+    ...directoryIdentity(),
   }) + "\\n", { mode: 0o600, flag: "wx" });
   renameSync(temporaryRecord, projectRecordPath);
   const runtimeSettings = { DACS_IMAGE: imageId, DACS_RUNTIME_UID: uid, DACS_RUNTIME_GID: gid };
@@ -5089,6 +5114,9 @@ process.stdout.write(JSON.stringify({
 const DOCKERFILE = `FROM ${IMAGE_BASE} AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
+# Generated host files are private; this image contains only public build inputs.
+# Compose may run as a different non-root UID from the image's default user.
+RUN chmod 0644 package.json package-lock.json
 RUN npm ci --ignore-scripts --omit=optional --no-audit --no-fund
 RUN npm rebuild better-sqlite3
 COPY tsconfig.json dacs.config.ts ./
@@ -5599,11 +5627,16 @@ recorded directory is another project that is still in use (this directory is
 a copy of it), delete this directory's \`.dacs-runtime/compose-project.json\`
 instead. A copy or clone of this project shares its identity, so one put at a
 path this project was moved from gets the project name of the containers
-started there. The record therefore also names this directory's inode, which
-a move within one file system keeps and a copy, clone or restore does not, and
-while the project has containers these commands run only from the directory
-whose \`dacs:up\` started them. (The record leaves out the file system's device
-number, which a reboot or remount can change.) Elsewhere, including in a copy
+started there. The record also binds this directory's device and inode. A
+move within one file system keeps both; a copy to another file system cannot
+claim ownership by reusing an inode number. If a reboot or remount changes the
+device number, the commands fail closed too: explicitly remove the recorded
+containers with \`docker compose --project-name <project> down\`, then rerun
+\`dacs:up\` to record the new device. Older inode-only records need the same
+recovery. This binding assumes an ordinary directory. A file-system snapshot,
+clone or rollback restored at the same path with the same device and inode
+counts as this directory; it cannot be distinguished by this record.
+Elsewhere, including in a copy
 without \`.dacs-runtime/\`, they refuse: move the project that started the
 containers back to run its commands, or remove the containers from any
 directory with \`docker compose --project-name <project> down\`, which keeps both
@@ -5621,10 +5654,13 @@ confirms neither still runs and exits non-zero. If it cannot stop them, or the
 project now has a container that compose created for another directory, it
 stops nothing more, says so and exits 1.
 
-These commands need the Docker CLI with the Compose plugin v2.10 or later, this
-project's documented minimum; each compose command checks \`docker compose
-version\` first and refuses an older plugin. The smoke accepts the image
-configuration that Docker CLI versions both before and after 28.2 print, and
+The supported toolchain is Docker CLI and Engine 24.x through 28.x with
+Compose 2.10.x through 2.40.x. Doctor checks both Docker versions and Compose;
+each compose command also checks \`docker compose version\` and refuses a
+plugin outside that range. CI builds this Dockerfile for x402 and pay-dem with
+Docker 24.0.9 / Compose 2.10.2 and Docker 28.5.1 / Compose 2.40.3, then runs its
+image smoke. The smoke accepts the image configuration that Docker CLI
+versions both before and after 28.2 print, and
 requires the image to run Node.js ${IMAGE_NODE_VERSION}, the release the
 Dockerfile's digest-pinned base image provides.
 

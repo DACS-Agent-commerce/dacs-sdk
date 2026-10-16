@@ -543,7 +543,7 @@ syncBuiltinESMExports();
 // Environment that runs the generated script under TEST_ONLY_STAT_SHIFT_SHIM.
 async function statShiftEnvironment(
   target: string,
-  shift: Readonly<{ dev: number; ino: number }>,
+  shift: Readonly<{ dev: number; ino: number | string }>,
 ): Promise<Record<string, string>> {
   const shim = join(await temporaryDirectory(), "stat-shift-shim.mjs");
   await writeFile(shim, TEST_ONLY_STAT_SHIFT_SHIM, "utf8");
@@ -692,8 +692,9 @@ async function generatedComposeArguments(target: string): Promise<string[]> {
 }
 
 // The inode the Docker lifecycle records for a project directory.
-async function directoryInode(target: string): Promise<{ inode: string }> {
-  return { inode: String((await stat(target, { bigint: true })).ino) };
+async function directoryInode(target: string): Promise<{ device: string; inode: string }> {
+  const observed = await stat(target, { bigint: true });
+  return { device: String(observed.dev), inode: String(observed.ino) };
 }
 
 // A compose command on the project, rather than `docker compose version`.
@@ -1224,11 +1225,10 @@ process.exit(1);
     expect(readme).toContain("the first 12 hex digits of the SHA-256 of this project's identity\n" +
       "followed by the directory's full path");
     expect(readme).toContain("nor does a\nnew project generated at a path this one was moved from");
-    expect(readme).toContain("The record therefore also names this directory's inode, which\n" +
-      "a move within one file system keeps and a copy, clone or restore does not, and\n" +
-      "while the project has containers these commands run only from the directory\n" +
-      "whose `dacs:up` started them. (The record leaves out the file system's device\n" +
-      "number, which a reboot or remount can change.)");
+    expect(readme).toContain("The record also binds this directory's device and inode.");
+    expect(readme).toContain("If a reboot or remount changes the\ndevice number, the commands fail closed too");
+    expect(readme).toContain("Older inode-only records need the same\nrecovery.");
+    expect(readme).toContain("A file-system snapshot,\nclone or rollback restored at the same path with the same device and inode\ncounts as this directory");
     expect(readme).toContain("including in a copy\nwithout `.dacs-runtime/`, they refuse: " +
       "move the project that started the\ncontainers back to run its commands, or remove " +
       "the containers from any\ndirectory with `docker compose --project-name <project> down`");
@@ -1237,7 +1237,7 @@ process.exit(1);
     expect(readme).toContain("If you moved the project, remove the old\ncontainers with " +
       "`docker compose --project-name <recorded project> down`");
     expect(readme).not.toContain("never share one");
-    expect(readme).toContain("Compose plugin v2.10 or later, this\nproject's documented minimum");
+    expect(readme).toContain("Docker CLI and Engine 24.x through 28.x with\nCompose 2.10.x through 2.40.x");
     expect(readme).not.toContain("which added");
     expect(readme).toContain(`requires the image to run Node.js ${GENERATED_IMAGE_NODE_VERSION}`);
     // The script's --up, --stop and --down modes are exercised directly below; the
@@ -1926,19 +1926,19 @@ process.exit(1);
       }
 
       // Compose before v2.10, or a version it cannot read, is refused.
-      for (const composeVersion of ["2.9.0", "v2.9.9", "1.29.2", "dev", "2.10"]) {
+      for (const composeVersion of ["2.9.0", "v2.9.9", "1.29.2", "dev", "2.10", "2.41.0", "5.6.0"]) {
         for (const args of lifecycle) {
           const refused = await runGeneratedDockerSmoke(production, passingDockerScenario({
             composeVersion,
           }), { args });
           expect(refused.status, `${composeVersion} ${args.join(" ")}`).toBe(2);
           expect(refused.stderr).toContain(
-            "this project needs the Docker Compose plugin v2.10 or later",
+            "this project needs the Docker Compose plugin v2.10 through v2.40",
           );
           expect(refused.invocations.filter(isComposeInvocation)).toEqual([]);
         }
       }
-      for (const composeVersion of ["2.10.0", "v2.10.2", "2.40.3-desktop.1", "5.6.0"]) {
+      for (const composeVersion of ["2.10.0", "v2.10.2", "2.40.3-desktop.1"]) {
         const accepted = await runGeneratedDockerSmoke(production, passingDockerScenario({
           composeVersion,
         }), { args: ["--down"] });
@@ -2066,6 +2066,9 @@ process.exit(1);
           { inode: 1 },
           { inode: "" },
           { inode: "1a" },
+          { device: 1 },
+          { device: "" },
+          { device: "1a" },
         ].map((change) => [JSON.stringify({ ...copiedRecord, ...change }),
           ".dacs-runtime/compose-project.json is not a compose project record"]),
       ]) {
@@ -2209,7 +2212,8 @@ process.exit(1);
       const refusal = `compose project ${project} has containers, but ` +
         ".dacs-runtime/compose-project.json does not show that dacs:up started them from " +
         `this directory: it may be a copy of a project that was moved from ${originalPath} ` +
-        "while its roles ran. Move that project back here to run its commands, or remove " +
+        "while its roles ran, or its device changed after a remount. " +
+        "Move this directory aside and that project back here to run its commands, or remove " +
         "the containers from any directory with: docker compose " +
         `--project-name ${project} down (both data directories are kept), then rerun`;
       for (const runtime of ["copied", "omitted"]) {
@@ -2220,16 +2224,23 @@ process.exit(1);
           .toBe(0);
         expect(await realpath(original)).toBe(originalPath);
         expect(await generatedProjectName(original)).toBe(project);
-        for (const containers of [running, stopped, [running[0]!]]) {
-          for (const args of [["--up"], ["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
-            const label = `${runtime} ${args.join(" ")}`;
-            const refused = await runGeneratedDockerSmoke(original, passingDockerScenario({
-              containers,
-            }), { args });
-            expect(refused.status, label).toBe(2);
-            expect(refused.stderr, label).toContain(refusal);
-            expect(refused.invocations.filter(isComposeInvocation), label).toEqual([]);
-            expect(refused.containers ?? containers, label).toEqual(containers);
+        const collision = await statShiftEnvironment(original, {
+          dev: 1,
+          ino: String((await stat(moved, { bigint: true })).ino -
+            (await stat(original, { bigint: true })).ino),
+        });
+        for (const env of [undefined, collision]) {
+          for (const containers of [running, stopped, [running[0]!]]) {
+            for (const args of [["--up"], ["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
+              const label = `${runtime} ${env ? "inode collision" : "copy"} ${args.join(" ")}`;
+              const refused = await runGeneratedDockerSmoke(original, passingDockerScenario({
+                containers,
+              }), { args, env });
+              expect(refused.status, label).toBe(2);
+              expect(refused.stderr, label).toContain(refusal);
+              expect(refused.invocations.filter(isComposeInvocation), label).toEqual([]);
+              expect(refused.containers ?? containers, label).toEqual(containers);
+            }
           }
         }
         // Once the moved project's containers are gone, the copy starts as its own.
@@ -2267,58 +2278,50 @@ process.exit(1);
   );
 
   test.runIf(process.platform !== "win32")(
-    "keeps running the project's own commands after a remount renumbers its file system",
+    "refuses colliding inodes on another device and recovers explicitly after a remount",
     async () => {
       const target = await generatedDockerProject("agent");
-      const project = await generatedProjectName(target);
       expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
-      const started = await runGeneratedDockerSmoke(target, passingDockerScenario(), {
-        args: ["--up"],
-      });
+      const started = await runGeneratedDockerSmoke(target, passingDockerScenario(), { args: ["--up"] });
       expect(started.status).toBe(0);
       const running = started.containers!;
-
-      // Another directory at this path, with another inode, is still refused,
-      // so the shifted stat reaches the script.
-      const other = await runGeneratedDockerSmoke(target, passingDockerScenario({
-        containers: running,
-      }), { args: ["--stop"], env: await statShiftEnvironment(target, { dev: 0, ino: 1 }) });
-      expect(other.status).toBe(2);
-      expect(other.stderr).toContain(`compose project ${project} has containers, but ` +
-        ".dacs-runtime/compose-project.json does not show that dacs:up started them");
-      expect(other.invocations.filter(isComposeInvocation)).toEqual([]);
-
-      // The same directory and inode on a file system with another device number.
-      const env = await statShiftEnvironment(target, { dev: 1, ino: 0 });
-      for (const args of [["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
-        const result = await runGeneratedDockerSmoke(target, passingDockerScenario({
-          containers: running,
-        }), { args, env });
-        expect(result.stderr, args.join(" ")).toBe("");
-        expect(result.status, args.join(" ")).toBe(0);
-        expect(result.invocations.filter(isComposeInvocation), args.join(" ")).toEqual([[
-          ...await generatedComposeArguments(target),
-          ...(args[0] === "--stop" ? ["stop"] : ["down", ...args.slice(1)]),
-        ]]);
+      const recordPath = join(target, ".dacs-runtime", "compose-project.json");
+      const originalRecord = await readFile(recordPath, "utf8");
+      for (const shift of [{ dev: 0, ino: 1 }, { dev: 1, ino: 0 }]) {
+        const env = await statShiftEnvironment(target, shift);
+        for (const args of [["--stop"], ["--down"], ["--down", "--remove-orphans"], ["--up"]]) {
+          const result = await runGeneratedDockerSmoke(target, passingDockerScenario({ containers: running }),
+            { args, env });
+          expect(result.status, JSON.stringify({ shift, args })).toBe(2);
+          expect(result.stderr).toContain("or its device changed after a remount");
+          expect(result.stderr).toContain("docker compose --project-name ");
+          expect(result.invocations.filter(isComposeInvocation)).toEqual([]);
+          expect(result.containers ?? running).toEqual(running);
+          expect(await readFile(recordPath, "utf8")).toBe(originalRecord);
+        }
       }
-      const restarted = await runGeneratedDockerSmoke(target, passingDockerScenario({
-        containers: [],
-      }), { args: ["--up"], env });
+      // An older inode-only record is readable but cannot authorize an action
+      // on existing containers, even if the inode and path match.
+      const record = JSON.parse(originalRecord) as Record<string, unknown>;
+      delete record.device;
+      await writeFile(recordPath, JSON.stringify(record), "utf8");
+      const legacy = await runGeneratedDockerSmoke(target, passingDockerScenario({ containers: running }),
+        { args: ["--stop"] });
+      expect(legacy.status).toBe(2);
+      expect(legacy.invocations.filter(isComposeInvocation)).toEqual([]);
+      // After the explicit down removes the containers, up can rebind the
+      // record to the remounted directory, and its own stop works again.
+      const env = await statShiftEnvironment(target, { dev: 1, ino: 0 });
+      const restarted = await runGeneratedDockerSmoke(target, passingDockerScenario({ containers: [] }),
+        { args: ["--up"], env });
       expect(restarted.stderr).toBe("");
       expect(restarted.status).toBe(0);
-
-      // A record that also names a device, which this directory no longer has.
-      const recordPath = join(target, ".dacs-runtime", "compose-project.json");
-      const record = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
-      const device = (await stat(target, { bigint: true })).dev + 1n;
-      await writeFile(recordPath, JSON.stringify({ ...record, device: String(device) }), "utf8");
-      const stale = await runGeneratedDockerSmoke(target, passingDockerScenario({
-        containers: running,
-      }), { args: ["--stop"] });
-      expect(stale.stderr).toBe("");
-      expect(stale.status).toBe(0);
-      expect(stale.invocations.filter(isComposeInvocation))
-        .toEqual([[...await generatedComposeArguments(target), "stop"]]);
+      const rebound = JSON.parse(await readFile(recordPath, "utf8"));
+      expect(rebound.device).toBe(String((await stat(target, { bigint: true })).dev + 1n));
+      const own = await runGeneratedDockerSmoke(target, passingDockerScenario({ containers: restarted.containers! }),
+        { args: ["--stop"], env });
+      expect(own.status).toBe(0);
+      expect(own.invocations.filter(isComposeInvocation)).toHaveLength(1);
     },
     SPAWNING_TEST_TIMEOUT_MS * 2,
   );

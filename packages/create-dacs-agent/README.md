@@ -49,20 +49,22 @@ moved one used to be. Its lifecycle commands
 refuse a compose project with containers from another directory, and, after
 the directory is moved, refuse to run until the project started from the old
 location has no containers left. While the project has containers they run
-only from the directory whose `dacs:up` started them, identified by its inode
-(which a move within one file system keeps) rather than its file system's
-device number (which a reboot or remount can change), so a copy put where the
-project was moved from cannot stop or remove the moved project's roles. The
-generated README gives the recovery.
+only from the directory whose `dacs:up` started them, identified by its device
+and inode. A changed device after a remount also fails closed; the generated
+README gives explicit container removal and restart recovery. The binding
+assumes an ordinary directory: a file-system snapshot, clone or rollback at
+the same path with the same device and inode counts as this directory.
 
-This package's tests run the generated `dacs:image:smoke`, `dacs:up` and
-`dacs:down` script against a test-only `docker` that models the Docker CLI and
-Compose, and run the image probe against a host-side stand-in for the image's
-production tree. No test or CI job builds the generated Dockerfile or runs the
-smoke against a built image, so the image-level guarantees (its Node.js
-release, the better-sqlite3 native binding inside the image, and the service
-exiting at its role check) are checked by the smoke at deployment time but not
-yet proven in CI.
+The supported toolchain is Docker CLI and Engine 24.x through 28.x and Compose
+2.10.x through 2.40.x. Doctor checks the CLI, Engine and Compose versions; every
+lifecycle Compose call also checks the plugin version. CI builds the unmodified
+generated Dockerfile and runs its zero-spend image smoke for both x402 and
+pay-dem, using Docker 24.0.9 / Compose 2.10.2 and Docker 28.5.1 / Compose 2.40.3.
+The CI lock uses this checkout's packed release set, served over loopback during
+the build, so unpublished packages do not block image verification. The smoke
+checks the image's Node.js release, production dependencies, better-sqlite3
+native binding and service command's missing-role exit. Unit tests also cover
+failure paths with a test-only Docker CLI and production-tree stand-in.
 
 The live bootstrap currently supervises buyer and seller services. Its
 `--role` default is therefore restricted to `buyer` or `seller`; the generated

@@ -273,14 +273,15 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
   directories with the same name never share a project, and nor does a new
   project generated at a path another project was moved from;
 - record the project it starts inside the project directory, with the
-  directory's inode but not its file system's device number, which a reboot or
-  remount can change;
+  directory's device and inode. A changed device after reboot or remount MUST
+  fail closed and require explicit removal of the recorded containers before
+  restarting;
 - ignore `COMPOSE_*` environment variables and compose override files, and
-  refuse to run while `.env` mentions `COMPOSE_`, while Compose is older than
-  v2.10, while the compose project has a container created for another
+  refuse to run while `.env` mentions `COMPOSE_`, while Compose is outside
+  v2.10.x through v2.40.x, while the compose project has a container created for another
   project directory, while a project recorded from another directory still
   has containers, or while the compose project has containers and the record
-  does not name this project, path and inode (as for a copy put at a
+  does not name this project, path, device and inode (as for a copy put at a
   path the project was moved from), as the generated `dacs:down` and
   maintenance stops also MUST, and name that project and the recovery; and
 - stop both roles and fail unless compose started and created each from the
@@ -288,15 +289,23 @@ deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
   once the project has a container created for another directory, and report a
   failure to stop them or confirm that they stopped.
 
-The generated Docker lifecycle requires the Compose plugin v2.10 or later, and
-checks it before each compose call.
+The supported toolchain is Docker CLI and Engine 24.x through 28.x, and
+Compose 2.10.x through 2.40.x. Doctor MUST check both Docker versions and the
+Compose version. The lifecycle also checks Compose before each compose call.
+CI builds the generated Dockerfile and runs its zero-spend image smoke for
+x402 and pay-dem on Docker 24.0.9 / Compose 2.10.2 and Docker 28.5.1 / Compose
+2.40.3. It uses this checkout's packed release set in the build lock while
+keeping the generated manifest and Dockerfile unchanged. The image smoke
+checks Node.js, production dependencies, the native SQLite binding and the
+service command's missing-role exit. Unit tests use a Docker CLI model for
+failure paths.
 
-The generator's tests run these commands against a test-only `docker` and run
-the image probe against a host-side stand-in for the image's production tree.
-No test or CI job yet builds the generated Dockerfile and smokes the built
-image, so the image's Node.js release, its better-sqlite3 native binding and
-its service command's role-check exit are enforced by `dacs:image:smoke` at
-deployment time but not proven in CI.
+The directory binding assumes an ordinary directory. A file-system snapshot,
+clone or rollback restored at the same path with the same device and inode
+counts as this directory. After a changed device or an older inode-only record,
+remove the recorded containers explicitly with
+`docker compose --project-name <project> down` (data directories are kept), then
+rerun `dacs:up` to bind the new identity.
 
 `dacs:setup` owns bounded setup writes such as Listing and binding publication.
 Without live-write confirmation it MUST print a read-only plan and exit without
