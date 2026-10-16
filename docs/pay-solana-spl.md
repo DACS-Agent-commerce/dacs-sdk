@@ -86,9 +86,10 @@ result.
   of band. A transfer that landed but does not match the intent
   (`solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`)
   is reported here, because funds may have moved.
-- `transient`: the preflight read failed (`solana-spl-preflight-unavailable`).
-  The call signed nothing, and every retained attempt had durable `finalized`
-  expiry evidence, so nothing under the key can land. The key stays open:
+- `transient`: a preflight read failed, or authenticated no-submission
+  evidence proves a preparation RPC failure, congestion or timeout. The call
+  left no transaction able to land, and every retained attempt had durable
+  `finalized` expiry evidence, so nothing under the key can land. The key stays open:
   retry the same authority. It never authorizes paying the phase another way.
 - `failed`: nothing under this settlement key moved tokens or can land. The
   store shows no retained attempt, or every retained attempt with complete,
@@ -110,14 +111,14 @@ result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
 
 | Status | Reason codes |
 |---|---|
-| `failed` / `permanent` | `solana-spl-insufficient-token-balance`, `solana-spl-insufficient-network-fee-balance`, `solana-spl-insufficient-ata-rent-and-fee-balance`, `solana-spl-transfer-failed-on-chain` |
+| `failed` / `permanent` | `solana-spl-insufficient-token-balance`, `solana-spl-insufficient-network-fee-balance`, `solana-spl-insufficient-ata-rent-and-fee-balance`, `solana-spl-transfer-failed-on-chain`, `solana-spl-invalid-signature` |
 | `failed` / `counterparty` | `solana-spl-payee-ata-missing`, `solana-spl-payee-ata-binding-mismatch` |
-| `transient` | `solana-spl-preflight-unavailable` |
+| `transient` | `solana-spl-preflight-unavailable`, `solana-spl-preparation-rpc-failure`, `solana-spl-preparation-congestion`, `solana-spl-preparation-timeout` |
 | `waiting` | `solana-spl-settlement-held`, `solana-spl-reconciliation-pending`, `solana-spl-broadcast-not-yet-visible` |
 | `indeterminate`, before the store is read | `solana-spl-authority-invalid`, `solana-spl-runtime-policy-invalid`, `solana-spl-dependencies-invalid`, `solana-spl-settlement-store-unavailable` |
 | `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
 | `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable`, `solana-spl-predecessor-landed-failed` |
-| `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain` |
+| `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain`, `solana-spl-other-attempt-unresolved`, `solana-spl-multiple-settlements` |
 | `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-payee-ata-not-associated`, `solana-spl-payer-rent-state-unknown`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
 
 A store `conflict` (another binding already holds the same job, rail and
@@ -130,8 +131,13 @@ itself failed, and `indeterminate` when the lease was lost around it, whether
 the read then returned or failed, because another worker may then be signing.
 `solana-spl-predecessor-landed-failed` is a predecessor with `confirmed`
 expiry evidence from an earlier version that the chain has since refused at
-`finalized`. That attempt cannot land, but the store holds no `finalized`
-expiry evidence for it, so reconcile the key by hand.
+`finalized`, with no matching settlement found among its successors. Recovery
+checks every successor without broadcasting or signing. A matching settlement
+may close the key only after all other attempts have finalized expiry or
+finalized refusal evidence. `solana-spl-other-attempt-unresolved` means another
+attempt may still land; `solana-spl-multiple-settlements` means at least two
+matching payments were observed. Both keep the key open for reconciliation
+or out-of-band resolution, with no new payment authorized.
 
 ### Reporting to the phase handler
 
@@ -147,27 +153,41 @@ DACS-4 PC-4 classifies a payment phase as `ok: true`, or `ok: false` with an
 | `indeterminate` | Not a phase outcome. Keep the session non-terminal: PC-7 reconciliation of the original binding, by resuming or out of band. |
 
 `transient` is the one result that may count against a retry budget. The
-core returns it only before anything is signed in the call, when every
+core returns it only when the call left no transaction able to land and every
 retained attempt already has durable `finalized` expiry evidence, so a retry
 of the same key cannot pay twice. The key is not closed, so the retry
 continues it. If the budget runs out and the session ends `failed-perm`
 (DACS-5), nothing under the key has landed, but the key is still open: do not
 resume it after the session is terminal.
 
-Never report `waiting` or `indeterminate` as `transient`. A transient
-failure can exhaust a retry budget and end the session as `failed-perm`
-while a retained transfer can still land. §9.5.3's "congestion or
-timeout → `transient`" is the case the core reports as `waiting` or
-`indeterminate` once a transfer may have been broadcast, because only
-reconciliation may then end the phase. Two PC-4 rows remain deviations for
-the same reason. There is no `permanent` result for a signature the core
-refuses, and no result at all for a wallet that declines to sign. Both are
-`indeterminate` (`solana-spl-prepared-transaction-invalid`,
-`solana-spl-preparation-unavailable`), and the key stays open. A signer that
-throws, or returns bytes the core refuses, proves nothing about whether it
-also signed or sent something, and `permanent` would let the phase be paid
-another way while such a transaction could land. (A wallet decline as
-`counterparty` is §9.5.2's EVM rule, not §9.5.3's.)
+PC-4's invalid-signature, RPC-failure and §9.5.3 congestion/timeout outcomes
+are available after an unsuccessful preparation through the optional
+`adapter.proveNoSubmission(plan, attempt, fence)` method. It must authenticate
+a wallet audit proving that the preparation left no transaction submitted or
+able to land, including any work done before an exception or malformed reply.
+It returns `null` when that cannot be proved. A broadcast rejection, missing
+RPC result, local parser refusal or wallet exception alone is insufficient.
+The proof binds `authorityHash`, `attempt`, lease `owner` and `generation`,
+the `failure` and `authenticationHash`. The hash commits to those fields and
+the authenticated audit. The core checks plain-data shape and these bindings,
+not audit authenticity; the adapter is the authentication boundary. It checks
+the fence again after the proof returns. Existing adapters may omit the
+method, in which case uncertain preparation remains `indeterminate`.
+
+A proven `invalid-signature` closes the key through `recordFailure` as
+`failed` / `permanent` (`solana-spl-invalid-signature`), retaining the proof.
+Proven `rpc-failure`, `congestion` and `timeout` return `transient`, leaving
+the key open for the same authority. These paths are reached only after every
+retained attempt has durable finalized expiry evidence. The proof method is
+never used after broadcast. A production adapter must implement authenticated
+no-submission auditing to provide these preparation classifications.
+
+After broadcast, `waiting` and `indeterminate` are reconciliation states,
+with no phase outcome yet. Keep the phase non-terminal and resume the same
+binding under PC-7. Do not manufacture a transient phase failure from an
+uncertain broadcast: exhausting a retry budget while that payment can still
+land would permit another route to pay twice. A wallet decline alone also
+remains uncertain; §9.5.2's EVM `counterparty` rule does not apply here.
 
 The core is the rail step of a payment phase, not a whole PC-7 handler. After
 `settled`, the caller still owns the rest of PC-7: build and sign the
@@ -197,8 +217,11 @@ hold `confirmed` evidence for any attempt: the core loads it, but reconciles
 that attempt again before it signs, reports `transient` or closes the key,
 and the store must then let the new `finalized` evidence for that signature
 replace the `confirmed` record. A predecessor is never rebroadcast: one not
-yet expired at `finalized` is `waiting`, and one that landed is settled or
-`indeterminate`, as the latest attempt would be.
+yet expired at `finalized` is `waiting`. When one lands at the intent's
+commitment or is refused at `finalized`, recovery reconciles every successor
+read-only before recording
+settlement. A refused predecessor does not close the key as `failed`, unlike
+a refused latest attempt: a successor may already have paid or may still land.
 `expiredSignatures` remains in the store claim for source
 compatibility, but a hash-only legacy marker is never replacement authority: it
 causes the retained attempt to be reconciled again. A store must allow a later
@@ -209,14 +232,23 @@ replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
 `recordFailure` must close the key only for the current lease generation and
-only while every retained attempt has expiry evidence (`finalized` for the
-latest) or is the attempt that `landedFailure` names. A store must refuse a `landedFailure` that does not
+only while every retained attempt has `finalized` expiry evidence or is the
+attempt that the finalized `landedFailure` names. A store must refuse a `landedFailure` that does not
 name a retained attempt or is not `finalized`, and must retain the one it
 accepts with the failure. Once it has, `claim`
 returns `{ status: "failed", intent, failure }`, `isCurrent` is false, and
 every other write for the key is refused. `failure` is exactly
 `{ errorClass, reason }`, with a reason from the `failed` rows above and its
 class; any other failure is `solana-spl-settlement-store-claim-invalid`.
+`recordSettlement` must atomically refuse settlement while any other retained
+attempt can still land. Each other attempt must have durable finalized expiry
+evidence or be named in the optional `landedFailures` array of finalized
+refusal proofs. The store must validate these proofs against distinct retained
+signatures other than the settling signature and retain them with settlement.
+This allows a refused predecessor and paid successor to resolve without hiding
+a live payment. A store supporting historical confirmed records must enforce
+this stronger close rule when upgrading.
+
 Every store object the core relies on must be plain data, and plain data has
 one meaning, enforced the same way for each of them. These objects are the
 claim and its `intent`, `lease` and `failure`, each retained attempt and

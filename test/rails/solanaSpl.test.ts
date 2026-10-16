@@ -4494,7 +4494,8 @@ describe("advanceSolanaSplSettlement with a predecessor's legacy confirmed expir
   // Retains attempts 1 and 2, each with durable finalized expiry evidence,
   // then resumes once with attempt 1's evidence shown at confirmed, as an
   // earlier version stored it. On resume attempt 1 reconciles as
-  // `predecessor` and a new attempt settles; the latest is never re-read.
+  // `predecessor` and a new attempt settles. Landed predecessors trigger
+  // a read-only reconciliation of the latest too.
   async function resumeLegacy(
     predecessor: SolanaSplReconciliation,
     resumedPreflight: () => Promise<SolanaSplPreflight> = async () => preflight(),
@@ -4634,7 +4635,7 @@ describe("advanceSolanaSplSettlement with a predecessor's legacy confirmed expir
       preflights: 0,
       prepared: [],
       broadcast: [],
-      reconciled: [1],
+      reconciled: [1, 2],
       expiries: [],
       failures: 0,
     });
@@ -4667,7 +4668,7 @@ describe("advanceSolanaSplSettlement with a predecessor's legacy confirmed expir
       preflights: 0,
       prepared: [],
       broadcast: [],
-      reconciled: [1],
+      reconciled: predecessor.disposition === "landed-failed" ? [1, 2] : [1],
       expiries: [],
       failures: 0,
     });
@@ -4687,5 +4688,251 @@ describe("advanceSolanaSplSettlement with a predecessor's legacy confirmed expir
       expiries: upgraded,
       failures: 0,
     });
+  });
+});
+
+describe("legacy predecessor recovery checks all retained successors", () => {
+  const signatureFor = (n: number) => `${"1".repeat(63)}${n}`;
+  const paid = (n: number): SolanaSplReconciliation => ({
+    disposition: "settled-same", transfer: observed({ signature: signatureFor(n), commitmentLevel: "finalized" }),
+  });
+  const refused: SolanaSplReconciliation = {
+    disposition: "landed-failed", slot: 12_345, commitmentLevel: "finalized", authenticationHash: "f".repeat(64),
+  };
+  async function recover(states: readonly SolanaSplReconciliation[]) {
+    let clock = 1_000;
+    let resumed = false;
+    const memory = createInMemorySolanaSplSettlementStore();
+    const recordSettlement = vi.fn(memory.recordSettlement);
+    const recordFailure = vi.fn(memory.recordFailure);
+    const store: SolanaSplSettlementStore = {
+      ...memory, recordSettlement, recordFailure,
+      async claim(request) {
+        const claim = await memory.claim(request);
+        if (!resumed || claim.status !== "acquired") return claim;
+        return { ...claim, expiryEvidence: claim.expiryEvidence?.map((row) => ({
+          ...row, commitmentLevel: "confirmed" as const,
+        })) };
+      },
+    };
+    const prepareSignedTransfer = vi.fn(async (plan, n, fence) => ({
+      ...(await adapter().prepareSignedTransfer(plan, n, fence)),
+      signature: signatureFor(n), signedTransactionBase64: signedWire([signatureFor(n)], `attempt-${n}`),
+    }));
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const checkedPreflight = vi.fn(adapter().preflight);
+    const seen = new Set<string>();
+    const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> => {
+      if (resumed) return states[attempt.attempt - 1]!;
+      if (seen.has(attempt.signature)) return expired(attempt);
+      seen.add(attempt.signature);
+      return { disposition: "indeterminate", reason: "not yet visible" };
+    });
+    const shared = input({ store, now: () => clock, adapter: adapter({
+      preflight: checkedPreflight, prepareSignedTransfer, broadcastRetained, reconcile,
+    }) });
+    // The predecessor was replaced under the historical confirmed rule; the
+    // latest is retained and broadcast with no expiry evidence. The returned
+    // claim has complete, consistent legacy evidence for every predecessor.
+    for (let n = 0; n < states.length; n += 1) {
+      await advanceSolanaSplSettlement({ ...shared, owner: `initial-${n}` });
+      clock += 101;
+    }
+    for (const spy of [prepareSignedTransfer, broadcastRetained, checkedPreflight, reconcile]) spy.mockClear();
+    resumed = true;
+    const result = await advanceSolanaSplSettlement({ ...shared, owner: "recovery" });
+    expect(checkedPreflight).not.toHaveBeenCalled();
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+    expect(recordFailure).not.toHaveBeenCalled();
+    const claim = await store.claim({ intent: createSolanaSplSettlementIntent(authority()),
+      owner: "after", now: clock + 101, leaseDurationMs: 100 });
+    return { result, claim, store, recordSettlement, reconciled: reconcile.mock.calls.map((call) => call[1].attempt) };
+  }
+
+  test.each<SolanaSplReconciliation>([
+    { disposition: "absent-valid", authenticationHash: HASH },
+    { disposition: "pending", reason: "congestion" },
+    { disposition: "indeterminate", reason: "timeout" },
+    { disposition: "settled-different", reason: "wrong transfer", authenticationHash: HASH },
+    { disposition: "absent-expired", observedBlockHeight: 10_003, commitmentLevel: "confirmed", authenticationHash: HASH },
+  ])("a paid predecessor never hides an unresolved successor: %j", async (successor) => {
+    const outcome = await recover([paid(1), successor]);
+    expect(outcome.result.status).toBe("indeterminate");
+    expect(outcome.recordSettlement).not.toHaveBeenCalled();
+    expect(outcome.claim.status).toBe("acquired");
+    expect(outcome.reconciled).toEqual([1, 2]);
+  });
+
+  test("the store itself refuses a predecessor settlement over a live successor", async () => {
+    const outcome = await recover([paid(1), { disposition: "absent-valid", authenticationHash: HASH }]);
+    if (outcome.claim.status !== "acquired") throw new Error("expected an open key");
+    const intent = createSolanaSplSettlementIntent(authority());
+    await expect(outcome.store.recordSettlement({
+      settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+      owner: outcome.claim.lease.owner, generation: outcome.claim.lease.generation,
+      signature: signatureFor(1), settlement: {} as never,
+    })).resolves.toEqual({ status: "conflict", reason: "solana-settlement-other-attempt-live" });
+  });
+
+  test.each(["confirmed", "bad-hash", "unknown-signature", "settling-signature", "duplicate"])(
+    "the store rejects invalid successor refusal evidence: %s", async (kind) => {
+      const outcome = await recover([paid(1), { disposition: "absent-valid", authenticationHash: HASH }]);
+      if (outcome.claim.status !== "acquired") throw new Error("expected an open key");
+      const intent = createSolanaSplSettlementIntent(authority());
+      const proof = { signature: signatureFor(2), slot: 12_345, commitmentLevel: "finalized", authenticationHash: HASH };
+      if (kind === "confirmed") proof.commitmentLevel = "confirmed";
+      if (kind === "bad-hash") proof.authenticationHash = "not authenticated";
+      if (kind === "unknown-signature") proof.signature = signatureFor(3);
+      if (kind === "settling-signature") proof.signature = signatureFor(1);
+      const proofs = kind === "duplicate" ? [proof, proof] : [proof];
+      await expect(outcome.store.recordSettlement({
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        owner: outcome.claim.lease.owner, generation: outcome.claim.lease.generation,
+        signature: signatureFor(1), settlement: {} as never, landedFailures: proofs as never,
+      })).resolves.toEqual({ status: "conflict", reason: "solana-landed-failure-invalid" });
+    },
+  );
+
+  test("two payments remain open with a distinct double-payment reason", async () => {
+    const outcome = await recover([paid(1), paid(2)]);
+    expect(outcome.result).toEqual({ status: "indeterminate", reason: "solana-spl-multiple-settlements" });
+    expect(outcome.recordSettlement).not.toHaveBeenCalled();
+    expect(outcome.claim.status).toBe("acquired");
+    expect(outcome.reconciled).toEqual([1, 2]);
+  });
+
+  test("a refused predecessor does not hide a settled latest attempt", async () => {
+    const outcome = await recover([refused, paid(2)]);
+    expect(outcome.result).toMatchObject({ status: "settled", settlement: { txRef: { signature: signatureFor(2) } } });
+    expect(outcome.recordSettlement.mock.calls[0]![0].landedFailures).toEqual([
+      { signature: signatureFor(1), slot: 12_345, commitmentLevel: "finalized", authenticationHash: "f".repeat(64) },
+    ]);
+    expect(outcome.claim.status).toBe("settled");
+    expect(outcome.reconciled).toEqual([1, 2]);
+  });
+
+  test("a settled predecessor closes only after the latest has finalized expiry", async () => {
+    const outcome = await recover([paid(1), expired({ signature: signatureFor(2), lastValidBlockHeight: 10_002 })]);
+    expect(outcome.result).toMatchObject({ status: "settled", settlement: { txRef: { signature: signatureFor(1) } } });
+    expect(outcome.claim.status).toBe("settled");
+    expect(outcome.reconciled).toEqual([1, 2]);
+  });
+
+  test("a finalized refusal of the successor permits the predecessor's settlement", async () => {
+    const outcome = await recover([paid(1), refused]);
+    expect(outcome.result.status).toBe("settled");
+    expect(outcome.recordSettlement.mock.calls[0]![0].landedFailures).toMatchObject([{ signature: signatureFor(2) }]);
+    expect(outcome.claim.status).toBe("settled");
+  });
+
+  test("recovery checks intermediate successors as well as the latest", async () => {
+    const outcome = await recover([paid(1), paid(2), expired({ signature: signatureFor(3), lastValidBlockHeight: 10_003 })]);
+    expect(outcome.result).toEqual({ status: "indeterminate", reason: "solana-spl-multiple-settlements" });
+    expect(outcome.recordSettlement).not.toHaveBeenCalled();
+    expect(outcome.reconciled).toEqual([1, 2, 3]);
+  });
+});
+
+describe("PC-4 preparation outcomes with authenticated no-submission evidence", () => {
+  const proof: NonNullable<SolanaSplAdapter["proveNoSubmission"]> = async (plan, attempt, fence) => ({
+    authorityHash: plan.intent.bindingHash, attempt, owner: fence.owner, generation: fence.generation,
+    failure: "invalid-signature", authenticationHash: HASH,
+  });
+  test.each(["throw", "invalid-bytes"])("a proven invalid signature after %s permanently closes the key", async (mode) => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordFailure = vi.spyOn(store, "recordFailure");
+    const prepareSignedTransfer = vi.fn(async () => {
+      if (mode === "throw") throw new Error("wallet refused signature");
+      return {} as never;
+    });
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const shared = input({ store, adapter: adapter({ prepareSignedTransfer, broadcastRetained, proveNoSubmission: proof }) });
+    const expected = { status: "failed", errorClass: "permanent", reason: "solana-spl-invalid-signature" };
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toEqual(expected);
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toEqual(expected);
+    expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).not.toHaveBeenCalled();
+    expect(recordFailure.mock.calls[0]![0].noSubmission).toMatchObject({ failure: "invalid-signature", attempt: 1 });
+  });
+
+  test.each(["rpc-failure", "congestion", "timeout"] as const)("proven %s is transient and retries the same key", async (failure) => {
+    let failed = true;
+    let clock = 1_000;
+    const shared = input({ now: () => clock, adapter: adapter({
+      async prepareSignedTransfer(plan, attempt, fence) {
+        if (failed) throw new Error("preparation failed");
+        return adapter().prepareSignedTransfer(plan, attempt, fence);
+      },
+      async proveNoSubmission(...args) { return { ...(await proof(...args))!, failure }; },
+    }) });
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toEqual({ status: "transient", reason: `solana-spl-preparation-${failure}` });
+    failed = false;
+    clock += 101;
+    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({ status: "settled" });
+  });
+
+  test.each([
+    { authorityHash: "b".repeat(64) }, { attempt: 2 }, { owner: "another" }, { generation: 2 },
+    { authenticationHash: "unverified" }, { failure: "arbitrary RPC detail" }, { extra: true },
+  ])("unbound or invalid proof stays indeterminate: %j", async (overrides) => {
+    const recordFailure = vi.fn();
+    await expect(advanceSolanaSplSettlement(input({
+      store: { ...createInMemorySolanaSplSettlementStore(), recordFailure },
+      adapter: adapter({
+        prepareSignedTransfer: async () => { throw new Error("failed"); },
+        proveNoSubmission: async (...args) => ({ ...(await proof(...args))!, ...overrides }) as never,
+      }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preparation-unavailable" });
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  test.each(["null", "throws", "proxy", "accessor"])("an unavailable or non-data audit (%s) stays indeterminate", async (mode) => {
+    const getter = vi.fn(() => "invalid-signature");
+    const proveNoSubmission: NonNullable<SolanaSplAdapter["proveNoSubmission"]> = async (...args) => {
+      if (mode === "throws") throw new Error("wallet audit unavailable");
+      if (mode === "null") return null;
+      const result = (await proof(...args))!;
+      return mode === "proxy" ? new Proxy(result, {}) : Object.defineProperty({ ...result }, "failure", {
+        enumerable: true, get: getter,
+      });
+    };
+    const recordFailure = vi.fn();
+    await expect(advanceSolanaSplSettlement(input({
+      store: { ...createInMemorySolanaSplSettlementStore(), recordFailure },
+      adapter: adapter({ proveNoSubmission, prepareSignedTransfer: async () => { throw new Error("failed"); } }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preparation-unavailable" });
+    expect(getter).not.toHaveBeenCalled();
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  test("a refused close after a proven signature refusal remains indeterminate", async () => {
+    await expect(advanceSolanaSplSettlement(input({
+      store: { ...createInMemorySolanaSplSettlementStore(),
+        recordFailure: async () => ({ status: "stale", reason: "lease changed" }) },
+      adapter: adapter({ proveNoSubmission: proof, prepareSignedTransfer: async () => { throw new Error("failed"); } }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-failure-persistence-uncertain" });
+  });
+
+  test("a proof received after lease loss cannot authorize a permanent failure", async () => {
+    let current = true;
+    const memory = createInMemorySolanaSplSettlementStore();
+    const recordFailure = vi.spyOn(memory, "recordFailure");
+    await expect(advanceSolanaSplSettlement(input({
+      store: { ...memory, isCurrent: async (request) => current && memory.isCurrent(request) },
+      adapter: adapter({
+        prepareSignedTransfer: async () => { throw new Error("failed"); },
+        async proveNoSubmission(...args) { const result = await proof(...args); current = false; return result; },
+      }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preparation-unavailable" });
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  test("a broadcast timeout never uses preparation-only no-submission evidence", async () => {
+    const proveNoSubmission = vi.fn(proof);
+    await expect(advanceSolanaSplSettlement(input({ adapter: adapter({
+      proveNoSubmission, broadcastRetained: async () => { throw new Error("timeout after send"); },
+    }) }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-broadcast-unavailable" });
+    expect(proveNoSubmission).not.toHaveBeenCalled();
   });
 });

@@ -159,6 +159,7 @@ export {
   type SolanaSplReconciliation,
   type SolanaSplBroadcastResult,
   type SolanaSplEffectFence,
+  type SolanaSplNoSubmissionEvidence,
   type SolanaSplAdapter,
   type SolanaSplSettlementResult,
   type SolanaSplLease,
