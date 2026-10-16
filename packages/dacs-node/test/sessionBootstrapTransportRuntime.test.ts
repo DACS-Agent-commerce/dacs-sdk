@@ -362,7 +362,8 @@ async function presentationFixture() {
 
 describe("pre-agreement session bootstrap transport", () => {
   it.each((["buyer", "seller"] as const).flatMap((role) =>
-    (["shape", "signature", "binding", "nonce-binding"] as const).map((fault) => ({ role, fault })),
+    (["shape", "signature", "binding", "nonce-binding", "missing-nonces",
+      "wrong-nonces", "missing-identity"] as const).map((fault) => ({ role, fault })),
   ))("$role consumes a $fault attempt before validation and retains it on restart", async ({ role, fault }) => {
     const value = await presentationFixture();
     const runtime = role === "buyer" ? value.buyerRuntime : value.sellerRuntime;
@@ -374,7 +375,14 @@ describe("pre-agreement session bootstrap transport", () => {
       const signature = payload[identityKey].presentation.signatures[0];
       signature.signature = (signature.signature.startsWith("A") ? "B" : "A") + signature.signature.slice(1);
     } else if (fault === "binding") payload[role === "buyer" ? "initPayloadHash" : "challengePayloadHash"] = "0".repeat(64);
-    else payload[role === "buyer" ? "sellerChallenge" : "buyerChallenge"] = "0".repeat(64);
+    else if (fault === "missing-nonces" || fault === "missing-identity") {
+      delete payload[role === "buyer" ? "sellerChallenge" : "buyerChallenge"];
+      if (fault === "missing-identity") delete payload[identityKey];
+      else delete payload[identityKey].sessionNonce;
+    } else {
+      payload[role === "buyer" ? "sellerChallenge" : "buyerChallenge"] = "0".repeat(64);
+      if (fault === "wrong-nonces") payload[identityKey].sessionNonce = "0".repeat(64);
+    }
     const invalid = await authenticated(envelope.envelope.type as "session-challenge", payload as never, {
       sender: envelope.envelope.sender, audience: envelope.envelope.audience,
       privateKey: role === "buyer" ? value.sellerKeys.privateKey : value.buyerKeys.privateKey,
@@ -384,6 +392,7 @@ describe("pre-agreement session bootstrap transport", () => {
       payload: invalid.envelope.payload, jobId: JOB_ID, sender: invalid.envelope.sender,
       audience: invalid.envelope.audience })).toEqual({ status: "valid" });
     await expect(runtime.handleMessage(invalid, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
     const old = role === "buyer" ? value.buyerDatabase : value.sellerDatabase;
     old.close();
     databases.splice(databases.indexOf(old), 1);
@@ -447,19 +456,17 @@ describe("pre-agreement session bootstrap transport", () => {
     expect(results.filter((result) => result.disposition === "rejected")).toHaveLength(1);
   });
 
-  it("binds issuance to the job and presenter, and does not consume another nonce", async () => {
+  it.each(["buyer", "seller"] as const)("%s checks job, presenter and audience before consuming its challenge", async (role) => {
     const value = await presentationFixture();
-    const valid = await value.presentationEnvelope();
-    for (const patch of [{ jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E" }, { sender: value.seller }]) {
-      await expect(value.sellerRuntime.handleMessage({ ...valid, envelope: {
+    const runtime = role === "buyer" ? value.buyerRuntime : value.sellerRuntime;
+    const valid = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    for (const patch of [{ jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E" },
+      { sender: valid.envelope.audience }, { audience: valid.envelope.sender }]) {
+      await expect(runtime.handleMessage({ ...valid, envelope: {
         ...valid.envelope, ...patch,
-      } } as never, value.inbound)).resolves.toMatchObject({ disposition: "rejected" });
+      } } as never, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
     }
-    await expect(value.sellerRuntime.handleMessage(await value.presentationEnvelope({
-      ...value.presentation, buyerChallenge: "e".repeat(64),
-      buyerIdentity: { ...value.presentation.buyerIdentity, sessionNonce: "e".repeat(64) },
-    }, 67), value.inbound)).resolves.toMatchObject({ disposition: "rejected" });
-    await expect(value.sellerRuntime.handleMessage(valid, value.inbound)).resolves.toEqual({ disposition: "accepted" });
+    await expect(runtime.handleMessage(valid, { role } as never)).resolves.toEqual({ disposition: "accepted" });
   });
 
   it("retains an authenticated, replay-safe linked transcript across both role stores", async () => {

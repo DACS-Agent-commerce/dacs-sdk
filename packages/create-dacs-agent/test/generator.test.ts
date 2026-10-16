@@ -648,14 +648,19 @@ async function runGeneratedDockerSmoke(
       for (const [name, value] of Object.entries(service.environment)) environment.set(name, interpolate(String(value)));
       return [role, {
         Config: { User: interpolate(service.user), WorkingDir: "/app", Cmd: GENERATED_SERVICE_COMMAND,
-          Env: [...environment].map(([name, value]) => name + "=" + value), Entrypoint: [] },
+          Env: [...environment].map(([name, value]) => name + "=" + value), Entrypoint: [],
+          Healthcheck: { Test: service.healthcheck.test, Interval: 10_000_000_000,
+            Timeout: 3_000_000_000, Retries: service.healthcheck.retries, StartPeriod: 10_000_000_000 } },
         Mounts: service.volumes.map((volume: string) => {
           const [source, destination, mode] = interpolate(volume).split(":");
           return { Type: "bind", Source: resolve(target, source!), Destination: destination, RW: mode !== "ro" };
         }),
         HostConfig: { ReadonlyRootfs: service.read_only, Privileged: false,
           NetworkMode: service.network_mode, CapDrop: service.cap_drop,
-          SecurityOpt: service.security_opt, Tmpfs: { "/tmp": "rw,noexec,nosuid,size=32m" } },
+          SecurityOpt: service.security_opt, Tmpfs: { "/tmp": "rw,noexec,nosuid,size=32m" },
+          Init: service.init, PidsLimit: service.pids_limit, Memory: 512 * 1024 * 1024,
+          RestartPolicy: { Name: service.restart, MaximumRetryCount: 0 },
+          LogConfig: { Type: service.logging.driver, Config: service.logging.options } },
       }];
     }));
     await writeFile(
@@ -1777,6 +1782,95 @@ process.exit(1);
     SPAWNING_TEST_TIMEOUT_MS,
   );
 
+  test.runIf(process.platform !== "win32").each(["buyer", "seller"])(
+    "dacs:up checks %s init, resource limits, restart, logging and health policy",
+    async (role) => {
+      const target = await generatedDockerProject(`bounded-${role}-agent`);
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      const up = { args: ["--up"] };
+      const model = parseYaml(await readFile(join(target, "compose.yaml"), "utf8"), { merge: true });
+      const health = { Test: model.services[role].healthcheck.test,
+        Interval: 10_000_000_000, Timeout: 3_000_000_000, Retries: 3, StartPeriod: 10_000_000_000 };
+      const refused = [
+        ...[
+          { Init: false }, { PidsLimit: 0 }, { Memory: 0 },
+          { RestartPolicy: { Name: "always", MaximumRetryCount: 0 } },
+          { RestartPolicy: { Name: "unless-stopped", MaximumRetryCount: 1 } },
+          { LogConfig: { Type: "none", Config: {} } },
+          { LogConfig: { Type: "json-file", Config: { "max-size": "10m" } } },
+          { LogConfig: { Type: "json-file", Config: { "max-size": "100m", "max-file": "3" } } },
+          { LogConfig: { Type: "json-file", Config: { "max-size": "10m", "max-file": "30" } } },
+        ].map((HostConfig) => ({ HostConfig })),
+        ...[
+          null, { Test: ["NONE"] }, { Interval: 0 }, { Timeout: 0 },
+          { Retries: 0 }, { StartPeriod: 0 }, { StartInterval: 1_000_000_000 },
+        ].map((change) => ({ Config: { Healthcheck: change === null ? null : {
+          ...health, ...change,
+        } } })),
+      ];
+      for (const inspection of refused) {
+        const result = await runGeneratedDockerSmoke(target, passingDockerScenario({
+          inspectChanges: { [role]: inspection },
+        }), up);
+        expect(result.status, JSON.stringify(inspection)).toBe(5);
+        expect(result.stderr).toContain(`${role} container resource, restart, logging or health settings differ`);
+        expect(result.containers?.every((container) => !container.running)).toBe(true);
+      }
+      // Docker 24 omits StartInterval; newer engines can return the zero default.
+      // Object property order does not alter the effective logging policy.
+      const valid = await runGeneratedDockerSmoke(target, passingDockerScenario({
+        inspectChanges: { [role]: {
+          Config: { Healthcheck: {
+            ...health, StartInterval: 0,
+          } },
+          HostConfig: { LogConfig: { Type: "json-file", Config: { "max-file": "3", "max-size": "10m" } } },
+        } },
+      }), up);
+      expect(valid.stderr).toBe("");
+      expect(valid.status).toBe(0);
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "dacs:up refuses running buyer and seller one-offs before start and after a racing start",
+    async () => {
+      const target = await generatedDockerProject("oneoff-start-agent");
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario())).status).toBe(0);
+      const up = { args: ["--up"] };
+      expect((await runGeneratedDockerSmoke(target, passingDockerScenario(), up)).status).toBe(0);
+      const projectName = await generatedProjectName(target);
+      for (const service of ["buyer", "seller"]) {
+        const oneOff: FakeContainer = {
+          Id: `container-${projectName}-${service}-run`, Image: TEST_ONLY_FAKE_IMAGE_ID,
+          project: projectName, service, running: true, oneoff: true,
+          workingDir: await realpath(target),
+        };
+        const message = `${service} compose run container is still running; stop it before retrying dacs:up`;
+        const refused = await runGeneratedDockerSmoke(target, passingDockerScenario({ containers: [oneOff] }), up);
+        expect(refused.status).toBe(2);
+        expect(refused.stderr).toContain(message);
+        expect(refused.invocations.some((args) => isComposeInvocation(args) && args.includes("up"))).toBe(false);
+        expect(refused.containers).toBeUndefined(); // No container state was changed.
+
+        const raced = await runGeneratedDockerSmoke(target, passingDockerScenario({ composeUpAdds: [oneOff] }), up);
+        expect(raced.status, raced.stderr).toBe(1);
+        expect(raced.stderr).toContain(message);
+        // Compose stop cannot stop the one-off; report that it needs attention.
+        expect(raced.stderr).toContain(`${service} is still running`);
+        expect(raced.containers?.find((container) => container.Id === oneOff.Id)?.running).toBe(true);
+        expect(raced.containers?.filter((container) => !container.oneoff).every((container) => !container.running)).toBe(true);
+
+        const retried = await runGeneratedDockerSmoke(target, passingDockerScenario({
+          containers: [{ ...oneOff, running: false }],
+        }), up);
+        expect(retried.status).toBe(0);
+        expect(retried.stderr).toBe("");
+      }
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
+  );
+
   test.runIf(process.platform !== "win32")(
     "dacs:up stops both roles unless compose created them from the smoked image ID",
     async () => {
@@ -1823,18 +1917,6 @@ process.exit(1);
         containers: [{ ...strayContainer, running: false }],
       }), up);
       expect(stopped.status).toBe(0);
-      // Nor does a one-off `compose run` container of a role.
-      const oneOff = await runGeneratedDockerSmoke(target, passingDockerScenario({
-        containers: [{
-          ...strayContainer,
-          Id: `container-${projectName}-buyer-run`,
-          service: "buyer",
-          oneoff: true,
-        }],
-      }), up);
-      expect(oneOff.stderr).toBe("");
-      expect(oneOff.status).toBe(0);
-
       // A failed or partial start, or a check that cannot complete, also stops
       // both roles and confirms that neither still runs. The first ps is the
       // check before compose up.
