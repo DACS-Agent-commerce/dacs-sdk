@@ -76,8 +76,12 @@ def bom_refs(value, found=None):
     return found
 def schema_result(validator, bom):
     """Schema validity plus repeated references. CycloneDX 1.5 requires every bom-ref to be unique, which the
-    schema cannot express, so a repeated reference makes the document invalid even without a schema error."""
-    errors = sorted({'/'.join(map(str, e.absolute_path)) + ': ' + e.validator for e in validator.iter_errors(bom)})
+    schema cannot express, so a repeated reference makes the document invalid even without a schema error.
+    This assessment also requires an exact 1.5 declaration: the schema only constrains it to a string.
+    These checks do not establish complete prose-level CycloneDX specification conformance."""
+    errors = {'/'.join(map(str, e.absolute_path)) + ': ' + e.validator for e in validator.iter_errors(bom)}
+    if bom.get('specVersion') != '1.5': errors.add('specVersion: expected 1.5')
+    errors = sorted(errors)
     duplicates = {k: n for k, n in sorted(bom_refs(bom).items()) if n > 1}
     return dict(valid=not errors and not duplicates, errors=errors, duplicate_bom_refs=duplicates)
 

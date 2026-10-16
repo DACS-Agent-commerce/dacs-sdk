@@ -79,6 +79,19 @@ class Sboms(unittest.TestCase):
     def test_valid_bom(self):
         result = validate.schema_result(self.validator, self.bom({'bom-ref': 'a@1', 'type': 'library', 'name': 'a'}))
         self.assertEqual(result, dict(valid=True, errors=[], duplicate_bom_refs={}))
+    def test_primary_output_requires_exact_specification_version(self):
+        # Primary npm output goes directly through schema_result, without check_bom.
+        primary = dict(bomFormat='CycloneDX', specVersion='1.5', version=1)
+        self.assertTrue(validate.schema_result(self.validator, primary)['valid'])
+        for version in ['0.0', '1.4', '1.6', '', None, 1.5]:
+            with self.subTest(version=version):
+                primary['specVersion'] = version
+                result = validate.schema_result(self.validator, primary)
+                self.assertFalse(result['valid'])
+                self.assertIn('specVersion: expected 1.5', result['errors'])
+        del primary['specVersion']
+        self.assertFalse(validate.schema_result(self.validator, primary)['valid'])
+
     def test_repeated_references_fail(self):
         a = {'bom-ref': 'a@1', 'type': 'library', 'name': 'a'}
         result = validate.schema_result(self.validator, self.bom(a, dict(a)))
