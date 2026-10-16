@@ -13,3 +13,8 @@ test.each(["", "job-abc", JOB.toLowerCase(), JOB + "\n", JOB + "\r", JOB + "\t",
  expect(() => fixedPriceAgreementLogicalAddress(value)).toThrow(DacsError);
  expect(() => fixedPriceAgreementLogicalAddress(value)).toThrow(/jobId/);
 });
+
+// Type guards are controls: the previous nonempty-string guard already refused these.
+test.each([null, undefined, 123, {}, []])("refuses a non-string operand %j", (value) => {
+ expect(() => fixedPriceAgreementLogicalAddress(value as unknown as string)).toThrow(DacsError);
+});
