@@ -30,8 +30,8 @@ export interface CrossChainHtlcStoreCheck {
 export interface CrossChainHtlcStoreCheckOptions {
   /**
    * Close `store` and return a new store over the same durable state, as a
-   * process restart would. The kit never uses `store` again. When supplied,
-   * the restart case runs.
+   * process restart would. The kit never uses `store` again. Without it the
+   * restart case fails.
    */
   reopen?: (store: CrossChainHtlcStore) => CrossChainHtlcStore | Promise<CrossChainHtlcStore>;
 }
@@ -551,8 +551,13 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
   }],
 ];
 
-function restartCase(reopen: NonNullable<CrossChainHtlcStoreCheckOptions["reopen"]>): readonly [string, Case] {
-  return ["restart: a reopened store keeps the lease, rows, checkpoints, claim histories, secret bindings and settlement", async (make) => {
+const RESTART_CASE = "restart: a reopened store keeps the lease, rows, checkpoints, claim histories, secret bindings and settlement";
+
+function restartCase(reopen: CrossChainHtlcStoreCheckOptions["reopen"]): readonly [string, Case] {
+  return [RESTART_CASE, async (make) => {
+    // A store whose state does not survive a restart can lose a reveal or
+    // lock row and lead the core to a second lock or an unsafe refund.
+    if (reopen === undefined) throw new ContractViolation("not checked: no reopen hook");
     const store = await make();
     const a = await acquire(store, session(JOB_IDS[0]));
     const lock = prepared(a.intent, "source-lock", "lock-s");
@@ -665,24 +670,24 @@ function restartCase(reopen: NonNullable<CrossChainHtlcStoreCheckOptions["reopen
  * lock, the reveal/refund exclusion, both replacement CASes and concurrent
  * workers. A store that fails any case can make the core send twice.
  *
- * Only with `options.reopen` does the kit check a restart. That case drives
- * one session to a replaced reveal and a replaced source claim with both
- * checkpoints, and settles another, then reopens the store. The reopened store
- * must return the same live lease, intent, rows, checkpoints and claim
- * histories, a higher generation on takeover, and the same settlement. It
- * must still refuse the old generation, another salt or preimage, a reused
- * salt, effect or transaction, and a second row or checkpoint. Without
- * `reopen` nothing here shows that state survives a restart. No case proves
- * encryption or atomicity across processes; those remain the host's to test.
+ * The restart case needs `options.reopen`. It drives one session to a
+ * replaced reveal and a replaced source claim with both checkpoints, and
+ * settles another, then reopens the store. The reopened store must return the
+ * same live lease, intent, rows, checkpoints and claim histories, a higher
+ * generation on takeover, and the same settlement. It must still refuse the
+ * old generation, another salt or preimage, a reused salt, effect or
+ * transaction, and a second row or checkpoint. Without `reopen` that case
+ * fails (`not checked: no reopen hook`): nothing else shows that state
+ * survives a restart, so a store passes the kit only with every case `ok`,
+ * restart included. No case proves encryption or atomicity across processes;
+ * those remain the host's to test.
  */
 export async function checkCrossChainHtlcStore(
   makeStore: () => CrossChainHtlcStore | Promise<CrossChainHtlcStore>,
   options: Readonly<CrossChainHtlcStoreCheckOptions> = {},
 ): Promise<readonly CrossChainHtlcStoreCheck[]> {
   const results: CrossChainHtlcStoreCheck[] = [];
-  const reopen = options?.reopen;
-  const cases = reopen === undefined ? CASES : [...CASES, restartCase(reopen)];
-  for (const [name, run] of cases) {
+  for (const [name, run] of [...CASES, restartCase(options?.reopen)]) {
     try {
       await run(makeStore);
       results.push(Object.freeze({ name, ok: true }));

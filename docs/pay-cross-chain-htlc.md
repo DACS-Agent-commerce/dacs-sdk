@@ -625,16 +625,21 @@ destination lock's source-finality binding, the reveal/refund exclusion, both
 replacement CASes and concurrent workers.
 
 `reopen(store)` must close `store` and return a new store over the same
-durable state, as a process restart would. Only with it does the kit run its
-restart case. That case retains a session with a replaced reveal, a replaced
-source claim and both checkpoints, plus a settled session, then reopens the
-store. The reopened store must return the same live lease, intent, rows,
-checkpoints, claim histories and settlement, and give a takeover a higher
-generation. It must still refuse a write from the old generation, another
-salt or preimage, a reused salt, effect or transaction, and a second row or
-checkpoint. Without `reopen` the kit does not check durability at all. No case
-proves encryption or atomicity across processes; those remain the host's to
-test.
+durable state, as a process restart would. The kit's restart case needs it.
+That case retains a session with a replaced reveal, a replaced source claim
+and both checkpoints, plus a settled session, then reopens the store. The
+reopened store must return the same live lease, intent, rows, checkpoints,
+claim histories and settlement, and give a takeover a higher generation. It
+must still refuse a write from the old generation, another salt or preimage,
+a reused salt, effect or transaction, and a second row or checkpoint. Without
+`reopen` the restart case fails with `not checked: no reopen hook`, so the
+in-memory store never passes the kit.
+
+A host store must pass every case, restart included, before it is used. A
+store that loses a saved reveal or source-lock row can make the core send a
+second lock, or refund the source after the preimage may have left. Atomicity
+and encryption across processes are not shown by any case; they remain the
+host's to prove.
 
 When preparing a replacement of either claim, the adapter receives
 `replacement` context with the new attempt number, prior effect
@@ -928,8 +933,9 @@ map as follows:
 
 - Supply a durable, atomic, encrypted `CrossChainHtlcStore` that survives the
   process. Restart safety depends on it; the in-memory store does not provide
-  it. Run `checkCrossChainHtlcStore` against it in the host's tests, with a
-  `reopen` hook so that its restart case runs.
+  it. Before using it, run `checkCrossChainHtlcStore` against it in the
+  host's tests with a `reopen` hook, and require every case `ok`, restart
+  included. Cross-process atomicity and encryption remain the host's to prove.
 - Never discard the buyer salt while the session can still be driven. Keep
   it encrypted and durable until the session is terminal: settlement is
   recorded, both legs are refunded, or the core returned a permanent `failed`

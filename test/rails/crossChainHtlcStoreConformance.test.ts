@@ -20,8 +20,11 @@ function broken(patch: (inner: CrossChainHtlcStore) => Partial<CrossChainHtlcSto
 const answer = (status: HtlcStoreWrite["status"]): HtlcStoreWrite =>
   status === "recorded" || status === "existing" ? { status } : { status, reason: "broken" };
 
+/** The failing cases other than restart, which fails for any store checked without `reopen`. */
 async function failingCases(makeStore: () => CrossChainHtlcStore): Promise<string[]> {
-  return (await checkCrossChainHtlcStore(makeStore)).filter((check) => !check.ok).map((check) => check.name);
+  return (await checkCrossChainHtlcStore(makeStore))
+    .filter((check) => !check.ok && !RESTART_CASE.test(check.name))
+    .map((check) => check.name);
 }
 
 /**
@@ -57,21 +60,23 @@ function durable(restarted: (inner: CrossChainHtlcStore) => CrossChainHtlcStore 
 const RESTART_CASE = /^restart: /;
 
 describe("checkCrossChainHtlcStore", () => {
-  test("the in-memory store meets every case of the store contract", async () => {
+  // The volatile store loses every row on a restart, so a host CI that checks
+  // every case `ok` must not pass it.
+  test("fails the restart case, and only it, for a store checked without a reopen hook", async () => {
     const checks = await checkCrossChainHtlcStore(memory);
-    expect(checks.length).toBeGreaterThanOrEqual(16);
-    expect(checks.filter((check) => !check.ok)).toEqual([]);
+    expect(checks.length).toBeGreaterThanOrEqual(17);
+    expect(checks.every((check) => check.ok)).toBe(false);
+    expect(checks.filter((check) => !check.ok)).toEqual([
+      { name: expect.stringMatching(RESTART_CASE), ok: false, detail: "not checked: no reopen hook" },
+    ]);
   });
 
-  test("runs the restart case only with a reopen hook", async () => {
+  test("passes every case, restart included, for a store that keeps its state across a reopen", async () => {
     const without = await checkCrossChainHtlcStore(memory);
-    expect(without.some((check) => RESTART_CASE.test(check.name))).toBe(false);
     const { makeStore, reopen } = durable();
     const withReopen = await checkCrossChainHtlcStore(makeStore, { reopen });
-    expect(withReopen.map((check) => check.name)).toEqual([
-      ...without.map((check) => check.name),
-      expect.stringMatching(RESTART_CASE),
-    ]);
+    expect(withReopen.map((check) => check.name)).toEqual(without.map((check) => check.name));
+    expect(withReopen.filter((check) => RESTART_CASE.test(check.name))).toHaveLength(1);
     expect(withReopen.filter((check) => !check.ok)).toEqual([]);
   });
 
