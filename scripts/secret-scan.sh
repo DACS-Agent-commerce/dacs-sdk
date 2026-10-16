@@ -34,16 +34,41 @@ if [ -n "$octopus" ]; then
   exit 1
 fi
 
+# git quotes a path containing a newline everywhere but in its `remerge ...` lines, where the
+# path's text after the newline becomes a line of its own (after a stray byte), and can pass for
+# any line Gitleaks reads, a commit header included. Gitleaks would then report a finding under
+# another commit or file, and such a path's fingerprint can't be one .gitleaksignore line. So
+# the scan refuses any history in which a commit adds, changes or deletes such a path, a merge
+# compared with each parent: every path of every scanned commit's tree is then checked.
+# shellcheck disable=SC2086
+if ! newlines=$(git log --format=%H $LOG_OPTS --diff-merges=off |
+  git diff-tree --stdin -r -z --name-only --root -m --no-commit-id | tr -cd '\n' | wc -c); then
+  echo "Nothing was scanned: git failed to list the history's paths." >&2
+  exit 1
+fi
+if [ "$newlines" != 0 ]; then
+  echo "Nothing was scanned: after a path containing a newline, Gitleaks can report a finding under another commit or file. Rewrite the history without it; these commits add, change or delete one:" >&2
+  # shellcheck disable=SC2086
+  git log --format=%H $LOG_OPTS --diff-merges=off | while read -r commit; do
+    if [ "$(git diff-tree -r -z --name-only --root -m --no-commit-id "$commit" | tr -cd '\n' | wc -c)" != 0 ]; then
+      echo "$commit"
+    fi
+  done >&2
+  exit 1
+fi
+
 # Gitleaks runs the first git on its PATH, so it gets this one, which runs the real git and
 # records the exit status of Gitleaks' `git -C . log`: Gitleaks passes even if git dies without
 # a word on stderr. It also drops git's `remerge ...` lines, which describe a merge's
-# conflicts, and the lines that continue one (git splits a message about a path containing a
-# newline). Gitleaks 8.30.1 reads such a line as the start of a new commit if it contains the
+# conflicts. Gitleaks 8.30.1 reads such a line as the start of a new commit if it contains the
 # text `commit`, and then drops the merge's commit from that file's fingerprint and every later
-# file's. So, from each `diff --git` line to the file's first hunk (`@@`), binary patch, next
-# commit or blank line, only git's own header lines are kept; none of them holds file content.
-# Elsewhere only `remerge ` lines are dropped: patch lines start with `+`, `-`, ` ` or `\`, and
-# commit messages are indented.
+# file's. git can continue a `remerge` line on lines of its own: for a path containing a
+# newline, which the check above refuses, and for a conflicted submodule that is checked out,
+# which the workflows' checkouts never do. So, from each `diff --git` line to
+# the file's first hunk (`@@`), binary patch, next commit or blank line, only lines that start
+# as git's own header lines do are kept; none of git's holds file content. Elsewhere only
+# `remerge ` lines are dropped: patch lines start with `+`, `-`, ` ` or `\`, and commit
+# messages are indented.
 export SECRET_SCAN_GIT SECRET_SCAN_GIT_STATUS="$temp/git-log.status"
 SECRET_SCAN_GIT=$(command -v git)
 mkdir "$temp/bin"

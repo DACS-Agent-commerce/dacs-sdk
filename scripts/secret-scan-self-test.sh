@@ -92,24 +92,15 @@ commit_file commitment.txt main3 main3
 printf 'marker-later\n' > later.txt
 commit_file commitment.txt marker-no-commit "resolve commitment"
 commitment=$(git rev-parse HEAD)
-# A conflict in a path containing a newline. git continues its remerge line for it on a line of
-# its own, which contains "commit" here, so it must not reach Gitleaks either. (A git bug starts
-# that line with a stray byte; when the byte is 0, git prints no such line.)
-newline_path=$'nl\ncommit.txt'
-printf 'base\n' > "$newline_path"
-commit_file newline-base.txt base "newline base"
-git checkout -q -b side4
-commit_file "$newline_path" side4 side4
-git checkout -q main
-commit_file "$newline_path" main4 main4
-! git merge -q side4 > /dev/null 2>&1
-printf 'marker-newline-later\n' > z-later.txt
-commit_file "$newline_path" resolved "resolve newline"
-newline=$(git rev-parse HEAD)
 # shellcheck disable=SC2086
 git log -p -U0 $LOG_OPTS > "$temp/log"
 if ! grep -q '^remerge CONFLICT .*commitment\.txt' "$temp/log"; then
   echo "self-test: git no longer shows the remerge CONFLICT line this case needs" >&2
+  exit 1
+fi
+# git orders a patch's files by path, so later.txt follows the conflicted file in the merge's.
+if ! sed -n '/^remerge CONFLICT .*commitment\.txt/,/^commit /p' "$temp/log" | grep -q '^diff --git a/later\.txt '; then
+  echo "self-test: git no longer shows later.txt after the conflicted file in the merge's patch" >&2
   exit 1
 fi
 # Every case but the control is one that Gitleaks' default options would miss.
@@ -124,7 +115,7 @@ commit_file pull.txt marker-pull-request "pull request"
 pull=$(git rev-parse HEAD)
 git update-ref refs/pull/7/head HEAD
 git checkout -q main
-git branch -q -D pull side side2 side3 side4
+git branch -q -D pull side side2 side3
 
 {
   echo "$control:control.txt:marker:1"
@@ -134,7 +125,6 @@ git branch -q -D pull side side2 side3 side4
   echo "$merge:merged.txt:marker:1"
   echo "$commitment:commitment.txt:marker:1"
   echo "$commitment:later.txt:marker:1"
-  echo "$newline:z-later.txt:marker:1"
   if [ "$pull_requests" = true ]; then echo "$pull:pull.txt:marker:1"; fi
 } | LC_ALL=C sort > "$temp/expected"
 fingerprints "$temp/found" > "$temp/found.sorted"
@@ -160,4 +150,26 @@ if fingerprints "$temp/octopus-found" > /dev/null 2>&1 || [ -e "$temp/octopus-fo
   exit 1
 fi
 
-echo "Secret scan self-test passed: $(wc -l < "$temp/expected") fingerprints as expected; an octopus merge is refused."
+# A conflict in a path containing a newline, and a later file: the scan must refuse it, and name
+# the merge, since git's remerge line for that path can pass for a header line Gitleaks reads.
+mkdir "$temp/newline"
+cd "$temp/newline"
+git init -q -b main
+newline_path=$'nl\ncommit.txt'
+printf 'base\n' > "$newline_path"
+commit_file README fixture base
+git checkout -q -b side
+commit_file "$newline_path" side side
+git checkout -q main
+commit_file "$newline_path" main main
+! git merge -q side > /dev/null 2>&1
+printf 'marker-newline\n' > z-later.txt
+commit_file "$newline_path" resolved "resolve newline"
+newline=$(git rev-parse HEAD)
+if fingerprints "$temp/newline-found" > /dev/null 2> "$temp/newline.err" || [ -e "$temp/newline-found" ] ||
+  ! grep -qx "$newline" "$temp/newline.err"; then
+  echo "self-test: the scan did not refuse a path containing a newline before running Gitleaks" >&2
+  exit 1
+fi
+
+echo "Secret scan self-test passed: $(wc -l < "$temp/expected") fingerprints as expected; an octopus merge and a path containing a newline are refused."

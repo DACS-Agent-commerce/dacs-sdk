@@ -623,14 +623,72 @@ describe("secret scan git log options", () => {
       expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`]);
     });
 
+    it("refuses a path containing a newline wherever the scanned history has one, and lists its commits", async () => {
+      const refusal =
+        "Nothing was scanned: after a path containing a newline, Gitleaks can report a finding under another commit or file. Rewrite the history without it; these commits add, change or delete one:\n";
+      const newlinePath = "nl\ncommit.txt";
+      // In the root commit, which has no parent to compare with.
+      const root = join(directory, "newline-root");
+      await mkdir(root);
+      git(root, ["init", "-q", "-b", "main"]);
+      await commitFile(root, newlinePath, "root\n", "root");
+      const rootSha = git(root, ["rev-parse", "HEAD"]);
+      await commitFile(root, "README", "fixture\n", "readme");
+      // Added only by a merge, which git log shows no paths for without a merge diff.
+      const merge = join(directory, "newline-merge");
+      await mkdir(merge);
+      git(merge, ["init", "-q", "-b", "main"]);
+      await commitFile(merge, "README", "fixture\n", "base");
+      git(merge, ["checkout", "-q", "-b", "side"]);
+      await commitFile(merge, "side.txt", "side\n", "side");
+      git(merge, ["checkout", "-q", "main"]);
+      await commitFile(merge, "main.txt", "main\n", "main");
+      run(merge, ["merge", "-q", "--no-ff", "--no-commit", "side"]);
+      await commitFile(merge, newlinePath, "merged\n", "merge");
+      const mergeSha = git(merge, ["rev-parse", "HEAD"]);
+      for (const [repository, sha] of [
+        [root, rootSha],
+        [merge, mergeSha],
+      ] as const) {
+        for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+          const result = runScript(repository, scanScriptPath, [stub], { LOG_OPTS: logOpts });
+          expect(result.status).toBe(1);
+          expect(result.stderr).toBe(`${refusal}${sha}\n`);
+        }
+      }
+      expect(await stubCalls()).toEqual([]);
+
+      // Changed only on a pull request head: the audit refuses it, the required scan doesn't reach it.
+      const pull = join(directory, "newline-pull");
+      await mkdir(pull);
+      git(pull, ["init", "-q", "-b", "main"]);
+      await commitFile(pull, "README", "fixture\n", "base");
+      git(pull, ["checkout", "-q", "-b", "pull"]);
+      await commitFile(pull, newlinePath, "pull\n", "pull");
+      const pullSha = git(pull, ["rev-parse", "HEAD"]);
+      git(pull, ["update-ref", "refs/pull/9/head", "HEAD"]);
+      git(pull, ["checkout", "-q", "main"]);
+      git(pull, ["branch", "-q", "-D", "pull"]);
+      const audit = runScript(pull, scanScriptPath, [stub], { LOG_OPTS: AUDIT_LOG_OPTS });
+      expect(audit.status).toBe(1);
+      expect(audit.stderr).toBe(`${refusal}${pullSha}\n`);
+      expect(await stubCalls()).toEqual([]);
+      const required = runScript(pull, scanScriptPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS });
+      expect(required.status).toBe(0);
+      expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`]);
+    });
+
     it("self-test fails unless Gitleaks reports exactly the expected fingerprints", async () => {
       const missing = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, STUB_REPORT: "" });
       expect(missing.status).toBe(1);
       expect(missing.stderr).toContain("self-test: Gitleaks did not report exactly the expected fingerprints");
+      expect(await stubCalls()).not.toEqual([]);
       // It knows which fingerprints to expect only for the workflows' revisions.
       const unknown = runScript(directory, selfTestPath, [stub], { LOG_OPTS: "--full-history --text --remerge-diff main" });
       expect(unknown.status).toBe(1);
       expect(unknown.stderr).toContain("self-test: LOG_OPTS must end with HEAD or --all");
+      expect(await stubCalls()).toEqual([]);
+      // Each check of git's own output stops the self-test before anything is scanned.
       // A git that no longer prints the remerge line the commit-less case relies on.
       const quiet = await gitShim(
         "no-remerge-git",
@@ -639,6 +697,17 @@ describe("secret scan git log options", () => {
       const noRemerge = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...quiet });
       expect(noRemerge.status).toBe(1);
       expect(noRemerge.stderr).toContain("self-test: git no longer shows the remerge CONFLICT line this case needs");
+      expect(noRemerge.stderr).not.toContain("later.txt");
+      expect(await stubCalls()).toEqual([]);
+      // A git whose patch for that merge has no file after the conflicted one: the case would show nothing.
+      const noLater = await gitShim(
+        "no-later-git",
+        `if [ "$1" = log ]; then '${realGit}' "$@" | sed '/^diff --git a\\/later\\.txt /d'; exit; fi`,
+      );
+      const later = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...noLater });
+      expect(later.status).toBe(1);
+      expect(later.stderr).toContain("self-test: git no longer shows later.txt after the conflicted file in the merge's patch");
+      expect(await stubCalls()).toEqual([]);
       // A git whose default options would show a merge: the control must fail.
       const merging = await gitShim(
         "merging-git",
@@ -647,7 +716,7 @@ describe("secret scan git log options", () => {
       const defaults = runScript(directory, selfTestPath, [stub], { LOG_OPTS: REQUIRED_LOG_OPTS, ...merging });
       expect(defaults.status).toBe(1);
       expect(defaults.stderr).toContain("self-test: Gitleaks' default options see more than the control case");
-      await stubCalls();
+      expect(await stubCalls()).toEqual([]);
     });
 
     it("self-test reads git's messages in English whatever the caller's locale", async () => {
@@ -670,31 +739,36 @@ describe("secret scan git log options", () => {
     // Set GITLEAKS to a Gitleaks 8.30.1 binary to run the workflows' self-test here.
     it.skipIf(!process.env.GITLEAKS)("self-test passes with the pinned Gitleaks under both workflows' options", () => {
       for (const [logOpts, count] of [
-        [REQUIRED_LOG_OPTS, 8],
-        [AUDIT_LOG_OPTS, 9],
+        [REQUIRED_LOG_OPTS, 7],
+        [AUDIT_LOG_OPTS, 8],
       ] as const) {
         const result = runScript(directory, selfTestPath, [process.env.GITLEAKS ?? ""], { LOG_OPTS: logOpts });
         expect(result.stderr).not.toContain("self-test:");
         expect(result.status).toBe(0);
         expect(result.stdout).toBe(
-          `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge is refused.\n`,
+          `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge and a path containing a newline are refused.\n`,
         );
       }
     });
 
-    it.skipIf(!process.env.GITLEAKS)("self-test fails with a scan that doesn't refuse octopus merges", async () => {
-      const scripts = join(directory, "no-octopus-gate");
-      await mkdir(scripts);
-      const scan = await readFile(scanScriptPath, "utf8");
-      const gate = 'if [ -n "$octopus" ]; then';
-      expect(scan).toContain(gate);
-      await writeFile(join(scripts, "secret-scan.sh"), scan.replace(gate, "if false; then"));
-      await writeFile(join(scripts, "secret-scan-self-test.sh"), await readFile(selfTestPath, "utf8"));
-      const result = runScript(directory, join(scripts, "secret-scan-self-test.sh"), [process.env.GITLEAKS ?? ""], {
-        LOG_OPTS: REQUIRED_LOG_OPTS,
+    for (const [name, from, to, message] of [
+      ["doesn't refuse octopus merges", 'if [ -n "$octopus" ]; then', "if false; then", "an octopus merge"],
+      ["doesn't refuse paths containing a newline", 'if [ "$newlines" != 0 ]; then', "if false; then", "a path containing a newline"],
+      ["refuses a path containing a newline without naming its commits", '      echo "$commit"\n', "      :\n", "a path containing a newline"],
+    ] as const) {
+      it.skipIf(!process.env.GITLEAKS)(`self-test fails with a scan that ${name}`, async () => {
+        const scripts = join(directory, `mutated-${name.replaceAll(" ", "-")}`);
+        await mkdir(scripts);
+        const scan = await readFile(scanScriptPath, "utf8");
+        expect(scan).toContain(from);
+        await writeFile(join(scripts, "secret-scan.sh"), scan.replace(from, to));
+        await writeFile(join(scripts, "secret-scan-self-test.sh"), await readFile(selfTestPath, "utf8"));
+        const result = runScript(directory, join(scripts, "secret-scan-self-test.sh"), [process.env.GITLEAKS ?? ""], {
+          LOG_OPTS: REQUIRED_LOG_OPTS,
+        });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(`self-test: the scan did not refuse ${message} before running Gitleaks`);
       });
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("self-test: the scan did not refuse an octopus merge before running Gitleaks");
-    });
+    }
   });
 });
