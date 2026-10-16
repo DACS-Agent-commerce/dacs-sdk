@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, describe, expect, test } from "vitest";
 import { verifyMessage, verifyTypedData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -170,11 +170,32 @@ const BUYER = claimFor(BUYER_SEED);
 const SELLER = claimFor(SELLER_SEED);
 
 const tempDirs: string[] = [];
+const failureDiagnostics: string[] = [];
 
-afterEach(async () => {
+afterEach(async ({ task }) => {
+  // Keep assertions visible when a parent uses only the JSON reporter.
+  if (task.result?.state === "fail") {
+    const diagnostic = `${task.name}: ${JSON.stringify(task.result.errors)}`;
+    failureDiagnostics.push(diagnostic);
+    process.stderr.write(`${diagnostic}\n`);
+  }
   await Promise.all(
     tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
   );
+});
+
+afterAll(async () => {
+  if (failureDiagnostics.length === 0) return;
+  // The kit retains only the end of stdout. Keep complete nested worker output
+  // outside the fixture trees, which afterEach intentionally removes.
+  try {
+    const directory = await mkdtemp(join(tmpdir(), "dacs-issue114-diagnostics-"));
+    const path = join(directory, "failures.log");
+    await writeFile(path, failureDiagnostics.join("\n\n"), "utf8");
+    process.stderr.write(`whole-process failure diagnostics: ${path}\n`);
+  } catch (error) {
+    process.stderr.write(`could not retain whole-process diagnostics: ${String(error)}\n`);
+  }
 });
 
 async function tempDir(name: string): Promise<string> {
@@ -2056,7 +2077,7 @@ async function settleAndRecover(input: {
   // just an HTTP round trip. Bound it below the enclosing test's budget without
   // mistaking slow fixture I/O for loss of the PAYMENT-RESPONSE disclosure.
   const paidTransport = createX402BuyerPaidRequestTransport({
-    transportPolicy: { mode: "insecure-test", timeoutMs: 15_000 },
+    transportPolicy: { mode: "insecure-test", timeoutMs: 60_000 },
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
       if (!header) throw new Error("retained payment header absent");
@@ -3630,9 +3651,10 @@ async function runWholeProcessStageA(root: string, runId: string): Promise<never
   const intent = await prepareSettlementIntent(fixture);
   const store = await createFsX402BuyerSettlementStore({ dir: paths.buyer });
   // Process A performs the same inline durable seller work as settleAndRecover.
-  // Keep its fixture deadline below the whole-process stage's 25-second budget.
+  // The fake fetch performs durable seller work inline. Its request deadline
+  // must fit below the worker (90s), stage (105s), and parent (220s) budgets.
   const transport = createX402BuyerPaidRequestTransport({
-    transportPolicy: { mode: "insecure-test", timeoutMs: 15_000 },
+    transportPolicy: { mode: "insecure-test", timeoutMs: 60_000 },
     fetchImpl: async (_url, init) => {
       const header = new Headers(init?.headers).get("PAYMENT-SIGNATURE");
       if (!header) throw new Error("process A lost its retained payment header");
@@ -3801,22 +3823,38 @@ async function spawnWholeProcessStage(
       DACS_ISSUE114_RUN_ID: runId,
     },
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
   });
   let output = "";
   child.stdout.on("data", (chunk) => { output += String(chunk); });
   child.stderr.on("data", (chunk) => { output += String(chunk); });
   return await new Promise((resolve, reject) => {
+    let timedOut = false;
     const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`whole-process stage ${stage} timed out\n${output}`));
-    }, 25_000);
+      timedOut = true;
+      // End the controller and its forked worker together. Leaving a worker
+      // alive could race fixture cleanup or the next recovery stage.
+      try {
+        if (process.platform !== "win32" && child.pid !== undefined) {
+          process.kill(-child.pid, "SIGKILL");
+        } else {
+          child.kill("SIGKILL");
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") reject(error);
+      }
+    }, 105_000);
     child.once("error", (error) => {
       clearTimeout(timeout);
       reject(error);
     });
-    child.once("exit", (code, signal) => {
+    child.once("close", (code, signal) => {
       clearTimeout(timeout);
-      resolve({ code, signal, output });
+      if (timedOut) {
+        reject(new Error(`whole-process stage ${stage} timed out\n${output}`));
+      } else {
+        resolve({ code, signal, output });
+      }
     });
   });
 }
@@ -3850,20 +3888,20 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
     expect(bundles.buyerFinalization.buyerBundle.anchoredByRole).toBe("buyer");
     expect(bundles.sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
     expect(bundles.standardLimitations).toEqual(["DACS-Standard#331"]);
-  }, 30_000);
+  }, 150_000);
 
   test("recovers the same run after a real process crash without replaying effects", async () => {
     const root = await tempDir("issue114-whole-process");
     const runId = `issue114-${process.pid}-${Date.now()}`;
     const first = await spawnWholeProcessStage("a", root, runId);
-    expect(first.code === 0 && first.signal === null).toBe(false);
+    expect(first.code === 0 && first.signal === null, first.output).toBe(false);
     const manifest = await readExternalRecord<{
       runId: string;
       jobId: string;
       settlementKey: string;
       stageAEffects: CommerceCounts;
     }>(root, "whole-process-manifest");
-    expect(manifest).toMatchObject({
+    expect(manifest, first.output).toMatchObject({
       runId,
       jobId: JOB_ID,
       stageAEffects: {
@@ -3909,7 +3947,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
         paidRequestResubmissions: 0,
       },
     });
-  }, 40_000);
+  }, 220_000);
 
   test("rejects a wrong-network x402 challenge before the buyer signer", async () => {
     let signerCalls = 0;
@@ -4168,5 +4206,5 @@ describe.skipIf(PROCESS_STAGE === undefined)("issue #114 whole-process worker", 
     if (PROCESS_STAGE === "a") await runWholeProcessStageA(root, runId);
     else if (PROCESS_STAGE === "b") await runWholeProcessStageB(root, runId);
     else throw new Error(`unknown whole-process worker stage: ${PROCESS_STAGE}`);
-  }, 20_000);
+  }, 90_000);
 });

@@ -4,7 +4,17 @@
 observation. It verifies the signed `SettlementEvidence`, its exact PC-2 anchor
 (`dacs4:payment:{jobId}:{CF-4 railId}:{phaseIndex}[:resolved]`), the finalized
 anchor receipt, the content-addressed native proof, live rail finality, and the
-canonical event/instruction-level SB-1 settlement identity.
+canonical event/instruction-level SB-1 settlement identity. Current contexts
+require canonical uppercase ULID job IDs before PC-2 address derivation.
+
+For a failed settlement, retain the exact handler result in the authenticated
+`SessionSettlementContext.phaseResult`, for example
+`{ ok: false, errorClass: "substrate" }`. Its error class must be one of
+`permanent`, `transient`, `counterparty`, `substrate`, or
+`settlement-atomicity`. A missing failure result is `indeterminate`: the signed
+free-text evidence reason cannot substitute for a handler classification.
+Successful contexts may also supply the exact result and transaction refs;
+when supplied they must agree with the signed evidence.
 
 The returned `AuthenticatedSessionSettlementObservation` is deliberately not:
 

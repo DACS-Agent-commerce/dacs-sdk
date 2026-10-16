@@ -75,6 +75,7 @@ export {
   type AuthoritativeBundleSelection,
 } from "./bundleConsistency.js";
 export {
+  inspectHistoricalSettlementEvidence,
   validateSettlementEvidenceStructure,
   verifySettlementEvidence,
   type EvidenceDecision,

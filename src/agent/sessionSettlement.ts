@@ -14,6 +14,7 @@ import type {
   SettlementFinalityModel,
 } from "../artifacts/types.js";
 import {
+  isCanonicalJobId,
   isAnchorReceipt,
   isAttestationRef,
   isSettlementEvidence,
@@ -21,6 +22,7 @@ import {
 import {
   verifySettlementEvidence,
   type EvidenceDeps,
+  type AuthenticatedEvidenceContext,
 } from "./verifySettlementEvidence.js";
 import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
 
@@ -138,6 +140,8 @@ export interface SessionSettlementContext {
   };
   paymentAmount: PaymentAmount;
   rail: SessionSettlementRailPin;
+  /** Exact authenticated handler result when retained; required for failures. */
+  phaseResult?: AuthenticatedEvidenceContext["result"];
 }
 
 /**
@@ -478,7 +482,10 @@ function isContext(value: unknown): value is SessionSettlementContext {
     "payee",
     "paymentAmount",
     "rail",
-  ]) && value.contextVersion === "1" && isNonEmpty(value.jobId) &&
+  ], ["phaseResult"]) && value.contextVersion === "1" && isCanonicalJobId(value.jobId) &&
+    (value.phaseResult === undefined ||
+      (isRecord(value.phaseResult) && exactKeys(value.phaseResult, ["ok"], ["errorClass", "txRefs"]) &&
+        typeof value.phaseResult.ok === "boolean")) &&
     isAttestationRef(value.agreementRef) && isHash(value.agreementHash) &&
     value.agreementRef.contentHash === value.agreementHash &&
     isUint(value.paymentPhaseIndex) && isNonEmpty(value.orchestrator) &&
@@ -644,8 +651,6 @@ function contextMatchesEvidence(
     settlement.anchorReceipt.writer === context.payer.primaryClaim;
   if (!authenticatedWriter ||
       settlement.anchorReceipt.logicalAddress !== evidenceAddress ||
-      (settlement.evidenceRef.signer !== undefined &&
-        settlement.evidenceRef.signer !== evidence.signature.signer) ||
       settlement.anchorReceipt.state !== "finalized" ||
       settlement.anchorReceipt.observationDisposition !== "established") {
     return "settlement evidence lacks an exact finalized authenticated-actor receipt";
@@ -885,6 +890,11 @@ export async function verifyFinalizedSessionSettlement(
   }
   if (mismatch) return rejected("rejected", mismatch);
 
+  // A signed reason is free text, not a PC-4 classification. Do not invent
+  // a handler result for a failure when the authenticated context lacks it.
+  if (settlement.outcome === "failure" && context.phaseResult === undefined) {
+    return rejected("indeterminate", "authenticated failure phase result is unavailable");
+  }
   let evidenceVerification: Awaited<ReturnType<typeof verifySettlementEvidence>>;
   try {
     evidenceVerification = await verifySettlementEvidence(
@@ -908,9 +918,7 @@ export async function verifyFinalizedSessionSettlement(
           phaseIndex: context.paymentPhaseIndex,
           resolved: settlement.evidenceRef.anchor.locator.endsWith(":resolved"),
         },
-        result: settlement.outcome === "success"
-          ? { ok: true }
-          : { ok: false, errorClass: settlement.evidence.reason },
+        result: context.phaseResult ?? { ok: true },
       },
       provider.evidence,
     );

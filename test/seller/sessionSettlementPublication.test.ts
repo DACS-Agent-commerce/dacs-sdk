@@ -60,7 +60,7 @@ const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
 const NOW = 1_777_000_000_000;
 const TX_HASH = "e".repeat(64);
 
-function authorization(jobId = "job-publication-1"): SellerPaymentAuthorization {
+function authorization(jobId = "01JZ0000000000000000000362"): SellerPaymentAuthorization {
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1" as const,
     jobId,
@@ -430,6 +430,17 @@ describe("publishSellerSessionSettlement", () => {
     expect(sellerPublishSellerSessionSettlement).toBe(publishSellerSessionSettlement);
   });
 
+  it.each(["job-publication-legacy", "01jz0000000000000000000362", "8".repeat(26)])(
+    "rejects noncanonical current jobId %s before resolving or signing", async (jobId) => {
+      const h = harness(authorization(jobId));
+      await expect(publishSellerSessionSettlement(request(h), h.deps))
+        .resolves.toMatchObject({ disposition: "error" });
+      expect(h.resolveProof).not.toHaveBeenCalled();
+      expect(h.sign).not.toHaveBeenCalled();
+      expect(h.anchor).not.toHaveBeenCalled();
+    },
+  );
+
   it("publishes an exact finalized settlement consumable by the public verifier", async () => {
     const h = harness();
     const result = await publishSellerSessionSettlement(request(h), h.deps);
@@ -480,7 +491,7 @@ describe("publishSellerSessionSettlement", () => {
   });
 
   it("keeps one effect identity as authenticated proof observations advance", async () => {
-    const value = authorization("job-publication-proof-replay");
+    const value = authorization("01JZ0000000000000000000363");
     const first = harness(value);
     const replay = harness(value);
     replay.resolveProof.mockResolvedValue(proofAuthentication(value, {
@@ -609,7 +620,7 @@ describe("publishSellerSessionSettlement", () => {
     expect(available.anchor).not.toHaveBeenCalled();
 
     const substituted = harness();
-    const other = authorization("job-substituted");
+    const other = authorization("01JZ0000000000000000000364");
     substituted.deps.receiptStore.inspectPermit = async () => ({
       status: "already-consumed",
       claim: claim(other),

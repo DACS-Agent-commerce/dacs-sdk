@@ -611,6 +611,7 @@ export {
   type BundleRole,
   type AuthoritativeBundleSelection,
   verifySettlementEvidence,
+  inspectHistoricalSettlementEvidence,
   validateSettlementEvidenceStructure,
   type EvidenceDecision,
   type EvidenceVerification,
