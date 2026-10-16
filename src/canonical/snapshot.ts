@@ -215,8 +215,8 @@ export function snapshotCanonicalJson<T>(value: T, label: string): T {
  * This is {@link snapshotCanonicalJson} with one difference: CORE §B.2 admits
  * negative zero as a JSON number that serialises as `0`, so a CF-5-admitted
  * `-0.0` is owned as `0` instead of being refused as an authoring alias. The
- * strict descriptor checks are kept; only {@link snapshotCanonicalJsonRead}
- * also accepts read-only views returned by storage/callback reads.
+ * strict descriptor checks are kept: unlike {@link snapshotCanonicalJsonRead},
+ * it refuses read-only views such as those returned by storage/callback reads.
  */
 export function snapshotCanonicalJsonReceived<T>(value: T, label: string): T {
   return snapshotCanonicalJsonInternal(value, label, false, false, true);
