@@ -211,8 +211,10 @@ describe("x402 SB-3 retry identity across a real restart (#43)", () => {
     // The token contract's authorization state for this nonce, as a reconciler observes it.
     if (prior.state === "cancelled") await seed(h, [{ rail: "x402", ...NONCE_SCOPE, nonce: NONCE, state: "cancelled" }]);
     else if (!ours) {
+      // The exact signed window, so only the transfer parameters differ.
       await seed(h, [{
         rail: "x402", txHash: `0x${"e".repeat(64)}`, ...NONCE_SCOPE, nonce: NONCE, state: "used", to: OTHER_PAYEE, value: "1000000",
+        ...X402_SIGNED_WINDOW,
       }]);
     }
     const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
@@ -235,11 +237,17 @@ describe("x402 SB-3 retry identity across a real restart (#43)", () => {
     expect(await h.count("grants")).toBe(0);
   }, 30_000);
 
-  test("used by a different amount is refused for that reason, with no fresh nonce", async () => {
+  // Each record carries the exact signed window, so the named field alone differs.
+  test.each([
+    ["amount", { to: PAYEE, value: "2000000" }],
+    ["payee", { to: OTHER_PAYEE, value: "1000000" }],
+    ["transaction (no landed hash)", { to: PAYEE, value: "1000000", txHash: undefined }],
+  ] as const)("used by a different %s is refused for that reason, with no fresh nonce", async (_name, transfer) => {
     const h = await harness();
     await crash(h, "x402", "before-effect");
     await seed(h, [{
-      rail: "x402", txHash: `0x${"e".repeat(64)}`, ...NONCE_SCOPE, nonce: NONCE, state: "used", to: PAYEE, value: "2000000",
+      rail: "x402", txHash: `0x${"e".repeat(64)}`, ...NONCE_SCOPE, nonce: NONCE, state: "used", ...transfer,
+      ...X402_SIGNED_WINDOW,
     }]);
     const restarted = await h.start("restarted", { mode: "x402", now: 200, reconcile: "landed" }).result();
     expect(restarted).toMatchObject({ ok: false, error: { name: "DacsError" } });
