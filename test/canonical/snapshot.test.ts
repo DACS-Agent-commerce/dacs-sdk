@@ -19,17 +19,21 @@ const causeOf = (run: () => unknown): string => {
 };
 
 describe("isSafeJsonString", () => {
-  it.each(["", "plain", "𐀀", "􏿿", "𐏿", "a𐀀b"])(
-    "accepts %j",
-    (value) => {
-      expect(isSafeJsonString(value)).toBe(true);
-    },
-  );
+  it.each([
+    "",
+    "plain",
+    "\ud800\udc00",
+    "\udbff\udfff",
+    "\ud800\udfff",
+    "a\ud800\udc00b",
+  ])("accepts %j", (value) => {
+    expect(isSafeJsonString(value)).toBe(true);
+  });
 
   it.each([
     "\ud800",
     "\ud800a",
-    "\ud800",
+    "\ud800\ue000",
     "\udc00",
     "\udfff",
     "a\udc00",
