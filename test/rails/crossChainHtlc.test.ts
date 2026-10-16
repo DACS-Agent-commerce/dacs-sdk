@@ -6827,11 +6827,13 @@ describe("retained history and checkpoint contradictions the core refuses", () =
   test.each([undefined, "out-of-gas"])("retains a failure's reason exactly when it has one (%s)", async (reason) => {
     const { run } = await replacedOnce("source-claim", reason);
     const { intent, secrets } = createCrossChainHtlcIntent(authority(), SALT, hashlocks);
+    const { now } = run.nextOwner();
+    if (!now) throw new Error("expected the runner's clock");
     const claimed = await run.shared.store.claim({
       intent,
       secrets,
       owner: "reader",
-      now: run.nextOwner().now(),
+      now: now(),
       leaseDurationMs: 100,
     });
     if (claimed.status !== "acquired") throw new Error("expected the lease");
