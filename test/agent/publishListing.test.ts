@@ -873,9 +873,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("reads an existing legacy MVP version only through the compatibility boundary", async () => {
     const deps = fakeDeps();
-    const prefix = logicalToStorageProgramName(
-      listingAddress(SELLER, "market-data", "v"),
-    );
+    const prefix = "dacs1%3Adid%3Ademos%3Aseller%3Amarket-data%3Av";
     deps.scanOwnAnchorsByNamePrefix = async () => ({
       status: "ok",
       anchors: [
@@ -907,9 +905,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
 
   test("fails closed when the visible owner-bound history already has a gap", async () => {
     const deps = fakeDeps();
-    const prefix = logicalToStorageProgramName(
-      listingAddress(SELLER, "market-data", "v"),
-    );
+    const prefix = "dacs1%3Adid%3Ademos%3Aseller%3Amarket-data%3Av";
     deps.scanOwnAnchorsByNamePrefix = async () => ({
       status: "ok",
       anchors: [
