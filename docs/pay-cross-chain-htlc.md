@@ -897,6 +897,14 @@ ST-8 maps onto the core's results as follows:
   window never produces this alert: the core returns the terminal ST-8
   expiry above, with that claim.
 
+The paid-late-claim handling above is SDK recovery guidance. The pinned
+DACS-4 §9.5.4 and DACS-5 ST-8 still prescribe `failed-counterparty` for HTLC-9
+expiry; they do not define a separate verdict or evidence transition for a
+payee already paid by a late claim. That host mapping requires a Standard
+revision, an SDK pin update and host mapping tests. Until then, retain the
+original interim evidence and the paid claim for financial reconciliation;
+the late claim does not justify an ST-8 `:resolved` success record.
+
 ## Authority fields and the pinned rail
 
 `crossChainHtlcAuthorityFromRail(rail, selection)` builds the

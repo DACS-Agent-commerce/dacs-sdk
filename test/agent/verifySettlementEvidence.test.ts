@@ -122,6 +122,128 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — §14 golden fixtures
     await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
       .resolves.toEqual({ decision: "pass", reasons: [] });
   });
+
+  // Keep every other trust input valid so one missing input cannot hide behind
+  // a different configuration error. Use the fixture's real signature here.
+  test.each([
+    ["orchestrator", ["authenticated evidence context requires a canonical phase orchestrator ClaimReference"]],
+    ["agreement", ["authenticated evidence context requires the exact agreement amount and currency"]],
+    ["rail", ["authenticated payment evidence context requires the exact pinned rail"]],
+    ["attestationRef", [
+      "authenticated evidence context requires the exact evidence attestationRef",
+      "payment evidence attestationRef is unavailable for PC-2 address binding",
+    ]],
+    ["result", ["authenticated evidence context requires the exact phase result"]],
+    ["paymentAddress", ["authenticated payment evidence context requires the exact PC-2 address tuple"]],
+  ] as const)("requires the authenticated %s independently", async (field, reasons) => {
+    const context: EvidenceContext = paymentAuthenticatedContext();
+    delete context[field];
+    await expect(verifySettlementEvidence(
+      paymentFx.evidence, context as AuthenticatedEvidenceContext, deps,
+    )).resolves.toEqual({ decision: "error", reasons: [...reasons] });
+  });
+
+  test.each(["railId", "railType", "asset", "network", "handler"] as const)(
+    "requires the pinned rail's %s independently",
+    async (field) => {
+      const context = paymentAuthenticatedContext();
+      delete context.rail![field];
+      await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
+        .resolves.toEqual({
+          decision: "error",
+          reasons: ["authenticated payment evidence context requires the exact pinned rail"],
+        });
+    },
+  );
+
+  test.each(["amount", "currency"] as const)(
+    "requires the agreement's %s independently",
+    async (field) => {
+      const context: EvidenceContext = paymentAuthenticatedContext();
+      delete context.agreement![field];
+      await expect(verifySettlementEvidence(
+        paymentFx.evidence, context as AuthenticatedEvidenceContext, deps,
+      )).resolves.toEqual({
+        decision: "error",
+        reasons: ["authenticated evidence context requires the exact agreement amount and currency"],
+      });
+    },
+  );
+
+  test.each(["railId", "railType", "asset", "network", "handler"] as const)(
+    "rejects an empty pinned rail %s independently",
+    async (field) => {
+      const context = paymentAuthenticatedContext();
+      context.rail![field] = "";
+      await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
+        .resolves.toEqual({
+          decision: "error",
+          reasons: [
+            "authenticated payment evidence context requires the exact pinned rail",
+            ...(field === "network" ? [
+              'rail network "" is not a canonical pinned eip155, solana, or demos network',
+            ] : []),
+          ],
+        });
+    },
+  );
+
+  test.each([
+    [{ agreement: { amount: "5.00", currency: "USDC" } },
+      "authenticated evidence context requires the exact agreement amount and currency"],
+    [{ agreement: { amount: "5", currency: "" } },
+      "authenticated evidence context requires the exact agreement amount and currency"],
+    [{ result: {} }, "authenticated evidence context requires the exact phase result"],
+  ] satisfies [EvidenceContext, string][])(
+    "rejects an incomplete or noncanonical trust input %j independently",
+    async (patch, reason) => {
+      await expect(verifySettlementEvidence(
+        paymentFx.evidence, { ...paymentAuthenticatedContext(), ...patch } as AuthenticatedEvidenceContext, deps,
+      )).resolves.toEqual({ decision: "error", reasons: [reason] });
+    },
+  );
+
+  test.each(["railId", "phaseIndex"] as const)(
+    "requires the payment address's %s independently",
+    async (field) => {
+      const context = paymentAuthenticatedContext();
+      const address: Partial<NonNullable<EvidenceContext["paymentAddress"]>> = context.paymentAddress!;
+      delete address[field];
+      await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
+        .resolves.toEqual({
+          decision: "error",
+          reasons: [
+            "payment evidence address context is malformed",
+            "authenticated payment evidence context requires the exact PC-2 address tuple",
+          ],
+        });
+    },
+  );
+
+  test.each(["resolvePublicKey", "verify"] as const)(
+    "requires the %s dependency independently",
+    async (field) => {
+      const incomplete: Partial<AuthenticatedEvidenceDeps> = { ...deps };
+      delete incomplete[field];
+      await expect(verifySettlementEvidence(
+        paymentFx.evidence, paymentAuthenticatedContext(), incomplete as AuthenticatedEvidenceDeps,
+      )).resolves.toEqual({
+        decision: "error",
+        reasons: ["authenticated evidence verification requires key resolution and signature verification"],
+      });
+    },
+  );
+
+  it("requires the delivery locator independently", async () => {
+    const context: EvidenceContext = { ...deliveryCtx };
+    delete context.expectedAnchorLocator;
+    await expect(verifySettlementEvidence(
+      deliveryFx.evidence, context as AuthenticatedEvidenceContext, deps,
+    )).resolves.toEqual({
+      decision: "error",
+      reasons: ["authenticated delivery evidence context requires the expected deliverable locator"],
+    });
+  });
 });
 
 // ── Decision-by-decision, over constructed mutations of the base records ──
@@ -292,6 +414,119 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ctx: EvidenceContext = { agreement: { amount: "10", currency: "USDC" } };
     expect((await verify(ev, ctx)).decision).toBe("fail");
   });
+
+  test.each([
+    {
+      name: "agreement currency",
+      context: { agreement: { amount: "5", currency: "DAI" } },
+      reason: 'paymentAmount.currency "USDC" does not match agreement currency "DAI"',
+    },
+    {
+      name: "agreed price",
+      context: { agreement: { amount: "5.0001", currency: "USDC" } },
+      reason: "settled amount is less than the agreed price (underpayment)",
+    },
+    {
+      name: "rail asset",
+      context: { rail: { asset: "DAI" } },
+      reason: 'paymentAmount.currency "USDC" does not resolve to rail asset "DAI" (PC-5)',
+    },
+    {
+      name: "rail handler",
+      context: { rail: { railType: "evm-erc20", handler: "pay-solana-spl" } },
+      reason: 'rail handler "pay-solana-spl" is incoherent with rail type "evm-erc20"',
+    },
+    {
+      name: "asset kind",
+      context: { rail: { railType: "evm-erc20", assetSpec: { kind: "spl" } } },
+      reason: 'rail type "evm-erc20" requires asset kind "erc20", got "spl" (RD-5)',
+    },
+    {
+      name: "network kind",
+      context: { rail: { railType: "evm-erc20", networkSpec: { kind: "solana" } } },
+      reason: 'rail type "evm-erc20" requires network kind "evm", got "solana" (RD-5)',
+    },
+    {
+      name: "asset chain",
+      context: { rail: {
+        assetSpec: { kind: "erc20", chainId: 8453 },
+        networkSpec: { kind: "evm", chainId: 80002 },
+      } },
+      reason: "rail asset chainId 8453 does not match network chainId 80002 (RD-5)",
+    },
+    {
+      name: "canonical network versus structured network",
+      context: { rail: {
+        network: "eip155:80002", networkSpec: { kind: "evm", chainId: 8453 },
+      } },
+      reason: "canonical rail network contradicts networkSpec.chainId",
+    },
+    {
+      name: "result error class",
+      context: { result: { ok: true, errorClass: "counterparty" } },
+      reason: "phase result is ok:true but carries an errorClass",
+    },
+    {
+      name: "result outcome",
+      context: { result: { ok: false, errorClass: "counterparty" } },
+      reason: "phase result is ok:false but SettlementEvidence does not report failure",
+    },
+  ] satisfies { name: string; context: EvidenceContext; reason: string }[])(
+    "rejects a mismatched $name with only its own reason",
+    async ({ context, reason }) => {
+      await expect(validateSettlementEvidenceStructure(payment(), context))
+        .resolves.toEqual({ decision: "invalid", reasons: [reason] });
+    },
+  );
+
+  test.each(["4.9999", "5"])("accepts payment at or above the agreed price %s", async (amount) => {
+    await expect(validateSettlementEvidenceStructure(payment(), {
+      agreement: { amount, currency: "USDC" },
+    })).resolves.toEqual({ decision: "valid", reasons: [] });
+  });
+
+  test.each([
+    {
+      name: "rail identity",
+      patch: { rail: { railId: "another-rail" } },
+      reason: "paymentAddress railId contradicts the authenticated pinned rail",
+    },
+    {
+      name: "phase index",
+      patch: { paymentAddress: { railId: "polygon-amoy-usdc", phaseIndex: 1 } },
+      reason: "attestationRef locator does not match the complete authenticated PC-2 payment address",
+    },
+    {
+      name: "signed scope hash",
+      patch: { attestationRef: {
+        ...paymentAuthenticatedContext().attestationRef,
+        contentHash: "0".repeat(64),
+      } },
+      reason: "attestationRef.contentHash does not match the evidence's signed-scope hash",
+    },
+    {
+      name: "orchestrator identity",
+      patch: { orchestrator: "did:demos:someone-else" },
+      reason: 'signer "did:demos:orchestrator" is not the phase orchestrator "did:demos:someone-else"',
+    },
+    {
+      name: "handler refs",
+      patch: { result: { ok: true, txRefs: [] } },
+      reason: "signed evidence.paymentTxRefs do not equal the authenticated phase-handler result txRefs",
+    },
+  ] satisfies { name: string; patch: EvidenceContext; reason: string }[])(
+    "binds the authenticated $name independently",
+    async ({ patch, reason }) => {
+      const fixture = read("fixtures/settlement-evidence-payment-success.json");
+      const golden = read("vectors/golden.json").settlement;
+      const context = paymentAuthenticatedContext();
+      await expect(verifySettlementEvidence(
+        fixture.evidence,
+        { ...context, ...patch, rail: { ...context.rail, ...patch.rail } },
+        realDeps(golden.publicKeys ?? read("fixtures/settlement-evidence-delivery-success.json").publicKeys),
+      )).resolves.toEqual({ decision: "fail", reasons: [reason] });
+    },
+  );
   test("phaseRailMismatch → fail", async () => {
     const ev = payment(); // phase pay-evm-erc20
     expect((await verify(ev, { rail: { railType: "solana-spl" } })).decision).toBe("fail");
