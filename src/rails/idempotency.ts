@@ -323,7 +323,7 @@ function captureBoundResult(
   }
   if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
       (binding.phase !== "pay-dem" || binding.agreementAsset !== "DEM" ||
-        !hasDefinitiveDemosFailure(result, binding.amount))) {
+        !hasDefinitiveDemosFailure(result, binding.amount, binding.network))) {
     throw new DacsError(`${label} terminal-failure proof does not bind the payment`);
   }
   if (!result.ok) {

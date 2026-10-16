@@ -81,10 +81,13 @@ the prepared-transfer checkpoint. Operators must authenticate that complete
 tuple in the same durable authority as the settlement intent before using it for
 recovery. The reconciliation callback receives that immutable tuple and repeats
 the chain-observed OS amount in its result; a missing, non-final or contradictory
-observation must throw. The result must also carry `execution: "executed"`, set
-only after the node's transaction record for the hash reads `confirmed` at the
-inclusion block; a `failed` record must throw. `payDemSettle` refuses a result
-without it and keeps the intent held (see
+observation must throw. A successful result must carry `execution: "executed"`,
+set only after the node's transaction record for the hash reads `confirmed` at
+the inclusion block. A bound `failed` record may instead return `ok: false`,
+`errorClass: "permanent"` and the exact `demos-failed-record` proof described in
+the execution guide; it must omit successful execution and finality.
+`payDemSettle` keeps an intent held unless reconciliation authenticates one of
+these definitive outcomes (see
 [the pay-dem execution gate](./pay-dem-execution.md)). After restart, even a
 cached success is reconciled before reuse. An authoritative `null` proves only that no transfer has landed yet; it
 cannot revoke a possibly-live old process or signed transaction and does not

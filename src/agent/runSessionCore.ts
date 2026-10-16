@@ -540,6 +540,7 @@ interface DurableSettlementOutcomeBase {
   ok: boolean;
   errorClass?: "permanent";
   failureProofJson?: string;
+  networkFeeOs?: string;
   blockNumber?: number;
   txRefKind?: string;
   /** Canonical JSON encoding preserves the discriminated current reference in the primitive WAL. */
@@ -894,6 +895,7 @@ function durableSettlementCheckpointData(
   };
   if (outcome.errorClass !== undefined) data.errorClass = outcome.errorClass;
   if (outcome.failureProofJson !== undefined) data.failureProofJson = outcome.failureProofJson;
+  if (outcome.networkFeeOs !== undefined) data.networkFeeOs = outcome.networkFeeOs;
   if (outcome.finalityModel !== undefined) {
     data.finalityModel = outcome.finalityModel;
   }
@@ -948,6 +950,7 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
     "ok",
     "errorClass",
     "failureProof",
+    "networkFeeOs",
     "txHash",
     "chainId",
     "payer",
@@ -974,6 +977,9 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
     typeof result.payee !== "string" ||
     result.payee.length === 0 ||
     result.payee.trim() !== result.payee ||
+    (result.networkFeeOs !== undefined &&
+      (typeof result.networkFeeOs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(result.networkFeeOs))) ||
     (result.blockNumber !== undefined &&
       (!Number.isSafeInteger(result.blockNumber) ||
         (result.blockNumber as number) < 0)) ||
@@ -2138,6 +2144,7 @@ function durableSettlementOutcome(
     ok,
     ...(result.errorClass === undefined ? {} : { errorClass: result.errorClass,
       failureProofJson: canonicalize(result.failureProof) }),
+    ...(result.networkFeeOs === undefined ? {} : { networkFeeOs: result.networkFeeOs }),
     ...durableFinalityFields(finality),
     ...(result.blockNumber !== undefined ? { blockNumber: result.blockNumber } : {}),
     ...(result.txRefKind !== undefined ? { txRefKind: result.txRefKind } : {}),
@@ -2177,6 +2184,7 @@ function sameSettlementOutcome(
     left.ok === right.ok &&
     left.errorClass === right.errorClass &&
     left.failureProofJson === right.failureProofJson &&
+    left.networkFeeOs === right.networkFeeOs &&
     left.finalityModel === right.finalityModel &&
     left.finalityBlocks === right.finalityBlocks &&
     left.finalityCommitmentLevel === right.finalityCommitmentLevel &&
@@ -2409,6 +2417,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         "ok",
         "errorClass",
         "failureProofJson",
+        "networkFeeOs",
         "finalityModel",
         "finalityBlocks",
         "finalityCommitmentLevel",
@@ -2429,6 +2438,9 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         typeof payee !== "string" ||
         payee.length === 0 ||
         payee.trim() !== payee ||
+        (data.networkFeeOs !== undefined &&
+          (typeof data.networkFeeOs !== "string" ||
+            !/^(?:0|[1-9][0-9]*)$/.test(data.networkFeeOs))) ||
         finality === null ||
         (blockNumber !== undefined &&
           (!Number.isSafeInteger(blockNumber) || (blockNumber as number) < 0)) ||
@@ -2464,6 +2476,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           ok,
           ...(data.errorClass === "permanent" ? { errorClass: "permanent" as const,
             failureProofJson: data.failureProofJson as string } : {}),
+          ...(typeof data.networkFeeOs === "string" ? { networkFeeOs: data.networkFeeOs } : {}),
           ...durableFinalityFields(finality),
           ...(typeof blockNumber === "number" ? { blockNumber } : {}),
           ...(typeof txRefKind === "string" ? { txRefKind } : {}),
@@ -4504,13 +4517,6 @@ export async function runSessionCore(
       // complete. The legacy MVP profile has exactly one ref (enforced by the
       // matcher), so no ordered-set information is lost in this v1 checkpoint.
       await bindSettlementTransaction(evidenceOutcome);
-      if (!evidenceOutcome.ok && evidenceOutcome.txHash.length > 0) {
-        throw new CounterpartyError(
-          `authenticated failure evidence carries transaction ${evidenceOutcome.chainId}:${evidenceOutcome.txHash}; ` +
-            "the payment remains indeterminate and cannot become a terminal checkpoint",
-        );
-      }
-
       let loaded = await store.load(jobId);
       assertSessionAgreementBinding(
         loaded,
@@ -4524,6 +4530,24 @@ export async function runSessionCore(
         );
       }
       let recorded = readSettleOutcome(loaded);
+      // Failure evidence alone cannot prove a transaction failed. A retained
+      // rail outcome can: the durable reader validates its bound record proof.
+      // Keep that outcome (and proof) when resuming after the anchor committed,
+      // including when the anchor's acknowledgment was lost.
+      if (!evidenceOutcome.ok && evidenceOutcome.txHash.length > 0 &&
+          !(recorded.status === "current-rail" &&
+            recorded.outcome.errorClass === "permanent" &&
+            sameSettlementBinding(recorded.outcome, expectedSettlementBinding) &&
+            recorded.outcome.payee === expectedSettlementPayee &&
+            recorded.outcome.txHash === evidenceOutcome.txHash &&
+            recorded.outcome.chainId === evidenceOutcome.chainId &&
+            recorded.outcome.txRefKind === evidenceOutcome.txRefKind &&
+            recorded.outcome.blockNumber === evidenceOutcome.blockNumber)) {
+        throw new CounterpartyError(
+          `authenticated failure evidence carries transaction ${evidenceOutcome.chainId}:${evidenceOutcome.txHash}; ` +
+            "the payment remains indeterminate and cannot become a terminal checkpoint",
+        );
+      }
       if (recorded.status === "absent") {
         const claim = await claimSettlement({ ...expectedSettlementBinding });
         if (claim.status === "completed") recorded = claim.outcome;

@@ -23,7 +23,16 @@ record carries `errorClass: "permanent"` and a `failureProof` containing its
 hash, signed nonce, block, payer, payee and OS amount. Rail and session stores
 persist this terminal outcome and return it on resume without another debit.
 Unproven or conflicting results keep the intent held. Neither path broadcasts
-again; terminal failure does not authorize a replacement payment.
+again; terminal failure does not authorize a replacement payment. This also
+applies after failure evidence was anchored, including when the anchor's
+acknowledgment was lost. Reuse requires the anchored transaction and block to
+match the retained permanent proof. Configured network labels such as
+`demos:testnet` are bound by the rail's recovery context and durable outcome.
+
+When the rail authenticates the payer's total debit, a successful result may
+include `networkFeeOs`, a canonical non-negative integer OS string. Session
+checkpoints retain this fee across restart; the evidence's payment amount
+continues to describe the agreed transfer amount.
 
 ## Custom native clients
 

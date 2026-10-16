@@ -689,7 +689,7 @@ export async function payDemSettleCore(
       blockNumber, txRefKind: "demos",
     };
     if (okProperty.value === false && state === "failed" &&
-        hasDefinitiveDemosFailure(failed, amount)) {
+        hasDefinitiveDemosFailure(failed, amount, chainId)) {
       return failed as SettleResult;
     }
     return {
@@ -1866,7 +1866,7 @@ function capturePayDemResult(
   }
 
   if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
-      !hasDefinitiveDemosFailure(result as unknown as SettleResult, context.amountOs)) {
+      !hasDefinitiveDemosFailure(result as unknown as SettleResult, context.amountOs, context.network)) {
     throw new DacsError(`${label} has an invalid terminal-failure proof`);
   }
   const blockNumber = result.blockNumber;
@@ -1957,7 +1957,7 @@ function capturePayDemReconciliation(
     context,
     "pay-dem reconciliation result",
   );
-  if (!captured.ok && !hasDefinitiveDemosFailure(captured, context.amountOs)) {
+  if (!captured.ok && !hasDefinitiveDemosFailure(captured, context.amountOs, context.network)) {
     throw new DacsError(
       "pay-dem reconciliation is indeterminate; a definitive finalized result is required",
     );

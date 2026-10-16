@@ -48,6 +48,38 @@ describe("terminal failed Demos record", () => {
     expect(forbidden).not.toHaveBeenCalled();
   });
 
+  it.each(["demos", "demos:testnet"])("classifies and persists a bound failed record on %s", async (network) => {
+    const transfer = vi.fn(async () => ({ ok: false, hash: txHash, state: "failed",
+      blockNumber: 42, failureProof: proof }));
+    const result = await payDemSettleCore({ recipient: payee, amount: proof.amountOs, network },
+      { address: payer, transfer } as never);
+    expect(result).toEqual({ ...failure, chainId: network });
+    const log = createInMemorySettlementLog();
+    await expect(createIdempotencyStore(log).once(key, { ...binding, network }, async () => result))
+      .resolves.toEqual(result);
+    const forbidden = vi.fn(async () => { throw new Error("must not submit"); });
+    await expect(createIdempotencyStore(log).once(key, { ...binding, network }, forbidden))
+      .resolves.toEqual(result);
+    expect(forbidden).not.toHaveBeenCalled();
+  });
+
+  it("refuses failure reconciliation from a different configured network", async () => {
+    const log = createInMemorySettlementLog();
+    const submit = vi.fn(async () => { throw new Error("lost response"); });
+    const rail = { address: payer, settle: submit };
+    const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
+      payee: `did:demos:agent:${payee}`, expectedPayee: payee, jobId: "failure-proof", phaseIndex: 0 };
+    await expect(payDemSettle(rail, { network: "demos:testnet" }, {
+      store: createIdempotencyStore(log, { owner: "before", now: () => 1, leaseDurationMs: 1 }),
+    })(request)).rejects.toThrow("lost response");
+    await expect(payDemSettle(rail, { network: "demos:testnet" }, {
+      store: createIdempotencyStore(log, { owner: "after", now: () => 3, leaseDurationMs: 1 }),
+      reconcile: async () => ({ ...failure, ok: false as const, errorClass: "permanent" as const,
+        amountOs: proof.amountOs, failureProof: proof }),
+    })(request)).rejects.toThrow(/network/);
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
   it("authenticates terminal failure when recovering an ambiguous intent without replacement", async () => {
     const log = createInMemorySettlementLog();
     const before = createIdempotencyStore(log, { owner: "before", now: () => 1, leaseDurationMs: 1 });
@@ -59,22 +91,22 @@ describe("terminal failed Demos record", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  it("reconciles a permanent failure through the pay-dem bridge after restart", async () => {
+  it.each(["demos", "demos:testnet"])("reconciles a permanent failure on %s through the pay-dem bridge after restart", async (network) => {
     const log = createInMemorySettlementLog();
     const submit = vi.fn(async () => { throw new Error("lost transfer response"); });
     const rail = { address: payer, settle: submit };
     const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
       payee: `did:demos:agent:${payee}`, expectedPayee: `did:demos:agent:${payee}`,
       jobId: "failure-proof", phaseIndex: 0 };
-    const first = payDemSettle(rail, {}, { store: createIdempotencyStore(log,
+    const first = payDemSettle(rail, { network }, { store: createIdempotencyStore(log,
       { owner: "before", now: () => 1, leaseDurationMs: 1 }) });
     await expect(first(request)).rejects.toThrow("lost transfer response");
-    const reconcile = vi.fn(async () => ({ ...failure, amountOs: proof.amountOs, ok: false as const,
+    const reconcile = vi.fn(async () => ({ ...failure, chainId: network, amountOs: proof.amountOs, ok: false as const,
       errorClass: "permanent" as const, failureProof: proof }));
-    const after = payDemSettle(rail, {}, { store: createIdempotencyStore(log,
+    const after = payDemSettle(rail, { network }, { store: createIdempotencyStore(log,
       { owner: "after", now: () => 3, leaseDurationMs: 1 }), reconcile });
-    await expect(after(request)).resolves.toEqual({ ...failure, payee: request.expectedPayee });
-    await expect(after(request)).resolves.toEqual({ ...failure, payee: request.expectedPayee });
+    await expect(after(request)).resolves.toEqual({ ...failure, chainId: network, payee: request.expectedPayee });
+    await expect(after(request)).resolves.toEqual({ ...failure, chainId: network, payee: request.expectedPayee });
     expect(submit).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
@@ -115,10 +147,10 @@ describe("terminal failed Demos record", () => {
   });
 
   it.each([
-    ["class without proof", { ...failure, failureProof: undefined }],
-    ["proof without class", { ...failure, errorClass: undefined }],
+    ["class without proof", Object.fromEntries(Object.entries(failure).filter(([key]) => key !== "failureProof"))],
+    ["proof without class", Object.fromEntries(Object.entries(failure).filter(([key]) => key !== "errorClass"))],
     ["wrong amount", { ...failure, failureProof: { ...proof, amountOs: "1" } }],
-    ["success with failure proof", { ...failure, ok: true }],
+    ["success with failure proof", { ...failure, ok: true, finality: { model: "bft-final" } }],
     ["failure with success finality time", { ...failure, finalityObservedAt: 42 }],
   ])("refuses to persist %s", async (_label, value) => {
     const store = createIdempotencyStore();

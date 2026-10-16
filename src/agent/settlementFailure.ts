@@ -15,7 +15,11 @@ export interface DemosFailedRecordProof {
   amountOs: string;
 }
 
-/** Validate owned, canonical result data after the caller's snapshot boundary. */
+/**
+ * Validate owned, canonical result data after the caller's snapshot boundary.
+ * Rail callers bind the configured network here; session recovery also matches
+ * the retained chainId against its durable outcome and anchored evidence.
+ */
 export function hasDefinitiveDemosFailure(
   result: {
     ok: boolean; txHash: string; chainId: string; payer: string; payee: string;
@@ -24,12 +28,17 @@ export function hasDefinitiveDemosFailure(
     finalityObservedAt?: unknown; x402Receipt?: unknown;
   },
   amountOs?: string,
+  expectedNetwork?: string,
 ): boolean {
   const proof = result.failureProof;
   const payer = demosAddressFromClaim(result.payer) ?? normalizeDemosNativeAddress(result.payer);
   const payee = demosAddressFromClaim(result.payee) ?? normalizeDemosNativeAddress(result.payee);
   if (result.ok || result.errorClass !== "permanent" ||
-      result.chainId !== "demos" || !/^[0-9a-f]{64}$/.test(result.txHash) ||
+      typeof result.chainId !== "string" || result.chainId.length === 0 ||
+      result.chainId.trim() !== result.chainId ||
+      result.chainId.normalize("NFC") !== result.chainId ||
+      (expectedNetwork !== undefined && result.chainId !== expectedNetwork) ||
+      !/^[0-9a-f]{64}$/.test(result.txHash) ||
       payer === null || payee === null ||
       result.txRefKind !== "demos" || result.finality !== undefined ||
       result.txRef !== undefined || result.finalityObservedAt !== undefined ||
