@@ -151,7 +151,7 @@ export interface DacsPayDemPaymentNoticeV1 {
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | {
       status: "completed";
-      settlement: Readonly<PayDemReconciledSettlement>;
+      settlement: Readonly<Omit<PayDemReconciledSettlement, "execution">>;
     }
   | { status: "absent"; absenceProofHash: string }
   | { status: "indeterminate"; reasonCode: string; retryAt?: number }
@@ -169,6 +169,13 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
     retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
   }>): Promise<Readonly<DacsPayDemBuyerPaymentAuthorityV1>> |
     Readonly<DacsPayDemBuyerPaymentAuthorityV1>;
+  /**
+   * Return `completed` only when the node's transaction record for the
+   * prepared hash shows the transfer executed. A status-index `included`
+   * alone is not execution: a node reports it for a transaction whose record
+   * `failed` (#338). The reconciler from
+   * `createDacsFixedPricePayDemBuyerReconciliationV1` reads the record.
+   */
   reconcile(input: Readonly<{
     payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
     prepared?: Readonly<PayDemPreparedTransfer>;

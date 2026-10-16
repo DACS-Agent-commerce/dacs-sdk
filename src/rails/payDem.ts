@@ -280,6 +280,15 @@ export interface PayDemSettlementRecoveryContext {
  */
 export interface PayDemReconciledSettlement extends SettleResult {
   amountOs: string;
+  /**
+   * The reconciler's statement that the node's transaction record for
+   * `txHash` is `confirmed` at `blockNumber` and binds the payer, payee and
+   * amount (#338). A status-index `included` alone is not execution: the SDK
+   * refuses a reconciliation without this, as {@link payDemSettleCore} refuses
+   * a transfer result without {@link DemosTransferResult.execution}. It is not
+   * persisted with the settlement.
+   */
+  execution: "executed";
 }
 
 /**
@@ -287,7 +296,12 @@ export interface PayDemReconciledSettlement extends SettleResult {
  * transfer for this tuple landed, but cannot by itself revoke an earlier process
  * or signed transaction. Native DEM therefore remains fail-closed after absence
  * unless a higher-level adapter supplies a separately fenced replay primitive.
- * An indeterminate or non-final observation must throw.
+ * Return a settlement only after reading the node's transaction record for the
+ * hash and finding it `confirmed` at the inclusion block for this payer, payee
+ * and amount, and set `execution: "executed"`. A node reports `included` in its
+ * status index for a transaction whose record `failed` (#338), so inclusion
+ * alone must not be returned as a settlement. A `failed` record, and any
+ * indeterminate or non-final observation, must throw.
  */
 export type PayDemSettlementReconcile = (
   context: Readonly<PayDemSettlementRecoveryContext>,
@@ -1934,6 +1948,7 @@ function capturePayDemReconciliation(
   }
   const settlement = { ...record };
   delete settlement.amountOs;
+  delete settlement.execution;
   const captured = capturePayDemResult(
     settlement,
     context,
@@ -1942,6 +1957,14 @@ function capturePayDemReconciliation(
   if (!captured.ok) {
     throw new DacsError(
       "pay-dem reconciliation is indeterminate; a definitive finalized result is required",
+    );
+  }
+  // Inclusion is not execution (#338): a reconciler written when `included`
+  // alone meant success must not turn an included-but-failed transfer into a
+  // settlement on recovery.
+  if (record.execution !== "executed") {
+    throw new DacsError(
+      "pay-dem reconciliation does not attest that the transaction record shows the transfer executed (#338); refusing reuse or rebroadcast",
     );
   }
   return captured;

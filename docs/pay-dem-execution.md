@@ -33,6 +33,17 @@ leave it out. Its `included` result then returns `ok: false` with no finality,
 so the intent stays held and nothing is resubmitted. This includes a client
 written before #338, when `included` alone meant success.
 
+The same rule applies to the `reconcile` capability that `payDemSettle` uses
+after a restart. A `PayDemSettlementReconcile` returns a settlement only after
+it reads the node's transaction record for the hash and finds it `confirmed`
+at the inclusion block for the payer, payee and amount, and the settlement
+must carry `execution: "executed"`. A `failed` record must throw, like any
+other indeterminate observation. `payDemSettle` refuses a reconciliation
+without the attestation, so a reconciler written before #338 cannot turn an
+included-but-failed transfer into a settlement on recovery; the intent stays
+held and nothing is rebroadcast. The attestation is not persisted with the
+settlement.
+
 ## Node behaviour this depends on
 
 The mapping was verified against kynesyslabs/node

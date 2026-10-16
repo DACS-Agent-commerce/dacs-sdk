@@ -550,6 +550,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 4242,
       txRefKind: "demos",
       amountOs: context.amountOs,
+      execution: "executed" as const,
     }));
     const resumed = await payDemSettle(rail, { network: "demos" }, {
       store,
@@ -569,6 +570,22 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       /does not match the authoritative reconciled transaction/],
     ["when reconciliation returns another block", { blockNumber: 4243 },
       /does not match the authoritative reconciled transaction/],
+    ["when reconciliation does not attest execution (#338)",
+      async (context: PayDemSettlementRecoveryContext) => ({
+        ok: true,
+        txHash: TX_HASH,
+        chainId: context.network,
+        payer: context.payer,
+        payee: context.payee,
+        finality: { model: "bft-final" as const },
+        blockNumber: 4242,
+        txRefKind: "demos",
+        amountOs: context.amountOs,
+      }),
+      /does not attest that the transaction record shows the transfer executed/],
+    ["when reconciliation attests inclusion instead of execution (#338)",
+      { execution: "included" },
+      /does not attest that the transaction record shows the transfer executed/],
   ])("refuses a restarted durable outcome %s", async (_case, reconciled, message) => {
     const client = fakeClient();
     let transfers = 0;
@@ -595,6 +612,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
             blockNumber: 4242,
             txRefKind: "demos",
             amountOs: context.amountOs,
+            execution: "executed" as const,
             ...reconciled,
           }));
 
@@ -697,6 +715,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 95563,
       txRefKind: "demos",
       amountOs: context.amountOs,
+      execution: "executed" as const,
     }));
     now = 11;
     const restartedStore = createIdempotencyStore(log, {
@@ -716,6 +735,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 95563,
       txRefKind: "demos",
     });
+    expect(recovered).not.toHaveProperty("execution");
     expect(transfers).toBe(1);
     expect(restartedRail.settle).not.toHaveBeenCalled();
     expect(reconcile).toHaveBeenCalledTimes(1);
@@ -807,6 +827,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 9,
       txRefKind: "demos",
       amountOs: context.amountOs,
+      execution: "executed" as const,
       ...override,
     }));
 
@@ -815,6 +836,54 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
     })(request)).rejects.toThrow(pattern);
     expect(rail.settle).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["no execution attestation", {}],
+    ["an execution attestation other than executed", { execution: "included" }],
+    ["a boolean execution attestation", { execution: true }],
+  ])("refuses a held intent's reconciliation with %s, without rebroadcast (#338)", async (
+    _case,
+    execution,
+  ) => {
+    // A reconciler written when `included` alone meant success must not turn
+    // an included-but-failed transfer into a settlement on recovery.
+    const log = createInMemorySettlementLog();
+    const request = req({
+      rail: "demos-native:DEM",
+      jobId: "job-unattested",
+      phaseIndex: 4,
+    });
+    await seedExpiredIntent(log, request);
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: vi.fn(async () => {
+        throw new Error("must not rebroadcast");
+      }),
+    };
+    const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+      ok: true,
+      txHash: TX_HASH,
+      chainId: context.network,
+      payer: context.payer,
+      payee: context.payee,
+      finality: { model: "bft-final" as const },
+      blockNumber: 9,
+      txRefKind: "demos",
+      amountOs: context.amountOs,
+      ...execution,
+    }));
+    const putOutcome = vi.spyOn(log, "putOutcome");
+
+    await expect(payDemSettle(rail, { network: "demos" }, {
+      store: createIdempotencyStore(log),
+      reconcile: reconcile as unknown as PayDemSettlementReconcile,
+    })(request)).rejects.toThrow(
+      /does not attest that the transaction record shows the transfer executed/,
+    );
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(rail.settle).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
   });
 
   test("a cached success cannot be reused under changed amount terms", async () => {
@@ -852,6 +921,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       blockNumber: 7,
       txRefKind: "demos",
       amountOs: context.amountOs,
+      execution: "executed" as const,
     }));
 
     await expect(payDemSettle(rail, { network: "demos" }, {
