@@ -92,10 +92,10 @@ result.
   retry the same authority. It never authorizes paying the phase another way.
 - `failed`: nothing under this settlement key moved tokens or can land. The
   store shows no retained attempt, or every retained attempt with complete,
-  durably acknowledged expiry evidence (`finalized` for the latest; see
-  "Upgrading" for older records), except that the latest may instead
-  have landed and been refused by the chain at `finalized` commitment
-  (`solana-spl-transfer-failed-on-chain`). The store has closed the key.
+  durably acknowledged `finalized` expiry evidence, except that the latest
+  may instead have landed and been refused by the chain at `finalized`
+  commitment (`solana-spl-transfer-failed-on-chain`). The store has closed
+  the key.
 
 `failed` is terminal, and the phase may be paid by another route. The core
 reports it only after the store has acknowledged `recordFailure`, one atomic
@@ -116,7 +116,7 @@ result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
 | `waiting` | `solana-spl-settlement-held`, `solana-spl-reconciliation-pending`, `solana-spl-broadcast-not-yet-visible` |
 | `indeterminate`, before the store is read | `solana-spl-authority-invalid`, `solana-spl-runtime-policy-invalid`, `solana-spl-dependencies-invalid`, `solana-spl-settlement-store-unavailable` |
 | `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
-| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable` |
+| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable`, `solana-spl-predecessor-landed-failed` |
 | `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain` |
 | `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-payee-ata-not-associated`, `solana-spl-payer-rent-state-unknown`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
 
@@ -126,8 +126,12 @@ hold a broadcast this call cannot inspect, so it must be resolved out of band.
 `solana-spl-failure-persistence-uncertain` also covers a close after an
 on-chain refusal that the store did not acknowledge.
 `solana-spl-preflight-unavailable` is `transient` when the preflight read
-itself failed, and `indeterminate` when the lease was lost around it, because
-another worker may then be signing.
+itself failed, and `indeterminate` when the lease was lost around it, whether
+the read then returned or failed, because another worker may then be signing.
+`solana-spl-predecessor-landed-failed` is a predecessor with `confirmed`
+expiry evidence from an earlier version that the chain has since refused at
+`finalized`. That attempt cannot land, but the store holds no `finalized`
+expiry evidence for it, so reconcile the key by hand.
 
 ### Reporting to the phase handler
 
@@ -189,9 +193,12 @@ final settlement or failure across process restart. The evidence binds the
 retained signature to a non-negative safe-integer `observedBlockHeight`
 strictly greater than its `lastValidBlockHeight`, the literal `finalized`
 commitment and an authentication hash. A record an earlier version wrote may
-hold `confirmed` evidence: the core still loads it for a predecessor, but
-reconciles the latest attempt again, and the store must then let the new
-`finalized` evidence for that signature replace the `confirmed` record.
+hold `confirmed` evidence for any attempt: the core loads it, but reconciles
+that attempt again before it signs, reports `transient` or closes the key,
+and the store must then let the new `finalized` evidence for that signature
+replace the `confirmed` record. A predecessor is never rebroadcast: one not
+yet expired at `finalized` is `waiting`, and one that landed is settled or
+`indeterminate`, as the latest attempt would be.
 `expiredSignatures` remains in the store claim for source
 compatibility, but a hash-only legacy marker is never replacement authority: it
 causes the retained attempt to be reconciled again. A store must allow a later
@@ -370,12 +377,13 @@ not observed, so another one is the adapter's fault. Nothing is signed and
 the key stays open.
 
 Preflight balances and the payee account's existence, owner and mint decide
-`failed` results that close the key, and the core cannot tell a stale read
-from a true one. The adapter must therefore read them from one coherent view
-at the intent's commitment level or stronger: a lagging RPC that reports a
-zero balance or a missing account would close the key with the wrong reason.
-Nothing has been signed in that case, so the cost is a wrong failure, never
-a double payment.
+`failed` results that close the key. The core checks only their form and
+arithmetic, never their authenticity, so it cannot tell a stale or forged
+read from a true one. The adapter must therefore read them from one coherent
+view at the intent's commitment level or stronger: a lagging RPC that reports
+a zero balance or a missing account would close the key with the wrong
+reason. Nothing has been signed in that case, so the cost is a wrong failure,
+never a double payment.
 
 Token-2022 is not supported, and its associated token account is refused in
 the same way. A Token-2022 mint with a transfer fee credits the payee less
@@ -478,8 +486,8 @@ new revision of any of them.
   `commitmentLevel: "finalized"`, and adapters must report `absent-expired`
   at the level they observed: expiry seen at `confirmed` is `waiting` until
   it is finalized. A record an earlier version wrote with `confirmed`
-  evidence still loads for a predecessor. For the latest attempt the core
-  reconciles again, and the store must let the new `finalized` evidence
+  evidence still loads, but the core reconciles each such attempt again,
+  predecessors first, and the store must let the new `finalized` evidence
   replace the `confirmed` record; a store that refuses leaves the key
   `indeterminate` (`solana-spl-expiry-persistence-uncertain`), so nothing is
   paid twice.

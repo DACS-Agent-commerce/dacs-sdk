@@ -1392,7 +1392,10 @@ describe("advanceSolanaSplSettlement", () => {
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
   });
 
-  test("a preflight that throws under a stale fence is indeterminate, not transient", async () => {
+  test.each([
+    ["returns", async () => preflight()],
+    ["throws", async () => { throw new Error("getAccountInfo: 503 at https://rpc.example"); }],
+  ])("a preflight that %s under a stale fence is indeterminate, not transient", async (_name, read) => {
     let current = true;
     const store = createInMemorySolanaSplSettlementStore();
     await expect(advanceSolanaSplSettlement(input({
@@ -1400,6 +1403,65 @@ describe("advanceSolanaSplSettlement", () => {
       adapter: adapter({
         preflight: async () => {
           current = false;
+          return read();
+        },
+      }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-unavailable" });
+  });
+
+  // A read that times out is the likeliest way to lose the lease. Another
+  // worker may meanwhile sign under the key, and its transfer can still land.
+  test("a preflight that times out after another worker signed under the key is indeterminate", async () => {
+    let clock = 1_000;
+    const store = createInMemorySolanaSplSettlementStore();
+    let readStarted!: () => void;
+    let failRead!: (error: Error) => void;
+    const started = new Promise<void>((resolve) => { readStarted = resolve; });
+    const slowRead = new Promise<never>((_resolve, reject) => { failRead = reject; });
+    const first = advanceSolanaSplSettlement(input({
+      store,
+      now: () => clock,
+      adapter: adapter({
+        async preflight() {
+          readStarted();
+          return slowRead;
+        },
+      }),
+    }));
+    await started;
+    clock += 101;
+    await expect(advanceSolanaSplSettlement(input({
+      store,
+      owner: "worker-b",
+      now: () => clock,
+      adapter: adapter({
+        reconcile: async () => ({ disposition: "absent-valid", authenticationHash: "d".repeat(64) }),
+      }),
+    }))).resolves.toEqual({ status: "waiting", reason: "solana-spl-broadcast-not-yet-visible" });
+    failRead(new Error("getAccountInfo: timeout at https://rpc.example"));
+
+    await expect(first)
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-unavailable" });
+    await expect(store.claim({
+      intent: createSolanaSplSettlementIntent(authority()),
+      owner: "observer",
+      now: clock,
+      leaseDurationMs: 100,
+    })).resolves.toMatchObject({
+      status: "waiting",
+      attempts: [{ signature: SIGNATURE_1 }],
+      expiredSignatures: [],
+    });
+  });
+
+  test("an adapter's own stale-fence error from preflight is indeterminate, not transient", async () => {
+    let clock = 1_000;
+    await expect(advanceSolanaSplSettlement(input({
+      now: () => clock,
+      adapter: adapter({
+        async preflight(_intent, fence) {
+          clock += 101;
+          await fence.assertCurrent();
           return preflight();
         },
       }),
@@ -3593,12 +3655,13 @@ describe("advanceSolanaSplSettlement with a sparse or exotic attempts array", ()
   });
 
   // An earlier version wrote confirmed evidence; attempt 2 was already signed
-  // on it, so it still loads. Attempt 2 itself is reconciled as usual.
-  test("a predecessor's confirmed expiry evidence from an earlier version still loads", async () => {
+  // on it, so it still loads, but attempt 1 is reconciled again and its
+  // finalized expiry stored before attempt 2 is reconciled as usual.
+  test("a predecessor's confirmed expiry evidence from an earlier version loads and is checked again", async () => {
     await expect(resumeWith(2, (claim) => ({
       ...claim,
       expiryEvidence: (claim.expiryEvidence ?? []).map((row) => ({ ...row, commitmentLevel: "confirmed" })),
-    }))).resolves.toMatchObject({ reconciled: [2, 3], prepared: [3], expiries: 1 });
+    }))).resolves.toMatchObject({ reconciled: [1, 2, 3], prepared: [3], broadcast: [3], expiries: 2 });
   });
 
   // A proxy answers `length`, its own keys and each index from separate code.
@@ -4422,5 +4485,207 @@ describe("advanceSolanaSplSettlement on a runtime without util.types.isProxy", (
     }
     expect(checkedPreflight).not.toHaveBeenCalled();
     expect(prepareSignedTransfer).not.toHaveBeenCalled();
+  });
+});
+
+describe("advanceSolanaSplSettlement with a predecessor's legacy confirmed expiry evidence", () => {
+  const signatureFor = (n: number) => `${"1".repeat(63)}${n}`;
+
+  // Retains attempts 1 and 2, each with durable finalized expiry evidence,
+  // then resumes once with attempt 1's evidence shown at confirmed, as an
+  // earlier version stored it. On resume attempt 1 reconciles as
+  // `predecessor` and a new attempt settles; the latest is never re-read.
+  async function resumeLegacy(
+    predecessor: SolanaSplReconciliation,
+    resumedPreflight: () => Promise<SolanaSplPreflight> = async () => preflight(),
+    resumedMarkExpired?: SolanaSplSettlementStore["markAttemptExpired"],
+  ) {
+    let clock = 1_000;
+    let resumed = false;
+    let preflights = 0;
+    const counts = new Map<string, number>();
+    const memory = createInMemorySolanaSplSettlementStore();
+    const markAttemptExpired = vi.fn(async (request: Parameters<typeof memory.markAttemptExpired>[0]) =>
+      resumed && resumedMarkExpired
+        ? resumedMarkExpired(request)
+        : memory.markAttemptExpired(request));
+    const recordFailure = vi.fn(memory.recordFailure);
+    const store: SolanaSplSettlementStore = {
+      ...memory,
+      markAttemptExpired,
+      recordFailure,
+      async claim(request) {
+        const claim = await memory.claim(request);
+        if (!resumed || claim.status !== "acquired") return claim;
+        return {
+          ...claim,
+          expiryEvidence: (claim.expiryEvidence ?? []).map((row) =>
+            row.signature === signatureFor(1) ? { ...row, commitmentLevel: "confirmed" as const } : row),
+        };
+      },
+    };
+    const checkedPreflight = vi.fn(async () => {
+      if (resumed) return resumedPreflight();
+      preflights += 1;
+      if (preflights === 3) throw new Error("stop-after-expiry-persistence");
+      return preflight();
+    });
+    const prepareSignedTransfer = vi.fn(async (plan, attempt, fence) => ({
+      ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
+      signature: signatureFor(attempt),
+      signedTransactionBase64: signedWire([signatureFor(attempt)], `signed-wire-${attempt}`),
+    }));
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const reconcile = vi.fn(async (_intent, attempt): Promise<SolanaSplReconciliation> => {
+      if (resumed) {
+        if (attempt.attempt === 1) return predecessor;
+        return attempt.attempt === 3
+          ? { disposition: "settled-same", transfer: observed({ signature: attempt.signature }) }
+          : expired(attempt);
+      }
+      const count = (counts.get(attempt.signature) ?? 0) + 1;
+      counts.set(attempt.signature, count);
+      return count === 1 ? { disposition: "indeterminate", reason: "lost" } : expired(attempt);
+    });
+    const shared = input({
+      store,
+      now: () => clock,
+      adapter: adapter({
+        preflight: checkedPreflight, prepareSignedTransfer, broadcastRetained, reconcile,
+      }),
+    });
+    for (let call = 1; call <= 3; call += 1) {
+      await advanceSolanaSplSettlement({ ...shared, owner: `worker-${call}` });
+      clock += 101;
+    }
+    expect(markAttemptExpired.mock.calls.map((call) => call[0].signature))
+      .toEqual([signatureFor(1), signatureFor(2)]);
+    for (const spy of [
+      checkedPreflight, prepareSignedTransfer, broadcastRetained, reconcile, markAttemptExpired,
+    ]) spy.mockClear();
+    resumed = true;
+    const result = await advanceSolanaSplSettlement({ ...shared, owner: "worker-resume" });
+    return {
+      result,
+      preflights: checkedPreflight.mock.calls.length,
+      prepared: prepareSignedTransfer.mock.calls.map((call) => call[1]),
+      broadcast: broadcastRetained.mock.calls.map((call) => call[0].attempt),
+      reconciled: reconcile.mock.calls.map((call) => call[1].attempt),
+      expiries: markAttemptExpired.mock.calls.map((call) => [call[0].signature, call[0].commitmentLevel]),
+      failures: recordFailure.mock.calls.length,
+    };
+  }
+  const predecessorExpired = expired({ signature: signatureFor(1), lastValidBlockHeight: 10_001 });
+  const upgraded = [[signatureFor(1), "finalized"]];
+
+  test("a refusing preflight closes the key only after the predecessor's finalized expiry is stored", async () => {
+    await expect(resumeLegacy(
+      predecessorExpired,
+      async () => preflight({ payerTokenBalanceBaseUnits: "0" }),
+    )).resolves.toEqual({
+      result: {
+        status: "failed",
+        errorClass: "permanent",
+        reason: "solana-spl-insufficient-token-balance",
+      },
+      preflights: 1,
+      prepared: [],
+      broadcast: [],
+      reconciled: [1],
+      expiries: upgraded,
+      failures: 1,
+    });
+  });
+
+  test("a passing preflight signs a new attempt only after the predecessor's finalized expiry is stored", async () => {
+    await expect(resumeLegacy(predecessorExpired)).resolves.toMatchObject({
+      result: { status: "settled", settlement: { txRef: { signature: signatureFor(3) } } },
+      prepared: [3],
+      broadcast: [3],
+      reconciled: [1, 3],
+      expiries: upgraded,
+    });
+  });
+
+  test("a preflight RPC failure is transient only after the predecessor's finalized expiry is stored", async () => {
+    await expect(resumeLegacy(
+      predecessorExpired,
+      async () => { throw new Error("getAccountInfo: 503 at https://rpc.example"); },
+    )).resolves.toMatchObject({
+      result: { status: "transient", reason: "solana-spl-preflight-unavailable" },
+      reconciled: [1],
+      expiries: upgraded,
+    });
+  });
+
+  // The block that showed attempt 1 expired was rolled back, and attempt 1
+  // landed on the fork that was finalized: the phase is paid.
+  test("a predecessor that landed after all settles the phase with nothing new signed", async () => {
+    await expect(resumeLegacy({
+      disposition: "settled-same",
+      transfer: observed({ signature: signatureFor(1) }),
+    })).resolves.toEqual({
+      result: {
+        status: "settled",
+        settlement: expect.objectContaining({
+          txRef: expect.objectContaining({ signature: signatureFor(1) }),
+        }),
+      },
+      preflights: 0,
+      prepared: [],
+      broadcast: [],
+      reconciled: [1],
+      expiries: [],
+      failures: 0,
+    });
+  });
+
+  test.each<[string, SolanaSplReconciliation, unknown]>([
+    ["still within its validity at finalized", {
+      disposition: "absent-valid", authenticationHash: "d".repeat(64),
+    }, { status: "waiting", reason: "solana-spl-reconciliation-pending" }],
+    ["seen expired only at confirmed",
+      expired({ signature: signatureFor(1), lastValidBlockHeight: 10_001 }, { commitmentLevel: "confirmed" }),
+      { status: "waiting", reason: "solana-spl-reconciliation-pending" }],
+    ["refused by the chain at finalized", {
+      disposition: "landed-failed",
+      slot: 12_345,
+      commitmentLevel: "finalized",
+      authenticationHash: "f".repeat(64),
+    }, { status: "indeterminate", reason: "solana-spl-predecessor-landed-failed" }],
+    ["unobservable", { disposition: "indeterminate", reason: "rpc detail" },
+      { status: "indeterminate", reason: "solana-spl-reconciliation-indeterminate" }],
+    ["settled differently", {
+      disposition: "settled-different", reason: "rpc detail", authenticationHash: "d".repeat(64),
+    }, { status: "indeterminate", reason: "solana-spl-settled-different" }],
+  ])("a predecessor %s is never rebroadcast, replaced or closed over", async (_name, predecessor, result) => {
+    await expect(resumeLegacy(
+      predecessor,
+      async () => preflight({ payerTokenBalanceBaseUnits: "0" }),
+    )).resolves.toEqual({
+      result,
+      preflights: 0,
+      prepared: [],
+      broadcast: [],
+      reconciled: [1],
+      expiries: [],
+      failures: 0,
+    });
+  });
+
+  test("a store that will not upgrade the predecessor's evidence stops before preflight", async () => {
+    await expect(resumeLegacy(
+      predecessorExpired,
+      async () => preflight({ payerTokenBalanceBaseUnits: "0" }),
+      async () => ({ status: "conflict", reason: "solana-expiry-proof-conflict" }),
+    )).resolves.toEqual({
+      result: { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" },
+      preflights: 0,
+      prepared: [],
+      broadcast: [],
+      reconciled: [1],
+      expiries: upgraded,
+      failures: 0,
+    });
   });
 });

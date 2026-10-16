@@ -375,9 +375,9 @@ export interface SolanaSplSettlementStore {
  *   stays open: retry the same authority. It never authorizes paying the
  *   phase another way.
  * - `failed`: nothing under this settlement key moved tokens or can land.
- *   Every retained attempt has durable expiry evidence (`finalized` for the
- *   latest), except that the latest may instead have landed and been refused
- *   by the chain at `finalized` commitment. The store closed the key before
+ *   Every retained attempt has durable `finalized` expiry evidence, except
+ *   that the latest may instead have landed and been refused by the chain at
+ *   `finalized` commitment. The store closed the key before
  *   this was reported. Every later call with the same authority returns the
  *   same result without signing or broadcasting, so the phase may be paid
  *   another way. A retry after a top-up needs a new phase, and so a new key.
@@ -1684,6 +1684,33 @@ export async function advanceSolanaSplSettlement(
     return { status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" };
   };
 
+  // Confirmed expiry evidence an earlier version stored for a predecessor is
+  // checked again before anything relies on it: if the block that showed the
+  // expiry were rolled back, the predecessor could still land. Only finalized
+  // expiry the store acknowledges clears it, and it is never rebroadcast,
+  // because a later attempt already replaced it.
+  for (const predecessor of attempts.slice(0, -1)) {
+    if (expiryEvidence.get(predecessor.signature)?.commitmentLevel === "finalized") continue;
+    const state = await reconcile(predecessor);
+    if (state.disposition === "absent-expired") {
+      const persistenceFailure = await persistExpiry(predecessor, state.evidence);
+      if (persistenceFailure) return persistenceFailure;
+      continue;
+    }
+    if (state.disposition === "absent-valid") {
+      return { status: "waiting", reason: "solana-spl-reconciliation-pending" };
+    }
+    // A refusal proves this attempt cannot land, but a later attempt may, so
+    // it cannot close the key, and it is not expiry evidence the store holds.
+    if (state.disposition === "landed-failed") {
+      return { status: "indeterminate", reason: "solana-spl-predecessor-landed-failed" };
+    }
+    // A landed predecessor settles the phase, or is uncertain, as the latest
+    // attempt would be.
+    return await finalize(predecessor, state) ??
+      { status: "indeterminate", reason: "solana-spl-reconciliation-invalid" };
+  }
+
   const latest = attempts.at(-1);
   // Only finalized expiry evidence lets the latest attempt be replaced or the
   // key closed. Confirmed evidence an earlier version stored is checked again.
@@ -1724,23 +1751,26 @@ export async function advanceSolanaSplSettlement(
   // A stale fence means another worker may be signing, so only a failed read
   // under a current fence is `transient`. Nothing has been signed in this
   // call, and nothing retained can land, so a retry of the same key is safe.
-  let preflight: Readonly<SolanaSplPreflight>;
+  let preflight: { value: Readonly<SolanaSplPreflight> } | null;
   try {
     await fence.assertCurrent();
   } catch {
     return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
   }
   try {
-    preflight = await runPreflight(intent, fence);
+    preflight = { value: await runPreflight(intent, fence) };
   } catch {
-    return { status: "transient", reason: "solana-spl-preflight-unavailable" };
+    preflight = null;
   }
+  // A read that threw may have outlived the lease as well, so the fence is
+  // checked again before either answer is used.
   try {
     await fence.assertCurrent();
   } catch {
     return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
   }
-  const plan = validatePreflight(intent, preflight);
+  if (!preflight) return { status: "transient", reason: "solana-spl-preflight-unavailable" };
+  const plan = validatePreflight(intent, preflight.value);
   if ("status" in plan) return plan.status === "failed" ? close(plan) : plan;
 
   const attemptNumber = attempts.length + 1;
