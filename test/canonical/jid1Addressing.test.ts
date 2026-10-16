@@ -9,7 +9,7 @@ const JOB = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const BAD: unknown[] = ["", "job-abc", JOB.toLowerCase(), "8" + "0".repeat(25),
  "9" + "0".repeat(25), "0".repeat(25), "0".repeat(27), ...["I","L","O","U","é","１"].map(c => "0" + c.repeat(25)),
  " " + JOB, JOB + " ", JOB + "\n", JOB + "\r\n", JOB + "\t", JOB + "\u2028",
- JOB.replace("0", "%30"), JOB.slice(0, 5) + ":" + JOB.slice(6), null, undefined, 123];
+ JOB + "\0", JOB.replace("0", "%30"), JOB.slice(0, 5) + ":" + JOB.slice(6), null, undefined, 123];
 const api = () => canonical as unknown as Record<string, (...args: any[]) => string>;
 const calls = (job: unknown) => [
  () => api().jid1AttestationAddress!(job, "lei", "a:b", 2),
@@ -44,4 +44,19 @@ describe("current-only JID-3 address derivation", () => {
   for (const role of ["buyer","seller","orchestrator"] as const)
    expect(api().jid1BundleAddress!(JOB, role)).toBe(canonical.bundleAddress(JOB, role));
  });
+});
+
+// Positive spy control: prove this hook observes valid bundle hashing too.
+test("hash spy observes a valid bundle derivation", () => {
+ const spy = vi.spyOn(hash, "sha256Hex");
+ try { api().jid1BundleAddress!(JOB, "buyer"); expect(spy).toHaveBeenCalledOnce(); }
+ finally { spy.mockRestore(); }
+});
+test.each(["7" + "Z".repeat(25), ...["H","J","K","M","N","P","T","V"].map(c => "0" + c.repeat(25))])("accepts spec alphabet edge %s", (job) => {
+ expect(api().jid1RatingAddress!(job, "rater")).toBe(`dacs5:rating:${job}:rater`);
+});
+test("current bundle helper refuses an unknown role before hashing", () => {
+ const spy = vi.spyOn(hash, "sha256Hex");
+ try { expect(() => api().jid1BundleAddress!(JOB, "unknown")).toThrow(DacsError); expect(spy).not.toHaveBeenCalled(); }
+ finally { spy.mockRestore(); }
 });
