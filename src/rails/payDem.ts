@@ -776,11 +776,13 @@ export interface PayDemRailConfig {
    * indeterminate and never resubmitted. demosdk's transport retries a
    * connection error or a 502–504 up to four times inside one read, backing
    * off 250, 500, 1 000 and 2 000 ms (up to 8 seconds only when the node sends
-   * `Retry-After`). One transient error adds about 250 ms; a read outlasts a
-   * 5 second `statusRequestTimeoutMs` only after about three consecutive
-   * failures, a long `Retry-After` or a slow gateway. It then counts as
-   * stalled and the settlement is indeterminate at once (liveness only, never
-   * a resubmission).
+   * `Retry-After`). One transient error adds about 250 ms. Five fast failures
+   * end the read in about 3.75 seconds with an error result, which is polled
+   * again. A read outlasts a 5 second `statusRequestTimeoutMs` only when all
+   * four backoffs (3.75 seconds) plus the requests' own time pass it, when the
+   * node sends a `Retry-After` of 5 seconds or more, or when one response is
+   * slow. It then counts as stalled and the settlement is indeterminate at
+   * once (liveness only, never a resubmission).
    */
   transactionRecordTimeoutMs?: number;
 }

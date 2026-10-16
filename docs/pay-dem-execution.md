@@ -90,12 +90,15 @@ Inside one status or record read, demosdk's transport retries a connection
 error or an HTTP 502–504 up to four times. For these reads it backs off 250,
 500, 1 000 and 2 000 ms. A retry waits up to 8 seconds only when the node
 sends `Retry-After` (demosdk 4.0.16 and 4.0.18 `_doPost`). So one transient
-error adds about 250 ms. A read outlasts the 5 second `statusRequestTimeoutMs`
+error adds about 250 ms. Five fast failures, such as a refused connection or a
+quick 502, end the read in about 3.75 seconds with an error result, and the
+rail polls again. A read outlasts the 5 second `statusRequestTimeoutMs`
 default only in these cases:
 
-- about three consecutive failures plus request time;
-- a `Retry-After` of 5 seconds or more;
-- a slow gateway response.
+- all four retries, whose backoffs add 3.75 seconds, plus the requests' own
+  time pass it;
+- the node sends a `Retry-After` of 5 seconds or more;
+- one response is slow.
 
 The read then counts as stalled, and the settlement is indeterminate and held.
 This delays settlement and never causes a second broadcast.
