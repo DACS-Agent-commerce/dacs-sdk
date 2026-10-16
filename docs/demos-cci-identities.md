@@ -184,7 +184,7 @@ explicitly:
   also connects directly, with conservative compatibility checks: a global
   `fetch` with Node's complete normalized source, a global dispatcher shaped
   like Node's default, the switch off, Node's plain `http`/`https` global
-  agents, and no environment
+  agents without custom connection/request methods or route-changing options, and no environment
   proxy that Axios applies to the RPC URL. It never calls the global `fetch`
   or dispatches through the global dispatcher. A replaced, wrapped, bound or
   `Proxy` global `fetch` counts as custom, whatever dispatcher is installed,
@@ -200,7 +200,12 @@ explicitly:
   `maxRedirections` (kept outside its stored options), or later changes to an
   Agent's internals may pass. Such globals still cannot receive an automatic
   CCI request: the SDK always supplies its own private direct dispatcher to
-  its imported Fetch. When a compatibility check fails, identity reads
+  its imported Fetch. The package is loaded lazily after Node's own Fetch
+  implementation, preserving Node's global dispatcher on Node 20 as well.
+  Custom connectors or request methods on Node's global HTTP(S) Agents and
+  route-changing options such as `lookup`, `host`, or `socketPath` require an
+  injected `identityFetch`; ordinary pool settings such as `keepAlive` are allowed.
+  When a compatibility check fails, identity reads
   throw a permanent `DacsError` before signing or sending anything: `Demos GCR
   identity read would bypass the environment proxy; inject identityFetch` when
   Axios would use a proxy, or `Demos GCR identity read cannot verify its route

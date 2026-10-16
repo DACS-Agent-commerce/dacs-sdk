@@ -471,8 +471,8 @@ export interface AgentConfig {
   demosWriteJournal?: DemosWriteJournal;
   /**
    * Fetch transport for Demos CCI identity reads, passed to the adapter as
-   * `DemosAdapterConfig.identityFetch`. Without it, reads use global fetch only
-   * where it and demosdk's Axios both connect directly, and otherwise fail
+   * `DemosAdapterConfig.identityFetch`. Without it, reads use the SDK's private
+   * direct Undici transport where demosdk's Axios also connects directly, and otherwise fail
    * before sending; behind a proxy, inject a fetch that uses it.
    */
   identityFetch?: typeof fetch;

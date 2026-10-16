@@ -114,9 +114,9 @@ export interface DacsDemosActorRuntimeOptionsV1 {
   writePolicy?: "perform" | "read-only";
   /**
    * Fetch transport for the adapter's Demos CCI identity reads. Without it,
-   * reads fail before sending wherever global fetch and demosdk's Axios might
-   * take different routes, such as behind HTTP(S)_PROXY; inject a fetch that
-   * uses the proxy there.
+   * reads use the SDK's private direct Undici transport where demosdk's Axios
+   * also connects directly, and otherwise fail before sending. Behind a proxy,
+   * inject a fetch that uses it.
    */
   identityFetch?: typeof fetch;
   /** Deterministic test/custom-host seam. Production omits this callback. */

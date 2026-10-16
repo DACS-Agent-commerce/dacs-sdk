@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
-import { Agent, fetch as directFetch } from "undici";
+import { types } from "node:util";
+import type { Agent } from "undici";
 
 import { DacsError, SubstrateError, TransientError } from "../errors.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../identity/cci.js";
@@ -9,10 +10,15 @@ import { isNodeBuiltinFetch, isNodeDefaultDispatcher } from "./nodeDefaultDispat
 // Never dispatch automatic reads through global fetch or its global dispatcher.
 // Source/shape checks below cannot establish those functions' closed-over state.
 // Keep this unconfigured direct Agent private, including across signing awaits.
-const directDispatcher = new Agent();
-const directCciFetch = ((input, init) => directFetch(input as string, {
-  ...init, dispatcher: directDispatcher,
-} as Parameters<typeof directFetch>[1])) as typeof fetch;
+let directTransport: Promise<{ fetch: typeof import("undici").fetch; dispatcher: Agent }> | undefined;
+const directCciFetch = (async (input, init) => {
+  // On Node 20 this lazy web global loads Node's own Undici first. Loading the
+  // package first would install its Agent as the process's global dispatcher.
+  void globalThis.Response;
+  const { fetch, dispatcher } = await (directTransport ??= import("undici")
+    .then(({ Agent, fetch }) => ({ fetch, dispatcher: new Agent() })));
+  return fetch(input as string, { ...init, dispatcher } as Parameters<typeof fetch>[1]);
+}) as typeof fetch;
 
 /** Default and hard maximum for one raw GCR identity response (2 MiB). */
 export const DEMOS_CCI_MAX_RESPONSE_BYTES = DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes;
@@ -341,8 +347,51 @@ function nodeRouteState(): NodeRouteState {
   };
 }
 
-const className = (value: unknown) =>
-  (value as { constructor?: { name?: unknown } } | null | undefined)?.constructor?.name;
+const agentPrototypes = [http.Agent.prototype, https.Agent.prototype];
+// Built-in prototype methods are trusted; remember them so later mutations also
+// refuse the automatic route. No supplied Agent method is called by this check.
+const agentMethods = agentPrototypes.map(prototype => new Map([
+  ...Object.entries(Object.getOwnPropertyDescriptors(http.Agent.prototype)),
+  ...Object.entries(Object.getOwnPropertyDescriptors(prototype)),
+].filter(([, descriptor]) => typeof descriptor.value === "function")
+  .map(([name, descriptor]) => [name, descriptor.value] as const)));
+const poolOptions = new Set([
+  "keepAlive", "keepAliveMsecs", "maxSockets", "maxFreeSockets", "maxTotalSockets",
+  "scheduling", "timeout", "noDelay", "maxCachedSessions", "agentKeepAliveTimeoutBuffer",
+]);
+const ownData = (value: object, key: PropertyKey): unknown => {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && "value" in descriptor ? descriptor.value : undefined;
+};
+
+function isPlainGlobalAgent(value: unknown, index: number): boolean {
+  if (value === null || typeof value !== "object" || types.isProxy(value) ||
+      Object.getPrototypeOf(value) !== agentPrototypes[index]) return false;
+  const protocol = index === 0 ? "http:" : "https:";
+  const port = index === 0 ? 80 : 443;
+  if (ownData(value, "protocol") !== protocol || ownData(value, "defaultPort") !== port) return false;
+  for (const [name, method] of agentMethods[index]!) {
+    if (Object.hasOwn(value, name)) return false;
+    const prototype = Object.hasOwn(agentPrototypes[index]!, name)
+      ? agentPrototypes[index]! : http.Agent.prototype;
+    if (ownData(prototype, name) !== method) return false;
+  }
+  // Node's startup proxy configuration can outlive options.proxyEnv.
+  if (Object.getOwnPropertySymbols(value).some(key =>
+    key.description === "kProxyConfig" && ownData(value, key) != null)) return false;
+  const options = ownData(value, "options");
+  if (options === null || typeof options !== "object" || types.isProxy(options) ||
+      ![null, Object.prototype].includes(Object.getPrototypeOf(options))) return false;
+  return Reflect.ownKeys(options).every(key => {
+    const descriptor = Object.getOwnPropertyDescriptor(options, key)!;
+    if (!("value" in descriptor)) return false;
+    const option: unknown = descriptor.value;
+    if (typeof key !== "string") return false;
+    return option === undefined || poolOptions.has(key) ||
+      key === "path" && option === null || key === "proxyEnv" && option === null ||
+      key === "protocol" && option === protocol || key === "defaultPort" && option === port;
+  });
+}
 
 // With NODE_USE_ENV_PROXY=1 or --use-env-proxy, Node 22.21+ also proxies the
 // global agents Axios connects through "directly", from a snapshot of the
@@ -350,8 +399,7 @@ const className = (value: unknown) =>
 function nodeMayProxyAxios(env: NodeJS.ProcessEnv, state: NodeRouteState): boolean {
   const flags = [...state.execArgv, ...(env.NODE_OPTIONS ?? "").split(/\s+/)];
   if (env.NODE_USE_ENV_PROXY === "1" || flags.includes("--use-env-proxy")) return true;
-  return state.agents.some(agent => className(agent) !== "Agent" ||
-    (agent as { options?: { proxyEnv?: unknown } }).options?.proxyEnv != null);
+  return state.agents.length !== 2 || state.agents.some((agent, index) => !isPlainGlobalAgent(agent, index));
 }
 
 /**

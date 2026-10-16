@@ -43,7 +43,8 @@ export interface DemosAdapterConfig {
    * Node-shaped global fetch (a replaced or wrapped one counts as custom),
    * Node's default dispatcher (a bare `new Agent()`; one with a connector, factory or
    * other stored option counts as custom), no NODE_USE_ENV_PROXY=1 or
-   * --use-env-proxy, plain global agents, and no environment proxy that Axios applies
+   * --use-env-proxy, plain global agents without custom request/connection methods
+   * or route-changing options, and no environment proxy that Axios applies
    * to `rpc`. Otherwise identity reads throw DacsError without signing or sending.
    * Inject a fetch, for example one with a proxy dispatcher, to choose the route
    * yourself; createAgent() takes it as AgentConfig.identityFetch.
