@@ -1968,9 +1968,9 @@ export async function advanceLiquidityTankSettlement(
   if (restartSafety !== "conformance-tested" && restartSafety !== "volatile-acknowledged") {
     return { status: "indeterminate", reason: "liquidity-tank-store-restart-safety-undeclared" };
   }
-  // The core cannot tell production from development; a process that says it
-  // is in production never runs on a store that has said it is volatile.
-  if (restartSafety === "volatile-acknowledged" && declaresProduction()) {
+  // Volatile storage requires an explicitly declared development/test mode;
+  // an absent, unknown or unreadable environment cannot authorize its use.
+  if (restartSafety === "volatile-acknowledged" && !allowsVolatileStore()) {
     return { status: "indeterminate", reason: "liquidity-tank-store-volatile-in-production" };
   }
   // Without the host's checks the core cannot tell a forged observation or a
@@ -3092,12 +3092,13 @@ export interface InMemoryLiquidityTankStoreOptions {
   readonly acknowledgeVolatile: true;
 }
 
-/** `NODE_ENV` is `production`; an environment that cannot be read counts as production. */
-function declaresProduction(): boolean {
+/** Only explicit development/test modes permit a volatile store. */
+function allowsVolatileStore(): boolean {
   try {
-    return process.env["NODE_ENV"] === "production";
+    const mode = process.env["NODE_ENV"];
+    return mode === "development" || mode === "test";
   } catch {
-    return true;
+    return false;
   }
 }
 

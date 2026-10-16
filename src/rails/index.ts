@@ -169,6 +169,11 @@ export {
   type AdvanceLiquidityTankInput,
 } from "./liquidityTank.js";
 export {
+  createLiquidityTankEvmFinalityVerifier,
+  LIQUIDITY_TANK_EVM_FINALITY_VERSION,
+  type LiquidityTankEvmFinalityOptions,
+} from "./liquidityTankEvmFinality.js";
+export {
   runLiquidityTankStoreConformance,
   type LiquidityTankStoreConformanceOptions,
   type LiquidityTankStoreConformanceResult,

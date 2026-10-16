@@ -76,9 +76,9 @@ durable store, `createFsLiquidityTankStore` for a single host (see
 in the SDK's tests and declares `"conformance-tested"`. The exported in-memory
 store loses everything on restart, refuses to construct without
 `{ acknowledgeVolatile: true }`, and declares itself `"volatile-acknowledged"`.
-It is for tests and development only, never production: the core runs end to
-end on it, except in a process with `NODE_ENV=production`, where the core
-refuses it before any claim. The declaration is the host's, and the core does
+It is for tests and development only: the core permits it only with an explicit
+`NODE_ENV=development` or `NODE_ENV=test`. An unset, empty, unknown or unreadable
+environment is refused before any claim. The declaration is the host's, and the core does
 not check it: it checks only that the value is one of the two strings, so a
 non-durable store that declares `"conformance-tested"` also runs end to end.
 
@@ -90,6 +90,7 @@ the SDK does not check (see [Tank balance](#tank-balance-is-the-bridges)).
 ```ts
 import {
   advanceLiquidityTankSettlement,
+  createLiquidityTankEvmFinalityVerifier,
   type LiquidityTankAdapter,
   type LiquidityTankStore,
   type LiquidityTankVerifier,
@@ -102,7 +103,10 @@ const result = await advanceLiquidityTankSettlement({
   // Durable and atomic, passes runLiquidityTankStoreConformance, and
   // declares restartSafety: "conformance-tested".
   store: durableStore satisfies LiquidityTankStore,
-  verifier: hostVerifier satisfies LiquidityTankVerifier,
+  verifier: createLiquidityTankEvmFinalityVerifier({
+    verifier: hostVerifier satisfies LiquidityTankVerifier,
+    sourceRpcUrl: trustedSepoliaRpcUrl,
+  }),
 });
 ```
 
@@ -351,6 +355,47 @@ A missing verifier or method, or one that is not a stable function, is refused
 before any claim with `liquidity-tank-observation-authenticator-unavailable` or
 `liquidity-tank-submission-verifier-unavailable`. The core never falls back to
 trusting the adapter.
+
+### Ethereum source-finality verifier
+
+`createLiquidityTankEvmFinalityVerifier` supplies the source-lock finality gate
+for the supported Sepolia route. Its contract version is
+`LIQUIDITY_TANK_EVM_FINALITY_VERSION = "ethereum-finalized-receipt-v1"`, using
+JSON-RPC 2.0 and the Ethereum Execution APIs
+[**v1.0.0-beta.7** at `5aebdfdd45cadeb723be4bd45b4611b71c8b1c85`](https://github.com/ethereum/execution-apis/tree/5aebdfdd45cadeb723be4bd45b4611b71c8b1c85)
+methods
+[`eth_getTransactionReceipt`](https://ethereum.github.io/execution-apis/api/methods/eth_getTransactionReceipt/)
+and [`eth_getBlockByNumber`](https://ethereum.github.io/execution-apis/api/methods/eth_getBlockByNumber/).
+The receipt's `status` must be `0x1`, its transaction hash must equal the
+authenticated observation's `lockTxHash`, and its block must be canonical,
+contain that transaction and be at or below the node's `finalized` head.
+`latest`, `safe`, inclusion and a count of confirmations never substitute for
+the `finalized` tag. `eth_chainId` must return Sepolia's `0xaa36a7`.
+
+The host pins `sourceRpcUrl` to a **trusted execution RPC using HTTPS**. Native
+fetch validates TLS; redirects, URL userinfo and fragments are refused. The
+optional `fetch` is a trusted transport override. This uses the configured
+node's authenticated chain view, not an independently verified light-client
+proof. A dishonest node can lie about finality. The host must select and review
+that trust dependency along with the bridge's trust model.
+
+The wrapper first calls the supplied bridge authenticator, which still must
+bind the exact operation, source lock, amount, asset and tank pair. It then
+checks source finality for **every lock-bearing observation**, including
+failures, completions and retained recovery evidence. A pre-final receipt,
+unsupported finality tag, wrong network, missing or inconsistent block data,
+RPC error or network outage returns `"unavailable"`. A reverted transaction
+or receipt for another transaction refuses the bridge claim. No observation,
+expiry or settlement write is authorized by unavailable proof. A retained
+lock continues to be reported during an outage without authorizing effects.
+The four read requests share a `timeoutMs` deadline (default 10 seconds;
+allowed 1–30,000 ms). Signed-submission decoding is delegated unchanged to the
+supplied verifier. The RPC receives no signed bytes and submits no transaction.
+
+This adapter supplies source finality independently of the Demos bridge DTO.
+It does **not** supply the bridge's authenticated status record, local signing,
+release finality or funded integration. Those live-adapter requirements below
+still apply; an authenticator that simply returns `true` cannot establish them.
 
 **A settled row is trusted as the store wrote it.** When a claim returns
 `settled`, the core checks the stored settlement's shape, its amount and route
@@ -716,8 +761,8 @@ claim, preparation, signature, observation or broadcast:
   caller has said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile:
   true })` sets it. For tests and development only, never production: the
   core runs end to end on it, and after a restart signs a second bridge
-  operation. When `process.env.NODE_ENV` is `"production"`, or the
-  environment cannot be read, the core refuses it before any claim with
+  operation. Unless `process.env.NODE_ENV` is exactly `"development"` or
+  `"test"`, the core refuses it before any claim with
   `indeterminate` `liquidity-tank-store-volatile-in-production`. That is a
   backstop for a mis-wired production process, not a check of the store: the
   core cannot tell production from development any other way.
@@ -874,8 +919,8 @@ Host configuration is refused the same way, before any claim or effect:
 - **A store that does not declare `restartSafety`** (see
   [Declaring restart safety](#declaring-restart-safety)) returns
   `liquidity-tank-store-restart-safety-undeclared` on every call.
-- **A store that declares `"volatile-acknowledged"`, in a process with
-  `NODE_ENV=production`**, returns
+- **A store that declares `"volatile-acknowledged"`, without explicit
+  `NODE_ENV=development` or `NODE_ENV=test`**, returns
   `liquidity-tank-store-volatile-in-production` on every call.
 - **Any other refused owner, lease, clock, store or adapter**, including a
   whole store wrapped in a `Proxy`, returns its refusal message as the reason,
@@ -897,8 +942,8 @@ operator rather than polling:
 - `liquidity-tank-store-recovery-capability-unavailable`;
 - `liquidity-tank-store-restart-safety-undeclared`: the store does not declare
   how it survives a restart;
-- `liquidity-tank-store-volatile-in-production`: a process with
-  `NODE_ENV=production` was given a store that declares
+- `liquidity-tank-store-volatile-in-production`: a process outside explicit
+  development/test mode was given a store that declares
   `"volatile-acknowledged"`;
 - `liquidity-tank-settlement-store-lease-invalid`: the store's lease is not
   exactly `now + leaseDurationMs`, or a waiting lease is malformed (see
