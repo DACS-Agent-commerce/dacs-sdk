@@ -40,10 +40,17 @@ Canonicalization, schema checks, signed-scope selection, and signature and
 protocol verification remain subsequent operations.
 
 Negative zero (for example `-0.0`) is an admitted CORE §B.2 number that
-serialises as `0`. `contentHash`, `stripSignature`, `canonicalSignedScope` and
-the signature/Listing verifiers therefore treat an admitted `-0` exactly like
-`0`, and their owned snapshots hold `0`. Locally authored artifacts should use
-`0`: the signing helpers still refuse an in-memory `-0` as a non-wire alias.
+serialises as `0`. APIs that take ownership of received or stored data treat an
+admitted `-0` exactly like `0`, and their owned snapshots hold `0`. These
+include `contentHash`, `stripSignature`, `canonicalSignedScope`, `signArtifact`
+and `verifyArtifact`, the component-signature and Listing verifiers, and the
+ordered DACS-1 §6.3.4 reader `validateListingArtifact` with its revocation,
+payload-capability and reachability helpers. Such an API also normalises an
+in-memory `-0` it is handed directly. Locally authored component artifacts
+should use `0`: `signComponentArtifact`, `buildComponentSignature` and the
+SDK's other authoring boundaries refuse an in-memory `-0` as a non-wire alias.
+Wire-format reads that must keep a transport's exact JSON also refuse it,
+because their owned copy is not re-parsed from canonical bytes.
 
 This is an **explicit API**, not a current-profile switch. Existing object-based
 SDK consumers, adapters, caches and restored session records do not acquire
