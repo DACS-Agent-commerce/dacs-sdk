@@ -1,6 +1,91 @@
 import { describe, expect, it } from "vitest";
 
-import { snapshotWireJsonRead } from "../../src/canonical/snapshot.js";
+import {
+  isSafeJsonString,
+  snapshotCanonicalJson,
+  snapshotCanonicalJsonConfig,
+  snapshotWireJsonRead,
+} from "../../src/canonical/snapshot.js";
+
+const causeOf = (run: () => unknown): string => {
+  try {
+    run();
+  } catch (error) {
+    return ((error as Error).cause as Error).message;
+  }
+  throw new Error("expected the snapshot to throw");
+};
+
+describe("isSafeJsonString", () => {
+  it.each(["", "plain", "𐀀", "􏿿", "𐏿", "a𐀀b"])(
+    "accepts %j",
+    (value) => {
+      expect(isSafeJsonString(value)).toBe(true);
+    },
+  );
+
+  it.each([
+    "\ud800",
+    "\ud800a",
+    "\ud800",
+    "\udc00",
+    "\udfff",
+    "a\udc00",
+    "\udbff",
+    "\udc00\ud800",
+  ])("rejects lone surrogate %j", (value) => {
+    expect(isSafeJsonString(value)).toBe(false);
+  });
+});
+
+describe("negative zero by snapshot boundary", () => {
+  it.each([
+    ["top-level", -0],
+    ["object member", { n: -0 }],
+    ["array element", { n: [-0] }],
+  ])("refuses %s negative zero at the authoring and configuration boundaries", (_label, value) => {
+    expect(() => snapshotCanonicalJson(value, "artifact"))
+      .toThrow(/artifact is not stable canonical JSON/);
+    expect(causeOf(() => snapshotCanonicalJson(value, "artifact")))
+      .toBe("not data-only JSON");
+    expect(causeOf(() => snapshotCanonicalJsonConfig(value, "config")))
+      .toBe("not data-only JSON");
+  });
+
+  it.each([
+    ["top-level", -0],
+    ["object member", { n: -0 }],
+    ["array element", { n: [-0] }],
+  ])("refuses %s negative zero on the wire read before cloning", (_label, value) => {
+    expect(() => snapshotWireJsonRead(value, "signed transaction"))
+      .toThrow(/signed transaction is not stable wire JSON/);
+    expect(causeOf(() => snapshotWireJsonRead(value, "signed transaction")))
+      .toBe("not data-only JSON");
+  });
+});
+
+describe("strict canonical snapshot", () => {
+  it.each([
+    ["exotic value in an array", [new Date(0)]],
+    ["accessor inside an array", [{ get x() { return 1; } }]],
+    ["symbol-keyed member", { [Symbol("hidden")]: 1, a: 1 }],
+    ["frozen array", Object.freeze([1])],
+    ["array subclass instance", { list: class Tagged extends Array {}.of(1) }],
+    ["null-prototype array", { list: Object.setPrototypeOf([1], null) }],
+    ["lone surrogate value", { s: "\ud800" }],
+    ["lone surrogate member name", { ["\udc00"]: 1 }],
+    ["unsafe integer", { n: 2 ** 53 }],
+  ])("rejects %s", (_label, value) => {
+    expect(causeOf(() => snapshotCanonicalJson(value, "artifact")))
+      .toBe("not data-only JSON");
+  });
+
+  it("rejects accessors at the configuration boundary", () => {
+    expect(causeOf(() =>
+      snapshotCanonicalJsonConfig({ get x() { return 1; } }, "config"),
+    )).toBe("not data-only JSON");
+  });
+});
 
 describe("snapshotWireJsonRead", () => {
   it("owns frozen wire JSON without sorting keys or normalising strings", () => {
@@ -44,6 +129,12 @@ describe("snapshotWireJsonRead", () => {
     ["undefined", { value: undefined }],
     ["exotic prototype", Object.create({ inherited: true })],
     ["sparse array", new Array(1)],
+    ["negative zero", { n: -0 }],
+    ["nested negative zero", { n: [-0] }],
+    ["unsafe integer", { n: 2 ** 53 }],
+    ["lone high surrogate", { s: "\ud800" }],
+    ["lone low surrogate", { s: "a\udc00" }],
+    ["lone surrogate member name", { ["\udbff"]: 1 }],
   ])("rejects %s input", (_label, value) => {
     expect(() => snapshotWireJsonRead(value, "signed transaction"))
       .toThrow(/signed transaction is not stable wire JSON/);
