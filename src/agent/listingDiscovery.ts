@@ -881,7 +881,12 @@ export async function enumerateListingsForSeller(
       retryCursor: cursor,
     };
   }
+  // A legacy Listing's address may carry a serviceId outside the CF-4 listingId
+  // grammar, which classifies as `unknown`. Every `dacs1:` row goes through the
+  // same address parser as the direct read, so enumeration neither drops a
+  // Listing that read authenticates nor skips a bad address silently.
   const scan = await scanAnchorPage(fetchPage, cursor, {
+    includeUnknown: true,
     ...(historyPageSize === undefined
       ? {}
       : { limit: historyPageSize }),
@@ -901,7 +906,8 @@ export async function enumerateListingsForSeller(
   const listings: AuthenticatedListing[] = [];
   const diagnostics: ListingEnumerationDiagnostic[] = [];
   for (const candidate of scan.anchors) {
-    if (candidate.kind !== "listing") continue;
+    // Both `listing` rows and unclassified legacy Listing rows start `dacs1:`.
+    if (!candidate.logicalAddress.startsWith("dacs1:")) continue;
     if (
       candidate.owner === undefined ||
       !DEMOS_OWNER.test(candidate.owner) ||
