@@ -7,6 +7,7 @@ import {
 import {
   AnchorHistoryRestartRequiredError,
   createDemosHistoryPageFetcher as createDemosHistoryPageFetcherFromRoot,
+  scanAllAnchors,
   scanAnchorPage,
 } from "../../src/index.js";
 
@@ -285,6 +286,9 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     ["a sender with trailing junk", (v) => { (v.content as Row).from = `${OWNER}00`; }, /32-byte hex address/],
     ["a three-part payload", (v) => { ((v.content as Row).data as unknown[]).push({}); }, /malformed storage payload/],
     ["a one-part payload", (v) => { ((v.content as Row).data as unknown[]).pop(); }, /malformed storage payload/],
+    ["an array-like payload tuple", (v) => {
+      (v.content as Row).data = { length: 2, 0: "storageProgram", 1: payloadOf(v) };
+    }, /malformed storage payload/],
     ["another payload tag", (v) => { ((v.content as Row).data as unknown[])[0] = "native"; }, /malformed storage payload/],
     ["an unknown operation", (v) => { payloadOf(v).operation = "CREATE_STORAGE"; }, /inconsistent storage metadata/],
     ["a storage address with leading junk", (v) => setStorage(v, `x${NATIVE_1}`), /inconsistent storage metadata/],
@@ -306,6 +310,9 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
     ["a confirmation in block 0", (v) => { v.blockNumber = 0; }, true],
     ["a timestamp of 0", (v) => { (v.content as Row).timestamp = 0; }, true],
     ["a decimal-string timestamp of 0", (v) => { (v.content as Row).timestamp = "0"; }, true],
+    ["equal camelCase and snake_case logical metadata", (v) => {
+      payloadOf(v).metadata = { logicalAddress: "dacs1:s:svc:v1", logical_address: "dacs1:s:svc:v1" };
+    }, true],
   ])("a row with %s is well formed (emitted: %s)", async (_name, edit, emitted) => {
     const client = clientWith(async (_owner, _type, { start }) => start === 0 ? [edited(edit)] : []);
     await expect(createDemosHistoryPageFetcher(client, OWNER)(null, 2)).resolves.toEqual({
@@ -331,7 +338,7 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
       row({ hash: "older", timestamp: 1 }), row({ hash: "newer", timestamp: 2 }),
     ]), OWNER);
     await expect(outOfOrder(null, 2)).rejects.toThrow(/out of timestamp order/);
-    for (const timestamp of [-1, 1.5, "01", "x", null]) {
+    for (const timestamp of [-1, 1.5, 2 ** 60, "01", "x", null]) {
       const bad = row({ hash: "bad" });
       (bad.content as Record<string, unknown>).timestamp = timestamp;
       await expect(createDemosHistoryPageFetcher(clientWith(async () => [bad]), OWNER)(null, 1))
@@ -342,6 +349,19 @@ describe("createDemosHistoryPageFetcher (#54)", () => {
       ? [row({ hash: "s", timestamp: "1800000000000", logicalAddress: "dacs1:s:svc:v1" })]
       : []), OWNER);
     await expect(decimal(null, 2)).resolves.toMatchObject({ entries: [{ logicalAddress: "dacs1:s:svc:v1" }], nextCursor: null });
+  });
+
+  // Every continuation re-reads a full 100-row window; only a boundary group that
+  // fills it may restart, never an ordinary long history.
+  test.each([7, 50, 99])("a 150-row history drains at limit %i: every row once, in order", async (limit) => {
+    const history = Array.from({ length: 150 }, (_, n) => row({
+      hash: `tx-${n}`, timestamp: 2_000_000 - n, nativeAddress: `stor-${n.toString(16).padStart(40, "0")}`,
+      logicalAddress: `dacs1:s:l${n}:v1`,
+    }));
+    const client = clientWith(async (_owner, _type, { start, limit: size }) => history.slice(start, start + size));
+    const result = await scanAllAnchors(createDemosHistoryPageFetcher(client, OWNER), { limit, includeUnknown: true });
+    expect(result.status).toBe("complete");
+    expect(result.anchors.map((anchor) => anchor.logicalAddress)).toEqual(history.map((_, n) => `dacs1:s:l${n}:v1`));
   });
 
   // Buffered overlap: more rows after the boundary than `limit` in a short window.

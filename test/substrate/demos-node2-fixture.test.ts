@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
+import { classifyAnchor } from "../../src/discovery/index.js";
 import {
   createDemosHistoryPageFetcher,
   createInMemoryDemosWriteJournal,
@@ -43,19 +44,28 @@ async function drain(rows: Row[], limit: number) {
 }
 
 describe("the Demos history fetcher against recorded node2 responses", () => {
+  // The last row is a real DACS settlement-evidence CREATE.
+  const REAL_DACS = {
+    nativeAddress: "stor-0c8a191536d3908a8816c2312bdb4cfcd316e513",
+    logicalAddress: "dacs4:payment:01M0JS1ZPVGE2HJ3N83DVTPV8P:x402%3Abase-sepolia:2",
+    owner: fixture.owner,
+  };
+
   test("the fixture has confirmed and failed rows with decimal-string timestamps", () => {
-    expect(fixture.historyRows.map((row) => row.status)).toEqual(["confirmed", "confirmed", "failed", "failed"]);
+    expect(fixture.historyRows.map((row) => row.status))
+      .toEqual(["confirmed", "confirmed", "failed", "failed", "confirmed"]);
     for (const row of fixture.historyRows) expect(row.content.timestamp).toMatch(/^[1-9][0-9]*$/);
     expect(fixture.historyRows[0]!.content.transaction_fee).toHaveProperty("rpc_address");
   });
 
-  test.each([1, 2, 3, 100])("pages every row at limit %i and emits no WRITE, failed or non-DACS row", async (limit) => {
+  test.each([1, 2, 3, 100])("pages every row at limit %i and emits only the real DACS CREATE row", async (limit) => {
     const { entries, cursor } = await drain(fixture.historyRows, limit);
     expect(cursor).toBeNull();
-    expect(entries).toEqual([]);
+    expect(entries).toEqual([REAL_DACS]);
+    expect(classifyAnchor(REAL_DACS.logicalAddress)).toBe("settlement-evidence");
   });
 
-  test.each([1, 2, 100])("a real CREATE row carrying DACS metadata is emitted once at limit %i", async (limit) => {
+  test.each([1, 2, 100])("a non-DACS CREATE row given DACS metadata is emitted once at limit %i", async (limit) => {
     const rows = structuredClone(fixture.historyRows);
     const payload = rows.find((row) => row.content.data[1].operation === "CREATE_STORAGE_PROGRAM")!.content.data[1];
     payload.metadata = { ...payload.metadata, logicalAddress: "dacs3:commit:01J8ME0SXKQ4T9V2RC5HJ6WX7D" };
@@ -65,7 +75,7 @@ describe("the Demos history fetcher against recorded node2 responses", () => {
       nativeAddress: payload.storageAddress,
       logicalAddress: "dacs3:commit:01J8ME0SXKQ4T9V2RC5HJ6WX7D",
       owner: fixture.owner,
-    }]);
+    }, REAL_DACS]);
   });
 
   test("the recorded not-found body, returned or thrown as HTTP 404, reads as no record", async () => {
