@@ -236,7 +236,7 @@
       "licenses": [
         {
           "license": {
-            "id": "LicenseRef-Aptos"
+            "name": "LicenseRef-Aptos"
           }
         }
       ]

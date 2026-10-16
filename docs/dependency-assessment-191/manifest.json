@@ -3226,7 +3226,7 @@
       "bytes": 1819
     }
   ],
-  "path_policy": "Authored tarball paths use <collection>/tarballs; supplementary SBOM file references use collection-relative file:tarballs URLs. These derived path substitutions do not alter original raw bytes.",
+  "path_policy": "Authored tarball paths use <collection>/tarballs; supplementary SBOM file references use collection-relative file:tarballs URLs. These derived path substitutions do not alter original raw bytes. Supplementary SBOM licenses move a user-defined LicenseRef- or DocumentRef- identifier from license.id to license.name, as the CycloneDX 1.5 schema requires; tools/validate.py applies the same rule to the original raw exports.",
   "native_artifact": {
     "package": "@demosnetwork/demos-native",
     "version": "0.1.0-alpha.2",
@@ -3238,9 +3238,24 @@
   "install_path_gaps": [],
   "catalog_files": [
     {
+      "path": "cyclonedx/bom-1.5.schema.json",
+      "sha256": "067f7824b08653839ea050ae9e09ca48375eadc2652b0e2a299476e7db90335b",
+      "bytes": 164769
+    },
+    {
+      "path": "cyclonedx/jsf-0.82.schema.json",
+      "sha256": "8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae",
+      "bytes": 8058
+    },
+    {
+      "path": "cyclonedx/spdx.schema.json",
+      "sha256": "4f6e2b05c05d26a4f2dc5879fbc2fca94b0a28db46289d0c51345621b71cfbfc",
+      "bytes": 12322
+    },
+    {
       "path": "native-api.json",
-      "sha256": "78e608ea049f9518b052ca717278d4b46084408580f8ca632f28ca8766504d1b",
-      "bytes": 4327
+      "sha256": "4d954f309714575885535cd2b79ef6e34042126d49b8919b26a100a5ad7ae422",
+      "bytes": 4991
     },
     {
       "path": "native-delta.json",
@@ -3256,6 +3271,11 @@
       "path": "packs.json",
       "sha256": "5e439497c5db5a21368def5082350bd3b5f8a6cecfb1530b6066c5231e05902f",
       "bytes": 761
+    },
+    {
+      "path": "release-checks.json",
+      "sha256": "3d99993ba695b5435d16c4131ddc064eda99203041782187c360352205082270",
+      "bytes": 15784
     },
     {
       "path": "sbom-comparison.json",
@@ -3294,13 +3314,13 @@
     },
     {
       "path": "sboms/live-buyer.physical.cdx.json",
-      "sha256": "69b7fbadb9ea40d58c4a0ee7f75e3081e4943ff82d9f7667f0d4324d53f047b0",
-      "bytes": 1463954
+      "sha256": "bb9badbe6eed7d4698662f32afc6a9b2cccffdb8600a1a74b55068ecf7cbc166",
+      "bytes": 1463956
     },
     {
       "path": "sboms/live-seller.physical.cdx.json",
-      "sha256": "b51effdfd1d1f5c8b03c666fb0fa71afaffcb137da404fa1e829f90d9ac0e4a9",
-      "bytes": 1463956
+      "sha256": "ede63534706d1435c3cf43b51d53bd6e435716a1222c319a7d1637df8dd0735e",
+      "bytes": 1463958
     },
     {
       "path": "sboms/native-alpha2.npm.cdx.json",
@@ -3329,13 +3349,18 @@
     },
     {
       "path": "summary.json",
-      "sha256": "afcf39bfbac301c7cec59820bd9635e978260c387ce45c65856d571722324edf",
-      "bytes": 7097
+      "sha256": "0d3a2c5488b387641f976b73db52c8329c9dc2d8ad7ba97c47881c323e16bca4",
+      "bytes": 7629
     },
     {
       "path": "tools/assess.py",
-      "sha256": "5537e1d0fa87752fe82b32cf9ac300561157d8d65c7c150993942e45d059bb25",
-      "bytes": 14292
+      "sha256": "87c495637f5fcc0a91db31044a3ac30d1805652ce8ec14074541af0f84d9f60a",
+      "bytes": 14845
+    },
+    {
+      "path": "tools/engines-check.cjs",
+      "sha256": "c8e24af70f725086e9e41d12cfc62fe5dc8c91c68516920f7d3006df86d17d95",
+      "bytes": 2035
     },
     {
       "path": "tools/native-data-compat.mjs",
@@ -3343,9 +3368,19 @@
       "bytes": 2939
     },
     {
+      "path": "tools/native-nonce-poll.mjs",
+      "sha256": "6031eb51df66666b926d6086748c53dd9dbbcea8c0ac31d850990deb828ce19e",
+      "bytes": 2187
+    },
+    {
       "path": "tools/physical-sbom.cjs",
-      "sha256": "f86807fccc0a0eb51d852f27dc10e3ce733ff7b2aa83f26c515c978a486056e2",
-      "bytes": 3117
+      "sha256": "34241c34ef6025e48bec96506eda3863cb2179f0f7fe9af9a41dd455f6a221d0",
+      "bytes": 3393
+    },
+    {
+      "path": "tools/semver-match.cjs",
+      "sha256": "8295415d0fcc1de354e3d9df76bcd44d0f28d2feb69a7ae8b56cceeb3e602998",
+      "bytes": 964
     },
     {
       "path": "tools/supplement.py",
@@ -3353,9 +3388,14 @@
       "bytes": 12386
     },
     {
+      "path": "tools/tools.test.mjs",
+      "sha256": "a36c556a93baa090820c5b87e4974df0939f2c95438a383c8f552d1cf11ce86d",
+      "bytes": 5786
+    },
+    {
       "path": "tools/trace-full.mjs",
-      "sha256": "b6a0df70401f10e3a50f80e40154fd2b444f98c6c680d86bfabe0a8ed1149c1a",
-      "bytes": 4649
+      "sha256": "417147c4944ac649f6026978984ca7308dc5543c4e05fac13f9f9c5467dd7d22",
+      "bytes": 4788
     },
     {
       "path": "tools/trace-imports.mjs",
@@ -3364,18 +3404,23 @@
     },
     {
       "path": "tools/validate.py",
-      "sha256": "867be05c6b4a0b33505d074ccbac84ae4006d02cf3e19bdc3e150da2208546ca",
-      "bytes": 14803
+      "sha256": "2b7f3f825be509ca8cde3ba6b8f9d761705e7475ca00e256b9999a8715f640b1",
+      "bytes": 24151
+    },
+    {
+      "path": "tools/validate_test.py",
+      "sha256": "381e0cf3a6196eeedd0a5fa2a6c0395dc3238555f03f4cf612fd80652de65cbd",
+      "bytes": 7805
     },
     {
       "path": "upstream-actions.json",
-      "sha256": "ffa6b5ad3d34248874fc225ce8265e84db5559cca3860579863eada7479e3037",
-      "bytes": 6927
+      "sha256": "5c5c1722f51f3e7aab98d2d0a40986ccb3d5038d696eb35038539fcd3b671b12",
+      "bytes": 8453
     },
     {
       "path": "validation.json",
-      "sha256": "1983f35d0c0c99701c47de4cf9686e4ed5acd3282373bfa9f1c1d675a42b2308",
-      "bytes": 4504
+      "sha256": "a8b8848d2be3faff431eea3139bdaf7ba1f15b28db7b12b4470e177e37825fa9",
+      "bytes": 6169
     }
   ],
   "receipt_gaps": [
@@ -4523,7 +4568,7 @@
       }
     ]
   },
-  "report_sha256": "b3ca56c16eeae7daa539994ddf53defc9ae3fac4e03f2186be70f677dc1808d0",
+  "report_sha256": "1bd01572687b4642bb24cd96e427bbb75f842cb56bb605ab7869ef5bbe9eaac1",
   "fix_round2": {
     "collected_utc": "2026-10-15T22:40:45.140219+00:00",
     "collection_root": "<round2-root>",

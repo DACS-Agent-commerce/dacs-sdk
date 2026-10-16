@@ -36,6 +36,10 @@ const {cyclonedxOutput}=require(path.join(npmRoot,'lib/utils/sbom-cyclonedx.js')
     for(const reference of component.externalReferences||[]){
       if(reference.url.startsWith('file:')&&reference.url.endsWith('.tgz'))reference.url='file:tarballs/'+path.basename(reference.url);
     }
+    // CycloneDX 1.5 license.id admits only SPDX list identifiers; user-defined references belong in license.name.
+    for(const entry of component.licenses||[]){
+      if(/^(?:LicenseRef|DocumentRef)-/.test(entry.license?.id||''))entry.license={name:entry.license.id};
+    }
   }
   fs.writeFileSync(folder+'/sbom-installed.cdx.json',JSON.stringify(sbom,null,2)+'\n');
   process.stdout.write(JSON.stringify({components:sbom.components.length,conflicts:conflicts.length})+'\n');

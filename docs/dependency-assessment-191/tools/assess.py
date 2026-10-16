@@ -3,6 +3,7 @@ import json,collections,subprocess,hashlib,argparse
 parser=argparse.ArgumentParser(description='Regenerate findings from retained locks, audits and physical inventories.')
 parser.add_argument('--collection',type=Path,required=True)
 parser.add_argument('--output',type=Path)
+parser.add_argument('--npm-root',help='npm 10.9.9 installation whose bundled semver matches ranges; default derives it from the running node.')
 args=parser.parse_args()
 BASE=args.collection.resolve()
 RAW=BASE/'raw'
@@ -146,9 +147,9 @@ for tree in TREES:
     summary={'tree':tree,'lock_sha256':sha(raw/'package-lock.json'),'audit_package_counts':counts(audit),'physical_components':len(load(raw/'sbom-physical.cdx.json')['components']),'primary_sbom_exit':load(raw/'sbom.command.json')['exit_code'],'install_exit':load(raw/'install.command.json')['exit_code']}
     if (raw/'audit-installed.stdout.log').exists():summary['audit_omit_optional_counts']=counts(load(raw/'audit-installed.stdout.log'))
     summaries.append(summary)
-# Match source ranges with the same semver library used by npm; inherited rows retain npm's affected node set.
-script="const fs=require('node:fs'),s=require('/usr/lib/node_modules/npm/node_modules/semver'); const a=JSON.parse(fs.readFileSync(0,'utf8')); process.stdout.write(JSON.stringify(a.map(x=>x.versions.map(v=>x.inherited||s.satisfies(v,x.range,{includePrerelease:true})))));"
-matched=json.loads(subprocess.check_output(['node','-e',script],input=json.dumps(semver_jobs).encode()))
+# Match source ranges with the pinned semver bundled by npm; inherited rows retain npm's affected node set.
+matcher=['node',str(Path(__file__).with_name('semver-match.cjs')),*([args.npm_root] if args.npm_root else [])]
+matched=json.loads(subprocess.check_output(matcher,input=json.dumps(semver_jobs).encode()))
 # Each closure below was captured in the tree iteration; bind explicit tree state for final enrichment.
 final_ranges=[]
 for (row,inst,src,_),match in zip(range_rows,matched):
@@ -168,6 +169,13 @@ for summary in summaries:
         summary[label+'_rows']=len(selected)
         summary[label+'_dispositions']={d:sum(r['disposition']==d for r in selected) for d in ['upgrade available and safe','narrow entry point','not reachable','needs an upstream repair (U-03)']}
         summary[label+'_reachability']=dict(collections.Counter(r['reachability'] for r in selected))
+# Engines come from installed trees (tools/engines-check.cjs), not from retained raw data; carry the catalog counts forward.
+checks=Path(__file__).resolve().parents[1]/'release-checks.json'
+engines={t['tree']:t for t in load(checks)['engines']['trees']} if checks.exists() else {}
+for summary in summaries:
+    if summary['tree'] in engines:
+        e=engines[summary['tree']]
+        summary['engines']={'advertised':e['advertised'],'outside_advertised':len(e['outside']),'rejects_advertised_floor':sum(bool(r['rejected_probes']) for r in e['outside']),'catalog':'release-checks.json'}
 for name,data in [('package-findings.json',package_rows),('source-range-findings.json',final_ranges),('summary.json',summaries),('path-gaps.json',path_gaps)]:
     (OUT/name).write_text(json.dumps(data,indent=2)+'\n')
 print(json.dumps(summaries,indent=2))

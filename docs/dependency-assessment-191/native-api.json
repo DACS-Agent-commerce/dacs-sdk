@@ -15,7 +15,7 @@
     ],
     "available": true,
     "evidence": "native client declarations and implementation; DemosAdapter and demosRuntime call sites",
-    "gap": "Transport and response-envelope parity remain unqualified.",
+    "gap": "Transport and response-envelope parity remain unqualified. Native transport uses Node fetch and ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 is set, while the broad client honors the proxy. An unconnected or failed native nodeCall returns a {result:500} envelope instead of throwing. Not-found and failure envelopes must be qualified per method.",
     "owner": "local qualification"
   },
   {
@@ -41,7 +41,7 @@
     ],
     "available": true,
     "evidence": "payDem captures these native methods; native client declares all four.",
-    "gap": "No transfer, confirmation, broadcast, nonce polling or chain execution was performed.",
+    "gap": "No transfer, confirmation, broadcast, nonce polling or chain execution was performed. Native waitForNonce rejects on the first failed nonce read, while the broad client keeps polling until its deadline; native getAddressNonce rejects a malformed nonce, while the broad client returns 0. tools/native-nonce-poll.mjs pins both differences with scripted reads. Decide whether the native package or the local adapter retries, and keep the fail-closed nonce parse.",
     "owner": "local qualification"
   },
   {

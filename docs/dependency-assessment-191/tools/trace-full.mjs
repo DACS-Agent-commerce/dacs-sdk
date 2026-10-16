@@ -20,8 +20,9 @@ function owner(file){
   let dir=path.dirname(file);
   while(dir.startsWith(root)){
     const p=path.join(dir,'package.json');
-    if(fs.existsSync(p)){
-      const m=JSON.parse(fs.readFileSync(p,'utf8'));
+    // Nameless manifests are module-type stubs inside a package (for example lib.esm/); keep walking to the installed package.
+    const m=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):null;
+    if(m?.name){
       const value={location:path.relative(root,dir),name:m.name,version:m.version};
       ownerCache.set(file,value);return value;
     }

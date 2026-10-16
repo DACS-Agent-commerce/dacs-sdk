@@ -139,6 +139,12 @@
       "no static import path found; affected operation not established": 96,
       "conditional Demos feature; inherited finding": 2,
       "module import path present; affected operation not established": 6
+    },
+    "engines": {
+      "advertised": "^20.19.0 || >=22.12.0",
+      "outside_advertised": 17,
+      "rejects_advertised_floor": 16,
+      "catalog": "release-checks.json"
     }
   },
   {
@@ -188,6 +194,12 @@
       "no static import path found; affected operation not established": 96,
       "conditional Demos feature; inherited finding": 2,
       "module import path present; affected operation not established": 6
+    },
+    "engines": {
+      "advertised": "^20.19.0 || >=22.12.0",
+      "outside_advertised": 17,
+      "rejects_advertised_floor": 16,
+      "catalog": "release-checks.json"
     }
   },
   {
@@ -250,6 +262,12 @@
       "not reachable": 0,
       "needs an upstream repair (U-03)": 0
     },
-    "source_range_reachability": {}
+    "source_range_reachability": {},
+    "engines": {
+      "advertised": "^20.19.0 || >=22.12.0",
+      "outside_advertised": 1,
+      "rejects_advertised_floor": 0,
+      "catalog": "release-checks.json"
+    }
   }
 ]

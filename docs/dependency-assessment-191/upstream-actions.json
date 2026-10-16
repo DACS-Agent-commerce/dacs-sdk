@@ -3,9 +3,17 @@
     "package": "@multiversx/sdk-core; @near-js/providers",
     "version": "13.17.2 -> bip39 3.1.0; 0.2.3 -> node-fetch 2.6.7",
     "condition": "D-1: broad tree retained with documented optional omission",
-    "required_change": "Correct or remove the exact optional pins for bip39 3.1.0 and node-fetch 2.6.7, then rerun the required primary live npm SBOM command. Alternatively qualify a narrow-package migration or an npm-side correction.",
-    "why": "The omitted nested copies leave optional edges resolving to hoisted bip39 3.1.2 and node-fetch 2.7.0; npm rejects these edges with ESBOMPROBLEMS. The narrow candidate primary SBOM succeeds.",
+    "required_change": "Correct or remove the exact optional pins for bip39 3.1.0 and node-fetch 2.6.7, then rerun the required primary live npm SBOM command. Alternatively qualify a narrow-package migration or an npm-side correction. D-1 closes only when the command exits 0, its output validates against the CycloneDX 1.5 schema at specification commit c320fc0f0b46873864927d9d5684eea7ba439728, and every component bom-ref is unique; record the npm version used (11.19.0 or later meets this on the narrow candidate; 10.9.9 does not).",
+    "why": "The omitted nested copies leave optional edges resolving to hoisted bip39 3.1.2 and node-fetch 2.7.0; npm rejects these edges with ESBOMPROBLEMS. The narrow candidate primary SBOM exits 0 under npm 10.9.9 but repeats the @noble/hashes@1.8.0 and @scure/bip39@1.6.0 references of nested viem/ox copies and fails the schema; npm 11.19.0 output for the same tree is unique and schema-valid.",
     "status": "open primary SBOM check; conditional U-03 metadata repair or npm follow-up"
+  },
+  {
+    "package": "@kynesyslabs/demosdk -> sigstore and its fetch/cache chain",
+    "version": "demosdk 4.0.16 declares sigstore ^5.0.0; 16 installed packages declare ^22.22.2 || ^24.15.0 || >=26.0.0",
+    "condition": "broad package retained with the generated engines range ^20.19.0 || >=22.12.0",
+    "required_change": "Either our side raises the generated engines range, Dockerfile base image and doctor check to the resolved floor, or the broad package supplies a dependency chain that supports Node 20.19 and 22.12. The narrow candidate has no floor rejection. Separately decide whether the open-ended range should admit Node 26+ while better-sqlite3 12.6.2 declares 20.x to 25.x.",
+    "why": "Collection on Node 22.23.3 hid the mismatch; tools/engines-check.cjs lists the packages and the rejected Node versions in release-checks.json. An engine-strict install fails on the advertised floors and the generated node:20.19.1 image.",
+    "status": "open engines gate; owner decision or conditional upstream repair"
   },
   {
     "package": "@demosnetwork/demos-native",
