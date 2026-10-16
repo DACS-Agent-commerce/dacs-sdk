@@ -497,29 +497,34 @@ function base58Bytes(parsed: string, expectedBytes: number): Uint8Array {
  * then that many 64-byte signatures. Null when the bytes cannot hold them.
  */
 function firstSignature(transaction: Uint8Array): Uint8Array | null {
-  let count = 0;
-  let offset = 0;
-  for (let shift = 0; ; shift += 7) {
-    if (offset >= 3 || offset >= transaction.length) return null;
-    const byte = transaction[offset] as number;
-    offset += 1;
-    count |= (byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) break;
-  }
+  const read = readCompactU16(transaction, 0);
+  if (read === null) return null;
+  const [count, offset] = read;
   if (count < 1 || offset + 64 * count > transaction.length) return null;
   return transaction.subarray(offset, offset + 64);
 }
 
-/** A compact-u16 at `offset`: its value and the offset after it. */
-function compactU16(bytes: Uint8Array, offset: number): [number, number] {
+/**
+ * A compact-u16 at `offset`: its value and the offset after it, or null for
+ * bytes solana-short-vec 3.3.0 refuses. Seven bits a byte, low bits first, at
+ * most three bytes; a zero byte after the first is an alias of a shorter
+ * encoding, and a third byte above 3 does not fit in 16 bits.
+ */
+function readCompactU16(bytes: Uint8Array, offset: number): [number, number] | null {
   let value = 0;
   for (let index = 0; index < 3; index += 1) {
     const byte = bytes[offset + index];
-    if (byte === undefined) break;
+    if (byte === undefined || (index > 0 && byte === 0) || (index === 2 && byte > 3)) return null;
     value |= (byte & 0x7f) << (7 * index);
     if ((byte & 0x80) === 0) return [value, offset + index + 1];
   }
-  throw new DacsError("pay-solana-spl: truncated compact-u16");
+  return null;
+}
+
+function compactU16(bytes: Uint8Array, offset: number): [number, number] {
+  const read = readCompactU16(bytes, offset);
+  if (read === null) throw new DacsError("pay-solana-spl: compact-u16 is truncated or not canonical");
+  return read;
 }
 
 /**

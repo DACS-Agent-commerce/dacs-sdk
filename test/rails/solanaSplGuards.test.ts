@@ -564,6 +564,118 @@ describe("durable-nonce and malformed messages", () => {
     expect(recordAttempt).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
   });
+
+  // A transfer wire whose compact-u16 counts are written as given, each one
+  // canonical unless overridden.
+  type Lengths = Partial<Record<"signatures" | "keys" | "instructions" | "accounts" | "data", readonly number[]>>;
+  function wireWith(signature: string, lengths: Lengths, data: readonly number[] = [12]): string {
+    return Buffer.concat([
+      Buffer.from(lengths.signatures ?? [1]), base58Decode(signature, 64),
+      Buffer.from([1, 0, 1, ...(lengths.keys ?? [2])]), PAYER_KEY, OTHER, Buffer.alloc(32, 3),
+      Buffer.from([
+        ...(lengths.instructions ?? [1]), 1, ...(lengths.accounts ?? [0]),
+        ...(lengths.data ?? compact(data.length)), ...data,
+      ]),
+    ]).toString("base64");
+  }
+  async function prepareWire(lengths: Lengths, data?: readonly number[]) {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordAttempt = vi.spyOn(store, "recordAttempt");
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const result = await advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        async prepareSignedTransfer(plan, attempt, fence) {
+          const prepared = await adapter().prepareSignedTransfer(plan, attempt, fence);
+          return { ...prepared, signedTransactionBase64: wireWith(prepared.signature, lengths, data) };
+        },
+        broadcastRetained,
+      }),
+    }));
+    return { result, recordAttempt, broadcastRetained };
+  }
+  // solana-short-vec 3.3.0 refuses a zero byte after the first, which aliases
+  // a shorter encoding of the same value.
+  const alias = (value: number) => [0x80 | value, 0];
+  const ALIASES: readonly [string, Lengths][] = [
+    ["signature count", { signatures: alias(1) }],
+    ["account key count", { keys: alias(2) }],
+    ["instruction count", { instructions: alias(1) }],
+    ["instruction account count", { accounts: alias(0) }],
+    ["instruction data length", { data: alias(1) }],
+    ["instruction data length in three bytes", { data: [0x81, 0x80, 0] }],
+  ];
+
+  test.each(ALIASES)("an aliased %s is refused before it is retained or broadcast", async (_name, lengths) => {
+    const { result, recordAttempt, broadcastRetained } = await prepareWire(lengths);
+    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" });
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["65536, a third byte of 4", [0x80, 0x80, 0x04], 65_536],
+    ["a third byte that continues", [0x80, 0x80, 0x81, 0x00], 16_384],
+  ])("an instruction data length of %s is refused before it is retained or broadcast", async (_name, length, size) => {
+    const data = [12, ...Array<number>(size - 1).fill(0)];
+    const { result, recordAttempt, broadcastRetained } = await prepareWire({ data: length }, data);
+    expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" });
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["every count in one byte", {}, [12]],
+    ["an instruction data length of 16384 in three bytes", { data: [0x80, 0x80, 0x01] }, 16_384],
+    ["an instruction data length of 65535, a third byte of 3", { data: [0xff, 0xff, 0x03] }, 65_535],
+  ] as const)("a transfer with %s is retained and settles", async (_name, lengths, data) => {
+    const bytes = typeof data === "number" ? [12, ...Array<number>(data - 1).fill(0)] : data;
+    const { result, recordAttempt, broadcastRetained } = await prepareWire(lengths, bytes);
+    expect(result).toMatchObject({ status: "settled" });
+    expect(recordAttempt).toHaveBeenCalledTimes(1);
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+
+  // Leaves attempt 1 broadcast, then resumes while the store returns it as a
+  // row an earlier version stored with `lengths`, rehashed so only its wire
+  // is wrong.
+  async function resumeRetainedWire(lengths: Lengths) {
+    const base = createInMemorySolanaSplSettlementStore();
+    const reconcile = vi.fn(async () => lost);
+    const broadcastRetained = vi.fn(adapter().broadcastRetained);
+    const store: SolanaSplSettlementStore = {
+      ...base,
+      async claim(request) {
+        const claim = await base.claim(request);
+        if (claim.status !== "acquired" || claim.attempts.length === 0) return claim;
+        return {
+          ...claim,
+          attempts: claim.attempts.map(({ attemptHash: _old, ...row }) => {
+            const unsigned = { ...row, signedTransactionBase64: wireWith(row.signature, lengths) };
+            return { ...unsigned, attemptHash: sha256Hex(canonicalize(unsigned)) };
+          }),
+        } as never;
+      },
+    };
+    const shared = await leaveAttemptOne(store, { reconcile, broadcastRetained });
+    expect(broadcastRetained).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    return { result: await advanceSolanaSplSettlement(shared), broadcastRetained, reconcile };
+  }
+
+  test.each(ALIASES)("a retained attempt with an aliased %s is corrupt before it is broadcast or reconciled again",
+    async (_name, lengths) => {
+      const { result, broadcastRetained, reconcile } = await resumeRetainedWire(lengths);
+      expect(result).toEqual({ status: "indeterminate", reason: "solana-spl-retained-state-corrupt" });
+      expect(broadcastRetained).toHaveBeenCalledTimes(1);
+      expect(reconcile).toHaveBeenCalledTimes(1);
+    });
+
+  test("a retained attempt rewritten canonically and rehashed is reconciled again", async () => {
+    const { result, reconcile } = await resumeRetainedWire({});
+    expect(result).not.toEqual({ status: "indeterminate", reason: "solana-spl-retained-state-corrupt" });
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("preflight numbers", () => {

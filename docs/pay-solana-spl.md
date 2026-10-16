@@ -325,6 +325,12 @@ always the transaction tracked and proven expired. Otherwise a prepared
 attempt is `solana-spl-prepared-transaction-invalid`, with nothing recorded or
 broadcast, and a retained one is `solana-spl-retained-state-corrupt`.
 
+Every compact-u16 length the core reads (the signature, account key,
+instruction, instruction account and instruction data counts) must be
+encoded as `solana-short-vec` decodes it: at most three bytes, no zero byte
+after the first, and a value of at most 65535. The runtime refuses any other
+encoding, so a message that uses one is malformed, with the same results.
+
 A claim's `attempts`, `expiredSignatures` and `expiryEvidence` must be real,
 dense arrays. Element n is an own, enumerable data property at index n, so
 attempt n is at index n − 1, and the array has no other own keys. A proxy is
@@ -474,7 +480,7 @@ read at these revisions:
 | Behaviour | Source |
 |---|---|
 | Commitment levels, `getSignatureStatuses` and its `err`, blockhash expiry, durable nonces, fee-payer rent | agave `v4.3.0` (`825efd18292aff6ffcf9daa0f7612f21b3531a72`): `rpc/src/rpc.rs`, `runtime/src/bank/check_transactions.rs`, `svm/src/account_loader.rs`, `svm/src/rent_calculator.rs` |
-| Wire format: compact-u16 signature count, then the signatures, then a legacy or v0 message | `solana-short-vec` 3.3.0, the version agave `v4.3.0` locks |
+| Wire format: compact-u16 signature count, then the signatures, then a legacy or v0 message; compact-u16 aliases and values above 65535 are refused | `solana-short-vec` 3.3.0, the version agave `v4.3.0` locks |
 | Durable-nonce detection: the first instruction is the system program's `AdvanceNonceAccount` (the core skips agave's writable-account check, so it refuses a superset) | agave `v4.3.0` `runtime/src/bank/check_transactions.rs`, which calls `SVMMessage::get_durable_nonce` from `solana-svm-transaction` 5.0.0, the version agave locks |
 | Message versions: legacy and v0 are decoded; v1, gated behind SIMD-0385, is refused | `solana-message` 4.5.0, the version agave `v4.3.0` locks |
 | `TransferChecked` (`u64` amount, `u8` decimals), token-account owner, mint and state, on-chain refusals | SPL Token `program@v9.0.0` (`dfb260231c761be7d9c8b63728e770a102b86495`) |
