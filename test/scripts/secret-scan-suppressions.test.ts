@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -39,23 +39,43 @@ describe("secret scan suppressions", () => {
 
   it("rejects every config setting that suppresses more than an exact fingerprint", () => {
     const rule = `[[rules]]\nid = "dacs-extra"\nregex = '''x'''\n`;
+    expect(configProblems(`${config}\n${rule}keywords = ["x"]\n`)).toEqual([]);
     const rejected: [string, string][] = [
-      [`${config}\n[allowlist]\npaths = ['''^test/''']\n`, "allowlist"],
-      [`${config}\n[[allowlists]]\ntargetRules = ["generic-api-key"]\nregexes = ['''x''']\n`, "allowlist"],
-      [`${config}\n[[AllowLists]]\nstopwords = ["x"]\n`, "allowlist"],
-      [`${config}\n${rule}[rules.allowlist]\npaths = ['''x''']\n`, "allowlist"],
-      [`${config}\n${rule}[[rules.allowlists]]\ncommits = ["x"]\n`, "allowlist"],
-      [`${config}\n${rule}allowlists = [{ paths = ['''x'''] }]\n`, "allowlist"],
-      [config.replace("useDefault = true", 'useDefault = true\ndisabledRules = ["generic-api-key"]'), "disabledrules"],
+      [`${config}\n[allowlist]\npaths = ['''^test/''']\n`, "table [allowlist]"],
+      [`${config}\n[[allowlists]]\ntargetRules = ["generic-api-key"]\nregexes = ['''x''']\n`, "table [[allowlists]]"],
+      [`${config}\n[[AllowLists]]\nstopwords = ["x"]\n`, "table [[AllowLists]]"],
+      [`${config}\n${rule}[rules.allowlist]\npaths = ['''x''']\n`, "table [rules.allowlist]"],
+      [`${config}\n${rule}[[rules.allowlists]]\ncommits = ["x"]\n`, "table [[rules.allowlists]]"],
+      [`${config}\n${rule}allowlists = [{ paths = ['''x'''] }]\n`, "setting allowlists = [{ paths = ['''x'''] }]"],
+      [config.replace("useDefault = true", 'useDefault = true\ndisabledRules = ["generic-api-key"]'), 'setting disabledRules = ["generic-api-key"]'],
       [config.replace("useDefault = true", "useDefault = false"), "extend"],
-      [config.replace("useDefault = true", 'path = "other.toml"'), "extend"],
-      [config.replace("useDefault = true", 'useDefault = true\nurl = "https://example.invalid/x.toml"'), "extend"],
-      [`extend.path = "other.toml"\n${config}`, "extend"],
-      // A local rule with a default rule's id replaces that rule's regex, entropy and path.
+      [config.replace("[extend]\nuseDefault = true", ""), "extend"],
+      [config.replace("useDefault = true", 'path = "other.toml"'), 'setting path = "other.toml"'],
+      [config.replace("useDefault = true", 'useDefault = true\nurl = "https://example.invalid/x.toml"'), 'setting url = "https://example.invalid/x.toml"'],
+      [`extend.path = "other.toml"\n${config}`, 'setting extend.path = "other.toml"'],
+      [config.replace("[extend]", "[Extend]"), "table [Extend]"],
+      // A rule with a default rule's id, or another local rule's, replaces that rule.
       [`${config}\n[[rules]]\nid = "generic-api-key"\nentropy = 9.0\n`, 'rule id "generic-api-key"'],
+      [`${config}\n[[rules]]\nid = "dacs-mnemonic-assignment"\nregex = '''x'''\n`, 'duplicate rule id "dacs-mnemonic-assignment"'],
       [`${config}\n[[rules]]\nregex = '''x'''\n`, "rule without id"],
+      // Viper ignores case, so this is the rule's id; the commented line above it is not.
+      [`${config}\n[[rules]]\n# id = "dacs-decoy"\nID = "generic-api-key"\nregex = '''x'''\n`, 'setting ID = "generic-api-key"'],
+      [`${config}\n[[rules]]\n# id = "dacs-decoy"\nID = "generic-api-key"\nregex = '''x'''\n`, "rule without id"],
+      // The rule still matches, but gitleaks reports none of its findings.
+      [config.replace("secretGroup = 1", "secretGroup = 1\nskipReport = true"), "setting skipReport = true"],
+      [config.replace("secretGroup = 1", "secretGroup = 1\nSkipReport = true"), "setting SkipReport = true"],
+      [`${config}\n${rule}[[rules.required]]\nid = "dacs-mnemonic-assignment"\n`, "table [[rules.required]]"],
+      // A value that runs onto the next lines could hide a table or setting in them.
+      [`${config}\n${rule}description = '''\n[[allowlists]]\n'''\n`, "setting description = '''"],
     ];
     for (const [mutant, problem] of rejected) expect(configProblems(mutant)).toContain(problem);
+  });
+
+  // Gitleaks finds its config through viper, which tries `.gitleaks.json` before `.gitleaks.toml`
+  // and reads either as TOML, so another root config would replace the one checked above.
+  it("has no root gitleaks config other than .gitleaks.toml", async () => {
+    const configs = (await readdir(root)).filter((name) => /^\.gitleaks(?!ignore$)/i.test(name));
+    expect(configs).toEqual([".gitleaks.toml"]);
   });
 });
 
@@ -69,20 +89,46 @@ function ignoreEntryProblems(lines: string[]) {
   ];
 }
 
-// The .gitleaks.toml settings that widen what the scan skips. Gitleaks reads keys through viper,
-// which ignores case, so `[[AllowLists]]` and `DisabledRules` count too.
+// The only tables and keys .gitleaks.toml may use, spelled exactly as here. Gitleaks reads keys
+// through viper, which ignores case, so `ID` or `SkipReport` would still be read: any other
+// table, key or spelling is a problem. Left out because each makes gitleaks report less than the
+// rules find: allowlists, `disabledRules`, extend `path` (another config, with its own
+// allowlists), and a rule's `skipReport`, `required`, `entropy` and `path`.
+const configKeys = new Map([
+  ["", ["title", "minVersion"]],
+  ["[extend]", ["useDefault"]],
+  ["[[rules]]", ["id", "description", "regex", "secretGroup", "keywords"]],
+]);
+// A TOML string, boolean, number or array of strings that ends on the line it starts on, so no
+// table or setting can hide in a value that runs onto the next lines.
+const tomlString = String.raw`"(?:[^"\\\n]|\\.)*"|'''(?:(?!''')[^\n])*'''|'[^'\n]*'`;
+const tomlValue = new RegExp(
+  String.raw`^(?:${tomlString}|true|false|-?\d+(?:\.\d+)?|\[\s*(?:(?:${tomlString})\s*,\s*)*(?:(?:${tomlString})\s*)?\])$`,
+);
+
+// The .gitleaks.toml lines that widen what the scan skips, read table by table the way TOML does.
 function configProblems(text: string) {
-  const lower = text.toLowerCase();
-  const problems = ["allowlist", "disabledrules"].filter((word) => lower.includes(word));
-  const lines = text.split("\n").map((line) => line.trim());
-  const start = lines.indexOf("[extend]");
-  const end = lines.findIndex((line, i) => i > start && line.startsWith("["));
-  const extend = start < 0 ? [] : lines.slice(start + 1, end < 0 ? undefined : end);
-  const settings = extend.filter((line) => line !== "" && !line.startsWith("#"));
-  // Only the default rules: `path` or `url` would load another config, with its own allowlists.
-  if (settings.join("\n") !== "useDefault = true" || lower.split("extend").length !== 2) problems.push("extend");
-  const ids = [...text.matchAll(/\bid\s*=\s*("[^"\n]*"|'[^'\n]*')/g)].map((match) => match[1] ?? "");
-  problems.push(...ids.filter((id) => !/^"dacs-[a-z0-9-]+"$/.test(id)).map((id) => `rule id ${id}`));
-  if (ids.length !== (text.match(/^\s*\[\[\s*rules\s*\]\]/gm)?.length ?? 0)) problems.push("rule without id");
+  const problems: string[] = [];
+  const tables: { header: string; settings: [string, string][] }[] = [{ header: "", settings: [] }];
+  for (const line of text.split("\n").map((line) => line.trim())) {
+    if (line === "" || line.startsWith("#")) continue;
+    if (line.startsWith("[")) {
+      if (!configKeys.has(line)) problems.push(`table ${line}`);
+      tables.push({ header: line, settings: [] });
+      continue;
+    }
+    const table = tables[tables.length - 1]!;
+    const [, key = "", value = ""] = /^([A-Za-z]+)\s*=\s*(.*)$/.exec(line) ?? [];
+    if (configKeys.get(table.header)?.includes(key) && tomlValue.test(value)) table.settings.push([key, value]);
+    else problems.push(`setting ${line}`);
+  }
+  const settings = (header: string) => tables.filter((table) => table.header === header).map((table) => table.settings);
+  // Only the default rules: without `useDefault = true`, gitleaks runs this file's rules alone.
+  if (JSON.stringify(settings("[extend]")) !== JSON.stringify([[["useDefault", "true"]]])) problems.push("extend");
+  // A rule with a default rule's id, or another local rule's, replaces that rule.
+  const ids = settings("[[rules]]").map((rule) => rule.filter(([key]) => key === "id").map(([, value]) => value));
+  problems.push(...ids.flat().filter((id) => !/^"dacs-[a-z0-9-]+"$/.test(id)).map((id) => `rule id ${id}`));
+  problems.push(...ids.flat().filter((id, i, all) => all.indexOf(id) !== i).map((id) => `duplicate rule id ${id}`));
+  if (ids.some((rule) => rule.length === 0)) problems.push("rule without id");
   return problems;
 }
