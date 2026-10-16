@@ -340,7 +340,8 @@ describe("secret scan git log options", () => {
     expect(scanned(origin, REQUIRED_LOG_OPTS)).toEqual(markers);
     expect(scanned(origin, AUDIT_LOG_OPTS)).toEqual([...markers, pullOnly]);
     expect(scanned(origin, GITLEAKS_DEFAULT_LOG_OPTS)).toEqual([markers[0], pullOnly]);
-    // The options before this change saw the type change, but no merge or binary-marked path.
+    // Restricting history to HEAD without the default diff filter sees the type change,
+    // but still misses merges and binary-marked paths.
     expect(scanned(origin, "--full-history HEAD")).toEqual(markers.slice(0, 2));
   });
 
@@ -392,8 +393,7 @@ describe("secret scan git log options", () => {
     // A directory holding a `wc` that pads each count as BSD and macOS `wc` do (" %7ju"), e.g. "       0".
     async function wcShim() {
       const realWc = spawnSync("sh", ["-c", "command -v wc"], { encoding: "utf8" }).stdout.trim();
-      const shim = join(directory, "padding-wc");
-      await mkdir(shim);
+      const shim = await mkdtemp(join(directory, "padding-wc-"));
       await writeFile(
         join(shim, "wc"),
         ["#!/bin/sh", `out=$('${realWc}' "$@") || exit`, 'for n in $out; do printf " %7s" "$n"; done', 'printf "\\n"', ""].join("\n"),
@@ -765,19 +765,22 @@ describe("secret scan git log options", () => {
     });
 
     // Set GITLEAKS to a Gitleaks 8.30.1 binary to run the workflows' self-test here.
-    it.skipIf(!process.env.GITLEAKS)("self-test passes with the pinned Gitleaks under both workflows' options", () => {
-      for (const [logOpts, count] of [
-        [REQUIRED_LOG_OPTS, 7],
-        [AUDIT_LOG_OPTS, 8],
-      ] as const) {
-        const result = runScript(directory, selfTestPath, [process.env.GITLEAKS ?? ""], { LOG_OPTS: logOpts });
-        expect(result.stderr).not.toContain("self-test:");
-        expect(result.status).toBe(0);
-        expect(result.stdout).toBe(
-          `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge and a path containing a newline are refused.\n`,
-        );
+    for (const [mode, logOpts, count] of [
+      ["required", REQUIRED_LOG_OPTS, 7],
+      ["audit", AUDIT_LOG_OPTS, 8],
+    ] as const) {
+      for (const [wcStyle, padded] of [["normal", false], ["padded", true]] as const) {
+        it.skipIf(!process.env.GITLEAKS)(`self-test passes with the pinned Gitleaks under ${mode} options and ${wcStyle} wc`, async () => {
+          const env = padded ? await wcShim() : {};
+          const result = runScript(directory, selfTestPath, [process.env.GITLEAKS ?? ""], { LOG_OPTS: logOpts, ...env });
+          expect(result.stderr).not.toContain("self-test:");
+          expect(result.status).toBe(0);
+          expect(result.stdout).toBe(
+            `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge and a path containing a newline are refused.\n`,
+          );
+        });
       }
-    });
+    }
 
     for (const [name, from, to, message] of [
       ["doesn't refuse octopus merges", 'if [ -n "$octopus" ]; then', "if false; then", "an octopus merge"],

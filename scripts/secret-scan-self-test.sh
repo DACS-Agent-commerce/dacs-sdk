@@ -172,4 +172,4 @@ if fingerprints "$temp/newline-found" > /dev/null 2> "$temp/newline.err" || [ -e
   exit 1
 fi
 
-echo "Secret scan self-test passed: $(wc -l < "$temp/expected") fingerprints as expected; an octopus merge and a path containing a newline are refused."
+echo "Secret scan self-test passed: $(grep -c '' "$temp/expected") fingerprints as expected; an octopus merge and a path containing a newline are refused."
