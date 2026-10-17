@@ -6,6 +6,7 @@ import {
   type HtlcStoreClaim,
   type HtlcStoreWrite,
 } from "../../src/rails/crossChainHtlc.js";
+import { sha256Hex } from "../../src/canonical/index.js";
 import { checkCrossChainHtlcStore } from "../../src/rails/crossChainHtlcStoreConformance.js";
 
 type SettledClaim = Extract<HtlcStoreClaim, { status: "settled" }>;
@@ -383,6 +384,97 @@ describe("checkCrossChainHtlcStore", () => {
     const failing = await failingCases(makeStore);
     expect(failing.length).toBeGreaterThan(0);
     expect(failing.some((name) => expected.test(name))).toBe(true);
+  });
+
+  test.each([
+    ["reuses a salt only across sessions", broken((inner) => ({
+      claim: (input) => inner.claim({ ...input, secrets: {
+        ...input.secrets, buyerSaltHash: sha256Hex(input.secrets.buyerSaltHash + input.intent.settlementKey),
+      } }),
+    })), /^salt: /, "second session with the same salt: expected conflict, got acquired"],
+    ["names the waiting caller as holder", broken((inner) => ({
+      async claim(input) {
+        const result = await inner.claim(input);
+        return result.status === "waiting" ? { ...result, lease: { ...result.lease, owner: input.owner } } : result;
+      },
+    })), /^lease: a live lease/, "waiting names the lease holder"],
+    ["reuses a takeover generation", broken((inner) => ({
+      async claim(input) {
+        const result = await inner.claim(input);
+        return result.status === "acquired" ? { ...result, lease: { ...result.lease, generation: 1 } } : result;
+      },
+    })), /^lease: a live lease/, "takeover gives the new owner a higher generation"],
+    ["calls a conflicting second row existing", broken((inner) => ({
+      async recordPrepared(input) {
+        const result = await inner.recordPrepared(input);
+        return result.status === "conflict" && result.reason === "htlc-action-replacement-forbidden" ? answer("existing") : result;
+      },
+    })), /^prepared: the same row/, "another row for the action: expected conflict or corrupt, got existing"],
+    ["replaces the first row while refusing the second", broken((inner) => {
+      const overwritten = new Map<string, Parameters<CrossChainHtlcStore["recordPrepared"]>[0]["prepared"]>();
+      return {
+        async recordPrepared(input) {
+          const result = await inner.recordPrepared(input);
+          if (result.status === "conflict" && input.prepared.txRef.kind === "htlc-lock" &&
+              input.prepared.txRef.lockTxHash === "lock-other") overwritten.set(input.settlementKey, input.prepared);
+          return result;
+        },
+        async claim(input) {
+          const result = await inner.claim(input);
+          const row = overwritten.get(input.intent.settlementKey);
+          return row && (result.status === "waiting" || result.status === "acquired") ? { ...result, prepared: [row] } : result;
+        },
+      };
+    }), /^prepared: the same row/, "the first row is retained unchanged"],
+    ["records both concurrent rows", broken((inner) => {
+      const extra = new Map<string, Parameters<CrossChainHtlcStore["recordPrepared"]>[0]["prepared"]>();
+      return {
+        async recordPrepared(input) {
+          const result = await inner.recordPrepared(input);
+          if (result.status === "conflict" && input.prepared.txRef.kind === "htlc-lock" &&
+              ["lock-x", "lock-y"].includes(input.prepared.txRef.lockTxHash)) {
+            extra.set(input.settlementKey, input.prepared);
+            return answer("recorded");
+          }
+          return result;
+        },
+        async claim(input) {
+          const result = await inner.claim(input);
+          const row = extra.get(input.intent.settlementKey);
+          return row && (result.status === "waiting" || result.status === "acquired")
+            ? { ...result, prepared: [...result.prepared, row] } : result;
+        },
+      };
+    }), /^concurrency: /, "one recorded and one refused, got recorded, recorded"],
+    ["changes the returned settled amount", broken((inner) => ({
+      async claim(input) {
+        const result = await inner.claim(input);
+        return result.status === "settled" ? { ...result, settlement: {
+          ...result.settlement, paymentAmount: { ...result.settlement.paymentAmount, amount: "999" },
+        } } : result;
+      },
+    })), /^settlement: /, "claim returns the recorded settlement"],
+  ] as const)("pins the conformance sub-check for a store that %s", async (_name, makeStore, name, detail) => {
+    const checks = await checkCrossChainHtlcStore(makeStore);
+    expect(checks.find((check) => name.test(check.name))).toEqual({
+      name: expect.stringMatching(name), ok: false, detail,
+    });
+  });
+
+  test.each([
+    "recordPrepared", "recordSourceFinality", "recordRevealFinal", "recordSettlement",
+    "replacePreparedSourceClaim", "replacePreparedDestinationClaim",
+  ] as const)("pins the stale %s write sub-check", async (method) => {
+    const makeStore = broken((inner) => ({
+      [method]: async (input: never) => {
+        const result = await inner[method](input);
+        return result.status === "stale" ? answer("recorded") : result;
+      },
+    }));
+    const checks = await checkCrossChainHtlcStore(makeStore);
+    expect(checks.find((check) => check.name.startsWith("stale: "))).toEqual({
+      name: expect.stringMatching(/^stale: /), ok: false, detail: `${method}: expected stale, got recorded`,
+    });
   });
 
   test("reports a throwing store as a failed case, not a thrown check", async () => {

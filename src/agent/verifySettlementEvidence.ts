@@ -115,14 +115,18 @@ export interface EvidenceRailContext {
   sourceFinalitySec?: number;
   safetyWindowSec?: number;
   /**
-   * The pinned HTLC route's chains (`CrossChainRoute.sourceChainId` /
-   * `destChainId`). The HTLC references must sit on them by role: the lock
-   * and claim on the source chain, the reveal on the destination chain.
+   * The pinned HTLC route's chains and contracts. The references must match
+   * both by role: lock and claim on source, reveal on destination.
    * REQUIRED by `verifySettlementEvidence` for `pay-cross-chain-htlc`
    * evidence (DACS-4 §9.5.4 route selection); optional for structural
    * validation.
    */
-  htlcRoute?: { sourceChainId: number; destChainId: number };
+  htlcRoute?: {
+    sourceChainId: number;
+    destChainId: number;
+    /** Exact contracts from the pinned CrossChainRoute. */
+    htlcContracts?: { source: string; dest: string };
+  };
 }
 
 export interface EvidenceContext {
@@ -140,6 +144,8 @@ export interface EvidenceContext {
   result?: {
     ok?: boolean;
     errorClass?: string;
+    /** Caller-authenticated ST-8 open state, required for HTLC failures carrying a reveal. */
+    asymmetric?: boolean;
     /** Exact authenticated handler-return refs; order and values are binding. */
     txRefs?: readonly ChainTxRef[];
   };
@@ -162,7 +168,8 @@ export interface EvidenceContext {
    * Absolute HTLC expiry instants in Unix seconds (the unit of
    * `rail.sourceFinalitySec` and `rail.safetyWindowSec`, which the HTLC-7
    * margin adds to them), when a cross-chain-htlc route is being checked.
-   * Skipped when absent.
+   * Required from independently authenticated lock observations at the
+   * trust-bearing API; optional for incomplete structural validation.
    */
   htlcExpiry?: { source: number; dest: number };
 }
@@ -182,6 +189,7 @@ export interface AuthenticatedEvidenceContext extends EvidenceContext {
   result: {
     ok: boolean;
     errorClass?: string;
+    asymmetric?: boolean;
     txRefs?: readonly ChainTxRef[];
   };
 }
@@ -500,6 +508,19 @@ async function evaluateSettlementEvidence(
         sawError = true;
         reasons.push("authenticated HTLC payment evidence context requires the pinned route's source and destination chains");
       }
+      if (phase === "pay-cross-chain-htlc") {
+        const contracts = isObj(route) ? route["htlcContracts"] : undefined;
+        if (!isObj(contracts) || !isStr(contracts["source"]) || contracts["source"].length === 0 ||
+            !isStr(contracts["dest"]) || contracts["dest"].length === 0) {
+          sawError = true;
+          reasons.push("authenticated HTLC payment evidence context requires the pinned route's source and destination contracts");
+        }
+        if (!isObj(ctx.htlcExpiry) || !isPositiveSafeInteger(ctx.htlcExpiry.source) ||
+            !isPositiveSafeInteger(ctx.htlcExpiry.dest)) {
+          sawError = true;
+          reasons.push("authenticated HTLC payment evidence context requires absolute source and destination expiries in Unix seconds");
+        }
+      }
     }
     if (isDelivery && (!isStr(ctx.expectedAnchorLocator) ||
         ctx.expectedAnchorLocator.length === 0)) {
@@ -526,6 +547,12 @@ async function evaluateSettlementEvidence(
   // Phase-result envelope coherence (ok ⇔ no errorClass).
   if (ctx.result && ctx.result.ok !== undefined) {
     const hasErrorClass = isStr(ctx.result.errorClass) && ctx.result.errorClass !== "";
+    if (ctx.result.asymmetric !== undefined && typeof ctx.result.asymmetric !== "boolean") {
+      fail("phase result asymmetric marker MUST be a boolean");
+    }
+    if (ctx.result.asymmetric === true && ctx.result.ok === true) {
+      fail("an asymmetric phase result MUST NOT report success");
+    }
     if (ctx.result.ok === true && hasErrorClass) {
       fail("phase result is ok:true but carries an errorClass");
     }
@@ -845,12 +872,13 @@ async function evaluateSettlementEvidence(
   }
 
   // ── HTLC reference set (§9.5.4 txRefs, HTLC-9, ST-8) ─────────────────────
-  // A success, direct or ST-8 `:resolved`, carries exactly the source lock,
-  // the destination reveal and the source claim. The HTLC-9 interim failure
-  // carries the source lock and the reveal and no claim. The record a
-  // resolution supersedes is authenticated by the caller, not here. An interim
-  // record that omits paymentTxRefs is held to the same set: it has no reveal.
-  const htlcInterim = outcome !== "success" && ev["reason"] === "dest-revealed-source-unclaimed";
+  // A success carries the source lock, destination reveal and source claim.
+  // HTLC-9 requires the reveal, but allows the source lock to be omitted.
+  // A reveal in a failure always denotes the asymmetric state, whatever the
+  // reason spelling. An authenticated state marker binds aliases to ST-8.
+  const htlcInterim = outcome === "failure" &&
+    (ev["reason"] === "dest-revealed-source-unclaimed" || ctx.result?.asymmetric === true ||
+      txRefs?.some((ref) => isObj(ref) && ref["kind"] === "htlc-reveal"));
   if (phase === "pay-cross-chain-htlc" && (txRefs || htlcInterim)) {
     const htlcRefs = txRefs ?? [];
     const refsOf = (kind: string) =>
@@ -861,16 +889,22 @@ async function evaluateSettlementEvidence(
     const route: unknown = ctx.rail?.htlcRoute;
     // A route that is present but not an object (a host's `null`) matches no chains.
     const roleChainsMismatch = (sourceRefs: Record<string, unknown>[]): boolean => {
-      const sourceChain = sourceRefs[0]!["chainId"];
+      const sourceChain = sourceRefs[0]?.["chainId"];
       const destChain = reveals[0]!["chainId"];
       return sourceRefs.some((t) => t["chainId"] !== sourceChain) || sourceChain === destChain ||
-        (route !== undefined && (!isObj(route) || sourceChain !== route["sourceChainId"] ||
+        (route !== undefined && (!isObj(route) ||
+          sourceRefs.some((t) => t["chainId"] !== route["sourceChainId"]) ||
           destChain !== route["destChainId"]));
     };
-    // Pack topology: each action is its own transaction, and the claim spends
-    // the lock's own contract.
+    const roleContractsMismatch = (sourceRefs: Record<string, unknown>[]): boolean => {
+      const contracts = isObj(route) ? route["htlcContracts"] : undefined;
+      return contracts !== undefined && (!isObj(contracts) ||
+        sourceRefs.some((t) => t["contractAddress"] !== contracts["source"]) ||
+        reveals[0]!["contractAddress"] !== contracts["dest"]);
+    };
     const reusesTxHash = (): boolean => {
-      const hashes = [locks[0]?.["lockTxHash"], reveals[0]?.["revealTxHash"], claims[0]?.["claimTxHash"]]
+      const hashes = htlcRefs.filter(isObj).map((ref) =>
+        ref["lockTxHash"] ?? ref["revealTxHash"] ?? ref["claimTxHash"] ?? ref["refundTxHash"])
         .filter((hash) => hash !== undefined);
       return new Set(hashes).size !== hashes.length;
     };
@@ -882,6 +916,8 @@ async function evaluateSettlementEvidence(
         );
       } else if (roleChainsMismatch([locks[0]!, claims[0]!])) {
         fail("HTLC success evidence MUST carry the lock and claim on the source chain and the reveal on the destination chain");
+      } else if (roleContractsMismatch([locks[0]!, claims[0]!])) {
+        fail("HTLC evidence MUST use the pinned source and destination contracts");
       } else if (claims[0]!["contractAddress"] !== locks[0]!["contractAddress"]) {
         fail("HTLC success evidence MUST carry the htlc-claim on the source lock's contract");
       } else if (reusesTxHash()) {
@@ -893,14 +929,23 @@ async function evaluateSettlementEvidence(
     } else if (htlcInterim) {
       if (claims.length !== 0) fail("HTLC-9 interim evidence MUST NOT carry an htlc-claim");
       if (reveals.length !== 1) fail("HTLC-9 interim evidence MUST include the htlc-reveal txRef (HTLC-9(b))");
-      if (locks.length !== 1) fail("HTLC-9 interim evidence MUST carry exactly the source htlc-lock");
-      if (htlcRefs.length !== 2) {
-        fail("HTLC-9 interim evidence MUST carry exactly the source htlc-lock and the destination htlc-reveal");
-      }
-      if (reveals.length === 1 && locks.length === 1 && roleChainsMismatch(locks)) {
-        fail("HTLC-9 interim evidence MUST carry the lock on the source chain and the reveal on the destination chain");
-      } else if (reveals.length === 1 && locks.length === 1 && reusesTxHash()) {
+      if (reveals.length === 1 && roleChainsMismatch(locks)) {
+        fail("HTLC-9 interim evidence MUST carry locks on the source chain and the reveal on the destination chain");
+      } else if (reveals.length === 1 && roleContractsMismatch(locks)) {
+        fail("HTLC evidence MUST use the pinned source and destination contracts");
+      } else if (reusesTxHash()) {
         fail("HTLC evidence MUST NOT reuse one transaction hash for two actions");
+      }
+      const sourceChain = isObj(route) ? route["sourceChainId"] : locks[0]?.["chainId"];
+      if (refsOf("htlc-refund").some((ref) => ref["chainId"] === sourceChain)) {
+        fail("HTLC-9 interim evidence MUST NOT carry a source refund");
+      }
+      if ((requireAuthenticatedContext || ev["reason"] !== "dest-revealed-source-unclaimed") &&
+          ctx.result?.asymmetric !== true) {
+        fail("HTLC-9 revealed failure requires an authenticated asymmetric phase result marker");
+      }
+      if (ctx.result && (ctx.result.ok !== false || ctx.result.errorClass !== "settlement-atomicity")) {
+        fail("HTLC-9 interim evidence requires an ok:false settlement-atomicity phase result");
       }
       if (ev["supersedesEvidenceRef"] !== undefined) {
         fail("HTLC-9 interim evidence MUST NOT supersede another record");
@@ -910,10 +955,14 @@ async function evaluateSettlementEvidence(
 
   // ── HTLC route params (HTLC-7), only for a cross-chain-htlc phase ────────
   if (phase === "pay-cross-chain-htlc" && ctx.rail) {
+    if (ctx.htlcExpiry !== undefined && (!isObj(ctx.htlcExpiry) ||
+        !isPositiveSafeInteger(ctx.htlcExpiry.source) || !isPositiveSafeInteger(ctx.htlcExpiry.dest))) {
+      fail("HTLC expiries MUST be positive safe integers in Unix seconds (HTLC-7)");
+    }
     if (!isNum(ctx.rail.sourceFinalitySec)) fail("HTLC route MUST pin rail.sourceFinalitySec (HTLC-7)");
     if (!isNum(ctx.rail.safetyWindowSec)) fail("HTLC route MUST pin rail.safetyWindowSec (HTLC-7)");
     if (
-      ctx.htlcExpiry &&
+      isObj(ctx.htlcExpiry) &&
       isNum(ctx.rail.sourceFinalitySec) &&
       isNum(ctx.rail.safetyWindowSec) &&
       !(ctx.htlcExpiry.source > ctx.htlcExpiry.dest + ctx.rail.sourceFinalitySec + ctx.rail.safetyWindowSec)

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import { isSettlementEvidence } from "../../src/artifacts/validators.js";
@@ -1831,6 +1832,45 @@ describe("advanceCrossChainHtlc", () => {
     for (let call = 0; call < 3; call += 1) result = await advanceCrossChainHtlc(run.nextOwner());
     expect(result).toMatchObject({ status: "settle-asymmetric" });
   };
+  test.each([
+    ["within the window", 4_999_000, "operator-alert"],
+    ["after the window", 5_000_001, "failed"],
+  ] as const)("reconciles an outside claim final %s without any retained source claim", async (_name, finality, status) => {
+    const h = harness();
+    const prepare = h.prepareAction.getMockImplementation()!;
+    h.prepareAction.mockImplementation(async (request, fence) => {
+      if (request.action === "source-claim") throw new Error("payee claim preparation unavailable");
+      return prepare(request, fence);
+    });
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+    const recordPrepared = vi.fn(base.recordPrepared.bind(base));
+    const run = runner({ adapter: h.adapter, store: { ...base, recordPrepared } });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    await advanceCrossChainHtlc(run.nextOwner());
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "indeterminate", reason: "htlc-source-claim-effect-uncertain",
+    });
+    expect(recordPrepared.mock.calls.map(([input]) => input.prepared.action))
+      .toEqual(["source-lock", "destination-lock", "destination-claim"]);
+    h.actions["source-lock"] = {
+      ...h.actions["source-lock"], lockState: "claimed", claimTxRef: outsideClaim, claimFinalityReachedAt: finality,
+    } as HtlcObservedAction;
+    run.setClock(5_010_000);
+    h.setObservedAt(5_010_000);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+      status,
+      ...(status === "failed" ? { errorClass: "settlement-atomicity" } : {
+        txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim")],
+      }),
+      reason: status === "failed" ? "dest-revealed-source-unclaimed-expired" : "htlc-source-claimed-outside-core",
+      sourceClaimTxRef: outsideClaim,
+      sourceClaimFinalityReachedAt: finality,
+      recoveryDeadline: 5_000_000,
+    });
+    expect(h.broadcastRetained.mock.calls.map(([prepared]) => prepared.action))
+      .toEqual(["source-lock", "destination-lock", "destination-claim"]);
+  });
   const corePathRefs = () =>
     [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")];
   test.each([
@@ -3336,6 +3376,31 @@ describe("advanceCrossChainHtlc", () => {
     ]);
     expect(h.broadcastRetained.mock.calls.map((call) => call[0].action))
       .toEqual(["source-lock", "destination-lock", "source-refund"]);
+  });
+
+  test("refunds from a source-leg view reporting an absent source claim while the payee observer is down", async () => {
+    const h = harness({ sourceExpiry: 1_700, mode: { "source-refund": "pending" } });
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+    const recordSourceFinality = vi.fn(base.recordSourceFinality.bind(base));
+    const observeSourceLeg = h.observeSourceLeg.getMockImplementation()!;
+    h.observeSourceLeg.mockImplementation(async (...args) => {
+      const view = await observeSourceLeg(...args);
+      return { ...view, actions: { ...view.actions, "source-claim": { state: "absent", authenticationHash: AUTH_HASH } } };
+    });
+    const run = runner({ adapter: h.adapter, store: { ...base, recordSourceFinality }, authorizeDestinationClaim: false });
+    await advanceCrossChainHtlc(run.shared);
+    h.observe.mockRejectedValue(new Error("payee observation unavailable"));
+    await advanceCrossChainHtlc(run.nextOwner());
+    expect(recordSourceFinality).toHaveBeenCalledTimes(1);
+    run.setClock(1_700_000);
+    const refunded = await advanceCrossChainHtlc(run.nextOwner());
+    expect(refunded).toEqual({
+      status: "refund-pending",
+      reason: "destination-lock-missing",
+      txRefs: [refFor("source-lock"), refFor("source-refund")],
+      refunds: { "source-refund": "pending" },
+    });
+    expect(h.broadcastRetained.mock.calls.map(([prepared]) => prepared.action)).toEqual(["source-lock", "source-refund"]);
   });
 
   test.each(["throws", "never answers"] as const)(
@@ -6823,33 +6888,11 @@ describe("secret handling, persistence, effect binding, observations and evidenc
     const reveal = { kind: "htlc-reveal", chainId: 80002, contractAddress: contract, revealTxHash: `0x${"b".repeat(64)}` } as const;
     const claim = { kind: "htlc-claim", chainId: 84532, contractAddress: contract, claimTxHash: `0x${"c".repeat(64)}` } as const;
     const fixtureEnvelope = { evidenceVersion: "1", jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phase: "pay-cross-chain-htlc" };
-    const interimFixture = {
-      ...fixtureEnvelope,
-      observedAt: 1760000100000,
-      outcome: "failure",
-      paymentTxRefs: [lock, reveal],
-      reason: "dest-revealed-source-unclaimed",
-      signature,
-    };
-    const resolvedFixture = {
-      ...fixtureEnvelope,
-      observedAt: 1760000300000,
-      outcome: "success",
-      paymentAmount: { amount: "25", currency: "USDC" },
-      paymentTxRefs: [lock, reveal, claim],
-      settlementFinality: { finalityObservedAt: 1760000290000, model: "htlc-reveal" },
-      signature: {
-        ...signature,
-        value: "DvJWDESPE7O5rHSFHhTo0pIg2CtkoAYONy6wf9csI9qEKHr9UyV-6AZ6FxqJnsAbh3i-SU8gTY8mWzrpLR7IBw",
-      },
-      supersedesEvidenceRef: {
-        anchor: {
-          kind: "storage-program" as const,
-          locator: "stor-0f56d8d2f89793bc000caa0283dacee9ef25513f63e32a527358d121743f6f2b",
-        },
-        contentHash: "0f56d8d2f89793bc000caa0283dacee9ef25513f63e32a527358d121743f6f2b",
-      },
-    };
+    const readHtlcFixture = (name: string) => JSON.parse(readFileSync(new URL(
+      `../../vendor/DACS-Standard/conformance/fixtures/settlement/${name}.json`, import.meta.url,
+    ), "utf8")).settlementEvidence;
+    const interimFixture = readHtlcFixture("htlc9-asymmetric");
+    const resolvedFixture = readHtlcFixture("htlc9-asymmetric-resolved");
 
     test("reproduces the pinned HTLC-9 interim and resolved fixtures byte for byte", () => {
       const destinationLock = { ...lock, chainId: 80002, lockTxHash: `0x${"d".repeat(64)}` } as const;
@@ -6928,6 +6971,8 @@ describe("retained store rows the core must refuse", () => {
     },
   });
   const settlementCorruption: readonly (readonly [string, (settlement: CrossChainHtlcSettlement) => unknown])[] = [
+    ["no payment amount", (s) => ({ ...s, paymentAmount: null })],
+    ["an omitted payment amount", (s) => { const { paymentAmount: _dropped, ...rest } = s; return rest; }],
     ["another amount", (s) => ({ ...s, paymentAmount: { ...s.paymentAmount, amount: "2" } })],
     ["another currency", (s) => ({ ...s, paymentAmount: { ...s.paymentAmount, currency: "USDT" } })],
     ["another finality model", (s) => ({ ...s, settlementFinality: { ...s.settlementFinality, model: "block-depth" } })],
@@ -7177,8 +7222,9 @@ describe("retained store rows the core must refuse", () => {
         return "intent" in claimed ? { ...claimed, intent: { ...claimed.intent, amount: "2" } } : claimed;
       },
     };
-    await expect(advanceCrossChainHtlc(runner({ adapter: h.adapter, store }).shared))
-      .resolves.toEqual({ status: "indeterminate", reason: "htlc-settlement-store-intent-mismatch" });
+    const result = await advanceCrossChainHtlc(runner({ adapter: h.adapter, store }).shared);
+    expect(result).toEqual({ status: "indeterminate", reason: "htlc-settlement-store-intent-mismatch" });
+    expect(htlcNeedsOperator(result)).toBe(true);
     expect(h.observe).not.toHaveBeenCalled();
     expect(h.prepareAction).not.toHaveBeenCalled();
   });
@@ -7425,8 +7471,9 @@ describe("retained history and checkpoint contradictions the core refuses", () =
   });
 
   test("moves nothing when the stored intent cannot be canonicalized", async () => {
-    await expect(refuses("source-claim", (c) => ({ ...c, intent: { ...c.intent, amount: 1n } })))
-      .resolves.toEqual({ status: "indeterminate", reason: "htlc-settlement-store-intent-invalid" });
+    const result = await refuses("source-claim", (c) => ({ ...c, intent: { ...c.intent, amount: 1n } }));
+    expect(result).toEqual({ status: "indeterminate", reason: "htlc-settlement-store-intent-invalid" });
+    expect(htlcNeedsOperator(result)).toBe(true);
   });
 });
 

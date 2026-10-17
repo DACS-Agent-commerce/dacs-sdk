@@ -886,11 +886,24 @@ projection carries it. The host adds `evidenceVersion`, `jobId`, `phase`,
 Standard's `htlc9-asymmetric` and `htlc9-asymmetric-resolved` fixtures.
 
 A reader verifying such a record with `verifySettlementEvidence` passes the
-agreement's route as `rail.htlcRoute` (`{ sourceChainId, destChainId }`), with
-`sourceFinalitySec` and `safetyWindowSec`. Without a route of two distinct
-positive integer chain ids the verdict is `error`, never `pass`. With it, the
-lock and claim must sit on the source chain and the reveal on the destination
-chain, and a success record must use `htlc-reveal` finality.
+agreement's route as `rail.htlcRoute`
+(`{ sourceChainId, destChainId, htlcContracts: { source, dest } }`), with
+`sourceFinalitySec` and `safetyWindowSec`. It also supplies independently
+authenticated lock expiries in Unix seconds as `htlcExpiry: { source, dest }`.
+Missing or malformed chains, contracts or expiries give `error`. The lock and
+claim must use the source chain and contract; the reveal must use the
+destination chain and contract. HTLC-7's absolute expiry margin must hold,
+and a success record must use `htlc-reveal` finality.
+
+For an interim failure carrying a reveal, the authenticated phase result must
+carry `asymmetric: true`, `ok: false` and `errorClass: "settlement-atomicity"`.
+Set this marker from the authenticated ST-8 state, independently of the record's
+reason text. It permits other structured reason spellings without interpreting
+a revealed, still recoverable swap as an ordinary timeout. HTLC-9 requires
+exactly one destination reveal; the source lock is optional in interim evidence.
+The SDK's projection includes it. An interim record carries no source claim,
+source refund or supersession. Structural validation alone may omit the route
+and expiries and does not establish authenticated settlement.
 
 ST-8 maps onto the core's results as follows:
 
@@ -1002,6 +1015,12 @@ map as follows:
   supply the original salt on the next call.
 - Supply that same salt on every `advanceCrossChainHtlc` call, including after
   a restart. The current store API does not return secrets on takeover.
+- Persist the authority built at session start (or its pinned rail definition
+  and agreement selection), and pass that same authority on every call,
+  including after a restart. A later rail revision can change its descriptor
+  hash or availability. RAV-R2 permits an already pinned session to continue;
+  rebuilding from a later disabled or failed revision cannot recover its
+  original authority.
 - Set `leaseDurationMs` (default 30 000 ms) above the slowest adapter call,
   and at least twice the slowest `observeSourceLeg`. The core abandons an
   adapter call still running when the lease lapses, and a source-leg
@@ -1045,6 +1064,10 @@ map as follows:
     its retained rows and checkpoints, or one is missing, a store fault that
     retrying does not clear; the session may be paid, so reconcile the store
     against the chains and keep the salt;
+  - `indeterminate` with reason `htlc-settlement-store-intent-mismatch` or
+    `htlc-settlement-store-intent-invalid`: the retained intent differs from
+    this call's authority, or cannot be read canonically. Restore the original
+    pinned authority and reconcile the store; keep the salt and locked session;
   - `indeterminate` with reason `htlc-call-input-invalid`: the call's owner,
     lease, authority or hashlock deriver is unusable, a host error; correct
     the input and call again, keeping the salt;

@@ -762,7 +762,9 @@ export function htlcNeedsOperator(progress: Readonly<CrossChainHtlcProgress>): b
       return progress.reason === "htlc-source-observers-disagree" ||
         progress.reason === "htlc-call-input-invalid" ||
         progress.reason === "htlc-source-lock-disposition-contradicted" ||
-        progress.reason === "htlc-stored-settlement-mismatch";
+        progress.reason === "htlc-stored-settlement-mismatch" ||
+        progress.reason === "htlc-settlement-store-intent-mismatch" ||
+        progress.reason === "htlc-settlement-store-intent-invalid";
     default:
       return false;
   }
