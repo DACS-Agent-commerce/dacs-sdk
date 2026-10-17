@@ -431,6 +431,7 @@ export {
   createInMemoryBindingStore,
   queryListingCatalog,
   createCatalogBindingIndex,
+  artifactBindingHashOf,
   createBoundArtifactRepository,
   createScanningArtifactRepository,
   UnsupportedArtifactKindError,

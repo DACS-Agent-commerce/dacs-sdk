@@ -41,6 +41,7 @@ import {
   negotiablePriceBand,
   isNegotiablePriceWithinBand,
   verifyBundleCore,
+  artifactBindingHashOf,
   createScanningArtifactRepository,
   UnsupportedArtifactKindError,
   AnchorHistoryRestartRequiredError,
@@ -57,6 +58,7 @@ import {
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
 import {
   AnchorHistoryRestartRequiredError as DiscoveryRestartRequiredError,
+  artifactBindingHashOf as discoveryBindingHashOf,
   createScanningArtifactRepository as createScanningFromDiscovery,
   scanAnchorPage,
   UnsupportedArtifactKindError as DiscoveryUnsupportedKindError,
@@ -222,6 +224,8 @@ async function discoveryRowCodes(): Promise<DiscoveryRowIndeterminateCode[]> {
 }
 const discoveryUnsupported: UnsupportedArtifactKindError = new DiscoveryUnsupportedKindError("unsupported");
 const discoveryRestart: AnchorHistoryRestartRequiredError = new DiscoveryRestartRequiredError("restart");
+const deliverableBindingHash: string = artifactBindingHashOf("dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D")({ report: "ok" });
+const discoveryHashOf: typeof artifactBindingHashOf = discoveryBindingHashOf;
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
@@ -284,6 +288,8 @@ void historyPageCode;
 void discoveryRowCodes;
 void discoveryUnsupported;
 void discoveryRestart;
+void deliverableBindingHash;
+void discoveryHashOf;
 void adapter;
 void journal;
 void result;

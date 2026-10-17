@@ -16,6 +16,7 @@ export {
   type VerifiedReadDeps,
 } from "./verifiedRead.js";
 export {
+  artifactBindingHashOf,
   createBoundArtifactRepository,
   type BoundArtifactAdapter,
   type BoundArtifactRepository,
