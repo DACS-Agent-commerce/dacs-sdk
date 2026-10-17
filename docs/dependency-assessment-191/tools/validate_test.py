@@ -167,6 +167,20 @@ class Engines(unittest.TestCase):
         self.assertEqual(validate.check_engines(self.checks, self.summary, self.boms), {'t': 1})
 
 class Catalog(unittest.TestCase):
+    def test_purl_source_identifies_selected_edition_and_draft_status(self):
+        # At this pin the documentation map identifies the second edition, and
+        # its release notes describe changes awaiting TC54 approval.
+        purl = validate.load(TOOLS.parent / 'qualification-sources.json')['purl']
+        self.assertEqual(purl['commit'], 'ec6d7e03101ebdb7f79a7e292eb9d38998521ed6')
+        self.assertEqual(purl['edition'], 'ECMA-427, 2nd edition')
+        self.assertEqual(purl['publication_status'], 'working draft')
+        self.assertEqual(purl['edition_map_path'], 'docs/specification/README.md')
+        self.assertEqual(purl['release_notes_path'], 'docs/specification/ECMA-427-2nd_Edition-Release_notes.md')
+        report = (TOOLS.parents[2] / 'docs/dependency-assessment-191.md').read_text()
+        self.assertIn(purl['edition'] + ' ' + purl['publication_status'], report)
+        self.assertIn(purl['commit'], report)
+        self.assertIn(purl['normative_path'], report)
+
     def test_catalog_mode_passes(self):
         result = subprocess.run([sys.executable, '-I', str(TOOLS / 'validate.py'), '--repo', str(TOOLS.parents[2])],
                                 capture_output=True, text=True)

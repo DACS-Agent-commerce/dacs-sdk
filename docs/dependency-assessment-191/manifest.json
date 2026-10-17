@@ -3292,8 +3292,8 @@
     },
     {
       "path": "qualification-sources.json",
-      "sha256": "23d5c8f9248829ea99138a3994291333577b48a74d8aa108612e58a669b65fd2",
-      "bytes": 2165
+      "sha256": "1e14212b21b297675a8410d77fa1c4e38944e2b50ea6c3511f90cffba3607869",
+      "bytes": 2316
     },
     {
       "path": "recollection-2026-10-16.json",
@@ -3452,8 +3452,8 @@
     },
     {
       "path": "tools/validate_test.py",
-      "sha256": "9fb77f171c3b6299ce436523fee0f4ccaf837a77f79571b4cdd6707eab32c87d",
-      "bytes": 13368
+      "sha256": "4757a7be6121aa31f2eba573674e20848b8234abc39e1f5eb636c4d6a717f745",
+      "bytes": 14362
     },
     {
       "path": "upstream-actions.json",
@@ -4611,7 +4611,7 @@
       }
     ]
   },
-  "report_sha256": "a13aaf3af22add1d039316a457b92d4bd11e985d8131a9bd87b9fb3cbe6919ba",
+  "report_sha256": "8428549cf8ff73ec6f958a0656e21135b526db5e4397a7e0e967ed6d75bd3607",
   "fix_round2": {
     "collected_utc": "2026-10-15T22:40:45.140219+00:00",
     "collection_root": "<round2-root>",
