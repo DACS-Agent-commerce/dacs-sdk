@@ -1609,13 +1609,20 @@ export class DemosAdapter implements SubstrateAdapter {
    */
   /**
    * The account nonce a NEW storage program will be created under: the writer's
-   * next nonce (`getAddressNonce` + 1) per DACS-Standard #242. The node enforces
+   * next nonce (strict raw `getAddressNonce` + 1) per DACS-Standard #242. The node enforces
    * sequential nonces and REJECTS the skeleton default of 0, so a fixed nonce
    * made every live create fail (#58).
    */
   private async nextAnchorNonce(key = this.walletQueueKey()): Promise<number> {
-    const chainNext =
-      (await this.#demos.getAddressNonce(this.#demos.getAddress())) + 1;
+    // demosdk's convenience method partially parses strings and returns zero
+    // for malformed responses. A write must use an uncoerced node observation.
+    const chainNonce = demosNonNegativeInteger(await this.#demos.nodeCall(
+      "getAddressNonce", { address: this.#demos.getAddress() },
+    ));
+    if (chainNonce === undefined) {
+      throw new SubstrateError("Demos account nonce is unavailable or malformed");
+    }
+    const chainNext = chainNonce + 1;
     void key;
     const confirmed = this.activeWriteLease?.snapshot.records.reduce<number | undefined>(
       (highest, record) =>
@@ -1626,7 +1633,11 @@ export class DemosAdapter implements SubstrateAdapter {
           : highest,
       undefined,
     );
-    return confirmed === undefined ? chainNext : Math.max(chainNext, confirmed + 1);
+    const next = confirmed === undefined ? chainNext : Math.max(chainNext, confirmed + 1);
+    if (!Number.isSafeInteger(next)) {
+      throw new SubstrateError("Demos account nonce is exhausted");
+    }
+    return next;
   }
 
   /**

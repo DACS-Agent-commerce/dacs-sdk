@@ -483,7 +483,8 @@ export async function inspectGeneratedBackupV1(input: Readonly<{
 export function assertGeneratedBackupRestorableV1(
   manifest: Readonly<BackupManifestV1>,
 ): void {
-  if (manifest.release.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
+  if (manifest.release.sdkVersion !== VERSION ||
+      manifest.release.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
       manifest.release.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION ||
       manifest.release.sqliteSchemaVersion > DACS_NODE_SQLITE_SCHEMA_VERSION ||
       (manifest.release.sqliteSchemaVersion !== DACS_NODE_SQLITE_SCHEMA_VERSION &&

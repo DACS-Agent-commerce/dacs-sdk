@@ -11,12 +11,14 @@ import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonConfig,
   snapshotCanonicalJsonRead,
+  snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { AttestationRef, ChainTxRef } from "../artifacts/types.js";
 import { isComponentSignature } from "../artifacts/signatures.js";
 import {
+  isCanonicalJobId,
   isAttestationRef,
   isChainTxRef,
   isSettlementEvidence,
@@ -206,6 +208,20 @@ const PHASE_RAIL_TYPE: Record<string, string> = {
   "pay-dem": "demos-native",
 };
 
+/** PC-4 failure classifications and phase-owned PC-6 finality models. */
+const PHASE_ERROR_CLASSES = new Set([
+  "permanent", "transient", "counterparty", "substrate", "settlement-atomicity",
+]);
+const PHASE_FINALITY_MODEL = new Map([
+  ["pay-evm-erc20", "block-depth"],
+  ["pay-solana-spl", "commitment-level"],
+  ["pay-cross-chain-htlc", "htlc-reveal"],
+  ["pay-cross-chain-liquidity-tank", "liquidity-tank"],
+  ["pay-ap2", "provider-receipt"],
+  ["pay-x402", "block-depth"],
+  ["pay-dem", "bft-final"],
+]);
+
 const RAIL_SPEC_KINDS: Readonly<
   Record<string, Readonly<{ asset: string; network: string }>>
 > = Object.freeze({
@@ -318,6 +334,7 @@ async function evaluateSettlementEvidence(
   ctx: EvidenceContext,
   deps: EvidenceDeps,
   requireAuthenticatedContext: boolean,
+  historicalReplay = false,
 ): Promise<EvidenceVerification> {
   const reasons: string[] = [];
   let sawError = false;
@@ -364,10 +381,21 @@ async function evaluateSettlementEvidence(
     };
   }
 
+  if (historicalReplay && (!resolvePublicKey || !verify)) {
+    return { decision: "error", reasons: ["historical signature inspection requires cryptographic dependencies"] };
+  }
+
   let recordSnapshot: unknown;
   let contextSnapshot: EvidenceContext;
   try {
-    recordSnapshot = snapshotCanonicalJsonRead(record, "settlement evidence");
+    const wireSnapshot = snapshotWireJsonRead(record, "settlement evidence");
+    // CORE JID-1/JID-3 prohibit repairing the original spelling. Own data
+    // without NFC first so, for example, U+212A cannot be admitted as ASCII K.
+    if (!historicalReplay && isObj(wireSnapshot) &&
+        !isCanonicalJobId(wireSnapshot["jobId"])) {
+      return { decision: "error", reasons: ["current evidence jobId MUST be a canonical uppercase ULID"] };
+    }
+    recordSnapshot = snapshotCanonicalJsonRead(wireSnapshot, "settlement evidence");
     contextSnapshot = snapshotCanonicalJsonConfig(
       ctx,
       "settlement evidence context",
@@ -479,7 +507,7 @@ async function evaluateSettlementEvidence(
         reasons.push("authenticated payment evidence context requires the exact PC-2 address tuple");
       }
     }
-    if (isDelivery && (!isStr(ctx.expectedAnchorLocator) ||
+    if (isDelivery && outcome === "success" && (!isStr(ctx.expectedAnchorLocator) ||
         ctx.expectedAnchorLocator.length === 0)) {
       sawError = true;
       reasons.push("authenticated delivery evidence context requires the expected deliverable locator");
@@ -504,8 +532,12 @@ async function evaluateSettlementEvidence(
   // Phase-result envelope coherence (ok ⇔ no errorClass).
   if (ctx.result && ctx.result.ok !== undefined) {
     const hasErrorClass = isStr(ctx.result.errorClass) && ctx.result.errorClass !== "";
-    if (ctx.result.ok === true && hasErrorClass) {
+    if (ctx.result.ok === true && ctx.result.errorClass !== undefined) {
       fail("phase result is ok:true but carries an errorClass");
+    }
+    if (ctx.result.ok === false && hasErrorClass &&
+        !PHASE_ERROR_CLASSES.has(ctx.result.errorClass!)) {
+      fail("phase result errorClass MUST be a registered PC-4 error class");
     }
     if (ctx.result.ok === false && !hasErrorClass) {
       fail("phase result is ok:false but carries no errorClass to classify the fault");
@@ -588,6 +620,13 @@ async function evaluateSettlementEvidence(
     if (!isStr(model) || !FINALITY_MODELS.has(model)) {
       fail(`settlementFinality.model "${String(model)}" is not a recognised §9.7 finality model (PC-6)`);
     } else {
+      const expectedModel = isStr(phase) ? PHASE_FINALITY_MODEL.get(phase) : undefined;
+      // §9.7 retains pre-v0.6 x402 provider finality for explicit replay only.
+      const historicalX402 = historicalReplay && phase === "pay-x402" &&
+        model === "provider-receipt";
+      if (expectedModel && model !== expectedModel && !historicalX402) {
+        fail(`phase "${String(phase)}" is incoherent with finality model "${model}"`);
+      }
       // block-depth echoes the blocks waited; commitment-level echoes the Solana
       // commitment. Both are OPTIONAL in §9.7 (self-describing echoes of
       // rail.parameters) — validate only when present, never require.
@@ -623,15 +662,17 @@ async function evaluateSettlementEvidence(
   if (isDelivery) {
     // Delivery phases MUST omit settlementFinality (finality is payment-only).
     if (finality) fail("delivery evidence MUST NOT carry settlementFinality");
-    if (!isStr(ev["deliverableContentHash"])) {
+    if (outcome === "success" && ev["deliverableContentHash"] === undefined) {
       fail("delivery evidence MUST carry deliverableContentHash");
-    } else if (!is64Hex(ev["deliverableContentHash"])) {
+    } else if (ev["deliverableContentHash"] !== undefined &&
+        (!isStr(ev["deliverableContentHash"]) || !is64Hex(ev["deliverableContentHash"]))) {
       fail("deliverableContentHash MUST be a 64-char sha256 hex");
     }
     const anchor = isObj(ev["deliverableAnchor"]) ? (ev["deliverableAnchor"] as Record<string, unknown>) : null;
-    if (!anchor || !isStr(anchor["kind"]) || !isStr(anchor["locator"])) {
+    if ((outcome === "success" || ev["deliverableAnchor"] !== undefined) &&
+        (!anchor || !isStr(anchor["kind"]) || !isStr(anchor["locator"]))) {
       fail("delivery evidence MUST carry a deliverableAnchor {kind, locator}");
-    } else {
+    } else if (anchor) {
       if (phase === "deliver-storage-program" && anchor["kind"] !== "storage-program") {
         // A storage-program delivery anchored under a non-storage kind (e.g. an
         // entitlement) is incoherent with its phase.
@@ -1018,4 +1059,26 @@ export async function verifySettlementEvidence(
     (deps ?? {}) as EvidenceDeps,
     true,
   );
+}
+
+/**
+ * Inspect historical signed evidence without granting current settlement
+ * authority. Legacy job IDs are admitted only here. Even a verified signature
+ * yields `valid`, never the trust-bearing `pass` decision.
+ */
+export async function inspectHistoricalSettlementEvidence(
+  record: unknown,
+  ctx: EvidenceContext,
+  deps: AuthenticatedEvidenceDeps,
+): Promise<EvidenceStructureValidation> {
+  const result = await evaluateSettlementEvidence(
+    record, (ctx ?? {}) as EvidenceContext,
+    (deps ?? {}) as EvidenceDeps, false, true,
+  );
+  return {
+    decision: result.decision === "pass" ? "valid"
+      : result.decision === "fail" ? "invalid"
+      : result.decision === "indeterminate" ? "incomplete" : "error",
+    reasons: result.reasons,
+  };
 }

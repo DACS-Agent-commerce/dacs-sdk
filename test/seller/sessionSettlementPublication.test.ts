@@ -60,7 +60,7 @@ const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
 const NOW = 1_777_000_000_000;
 const TX_HASH = "e".repeat(64);
 
-function authorization(jobId = "job-publication-1"): SellerPaymentAuthorization {
+function authorization(jobId = "01JZ0000000000000000000362"): SellerPaymentAuthorization {
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1" as const,
     jobId,
@@ -430,6 +430,17 @@ describe("publishSellerSessionSettlement", () => {
     expect(sellerPublishSellerSessionSettlement).toBe(publishSellerSessionSettlement);
   });
 
+  it.each(["job-publication-legacy", "01jz0000000000000000000362", "8".repeat(26)])(
+    "rejects noncanonical current jobId %s before resolving or signing", async (jobId) => {
+      const h = harness(authorization(jobId));
+      await expect(publishSellerSessionSettlement(request(h), h.deps))
+        .resolves.toMatchObject({ disposition: "error" });
+      expect(h.resolveProof).not.toHaveBeenCalled();
+      expect(h.sign).not.toHaveBeenCalled();
+      expect(h.anchor).not.toHaveBeenCalled();
+    },
+  );
+
   it("publishes an exact finalized settlement consumable by the public verifier", async () => {
     const h = harness();
     const result = await publishSellerSessionSettlement(request(h), h.deps);
@@ -480,7 +491,7 @@ describe("publishSellerSessionSettlement", () => {
   });
 
   it("keeps one effect identity as authenticated proof observations advance", async () => {
-    const value = authorization("job-publication-proof-replay");
+    const value = authorization("01JZ0000000000000000000363");
     const first = harness(value);
     const replay = harness(value);
     replay.resolveProof.mockResolvedValue(proofAuthentication(value, {
@@ -505,13 +516,15 @@ describe("publishSellerSessionSettlement", () => {
     expect(replayResult.effectId).toBe(firstResult.effectId);
   });
 
-  it("keeps seller evidence authority while an authenticated buyer owns the anchor lane", async () => {
+  it.each([ORCHESTRATOR, "did:demos:independent-issuer"])(
+    "keeps seller evidence authority with an authenticated buyer anchor and issuer %s", async (issuer) => {
     const h = harness();
     let observedWriter: unknown;
     h.deps.anchorWriter = { role: "buyer", primaryClaim: BUYER };
     let expectedReceiptWriter: string | undefined;
-    h.deps.verifyAnchorReceipt = async ({ expectedWriter }) => {
+    h.deps.verifyAnchorReceipt = async ({ expectedWriter, evidenceRef }) => {
       expectedReceiptWriter = expectedWriter;
+      expect(evidenceRef.signer).toBe(issuer);
       return { disposition: "pass" };
     };
     let anchoredEvidence: SettlementEvidence | undefined;
@@ -524,7 +537,7 @@ describe("publishSellerSessionSettlement", () => {
         evidenceRef: {
           anchor: { kind: "storage-program", locator: input.logicalAddress },
           contentHash: input.evidenceHash,
-          signer: ORCHESTRATOR,
+          signer: issuer,
         },
         anchorReceipt: finalizedReceipt(input.logicalAddress, input.evidenceHash, BUYER),
       };
@@ -538,9 +551,30 @@ describe("publishSellerSessionSettlement", () => {
     expect(result.disposition).toBe("published");
     if (result.disposition !== "published") return;
     expect(result.settlement.evidence.signature.signer).toBe(ORCHESTRATOR);
+    expect(result.settlement.evidenceRef.signer).toBe(issuer);
     expect(result.settlement.anchorReceipt.writer).toBe(BUYER);
     expect(observedWriter).toEqual({ role: "buyer", primaryClaim: BUYER });
     expect(expectedReceiptWriter).toBe(BUYER);
+  });
+
+  it("requires receipt authentication for an independent attestation issuer", async () => {
+    const h = harness();
+    const anchor = h.deps.anchorEvidence;
+    h.deps.anchorEvidence = async (input) => {
+      const result = await anchor(input);
+      if (result.disposition !== "anchored") return result;
+      return { ...result, evidenceRef: {
+        ...result.evidenceRef, signer: "did:demos:independent-issuer",
+      } };
+    };
+    const verifyReceipt = vi.fn(() => ({
+      disposition: "fail" as const, reason: "attestation issuer proof invalid",
+    }));
+    h.deps.verifyAnchorReceipt = verifyReceipt;
+    expect(await publishSellerSessionSettlement(request(h), h.deps)).toMatchObject({
+      disposition: "rejected", reason: expect.stringContaining("attestation issuer proof invalid"),
+    });
+    expect(verifyReceipt).toHaveBeenCalledOnce();
   });
 
   it("rejects a buyer anchor lane absent from the consumed authenticated handoff", async () => {
@@ -609,7 +643,7 @@ describe("publishSellerSessionSettlement", () => {
     expect(available.anchor).not.toHaveBeenCalled();
 
     const substituted = harness();
-    const other = authorization("job-substituted");
+    const other = authorization("01JZ0000000000000000000364");
     substituted.deps.receiptStore.inspectPermit = async () => ({
       status: "already-consumed",
       claim: claim(other),

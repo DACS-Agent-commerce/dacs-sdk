@@ -161,9 +161,21 @@ comparison facts, returning `valid|invalid|incomplete|error`; `valid` is never
 an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
 operation and requires the authenticated agreement, pinned rail, phase
 orchestrator, evidence reference, phase result, PC-2 address (for payment),
-expected deliverable locator (for delivery), plus key resolution and signature
+expected deliverable locator (for successful delivery), plus key resolution and signature
 verification. Missing trust inputs fail as configuration errors rather than
-being silently skipped.
+being silently skipped. Both current evidence entry points require a canonical
+26-character uppercase ULID before deriving addresses or resolving keys. Native
+DEM uses BFT finality, and the other payment phases must use their own finality
+models. Failed delivery evidence may omit output fields; any supplied fields
+are still validated.
+
+For retained historical records, explicitly call
+`inspectHistoricalSettlementEvidence(record, context, cryptoDeps)`. It checks
+the original signature and returns the non-authorizing
+`valid|invalid|incomplete|error` vocabulary, allowing the original legacy job ID
+without granting current settlement authority. `isSettlementEvidence()` remains
+a wire-shape predicate, including historical shapes; it is not an admission or
+signature-verification API.
 
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
