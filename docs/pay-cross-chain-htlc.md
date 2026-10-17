@@ -913,12 +913,30 @@ The disposition must name the exact reveal reference. Pending transactions and
 observer outages do not establish an unlanded attempt; a final reveal still
 requires ST-8 regardless of reason text.
 
+Ordinary failure evidence for a created lock also requires `htlcRefund` from
+independently authenticated ledger observations. Supply `source` and `dest`
+for the created legs as `{ txRef, state: "final" }`, binding the exact refund
+references in the evidence. Include the created source lock reference. A refund
+reference or an expired timelock alone does not prove funds were returned.
+Pending, unknown or missing refund observations keep verification indeterminate;
+failed or absent refunds cannot verify as completed.
+
+Set `htlcRefund.sourceClaim` to `{ state: "absent" }` only when authenticated
+source-lock observation establishes no source claim, including claims outside
+the retained actions. If the evidence includes a source-claim attempt, supply
+its exact `txRef` and conclusive `"failed"` or `"absent"` disposition. A final
+source claim rejects an ordinary refund; pending or unknown claims leave it
+indeterminate. Failed/absent destination reveals may have exposed the preimage,
+so their disposition never substitutes for these source observations.
+
 For an early failure before a lock exists, supply independently authenticated
 `htlcLockState: { source: "created", dest: "not-created" }` and only
 `htlcExpiry: { source }`, with `result.ok: false`, `result.asymmetric: false`
 and exact `result.txRefs`. Such evidence carries only lock/refund refs for
-created legs. If neither lock was created, mark both `"not-created"`, pass no
-refs, and omit `htlcExpiry`. Success and asymmetric evidence always require
+created legs, and requires the final source refund and source-claim disposition
+in `htlcRefund` as above; omit the destination refund observation. If neither
+lock was created, mark both `"not-created"`, pass no refs, and omit `htlcExpiry`
+and `htlcRefund`. Success and asymmetric evidence always require
 both expiries and the HTLC-7 margin. Never infer a missing lock from reason text
 or invent its expiry.
 

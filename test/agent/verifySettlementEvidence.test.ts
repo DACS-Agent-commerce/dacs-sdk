@@ -899,7 +899,7 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     expect((await verify(ev, { rail: htlcRail })).decision).toBe("fail");
   });
   const htlcRefund = (ev: Record<string, any>, chainId: number) => ({
-    kind: "htlc-refund",
+    kind: "htlc-refund" as const,
     chainId,
     contractAddress: ev.paymentTxRefs[0].contractAddress,
     refundTxHash: `0x${"f".repeat(64)}`,
@@ -1079,6 +1079,11 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     ctx.result.asymmetric = false;
     ctx.result.txRefs = structuredClone(ev.paymentTxRefs);
     ctx.htlcReveal = { txRef: structuredClone(ev.paymentTxRefs[1]), state: "failed" };
+    ctx.htlcRefund = {
+      source: { txRef: structuredClone(ev.paymentTxRefs[2]), state: "final" },
+      dest: { txRef: structuredClone(ev.paymentTxRefs[3]), state: "final" },
+      sourceClaim: { state: "absent" },
+    };
     return { ev, ctx };
   };
   test.each(["failed", "absent"] as const)(
@@ -1086,6 +1091,90 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       const { ev, ctx } = refundedReveal();
       ctx.htlcReveal!.state = state;
       expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
+    },
+  );
+  const refreshHtlcEvidence = (ev: Record<string, any>, ctx: AuthenticatedEvidenceContext) => {
+    ctx.result.txRefs = structuredClone(ev.paymentTxRefs);
+    ctx.attestationRef = { ...ctx.attestationRef, contentHash: contentHash(stripSignature(ev)) };
+  };
+  test("a failed reveal with a source claim cannot verify as an ordinary refund", async () => {
+    const { ev, ctx } = refundedReveal();
+    ev.paymentTxRefs.push(htlcResolved().paymentTxRefs[2]);
+    refreshHtlcEvidence(ev, ctx);
+    expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "fail", reasons: [
+      "HTLC ordinary refund claims require exact authenticated unlanded observations",
+    ] });
+    ctx.htlcRefund!.sourceClaim = { txRef: structuredClone(ev.paymentTxRefs[4]), state: "final" };
+    expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "fail", reasons: [
+      "HTLC ordinary refund MUST NOT carry a final source claim",
+    ] });
+  });
+  test.each(["failed", "absent"] as const)("an exact authenticated %s source-claim attempt permits final refunds", async (state) => {
+    const { ev, ctx } = refundedReveal();
+    ev.paymentTxRefs.push(htlcResolved().paymentTxRefs[2]);
+    ctx.htlcRefund!.sourceClaim = { txRef: structuredClone(ev.paymentTxRefs[4]), state };
+    refreshHtlcEvidence(ev, ctx);
+    expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
+    ctx.htlcRefund!.sourceClaim.txRef!.claimTxHash = `0x${"d".repeat(64)}`;
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("fail");
+  });
+  test("a failed reveal and two locks without refunds remain unresolved", async () => {
+    const { ev, ctx } = refundedReveal();
+    ev.paymentTxRefs = [ev.paymentTxRefs[0], {
+      kind: "htlc-lock", chainId: 80002, contractAddress: htlcRail!.htlcRoute!.htlcContracts!.dest,
+      lockTxHash: `0x${"f".repeat(64)}`,
+    }, ev.paymentTxRefs[1]];
+    delete ctx.htlcRefund;
+    refreshHtlcEvidence(ev, ctx);
+    const result = await verifySettlementEvidence(ev, ctx, signatureAccepted);
+    expect(result.decision).toBe("indeterminate");
+    expect(result.reasons).toContain("HTLC ordinary refund MUST carry exactly one source refund reference");
+    expect(result.reasons).toContain("HTLC ordinary refund MUST carry exactly one dest refund reference");
+  });
+  test.each(["source", "dest"] as const)("ordinary refund requires authenticated %s finality", async (leg) => {
+    for (const state of ["pending", "unknown", "failed", "absent"] as const) {
+      const { ev, ctx } = refundedReveal();
+      ctx.htlcRefund![leg]!.state = state;
+      expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision)
+        .toBe(state === "pending" || state === "unknown" ? "indeterminate" : "fail");
+    }
+    const { ev, ctx } = refundedReveal();
+    delete ctx.htlcRefund![leg];
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("indeterminate");
+  });
+  test.each(["source", "dest"] as const)("ordinary refund binds the exact %s refund observation", async (leg) => {
+    for (const field of ["chainId", "contractAddress", "refundTxHash"] as const) {
+      const { ev, ctx } = refundedReveal();
+      const ref = ctx.htlcRefund![leg]!.txRef;
+      if (field === "chainId") ref.chainId = 11155111;
+      else ref[field] = field === "refundTxHash" ? `0x${"d".repeat(64)}` : `0x${"d".repeat(40)}`;
+      expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("fail");
+    }
+  });
+  test.each(["pending", "unknown"] as const)("ordinary refund remains open for a %s source claim", async (state) => {
+    const { ev, ctx } = refundedReveal();
+    ctx.htlcRefund!.sourceClaim = { state };
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("indeterminate");
+  });
+  test("a final source claim outside the evidence cannot close as a refund", async () => {
+    const { ev, ctx } = refundedReveal();
+    ctx.htlcRefund!.sourceClaim = { txRef: htlcResolved().paymentTxRefs[2], state: "final" };
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("fail");
+  });
+  test.each([null, {}, { source: null, sourceClaim: { state: "absent" } },
+    { source: { state: "final", txRef: null }, sourceClaim: { state: "absent" } }])(
+    "malformed refund observations never authorize a refund: %j", async (observation) => {
+      const { ev, ctx } = refundedReveal();
+      ctx.htlcRefund = observation as never;
+      expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).not.toBe("pass");
+    },
+  );
+  test.each([undefined, null, {}, { state: "failed" }, { state: "absent", txRef: null }])(
+    "ordinary refunds require a valid source-claim disposition: %j", async (sourceClaim) => {
+      const { ev, ctx } = refundedReveal();
+      ctx.htlcRefund!.sourceClaim = sourceClaim as never;
+      expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision)
+        .toBe(sourceClaim === undefined ? "indeterminate" : "error");
     },
   );
   test.each(["omitted", "final", "wrong-ref", "no-result-refs", "wrong-result-refs", "asymmetric"])(
@@ -1159,11 +1248,35 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     ctx.result.txRefs = structuredClone(ev.paymentTxRefs);
     ctx.htlcLockState = { source: "created", dest: "not-created" };
     ctx.htlcExpiry = { source: 10_000 };
+    ctx.htlcRefund = {
+      source: { txRef: structuredClone(ev.paymentTxRefs[1]), state: "final" }, sourceClaim: { state: "absent" },
+    };
     return { ev, ctx };
   };
   test("authenticates a source-only refund without inventing a destination expiry", async () => {
     const { ev, ctx } = sourceOnlyRefund();
     expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
+  });
+  test.each(["both", "lock", "refund"])("a created source lock cannot omit %s references", async (missing) => {
+    const { ev, ctx } = sourceOnlyRefund();
+    ev.paymentTxRefs = missing === "both" ? [] : ev.paymentTxRefs.filter((ref: Record<string, unknown>) =>
+      missing === "lock" ? ref.kind !== "htlc-lock" : ref.kind !== "htlc-refund");
+    refreshHtlcEvidence(ev, ctx);
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("fail");
+  });
+  test("a created source lock with no references or observations is unresolved", async () => {
+    const { ev, ctx } = sourceOnlyRefund();
+    ev.paymentTxRefs = [];
+    delete ctx.htlcRefund;
+    refreshHtlcEvidence(ev, ctx);
+    const result = await verifySettlementEvidence(ev, ctx, signatureAccepted);
+    expect(result.decision).toBe("indeterminate");
+    expect(result.reasons).toContain("HTLC ordinary refund MUST carry the created source lock reference");
+  });
+  test("a source-only refund cannot attach a destination refund observation", async () => {
+    const { ev, ctx } = sourceOnlyRefund();
+    ctx.htlcRefund!.dest = { txRef: htlcRefund(ev, 80002), state: "final" };
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("fail");
   });
   test("authenticates an early failure before either lock exists", async () => {
     const { ev, ctx } = sourceOnlyRefund();
@@ -1171,6 +1284,7 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     ctx.result.txRefs = [];
     ctx.htlcLockState!.source = "not-created";
     delete ctx.htlcExpiry;
+    delete ctx.htlcRefund;
     ctx.attestationRef = { ...ctx.attestationRef, contentHash: contentHash(stripSignature(ev)) };
     expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
   });

@@ -184,6 +184,28 @@ export interface EvidenceContext {
     txRef: Extract<ChainTxRef, { kind: "htlc-reveal" }>;
     state: "final" | "failed" | "absent";
   };
+  /**
+   * Independently authenticated ordinary-refund observations. Every created
+   * leg needs its exact final refund reference. Source-claim absence covers
+   * the source lock itself, including claims outside the retained actions.
+   * A named claim attempt must be conclusively failed/absent and bind the
+   * exact evidence claim. Pending/unknown observations cannot close a refund.
+   * Omit observations for legs authenticated as not-created.
+   */
+  htlcRefund?: {
+    source?: {
+      txRef: Extract<ChainTxRef, { kind: "htlc-refund" }>;
+      state: "final" | "pending" | "failed" | "absent" | "unknown";
+    };
+    dest?: {
+      txRef: Extract<ChainTxRef, { kind: "htlc-refund" }>;
+      state: "final" | "pending" | "failed" | "absent" | "unknown";
+    };
+    sourceClaim: {
+      txRef?: Extract<ChainTxRef, { kind: "htlc-claim" }>;
+      state: "final" | "pending" | "failed" | "absent" | "unknown";
+    };
+  };
 }
 
 export interface EvidenceDeps {
@@ -943,7 +965,8 @@ async function evaluateSettlementEvidence(
   const htlcInterim = outcome === "failure" &&
     (ev["reason"] === "dest-revealed-source-unclaimed" || ctx.result?.asymmetric === true ||
       ctx.htlcReveal?.state === "final" || (revealRefs.length > 0 && !unlandedReveal));
-  if (phase === "pay-cross-chain-htlc" && (txRefs || htlcInterim)) {
+  if (phase === "pay-cross-chain-htlc" &&
+      (txRefs || htlcInterim || requireAuthenticatedContext || ctx.htlcRefund !== undefined)) {
     const htlcRefs = txRefs ?? [];
     const refsOf = (kind: string) =>
       htlcRefs.filter((t): t is Record<string, unknown> => isObj(t) && t["kind"] === kind);
@@ -966,6 +989,74 @@ async function evaluateSettlementEvidence(
             ref["contractAddress"] !== contracts[onSource ? "source" : "dest"])) {
           fail("HTLC evidence MUST use the pinned source and destination contracts");
         }
+      }
+    }
+    // An ordinary failure closes only after every created leg is refunded.
+    // Failed/absent reveals can expose the preimage: neither their disposition
+    // nor a refund transaction reference proves that the payer recovered funds.
+    if (outcome === "failure" && !htlcInterim &&
+        (requireAuthenticatedContext || ctx.htlcRefund !== undefined)) {
+      if (ctx.result?.ok !== false || ctx.result.asymmetric !== false ||
+          !Array.isArray(ctx.result.txRefs) || !ctx.result.txRefs.every(isChainTxRef) ||
+          canonicalize(ctx.result.txRefs) !== canonicalize(htlcRefs)) {
+        fail("HTLC ordinary refund requires an ordinary failure and exact authenticated result refs");
+      }
+      const refund = ctx.htlcRefund;
+      if (refund !== undefined && !isObj(refund)) {
+        sawError = true;
+        reasons.push("authenticated HTLC refund observations are malformed");
+      }
+      for (const leg of ["source", "dest"] as const) {
+        const notCreated = leg === "source" ? sourceNotCreated : destNotCreated;
+        const observation = isObj(refund) ? refund[leg] : undefined;
+        if (notCreated) {
+          if (observation !== undefined) fail("a nonexistent HTLC lock MUST NOT carry a refund observation");
+          continue;
+        }
+        const chain = isObj(route) ? route[leg === "source" ? "sourceChainId" : "destChainId"] : undefined;
+        if (leg === "source" && locks.filter((ref) => ref["chainId"] === chain).length !== 1) {
+          fail("HTLC ordinary refund MUST carry the created source lock reference");
+        }
+        const refunds = refsOf("htlc-refund").filter((ref) => ref["chainId"] === chain);
+        if (refunds.length !== 1) fail(`HTLC ordinary refund MUST carry exactly one ${leg} refund reference`);
+        if (observation === undefined) {
+          sawIndeterminate = true;
+          reasons.push(`HTLC ordinary refund requires authenticated ${leg} refund finality`);
+        } else if (!isObj(observation) || !isChainTxRef(observation.txRef) ||
+            observation.txRef.kind !== "htlc-refund" ||
+            !["final", "pending", "failed", "absent", "unknown"].includes(observation.state)) {
+          sawError = true;
+          reasons.push(`authenticated HTLC ${leg} refund observation is malformed`);
+        } else if (refunds.length !== 1 || canonicalize(observation.txRef) !== canonicalize(refunds[0])) {
+          fail(`authenticated HTLC ${leg} refund observation MUST bind the exact evidence refund reference`);
+        } else if (observation.state === "pending" || observation.state === "unknown") {
+          sawIndeterminate = true;
+          reasons.push(`HTLC ${leg} refund is not final`);
+        } else if (observation.state !== "final") {
+          fail(`HTLC ${leg} refund MUST be final`);
+        }
+      }
+      const sourceClaim = isObj(refund) ? refund.sourceClaim : undefined;
+      if (sourceNotCreated) {
+        if (sourceClaim !== undefined) fail("a nonexistent source HTLC lock MUST NOT carry a claim observation");
+      } else if (sourceClaim === undefined) {
+        sawIndeterminate = true;
+        reasons.push("HTLC ordinary refund requires authenticated source-claim disposition");
+      } else if (!isObj(sourceClaim) ||
+          !["final", "pending", "failed", "absent", "unknown"].includes(sourceClaim.state) ||
+          (sourceClaim.txRef !== undefined &&
+            (!isChainTxRef(sourceClaim.txRef) || sourceClaim.txRef.kind !== "htlc-claim")) ||
+          (sourceClaim.state === "failed" && sourceClaim.txRef === undefined)) {
+        sawError = true;
+        reasons.push("authenticated HTLC source-claim disposition is malformed");
+      } else if (sourceClaim.state === "final") {
+        fail("HTLC ordinary refund MUST NOT carry a final source claim");
+      } else if (sourceClaim.state === "pending" || sourceClaim.state === "unknown") {
+        sawIndeterminate = true;
+        reasons.push("HTLC source-claim disposition is unresolved");
+      } else if (sourceClaim.txRef === undefined ? claims.length !== 0 :
+          claims.length !== 1 || canonicalize(sourceClaim.txRef) !== canonicalize(claims[0])) {
+        fail("HTLC ordinary refund claims require exact authenticated unlanded observations");
       }
     }
     // A route that is present but not an object (a host's `null`) matches no chains.
