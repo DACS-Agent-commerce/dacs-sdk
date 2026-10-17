@@ -194,7 +194,10 @@ export interface SellerSessionSettlementPublicationDeps {
     evidence: Readonly<SettlementEvidence>;
     expectedWriter: Readonly<SellerSessionSettlementAnchorWriter>;
   }>): Promise<SellerSessionSettlementAnchorResult>;
-  /** Authenticate the binding-native finalized receipt. */
+  /**
+   * Authenticate the binding-native finalized receipt and any reference issuer
+   * according to the attestation method. The issuer need not author the evidence.
+   */
   verifyAnchorReceipt(input: Readonly<{
     effectId: string;
     expectedWriter: string;
@@ -1147,7 +1150,6 @@ export async function publishSellerSessionSettlement(
   if (evidenceRef.anchor.kind !== "storage-program" ||
       evidenceRef.anchor.locator !== logicalAddress ||
       evidenceRef.contentHash !== evidenceHash ||
-      (evidenceRef.signer !== undefined && evidenceRef.signer !== deps.signer.signer) ||
       anchorReceipt.logicalAddress !== logicalAddress ||
       anchorReceipt.contentHash !== evidenceHash ||
       anchorReceipt.writer !== deps.anchorWriter.primaryClaim ||

@@ -27,6 +27,7 @@ import {
   type PaymentEvidenceAnchorFence,
   type PaymentEvidenceAnchorRequest,
   type PaymentEvidenceAuthenticatedPeer,
+  type SellerPaymentEvidenceHandshakeOptions,
 } from "../../src/commerce/index.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -204,6 +205,8 @@ function seller(
     disposition: "authenticated" as const,
     peer: completionPeer(candidate),
   }),
+  verifyAnchorReceipt: SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"] =
+    () => ({ disposition: "valid" }),
 ) {
   return createSellerPaymentEvidenceHandshake({
     store,
@@ -212,7 +215,7 @@ function seller(
     workerId: "seller-transport-worker",
     protocol: PROTOCOL,
     authenticateCompletion,
-    verifyAnchorReceipt: () => ({ disposition: "valid" }),
+    verifyAnchorReceipt,
   });
 }
 
@@ -294,6 +297,58 @@ async function queueRequest(
 }
 
 describe("actor-separated payment-evidence handshake", () => {
+  it.each(["valid", "buyer-invalid", "seller-invalid"] as const)(
+    "authenticates a distinct attestation issuer on both completion paths (%s)", async (mode) => {
+      const issuer = "did:example:independent-issuer";
+      const verifySeller = vi.fn<SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(
+        ({ completion }) => {
+          expect(completion.evidenceRef.signer).toBe(issuer);
+          expect(completion.anchorReceipt.writer).toBe(BUYER);
+          return mode === "seller-invalid"
+            ? { disposition: "invalid", reason: "issuer proof invalid" }
+            : { disposition: "valid" };
+        },
+      );
+      const sellerHandshake = seller(undefined, undefined, verifySeller);
+      const candidate = await queueRequest(sellerHandshake);
+      const anchored = finalAnchor(candidate);
+      anchored.evidenceRef.signer = issuer;
+      const verifyReceipt = vi.fn<BuyerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(({ completion }) => {
+        expect(completion.evidenceRef.signer).toBe(issuer);
+        expect(completion.anchorReceipt.writer).toBe(BUYER);
+        return mode === "buyer-invalid"
+          ? { disposition: "invalid" as const, reason: "issuer proof invalid" }
+          : { disposition: "valid" as const };
+      });
+      const { handshake } = buyer({
+        anchor: vi.fn(() => ({ disposition: "anchored", ...anchored })), verifyReceipt,
+      });
+      await handshake.receiveRequest(candidate, {});
+      expect((await handshake.runPending()).items).toEqual([{
+        messageId: candidate.messageId,
+        status: mode === "buyer-invalid" ? "operator-action" : "completed",
+        ...(mode === "buyer-invalid" ? { reasonCode: "receipt-invalid" } : {}),
+      }]);
+      expect(verifyReceipt).toHaveBeenCalledOnce();
+      const completions = (await handshake.claimOutboundCompletions()).items;
+      if (mode === "buyer-invalid") {
+        expect(completions).toEqual([]);
+        expect(verifySeller).not.toHaveBeenCalled();
+        return;
+      }
+      expect(completions).toHaveLength(1);
+      const completion = completions[0]!.completion;
+      if (mode === "seller-invalid") {
+        await expect(sellerHandshake.receiveCompletion(completion, {})).rejects.toThrow(
+          "completion invalid",
+        );
+      } else {
+        await expect(sellerHandshake.receiveCompletion(completion, {})).resolves.toBe("accepted");
+      }
+      expect(verifySeller).toHaveBeenCalledOnce();
+    },
+  );
+
   it("anchors through buyer authority and durably acknowledges both transport outboxes", async () => {
     const sellerHandshake = seller();
     const { handshake: buyerHandshake, anchor } = buyer();

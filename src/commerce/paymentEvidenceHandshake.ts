@@ -399,6 +399,7 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
     }>,
     fence: Readonly<PaymentEvidenceAnchorFence>,
   ): Promise<PaymentEvidenceAnchorReconciliation> | PaymentEvidenceAnchorReconciliation;
+  /** Authenticate the receipt and any reference issuer using its attestation method. */
   verifyAnchorReceipt(input: Readonly<{
     request: Readonly<PaymentEvidenceAnchorRequest>;
     completion: Readonly<PaymentEvidenceAnchorCompletion>;
@@ -418,6 +419,7 @@ export interface SellerPaymentEvidenceHandshakeOptions {
     completion: Readonly<PaymentEvidenceAnchorCompletion>,
     transportContext: unknown,
   ): Promise<PaymentEvidenceTransportAuthentication> | PaymentEvidenceTransportAuthentication;
+  /** Authenticate the receipt and any reference issuer using its attestation method. */
   verifyAnchorReceipt(input: Readonly<{
     request: Readonly<PaymentEvidenceAnchorRequest>;
     completion: Readonly<PaymentEvidenceAnchorCompletion>;
@@ -885,11 +887,6 @@ function completionMatchesRequest(
     completion.evidenceRef.anchor.kind === "storage-program" &&
     completion.evidenceRef.anchor.locator === request.logicalAddress &&
     completion.evidenceRef.contentHash === request.evidenceHash &&
-    (completion.evidenceRef.signer === undefined ||
-      sameCanonicalClaimIdentity(
-        completion.evidenceRef.signer,
-        request.protocol.orchestrator,
-      )) &&
     completion.anchorReceipt.logicalAddress === request.logicalAddress &&
     completion.anchorReceipt.contentHash === request.evidenceHash &&
     sameCanonicalClaimIdentity(completion.anchorReceipt.writer, request.buyer) &&
