@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import type {
   ComponentSignatureAlgorithm,
@@ -528,7 +529,7 @@ export type X402SettlementChainClassification =
  * snapshot. Security-bearing outputs MUST be cloneable plain data; the SDK
  * snapshots them before reading a discriminator or field.
  */
-export interface SellerPaymentIntakeDeps {
+export interface SellerPaymentIntakeDeps extends ProfileExecutionPolicy {
   /**
    * Trusted CA-7 boundary. A `verified` result MUST mean that the finalized
    * commitment and both Agreement party signatures have been cryptographically
@@ -2264,6 +2265,7 @@ export async function verifySellerPaymentIntake(
   input: SellerPaymentIntakeInput,
   deps: SellerPaymentIntakeDeps,
 ): Promise<SellerPaymentIntakeResult> {
+  requireAdmissibleProfile(deps);
   // Own the complete public request before its first property read. The caller
   // may retain and mutate its object while any dependency below is awaited.
   const request = snapshotPaymentIntakeInput(input);

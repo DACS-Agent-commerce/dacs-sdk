@@ -1,4 +1,5 @@
 import { types as nodeTypes } from "node:util";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import type {
   ComponentSignature,
@@ -20,6 +21,8 @@ import {
   isRevocationMarker,
 } from "../artifacts/validators.js";
 import {
+  admitRawJson,
+  RawJsonAdmissionError,
   canonicalize,
   contentHash,
   encodeAddressSegment,
@@ -163,6 +166,9 @@ export interface ListingValidationResult {
   /** Normative reader step that determined the result. */
   step: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
   reason: string;
+  /** Exact CF-5-admitted JSON, retained by the trusted reader as canonical Base64. */
+  receivedJsonBase64?: string;
+  executionMode?: "simulation";
   listing?: Listing;
   listingContentHash?: string;
   revocation?: RevocationCheck;
@@ -200,11 +206,19 @@ export function isVerifiedListingAdmission(
     return false;
   }
   try {
+    let received: unknown;
+    if (result.receivedJsonBase64 !== undefined) {
+      if (typeof result.receivedJsonBase64 !== "string") return false;
+      const receivedBytes = Buffer.from(result.receivedJsonBase64, "base64");
+      if (receivedBytes.toString("base64") !== result.receivedJsonBase64) return false;
+      received = admitRawJson(receivedBytes);
+    }
     // Apply the same received-number policy as the ordered reader before its
     // shape check, retaining every signed extension in the owned comparison.
     const capturedRaw = snapshotCanonicalJsonRead(raw, "admitted Listing");
     if (
       !isListing(capturedRaw) ||
+      (received !== undefined && canonicalize(received) !== canonicalize(capturedRaw)) ||
       canonicalize(result.listing) !== canonicalize(capturedRaw) ||
       contentHash(capturedRaw) !== result.listingContentHash ||
       contentHash(result.listing as unknown as Record<string, unknown>) !==
@@ -1087,7 +1101,7 @@ export async function resolveListingPayloadVerificationCapability(
   };
 }
 
-export interface ListingValidationDeps {
+export interface ListingValidationDeps extends ProfileExecutionPolicy {
   nowMs: () => number;
   verifyListingSignature: SignatureVerifier;
   revocation: Omit<ListingRevocationDeps, "nowMs">;
@@ -1187,23 +1201,36 @@ const identityPresentationBytes = (bundle: IdentityBundle): Uint8Array => {
 };
 
 /**
- * Execute the ordered DACS-1 §6.3.4 reader algorithm. LRR `indeterminate` is
+ * Admit exact received UTF-8 JSON before the ordered DACS-1 §6.3.4 reader.
+ * Parsed objects cannot establish CF-5 provenance and are refused. LRR `indeterminate` is
  * retained through step 9 so a signer-control failure still terminates as
  * `rejected`, exactly as the Standard requires.
  */
 export async function validateListingArtifact(
-  raw: Record<string, unknown>,
+  raw: Record<string, unknown> | Uint8Array,
   inputDeps: ListingValidationDeps,
 ): Promise<ListingValidationResult> {
+  requireAdmissibleProfile(inputDeps);
   // Fix every dependency identity before inspecting caller-owned artifact data.
   const deps = captureListingValidationDeps(inputDeps);
   let capturedRaw: Record<string, unknown>;
+  let receivedJsonBase64: string;
   try {
+    if (!nodeTypes.isUint8Array(raw)) {
+      return { disposition: "indeterminate", step: 1, reason: "received-json-bytes-required" };
+    }
+    // Admit the supplied view before decoding it, schema checks or hashing.
+    // Retain our own copy before any verifier or resolver can run.
+    const received = admitRawJson(raw);
+    receivedJsonBase64 = Buffer.from(raw).toString("base64");
     capturedRaw = snapshotCanonicalJsonReceived(
-      raw,
+      received as Record<string, unknown>,
       "Listing validation artifact",
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof RawJsonAdmissionError) {
+      return { disposition: "rejected", step: 1, reason: `${error.stage}:${error.code}` };
+    }
     return { disposition: "rejected", step: 1, reason: "schema-invalid" };
   }
   if (!isListingEnvelope(capturedRaw)) {
@@ -1487,6 +1514,8 @@ export async function validateListingArtifact(
     disposition: "verified",
     step: 9,
     reason: "verified",
+    receivedJsonBase64,
+    executionMode: "simulation",
     listing,
     listingContentHash,
     revocation: "absent",

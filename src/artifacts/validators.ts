@@ -247,6 +247,8 @@ const BUNDLE_PHASE_ERROR_CLASSES = [
   "substrate",
   "settlement-atomicity",
 ] as const;
+// SDK-supported subset of DACS-1 §6.3. In particular, the two identity-bound
+// commitment kinds must remain unsupported until their semantics are implemented.
 const PHASE_TYPES = [
   "vet-credentials",
   "negotiate-fixed-price",

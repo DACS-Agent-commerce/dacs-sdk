@@ -1,4 +1,6 @@
 import { types as nodeTypes } from "node:util";
+import { admitRawJson } from "../canonical/rawJson.js";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import {
   canonicalize,
@@ -196,7 +198,7 @@ export type AnchorLookup =
   | { status: "absent" }
   | { status: "indeterminate"; reason: string };
 
-export interface SessionDeps {
+export interface SessionDeps extends ProfileExecutionPolicy {
   /** The buyer agent's id / primary claim. */
   buyerId: string;
   /**
@@ -394,6 +396,7 @@ export interface SessionDeps {
    */
   validateListing?: (
     raw: Record<string, unknown>,
+    receivedBytes?: Uint8Array,
   ) => Promise<ListingValidationResult> | ListingValidationResult;
   /**
    * OPTIONAL durable session store (#55). When wired, the store is the
@@ -419,6 +422,7 @@ export interface SessionResult {
    * commercial-performance, or DACS-5 audit completion.
    */
   profile: "legacy-mvp-settlement-only";
+  executionMode: "simulation";
   /** Always false: this producer has no fulfilment or delivery-evidence phase. */
   commerceComplete: false;
   outcome: "completed" | "failed";
@@ -2754,6 +2758,7 @@ export async function runSessionCore(
   inputDeps: SessionDeps,
   resumeJobId?: string,
 ): Promise<SessionResult> {
+  requireAdmissibleProfile(inputDeps);
   // Capture every caller-controlled callback/scalar without invoking accessors.
   // A mutable dependency bag must not be able to switch an authenticator,
   // signer, rail, or durable store while another boundary is being inspected.
@@ -2774,9 +2779,21 @@ export async function runSessionCore(
     allowColon: true,
   });
 
-  const stored = await deps.readListing(listingRef);
+  let stored = await deps.readListing(listingRef);
+  let receivedListingBytes: Uint8Array | undefined;
+  if (nodeTypes.isUint8Array(stored)) {
+    receivedListingBytes = Buffer.from(stored);
+    stored = admitRawJson(receivedListingBytes);
+  }
   if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
+  }
+  if (!receivedListingBytes && !nodeTypes.isProxy(stored) &&
+      Object.prototype.hasOwnProperty.call(stored, "dacsVersion")) {
+    throw new SubstrateError(
+      "normative Listing received JSON bytes are required before hashing or session admission; " +
+      "the parsed transport has no CF-5 provenance",
+    );
   }
   let storedRecord: Record<string, unknown>;
   try {
@@ -2874,6 +2891,7 @@ export async function runSessionCore(
       const rawValidation = snapshotCanonicalJsonRead(
         await deps.validateListing(
           snapshotCanonicalJson(storedRecord, "Listing validator input"),
+          receivedListingBytes,
         ),
         "Listing validation result",
       );
@@ -4714,6 +4732,7 @@ export async function runSessionCore(
 
   return {
     profile: "legacy-mvp-settlement-only",
+    executionMode: "simulation",
     commerceComplete: false,
     outcome,
     jobId,
