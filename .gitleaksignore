@@ -43,9 +43,9 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:96
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:103
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:104
-# Public ed25519 signer reference ("key:<64 hex>") in the HTLC SettlementEvidence test fixture (PR #268).
-# It is the DACS-Standard d45c0a29 htlc9-asymmetric fixture signer, derived from that fixture's published test seed 0x41*32.
-# Applies only while commit a2dcd49 is in history: a squash, rebase or rewrite of #268 needs its own new fingerprint.
+# PR #268: ed25519 PUBLIC signer key in a SettlementEvidence test fixture, not a credential.
+# Source: a2dcd490, test/rails/crossChainHtlc.test.ts:6307, the signature's `signer` field.
+# Exact historical fingerprint only; re-review any finding at a rewritten commit.
 a2dcd490c4a0bd535f37c19a3d476768f0b0594e:test/rails/crossChainHtlc.test.ts:generic-api-key:6307
 # Test idempotency keys ("idempotencyKey" literals in copied seller tests) in the verbatim seller copy (PR #353, commit 7872649).
 # Applies only while commit 7872649 is in history: a squash, rebase or rewrite of #353 needs its own new fingerprints.
