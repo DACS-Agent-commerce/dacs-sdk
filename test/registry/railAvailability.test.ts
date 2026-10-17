@@ -66,6 +66,11 @@ describe("DACS-4 RAV-R1..RAV-R5 rail availability", () => {
         evaluateRailAvailabilitySelection(rail, authority(vector.ctx)).decision,
       ).toBe("fail");
     }
+    const appended = structuredClone(vector.rail);
+    appended.signatures = [{ appended: true }];
+    expect(
+      evaluateRailAvailabilitySelection(appended, authority(vector.ctx)),
+    ).toEqual({ decision: "fail", reason: "signature-invalid" });
   });
 
   it("does not let discovery or counterparty hints alter authenticated selection", () => {

@@ -389,6 +389,9 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     const { signature: _signature, ...draft } = listing;
     expect(isListingDraft(draft)).toBe(true);
     expect(isListingDraft({ ...draft, signatures: [] })).toBe(false);
+    // A signed Listing is not a draft, and a draft names a supported version.
+    expect(isListingDraft(listing)).toBe(false);
+    expect(isListingDraft({ ...draft, dacsVersion: "2" })).toBe(false);
   });
 
   it("fails closed on the Standard vector with an unknown phase kind", () => {

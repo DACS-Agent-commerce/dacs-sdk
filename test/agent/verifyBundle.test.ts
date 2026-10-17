@@ -850,6 +850,42 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("normative graph rejects a seller-signed Listing with an unsupported dacsVersion", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const listingScope = structuredClone(fx.listing);
+    delete listingScope.signature;
+    listingScope.dacsVersion = "2";
+    fx.listing = {
+      ...listingScope,
+      signature: await componentSignature(
+        listingScope,
+        ARTIFACT_SEPARATORS.Listing,
+        sellerDid,
+        signSeller,
+      ),
+    };
+    (fx.agreement.listingRef as Record<string, unknown>).contentHash =
+      contentHash(fx.listing);
+    await resignAgreement(fx);
+    (fx.bundle.listingRef as Record<string, unknown>).contentHash =
+      contentHash(fx.listing);
+    (fx.bundle.agreementRef as Record<string, unknown>).contentHash =
+      contentHash(fx.agreement);
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+
+    const result = await verifyBundleCore("ref", depsFor(fx));
+    expect(
+      result.refs.find((ref) => ref.kind === "dacs-3-agreement")?.verdict,
+    ).toBe("ok");
+    expect(
+      result.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
+    ).toBe("invalid-shape");
+    expect(result.ok).toBe(false);
+  });
+
   test("legacy runSession graph resolves only its exactly pinned normative Listing", async () => {
     const { listing } = await buildArtifacts();
     const listingPin = {
