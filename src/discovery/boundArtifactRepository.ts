@@ -20,6 +20,7 @@ import {
   type VerifiedReadDeps,
 } from "./verifiedRead.js";
 import { normalizedBindingOwner } from "./owner.js";
+import { classifyAnchor } from "./scanner.js";
 
 /** Minimal substrate seam needed for binding-aware immutable artifacts. */
 export interface BoundArtifactAdapter {
@@ -97,6 +98,20 @@ export interface BoundArtifactRepository {
     expectedOwner: string,
     verifySignature?: VerifiedReadDeps["verifySignature"],
   ): Promise<VerifiedRead>;
+}
+
+/**
+ * Hash a binding commits to for a record at this logical address. A DACS-4
+ * deliverable is an unsigned payload whose DV-1 hash covers the complete
+ * canonical payload (§9.6.1), so a top-level `signature` member there is data;
+ * every other kind binds its signed scope (`contentHash`, §7.2).
+ */
+export function artifactBindingHashOf(
+  logicalAddress: string,
+): (record: Record<string, unknown>) => string {
+  return classifyAnchor(logicalAddress) === "deliverable"
+    ? (record) => sha256Hex(canonicalize(record))
+    : contentHash;
 }
 
 function anchorOptionsWithLogicalAddress(
@@ -234,11 +249,18 @@ export function createBoundArtifactRepository(
 ): BoundArtifactRepository {
   return {
     async write(logicalAddress, artifact, options) {
-      const canonicalLogicalAddress = logicalAddress.trim().normalize("NFC");
-      if (canonicalLogicalAddress.length === 0) {
+      if (logicalAddress.trim().length === 0) {
         throw new Error("logicalAddress must not be empty");
       }
-      if (logicalAddress !== canonicalLogicalAddress) {
+      // CF-4 checks NFC on decoded variable segments. An escape's trailing hex
+      // letter can compose with a following combining mark, so normalizing the
+      // encoded key would change an already-canonical address. Classification
+      // validates those segments; keep the existing NFC rule for other keys.
+      if (
+        logicalAddress !== logicalAddress.trim() ||
+        (logicalAddress.normalize("NFC") !== logicalAddress &&
+          classifyAnchor(logicalAddress) === "unknown")
+      ) {
         throw new Error("logicalAddress must be trimmed and NFC-normalized");
       }
       const owner = deps.adapter.getAddress();
@@ -270,7 +292,7 @@ export function createBoundArtifactRepository(
           cause: error,
         });
       }
-      const artifactContentHash = contentHash(pinnedArtifact);
+      const artifactContentHash = artifactBindingHashOf(logicalAddress)(pinnedArtifact);
       const envelopeHash = sha256Hex(canonicalize(pinnedArtifact));
       const anchor = await deps.adapter.anchorWriteOnce(
         storageName,
@@ -313,7 +335,7 @@ export function createBoundArtifactRepository(
     async read(logicalAddress, expectedOwner, verifySignature) {
       return resolveAndRead(deps.index, logicalAddress, expectedOwner, {
         read: (nativeAddress) => deps.adapter.readAnchor(nativeAddress),
-        contentHashOf: contentHash,
+        contentHashOf: artifactBindingHashOf(logicalAddress),
         ...(verifySignature === undefined ? {} : { verifySignature }),
       });
     },

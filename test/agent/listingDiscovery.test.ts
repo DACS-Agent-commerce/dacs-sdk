@@ -24,11 +24,13 @@ import {
   rawPublicKey,
 } from "../../src/crypto/index.js";
 import {
+  AnchorHistoryRestartRequiredError,
   createCatalogBindingIndex,
   createInMemoryBindingIndex,
   type AnchorBinding,
   type BindingIndex,
 } from "../../src/discovery/index.js";
+import { createDemosHistoryPageFetcher } from "../../src/substrate/demosHistory.js";
 
 const seller = (seedByte: number) => {
   const seed = Uint8Array.from(Buffer.alloc(32, seedByte));
@@ -500,6 +502,78 @@ describe("readListingByLogicalAddress (#54)", () => {
     }
   });
 
+  test("a generic index tombstone is never an authenticated Listing", async () => {
+    const fixture = await listingFixture();
+    const index: BindingIndex = {
+      resolve: async () => ({
+        status: "present",
+        binding: { ...fixture.binding, revoked: true },
+      }),
+    };
+    await expect(
+      readListingByLogicalAddress(fixture.logicalAddress, depsFor([fixture], { index })),
+    ).resolves.toMatchObject({ status: "rejected", code: "generic-tombstone" });
+  });
+
+  test.each(["stale", "revoked", undefined])(
+    "an index status %j outside the contract is indeterminate even with a binding",
+    async (status) => {
+      const fixture = await listingFixture();
+      const index = {
+        resolve: async () => ({ status, binding: fixture.binding }),
+      } as unknown as BindingIndex;
+      await expect(
+        readListingByLogicalAddress(fixture.logicalAddress, depsFor([fixture], { index })),
+      ).resolves.toMatchObject({ status: "indeterminate", stage: "index" });
+    },
+  );
+
+  test("a legacy signature with trailing junk is not an exact envelope", async () => {
+    const fixture = await listingFixture();
+    const record = {
+      ...fixture.record,
+      signature: `${fixture.record.signature as string}zz`,
+    };
+    await expect(
+      readListingByLogicalAddress(fixture.logicalAddress, {
+        ...depsFor([fixture]),
+        readAnchor: async () => structuredClone(record),
+      }),
+    ).resolves.toMatchObject({
+      status: "rejected",
+      code: "invalid-signature-envelope",
+    });
+  });
+
+  test.each([
+    ["another DID method", `did:xdemos:agent:${SELLER.owner}`],
+    ["a 65-hex key", `did:demos:agent:${SELLER.owner}0`],
+  ])("a seller claim with %s is an invalid address even when signed by the key", async (_name, agentId) => {
+    const fixture = await listingFixture({
+      body: {
+        agentId,
+        serviceId: "market-data",
+        name: "Market Data",
+        description: "End-of-day prices",
+        claimRequirements: [],
+        supportedNegotiation: ["negotiate-fixed-price"],
+        supportedPaymentRails: ["pay-x402"],
+        supportedDelivery: ["deliver-attested-payload"],
+        listingVersion: 1,
+      },
+    });
+    const logicalAddress = listingAddress(agentId, "market-data", 1);
+    const index: BindingIndex = {
+      resolve: async () => ({
+        status: "present",
+        binding: { ...fixture.binding, logicalAddress },
+      }),
+    };
+    await expect(
+      readListingByLogicalAddress(logicalAddress, depsFor([fixture], { index })),
+    ).resolves.toMatchObject({ status: "invalid-address" });
+  });
+
   test("rejects hash mismatch, wrong signer, cross-service lift, and cross-version lift", async () => {
     const valid = await listingFixture();
     const wrongSigner = await listingFixture({ signer: OTHER.privateKey });
@@ -800,6 +874,81 @@ describe("enumerateListingsForSeller (#54)", () => {
     });
   });
 
+  test.each([
+    {
+      code: "metadata-conflict",
+      entries: [
+        { nativeAddress: "stor-shared", logicalAddress: "dacs1:x:first:v1" },
+        { nativeAddress: "stor-shared", logicalAddress: "dacs1:x:other:v1" },
+      ],
+      nextCursor: "next",
+      limit: 2,
+    },
+    { code: "cursor-cycle", entries: [], nextCursor: "failing-cursor", limit: 2 },
+    {
+      code: "page-limit-exceeded",
+      entries: [{ nativeAddress: "stor-first" }, { nativeAddress: "stor-second" }],
+      nextCursor: "next",
+      limit: 1,
+    },
+  ])("reports $code as a terminal history fault without a retry cursor", async ({ code, entries, nextCursor, limit }) => {
+    const resolve = vi.fn();
+    const readAnchor = vi.fn();
+    const result = await enumerateListingsForSeller(SELLER.did, depsFor([], {
+      index: { resolve },
+      readAnchor,
+      createHistoryPageFetcher: () => async () => ({ entries, nextCursor }),
+    }), { cursor: "failing-cursor", historyPageSize: limit });
+    expect(result).toEqual({
+      status: "history-error",
+      stage: "history",
+      code,
+      reason: expect.any(String),
+      listings: [],
+      diagnostics: [],
+      cursor: "failing-cursor",
+    });
+    expect("retryCursor" in result).toBe(false);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(readAnchor).not.toHaveBeenCalled();
+  });
+
+  test("conflicting camelCase and snake_case Demos metadata is a terminal enumeration fault", async () => {
+    const nativeAddress = `stor-${"1".repeat(40)}`;
+    const result = await enumerateListingsForSeller(SELLER.did, depsFor([], {
+      createHistoryPageFetcher: (owner) => createDemosHistoryPageFetcher({
+        getTransactionHistory: async () => [{
+          hash: "tx-conflict",
+          status: "confirmed",
+          blockNumber: 42,
+          content: {
+            timestamp: 1,
+            type: "storageProgram",
+            from: owner,
+            to: nativeAddress,
+            data: ["storageProgram", {
+              operation: "CREATE_STORAGE_PROGRAM",
+              storageAddress: nativeAddress,
+              metadata: {
+                logicalAddress: listingAddress(SELLER.did, "first", 1),
+                logical_address: listingAddress(SELLER.did, "other", 1),
+              },
+            }],
+          },
+        }],
+      }, owner),
+    }), { historyPageSize: 1 });
+    expect(result).toStrictEqual({
+      status: "history-error",
+      stage: "history",
+      code: "metadata-conflict",
+      reason: "page fetch failed: Demos history row 0 has conflicting logical metadata",
+      listings: [],
+      diagnostics: [],
+      cursor: null,
+    });
+  });
+
   test("history and mid-page index/read uncertainty are atomic and retry the input cursor", async () => {
     const first = await listingFixture({ serviceId: "first" });
     const second = await listingFixture({ serviceId: "second" });
@@ -827,6 +976,25 @@ describe("enumerateListingsForSeller (#54)", () => {
       stage: "history",
       listings: [],
       retryCursor: "retry-me",
+    });
+
+    // A cursor the fetcher cannot resume (for example an earlier format) restarts.
+    await expect(
+      enumerateListingsForSeller(
+        SELLER.did,
+        depsFor([], {
+          createHistoryPageFetcher: () => async () => {
+            throw new AnchorHistoryRestartRequiredError("invalid Demos history cursor prefix");
+          },
+        }),
+        { cursor: "dacs-demos-history-v1.stale" },
+      ),
+    ).resolves.toMatchObject({
+      status: "indeterminate",
+      stage: "history",
+      listings: [],
+      retryCursor: null,
+      code: "history-restart-required",
     });
 
     const baseIndex = createInMemoryBindingIndex([first.binding, second.binding]);
@@ -1012,5 +1180,141 @@ describe("enumerateListingsForSeller (#54)", () => {
       enumerateListingsForSeller(SELLER.did, deps, { historyPageSize: 37 }),
     ).resolves.toMatchObject({ status: "page" });
     expect(fetch).toHaveBeenCalledWith(null, 37);
+  });
+
+  test.each([
+    `did:web:demos:agent:${SELLER.owner}`,
+    `did:xdemos:agent:${SELLER.owner}`,
+  ])("only did:demos:agent sellers are canonical: %s is invalid", async (sellerId) => {
+    const setup = vi.fn(() => async () => ({ entries: [], nextCursor: null }));
+    await expect(
+      enumerateListingsForSeller(sellerId, depsFor([], { createHistoryPageFetcher: setup })),
+    ).resolves.toMatchObject({ status: "invalid-seller" });
+    expect(setup).not.toHaveBeenCalled();
+  });
+
+  test("another seller's authentic Listing in this owner's history is a diagnostic", async () => {
+    const record = (await buildSignedArtifact(
+      {
+        agentId: OTHER.did,
+        serviceId: "market-data",
+        name: "Market Data",
+        description: "End-of-day prices",
+        claimRequirements: [],
+        supportedNegotiation: ["negotiate-fixed-price"],
+        supportedPaymentRails: ["pay-x402"],
+        supportedDelivery: ["deliver-attested-payload"],
+        listingVersion: 1,
+      },
+      ARTIFACT_SEPARATORS.Listing,
+      (bytes) => ed25519Sign(bytes, OTHER.privateKey),
+    )) as unknown as Record<string, unknown>;
+    const other: Fixture = {
+      logicalAddress: listingAddress(OTHER.did, "market-data", 1),
+      nativeAddress: "stor-other-market-data-1",
+      record,
+      binding: {
+        logicalAddress: listingAddress(OTHER.did, "market-data", 1),
+        nativeAddress: "stor-other-market-data-1",
+        owner: OTHER.owner,
+        contentHash: contentHash(record),
+        version: 1,
+      },
+    };
+    // The control: the same Listing authenticates when read directly.
+    await expect(
+      readListingByLogicalAddress(other.logicalAddress, depsFor([other])),
+    ).resolves.toMatchObject({ status: "authenticated" });
+
+    const result = await enumerateListingsForSeller(
+      SELLER.did,
+      depsFor([other], {
+        createHistoryPageFetcher: () => async () => ({
+          entries: [{
+            nativeAddress: other.nativeAddress,
+            logicalAddress: other.logicalAddress,
+            owner: SELLER.owner,
+          }],
+          nextCursor: null,
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      status: "page",
+      listings: [],
+      diagnostics: [
+        {
+          nativeAddress: other.nativeAddress,
+          result: { status: "rejected", code: "seller-mismatch" },
+        },
+      ],
+    });
+  });
+
+  // CF-4 classifies these addresses `unknown` (the listingId grammar), but the
+  // legacy read arm accepts any serviceId, so enumeration must not drop them.
+  test.each(["market data", "svc:v2", "Données"])(
+    "enumerates a legacy Listing with serviceId %j exactly as a direct read does",
+    async (serviceId) => {
+      const fixture = await listingFixture({ serviceId });
+      const deps = depsFor([fixture], {
+        createHistoryPageFetcher: () => async () => ({
+          entries: [{
+            nativeAddress: fixture.nativeAddress,
+            logicalAddress: fixture.logicalAddress,
+            owner: SELLER.owner,
+          }],
+          nextCursor: null,
+        }),
+      });
+      await expect(
+        readListingByLogicalAddress(fixture.logicalAddress, deps),
+      ).resolves.toMatchObject({ status: "authenticated" });
+      await expect(enumerateListingsForSeller(SELLER.did, deps)).resolves.toMatchObject({
+        status: "page",
+        listings: [{
+          status: "authenticated",
+          ref: fixture.nativeAddress,
+          listing: { serviceId },
+        }],
+        diagnostics: [],
+      });
+    },
+  );
+
+  test("a dacs1: row that a direct read refuses is an invalid-address diagnostic, not a skip", async () => {
+    const resolve = vi.fn(async () => ({ status: "absent" as const }));
+    const malformed = [
+      `dacs1:did%3Ademos%3Aagent%3A${SELLER.owner}:svc%3av2:v1`,
+      `dacs1:did%3Ademos%3Aagent%3A${SELLER.owner}:svc:v0`,
+    ];
+    const result = await enumerateListingsForSeller(
+      SELLER.did,
+      depsFor([], {
+        index: { resolve },
+        createHistoryPageFetcher: () => async () => ({
+          entries: [
+            ...malformed.map((logicalAddress, i) => ({
+              nativeAddress: `stor-bad-${i}`,
+              logicalAddress,
+              owner: SELLER.owner,
+            })),
+            // Other unknown rows are still not Listing candidates.
+            { nativeAddress: "stor-x", logicalAddress: "dacs1-revoked:x", owner: SELLER.owner },
+            { nativeAddress: "stor-y", logicalAddress: "xdacs1:a:b:v1", owner: SELLER.owner },
+          ],
+          nextCursor: null,
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      status: "page",
+      listings: [],
+      diagnostics: malformed.map((logicalAddress, i) => ({
+        nativeAddress: `stor-bad-${i}`,
+        result: { status: "invalid-address", logicalAddress },
+      })),
+    });
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

@@ -24,6 +24,20 @@ export {
   type BoundArtifactWriteResult,
 } from "./boundArtifactRepository.js";
 export {
+  createScanningArtifactRepository,
+  UnsupportedArtifactKindError,
+  type ScanningArtifactRepository,
+  type ScanningArtifactRepositoryDeps,
+  type ArtifactScanState,
+  type ArtifactScanDeferredRow,
+  type ArtifactRowIndeterminateCode,
+  type ArtifactScanIndeterminateCode,
+  type ArtifactScanRestartCode,
+  type ScannedArtifactOutcome,
+  type ScannedArtifactRead,
+  type ArtifactScanPage,
+} from "./scanningArtifactRepository.js";
+export {
   queryListingCatalog,
   createCatalogBindingIndex,
   type CatalogReachabilityHint,
@@ -40,12 +54,14 @@ export {
   classifyAnchor,
   scanAnchorPage,
   scanAllAnchors,
+  AnchorHistoryRestartRequiredError,
   type AnchorKind,
   type AnchorHistoryPageFetcher,
   type RawAnchorEntry,
   type RawScanPage,
   type ScannedAnchor,
   type ScanPage,
+  type ScanPageCode,
   type ScanOptions,
   type ScanSeen,
 } from "./scanner.js";
