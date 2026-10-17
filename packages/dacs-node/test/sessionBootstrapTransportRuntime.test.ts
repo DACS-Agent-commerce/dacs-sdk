@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -225,11 +225,12 @@ async function authenticated<Type extends Exclude<DacsHttpMessageType, "acknowle
     privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"];
     role: "buyer" | "seller";
     nonceByte: number;
+    jobId?: string;
   }>,
 ): Promise<Readonly<DacsHttpAuthenticatedEnvelopeV1>> {
   const envelope = await createDacsHttpEnvelopeV1({
     type,
-    jobId: JOB_ID,
+    jobId: input.jobId ?? JOB_ID,
     sender: input.sender,
     audience: input.audience,
     issuedAt: 1_800_000_000_000,
@@ -328,11 +329,28 @@ async function fixture() {
     sellerStore, startOrder, admitInit, buyerEvmPrivateKey };
 }
 
-async function presentationFixture() {
+function legacyTranscript(
+  database: DacsNodeSqliteDatabase,
+  role: "buyer" | "seller",
+  kind: "init" | "challenge",
+  localBindingHash: string,
+  payload: unknown,
+) {
+  const id = createHash("sha256").update("dacs-live-session-bootstrap-binding:v1:" +
+    canonicalize({ role, kind, jobId: JOB_ID })).digest("hex");
+  // Pre-issuance-ledger versions retained only this transcript binding.
+  expect(database.putEffectIntent({ kind: "session", effectId: id, idempotencyKey: id,
+    bindingHash: localBindingHash, jobId: JOB_ID,
+    input: { bindingVersion: "1", localBindingHash, payloadHash: dacsHttpPayloadHashV1(payload), payload },
+  }).status).toBe("created");
+}
+
+async function presentationFixture(legacyRole?: "buyer" | "seller") {
   const value = await fixture();
   const init = { bootstrapVersion: "1" as const, order: value.pair.buyer,
     application: APPLICATION, sellerChallenge: "c".repeat(64) };
-  await value.buyerRuntime.publishInit(value.buyerOperation, init);
+  if (legacyRole === "buyer") legacyTranscript(value.buyerDatabase, "buyer", "init", value.pair.buyerLocalBindingHash, init);
+  else await value.buyerRuntime.publishInit(value.buyerOperation, init);
   const inbound = { role: "seller", coordinator: { startOrder: value.startOrder } } as never;
   await value.sellerRuntime.handleMessage(await authenticated("session-init", init, {
     sender: value.buyer, audience: value.seller, privateKey: value.buyerKeys.privateKey,
@@ -344,7 +362,8 @@ async function presentationFixture() {
   const challenge = { bootstrapVersion: "1" as const, initPayloadHash: dacsHttpPayloadHashV1(init),
     sellerChallenge: init.sellerChallenge, buyerChallenge: "d".repeat(64),
     sellerIdentity: sessionIdentity(value.seller, value.sellerKeys.privateKey, init.sellerChallenge) };
-  await value.sellerRuntime.publishChallenge(sellerOperation, challenge);
+  if (legacyRole === "seller") legacyTranscript(value.sellerDatabase, "seller", "challenge", value.pair.sellerLocalBindingHash, challenge);
+  else await value.sellerRuntime.publishChallenge(sellerOperation, challenge);
   const challengeEnvelope = await authenticated("session-challenge", challenge, {
     sender: value.seller, audience: value.buyer, privateKey: value.sellerKeys.privateKey,
     role: "seller", nonceByte: 62,
@@ -361,6 +380,152 @@ async function presentationFixture() {
 }
 
 describe("pre-agreement session bootstrap transport", () => {
+  // Corrupt retained records are injected at the storage read boundary; the
+  // legacy migration cases below use actual SQLite records without issuance.
+  function issuance(value: Awaited<ReturnType<typeof presentationFixture>>, role: "buyer" | "seller") {
+    const database = role === "buyer" ? value.buyerDatabase : value.sellerDatabase;
+    const challenge = role === "buyer" ? value.init.sellerChallenge : value.challenge.buyerChallenge;
+    const id = createHash("sha256").update(`dacs-session-challenge-issued:v1:${role}:${challenge}`).digest("hex");
+    return { database, challenge, id,
+      record: database.loadEffectInput("session", id) as Record<string, unknown>,
+      runtime: role === "buyer" ? value.buyerRuntime : value.sellerRuntime,
+      publish: () => role === "buyer"
+        ? value.buyerRuntime.publishInit(value.buyerOperation, value.init)
+        : value.sellerRuntime.publishChallenge(value.sellerOperation, value.challenge),
+    };
+  }
+
+  it.each(["buyer", "seller"] as const)("%s refuses to renew a legacy transcript without issuance authority", async (role) => {
+    const value = await presentationFixture(role);
+    const { database, id, runtime, publish } = issuance(value, role);
+    expect(database.loadEffectInput("session", id)).toBeUndefined();
+    const write = vi.spyOn(database, "putEffectIntent");
+    const send = role === "buyer" ? value.buyerContext : value.sellerContext;
+    // The transcript exists, so a missing record cannot be treated as a new job.
+    expect(role === "buyer" ? value.buyerRuntime.resolveInit(value.buyerOperation)
+      : value.sellerRuntime.resolveChallenge(value.sellerOperation)).toEqual(role === "buyer" ? value.init : value.challenge);
+    const calls = (send as unknown as { sendMessage: ReturnType<typeof vi.fn> }).sendMessage.mock.calls.length;
+    await expect(publish()).rejects.toMatchObject({ reasonCode: "session-challenge-issuance-missing" });
+    expect(write).not.toHaveBeenCalled();
+    expect((send as unknown as { sendMessage: ReturnType<typeof vi.fn> }).sendMessage).toHaveBeenCalledTimes(calls);
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    await expect(runtime.handleMessage(envelope, { role } as never))
+      .resolves.toMatchObject({ disposition: "rejected" });
+    expect(write).not.toHaveBeenCalled();
+    expect(database.loadEffectInput("session", id)).toBeUndefined();
+  });
+
+  const retainedFaults = ["null", "array", "extra", "missing", "challenge", "jobId", "localBindingHash",
+    "presenter", "fractional-issuedAt", "unsafe-expiresAt", "lifetime"] as const;
+  it.each((["buyer", "seller"] as const).flatMap((role) => retainedFaults.map((fault) => ({ role, fault }))))(
+    "$role rejects $fault retained issuance before admitting or writing a transcript", async ({ role, fault }) => {
+      const value = await presentationFixture();
+      const { database, id, record, runtime, publish } = issuance(value, role);
+      const corrupted = { ...record };
+      if (fault === "extra") corrupted.extra = true;
+      else if (fault === "missing") delete corrupted.presenter;
+      else if (fault === "fractional-issuedAt") corrupted.issuedAt = Number(record.issuedAt) + 0.5;
+      else if (fault === "unsafe-expiresAt") corrupted.expiresAt = Number.MAX_SAFE_INTEGER + 1;
+      else if (fault === "lifetime") corrupted.expiresAt = Number(record.expiresAt) + 1;
+      else corrupted[fault] = "wrong";
+      const replacement = fault === "null" ? null : fault === "array" ? [] : corrupted;
+      const load = database.loadEffectInput.bind(database);
+      vi.spyOn(database, "loadEffectInput").mockImplementation((kind, effectId) =>
+        kind === "session" && effectId === id ? replacement : load(kind, effectId));
+      const write = vi.spyOn(database, "putEffectIntent");
+      await expect(publish()).rejects.toMatchObject({ reasonCode: "session-challenge-issuance-invalid" });
+      const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+      await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+      expect(write).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each((["buyer", "seller"] as const).flatMap((role) =>
+    [-1, 0, 299_999, 300_000].map((elapsed) => ({ role, elapsed })),
+  ))("$role enforces issuance clock boundary $elapsed without refreshing it", async ({ role, elapsed }) => {
+    const issuedAt = 1_900_000_000_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(issuedAt);
+    const value = await presentationFixture();
+    const { database, id, record, runtime, publish } = issuance(value, role);
+    clock.mockReturnValue(issuedAt + elapsed);
+    await publish();
+    expect(database.loadEffectInput("session", id)).toEqual(record);
+    expect(record.issuedAt).toBe(issuedAt);
+    expect(record.expiresAt).toBe(issuedAt + 300_000);
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toMatchObject({
+      disposition: elapsed >= 0 && elapsed < 300_000 ? "accepted" : "rejected",
+    });
+    if (elapsed < 0 || elapsed >= 300_000) {
+      clock.mockReturnValue(issuedAt + 1);
+      await expect(runtime.handleMessage(envelope, { role } as never))
+        .resolves.toMatchObject({ disposition: "rejected" });
+    }
+  });
+
+  it.each(["buyer", "seller"] as const)("%s returns exact accepted-delivery deduplication across restart and expiry", async (role) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_900_000_000_000);
+    const value = await presentationFixture();
+    const { database, runtime } = issuance(value, role);
+    const envelope = role === "buyer" ? value.challengeEnvelope : await value.presentationEnvelope();
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toEqual({ disposition: "accepted" });
+    await expect(runtime.handleMessage(envelope, { role } as never)).resolves.toEqual({ disposition: "accepted" });
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const reopened = await openDacsNodeSqliteDatabase({ databasePath: join(value.root, `${role}.sqlite`),
+      mode: "live-demos", profile: DACS_NODE_LIVE_PROFILE, role, authority: value[role] });
+    databases.push(reopened);
+    const restarted = role === "buyer"
+      ? createDacsBuyerSessionBootstrapTransportRuntimeV1({ role, database: reopened } as never)
+      : createDacsSellerSessionBootstrapTransportRuntimeV1({ context: { role, database: reopened } as never,
+        admitInit: value.admitInit });
+    clock.mockReturnValue(1_900_000_300_000);
+    await expect(restarted.handleMessage(envelope, { role } as never)).resolves.toEqual({ disposition: "accepted" });
+    await expect(restarted.handleMessage({ ...envelope, identityEvidenceHash: "f".repeat(64) }, { role } as never))
+      .resolves.toMatchObject({ disposition: "rejected" });
+    const fresh = await authenticated(envelope.envelope.type as "session-challenge", envelope.envelope.payload as never, {
+      sender: envelope.envelope.sender, audience: envelope.envelope.audience,
+      privateKey: role === "buyer" ? value.sellerKeys.privateKey : value.buyerKeys.privateKey,
+      role: role === "buyer" ? "seller" : "buyer", nonceByte: 70,
+    });
+    await expect(restarted.handleMessage(fresh, { role } as never)).resolves.toMatchObject({ disposition: "rejected" });
+  });
+
+  it.each(["buyer", "seller"] as const)("%s reserves its verifier challenge for exactly one presenter and job", async (role) => {
+    const value = await presentationFixture();
+    const { database, challenge } = issuance(value, role);
+    const localBindingHash = role === "buyer" ? value.pair.buyerLocalBindingHash : value.pair.sellerLocalBindingHash;
+    expect(database.loadReservation("session", `session-nonce:${challenge}`)).toMatchObject({
+      bindingHash: localBindingHash, jobId: JOB_ID,
+      payloadHash: contentHash({ challenge, presenter: role === "buyer" ? value.seller : value.buyer }),
+    });
+    const pair = createDacsFixedPriceX402OrderPairV1({ jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+      buyer: value.buyer, seller: value.seller, protocol: protocol(value.seller) });
+    const store = database.createLiveCoordinatorStore(role);
+    await store.create({ role, order: pair[role], bindingHash: pair.bindingHash,
+      localBindingHash: role === "buyer" ? pair.buyerLocalBindingHash : pair.sellerLocalBindingHash } as never);
+    const loaded = await store.load(role, pair[role].jobId);
+    if (loaded.status !== "ok") throw new Error("second job missing");
+    const second = operation(loaded.record);
+    if (role === "buyer") {
+      putDacsLiveOrderInputV1({ database, order: pair.buyer, application: APPLICATION });
+      await expect(value.buyerRuntime.publishInit(second, { ...value.init, order: pair.buyer }))
+        .rejects.toMatchObject({ reasonCode: "session-challenge-reused" });
+    } else {
+      // Supply a second job's init through the public receiver first.
+      const init = { ...value.init, order: pair.buyer, sellerChallenge: "e".repeat(64) };
+      const inbound = await authenticated("session-init", init, { sender: value.buyer, audience: value.seller,
+        privateKey: value.buyerKeys.privateKey, role: "buyer", nonceByte: 71, jobId: pair.seller.jobId });
+      value.admitInit.mockReturnValue({ order: pair.seller, application: APPLICATION });
+      await expect(value.sellerRuntime.handleMessage(inbound,
+        { role, coordinator: { startOrder: async () => undefined } } as never)).resolves.toEqual({ disposition: "accepted" });
+      await expect(value.sellerRuntime.publishChallenge(second, { ...value.challenge,
+        initPayloadHash: dacsHttpPayloadHashV1(init), sellerChallenge: init.sellerChallenge,
+        sellerIdentity: sessionIdentity(value.seller, value.sellerKeys.privateKey, init.sellerChallenge) }))
+        .rejects.toMatchObject({ reasonCode: "session-challenge-reused" });
+    }
+  });
+
   it.each((["buyer", "seller"] as const).flatMap((role) =>
     (["shape", "signature", "binding", "nonce-binding", "missing-nonces",
       "wrong-nonces", "missing-identity"] as const).map((fault) => ({ role, fault })),

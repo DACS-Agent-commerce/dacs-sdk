@@ -4657,6 +4657,15 @@ const projectDirectory = new URL("../", import.meta.url);
 const projectPath = resolve(fileURLToPath(projectDirectory));
 const receiptDirectory = new URL(".dacs-runtime/", projectDirectory);
 const receiptPath = new URL("docker-image-smoke.json", receiptDirectory);
+const mode = {
+  "[]": "smoke",
+  '["--up"]': "up",
+  '["--stop"]': "stop",
+  '["--down"]': "down",
+  '["--down","--remove-orphans"]': "decommission",
+}[JSON.stringify(process.argv.slice(2))];
+// Withdraw the previous pass before .env reads or any smoke preflight can fail.
+if (mode === "smoke") rmSync(receiptPath, { force: true });
 let persistedSource = "";
 try {
   persistedSource = readFileSync(new URL(".env", projectDirectory), "utf8");
@@ -4669,13 +4678,6 @@ function setting(name) {
   return value === undefined || value === "" ? undefined : value;
 }
 
-const mode = {
-  "[]": "smoke",
-  '["--up"]': "up",
-  '["--stop"]': "stop",
-  '["--down"]': "down",
-  '["--down","--remove-orphans"]': "decommission",
-}[JSON.stringify(process.argv.slice(2))];
 // The compose project name is the directory's name as it stands, which compose
 // would otherwise normalise, followed by a digest of the identity the generator
 // gave this project and the directory's full path. Two directories with the
@@ -5084,8 +5086,6 @@ if (mode === "up") {
   process.exit(0);
 }
 
-// A new smoke attempt withdraws the previous pass before inspecting anything.
-rmSync(receiptPath, { force: true });
 requireApprovedCompose();
 const imageId = docker(["image", "inspect", "--format", "{{.Id}}", image]);
 if (!immutableImageId.test(imageId)) {

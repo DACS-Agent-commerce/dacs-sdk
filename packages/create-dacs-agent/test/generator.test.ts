@@ -1230,7 +1230,7 @@ process.exit(1);
       // SQLite adapter, then run the pre-start doctor.
       expect(invocations).toEqual([
         ["install", "--ignore-scripts", "--omit=optional", "--no-fund"],
-        ["rebuild", "better-sqlite3"],
+        ["rebuild", "better-sqlite3", "--ignore-scripts=false"],
         ["run", "dacs:doctor", "--", "--phase", "pre-start", "--for", "start"],
       ]);
       expect(invocations.flat()).not.toContain("--no-audit");
@@ -2755,6 +2755,62 @@ process.exit(1);
       expect(dangling.status).toBe(0);
     },
     SPAWNING_TEST_TIMEOUT_MS * 4,
+  );
+
+  test.runIf(process.platform !== "win32")(
+    "withdraws smoke receipts before every early preflight failure and preserves them for lifecycle commands",
+    async () => {
+      const target = await generatedDockerProject("early-smoke-agent");
+      const receiptPath = join(target, ".dacs-runtime", "docker-image-smoke.json");
+      const envPath = join(target, ".env");
+      const environment = await readFile(envPath, "utf8");
+      const receipt = { previous: "successful-smoke" };
+      await mkdir(dirname(receiptPath), { recursive: true });
+      const seed = () => writeFile(receiptPath, JSON.stringify(receipt), "utf8");
+      const invalidSettings: Record<string, string>[] = [
+        { DACS_IMAGE_SMOKE_TIMEOUT_SECONDS: "0" },
+        { DACS_IMAGE: "" },
+        { DACS_RUNTIME_UID: "0" },
+      ];
+      for (const env of invalidSettings) {
+        await seed();
+        const result = await runGeneratedDockerSmoke(target, undefined, { env });
+        expect(result.status).toBe(2);
+        expect(result.invocations).toEqual([]);
+        expect(result.receipt).toBeUndefined();
+      }
+      // An unreadable .env must fail even on root-capable test hosts.
+      await rm(envPath);
+      await mkdir(envPath);
+      await seed();
+      const unreadable = await runGeneratedDockerSmoke(target, undefined);
+      expect(unreadable.status).toBe(1);
+      expect(unreadable.stderr).toContain("EISDIR");
+      expect(unreadable.receipt).toBeUndefined();
+      await rm(envPath, { recursive: true });
+      await writeFile(envPath, environment + "\nCOMPOSE_FILE=foreign.yaml\n", "utf8");
+      for (const args of [[], ["--up"], ["--stop"], ["--down"], ["--down", "--remove-orphans"]]) {
+        await seed();
+        const result = await runGeneratedDockerSmoke(target, undefined, { args });
+        expect(result.status).toBe(2);
+        expect(result.invocations).toEqual([]);
+        expect(result.receipt).toEqual(args.length === 0 ? undefined : receipt);
+      }
+      await writeFile(envPath, environment, "utf8");
+      await seed();
+      const renamed = join(dirname(target), "Agent.invalid");
+      await rename(target, renamed);
+      const invalidDirectory = await runGeneratedDockerSmoke(renamed, undefined);
+      expect(invalidDirectory.status).toBe(2);
+      expect(invalidDirectory.receipt).toBeUndefined();
+      await rename(renamed, target);
+      await rm(envPath);
+      await seed();
+      const missingEnvironment = await runGeneratedDockerSmoke(target, undefined);
+      expect(missingEnvironment.status).toBe(2);
+      expect(missingEnvironment.receipt).toBeUndefined();
+    },
+    SPAWNING_TEST_TIMEOUT_MS,
   );
 
   test.runIf(process.platform !== "win32")(
