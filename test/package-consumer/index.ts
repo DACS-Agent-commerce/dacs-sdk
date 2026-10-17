@@ -98,6 +98,9 @@ const htlcAdvance: typeof advanceCrossChainHtlc = advanceCrossChainHtlc;
 const htlcPreimage: typeof deriveHtlcPreimage = deriveHtlcPreimage;
 const htlcLegState: HtlcRefundLegState = "failed";
 const rootHtlcLegState: RootHtlcRefundLegState = htlcLegState;
+// Type fixture only: Circle's testnet USDC on Ethereum Sepolia, Base Sepolia
+// and Polygon Amoy (https://developers.circle.com/stablecoins/usdc-contract-addresses,
+// lowercased; matched that table on 2026-10-17). No verdict depends on them.
 const htlcLockTerms: HtlcLockTerms = {
   token: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
   amountBaseUnits: "1250000",
