@@ -286,7 +286,12 @@ export interface SubstrateAdapter {
     expectedOwner: string,
   ): Promise<AnchorResolution>;
 
-  /** SR-2 — read a previously anchored value by its storage address, or null if absent. */
+  /**
+   * SR-2 — read a previously anchored value by its storage address, or null if absent.
+   * Return plain, writable JSON data: `Agent` passes this read to the session
+   * start, whose strict received snapshot refuses frozen or read-only objects.
+   * The value is already parsed, so it carries no CF-5 raw-byte admission.
+   */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 
   /** SR-3 — consensus-backed proxy fetch of a public HTTPS endpoint (DAHR). */

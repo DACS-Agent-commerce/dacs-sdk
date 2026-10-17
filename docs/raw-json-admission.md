@@ -73,6 +73,14 @@ an already parsed object as evidence of original CF-5 admission. Integration
 must retain exact bytes or enforce authenticated byte-admission provenance at
 each actual ingress. The SDK-wide Standard pin remains unchanged.
 
+On Demos, `DemosAdapter.readAnchor` returns a storage program's `data` already
+parsed by `@kynesyslabs/demosdk`. The SDK writes Listings with the `json`
+encoding, and the node stores that member as `jsonb` and serves it through
+`JSON.stringify` (`kynesyslabs/node@ac8f45f0`), so the publisher's exact bytes
+are gone before any reader receives them. Live Listing reads therefore carry no
+CF-5 provenance. Closing that needs a storage format that keeps the exact
+bytes, not a change to the read path.
+
 Tests vendor the byte-exact upstream `raw-json-profile-v0.1.json` corpus from
 that revision. All 59 outcomes and accepted canonical bytes are checked, along
 with API misuse, resource bounds, prototype-named members, view offsets and
