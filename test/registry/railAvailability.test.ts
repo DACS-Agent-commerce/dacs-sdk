@@ -57,6 +57,8 @@ describe("DACS-4 RAV-R1..RAV-R5 rail availability", () => {
       (rail: Record<string, any>) => { rail.parameters.authorization = "permit2"; },
       (rail: Record<string, any>) => { rail.governance.acceptedAt = 999; },
       (rail: Record<string, any>) => { rail.futureSignedMember = "preserved-by-SIG-5"; },
+      // The generic scope omits `signatures` as well as `signature`.
+      (rail: Record<string, any>) => { rail.signatures = [{ appended: true }]; },
     ]) {
       const rail = structuredClone(vector.rail);
       mutate(rail);

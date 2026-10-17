@@ -33,6 +33,7 @@ import {
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
+  snapshotCanonicalJsonReceived,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
@@ -194,15 +195,18 @@ export function isVerifiedListingAdmission(
     result.step !== 9 ||
     !result.listing ||
     !result.listingContentHash ||
-    !isListing(raw) ||
     !isListing(result.listing)
   ) {
     return false;
   }
   try {
+    // Apply the same received-number policy as the ordered reader before its
+    // shape check, retaining every signed extension in the owned comparison.
+    const capturedRaw = snapshotCanonicalJsonRead(raw, "admitted Listing");
     if (
-      canonicalize(result.listing) !== canonicalize(raw) ||
-      contentHash(raw) !== result.listingContentHash ||
+      !isListing(capturedRaw) ||
+      canonicalize(result.listing) !== canonicalize(capturedRaw) ||
+      contentHash(capturedRaw) !== result.listingContentHash ||
       contentHash(result.listing as unknown as Record<string, unknown>) !==
         result.listingContentHash
     ) {
@@ -428,7 +432,7 @@ export async function checkListingRevocation(
 ): Promise<RevocationCheckResult> {
   try {
     deps = captureRevocationDeps(deps);
-    listing = snapshotCanonicalJson(listing, "revocation Listing");
+    listing = snapshotCanonicalJsonReceived(listing, "revocation Listing");
     if (!isListingEnvelope(listing)) {
       return { disposition: "indeterminate", reason: "malformed-revocation-listing" };
     }
@@ -904,7 +908,10 @@ export function resolveListingRails(
 ): ListingRailResolutionResult {
   let captured: unknown;
   try {
-    captured = snapshotCanonicalJson(input, "Listing rail resolution input");
+    captured = snapshotCanonicalJsonReceived(
+      input,
+      "Listing rail resolution input",
+    );
   } catch {
     return railResult("indeterminate", "malformed-rail-authority");
   }
@@ -954,7 +961,7 @@ export async function resolveListingPayloadVerificationCapability(
   }
   let listingSnapshot: Listing | ListingDraft;
   try {
-    listingSnapshot = snapshotCanonicalJson(
+    listingSnapshot = snapshotCanonicalJsonReceived(
       listing,
       "payload verification capability Listing",
     );
@@ -1192,7 +1199,10 @@ export async function validateListingArtifact(
   const deps = captureListingValidationDeps(inputDeps);
   let capturedRaw: Record<string, unknown>;
   try {
-    capturedRaw = snapshotCanonicalJson(raw, "Listing validation artifact");
+    capturedRaw = snapshotCanonicalJsonReceived(
+      raw,
+      "Listing validation artifact",
+    );
   } catch {
     return { disposition: "rejected", step: 1, reason: "schema-invalid" };
   }
@@ -1709,7 +1719,7 @@ export async function assessListingReachability(
   }
   let listing: Listing;
   try {
-    listing = snapshotCanonicalJson(inputListing, "reachability Listing");
+    listing = snapshotCanonicalJsonReceived(inputListing, "reachability Listing");
   } catch {
     return { status: "indeterminate", checkedAt: 0, reason: "listing-malformed" };
   }

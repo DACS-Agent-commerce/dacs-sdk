@@ -210,6 +210,11 @@ export function evaluateRailAvailabilitySelection(
   ) {
     return result("fail", "signature-invalid");
   }
+  // CORE §B.7 SIG-5: a RailDefinition has one signature, and the signed-scope
+  // helper also omits `signatures`. Refuse it rather than leave it unhashed.
+  if (Object.prototype.hasOwnProperty.call(rail, "signatures")) {
+    return result("fail", "signature-invalid");
+  }
 
   const railDigest = contentHash(
     stripSignature(rail) as Record<string, unknown>,

@@ -10,6 +10,7 @@ import {
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
+  snapshotCanonicalJsonReceived,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -217,7 +218,11 @@ export interface SessionDeps {
     buyerId: string;
     jobId: string;
   }) => Promise<boolean> | boolean;
-  /** Read the (signed) listing at a ref. */
+  /**
+   * Read the (signed) listing at a ref. Return plain, writable JSON data: the
+   * session start owns it with the strict received snapshot, which refuses
+   * frozen or read-only objects as "listing not found or invalid".
+   */
   readListing: (ref: string) => Promise<unknown>;
   /**
    * Optional caller-held LR-1 tuple selected before entering the session. The
@@ -2775,7 +2780,7 @@ export async function runSessionCore(
   }
   let storedRecord: Record<string, unknown>;
   try {
-    storedRecord = snapshotCanonicalJson(
+    storedRecord = snapshotCanonicalJsonReceived(
       stored as Record<string, unknown>,
       `listing at ${listingRef}`,
     );

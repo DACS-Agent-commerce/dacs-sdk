@@ -11,6 +11,7 @@ import {
   type ChannelMessageSignatureVerifier,
   type VerificationDecision,
 } from "../../src/index.js";
+import { admitRawJson } from "../../src/canonical/index.js";
 
 const CHANNEL = "chan-session-7";
 const SENDER =
@@ -347,6 +348,72 @@ describe("DACS-3 channel admission", () => {
     await expect(
       admitChannelMessage(sparse, context(), verifier),
     ).resolves.toMatchObject({ decision: "error" });
+    expect(verifier).not.toHaveBeenCalled();
+  });
+
+  // CORE §B.2 / CF-5 item 4: a peer's admitted -0 spelling is in-profile and
+  // serialises as 0, so it must admit exactly like its 0 spelling.
+  test.each(["-0", "-0.0", "-0e5"])(
+    "admits a received %s body exactly like its 0 spelling",
+    async (spelling) => {
+      const text = JSON.stringify(
+        message(1, FIRST_SIGNATURE, CHANNEL, SENDER, {
+          price: "10",
+          discount: 0,
+          tiers: [0, { floor: 0 }],
+        }),
+      );
+      const negativeText = text
+        .replace('"discount":0', `"discount":${spelling}`)
+        .replace('"tiers":[0,{"floor":0}]', `"tiers":[${spelling},{"floor":${spelling}}]`);
+      expect(negativeText.split(spelling)).toHaveLength(4);
+      const zero = admitRawJson(Buffer.from(text, "utf8"));
+      const negativeZero = admitRawJson(Buffer.from(negativeText, "utf8")) as {
+        body: { discount: number };
+      };
+      expect(Object.is(negativeZero.body.discount, -0)).toBe(true);
+
+      const { unsignedEnvelope, envelopeHash } = prepareChannelMessageSigningInput(
+        JSON.parse(text.replace(`,"signature":"${FIRST_SIGNATURE}"`, "")),
+      );
+      const calls: Array<Parameters<ChannelMessageSignatureVerifier>[0]> = [];
+      const verifier = vi.fn<ChannelMessageSignatureVerifier>((input) => {
+        calls.push(input);
+        return "pass";
+      });
+
+      const expected = await admitChannelMessage(zero, context(), verifier);
+      const result = await admitChannelMessage(negativeZero, context(), verifier);
+
+      expect(expected.decision).toBe("pass");
+      expect(result).toEqual(expected);
+      expect(verifier).toHaveBeenCalledTimes(2);
+      expect(calls[1]).toEqual(calls[0]);
+      expect(calls[1]!.envelopeHash).toBe(envelopeHash);
+      expect(calls[1]!.unsignedEnvelope).toEqual(unsignedEnvelope);
+      expect(
+        Object.is((calls[1]!.message.body as { discount: number }).discount, 0),
+      ).toBe(true);
+      if (result.decision === "pass") {
+        expect(
+          Object.is((result.message.body as { discount: number }).discount, 0),
+        ).toBe(true);
+      }
+    },
+  );
+
+  test("keeps local signing input and admission context strict about negative zero", async () => {
+    const { signature: _signature, ...unsigned } = message();
+    expect(() =>
+      prepareChannelMessageSigningInput({ ...unsigned, body: { discount: -0 } }),
+    ).toThrow(/unsigned channel message is not stable canonical JSON/);
+    const verifier = vi.fn<ChannelMessageSignatureVerifier>(() => "pass");
+    await expect(
+      admitChannelMessage(message(), context(-0), verifier),
+    ).resolves.toMatchObject({
+      decision: "error",
+      reason: "channel message or admission context is malformed",
+    });
     expect(verifier).not.toHaveBeenCalled();
   });
 

@@ -51,6 +51,15 @@ describe("signed artifact envelope (T4)", () => {
     ).toBe(false);
   });
 
+  test("an appended signatures member breaks verification", async () => {
+    const signed = await buildSignedArtifact(listing, "dacs-listing:v1:", sign);
+    // The generic scope omits `signatures`, so the hash alone would not change.
+    const amended = { ...signed, signatures: [{ appended: true }] };
+    expect(
+      await verifySignedArtifact(amended, "dacs-listing:v1:", pub, verify),
+    ).toBe(false);
+  });
+
   test("missing signature returns false", async () => {
     expect(
       await verifySignedArtifact(listing, "dacs-listing:v1:", pub, verify),

@@ -39,6 +39,33 @@ failures are not failed cryptographic signatures.
 Canonicalization, schema checks, signed-scope selection, and signature and
 protocol verification remain subsequent operations.
 
+Negative zero (for example `-0.0`) is an admitted CORE §B.2 number that
+serialises as `0`. The following APIs treat an admitted `-0` exactly like `0`,
+and their owned snapshots hold `0`: `contentHash`, `stripSignature`,
+`canonicalSignedScope`, `signArtifact` and `verifyArtifact`, the
+component-signature verifier, the Listing verifiers `discoverListings`,
+`verifyReadableListingArtifact` and `authenticateReadableListingArtifact`, the
+ordered DACS-1 §6.3.4 reader
+`validateListingArtifact` with its revocation, payload-capability and
+reachability helpers, the rail resolver `resolveListingRails`, anchored
+discovery through `readListingByLogicalAddress`, the result binder
+`isVerifiedListingAdmission` used by seller payment intake, and the received
+message of DACS-3 channel admission (`admitChannelMessage`). Each of
+these also normalises an in-memory `-0` it is handed directly. Other entry
+points that take received data are not covered by this list. The structural
+guards `isListing` and `readListingArtifact` inspect the caller's
+value as is and may give a stricter answer for it. To use these with an
+admitted value, own it first by re-parsing its canonical bytes
+(`JSON.parse(canonicalize(value))`), which holds `0`. Locally authored
+artifacts and local state should use `0`: `signComponentArtifact`,
+`buildComponentSignature`, `prepareChannelMessageSigningInput` and the
+admission context of `admitChannelMessage` refuse an in-memory `-0` as a
+non-wire alias. Other helpers may own their input the way the read
+boundaries above do and hold `0`; neither spelling changes a hash or a
+comparison.
+Wire-format reads that must keep a transport's exact JSON also refuse it,
+because their owned copy is not re-parsed from canonical bytes.
+
 This is an **explicit API**, not a current-profile switch. Existing object-based
 SDK consumers, adapters, caches and restored session records do not acquire
 raw-byte provenance by importing this helper. Do not use `JSON.stringify` of

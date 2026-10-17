@@ -3,7 +3,15 @@ import { describe, expect, it } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
-import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
+import { admitRawJson, canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
+import { validateListingArtifact } from "../../src/agent/listingValidation.js";
+import {
+  ed25519Sign,
+  ed25519Verify,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  signedBytes,
+} from "../../src/crypto/index.js";
 import { identityBundleHash } from "../../src/identity/index.js";
 import {
   canonicalSellerSettlementId,
@@ -825,6 +833,79 @@ describe("verifySellerPaymentIntake", () => {
       .toBe(canonicalize(canonicalClaim.authorization));
     expect(isValidSellerReceiptClaim(canonicalClaim)).toBe(true);
     expect(isValidSellerReceiptClaim(aliasedClaim)).toBe(false);
+  });
+
+  it.each(["pay-dem", "pay-x402"] as const)("accepts admitted negative-zero Listing parameters at %s intake", async (kind) => {
+    const ctx = makeContext(kind);
+    const rail = ctx.listing.acceptedRails![0]!;
+    rail.parameters = { ...rail.parameters, floor: 0 };
+    const terms = ctx.agreement.terms as { rail: { parameters?: Record<string, unknown> } };
+    terms.rail.parameters = { ...terms.rail.parameters, floor: 0 };
+    Object.assign(ctx.listing, { futureOptionalMetadata: { floor: 0, label: "retained" } });
+    const seed = Uint8Array.from(Buffer.alloc(32, 48));
+    ctx.listing.signature.value = Buffer.from(ed25519Sign(
+      signedBytes("dacs-listing:v1:", contentHash(ctx.listing as unknown as Record<string, unknown>)),
+      privateKeyFromSeed(seed),
+    )).toString("base64url");
+    const text = JSON.stringify(ctx.listing).replaceAll('"floor":0', '"floor":-0.0');
+    expect(text).toContain('"floor":-0.0');
+    const raw = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
+    expect(Object.is((raw.acceptedRails as PaymentRailRef[])[0]!.parameters!.floor, -0)).toBe(true);
+    const validation = await validateListingArtifact(raw, {
+      nowMs: () => 900,
+      verifyListingSignature: ({ signedBytes, signature }) => ed25519Verify(
+        signedBytes,
+        Buffer.from(signature.value, "base64url"),
+        publicKeyFromSeed(seed),
+      ),
+      verifyIdentityPresentation: () => true,
+      verifySellerControl: () => true,
+      resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
+      revocation: {
+        surfaces: [{ kind: "well-known", status: "active", integrity: "verified" }],
+        readMarker: async () => null,
+        verifyMarkerSignature: () => true,
+      },
+      loadRailResolution: () => ({
+        trustPhase: "PA-1",
+        trustPolicyAcceptsPA1: true,
+        registry: { state: "not-used", entries: [], definitions: [] },
+        inCodeDefinitions: [{
+          railId: ctx.rail.railId,
+          railVersion: ctx.rail.railVersion,
+          phaseHandler: kind,
+          governanceAnchoring: "in-code",
+          signatureValid: true,
+        }],
+      }),
+    });
+    expect(validation).toMatchObject({ disposition: "verified", step: 9 });
+    expect(Object.is(validation.listing?.acceptedRails![0]!.parameters!.floor, 0)).toBe(true);
+    const resolution = { ...listingAtCommitResolution(ctx.listing), rawListing: raw, validation };
+    ctx.deps.resolveListingAtCommit = async () => resolution;
+    const listingRef = {
+      listingId: ctx.listing.listingId,
+      version: ctx.listing.listingVersion,
+      contentHash: contentHash(raw),
+    };
+    ctx.agreement.listingRef = listingRef;
+    ctx.committed.commitment.listingRef = listingRef;
+    refreshCommitment(ctx);
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+      listingRef,
+    });
+    expect(Object.is((raw.acceptedRails as PaymentRailRef[])[0]!.parameters!.floor, -0)).toBe(true);
+
+    // Normalization must not erase unknown signed members when binding the result.
+    (raw.futureOptionalMetadata as { floor: number }).floor = 1;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      reason: "listing-at-commit-admission-mismatch",
+      fulfilment: "none",
+    });
   });
 
   it("verifies pay-DEM in OS, emits exact normative evidence, and claims once", async () => {

@@ -23,6 +23,7 @@ import {
   readListingArtifact,
 } from "../../src/artifacts/validators.js";
 import {
+  admitRawJson,
   canonicalize,
   contentHash,
   sha256Hex,
@@ -271,6 +272,69 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     ).resolves.toMatchObject({ compatibility: "normative" });
   });
 
+  it("verifies a received Listing whose admitted bytes spell signed zeros as negative zero", async () => {
+    const signerSeed = Uint8Array.from(Buffer.alloc(32, 44));
+    const signerKey = rawPublicKey(publicKeyFromSeed(signerSeed));
+    const signer = `did:demos:agent:${Buffer.from(signerKey).toString("hex")}`;
+    const draft = stripSignature(
+      fixture() as unknown as Record<string, unknown>,
+    ) as unknown as ListingDraft & {
+      futureOptionalMetadata: Record<string, unknown>;
+    };
+    draft.seller.identity = {
+      bundleVersion: "1",
+      presentedBy: signer,
+      presentedAt: draft.seller.identity.presentedAt,
+      claims: [{ ref: signer }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: signer, signature: "signer-presentation" }],
+      },
+    };
+    draft.validity.notBefore = 0;
+    draft.futureOptionalMetadata["weights"] = [0, { floor: 0 }];
+    const signed = await signComponentArtifact(
+      draft,
+      ARTIFACT_SEPARATORS.Listing,
+      {
+        algorithm: "ed25519",
+        signer,
+        sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(signerSeed)),
+      },
+    );
+    expect(isListing(signed)).toBe(true);
+
+    // CORE §B.2 / CF-5: -0 is in-profile and serialises as 0, so these are
+    // the same signed bytes on the wire as far as JCS is concerned.
+    const text = JSON.stringify(signed)
+      .replace(/"notBefore":0(?=[,}])/, '"notBefore":-0.0')
+      .replace('"weights":[0,{"floor":0}]', '"weights":[-0,{"floor":-0e2}]');
+    const received = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
+    expect(
+      Object.is((received["validity"] as { notBefore: number }).notBefore, -0),
+    ).toBe(true);
+    expect(text).toContain('"weights":[-0,{"floor":-0e2}]');
+    expect(canonicalize(received)).toBe(canonicalize(signed));
+    expect(contentHash(received)).toBe(
+      contentHash(signed as unknown as Record<string, unknown>),
+    );
+    expect(readListingArtifact(received)).toMatchObject({
+      compatibility: "normative",
+    });
+
+    const verified = await verifyReadableListingArtifact(received, {
+      verify,
+      nowMs: () => 1_790_000_000_000,
+      resolvePublicKey: (claim) => (claim === signer ? signerKey : null),
+    });
+    expect(verified).toMatchObject({ compatibility: "normative" });
+    if (verified?.compatibility !== "normative") {
+      throw new Error("expected normative Listing");
+    }
+    expect(Object.is(verified.listing.validity.notBefore, 0)).toBe(true);
+    expect(verified.listing).toEqual(signed);
+  });
+
   it("preserves an inert unknown field in the signed scope", async () => {
     const listing = fixture() as Listing & {
       futureOptionalMetadata: { displayTier: string };
@@ -293,6 +357,38 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
         },
       ),
     ).resolves.toBeNull(); // mutation breaks the original signature.
+  });
+
+  it("refuses a top-level signatures member that the signed hash would omit", async () => {
+    const listing = fixture();
+    const amended = {
+      ...listing,
+      signatures: [{ appended: true }],
+    } as unknown as Record<string, unknown>;
+    // CORE §B.7 SIG-5: the generic scope omits `signature` and `signatures`,
+    // so the original single signature would still match the amended Listing.
+    expect(contentHash(amended)).toBe(
+      VECTOR.fixtures["listing-with-inert-extension"].artifactHash,
+    );
+    expect(isListingEnvelope(amended)).toBe(false);
+    expect(isListing(amended)).toBe(false);
+    expect(readListingArtifact(amended)).toBeNull();
+    await expect(
+      verifyReadableListingArtifact(amended, {
+        verify,
+        nowMs: () => 1_790_000_000_000,
+        resolvePublicKey: (claim) => {
+          const encoded = VECTOR.publicKeys[claim];
+          return encoded
+            ? Uint8Array.from(Buffer.from(encoded, "base64url"))
+            : null;
+        },
+      }),
+    ).resolves.toBeNull();
+
+    const { signature: _signature, ...draft } = listing;
+    expect(isListingDraft(draft)).toBe(true);
+    expect(isListingDraft({ ...draft, signatures: [] })).toBe(false);
   });
 
   it("fails closed on the Standard vector with an unknown phase kind", () => {
@@ -474,6 +570,30 @@ describe("explicit legacy Listing read compatibility", () => {
     expect(
       readListingArtifact({ ...legacy, signature: "legacy-hex-signature" }),
     ).toMatchObject({ compatibility: "legacy-mvp", listing: legacy });
+  });
+
+  it("reads a received legacy artifact carrying negative zero instead of throwing", () => {
+    const signedText = JSON.stringify({ ...legacy, signature: "legacy-hex-signature" });
+    const zero = signedText.replace(/}$/, ',"metadata":{"floor":0,"weights":[0]}}');
+    const negativeZero = signedText.replace(
+      /}$/,
+      ',"metadata":{"floor":-0.0,"weights":[-0]}}',
+    );
+    const received = admitRawJson(Buffer.from(negativeZero, "utf8"));
+
+    const read = readListingArtifact(received);
+    expect(read).toEqual(
+      readListingArtifact(admitRawJson(Buffer.from(zero, "utf8"))),
+    );
+    expect(read).toMatchObject({
+      compatibility: "legacy-mvp",
+      listing: { ...legacy, metadata: { floor: 0, weights: [0] } },
+    });
+    const metadata = (read!.listing as unknown as {
+      metadata: { floor: number; weights: number[] };
+    }).metadata;
+    expect(Object.is(metadata.floor, 0)).toBe(true);
+    expect(Object.is(metadata.weights[0], 0)).toBe(true);
   });
 
   it("rejects the legacy shape as a new Listing draft", () => {
