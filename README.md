@@ -900,18 +900,27 @@ verifier: a generic binding carries none of the DACS-5 BundleBinding fields its
 verification needs. The inherited `write` binds the generic content hash, which
 keeps `anchoredByRole`, so a role copy published through it scans as
 `hash-mismatch`; do not publish bundles through the generic repository.
-A deliverable (`dacs4:deliverable:{jobId}`) is an unsigned payload: its binding
-hash is the sha256 of the complete canonical payload (DACS-4 §9.6.1 DV-1), so a
-top-level `signature` or `signatures` member is bound like any other field.
-`write` and `read` use the same hash for that address, and every other kind
-binds its signed scope (`contentHash`). Payment-disposition and payload-attestation rows are
+A deliverable (`dacs4:deliverable:{jobId}`) is an unsigned record: its binding
+hash is the sha256 of the complete canonical anchored record (DACS-4 §9.6.1
+step 4), so a top-level `signature` or `signatures` member is bound like any
+other field. `write` and `read` use the same hash for that address, and every
+other kind binds its signed scope (`contentHash`). `artifactBindingHashOf`
+returns the hash rule for a logical address. That binding hash equals DV-1's
+`deliverableContentHash` only when the anchored record is the cleartext payload
+(`public` and `buyer-only` delivery). Under `encrypt-to-buyer` the anchored
+record is ciphertext, and under the extended-pointer pattern it is a pointer
+record: the binding hash covers those bytes, not the payload. For example, a
+`verified` encrypt-to-buyer row says only that the ciphertext matches its
+binding; decrypt it and compare `sha256Hex(canonicalize(cleartextPayload))`
+with the agreement's `deliverableContentHash` before treating it as delivered,
+as the fulfilment validators do. Payment-disposition and payload-attestation rows are
 classified as their own kinds and reach the verifier.
 The SDK ships no per-kind verifier for this seam. For settlement evidence,
 payment dispositions, payload attestations, deliverables and entitlements,
 `verified` means only that the bytes match the published binding and that your
 verifier returned `true`. It is not a payment or delivery verdict:
 before acting on payment or delivery, run the agreement-bound checks (DACS-4
-SB-1's complete PC-2 tuple, DPA-2's exact-byte digest, DV-1's deliverable hash),
+SB-1's complete PC-2 tuple, DPA-2's exact-byte digest, DV-1's cleartext hash),
 for example through `verifySettlementEvidence` or the fulfilment validators, or
 make your verifier perform them. The verifier receives the record as read, the
 binding and the classified anchor (`kind`, `logicalAddress`, `nativeAddress`),

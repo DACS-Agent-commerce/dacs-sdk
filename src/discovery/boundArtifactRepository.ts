@@ -102,9 +102,11 @@ export interface BoundArtifactRepository {
 
 /**
  * Hash a binding commits to for a record at this logical address. A DACS-4
- * deliverable is an unsigned payload whose DV-1 hash covers the complete
- * canonical payload (§9.6.1), so a top-level `signature` member there is data;
- * every other kind binds its signed scope (`contentHash`, §7.2).
+ * deliverable is unsigned, so its binding covers the complete canonical
+ * anchored record (§9.6.1 step 4) and a top-level `signature` member there is
+ * data; every other kind binds its signed scope (`contentHash`, §7.2). This
+ * equals DV-1's cleartext `deliverableContentHash` only when the anchored record
+ * is the cleartext payload, not for ciphertext or an extended-pointer record.
  */
 export function artifactBindingHashOf(
   logicalAddress: string,
