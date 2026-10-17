@@ -12,11 +12,16 @@ import {
 type Row = Record<string, any>;
 
 // Real node2 responses captured on `capturedAt`; see the fixture's notes. The
-// deployed node is newer than the ac8f45f source the fetcher was checked against.
+// advertised dirty build cannot be reproduced from its commit alone.
 const fixture = JSON.parse(
   readFileSync(new URL("../fixtures/demos-node2-history.json", import.meta.url), "utf8"),
 ) as {
   owner: string;
+  networkInfoProvenance: {
+    capturedAt: string;
+    nodeVersion: { version: string; commit: string; dirty: boolean; builtAt: string };
+    assessment: string;
+  };
   historyRows: Row[];
   missingStorageProgram: { status: number; body: Record<string, unknown> };
 };
@@ -44,6 +49,17 @@ async function drain(rows: Row[], limit: number) {
 }
 
 describe("the Demos history fetcher against recorded node2 responses", () => {
+  test("records advertised node provenance without treating a dirty build as pinned", () => {
+    expect(fixture.networkInfoProvenance).toMatchObject({
+      capturedAt: "2026-10-17",
+      nodeVersion: {
+        version: "0.9.8", commit: "61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+        dirty: true, builtAt: "2026-10-14T16:45:24Z",
+      },
+      assessment: expect.stringContaining("Deployment remains unpinned"),
+    });
+  });
+
   // The last row is a real DACS settlement-evidence CREATE.
   const REAL_DACS = {
     nativeAddress: "stor-0c8a191536d3908a8816c2312bdb4cfcd316e513",

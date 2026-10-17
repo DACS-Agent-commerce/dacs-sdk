@@ -130,7 +130,7 @@ describe("Demos transport metadata preserves encoded logical keys", () => {
   test("retained transaction and receipt identities distinguish NFC aliases", () => {
     const logicalAddress = KEYS[0]!;
     const programName = logicalToStorageProgramName(logicalAddress);
-    const data = { public: true };
+    const data = { public: true, note: "cafe\u0301" };
     const metadata = { logicalAddress, contentHash: contentHash(data), envelopeHash: contentHash(data) };
     const signed = {
       hash: "public-tx", content: {
