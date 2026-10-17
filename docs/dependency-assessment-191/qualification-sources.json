@@ -1,0 +1,73 @@
+{
+  "migration": {
+    "repository": "DACS-Agent-commerce/dacs-sdk",
+    "branch": "prep/demos-native-full-parity-20260902",
+    "commit": "d95aff688e31e4a6ebacf703b490925eec217d72",
+    "observed_on": "2026-10-16"
+  },
+  "purl": {
+    "repository": "package-url/purl-spec",
+    "commit": "ec6d7e03101ebdb7f79a7e292eb9d38998521ed6",
+    "normative_path": "docs/specification/standard/Clause-5-Package-URL-Specification.md",
+    "status": "Selected source for future semantic validation; current validator does not check PURL conformance.",
+    "edition": "ECMA-427, 2nd edition",
+    "publication_status": "working draft",
+    "edition_map_path": "docs/specification/README.md",
+    "release_notes_path": "docs/specification/ECMA-427-2nd_Edition-Release_notes.md"
+  },
+  "node": {
+    "qualification": "unqualified",
+    "deployment_digest": null,
+    "required_before_qualification": [
+      "build or image digest",
+      "observed nodeVersion response",
+      "response and failure fixtures for the pinned deployment"
+    ],
+    "observation": {
+      "url": "https://node2.demos.sh",
+      "read_at": "2026-10-16T22:26:35.487539+00:00",
+      "method": "getNetworkInfo",
+      "args": {},
+      "request": {
+        "method": "nodeCall",
+        "params": [
+          {
+            "type": "nodeCall",
+            "message": "getNetworkInfo",
+            "sender": null,
+            "receiver": null,
+            "timestamp": null,
+            "data": {},
+            "extra": ""
+          }
+        ]
+      },
+      "http_status": 200,
+      "seconds": 0.06154185300692916,
+      "response": {
+        "result": 200,
+        "response": {
+          "forks": {
+            "osDenomination": {
+              "activationHeight": 0,
+              "activated": true,
+              "currentHeight": 548719
+            }
+          },
+          "nodeVersion": {
+            "name": "demos-node-software",
+            "version": "0.9.8",
+            "commit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+            "commitShort": "61b8e75",
+            "commitMessage": "verify anchor peer pairing signature",
+            "branch": "stabilisation",
+            "dirty": true,
+            "builtAt": "2026-10-14T16:45:24Z"
+          }
+        },
+        "require_reply": false,
+        "extra": null
+      }
+    }
+  }
+}

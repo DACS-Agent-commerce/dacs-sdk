@@ -1,0 +1,98 @@
+[
+  {
+    "package": "@multiversx/sdk-core; @near-js/providers",
+    "version": "13.17.2 -> bip39 3.1.0; 0.2.3 -> node-fetch 2.6.7",
+    "condition": "D-1: broad tree retained with documented optional omission",
+    "required_change": "Correct or remove the exact optional pins for bip39 3.1.0 and node-fetch 2.6.7, then rerun the required primary live npm SBOM command. Alternatively qualify a narrow-package migration or an npm-side correction. D-1 closes only when the command exits 0, its output validates against the CycloneDX 1.5 schema at specification commit c320fc0f0b46873864927d9d5684eea7ba439728, and every component bom-ref is unique; record the npm version used (11.19.0 or later meets this on the narrow candidate; 10.9.9 does not).",
+    "why": "The omitted nested copies leave optional edges resolving to hoisted bip39 3.1.2 and node-fetch 2.7.0; npm rejects these edges with ESBOMPROBLEMS. The narrow candidate primary SBOM exits 0 under npm 10.9.9 but repeats the @noble/hashes@1.8.0 and @scure/bip39@1.6.0 references of nested viem/ox copies and fails the schema; npm 11.19.0 output for the same tree is unique and schema-valid.",
+    "status": "open primary SBOM check; conditional U-03 metadata repair or npm follow-up"
+  },
+  {
+    "package": "@kynesyslabs/demosdk -> sigstore and its fetch/cache chain",
+    "version": "demosdk 4.0.16 declares sigstore ^5.0.0; 16 installed packages declare ^22.22.2 || ^24.15.0 || >=26.0.0",
+    "condition": "broad package retained with the generated engines range ^20.19.0 || >=22.12.0",
+    "required_change": "Either our side narrows the generated engines range, Dockerfile base image and doctor check to a subset of ^22.22.2 || ^24.15.0, the live composition's effective range (raising only the floor still admits 24.0.0-24.14.x, 23.x and 25.x), or the broad package supplies a dependency chain that supports the advertised range. The narrow candidate has no floor rejection. Separately decide whether the open-ended range should admit Node 26+ while better-sqlite3 12.6.2 declares 20.x to 25.x.",
+    "why": "Collection on Node 22.23.3 hid the mismatch; tools/engines-check.cjs lists the packages and the rejected Node versions in release-checks.json. An engine-strict install fails on the advertised floors and the generated node:20.19.1 image.",
+    "status": "open engines gate; owner decision or conditional upstream repair"
+  },
+  {
+    "package": "@demosnetwork/demos-native",
+    "version": "0.1.0-alpha.2",
+    "condition": "current generated live profile",
+    "required_change": "Raise the ws floor from ^8.18.3 to >=8.21.0 within the supported major and qualify a pinned release. No missing current-profile runtime API repair was demonstrated.",
+    "why": "The declared range admits versions in the reported >=8.0.0 <8.21.0 and >=8.0.0 <8.20.1 ranges. Zero findings in the current candidate depend on its resolved ws versions, not a safe declared floor.",
+    "status": "upstream dependency floor repair and local qualification required"
+  },
+  {
+    "package": "@demosnetwork/demos-native release status",
+    "version": "latest: 0.1.0-alpha.1; next: 0.1.0-alpha.2",
+    "condition": "release selection by the owner and Hayk",
+    "required_change": "The owner and Hayk must choose whether to pin exactly alpha.2 for qualification or request a stable latest release by 2026-11-06; carry the ws floor repair into the selected release.",
+    "why": "The newest published version is tagged next and is a prerelease; a zero-finding resolution does not settle its production release status.",
+    "status": "owner and Hayk decision required"
+  },
+  {
+    "package": "@kynesyslabs/demosdk",
+    "version": "4.0.16; 4.0.18 lock-only control",
+    "condition": "broad package retained in shipped production tree",
+    "required_change": "Separate unused chain, proof, attestation, bridge and crypto toolchains from native installs; alternatively deliver and qualify repaired parent dependency chains below.",
+    "why": "The live installed tree retains 75 affected package entries. Lock-only controls of 4.0.16 and 4.0.18 both report 73 package findings with development and optional dependencies omitted; neither control is the generated composition or an API compatibility qualification.",
+    "status": "conditional upstream repair"
+  },
+  {
+    "package": "@metaplex-foundation/js -> @irys/sdk -> aptos",
+    "version": "aptos 1.8.5",
+    "condition": "legacy chain toolchain retained",
+    "required_change": "Replace the legacy Aptos client and its axios 0.27.2/form-data 4.0.0 dependencies with a supported, qualified parent chain; current leaf candidates include axios 0.34.0 or 1.20.0 and form-data 4.0.6, but parent API compatibility must be tested.",
+    "why": "This installed chain carries critical inherited and multipart dependency findings; a root-level update does not change these nested copies.",
+    "status": "conditional upstream repair; no safe upgrade qualified"
+  },
+  {
+    "package": "@cosmjs/stargate -> @confio/ics23 -> protobufjs",
+    "version": "protobufjs 6.11.6",
+    "condition": "Cosmos toolchain retained",
+    "required_change": "Move the proof package to a supported protobufjs generation/runtime with a version outside the listed affected ranges; the currently published 7.x tag is 7.6.6. Regenerate and qualify the proof encode/decode contract.",
+    "why": "The old nested major is pinned by its parent range and carries a critical dependency finding.",
+    "status": "conditional upstream repair; major compatibility required"
+  },
+  {
+    "package": "node-forge",
+    "version": "1.4.0",
+    "condition": "RSA verification retained",
+    "required_change": "Remove the unused RSA dependency from the native path, or supply a corrected and qualified RSA verification implementation/release.",
+    "why": "The newest published version remains inside the reported range; default native Ed25519 operation does not establish use of the affected RSA verifier.",
+    "status": "conditional upstream repair; no published leaf fix established"
+  },
+  {
+    "package": "@solana/web3.js -> bigint-buffer",
+    "version": "1.98.0 -> 1.1.5",
+    "condition": "Solana toolchain retained",
+    "required_change": "Replace the unsupported native integer conversion dependency, or move the parent to a qualified implementation that does not depend on it; remove eager non-native provider imports from the identity read path.",
+    "why": "The newest bigint-buffer version is still the affected version, and its module loads through abstraction provider registration.",
+    "status": "conditional upstream repair; no published leaf fix established"
+  },
+  {
+    "package": "@coral-xyz/anchor; @project-serum/anchor; @simplewebauthn/server",
+    "version": "toml 3.0.0; server 11.0.0",
+    "condition": "program tooling or WebAuthn capability retained",
+    "required_change": "Upgrade or replace parent packages so TOML parsing and attestation verification resolve outside the listed affected ranges. Current leaf releases are toml 5.0.1 and server 14.0.3; qualify their changed APIs.",
+    "why": "Both classes of dependency finding remain installed although their affected operations were not established in the native import path.",
+    "status": "conditional upstream repair; major compatibility required"
+  },
+  {
+    "package": "Legacy asset, NEAR, MultiversX, Bitcoin and Ethereum toolchains",
+    "version": "Exact paths and affected ranges in both finding tables",
+    "condition": "remaining broad features retained",
+    "required_change": "Modernize parent APIs and locks for affected base-x, bn.js, csv-parse, elliptic, secp256k1, stream-json, underscore, uuid and ws instances; select versions outside every applicable range and qualify callers. Elliptic has no newer clean published release established.",
+    "why": "Nested old major versions and parent constraints remain; npm fix signals are not compatibility evidence.",
+    "status": "conditional upstream repair; no safe override proposed"
+  },
+  {
+    "package": "@demosnetwork/demos-native companion / raw API",
+    "version": "not supplied by alpha.2",
+    "condition": "exact broadcastAndWait raw contract or experimental D402 without broad dependencies is required",
+    "required_change": "Specify the compatibility contract first, then request the missing method or a separately optional native-compatible D402 client.",
+    "why": "These gaps do not require a new upstream API for the current generated native/x402 profile when settled locally.",
+    "status": "conditional upstream API request"
+  }
+]

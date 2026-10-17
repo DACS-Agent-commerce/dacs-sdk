@@ -1,0 +1,116 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:d247468e-0579-4ac3-bfe2-6ea281769e2c",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-16T14:51:46.733Z",
+    "lifecycles": [
+      {
+        "phase": "build"
+      }
+    ],
+    "tools": [
+      {
+        "vendor": "npm",
+        "name": "cli",
+        "version": "10.9.9"
+      },
+      {
+        "vendor": "S-55 assessment",
+        "name": "physical-instance-export",
+        "version": "1"
+      }
+    ],
+    "component": {
+      "bom-ref": "npm:root",
+      "type": "library",
+      "name": "bare-generator",
+      "version": "1.0.0",
+      "scope": "required",
+      "purl": "pkg:npm/bare-generator@1.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": ""
+        },
+        {
+          "name": "cdx:npm:package:private",
+          "value": "true"
+        }
+      ],
+      "externalReferences": []
+    },
+    "properties": [
+      {
+        "name": "s55:range-conflicts",
+        "value": "[]"
+      },
+      {
+        "name": "s55:scope",
+        "value": "Installed production instances; dev omitted; original range conflicts retained. This is a supplementary export, not a successful npm sbom CLI run."
+      }
+    ]
+  },
+  "components": [
+    {
+      "bom-ref": "npm:node_modules/create-dacs-agent",
+      "type": "library",
+      "name": "create-dacs-agent",
+      "version": "0.1.0-alpha.0",
+      "scope": "required",
+      "description": "Create bounded offline or guarded live DACS agent projects.",
+      "purl": "pkg:npm/create-dacs-agent@0.1.0-alpha.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/create-dacs-agent"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "file:tarballs/create-dacs-agent-0.1.0-alpha.0.tgz"
+        },
+        {
+          "type": "vcs",
+          "url": "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/tree/main/packages/create-dacs-agent#readme"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e9c96da6b266f7884495f9e90e04e9d14e6a483a7ac18dc37cbad5a64065ddb3b3cddc58846f9f2a0fff72910474fa92983760af7bd67f153aa1dcf98f66b03c"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "npm:root",
+      "dependsOn": [
+        "npm:node_modules/create-dacs-agent"
+      ]
+    },
+    {
+      "ref": "npm:node_modules/create-dacs-agent",
+      "dependsOn": []
+    }
+  ]
+}
