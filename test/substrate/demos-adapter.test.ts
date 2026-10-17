@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
+import { DacsError } from "../../src/errors.js";
 // DemosAdapter lives on the substrate subpath, not the top-level barrel (the
 // barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
 import {
@@ -30,11 +31,13 @@ describe("DemosAdapter", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("requires an rpc url", () => {
     // @ts-expect-error — exercising the runtime guard
     expect(() => new DemosAdapter({})).toThrow(/rpc/);
+    expect(() => new DemosAdapter({ rpc: "" })).toThrow("DemosAdapter requires an rpc URL");
   });
 
   it("rejects an invalid confirmed-fee ceiling", () => {
@@ -42,6 +45,15 @@ describe("DemosAdapter", () => {
       rpc: RPC,
       maximumFeeOs: -1n,
     })).toThrow(/maximumFeeOs/);
+  });
+
+  it("accepts a zero confirmed-fee ceiling", () => {
+    expect(() => new DemosAdapter({ rpc: RPC, maximumFeeOs: 0n })).not.toThrow();
+  });
+
+  it.each([5, null, {}])("rejects a non-string chainIdentity %o", (chainIdentity) => {
+    expect(() => new DemosAdapter({ rpc: RPC, chainIdentity } as unknown as DemosAdapterConfig))
+      .toThrow("DemosAdapterConfig.chainIdentity must be a string");
   });
 
   it("rejects proxy and accessor-backed secret carriers", () => {
@@ -355,11 +367,11 @@ describe("DemosAdapter", () => {
   });
 
   it("retains GCR resolution for identities that are not self-certifying", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
     const raw = { result: 200, response: { web2: {} } };
-    const registryLookup = vi.spyOn(Identities.prototype, "getIdentities")
-      .mockResolvedValue(raw as never);
+    const registryLookup = vi.fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify(raw)));
+    const adapter = new DemosAdapter({ rpc: RPC, identityFetch: registryLookup });
+    Object.assign(adapter, { connected: true });
 
     await expect(adapter.resolveIdentity("legacy-demos-address")).resolves.toEqual({
       ref: "legacy-demos-address",
@@ -367,16 +379,19 @@ describe("DemosAdapter", () => {
       raw,
     });
     expect(registryLookup).toHaveBeenCalledWith(
-      adapter.raw,
-      "getIdentities",
-      "legacy-demos-address",
+      RPC,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          method: "gcr_routine",
+          params: [{ method: "getIdentities", params: ["legacy-demos-address"] }],
+        }),
+      }),
     );
   });
 
   it("bounds decoded GCR responses at the Demos adapter boundary", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
-    vi.spyOn(Identities.prototype, "getIdentities").mockResolvedValue({
+    const raw = {
       response: {
         web2: {
           github: new Array(
@@ -384,11 +399,31 @@ describe("DemosAdapter", () => {
           ).fill("alice"),
         },
       },
-    } as never);
+    };
+    const adapter = new DemosAdapter({
+      rpc: RPC,
+      identityFetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(raw))),
+    });
+    Object.assign(adapter, { connected: true });
 
     await expect(adapter.resolveIdentity("subject")).rejects.toThrow(
       /maxArrayLength/,
     );
+  });
+
+  it.each(["", null, 0, 1, {}, [], true])(
+    "rejects a supplied wallet secret that is not a non-empty string: %j",
+    (secret) => {
+      const construct = () => new DemosAdapter({ rpc: RPC, secret } as unknown as DemosAdapterConfig);
+      expect(construct).toThrow(DacsError);
+      expect(construct).toThrow("DemosAdapterConfig.secret must be a non-empty string when supplied");
+    },
+  );
+
+  it("accepts an omitted or non-empty wallet secret at construction", () => {
+    expect(() => new DemosAdapter({ rpc: RPC })).not.toThrow();
+    expect(() => new DemosAdapter({ rpc: RPC, secret: undefined })).not.toThrow();
+    expect(() => new DemosAdapter({ rpc: RPC, secret: "s" })).not.toThrow();
   });
 
   it("reverse-resolves canonical CCI web2 and chain/subchain wallet refs", async () => {
