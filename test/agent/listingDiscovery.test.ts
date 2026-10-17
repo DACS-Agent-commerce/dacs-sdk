@@ -415,6 +415,36 @@ describe("readListingByLogicalAddress (#54)", () => {
     });
   });
 
+  // CORE CF-1: verifiers apply values-only NFC before hashing, and the CF-2
+  // shape checks read that same owned snapshot, so an NFD spelling of a
+  // canonical ClaimReference reads exactly like its NFC spelling.
+  test("checks ClaimReferences on the NFC-normalised anchored snapshot", async () => {
+    const nfc = "cci-ud:café";
+    const nfd = nfc.normalize("NFD");
+    expect(nfd).not.toBe(nfc);
+    const fixture = await normativeListingFixture({ additionalClaimRef: nfc });
+    const deps = (record: Record<string, unknown>) =>
+      depsFor([{ ...fixture, record }], {
+        listingValidationDeps: normativeValidationDeps(),
+      });
+    const expected = await readListingByLogicalAddress(
+      fixture.logicalAddress,
+      deps(fixture.record),
+    );
+    expect(expected).toMatchObject({
+      status: "verified",
+      contentHash: fixture.binding.contentHash,
+    });
+
+    const text = JSON.stringify(fixture.record);
+    const decomposed = JSON.parse(text.replaceAll(nfc, nfd)) as Record<string, unknown>;
+    expect(JSON.stringify(decomposed).split(nfd)).toHaveLength(3);
+    expect(contentHash(decomposed)).toBe(fixture.binding.contentHash);
+    await expect(
+      readListingByLogicalAddress(fixture.logicalAddress, deps(decomposed)),
+    ).resolves.toEqual(expected);
+  });
+
   test("fails indeterminate when normative ordered-validation policy is absent", async () => {
     const fixture = await normativeListingFixture();
     await expect(

@@ -9,6 +9,7 @@ import { sizedListing, verifySizedListingSignature } from "../fixtures/sizedList
 import {
   assessListingReachability,
   checkListingRevocation,
+  isVerifiedListingAdmission,
   resolveListingPayloadVerificationCapability,
   resolveListingRails,
   validateListingArtifact,
@@ -219,6 +220,42 @@ describe("DACS-1 §6.3.4 LRR-1..LRR-6", () => {
       authorityBasis: "pa2",
     });
     expect(resolveListingRails(negativeZero)).toEqual(expected);
+  });
+
+  // LRR-1 compares PaymentRailRefs by canonical bytes, where -0 is 0.
+  it("treats 0 and an admitted -0.0 rail parameter as the same PaymentRailRef", () => {
+    const dem = '{"railId":"demos-native:DEM","railVersion":1}';
+    const x402 = (floor: string) =>
+      `{"railId":"x402:default","railVersion":1,"parameters":{"floor":${floor}}}`;
+    const input = (rails: string, alternatives?: string) =>
+      admitRawJson(
+        Buffer.from(
+          `{"trustPhase":"PA-2","payPhases":[${
+            alternatives === undefined
+              ? '{"kind":"pay-x402","rail":"x402:default"}'
+              : `{"kind":"pay-alternative","alternatives":[${alternatives}]}`
+          }],"acceptedRails":[${rails}],"registry":{"state":"verified-finalized",` +
+            `"entries":[{"railId":"demos-native:DEM","latestVersion":1,"versions":[1]},` +
+            `{"railId":"x402:default","latestVersion":1,"versions":[1]}],"definitions":[` +
+            `{"railId":"demos-native:DEM","railVersion":1,"phaseHandler":"pay-dem","state":"verified-finalized"},` +
+            `{"railId":"x402:default","railVersion":1,"phaseHandler":"pay-x402","state":"verified-finalized"}]},` +
+            `"supportedPaymentHandlers":["pay-dem","pay-x402"]}`,
+          "utf8",
+        ),
+      ) as unknown as ListingRailResolutionInput;
+
+    expect(resolveListingRails(input(`${x402("0")},${x402("-0.0")}`))).toMatchObject({
+      disposition: "rejected",
+      reason: "duplicate-accepted-rail-ref",
+    });
+    expect(
+      resolveListingRails(input(`${dem},${x402("0")}`, `${dem},${x402("-0.0")}`)),
+    ).toMatchObject({ disposition: "verified", reason: "verified" });
+    expect(
+      resolveListingRails(
+        input(`${dem},${x402("0")}`, `${dem},${x402("0")},${x402("-0.0")}`),
+      ),
+    ).toMatchObject({ disposition: "rejected", reason: "alternative-duplicate" });
   });
 
 });
@@ -1021,6 +1058,32 @@ describe("ordered ListingValidationDisposition", () => {
         }),
       }),
     ).resolves.toEqual([]);
+  });
+
+  // contentHash excludes `signature`, so only the canonical comparison stops a
+  // result for (content, signature A) binding to raw (content, signature B).
+  it("does not bind a verified result to a raw Listing with another signature", async () => {
+    const listing = fixture() as unknown as Record<string, unknown>;
+    const result = await validateListingArtifact(listing, baseDeps());
+    expect(result).toMatchObject({ disposition: "verified", step: 9 });
+    expect(isVerifiedListingAdmission(structuredClone(listing), result)).toBe(true);
+
+    const signature = (listing as unknown as Listing).signature;
+    const otherValue = Buffer.from(
+      ed25519Sign(
+        listingSignedBytes("dacs-listing:v1:", contentHash(listing)),
+        privateKeyFromSeed(Uint8Array.from(Buffer.alloc(32, 47))),
+      ),
+    ).toString("base64url");
+    expect(otherValue).not.toBe(signature.value);
+    for (const substitute of [
+      { ...signature, value: otherValue },
+      { ...signature, signer: `${signature.signer}-other` },
+    ]) {
+      const raw = { ...structuredClone(listing), signature: substitute };
+      expect(contentHash(raw)).toBe(result.listingContentHash);
+      expect(isVerifiedListingAdmission(raw, result)).toBe(false);
+    }
   });
 
   it("keeps a failed revocation lookup indeterminate", async () => {
