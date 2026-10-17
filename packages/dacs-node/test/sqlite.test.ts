@@ -57,6 +57,7 @@ import {
   inspectDacsNodeSqliteUpgradeSafetyV1,
   inspectExistingDacsNodeSqliteDatabaseV1,
   inspectDacsNodeSqliteLocation,
+  isDacsNodeSqliteBusyError,
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabaseOptions,
@@ -1818,6 +1819,53 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(readdirSync(root).some((name) => name.includes(".backup-v3-"))).toBe(false);
   });
 
+  // DACS-5 ST-7: the pause start is durable, so a restart does not reset it.
+  it("keeps a substrate pause's start across a restart and ends the pause at its maximum", async () => {
+    const databasePath = join(temporaryRoot(), "buyer.sqlite");
+    const liveOptions = {
+      mode: "live-demos" as const,
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const,
+      authority: BUYER,
+    };
+    const unanswered = (database: DacsNodeSqliteDatabase): FixedPriceX402TrackOperation =>
+      async () => ({
+        status: "indeterminate",
+        reasonCode: "demos-read-unanswered",
+        retryAt: database.readTime(),
+      });
+    const coordinator = (database: DacsNodeSqliteDatabase, maximumSubstratePauseMs: number) =>
+      createFixedPriceX402BuyerCoordinator({
+        store: database.createLiveCoordinatorStore("buyer"),
+        workerId: `buyer-worker-${maximumSubstratePauseMs}`,
+        maximumSubstratePauseMs,
+        operations: { agreement: unanswered(database) },
+      });
+    const first = await open(databasePath, liveOptions);
+    const before = coordinator(first, 3_600_000);
+    await before.startOrder(liveOrder());
+    await before.runPending({ limit: 1 });
+    const paused = (await before.getOrderStatus(JOB_ID))?.tracks.agreement;
+    expect(paused).toMatchObject({ state: "indeterminate" });
+    expect(paused?.pausedSince).toBe(paused?.updatedAt);
+    first.close();
+    databases.splice(databases.indexOf(first), 1);
+
+    const restarted = await open(databasePath, liveOptions);
+    await coordinator(restarted, 3_600_000).runPending({ limit: 1 });
+    const resumed = (await coordinator(restarted, 3_600_000).getOrderStatus(JOB_ID))
+      ?.tracks.agreement;
+    expect(resumed).toMatchObject({ state: "indeterminate", pausedSince: paused?.pausedSince });
+    expect(resumed!.updatedAt).toBeGreaterThanOrEqual(paused!.updatedAt);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const bounded = coordinator(restarted, 1);
+    await bounded.runPending({ limit: 1 });
+    expect((await bounded.getOrderStatus(JOB_ID))?.tracks.agreement).toMatchObject({
+      state: "operator-action", reasonCode: "substrate-pause-exceeded",
+    });
+  });
+
   it("resumes the live coordinator DAG from durable role-local state", async () => {
     const databasePath = join(temporaryRoot(), "buyer.sqlite");
     const liveOptions = {
@@ -3493,5 +3541,29 @@ describe("DACS Node SQLite durability foundation", () => {
     await expect(openDacsNodeSqliteDatabase(options(link))).rejects.toMatchObject({
       reasonCode: "database-path-symlink",
     });
+  });
+});
+
+// Only a busy or locked database is retried; any other SQLite error is not.
+describe("SQLite busy classification", () => {
+  it.each([
+    [{ code: "SQLITE_BUSY" }, true],
+    [{ code: "SQLITE_BUSY_SNAPSHOT" }, true],
+    [{ code: "SQLITE_LOCKED_SHAREDCACHE" }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 5 }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 6 }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 517 }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 262 }, true],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 1 }, false],
+    [{ code: "ERR_SQLITE_ERROR", errcode: 19 }, false],
+    [{ code: "ERR_SQLITE_ERROR" }, false],
+    [{ code: "ERR_SQLITE_ERROR", errcode: "5" }, false],
+    [{ code: "SQLITE_CONSTRAINT" }, false],
+    [{ code: "SQLITE_BUSYNESS" }, false],
+    [{ errcode: 5 }, false],
+    ["SQLITE_BUSY", false],
+    [null, false],
+  ] as const)("classifies %j as busy: %s", (error, busy) => {
+    expect(isDacsNodeSqliteBusyError(error)).toBe(busy);
   });
 });

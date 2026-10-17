@@ -449,7 +449,7 @@ describe("pre-agreement session bootstrap transport", () => {
       buyerVetRef: Object.freeze({
         anchor: Object.freeze({
           kind: "storage-program" as const,
-          locator: compositeVerificationAddress(JOB_ID, value.buyer),
+          locator: `stor-${"a".repeat(40)}`,
         }),
         contentHash: contentHash(record as unknown as Record<string, unknown>),
         signer: value.seller,
@@ -489,6 +489,26 @@ describe("pre-agreement session bootstrap transport", () => {
         contentHash: contentHash(forgedRecord as unknown as Record<string, unknown>),
       },
     })).rejects.toMatchObject({ reasonCode: "session-admission-binding-mismatch" });
+    // DACS-2 VPC-3: the admission's Vet reference and receipt
+    // bind the seller's Vet of this buyer at its composite address.
+    const substitutions: Array<[string, Record<string, unknown>]> = [
+      ["a reference at another native address", { buyerVetRef: {
+        ...admission.buyerVetRef,
+        anchor: { ...admission.buyerVetRef.anchor, locator: `stor-${"b".repeat(40)}` } } }],
+      ["a reference signed by the buyer", { buyerVetRef: { ...admission.buyerVetRef, signer: value.buyer } }],
+      ["a receipt at the seller's composite address", { buyerVetReceipt: {
+        ...admission.buyerVetReceipt, logicalAddress: compositeVerificationAddress(JOB_ID, value.seller) } }],
+      ["a receipt for other content", { buyerVetReceipt: {
+        ...admission.buyerVetReceipt, contentHash: "f".repeat(64) } }],
+      ["a receipt written by the buyer", { buyerVetReceipt: {
+        ...admission.buyerVetReceipt, writer: value.buyer } }],
+    ];
+    for (const [label, substitution] of substitutions) {
+      await expect(
+        value.sellerRuntime.publishAdmission(sellerOperation, { ...admission, ...substitution } as never),
+        label,
+      ).rejects.toMatchObject({ reasonCode: "session-admission-binding-mismatch" });
+    }
     await expect(value.sellerRuntime.publishAdmission(sellerOperation, admission))
       .resolves.toBe("acknowledged");
     const admissionEnvelope = await authenticated("session-admission", admission, {

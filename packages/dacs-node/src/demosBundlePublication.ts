@@ -1,7 +1,10 @@
 import {
   BUNDLE_BINDING_SEPARATOR,
+  DacsError,
   attestationBundleHash,
   bundleAddress,
+  resolveBundleBindingCandidates,
+  verifyBundleCopy,
   type BundleBinding,
   type FaultAttestationBundle,
 } from "@kynesyslabs/dacs";
@@ -16,6 +19,7 @@ import { ed25519Verify, publicKeyFromRaw, signedBytes } from
   "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
 
+import type { DacsBundleBindingDiscoverySurfaceV1 } from "./bundleBindingDiscovery.js";
 import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
 
@@ -28,6 +32,11 @@ export interface DacsDemosBundlePublicationOptionsV1 {
   jobId: string;
   buyer: string;
   seller: string;
+  /**
+   * DACS-1 §6.3.5 well-known and §6.3.6 catalog surfaces consulted for signed
+   * BundleBindings, in addition to the role's own Demos binding program.
+   */
+  discovery?: readonly Readonly<DacsBundleBindingDiscoverySurfaceV1>[];
 }
 
 export interface DacsDemosAnchoredBundleV1 {
@@ -43,7 +52,24 @@ export interface DacsDemosBundlePublicationV1 {
     resolvePublicKey(claim: string): Promise<Uint8Array | null>;
     verify(bytes: Uint8Array, signature: Uint8Array, key: Uint8Array): Promise<boolean>;
   }>;
+  /**
+   * This node's own role copy: at the native address its own write returned,
+   * else through its own write-input name (a producer-side idempotency hint,
+   * never a consumer resolution key). Another role's copy is refused.
+   */
   resolveRoleBundle(role: DacsBundleRoleV1): Promise<Readonly<DacsDemosAnchoredBundleV1> | null>;
+  /**
+   * A role's copy through its discovered signed BundleBindings (DACS-5
+   * BB-5..BB-7) and an exact native read. Non-discovery is `indeterminate`,
+   * never absence (BB-8).
+   */
+  resolveBoundRoleBundle(role: DacsBundleRoleV1): Promise<Readonly<
+    | { disposition: "present"; binding: Readonly<BundleBinding>;
+        anchored: Readonly<DacsDemosAnchoredBundleV1> }
+    | { disposition: "indeterminate"; reason: string }
+  >>;
+  /** The bundle at an exact native address, or null when none is readable there yet. */
+  readBundleAt(nativeAddress: string): Promise<Readonly<FaultAttestationBundle> | null>;
   submitRoleBundle(
     role: DacsBundleRoleV1,
     logicalAddress: string,
@@ -78,6 +104,17 @@ export class DacsDemosBundlePublicationError extends Error {
   constructor(readonly reasonCode: string) {
     super(reasonCode);
   }
+}
+
+/**
+ * True when a role-bundle read failed in a way retry cannot repair: the
+ * resolved anchor holds invalid content or an invalid receipt, or the
+ * publication authority is invalid. `bundle-resolution-indeterminate` and any
+ * other thrown error are unanswered reads.
+ */
+function isPermanentDacsDemosBundleReadError(error: unknown): boolean {
+  return error instanceof DacsDemosBundlePublicationError &&
+    error.reasonCode !== "bundle-resolution-indeterminate";
 }
 
 function copy<T>(value: T): T {
@@ -143,45 +180,109 @@ export function createDacsDemosBundlePublicationV1(
   owner(input.buyer);
   owner(input.seller);
   const context = input.context;
+  const discovery = [...(input.discovery ?? [])];
+  if (discovery.some((surface) => surface === null || typeof surface !== "object" ||
+      typeof surface.discover !== "function")) {
+    throw new TypeError("Demos bundle publication discovery surfaces are invalid");
+  }
+  // The native addresses this node's own writes returned, and the bindings it
+  // published: a lagging name index never hides either from this node.
+  const ownCopies = new Map<DacsBundleRoleV1, string>();
+  const ownBindings: BundleBinding[] = [];
+  const bundleCopyVerifier = Object.freeze({
+    async resolvePublicKey(claim: string) {
+      const raw = canonicalDemosAgentPublicKey(claim);
+      return raw === null ? null : Uint8Array.from(raw);
+    },
+    async verify(bytes: Uint8Array, signature: Uint8Array, key: Uint8Array) {
+      try {
+        return ed25519Verify(bytes, signature, publicKeyFromRaw(key));
+      } catch {
+        return false;
+      }
+    },
+  });
+
+  const readBundleAt: DacsDemosBundlePublicationV1["readBundleAt"] =
+    async (nativeAddress) => {
+      const bundle = await context.demos.adapter.readAnchor(nativeAddress);
+      if (bundle === null) return null;
+      if (!isFaultAttestationBundle(bundle)) {
+        throw new DacsDemosBundlePublicationError("bundle-readback-invalid");
+      }
+      return copy(bundle);
+    };
+
+  // The role's copy and its authenticated receipt at an exact native address,
+  // without the name index (DACS-5 BB-5 step 6); null when nothing is
+  // readable there yet.
+  const anchoredAt = async (
+    role: DacsBundleRoleV1,
+    nativeAddress: string,
+  ): Promise<Readonly<DacsDemosAnchoredBundleV1> | null> => {
+    const writer = authority(input, role);
+    const logicalAddress = bundleAddress(input.jobId, role);
+    const bundle = await readBundleAt(nativeAddress);
+    if (bundle === null) return null;
+    const hash = attestationBundleHash(bundle);
+    const receipt = await context.demos.adapter.resolveDemosAnchorReceipt({
+      logicalAddress,
+      nativeAddress,
+      contentHash: hash,
+      writer,
+    });
+    // The bundle was just read at this address, so a node that now finds no
+    // program there has not caught up; retry rather than reject.
+    if (receipt === null) {
+      throw new DacsDemosBundlePublicationError("bundle-resolution-indeterminate");
+    }
+    if (receipt.writer !== writer ||
+        receipt.logicalAddress !== logicalAddress ||
+        receipt.nativeAddress !== nativeAddress || receipt.contentHash !== hash ||
+        receipt.observationDisposition !== "established" ||
+        (receipt.state !== "included" && receipt.state !== "finalized") ||
+        await context.demos.adapter.verifyDemosAnchorReceipt(receipt) !== true) {
+      throw new DacsDemosBundlePublicationError("bundle-receipt-invalid");
+    }
+    return Object.freeze({
+      bundle,
+      nativeAddress,
+      anchorReceipt: copy(receipt),
+      ...(receipt.transactionRef.kind === "demos"
+        ? { anchorTx: receipt.transactionRef.value } : {}),
+    });
+  };
 
   const resolveRoleBundle: DacsDemosBundlePublicationV1["resolveRoleBundle"] =
     async (role) => {
-      const writer = authority(input, role);
-      const logicalAddress = bundleAddress(input.jobId, role);
+      // The storage-program name is this producer's own write input; no
+      // consumer resolves another role's copy by it (DACS-5 BB-5).
+      if (role !== context.role) {
+        throw new DacsDemosBundlePublicationError("bundle-resolution-role-invalid");
+      }
+      const own = ownCopies.get(role);
+      if (own !== undefined) {
+        const anchored = await anchoredAt(role, own);
+        if (anchored === null) {
+          throw new DacsDemosBundlePublicationError("bundle-resolution-indeterminate");
+        }
+        return anchored;
+      }
       const resolved = await context.demos.adapter.resolveAnchorByName(
-        logicalAddress,
-        owner(writer),
+        bundleAddress(input.jobId, role),
+        owner(authority(input, role)),
       );
       if (resolved.status === "absent") return null;
       if (resolved.status !== "present") {
         throw new DacsDemosBundlePublicationError("bundle-resolution-indeterminate");
       }
-      const bundle = await context.demos.adapter.readAnchor(resolved.address);
-      if (bundle === null || !isFaultAttestationBundle(bundle)) {
-        throw new DacsDemosBundlePublicationError("bundle-readback-invalid");
+      const anchored = await anchoredAt(role, resolved.address);
+      // The name index shows a program there, so a node that cannot read it
+      // yet has not caught up; retry rather than reject.
+      if (anchored === null) {
+        throw new DacsDemosBundlePublicationError("bundle-resolution-indeterminate");
       }
-      const hash = attestationBundleHash(bundle);
-      const receipt = await context.demos.adapter.resolveDemosAnchorReceipt({
-        logicalAddress,
-        nativeAddress: resolved.address,
-        contentHash: hash,
-        writer,
-      });
-      if (receipt === null || receipt.writer !== writer ||
-          receipt.logicalAddress !== logicalAddress ||
-          receipt.nativeAddress !== resolved.address || receipt.contentHash !== hash ||
-          receipt.observationDisposition !== "established" ||
-          (receipt.state !== "included" && receipt.state !== "finalized") ||
-          await context.demos.adapter.verifyDemosAnchorReceipt(receipt) !== true) {
-        throw new DacsDemosBundlePublicationError("bundle-receipt-invalid");
-      }
-      return Object.freeze({
-        bundle: copy(bundle),
-        nativeAddress: resolved.address,
-        anchorReceipt: copy(receipt),
-        ...(receipt.transactionRef.kind === "demos"
-          ? { anchorTx: receipt.transactionRef.value } : {}),
-      });
+      return anchored;
     };
 
   const verifyBundleAnchorReceipt:
@@ -210,69 +311,109 @@ export function createDacsDemosBundlePublicationV1(
       if (role === null || !isBundleBinding(binding) || binding.jobId !== input.jobId ||
           binding.role !== role || !verifyBindingSignature(binding)) return "invalid";
       try {
-        const anchored = await resolveRoleBundle(role);
-        return anchored !== null && anchored.nativeAddress === binding.nativeAddress &&
+        // BB-5 steps 6-8: fetch the binding's own native address.
+        const anchored = await anchoredAt(role, binding.nativeAddress);
+        if (anchored === null) return "indeterminate";
+        return anchored.bundle.jobId === binding.jobId &&
             anchored.anchorReceipt.contentHash === binding.bundleContentHash &&
             attestationBundleHash(anchored.bundle) === binding.bundleContentHash &&
             (binding.anchorTx === undefined || anchored.anchorTx === binding.anchorTx)
           ? "valid" : "invalid";
-      } catch {
-        return "indeterminate";
+      } catch (error) {
+        // An invalid anchored bundle or receipt can never authenticate a binding.
+        return isPermanentDacsDemosBundleReadError(error) ? "invalid" : "indeterminate";
       }
+    };
+
+  // The role's own Demos binding program: one discovery surface among those
+  // configured (BB-3). Its records are untrusted until the candidate set
+  // authenticates them.
+  const demosBindingProgram = async (role: DacsBundleRoleV1): Promise<unknown[]> => {
+    const resolved = await context.demos.adapter.resolveAnchorByName(
+      bindingAddress(input.jobId, role),
+      owner(authority(input, role)),
+    );
+    if (resolved.status === "absent") return [];
+    if (resolved.status !== "present") {
+      throw new DacsDemosBundlePublicationError("bundle-binding-resolution-indeterminate");
+    }
+    const binding = await context.demos.adapter.readAnchor(resolved.address);
+    return binding === null ? [] : [binding];
+  };
+
+  const resolveBoundRoleBundle: DacsDemosBundlePublicationV1["resolveBoundRoleBundle"] =
+    async (role) => {
+      const signer = authority(input, role);
+      const candidates: unknown[] = [...ownBindings];
+      const surfaces = [() => demosBindingProgram(role), ...discovery.map((surface) =>
+        () => surface.discover({ jobId: input.jobId, role, signer }))];
+      for (const discover of surfaces) {
+        try {
+          candidates.push(...await discover());
+        } catch {
+          // A surface that did not answer discovers nothing (BB-8).
+        }
+      }
+      const fetched = new Map<string, Readonly<DacsDemosAnchoredBundleV1>>();
+      const resolved = await resolveBundleBindingCandidates({
+        jobId: input.jobId,
+        role,
+        candidates,
+        // The session's authenticated role holder prunes before any fetch.
+        roleHolder: signer,
+        verifyBindingSignature,
+        async fetchCopy(nativeAddress) {
+          let anchored: Readonly<DacsDemosAnchoredBundleV1> | null;
+          try {
+            anchored = await anchoredAt(role, nativeAddress);
+          } catch (error) {
+            if (isPermanentDacsDemosBundleReadError(error)) {
+              throw new DacsError(`bundle candidate is invalid: ${(error as Error).message}`);
+            }
+            throw error;
+          }
+          if (anchored === null) return null;
+          fetched.set(nativeAddress, anchored);
+          return anchored.bundle as unknown as Record<string, unknown>;
+        },
+        verifyCopy: (bundle, copyRole) =>
+          verifyBundleCopy(bundle as Record<string, unknown>, copyRole, bundleCopyVerifier),
+      });
+      if (resolved.disposition !== "present") return resolved;
+      const anchored = fetched.get(resolved.binding.nativeAddress)!;
+      if (resolved.binding.anchorTx !== undefined &&
+          resolved.binding.anchorTx !== anchored.anchorTx) {
+        return { disposition: "indeterminate", reason: "bundle-binding-candidates-rejected" };
+      }
+      return { disposition: "present", binding: resolved.binding, anchored };
     };
 
   const resolveBundleBinding: DacsDemosBundlePublicationV1["resolveBundleBinding"] =
     async (logicalAddress, signer) => {
       const role = roleFor(input, logicalAddress, signer);
       if (role === null) return { disposition: "absent" };
+      let resolved: Awaited<ReturnType<typeof resolveBoundRoleBundle>>;
       try {
-        const name = bindingAddress(input.jobId, role);
-        const resolved = await context.demos.adapter.resolveAnchorByName(name, owner(signer));
-        if (resolved.status === "absent") return { disposition: "absent" };
-        if (resolved.status !== "present") {
-          return { disposition: "indeterminate",
-            reason: "bundle-binding-resolution-indeterminate" };
-        }
-        const binding = await context.demos.adapter.readAnchor(resolved.address);
-        if (binding === null || !isBundleBinding(binding)) {
-          return { disposition: "indeterminate", reason: "bundle-binding-invalid" };
-        }
-        const hash = contentHash(binding as unknown as Record<string, unknown>);
-        const receipt = await context.demos.adapter.resolveDemosAnchorReceipt({
-          logicalAddress: name,
-          nativeAddress: resolved.address,
-          contentHash: hash,
-          writer: signer,
-        });
-        if (receipt === null ||
-            await context.demos.adapter.verifyDemosAnchorReceipt(receipt) !== true ||
-            await verifyBundleBinding(binding) !== "valid") {
-          return { disposition: "indeterminate",
-            reason: "bundle-binding-authentication-failed" };
-        }
-        return { disposition: "present", binding: copy(binding) };
+        resolved = await resolveBoundRoleBundle(role);
       } catch {
         return { disposition: "indeterminate",
           reason: "bundle-binding-resolution-unavailable" };
       }
+      if (resolved.disposition === "present") {
+        return { disposition: "present", binding: copy(resolved.binding) };
+      }
+      // This producer publishes its own binding when it finds none; the write
+      // is idempotent, so this is no claim that the substrate lacks it.
+      return role === context.role && resolved.reason === "bundle-binding-undiscovered"
+        ? { disposition: "absent" } : resolved;
     };
 
   return Object.freeze({
     mapping: "write-input" as const,
-    bundleCopyVerifier: Object.freeze({
-      async resolvePublicKey(claim: string) {
-        const raw = canonicalDemosAgentPublicKey(claim);
-        return raw === null ? null : Uint8Array.from(raw);
-      },
-      async verify(bytes: Uint8Array, signature: Uint8Array, key: Uint8Array) {
-        try {
-          return ed25519Verify(bytes, signature, publicKeyFromRaw(key));
-        } catch {
-          return false;
-        }
-      },
-    }),
+    bundleCopyVerifier,
     resolveRoleBundle,
+    resolveBoundRoleBundle,
+    readBundleAt,
     async submitRoleBundle(
       role: DacsBundleRoleV1,
       logicalAddress: string,
@@ -283,8 +424,9 @@ export function createDacsDemosBundlePublicationV1(
         throw new DacsDemosBundlePublicationError("bundle-submission-invalid");
       }
       const hash = attestationBundleHash(bundle);
+      let written: string | undefined;
       try {
-        await context.demos.adapter.anchorWriteOnce(
+        const ref = await context.demos.adapter.anchorWriteOnce(
           logicalAddress,
           copy(bundle),
           dacsFixedPricePurchaseAnchorOptionsV1(context, input.jobId, {
@@ -293,14 +435,19 @@ export function createDacsDemosBundlePublicationV1(
             envelopeHash: sha256Hex(canonicalize(bundle)),
           }),
         );
+        if (typeof ref?.address === "string") written = ref.address;
       } catch {
         // An ambiguous write is resolved under the exact same role/name below.
       }
-      const readback = await resolveRoleBundle(role);
+      // Read back at the native address the write returned: the name index
+      // may lag finality (ST-11). Only an ambiguous write falls back to it.
+      const readback = written === undefined
+        ? await resolveRoleBundle(role) : await anchoredAt(role, written);
       if (readback === null ||
           canonicalize(readback.bundle) !== canonicalize(bundle)) {
         throw new DacsDemosBundlePublicationError("bundle-submission-ambiguous");
       }
+      ownCopies.set(role, readback.nativeAddress);
     },
     verifyBundleAnchorReceipt,
     resolveBundleBinding,
@@ -316,8 +463,9 @@ export function createDacsDemosBundlePublicationV1(
       }
       const logicalAddress = bindingAddress(input.jobId, role);
       const hash = contentHash(binding as unknown as Record<string, unknown>);
+      let written: string | undefined;
       try {
-        await context.demos.adapter.anchorWriteOnce(
+        const ref = await context.demos.adapter.anchorWriteOnce(
           logicalAddress,
           copy(binding),
           dacsFixedPricePurchaseAnchorOptionsV1(context, input.jobId, {
@@ -326,15 +474,26 @@ export function createDacsDemosBundlePublicationV1(
             envelopeHash: sha256Hex(canonicalize(binding)),
           }),
         );
+        if (typeof ref?.address === "string") written = ref.address;
       } catch {
         // Resolve the exact signed binding before reporting an ambiguous result.
       }
-      const readback = await resolveBundleBinding(binding.logicalAddress, binding.signer);
-      return readback.disposition === "present" &&
-          canonicalize(readback.binding) === canonicalize(binding)
-        ? { disposition: "published" as const }
-        : { disposition: "indeterminate" as const,
-            reason: "bundle-binding-publication-ambiguous" };
+      // As for the bundle: read back where the write landed, and use the
+      // binding program's name only after an ambiguous write.
+      let readback: unknown[];
+      try {
+        readback = written === undefined ? await demosBindingProgram(role)
+          : [await context.demos.adapter.readAnchor(written)];
+      } catch {
+        readback = [];
+      }
+      if (!readback.some((entry) => entry !== null &&
+          canonicalize(entry) === canonicalize(binding))) {
+        return { disposition: "indeterminate" as const,
+          reason: "bundle-binding-publication-ambiguous" };
+      }
+      ownBindings.push(copy(binding));
+      return { disposition: "published" as const };
     },
     verifyBundleBinding,
   });

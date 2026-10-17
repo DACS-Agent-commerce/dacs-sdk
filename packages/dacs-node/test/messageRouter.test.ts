@@ -35,6 +35,8 @@ describe("closed live role message router", () => {
         "agreement-response": agreement,
         "payment-evidence-request": payment,
         "bundle-signature-request": bundle,
+        "terminal-bundle-proposal-seller": route(),
+        "terminal-bundle-contribution-seller": route(),
       },
     });
     const input = {
@@ -74,6 +76,8 @@ describe("closed live role message router", () => {
         "agreement-proposal": route(),
         "payment-evidence-completion": route(),
         "bundle-signature-response": route(),
+        "terminal-bundle-proposal-buyer": route(),
+        "terminal-bundle-contribution-buyer": route(),
         "payment-evidence-request": route(),
       },
     } as never)).toThrow(/role-incompatible/);
@@ -113,6 +117,8 @@ describe("closed live role message router", () => {
         "pay-dem-payment-notice": route(),
         "payment-evidence-completion": route(),
         "bundle-signature-response": route(),
+        "terminal-bundle-proposal-buyer": route(),
+        "terminal-bundle-contribution-buyer": route(),
       },
     });
     await expect(router.validatePayload({
@@ -138,6 +144,8 @@ describe("closed live role message router", () => {
       "agreement-response",
       "payment-evidence-request",
       "bundle-signature-request",
+      "terminal-bundle-proposal-seller",
+      "terminal-bundle-contribution-seller",
     ]);
     expect(Object.isFrozen(dacsLiveRoleInboundMessageTypesV1("seller"))).toBe(true);
   });

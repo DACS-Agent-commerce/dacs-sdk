@@ -30,6 +30,7 @@ import {
 } from "../canonical/index.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
 import { finalityCommitmentAddress } from "../negotiate/commitment.js";
+import { compositeVerificationAddress } from "./vetCore.js";
 import {
   isSellerFulfilmentHandoff,
   isValidSellerReceiptClaim,
@@ -1542,8 +1543,13 @@ function auditSourceViolation(
       : binding?.roles.has("seller") === true
         ? buyerParty.primaryClaim
         : undefined;
-    const expectedCompositeAddress =
-      `dacs2:composite:${authorization.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
+    let expectedCompositeAddress: string;
+    try {
+      expectedCompositeAddress =
+        compositeVerificationAddress(authorization.jobId, invocation.evaluatedParty);
+    } catch {
+      return "audit source Vet invocation names a non-canonical evaluated party";
+    }
     const uncoveredRequired = invocation.requirement.required.some(
       (required) => !expectedResults.some((result) =>
         result.scheme === required.scheme && exact(result.requirement, required)),
@@ -1557,7 +1563,14 @@ function auditSourceViolation(
       invocation.evaluatedParty !== binding.primaryClaim ||
       invocation.verifier !== expectedVerifier ||
       invocation.vetRecordRef.anchor.kind !== "storage-program" ||
-      invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
+      (invocation.anchorReceipt === undefined
+        ? invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress
+        : invocation.anchorReceipt.logicalAddress !== expectedCompositeAddress ||
+          invocation.vetRecordRef.anchor.locator !== invocation.anchorReceipt.nativeAddress ||
+          invocation.anchorReceipt.contentHash !== invocation.vetRecordRef.contentHash ||
+          invocation.anchorReceipt.writer !== expectedVerifier ||
+          invocation.anchorReceipt.state !== "finalized" ||
+          invocation.anchorReceipt.observationDisposition !== "established") ||
       (invocation.vetRecordRef.signer !== undefined &&
         invocation.vetRecordRef.signer !== invocation.verifier) ||
       (listingOwned && !exact(invocation.requirement, listing.buyerRequirement)) ||

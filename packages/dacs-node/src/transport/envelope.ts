@@ -18,7 +18,12 @@ import type {
   PaymentEvidenceAnchorRequest,
   PaymentEvidenceAuthenticatedPeer,
 } from "@kynesyslabs/dacs/commerce";
-import type { ProtocolAnchorReceipt } from "@kynesyslabs/dacs";
+import type {
+  PrepareVetTerminalBundleInput,
+  ProtocolAnchorReceipt,
+  TerminalBundlePlan,
+  TerminalBundleSignatureContribution,
+} from "@kynesyslabs/dacs";
 import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
 import {
   parseCanonicalClaimReference,
@@ -56,6 +61,10 @@ export const DACS_HTTP_MESSAGE_TYPES = Object.freeze([
   "payment-evidence-completion",
   "bundle-signature-request",
   "bundle-signature-response",
+  "terminal-bundle-proposal-buyer",
+  "terminal-bundle-proposal-seller",
+  "terminal-bundle-contribution-buyer",
+  "terminal-bundle-contribution-seller",
   "diagnostic-probe-buyer",
   "diagnostic-probe-seller",
   "acknowledgement",
@@ -123,6 +132,12 @@ export interface DacsBundleSignatureRequestV1 {
   requiredCounterSigners: readonly string[];
 }
 
+export interface DacsVetTerminalBundleProposalV1 {
+  proposalVersion: "1";
+  terminalInput: Readonly<PrepareVetTerminalBundleInput>;
+  plan: Readonly<TerminalBundlePlan>;
+}
+
 export interface DacsHttpAcknowledgementV1 {
   acknowledgedEnvelopeId: string;
   acknowledgedPayloadHash: string;
@@ -147,6 +162,10 @@ export interface DacsHttpPayloadByType {
   "payment-evidence-completion": PaymentEvidenceAnchorCompletion;
   "bundle-signature-request": DacsBundleSignatureRequestV1;
   "bundle-signature-response": BundleSignature;
+  "terminal-bundle-proposal-buyer": DacsVetTerminalBundleProposalV1;
+  "terminal-bundle-proposal-seller": DacsVetTerminalBundleProposalV1;
+  "terminal-bundle-contribution-buyer": TerminalBundleSignatureContribution;
+  "terminal-bundle-contribution-seller": TerminalBundleSignatureContribution;
   "diagnostic-probe-buyer": DacsHttpDiagnosticProbePayloadV1;
   "diagnostic-probe-seller": DacsHttpDiagnosticProbePayloadV1;
   acknowledgement: DacsHttpAcknowledgementV1;
@@ -237,10 +256,15 @@ export type DacsHttpIdentityResolverV1 = (
   input: Readonly<DacsHttpIdentityResolutionInputV1>,
 ) => Promise<DacsHttpIdentityResolutionV1> | DacsHttpIdentityResolutionV1;
 
+/**
+ * `unavailable` decides nothing about the message: the validator could not
+ * read its own state now (for example, its store stayed locked), so the sender
+ * should retry.
+ */
 export type DacsHttpPayloadValidationV1 =
   | Readonly<{ status: "valid" }>
   | Readonly<{
-      status: "invalid" | "authentication-failure";
+      status: "invalid" | "authentication-failure" | "unavailable";
       reasonCode: string;
     }>;
 
@@ -278,7 +302,7 @@ export interface DacsHttpAuthenticatedEnvelopeV1 {
 
 export interface DacsHttpEnvelopeRejectionV1 {
   status: "rejected";
-  category: "malformed" | "authentication";
+  category: "malformed" | "authentication" | "unavailable";
   reasonCode: string;
 }
 
@@ -308,6 +332,10 @@ const REQUIRED_SENDER_ROLE = Object.freeze({
   "payment-evidence-completion": "buyer",
   "bundle-signature-request": "seller",
   "bundle-signature-response": "buyer",
+  "terminal-bundle-proposal-buyer": "buyer",
+  "terminal-bundle-proposal-seller": "seller",
+  "terminal-bundle-contribution-buyer": "buyer",
+  "terminal-bundle-contribution-seller": "seller",
   "diagnostic-probe-buyer": "buyer",
   "diagnostic-probe-seller": "seller",
 } as const);
@@ -353,7 +381,7 @@ const ACK_KEYS = Object.freeze([
 
 class EnvelopeFailure extends Error {
   constructor(
-    readonly category: "malformed" | "authentication",
+    readonly category: DacsHttpEnvelopeRejectionV1["category"],
     readonly reasonCode: string,
   ) {
     super(reasonCode);
@@ -361,7 +389,7 @@ class EnvelopeFailure extends Error {
 }
 
 function failure(
-  category: "malformed" | "authentication",
+  category: DacsHttpEnvelopeRejectionV1["category"],
   reasonCode: string,
 ): never {
   throw new EnvelopeFailure(category, reasonCode);
@@ -841,7 +869,7 @@ export async function authenticateDacsHttpEnvelopeV1(
         failure(
           validation.status === "authentication-failure"
             ? "authentication"
-            : "malformed",
+            : validation.status === "unavailable" ? "unavailable" : "malformed",
           validation.reasonCode,
         );
       }

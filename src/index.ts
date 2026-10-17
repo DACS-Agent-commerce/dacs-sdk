@@ -207,6 +207,7 @@ export {
   TransientError,
   CounterpartyError,
   SubstrateError,
+  IndeterminateSubstrateError,
   UnsupportedCapabilityError,
   faultCategory,
   type FaultCategory,
@@ -466,6 +467,10 @@ export {
   type ScanPage,
   type ScanOptions,
   type ScanSeen,
+  BUNDLE_BINDING_FETCH_BUDGET,
+  resolveBundleBindingCandidates,
+  type BundleBindingCandidateResolution,
+  type ResolveBundleBindingCandidatesInput,
 } from "./discovery/index.js";
 
 // Deterministic identityTier derivation (DACS-1 §6.3.2.1, IT-1..IT-3).
@@ -1040,6 +1045,7 @@ export {
   type DurableBuyerBundleFinalizationProvider,
   type AuthenticatedBundleRolePublication,
   type DurableFinalizedBuyerBundle,
+  type DurableBuyerSessionCompletion,
   type BuyerBundleTransportIdentity,
   type BuyerBundleTransportResolution,
   type BuyerCounterSignaturePublication,

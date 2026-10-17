@@ -126,6 +126,10 @@ const payloads = {
     algorithm: "ed25519",
     signature: "vector-signature",
   },
+  "terminal-bundle-proposal-buyer": { vector: "buyer-terminal-proposal" },
+  "terminal-bundle-proposal-seller": { vector: "seller-terminal-proposal" },
+  "terminal-bundle-contribution-buyer": { vector: "buyer-terminal-contribution" },
+  "terminal-bundle-contribution-seller": { vector: "seller-terminal-contribution" },
   acknowledgement: {
     acknowledgedEnvelopeId: "4".repeat(64),
     acknowledgedPayloadHash: "5".repeat(64),

@@ -16,7 +16,7 @@ import {
 } from "../artifacts/index.js";
 import { bundleAddress, canonicalize, contentHash } from "../canonical/index.js";
 import { ed25519Sign, signedBytes } from "../crypto/index.js";
-import { DacsError, SubstrateError } from "../errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../errors.js";
 import {
   assertNoRawSessionSeed,
   attestationBundleHash,
@@ -943,9 +943,19 @@ function dispositionFailure(
   disposition: SellerBundleVerificationDisposition,
 ): never {
   if (disposition === "indeterminate" || disposition === "error") {
-    throw new SubstrateError(`${subject} is not established (${disposition})`);
+    throw new IndeterminateSubstrateError(`${subject} is not established (${disposition})`);
   }
   throw new DacsError(`${subject} is invalid`);
+}
+
+/**
+ * The provider decides: a DacsError that is not a substrate fault reports a
+ * permanent failure and passes through. Any other thrown read failure may
+ * succeed on retry.
+ */
+function unavailableUnlessPermanent(error: unknown, message: string): Error {
+  if (error instanceof DacsError && !(error instanceof SubstrateError)) return error;
+  return new IndeterminateSubstrateError(message, { cause: error });
 }
 
 async function verifyDisposition(
@@ -958,7 +968,7 @@ async function verifyDisposition(
   try {
     disposition = await callbackResult(operation(), `${subject} result`);
   } catch (error) {
-    throw new SubstrateError(`${subject} verification errored`, { cause: error });
+    throw new IndeterminateSubstrateError(`${subject} verification errored`, { cause: error });
   }
   if (disposition !== "valid") dispositionFailure(subject, disposition);
 }
@@ -999,20 +1009,16 @@ async function resolveCounterpartyBundle(
   role: CounterpartyBundleRole,
   provider: RetainedCounterpartyProvider,
 ): Promise<CounterpartyBundleLookup> {
+  let raw: unknown;
   try {
-    return validateBundleLookup(
-      await callbackResult(
-        provider.resolveCounterpartyBundle(logicalAddress, role),
-        `${role} bundle lookup`,
-      ),
-      role,
+    raw = await callbackResult(
+      provider.resolveCounterpartyBundle(logicalAddress, role),
+      `${role} bundle lookup`,
     );
   } catch (error) {
-    if (error instanceof DacsError || error instanceof SubstrateError) throw error;
-    throw new SubstrateError(`${role} bundle lookup errored and is indeterminate`, {
-      cause: error,
-    });
+    throw unavailableUnlessPermanent(error, `${role} bundle lookup errored and is indeterminate`);
   }
+  return validateBundleLookup(raw, role);
 }
 
 async function authenticateAnchoredCounterpartyBundle(
@@ -1088,7 +1094,7 @@ async function publishCounterpartyBundle(
 ): Promise<AnchoredCounterpartyBundle> {
   let lookup = await resolveCounterpartyBundle(logicalAddress, role, provider);
   if (lookup.disposition === "indeterminate") {
-    throw new SubstrateError(
+    throw new IndeterminateSubstrateError(
       `${role} bundle lookup is indeterminate: ${lookup.reason}`,
     );
   }
@@ -1114,7 +1120,7 @@ async function publishCounterpartyBundle(
   } catch (error) {
     lookup = await resolveCounterpartyBundle(logicalAddress, role, provider);
     if (lookup.disposition !== "present") {
-      throw new SubstrateError(
+      throw new IndeterminateSubstrateError(
         `${role} bundle submission outcome is ambiguous; resolve before any retry`,
         { cause: error },
       );
@@ -1130,7 +1136,9 @@ async function publishCounterpartyBundle(
 
   lookup = await resolveCounterpartyBundle(logicalAddress, role, provider);
   if (lookup.disposition !== "present") {
-    throw new SubstrateError(
+    // Absence right after a submission may be readback lag; the retry
+    // resubmits under the same write-once name.
+    throw new IndeterminateSubstrateError(
       lookup.disposition === "indeterminate"
         ? `${role} bundle readback is indeterminate: ${lookup.reason}`
         : `${role} bundle is authoritatively absent after submission`,
@@ -1204,20 +1212,16 @@ async function resolveBinding(
   if (!provider.resolveBundleBinding) {
     throw new DacsError(`${role} BundleBinding lookup seam is unavailable`);
   }
+  let raw: unknown;
   try {
-    return validateBindingLookup(
-      await callbackResult(
-        provider.resolveBundleBinding(logicalAddress, signer),
-        `${role} BundleBinding lookup`,
-      ),
-      role,
+    raw = await callbackResult(
+      provider.resolveBundleBinding(logicalAddress, signer),
+      `${role} BundleBinding lookup`,
     );
   } catch (error) {
-    if (error instanceof DacsError) throw error;
-    throw new SubstrateError(`${role} BundleBinding lookup errored`, {
-      cause: error,
-    });
+    throw unavailableUnlessPermanent(error, `${role} BundleBinding lookup errored`);
   }
+  return validateBindingLookup(raw, role);
 }
 
 async function authenticateBinding(
@@ -1322,13 +1326,14 @@ async function reconcilePublishedBinding(
       provider,
     );
   } catch (error) {
-    throw new SubstrateError(
+    if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
+    throw new IndeterminateSubstrateError(
       `${role} BundleBinding publication outcome is ambiguous; resolve before any retry`,
       { cause: cause ?? error },
     );
   }
   if (lookup.disposition !== "present" || !exact(lookup.binding, expectedBinding)) {
-    throw new SubstrateError(
+    throw new IndeterminateSubstrateError(
       `${role} BundleBinding publication outcome is ambiguous; resolve before any retry`,
       { cause },
     );
@@ -1356,7 +1361,7 @@ async function publishBinding(
     provider,
   );
   if (lookup.disposition === "indeterminate") {
-    throw new SubstrateError(
+    throw new IndeterminateSubstrateError(
       `${role} BundleBinding lookup is indeterminate: ${lookup.reason}`,
     );
   }
@@ -1422,19 +1427,28 @@ async function publishBinding(
     );
   }
 
-  const published = await resolveBinding(
-    expected.logicalAddress,
-    expected.signer,
-    role,
-    provider,
-  );
-  if (published.disposition !== "present" || !exact(published.binding, authenticatedCandidate)) {
-    throw new SubstrateError(
+  // The publisher confirmed the write. Discovery may lag it, so a lookup that
+  // does not show the binding yet gates nothing (ST-11, BB-8); a different
+  // binding resolved for this role does.
+  let published: SellerBundleBindingLookup | undefined;
+  try {
+    published = await resolveBinding(
+      expected.logicalAddress,
+      expected.signer,
+      role,
+      provider,
+    );
+  } catch (error) {
+    if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
+    published = undefined;
+  }
+  if (published?.disposition === "present" && !exact(published.binding, authenticatedCandidate)) {
+    throw new IndeterminateSubstrateError(
       `published ${role} BundleBinding is not independently readable and exact`,
     );
   }
   return authenticateBinding(
-    published.binding,
+    authenticatedCandidate,
     expected,
     localParty,
     provider,

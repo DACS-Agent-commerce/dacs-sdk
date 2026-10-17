@@ -1,0 +1,7 @@
+{
+  "message": "request to http://127.0.0.1:37197/-/npm/v1/security/audits/quick failed, reason: connect ECONNREFUSED 127.0.0.1:37197",
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}

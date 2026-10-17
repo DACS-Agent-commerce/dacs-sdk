@@ -1,0 +1,31 @@
+{
+  "message": "504 Gateway Timeout - POST http://127.0.0.1:44147/-/npm/v1/security/audits/quick",
+  "method": "POST",
+  "uri": "http://127.0.0.1:44147/-/npm/v1/security/audits/quick",
+  "headers": {
+    "content-type": [
+      "text/plain"
+    ],
+    "date": [
+      "Mon, 12 Oct 2026 22:46:44 GMT"
+    ],
+    "connection": [
+      "keep-alive"
+    ],
+    "keep-alive": [
+      "timeout=5"
+    ],
+    "transfer-encoding": [
+      "chunked"
+    ],
+    "x-fetch-attempts": [
+      "1"
+    ]
+  },
+  "statusCode": 504,
+  "body": "Gateway Timeout",
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}

@@ -47,6 +47,37 @@ export type DacsSessionVetAuthenticationV1 =
   | "invalid"
   | "indeterminate";
 
+export interface DacsSessionVetProductionInputV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  operation: Readonly<DacsLiveTrackOperationInputV1>;
+  evaluatedIdentity: Readonly<IdentityBundle>;
+  requirement: Readonly<BundleRequirement>;
+}
+
+export interface DacsSessionVetAuthenticationInputV1 {
+  context: Readonly<DacsLiveRoleOperationContextV1>;
+  jobId: string;
+  evaluatedIdentity: Readonly<IdentityBundle>;
+  requirement: Readonly<BundleRequirement>;
+  verifier: string;
+  production: Readonly<DacsSessionVetProductionV1>;
+}
+
+/**
+ * Host seam for a complete DACS-2 party-Vet implementation. The default live
+ * profile deliberately supplies only the empty-requirement implementation;
+ * applications admitting non-empty requirements must provide both halves so
+ * pass and failure records are authenticated under the same policy.
+ */
+export interface DacsSessionVetRuntimeV1 {
+  produce(
+    input: Readonly<DacsSessionVetProductionInputV1>,
+  ): Promise<DacsSessionVetProductionOutcomeV1> | DacsSessionVetProductionOutcomeV1;
+  authenticate(
+    input: Readonly<DacsSessionVetAuthenticationInputV1>,
+  ): Promise<DacsSessionVetAuthenticationV1> | DacsSessionVetAuthenticationV1;
+}
+
 interface DacsSessionVetBindingV1 {
   bindingVersion: typeof VET_BINDING_VERSION;
   localBindingHash: string;
@@ -348,14 +379,9 @@ export async function createDacsLiveSessionIdentityV1(input: Readonly<{
     : createDacsX402SessionIdentityV1(input);
 }
 
-export async function authenticateDacsSessionVetProductionV1(input: Readonly<{
-  context: Readonly<DacsLiveRoleOperationContextV1>;
-  jobId: string;
-  evaluatedIdentity: Readonly<IdentityBundle>;
-  requirement: Readonly<BundleRequirement>;
-  verifier: string;
-  production: Readonly<DacsSessionVetProductionV1>;
-}>): Promise<DacsSessionVetAuthenticationV1> {
+export async function authenticateDacsSessionVetProductionV1(
+  input: Readonly<DacsSessionVetAuthenticationInputV1>,
+): Promise<DacsSessionVetAuthenticationV1> {
   try {
     if (!plainObject(input) || !plainObject(input.context) ||
         !isIdentityBundle(input.evaluatedIdentity) ||
@@ -378,7 +404,8 @@ export async function authenticateDacsSessionVetProductionV1(input: Readonly<{
         record.requirementHash !== sha256Hex(canonicalize(input.requirement)) ||
         record.overallDecision !== "pass" ||
         !recordSignatureValid(record, input.verifier) ||
-        ref.anchor.kind !== "storage-program" || ref.anchor.locator !== expectedAddress ||
+        ref.anchor.kind !== "storage-program" ||
+        ref.anchor.locator !== receipt.nativeAddress ||
         ref.contentHash !== expectedHash ||
         !sameCanonicalClaimIdentity(ref.signer, input.verifier) ||
         receipt.substrate !== "demos" || receipt.logicalAddress !== expectedAddress ||
@@ -396,12 +423,9 @@ export async function authenticateDacsSessionVetProductionV1(input: Readonly<{
   }
 }
 
-export async function produceDacsEmptyRequirementSessionVetV1(input: Readonly<{
-  context: Readonly<DacsLiveRoleOperationContextV1>;
-  operation: Readonly<DacsLiveTrackOperationInputV1>;
-  evaluatedIdentity: Readonly<IdentityBundle>;
-  requirement: Readonly<BundleRequirement>;
-}>): Promise<DacsSessionVetProductionOutcomeV1> {
+export async function produceDacsEmptyRequirementSessionVetV1(
+  input: Readonly<DacsSessionVetProductionInputV1>,
+): Promise<DacsSessionVetProductionOutcomeV1> {
   if (!plainObject(input) || !plainObject(input.context) ||
       !operationBound(input.context, input.operation) ||
       !isIdentityBundle(input.evaluatedIdentity) ||
@@ -474,7 +498,7 @@ export async function produceDacsEmptyRequirementSessionVetV1(input: Readonly<{
   const production: DacsSessionVetProductionV1 = {
     record,
     recordRef: {
-      anchor: { kind: "storage-program", locator: logicalAddress },
+      anchor: { kind: "storage-program", locator: receipt.nativeAddress },
       contentHash: recordHash,
       signer: input.context.authority,
     },
