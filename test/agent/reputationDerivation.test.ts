@@ -52,8 +52,8 @@ function bundle(
     jobId,
     outcome,
     anchoredByRole,
-    listingRef: { listingId: "svc", version: 1, contentHash: "c" },
-    agreementRef: { kind: "dacs-3-agreement", id: `a-${jobId}`, contentHash: "c" },
+    listingRef: { listingId: "svc", version: 1, contentHash: "1EFMP07AAGFBH6BV7NPMTPH1D5" },
+    agreementRef: { kind: "dacs-3-agreement", id: `a-${jobId}`, contentHash: "1EFMP07AAGFBH6BV7NPMTPH1D5" },
     parties,
     phaseSummary: [],
     vetRecords: [],
@@ -120,9 +120,9 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     const r = deriveReputation(
       PARTY,
       [
-        bundle("in", "completed", 1500),
-        bundle("early", "completed", 500),
-        bundle("late", "completed", 2500),
+        bundle("2R55KN6K8FJ2EHJTWQZ7K944T2", "completed", 1500),
+        bundle("7M121GQK3ZNCVGG68Q492AMCQ3", "completed", 500),
+        bundle("08J00T6NKSMCZF7PRCMD8DQ6WT", "completed", 2500),
       ],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
@@ -136,8 +136,8 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     const r = deriveReputation(
       PARTY,
       [
-        bundle("a", "completed", 1100),
-        bundle("b", "failed-substrate", 1200),
+        bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100),
+        bundle("1Y4FM1C01SB55372AFCNJE3C9M", "failed-substrate", 1200),
       ],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
@@ -151,10 +151,10 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     const r = deriveReputation(
       PARTY,
       [
-        bundle("a", "completed", 1100),
-        bundle("b", "failed-counterparty", 1200),
-        bundle("c", "aborted-by-other", 1300),
-        bundle("d", "aborted-by-self", 1400), // party's own fault, not counterparty
+        bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100),
+        bundle("1Y4FM1C01SB55372AFCNJE3C9M", "failed-counterparty", 1200),
+        bundle("1EFMP07AAGFBH6BV7NPMTPH1D5", "aborted-by-other", 1300),
+        bundle("0RNGZ76GZG2T4GRM8EJFWKA9GH", "aborted-by-self", 1400), // party's own fault, not counterparty
       ],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
@@ -166,7 +166,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("all-failed-substrate → denominator 0 → rates are null, not zero", () => {
     const r = deriveReputation(
       PARTY,
-      [bundle("a", "failed-substrate", 1100), bundle("b", "failed-substrate", 1200)],
+      [bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "failed-substrate", 1100), bundle("1Y4FM1C01SB55372AFCNJE3C9M", "failed-substrate", 1200)],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
     );
@@ -185,7 +185,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("keys and matches reputation by parameter-free CF-3 identity", () => {
     const qualifiedParty = `${PARTY}?jurisdiction=GB`;
     const qualifiedBundle = bundle(
-      "qualified",
+      "20SBNJTC6K204PS971Z4VKVVB6",
       "completed",
       1100,
       "buyer",
@@ -222,8 +222,8 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     const r = deriveReputation(
       PARTY,
       [
-        bundle("j1", "completed", 1100, "buyer"),
-        bundle("j1", "completed", 1100, "seller"), // counterparty copy, same job
+        bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "buyer"),
+        bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "seller"), // counterparty copy, same job
       ],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
@@ -231,8 +231,8 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.bundleCount).toBe(1); // deduped by jobId
   });
 
-  test("uses the independently resolved per-job role instead of relabelled bundle parties", () => {
-    const relabelled = bundle("relabelled", "aborted-by-self", 1100, "buyer", [
+  test("uses the independently resolved per-job role instead of 3WSTENFQ4BHP8ZWKDAN45W8W10 bundle parties", () => {
+    const relabelled = bundle("3WSTENFQ4BHP8ZWKDAN45W8W10", "aborted-by-self", 1100, "buyer", [
       { role: "seller", bundleHash: "h", primaryClaim: PARTY },
       { role: "buyer", bundleHash: "h", primaryClaim: CP },
     ]);
@@ -250,7 +250,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     });
 
     expect(resolved).toEqual([
-      { jobId: "relabelled", partyPrimaryClaim: PARTY },
+      { jobId: "3WSTENFQ4BHP8ZWKDAN45W8W10", partyPrimaryClaim: PARTY },
     ]);
     expect(Object.isFrozen(resolved[0])).toBe(true);
     expect(r.bundleCount).toBe(1);
@@ -261,7 +261,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("passes the parameter-free identity to the independent role resolver", () => {
     const qualifiedParty = `${PARTY}?jurisdiction=GB`;
     const qualifiedBundle = bundle(
-      "qualified-role",
+      "7JMYEQZNAFGAZYG01YZKK50Y3Y",
       "completed",
       1100,
       "buyer",
@@ -293,7 +293,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   });
 
   test("does not score Promise-like, unresolved, or thrown role results", () => {
-    const candidate = bundle("a", "completed", 1100);
+    const candidate = bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100);
     const promised = deriveReputation(PARTY, [candidate], WINDOW, {
       trustBundles: true,
       resolvePartyRole: (() => Promise.resolve("buyer")) as unknown as () =>
@@ -323,9 +323,9 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     const r = deriveReputation(
       PARTY,
       [
-        bundle("j1", "completed", 1100, "buyer"),
-        bundle("j1", "failed-counterparty", 1100, "seller"), // contradicts the buyer copy
-        bundle("j2", "completed", 1200, "buyer"),
+        bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "buyer"),
+        bundle("084GV6DY96N975Q22BHVRZREWK", "failed-counterparty", 1100, "seller"), // contradicts the buyer copy
+        bundle("54K438Q3T5D81TVBRGCKQYHYTM", "completed", 1200, "buyer"),
       ],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
@@ -337,8 +337,8 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
 
   test("legacy perspective-partner outcomes reconcile to one event", () => {
     const copies = [
-      bundle("j1", "failed-counterparty", 1100, "buyer"),
-      bundle("j1", "failed-perm", 1100, "seller"),
+      bundle("084GV6DY96N975Q22BHVRZREWK", "failed-counterparty", 1100, "buyer"),
+      bundle("084GV6DY96N975Q22BHVRZREWK", "failed-perm", 1100, "seller"),
     ];
     const buyer = deriveReputation(PARTY, copies, WINDOW, TRUSTED_WITH_ABSENCE);
     expect(buyer.bundleCount).toBe(1);
@@ -352,8 +352,8 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
 
   test("fault-bundle perspective pair scores the same absolute fault for both parties", () => {
     const copies = [
-      faultBundle("j1", "failed-counterparty", "seller", "buyer"),
-      faultBundle("j1", "failed-perm", "seller", "seller"),
+      faultBundle("084GV6DY96N975Q22BHVRZREWK", "failed-counterparty", "seller", "buyer"),
+      faultBundle("084GV6DY96N975Q22BHVRZREWK", "failed-perm", "seller", "seller"),
     ];
     const buyer = deriveReputation(PARTY, copies, WINDOW, TRUSTED_WITH_ABSENCE);
     expect(buyer.bundleCount).toBe(1);
@@ -365,8 +365,8 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
 
   test("mixed pair uses its compatible fault bundle and orchestrator fault is neutral", () => {
     const mixed = [
-      bundle("j1", "failed-counterparty", 1100, "buyer"),
-      faultBundle("j1", "failed-perm", "seller", "seller"),
+      bundle("084GV6DY96N975Q22BHVRZREWK", "failed-counterparty", 1100, "buyer"),
+      faultBundle("084GV6DY96N975Q22BHVRZREWK", "failed-perm", "seller", "seller"),
     ];
     expect(deriveReputation(PARTY, mixed, WINDOW, TRUSTED_WITH_ABSENCE).metrics.counterpartyFaultRate).toBe(1);
 
@@ -377,7 +377,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     ];
     const neutral = deriveReputation(
       PARTY,
-      [faultBundle("j2", "failed-counterparty", "orchestrator", "buyer", parties)],
+      [faultBundle("54K438Q3T5D81TVBRGCKQYHYTM", "failed-counterparty", "orchestrator", "buyer", parties)],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
     );
@@ -387,11 +387,11 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   });
 
   test("two present perspective-flipped phase error classes are divergent and excluded", () => {
-    const buyerCopy = bundle("j1", "completed", 1100, "buyer");
+    const buyerCopy = bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "buyer");
     buyerCopy.phaseSummary = [
       { index: 0, kind: "settle", outcome: "fail", errorClass: "counterparty" } as never,
     ];
-    const sellerCopy = bundle("j1", "completed", 1100, "seller");
+    const sellerCopy = bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "seller");
     sellerCopy.phaseSummary = [
       { index: 0, kind: "settle", outcome: "fail", errorClass: "permanent" } as never,
     ];
@@ -401,11 +401,11 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   });
 
   test("two present perspective-flipped phase outcomes are divergent and excluded", () => {
-    const buyerCopy = bundle("j1", "completed", 1100, "buyer");
+    const buyerCopy = bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "buyer");
     buyerCopy.phaseSummary = [
       { index: 0, kind: "settle", outcome: "failed-counterparty" } as never,
     ];
-    const sellerCopy = bundle("j1", "completed", 1100, "seller");
+    const sellerCopy = bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "seller");
     sellerCopy.phaseSummary = [
       { index: 0, kind: "settle", outcome: "failed-perm" } as never,
     ];
@@ -415,11 +415,11 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   });
 
   test("shared-index phase kind mismatch is divergent and excluded", () => {
-    const buyerCopy = bundle("j1", "completed", 1100, "buyer");
+    const buyerCopy = bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "buyer");
     buyerCopy.phaseSummary = [
       { index: 2, kind: "commit-agreement", outcome: "ok" } as never,
     ];
-    const sellerCopy = bundle("j1", "completed", 1100, "seller");
+    const sellerCopy = bundle("084GV6DY96N975Q22BHVRZREWK", "completed", 1100, "seller");
     sellerCopy.phaseSummary = [
       { index: 2, kind: "deliver-storage-program", outcome: "ok" } as never,
     ];
@@ -431,7 +431,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("counterparty-only copy without authoritative absence evidence is excluded", () => {
     const r = deriveReputation(
       PARTY,
-      [bundle("j1", "aborted-by-self", 1100, "seller")],
+      [bundle("084GV6DY96N975Q22BHVRZREWK", "aborted-by-self", 1100, "seller")],
       WINDOW,
       { trustBundles: true, trustBundlePartyRoles: true },
     );
@@ -443,7 +443,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("self-only copy without authoritative absence evidence is excluded", () => {
     const r = deriveReputation(
       PARTY,
-      [faultBundle("j1", "completed", "none", "buyer")],
+      [faultBundle("084GV6DY96N975Q22BHVRZREWK", "completed", "none", "buyer")],
       WINDOW,
       { trustBundles: true, trustBundlePartyRoles: true },
     );
@@ -454,13 +454,13 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("counterparty-only copy is attributed with authoritative absence evidence", () => {
     const r = deriveReputation(
       PARTY,
-      [bundle("j1", "aborted-by-self", 1100, "seller")],
+      [bundle("084GV6DY96N975Q22BHVRZREWK", "aborted-by-self", 1100, "seller")],
       WINDOW,
       {
         trustBundles: true,
         trustBundlePartyRoles: true,
         copyAbsence: ({ jobId, missingRole, presentRole }) => {
-          expect(jobId).toBe("j1");
+          expect(jobId).toBe("084GV6DY96N975Q22BHVRZREWK");
           expect(missingRole).toBe("buyer");
           expect(presentRole).toBe("seller");
           return "absent";
@@ -474,10 +474,10 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("signature validation hook drops invalid copies", () => {
     const r = deriveReputation(
       PARTY,
-      [bundle("a", "completed", 1100), bundle("b", "completed", 1200)],
+      [bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100), bundle("1Y4FM1C01SB55372AFCNJE3C9M", "completed", 1200)],
       WINDOW,
       {
-        isValid: (b) => b.jobId === "a",
+        isValid: (b) => b.jobId === "6AJY0H5JGVQQ5FNGHHPED27Q2D",
         trustBundlePartyRoles: true,
         copyAbsence: () => "absent",
       },
@@ -489,7 +489,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(() =>
       deriveReputation(
         PARTY,
-        [bundle("a", "completed", 1100)],
+        [bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100)],
         WINDOW,
         {
           // JavaScript and casted callers can bypass the TypeScript return type;
@@ -502,21 +502,21 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     ).toThrow(/boolean synchronously|deriveReputationWithValidation/);
   });
 
-  test("async validation admits only primitive true and excludes false, rejection, and non-boolean results", async () => {
+  test("async validation admits only primitive true and excludes 7WQKRPB44DT659WJFQZWKR20BP, rejection, and non-boolean results", async () => {
     const r = await deriveReputationWithValidation(
       PARTY,
       [
-        bundle("accepted", "completed", 1100),
-        bundle("false", "completed", 1200),
-        bundle("rejected", "completed", 1300),
-        bundle("truthy-object", "completed", 1400),
+        bundle("071GB0MRMSRN1R0W5HN9SQP57W", "completed", 1100),
+        bundle("7WQKRPB44DT659WJFQZWKR20BP", "completed", 1200),
+        bundle("10SP9RMBN69XGJPD93QJ91J4RC", "completed", 1300),
+        bundle("0GGFYR3M656S1MDMK05YY7GHCR", "completed", 1400),
       ],
       WINDOW,
       {
         validate: async (candidate) => {
-          if (candidate.jobId === "accepted") return true;
-          if (candidate.jobId === "rejected") throw new Error("indeterminate");
-          if (candidate.jobId === "truthy-object") {
+          if (candidate.jobId === "071GB0MRMSRN1R0W5HN9SQP57W") return true;
+          if (candidate.jobId === "10SP9RMBN69XGJPD93QJ91J4RC") throw new Error("indeterminate");
+          if (candidate.jobId === "0GGFYR3M656S1MDMK05YY7GHCR") {
             return { valid: true } as unknown as boolean;
           }
           return Promise.resolve(false);
@@ -528,7 +528,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
 
     expect(r.bundleCount).toBe(1);
     expect(r.bundleRefs[0]?.anchor.locator).toBe(
-      bundleAddress("accepted", "buyer"),
+      bundleAddress("071GB0MRMSRN1R0W5HN9SQP57W", "buyer"),
     );
     expect(r.metrics.completionRate).toBe(1);
   });
@@ -541,7 +541,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       {
         get() {
           propertyReads += 1;
-          throw new Error("must not inspect rejected wire input");
+          throw new Error("must not inspect 10SP9RMBN69XGJPD93QJ91J4RC wire input");
         },
       },
     ) as unknown as ReturnType<typeof bundle>;
@@ -565,9 +565,9 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(r.bundleCount).toBe(0);
   });
 
-  test("async validation snapshots each accepted copy before a later await permits caller mutation", async () => {
-    const accepted = bundle("accepted", "completed", 1100);
-    const delayed = bundle("delayed", "completed", 1200);
+  test("async validation snapshots each 071GB0MRMSRN1R0W5HN9SQP57W copy before a later await permits caller mutation", async () => {
+    const accepted = bundle("071GB0MRMSRN1R0W5HN9SQP57W", "completed", 1100);
+    const delayed = bundle("0PTYBH7YG58SM5KRPR3WYY5J4M", "completed", 1200);
     let releaseDelayed!: () => void;
     const delayedGate = new Promise<void>((resolve) => {
       releaseDelayed = resolve;
@@ -583,7 +583,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       WINDOW,
       {
         validate: async (candidate) => {
-          if (candidate.jobId === "accepted") return true;
+          if (candidate.jobId === "071GB0MRMSRN1R0W5HN9SQP57W") return true;
           signalDelayed();
           await delayedGate;
           return false;
@@ -604,7 +604,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   });
 
   test("owns each bundle and the window before asynchronous validation", async () => {
-    const candidate = bundle("owned-input", "completed", 1500);
+    const candidate = bundle("5VTXVC2FXEYRZ68PW9F45112JJ", "completed", 1500);
     const mutableWindow = { ...WINDOW };
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -652,7 +652,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     };
     const result = await deriveReputationWithValidation(
       PARTY,
-      [bundle("bound-validator", "completed", 1500)],
+      [bundle("4517F238D9W59NDA01PR1XZRCX", "completed", 1500)],
       WINDOW,
       dependencies,
     );
@@ -662,7 +662,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   });
 
   test("async validation forwards the independent role resolver", async () => {
-    const relabelled = bundle("relabelled", "aborted-by-self", 1100, "buyer", [
+    const relabelled = bundle("3WSTENFQ4BHP8ZWKDAN45W8W10", "aborted-by-self", 1100, "buyer", [
       { role: "seller", bundleHash: "h", primaryClaim: PARTY },
       { role: "buyer", bundleHash: "h", primaryClaim: CP },
     ]);
@@ -673,7 +673,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       {
         validate: async () => true,
         resolvePartyRole: ({ jobId, partyPrimaryClaim }) =>
-          jobId === "relabelled" && partyPrimaryClaim === PARTY
+          jobId === "3WSTENFQ4BHP8ZWKDAN45W8W10" && partyPrimaryClaim === PARTY
             ? "buyer"
             : undefined,
         copyAbsence: () => "absent",
@@ -687,7 +687,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
 
   test("requires an explicit isValid or trustBundles — no fail-open default", () => {
     expect(() =>
-      deriveReputation(PARTY, [bundle("a", "completed", 1100)], WINDOW),
+      deriveReputation(PARTY, [bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100)], WINDOW),
     ).toThrow(/isValid|trustBundles/);
   });
 
@@ -695,7 +695,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(() =>
       deriveReputation(
         PARTY,
-        [bundle("a", "completed", 1100)],
+        [bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100)],
         WINDOW,
         { trustBundles: true },
       ),
@@ -703,7 +703,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   });
 
   test("trust assertions accept only primitive true", () => {
-    const candidate = bundle("a", "completed", 1100);
+    const candidate = bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100);
     expect(() =>
       deriveReputation(PARTY, [candidate], WINDOW, {
         trustBundles: {} as unknown as true,
@@ -723,7 +723,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     await expect(
       deriveReputationWithValidation(
         PARTY,
-        [bundle("a", "completed", 1100)],
+        [bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100)],
         WINDOW,
         {
           validate: async () => {
@@ -742,10 +742,10 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     const r = deriveReputation(
       PARTY,
       [
-        bundle("a", "completed", 1100),
-        bundle("b", "failed-counterparty", 1200),
-        bundle("c", "aborted-by-other", 1300),
-        bundle("d", "aborted-by-self", 1400),
+        bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100),
+        bundle("1Y4FM1C01SB55372AFCNJE3C9M", "failed-counterparty", 1200),
+        bundle("1EFMP07AAGFBH6BV7NPMTPH1D5", "aborted-by-other", 1300),
+        bundle("0RNGZ76GZG2T4GRM8EJFWKA9GH", "aborted-by-self", 1400),
       ],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
@@ -756,7 +756,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   test("counterpartyAdjustedCompletionRate is null when every outcome is counterparty-caused", () => {
     const r = deriveReputation(
       PARTY,
-      [bundle("a", "failed-counterparty", 1100), bundle("b", "aborted-by-other", 1200)],
+      [bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "failed-counterparty", 1100), bundle("1Y4FM1C01SB55372AFCNJE3C9M", "aborted-by-other", 1200)],
       WINDOW,
       TRUSTED_WITH_ABSENCE,
     );
@@ -764,7 +764,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
   });
 
   test("transactionCountByCurrency is schema-present ([]) until volume wiring", () => {
-    const r = deriveReputation(PARTY, [bundle("a", "completed", 1100)], WINDOW, {
+    const r = deriveReputation(PARTY, [bundle("6AJY0H5JGVQQ5FNGHHPED27Q2D", "completed", 1100)], WINDOW, {
       trustBundles: true,
       trustBundlePartyRoles: true,
     });
@@ -833,7 +833,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       targetRole: "buyer",
       value: 4,
       ratedAt: 1200,
-    }, "accepted");
+    }, "071GB0MRMSRN1R0W5HN9SQP57W");
     const wrongJob = rating({
       jobId: OTHER_JOB,
       rater: CP,
@@ -849,7 +849,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       targetRole: "seller",
       value: 1,
       ratedAt: 1202,
-    }, "relabelled");
+    }, "3WSTENFQ4BHP8ZWKDAN45W8W10");
     const wrongHash = rating({
       jobId: ADVERSARIAL_JOB,
       rater: CP,
@@ -949,7 +949,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       targetRole: "buyer",
       value: 2,
       ratedAt: 1200,
-    }, "early");
+    }, "7M121GQK3ZNCVGG68Q492AMCQ3");
     const latest = rating({
       jobId: DUPLICATE_JOB,
       rater: CP,
@@ -1102,7 +1102,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect((await pending).metrics.averageBuyerRating).toBe(5);
   });
 
-  test("deduplicates CF-3-equivalent qualified rater references", async () => {
+  test("deduplicates CF-3-equivalent 20SBNJTC6K204PS971Z4VKVVB6 rater references", async () => {
     const first = rating({
       jobId: QUALIFIED_JOB,
       rater: `${CP}?jurisdiction=GB`,
@@ -1110,7 +1110,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       targetRole: "buyer",
       value: 2,
       ratedAt: 1200,
-    }, "qualified-first");
+    }, "20SBNJTC6K204PS971Z4VKVVB6-first");
     const latest = rating({
       jobId: QUALIFIED_JOB,
       rater: `${CP}?jurisdiction=US`,
@@ -1118,7 +1118,7 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
       targetRole: "buyer",
       value: 4,
       ratedAt: 1300,
-    }, "qualified-latest");
+    }, "20SBNJTC6K204PS971Z4VKVVB6-latest");
     const records = new Map([
       [first.ref.anchor.locator, first.record],
       [latest.ref.anchor.locator, latest.record],

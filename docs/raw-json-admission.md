@@ -1,4 +1,4 @@
-# Explicit raw-byte JSON admission (local candidate)
+# Raw-byte JSON admission
 
 `admitRawJson(bytes)` implements the CORE §B.2 CF-5 admission boundary from
 DACS-Standard `b80919cd7b114499ffc3d9b5c2f3f91ca7fab3f6`.
@@ -39,12 +39,30 @@ failures are not failed cryptographic signatures.
 Canonicalization, schema checks, signed-scope selection, and signature and
 protocol verification remain subsequent operations.
 
-This is an **explicit API**, not a current-profile switch. Existing object-based
-SDK consumers, adapters, caches and restored session records do not acquire
-raw-byte provenance by importing this helper. Do not use `JSON.stringify` of
-an already parsed object as evidence of original CF-5 admission. Integration
-must retain exact bytes or enforce authenticated byte-admission provenance at
-each actual ingress. The SDK-wide Standard pin remains unchanged.
+`admitArtifactJson(exactReceivedBytes)` admits an external JSON object and
+retains runtime provenance for the discovery and authenticated payment APIs.
+Its optional second argument selects an object member from a fully admitted
+transport envelope. `DemosAdapter.readAnchor` uses this at the public storage
+transport boundary, with a 1 MiB response bound and a 30-second timeout.
+Custom adapters must retain exact bytes and use the same API before returning
+a record. `resolveAndRead`, Listing discovery and `verifySettlementEvidence`
+refuse unproven parsed objects before hashing or verifying. Owned discovery
+snapshots retain provenance; `cloneWithArtifactAdmission` and
+`inheritArtifactAdmission` preserve it through equivalent owned JSON snapshots,
+including admitted members of authenticated HTTP envelopes and payment requests.
+Neither helper grants provenance to unproven parsed data. Arbitrary clones,
+restored cache objects and objects changed since admission do not retain it. Re-read external bytes after a restart.
+
+Do not use `JSON.stringify` of an already parsed external object as evidence of
+original CF-5 admission. Locally constructed structural inspection remains
+explicitly separate through `validateSettlementEvidenceStructure`.
+`verifyConstructedSettlementEvidence` is an explicit authoring path for evidence
+created by the local signer; it enforces current JID-1 and the complete
+cryptographic context, and must not be used for external transport values. Historical
+signature inspection uses `verifyLegacySettlementEvidence` and does not establish
+current-profile conformance. Other object-based APIs do not acquire provenance
+by importing a helper; their ingestion boundary remains the caller's duty.
+The SDK-wide Standard pin remains unchanged.
 
 Tests vendor the byte-exact upstream `raw-json-profile-v0.1.json` corpus from
 that revision. All 59 outcomes and accepted canonical bytes are checked, along

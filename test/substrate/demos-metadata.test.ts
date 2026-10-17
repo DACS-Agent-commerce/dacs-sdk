@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   attestationAddress,
@@ -94,7 +95,7 @@ describe("Demos transport metadata preserves encoded logical keys", () => {
       adapter: {
         getAddress: () => OWNER,
         anchorWriteOnce: adapter.anchorWriteOnce.bind(adapter),
-        readAnchor: async () => artifact,
+        readAnchor: async () => admittedFixture(artifact),
       },
       index: bindings, publisher: bindings, expectedOwner: OWNER,
       fetchPage: createDemosHistoryPageFetcher({

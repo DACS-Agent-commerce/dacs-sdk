@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { contentHash } from "../../src/canonical/index.js";
-import { bundleAddress, storAddress } from "../../src/canonical/addressing.js";
+import { legacyJobAddressing, storAddress } from "../../src/canonical/addressing.js";
 
 const CONF = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -44,6 +44,7 @@ describe("§14 golden vectors — content hashes + addressing", () => {
 
   it("role-specific bundle address derivation (§10.4.3)", () => {
     const jobId = golden.bundle.jobId;
+    const { bundleAddress } = legacyJobAddressing;
     const expected =
       "stor-" +
       createHash("sha256").update(`${jobId}-bundle-buyer`).digest("hex");

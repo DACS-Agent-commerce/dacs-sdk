@@ -10,12 +10,22 @@ export function storAddress(seed: string): string {
   return `stor-${sha256Hex(seed)}`;
 }
 
+/** CORE JID-1 current-profile identifier, checked before derivation or I/O. */
+export function isCurrentJobId(value: unknown): value is string {
+  return typeof value === "string" && value.length === 26 && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value);
+}
+
+export function requireCurrentJobId(value: unknown): asserts value is string {
+  if (!isCurrentJobId(value)) throw new DacsError("jobId must be a JID-1 canonical ULID");
+}
+
 /** DACS-5 §10.4.3 role-specific bundle address: `stor-{sha256(jobId + "-bundle-" + role)}`. */
 export function bundleAddress(
   jobId: string,
   role: "buyer" | "seller" | "orchestrator",
 ): string {
-  return storAddress(`${jobId}-bundle-${role}`);
+  requireCurrentJobId(jobId);
+  return legacyJobAddressing.bundleAddress(jobId, role);
 }
 
 /**
@@ -112,7 +122,25 @@ export function listingAddress(
 }
 
 /** DACS-2 CM-2 VerifyResult address with the identifier encoded per CF-4. */
-export function attestationAddress(
+export function attestationAddress(jobId: string, scheme: string, identifier: string, recipeVersion: number): string {
+  requireCurrentJobId(jobId);
+  return legacyJobAddressing.attestationAddress(jobId, scheme, identifier, recipeVersion);
+}
+
+/** DACS-4 PC-2 SettlementEvidence address with the rail id encoded per CF-4. */
+export function paymentEvidenceAddress(jobId: string, railId: string, phaseIndex: number, resolved = false): string {
+  requireCurrentJobId(jobId);
+  return legacyJobAddressing.paymentEvidenceAddress(jobId, railId, phaseIndex, resolved);
+}
+
+/** DACS-5 §10.6.1 RatingRecord address with the rater encoded per CF-4. */
+export function ratingAddress(jobId: string, rater: string): string {
+  requireCurrentJobId(jobId);
+  return legacyJobAddressing.ratingAddress(jobId, rater);
+}
+
+/** DACS-2 CM-2 VerifyResult address with the identifier encoded per CF-4. */
+function archivalAttestationAddress(
   jobId: string,
   scheme: string,
   identifier: string,
@@ -128,7 +156,7 @@ export function attestationAddress(
 }
 
 /** DACS-4 PC-2 SettlementEvidence address with the rail id encoded per CF-4. */
-export function paymentEvidenceAddress(
+function archivalPaymentEvidenceAddress(
   jobId: string,
   railId: string,
   phaseIndex: number,
@@ -147,11 +175,24 @@ export function paymentEvidenceAddress(
 }
 
 /** DACS-5 §10.6.1 RatingRecord address with the rater encoded per CF-4. */
-export function ratingAddress(jobId: string, rater: string): string {
+function archivalRatingAddress(jobId: string, rater: string): string {
   requireStructuralSegment(jobId, "rating address jobId");
   requireVariableSegment(rater, "rating address rater");
   return `dacs5:rating:${jobId}:${encodeAddressSegment(rater)}`;
 }
+
+/**
+ * Explicit archival derivations for historical signed records. These do not
+ * establish current-profile conformance and must never be selected by fallback.
+ */
+export const legacyJobAddressing = Object.freeze({
+  bundleAddress(jobId: string, role: "buyer" | "seller" | "orchestrator"): string {
+    return storAddress(`${jobId}-bundle-${role}`);
+  },
+  attestationAddress: archivalAttestationAddress,
+  paymentEvidenceAddress: archivalPaymentEvidenceAddress,
+  ratingAddress: archivalRatingAddress,
+});
 
 /**
  * Encode a colon-bearing logical address into a colon-free Demos StorageProgram

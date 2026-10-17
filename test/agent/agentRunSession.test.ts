@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -141,7 +142,7 @@ function memAdapter(options: { failBundleOnce?: boolean } = {}) {
       };
     },
     anchorAddress: async (name: string) => `stor:${name}`,
-    readAnchor: async (address: string) => store.get(address) ?? null,
+    readAnchor: async (address: string) => admittedFixture(store.get(address) ?? null),
     // #70 surface: resume resolution is BY NAME, owner-bound. The mem adapter's
     // addresses are deterministic (`stor:<name>`), so resolution is a lookup.
     getAddress: () => buyerDid,
@@ -1247,7 +1248,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       contentHash: contentHash(stripSignature(evidence)),
     };
     const directEvidenceVerdict = await verifySettlementEvidence(
-      evidence,
+      admittedFixture(evidence),
       {
         orchestrator: sellerDid,
         agreement: { amount: "1", currency: "USDC" },

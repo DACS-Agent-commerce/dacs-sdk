@@ -1,5 +1,6 @@
 import {
   bundleAddress,
+  legacyJobAddressing,
   canonicalize,
   contentHash,
   stripSignature,
@@ -256,6 +257,7 @@ function deriveReputationCore(
   bundles: AnyAttestationBundle[],
   window: ReputationWindow,
   deps: DeriveReputationDeps = {},
+  addressOf = bundleAddress,
 ): ReputationCoreResult {
   const basis = window.windowingBasis ?? "finalisedAt";
   const parsedParty = requireCanonicalClaimReference(
@@ -424,7 +426,7 @@ function deriveReputationCore(
     .map((b) => ({
       anchor: {
         kind: "storage-program" as const,
-        locator: bundleAddress(b.jobId, b.anchoredByRole),
+        locator: addressOf(b.jobId, b.anchoredByRole),
       },
       contentHash: bundleContentHash(b),
     }))
@@ -464,6 +466,16 @@ export function deriveReputation(
   deps: DeriveReputationDeps = {},
 ): ReputationDerivation {
   return deriveReputationCore(party, bundles, window, deps).derivation;
+}
+
+/** Explicit archival computation over historical signed job identifiers. */
+export function deriveLegacyReputation(
+  party: string,
+  bundles: AnyAttestationBundle[],
+  window: ReputationWindow,
+  deps: DeriveReputationDeps = {},
+): ReputationDerivation {
+  return deriveReputationCore(party, bundles, window, deps, legacyJobAddressing.bundleAddress).derivation;
 }
 
 function exactObjectKeys(

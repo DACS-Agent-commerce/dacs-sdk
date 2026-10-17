@@ -163,6 +163,12 @@ async function makeAdapter(options?: {
   vi.spyOn(adapter, "resolveAnchorByName").mockResolvedValue({
     status: "absent",
   });
+  // Native-visible writes schedule a diagnostic name-index read. Keep this
+  // unrelated background observation within the fixture's synthetic transport.
+  Object.defineProperty(adapter, "resolveAnchorByIndex", {
+    value: async () => ({ status: "absent" }),
+    configurable: true,
+  });
   raw.getAddressNonce = vi.fn(async () => signedCount);
   raw.storagePrograms.read = vi.fn(async (address: string) => {
     const entry = [...signedPayloads.entries()]
@@ -720,13 +726,14 @@ describe("DemosAdapter.anchorAndWait", () => {
   });
 
   it("distinguishes genuine 404 absence from transient read failures", async () => {
-    const { adapter, raw } = await makeAdapter();
-
+    const { adapter } = await makeAdapter();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 404 })));
     await expect(adapter.readAnchor("missing")).resolves.toBeNull();
-    raw.storagePrograms.read.mockRejectedValue(rpcFailure());
+    vi.stubGlobal("fetch", vi.fn(async () => { throw rpcFailure(); }));
     await expect(adapter.readAnchor("uncertain")).rejects.toThrow(
       /read anchor uncertain failed/,
     );
+    vi.unstubAllGlobals();
   });
 
   it("waits through stale content and returns exact-canonical progress evidence", async () => {

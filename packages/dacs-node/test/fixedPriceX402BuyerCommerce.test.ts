@@ -1,3 +1,4 @@
+import { admittedFixture } from "./helpers/admitted.js";
 import { x402BuyerSettlementKey } from "@kynesyslabs/dacs";
 import { ARTIFACT_SEPARATORS, type ComponentSignature } from "@kynesyslabs/dacs/artifacts";
 import { contentHash } from "@kynesyslabs/dacs/canonical";
@@ -92,7 +93,7 @@ function receivedFixture(
           artifacts.has(logicalAddress)
             ? { status: "present", address: logicalAddress }
             : { status: "absent" },
-        readAnchor: async (address: string) => artifacts.get(address) ?? null,
+        readAnchor: async (address: string) => admittedFixture(artifacts.get(address) ?? null),
         resolveDemosAnchorReceipt: async (input: {
           logicalAddress: string;
           nativeAddress: string;
@@ -119,7 +120,7 @@ function receivedFixture(
       parameters,
     } as never,
   });
-  const authorize = (body: unknown) => commerce.buyerReceived.authorizeReceived({
+  const authorizeBytes = (body: Uint8Array) => commerce.buyerReceived.authorizeReceived({
     operation: { order: { jobId: JOB_ID } },
     intent: {
       jobId: JOB_ID,
@@ -130,9 +131,10 @@ function receivedFixture(
       signedEvent: { httpResource: "https://seller.example/delivery" },
     },
     response: { contentType: "application/json; charset=utf-8" },
-    body: new TextEncoder().encode(JSON.stringify(body)),
+    body,
   } as never);
-  return { payload, evidence, authorize };
+  const authorize = (body: unknown) => authorizeBytes(new TextEncoder().encode(JSON.stringify(body)));
+  return { payload, evidence, authorize, authorizeBytes };
 }
 
 describe("fixed-price x402 buyer commerce", () => {
@@ -156,6 +158,14 @@ describe("fixed-price x402 buyer commerce", () => {
       result: { ok: true },
       expectedAnchorLocator: DELIVERABLE_ADDRESS,
     }, expect.anything());
+  });
+
+  it("rejects duplicate raw deliverable members before evidence verification", async () => {
+    const { payload, authorizeBytes } = receivedFixture();
+    const firstKey = Object.keys(payload)[0]!;
+    const raw = `{${JSON.stringify(firstKey)}:null,${JSON.stringify(payload).slice(1)}`;
+    await expect(authorizeBytes(new TextEncoder().encode(raw))).resolves.toBe("indeterminate");
+    expect(dependencies.verifySettlementEvidence).not.toHaveBeenCalled();
   });
 
   it("rejects a response that differs from the anchored deliverable outside its signed scope", async () => {
@@ -285,8 +295,8 @@ function paymentEvidenceFixture() {
       jobId: JOB_ID,
       logicalAddress: PAYMENT_ADDRESS,
       evidenceHash: contentHash(evidence),
-      evidence,
       ...request,
+      evidence: admittedFixture(Object.hasOwn(request, "evidence") ? request.evidence : evidence),
     } as never);
   return { evidence, settlementKey, settlementLoad, state, verify };
 }

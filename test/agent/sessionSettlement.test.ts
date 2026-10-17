@@ -45,9 +45,9 @@ const SETTLEMENT_ID = `evm:8453:${"e".repeat(64)}:0`;
 function context(finalityBlocks = 12): SessionSettlementContext {
   return {
     contextVersion: "1",
-    jobId: "job-settlement-1",
+    jobId: "5JJB9STB8SX9DXPGRFTZV5MV0R",
     agreementRef: {
-      anchor: { kind: "storage-program", locator: "agreement:job-settlement-1" },
+      anchor: { kind: "storage-program", locator: "agreement:5JJB9STB8SX9DXPGRFTZV5MV0R" },
       contentHash: "b".repeat(64),
     },
     agreementHash: "b".repeat(64),
@@ -140,7 +140,7 @@ function signedEvidence(input: {
   const outcome = input.outcome ?? "success";
   const base = {
     evidenceVersion: "1" as const,
-    jobId: input.jobId ?? "job-settlement-1",
+    jobId: input.jobId ?? "5JJB9STB8SX9DXPGRFTZV5MV0R",
     phase: "pay-x402" as const,
     outcome,
     paymentTxRefs: input.currentX402Event
@@ -169,7 +169,7 @@ function signedEvidence(input: {
             anchor: {
               kind: "storage-program" as const,
               locator:
-                `dacs4:payment:${input.jobId ?? "job-settlement-1"}:` +
+                `dacs4:payment:${input.jobId ?? "5JJB9STB8SX9DXPGRFTZV5MV0R"}:` +
                 `${encodeAddressSegment(input.railId ?? "rail-x402-base")}:` +
                 `${input.phaseIndex ?? 3}`,
             },
@@ -209,7 +209,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     anchor: {
       kind: "storage-program",
       locator:
-        `dacs4:payment:${options.jobId ?? "job-settlement-1"}:` +
+        `dacs4:payment:${options.jobId ?? "5JJB9STB8SX9DXPGRFTZV5MV0R"}:` +
         `${encodeAddressSegment(options.railId ?? "rail-x402-base")}:` +
         `${options.phaseIndex ?? 3}${options.resolved ? ":resolved" : ""}`,
     },
@@ -220,7 +220,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     substrate: "demos",
     finalityProfile: "bft-final",
     logicalAddress: evidenceRef.anchor.locator,
-    nativeAddress: "native:evidence:job-settlement-1:3",
+    nativeAddress: "native:evidence:5JJB9STB8SX9DXPGRFTZV5MV0R:3",
     contentHash: evidenceHash,
     transactionRef: { kind: "demos", value: "anchor-tx-1" },
     writer: ORCHESTRATOR,
@@ -250,7 +250,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     nativeProofRef: {
       proofVersion: "1",
       kind: "x402-response-and-chain-observation",
-      locator: "proof:job-settlement-1:3",
+      locator: "proof:5JJB9STB8SX9DXPGRFTZV5MV0R:3",
       contentHash: sha256Hex(canonicalize(proof)),
       encoding: "jcs",
     },
@@ -269,7 +269,7 @@ function replacePaymentEvidence(input: {
 }): void {
   const unsigned = {
     evidenceVersion: "1" as const,
-    jobId: "job-settlement-1",
+    jobId: "5JJB9STB8SX9DXPGRFTZV5MV0R",
     phase: input.phase,
     outcome: "success" as const,
     paymentTxRefs: [input.txRef],
@@ -510,7 +510,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     const accessorContext = context() as unknown as Record<string, unknown>;
     Object.defineProperty(accessorContext, "jobId", {
       enumerable: true,
-      get: () => "job-settlement-1",
+      get: () => "5JJB9STB8SX9DXPGRFTZV5MV0R",
     });
     expect((await verifyFinalizedSessionSettlement(
       accessorContext, settlement, provider(proof),
@@ -606,7 +606,7 @@ describe("verifyFinalizedSessionSettlement", () => {
   it("binds the evidence reference signer and receipt logical address locally", async () => {
     const { settlement, proof } = fixture();
     const wrongAddress = structuredClone(settlement);
-    wrongAddress.anchorReceipt.logicalAddress = "evidence:other-job:3";
+    wrongAddress.anchorReceipt.logicalAddress = "evidence:5HEWNTYVX2Z47MHMKNDX8GXWHK:3";
     const addressAnchorVerifier = vi.fn(() => ({ disposition: "pass" as const }));
     expect(await verifyFinalizedSessionSettlement(
       context(),
@@ -666,7 +666,7 @@ describe("verifyFinalizedSessionSettlement", () => {
   it("requires an exact authenticated native job, rail, and phase binding", async () => {
     const { settlement, proof } = fixture();
     const variants: Array<SessionSettlementIdentityBinding> = [
-      { ...settlementBinding(context()), jobId: "other-job" },
+      { ...settlementBinding(context()), jobId: "5HEWNTYVX2Z47MHMKNDX8GXWHK" },
       { ...settlementBinding(context()), railId: "other-rail" },
       { ...settlementBinding(context()), phaseIndex: 4 },
     ];
@@ -915,9 +915,9 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("authenticates point observations without minting SB-2 count authority", async () => {
     const first = fixture();
-    const second = fixture({ jobId: "job-settlement-2", phaseIndex: 4 });
+    const second = fixture({ jobId: "35097X3XRNHGH8KD1XABDK9V5V", phaseIndex: 4 });
     const secondContext = context();
-    secondContext.jobId = "job-settlement-2";
+    secondContext.jobId = "35097X3XRNHGH8KD1XABDK9V5V";
     secondContext.paymentPhaseIndex = 4;
 
     const firstResult = await verifyFinalizedSessionSettlement(

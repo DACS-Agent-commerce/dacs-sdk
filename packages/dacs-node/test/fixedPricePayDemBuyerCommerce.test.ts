@@ -1,3 +1,4 @@
+import { admittedFixture } from "./helpers/admitted.js";
 import {
   ARTIFACT_SEPARATORS,
   isAgreementArtifact,
@@ -282,7 +283,7 @@ async function fixture() {
             ? { status: "present", address: `native:${logicalAddress}` }
             : { status: "absent" },
         readAnchor: async (address: string) =>
-          state.anchors.get(address.replace(/^native:/, "")) ?? null,
+          admittedFixture(state.anchors.get(address.replace(/^native:/, "")) ?? null),
         resolveDemosAnchorReceipt: async (input: {
           logicalAddress: string;
           nativeAddress: string;
@@ -327,8 +328,8 @@ async function fixture() {
       jobId: JOB_ID,
       logicalAddress: PAYMENT_ADDRESS,
       evidenceHash: contentHash(paymentEvidence),
-      evidence: paymentEvidence,
       ...request,
+      evidence: admittedFixture(Object.hasOwn(request, "evidence") ? request.evidence : paymentEvidence),
     } as never);
   return {
     agreement,

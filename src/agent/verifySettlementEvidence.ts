@@ -1,3 +1,5 @@
+import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
+import { isCurrentJobId } from "../canonical/addressing.js";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -1003,11 +1005,11 @@ export async function validateSettlementEvidenceStructure(
 }
 
 /**
- * Verify one SettlementEvidence against complete authenticated context and
- * cryptographic dependencies. Missing trust inputs are an SDK configuration
- * error and can never produce `pass`.
+ * Inspect historical SettlementEvidence signatures against complete context.
+ * This explicitly selected archival API never grants current-profile conformance.
+ * Missing trust inputs are an SDK configuration error and cannot produce pass.
  */
-export async function verifySettlementEvidence(
+export async function verifyLegacySettlementEvidence(
   record: unknown,
   ctx: AuthenticatedEvidenceContext,
   deps: AuthenticatedEvidenceDeps,
@@ -1018,4 +1020,36 @@ export async function verifySettlementEvidence(
     (deps ?? {}) as EvidenceDeps,
     true,
   );
+}
+
+/** Current-profile external verification requires CF-5 admission and JID-1. */
+export async function verifySettlementEvidence(
+  record: unknown,
+  ctx: AuthenticatedEvidenceContext,
+  deps: AuthenticatedEvidenceDeps,
+): Promise<EvidenceVerification> {
+  let admitted: Record<string, unknown>;
+  try {
+    admitted = snapshotAdmittedArtifact(record);
+  } catch (error) {
+    return { decision: "error", reasons: [(error as Error).message] };
+  }
+  return verifyConstructedSettlementEvidence(admitted, ctx, deps);
+}
+
+/**
+ * SDK-owned local evidence evaluation, after construction or authenticated
+ * ingress. Transport consumers must use verifySettlementEvidence instead.
+ * Use only for locally authored evidence; external reads require byte admission.
+ */
+export async function verifyConstructedSettlementEvidence(
+  record: unknown,
+  ctx: AuthenticatedEvidenceContext,
+  deps: AuthenticatedEvidenceDeps,
+): Promise<EvidenceVerification> {
+  const snapshot = snapshotCanonicalJsonRead(record, "constructed settlement evidence");
+  if (!isObj(snapshot) || !isCurrentJobId(snapshot.jobId)) {
+    return { decision: "fail", reasons: ["jobId must be a JID-1 canonical ULID"] };
+  }
+  return evaluateSettlementEvidence(snapshot, ctx ?? {}, deps ?? {}, true);
 }

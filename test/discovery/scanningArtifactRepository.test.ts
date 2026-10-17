@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
@@ -76,7 +77,7 @@ const deferredRow = (id: string): ArtifactScanDeferredRow => ({
 function setup(ids: string[], over: Partial<ScanningArtifactRepositoryDeps> = {}) {
   const records = new Map(ids.map((id) => [`stor-${id}`, record(id)]));
   const store = createInMemoryBindingStore(ids.map(binding));
-  const readAnchor = vi.fn(async (address: string) => records.get(address) ?? null);
+  const readAnchor = vi.fn(async (address: string) => admittedFixture(records.get(address) ?? null));
   const publisher = { publish: vi.fn(store.publish) };
   const adapter: BoundArtifactAdapter = {
     getAddress: vi.fn(() => "buyer"),
@@ -337,7 +338,7 @@ describe("createScanningArtifactRepository (#54)", () => {
       return { address, txRef: `tx-${history.length}` };
     });
     const writer = createBoundArtifactRepository({
-      adapter: { getAddress: () => OWNER, anchorWriteOnce: write, readAnchor: async (address) => records.get(address) ?? null },
+      adapter: { getAddress: () => OWNER, anchorWriteOnce: write, readAnchor: async (address) => admittedFixture(records.get(address) ?? null) },
       index: store, publisher: store,
     });
     const slots = [logical("v1"), `stor-${"a".repeat(64)}`, "dacs1-revoked:seller:v1:v1", `dacs3:commit:${JOB}`];
@@ -356,7 +357,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     });
     const buyer = setup([], { index: store, fetchPage, verifyArtifact: verify,
       adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected buyer write"); },
-        readAnchor: async (address) => records.get(address) ?? null } });
+        readAnchor: async (address) => admittedFixture(records.get(address) ?? null) } });
     const first = await buyer.repo.scanPage(undefined, { limit: 2 });
     const second = await buyer.repo.scanPage(first.state, { limit: 2 });
     expect(first.status).toBe("page");
@@ -385,7 +386,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     let fail = true;
     fixture.readAnchor.mockImplementation(async (address) => {
       if (address === "stor-b" && fail) { fail = false; throw new Error("read unavailable"); }
-      return fixture.records.get(address) ?? null;
+      return admittedFixture(fixture.records.get(address) ?? null);
     });
     const input = state("retry-page");
     const first = await fixture.repo.scanPage(input);
@@ -608,7 +609,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     const fixture = setup([], {
       index: createInMemoryBindingIndex([buyer, seller, wrong].map((entry) => ({ ...entry, contentHash: bundleHash }))),
       adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
-        readAnchor: async (address) => records.get(address) ?? null },
+        readAnchor: async (address) => admittedFixture(records.get(address) ?? null) },
     });
     fixture.fetchPage.mockResolvedValue({ entries: [buyer, seller, wrong], nextCursor: null });
     const result = await fixture.repo.scanPage();
@@ -632,7 +633,7 @@ describe("createScanningArtifactRepository (#54)", () => {
       verifyArtifact,
       index: createInMemoryBindingIndex([{ ...entry, contentHash: contentHash(value) }]),
       adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
-        readAnchor: async () => value },
+        readAnchor: async () => admittedFixture(value) },
     });
     fixture.fetchPage.mockResolvedValue({ entries: [entry], nextCursor: null });
     const result = await fixture.repo.scanPage();
@@ -652,7 +653,7 @@ describe("createScanningArtifactRepository (#54)", () => {
         verifyArtifact,
         index: createInMemoryBindingIndex([{ ...entry, contentHash: bound }]),
         adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
-          readAnchor: async () => structuredClone(stored) },
+          readAnchor: async () => admittedFixture(structuredClone(stored)) },
       });
       fixture.fetchPage.mockResolvedValue({ entries: [entry], nextCursor: null });
       const [result] = (await fixture.repo.scanPage()).results;
@@ -699,7 +700,7 @@ describe("createScanningArtifactRepository (#54)", () => {
         verifyArtifact,
         index: createInMemoryBindingIndex([{ ...entry, contentHash: contentHash(value) }]),
         adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
-          readAnchor: async () => structuredClone(value) },
+          readAnchor: async () => admittedFixture(structuredClone(value)) },
       });
       fixture.fetchPage.mockResolvedValue({ entries: [entry], nextCursor: null });
       const { results } = await fixture.repo.scanPage();
@@ -1332,7 +1333,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     fixture.readAnchor.mockImplementation(async (address) => {
       const id = address.slice("stor-".length);
       if (outcomes[id]?.shift() === "fail") throw new Error(`read ${id} unavailable`);
-      return fixture.records.get(address) ?? null;
+      return admittedFixture(fixture.records.get(address) ?? null);
     });
     const repo = createScanningArtifactRepository({ ...fixture.deps, maxRowAttempts: 2 });
     fixture.fetchPage.mockResolvedValueOnce({ entries: [row("a"), row("b")], nextCursor: null })
@@ -1604,7 +1605,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     const repo = createScanningArtifactRepository({
       expectedOwner: ownerHex, index: store, publisher: store,
       adapter: { getAddress: () => "reader", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
-        readAnchor: async (native) => records.get(native) ?? null },
+        readAnchor: async (native) => admittedFixture(records.get(native) ?? null) },
       fetchPage: createDemosHistoryPageFetcher(client, ownerHex),
       verifyArtifact: () => true,
     });
@@ -1679,7 +1680,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     const repo = createScanningArtifactRepository({
       expectedOwner: ownerHex, index: store, publisher: store,
       adapter: { getAddress: () => "reader", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
-        readAnchor: async () => value },
+        readAnchor: async () => admittedFixture(value) },
       fetchPage: createDemosHistoryPageFetcher(client, ownerHex),
       verifyArtifact: () => true,
     });
@@ -1719,7 +1720,7 @@ describe("createScanningArtifactRepository (#54)", () => {
     const repo = createScanningArtifactRepository({
       expectedOwner: ownerHex, index: store, publisher: { publish: async () => { throw new Error("unexpected publish"); } },
       adapter: { getAddress: () => "reader", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
-        readAnchor: async () => value },
+        readAnchor: async () => admittedFixture(value) },
       fetchPage: createDemosHistoryPageFetcher(client, ownerHex),
       verifyArtifact: () => true,
     });
@@ -1747,7 +1748,7 @@ describe("createScanningArtifactRepository (#54)", () => {
       adapter: {
         getAddress: () => "offline-reader",
         anchorWriteOnce: async () => { throw new Error("read-only demo"); },
-        readAnchor: async (address) => address === nativeAddress ? artifact : null,
+        readAnchor: async (address) => admittedFixture(address === nativeAddress ? artifact : null),
       },
       fetchPage: async (cursor) => cursor === null
         ? { entries: [{ logicalAddress, nativeAddress, owner: expectedOwner }], nextCursor: "second-page" }

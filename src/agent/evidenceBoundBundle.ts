@@ -1,6 +1,6 @@
 import { types as nodeTypes } from "node:util";
 
-import { contentHash, paymentEvidenceAddress, stripSignature } from "../canonical/index.js";
+import { contentHash, paymentEvidenceAddress, legacyJobAddressing, isCurrentJobId, stripSignature } from "../canonical/index.js";
 import { canonicalize } from "../canonical/jcs.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import {
@@ -136,6 +136,8 @@ export interface EvidenceBoundBundleAuthority {
 }
 
 export interface EvidenceBoundBundleVerifierDeps {
+  /** Explicit archival replay only; omitted/current requires JID-1. */
+  jobIdProfile?: "current" | "legacy";
   resolvePublicKey: (claim: string) => Promise<Uint8Array | null>;
   verify: Verifier;
 }
@@ -213,6 +215,13 @@ function captureDeps(deps: EvidenceBoundBundleVerifierDeps): EvidenceBoundBundle
   ) {
     throw new DacsError("evidence-bound verifier dependencies must be a plain data object");
   }
+  const profileDescriptor = Object.getOwnPropertyDescriptor(deps, "jobIdProfile");
+  if (profileDescriptor && (!("value" in profileDescriptor) ||
+      (profileDescriptor.value !== undefined && profileDescriptor.value !== "current" &&
+        profileDescriptor.value !== "legacy"))) {
+    throw new DacsError("evidence-bound jobIdProfile must be current or legacy");
+  }
+  const jobIdProfile = profileDescriptor?.value === "legacy" ? "legacy" : "current";
   const resolveDescriptor = Object.getOwnPropertyDescriptor(deps, "resolvePublicKey");
   const verifyDescriptor = Object.getOwnPropertyDescriptor(deps, "verify");
   if (
@@ -230,6 +239,7 @@ function captureDeps(deps: EvidenceBoundBundleVerifierDeps): EvidenceBoundBundle
   const resolve = resolveDescriptor.value.bind(deps) as EvidenceBoundBundleVerifierDeps["resolvePublicKey"];
   const verify = verifyDescriptor.value.bind(deps) as Verifier;
   return Object.freeze({
+    jobIdProfile,
     resolvePublicKey: async (claim: string) => {
       const key = await resolve(claim);
       return key === null ? null : Uint8Array.from(key);
@@ -486,6 +496,7 @@ function receiptMatches(
   record: SettlementEvidence,
   bundle: EvidenceBoundFaultAttestationBundle,
   resolved: boolean,
+  legacyJobIds: boolean,
 ): boolean {
   if (
     execution.jobId !== bundle.jobId ||
@@ -506,7 +517,9 @@ function receiptMatches(
   if (record.phase.startsWith("pay-")) {
     if (typeof execution.railId !== "string" || execution.railId.length === 0) return false;
     try {
-      expectedAddress = paymentEvidenceAddress(
+      const addressOf = legacyJobIds
+        ? legacyJobAddressing.paymentEvidenceAddress : paymentEvidenceAddress;
+      expectedAddress = addressOf(
         bundle.jobId,
         execution.railId,
         execution.phaseIndex,
@@ -529,6 +542,7 @@ function resolvePhaseBinding(
   bundle: EvidenceBoundFaultAttestationBundle,
   executions: Readonly<Record<string, EvidencePhaseExecutionAuthority>>,
   receipts: Readonly<Record<string, EvidenceAnchorReceiptAuthority>>,
+  legacyJobIds: boolean,
 ): { phaseKey: string; resolved: boolean } | null {
   const receipt = receipts[canonicalRef(ref)];
   if (!receipt) return null;
@@ -552,7 +566,7 @@ function resolvePhaseBinding(
         ? [false, true]
         : [false];
     for (const resolved of classes) {
-      if (receiptMatches(ref, receipt, execution, record, bundle, resolved)) {
+      if (receiptMatches(ref, receipt, execution, record, bundle, resolved, legacyJobIds)) {
         matches.push({ phaseKey, resolved });
       }
     }
@@ -629,6 +643,7 @@ async function knownAuthenticatedSuccessor(
       authority.bundle,
       authority.sessionExecutionAuthorityByPhaseKey,
       authority.verifiedReceiptByCanonicalRef,
+      deps.jobIdProfile === "legacy",
     );
     if (
       binding?.phaseKey === phaseKey &&
@@ -670,6 +685,9 @@ export async function verifyEvidenceBoundFaultBundle(
     return reject("execution-authority", "authority is not inert canonical JSON");
   }
   const bundle = authority.bundle;
+  if (deps.jobIdProfile !== "legacy" && (!isRecord(bundle) || !isCurrentJobId(bundle.jobId))) {
+    return reject("execution-authority", "jobId must be a JID-1 canonical ULID");
+  }
   if (
     !isEvidenceBoundFaultAttestationBundle(bundle) ||
     !faultedPartyIsPermitted(bundle as unknown as Record<string, unknown>) ||
@@ -801,6 +819,7 @@ export async function verifyEvidenceBoundFaultBundle(
       bundle,
       authority.sessionExecutionAuthorityByPhaseKey,
       authority.verifiedReceiptByCanonicalRef,
+      deps.jobIdProfile === "legacy",
     );
     if (!binding || !trace.expected.includes(binding.phaseKey)) {
       return reject("exact-phase-mapping", "evidence does not resolve to exactly one expected authenticated phase");
@@ -894,6 +913,7 @@ export async function verifyEvidenceBoundFaultBundle(
       bundle,
       authority.sessionExecutionAuthorityByPhaseKey,
       authority.verifiedReceiptByCanonicalRef,
+      deps.jobIdProfile === "legacy",
     );
     if (interimBinding?.phaseKey !== member.phaseKey || interimBinding.resolved) {
       return reject("st8-raw-admissibility", "ST-8 interim binds a different phase or address class");

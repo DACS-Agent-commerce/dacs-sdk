@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -73,7 +74,7 @@ function fakeAdapter(owner: string, backend: FakeBackend): BoundArtifactAdapter 
     },
     async readAnchor(address) {
       const record = backend.records.get(address);
-      return record ? { ...record } : null;
+      return admittedFixture(record ? { ...record } : null);
     },
   };
 }
@@ -210,7 +211,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
         return { address: "stor-pinned", txRef: "tx-pinned" };
       },
       async readAnchor() {
-        return anchored ?? null;
+        return admittedFixture(anchored ?? null);
       },
     };
     const repository = createBoundArtifactRepository({

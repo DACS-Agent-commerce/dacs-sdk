@@ -1,3 +1,4 @@
+import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
 import { types as nodeTypes } from "node:util";
 import type {
   AgreementArtifact,
@@ -122,7 +123,7 @@ import {
   attestationBundleHash,
 } from "./twoSidedBundle.js";
 import {
-  verifySettlementEvidence,
+  verifyConstructedSettlementEvidence,
   type EvidenceContext,
 } from "./verifySettlementEvidence.js";
 import {
@@ -1089,8 +1090,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   const publicReads = Object.freeze({
     getAddress: (): string =>
       getAddressMethod?.() ?? missingAdapterCapability("getAddress"),
-    readAnchor: (address: string) =>
-      readAnchorMethod?.(address) ?? missingAdapterCapability("readAnchor"),
+    readAnchor: async (address: string) => {
+      const value = await (readAnchorMethod?.(address) ?? missingAdapterCapability("readAnchor"));
+      return value === null ? null : snapshotAdmittedArtifact(value);
+    },
     resolveAnchorByName: (name: string, owner: string) =>
       resolveAnchorByNameMethod?.(name, owner) ??
         missingAdapterCapability("resolveAnchorByName"),
@@ -1621,7 +1624,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         if (paymentAddress === null) {
           return { decision: "fail" as const, authorizedSigner: null };
         }
-        const verification = await verifySettlementEvidence(
+        const verification = await verifyConstructedSettlementEvidence(
           evidence,
           {
             ...resolvedContext,

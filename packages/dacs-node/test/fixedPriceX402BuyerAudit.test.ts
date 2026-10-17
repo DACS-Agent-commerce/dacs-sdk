@@ -1,3 +1,4 @@
+import { admittedFixture } from "./helpers/admitted.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -733,7 +734,7 @@ async function x402AuditHarness() {
         : { status: "present" as const, address };
     }),
     readAnchor: vi.fn(async (address: string) =>
-      structuredClone(f.artifacts.get(address) ?? null)),
+      admittedFixture(structuredClone(f.artifacts.get(address) ?? null))),
     resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
       structuredClone(f.receipts.get(input.nativeAddress) ?? null)),
     verifyDemosAnchorReceipt: vi.fn(async () => true),
@@ -973,7 +974,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
           : { status: "present" as const, address };
       }),
       readAnchor: vi.fn(async (address: string) =>
-        structuredClone(f.artifacts.get(address) ?? null)),
+        admittedFixture(structuredClone(f.artifacts.get(address) ?? null))),
       resolveDemosAnchorReceipt: vi.fn(async (input: { nativeAddress: string }) =>
         structuredClone(f.receipts.get(input.nativeAddress) ?? null)),
       verifyDemosAnchorReceipt: vi.fn(async () => true),

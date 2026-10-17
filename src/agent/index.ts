@@ -63,6 +63,7 @@ export {
 } from "./evidenceBoundBundle.js";
 export {
   lookupBundleCopies,
+  lookupLegacyBundleCopies,
   bundleConsistency,
   selectAuthoritativeBundleCopy,
   bundlesDiverge,
@@ -77,6 +78,8 @@ export {
 export {
   validateSettlementEvidenceStructure,
   verifySettlementEvidence,
+  verifyConstructedSettlementEvidence,
+  verifyLegacySettlementEvidence,
   type EvidenceDecision,
   type EvidenceVerification,
   type EvidenceStructureDecision,
@@ -105,6 +108,7 @@ export {
 } from "./publishListingCore.js";
 export {
   deriveReputation,
+  deriveLegacyReputation,
   deriveReputationWithValidation,
   type ReputationDerivation,
   type ReputationMetrics,

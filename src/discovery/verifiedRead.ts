@@ -1,3 +1,4 @@
+import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
 import type { AnchorBinding, BindingIndex } from "./binding.js";
 import { describeError } from "./describeError.js";
 import { normalizedBindingOwner } from "./owner.js";
@@ -42,7 +43,11 @@ export type VerifiedRead =
   | { status: "indeterminate"; reason: string; code?: "binding-conflict" };
 
 export interface VerifiedReadDeps {
-  /** Read the record at its native locator and optional catalog anchor kind. */
+  /**
+   * Read an unchanged record from admitArtifactJson(exactReceivedBytes).
+   * Parsed external objects without runtime admission provenance are refused
+   * before hashing. Null remains an ordinary, non-authoritative not-found.
+   */
   read: (
     nativeAddress: string,
     anchorKind?: string,
@@ -150,7 +155,7 @@ export async function resolveAndRead(
   }
   if (!record) return { status: "unreadable", nativeAddress };
   try {
-    const snapshot: unknown = structuredClone(record);
+    const snapshot: unknown = snapshotAdmittedArtifact(record);
     if (
       typeof snapshot !== "object" ||
       snapshot === null ||
@@ -199,7 +204,7 @@ export async function resolveAndRead(
     let ok: boolean;
     try {
       ok = await deps.verifySignature(
-        structuredClone(record),
+        snapshotAdmittedArtifact(record),
         structuredClone(binding),
       );
     } catch (e) {

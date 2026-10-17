@@ -1,3 +1,5 @@
+import { legacyJobAddressing } from "../../src/canonical/index.js";
+const { attestationAddress, paymentEvidenceAddress, ratingAddress, bundleAddress } = legacyJobAddressing;
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,8 +8,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertPositiveAmount,
-  attestationAddress,
-  bundleAddress,
   canonicalSignedScope,
   canonicalize,
   canonicalizeDecimal,
@@ -15,8 +15,6 @@ import {
   decodeAddressSegment,
   encodeAddressSegment,
   listingAddress,
-  paymentEvidenceAddress,
-  ratingAddress,
   sha256Hex,
   stripSignature,
 } from "../../src/canonical/index.js";
@@ -36,12 +34,12 @@ import {
 import { verifyBundleCore } from "../../src/agent/verifyBundleCore.js";
 import {
   bundleConsistency,
-  lookupBundleCopies,
+  lookupLegacyBundleCopies as lookupBundleCopies,
   type BundleCopies,
 } from "../../src/agent/bundleConsistency.js";
 import { verifyBundleCopy } from "../../src/agent/bundleCopyValidity.js";
 import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
-import { deriveReputation } from "../../src/agent/reputationDerivation.js";
+import { deriveLegacyReputation as deriveReputation } from "../../src/agent/reputationDerivation.js";
 import {
   dacs5BundleOutcomeForTerminalState,
   isDacs5SessionTransitionAllowed,
@@ -58,7 +56,7 @@ import {
 } from "../../src/agent/listingValidation.js";
 import {
   validateSettlementEvidenceStructure,
-  verifySettlementEvidence,
+  verifyLegacySettlementEvidence as verifySettlementEvidence,
   type AuthenticatedEvidenceContext,
 } from "../../src/agent/verifySettlementEvidence.js";
 import { resolveSettlementEventIdentity } from "../../src/agent/settlementIdentity.js";

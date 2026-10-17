@@ -70,7 +70,7 @@ import type {
 } from "../../src/seller/bundleFinalization.js";
 
 const NOW = 1_786_200_000_000;
-const JOB_ID = "durable-buyer-finalization-122";
+const JOB_ID = "2G8R0PT1P42EZXF28VDC2S6ZKH";
 const AGREEMENT_HASH = "4".repeat(64);
 const BUYER = "did:demos:buyer";
 const SELLER = "did:demos:seller";

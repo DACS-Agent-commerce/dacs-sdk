@@ -1,3 +1,4 @@
+export { admitArtifactJson, snapshotAdmittedArtifact, inheritArtifactAdmission, cloneWithArtifactAdmission } from "./admittedArtifact.js";
 export {
   admitRawJson,
   RawJsonAdmissionError,
@@ -16,6 +17,8 @@ export {
   logicalToStorageProgramName,
   storAddress,
   bundleAddress,
+  legacyJobAddressing,
+  isCurrentJobId,
 } from "./addressing.js";
 export {
   sha256Hex,

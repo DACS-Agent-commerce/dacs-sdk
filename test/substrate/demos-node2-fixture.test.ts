@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { classifyAnchor } from "../../src/discovery/index.js";
 import {
@@ -8,6 +8,8 @@ import {
   DemosAdapter,
   type DemosHistoryClient,
 } from "../../src/substrate/index.js";
+
+afterEach(() => vi.unstubAllGlobals());
 
 type Row = Record<string, any>;
 
@@ -100,14 +102,13 @@ describe("the Demos history fetcher against recorded node2 responses", () => {
       chainIdentity: "test-chain",
       writeJournal: createInMemoryDemosWriteJournal(),
     });
-    const raw = adapter.raw as any;
-    raw.storagePrograms.read = vi.fn(async () => structuredClone(fixture.missingStorageProgram.body));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      JSON.stringify(fixture.missingStorageProgram.body), { status: 200 },
+    )));
     await expect(adapter.readAnchor(MISSING)).resolves.toBeNull();
-    raw.storagePrograms.read = vi.fn(async () => {
-      throw Object.assign(new Error("Request failed with status code 404"), {
-        response: { status: fixture.missingStorageProgram.status, data: fixture.missingStorageProgram.body },
-      });
-    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      JSON.stringify(fixture.missingStorageProgram.body), { status: 404 },
+    )));
     await expect(adapter.readAnchor(MISSING)).resolves.toBeNull();
   });
 });

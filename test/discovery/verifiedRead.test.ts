@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -32,10 +33,11 @@ function depsWith(
   store: Record<string, Record<string, unknown>>,
   over: Partial<VerifiedReadDeps> = {},
 ): VerifiedReadDeps {
+  const read = over.read ?? (async (addr: string) => store[addr] ?? null);
   return {
-    read: async (addr) => store[addr] ?? null,
     contentHashOf,
     ...over,
+    read: async (...args) => admittedFixture(await read(...args)),
   };
 }
 
@@ -132,7 +134,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
           depsWith({}, { read: async () => { throw make(); } }),
           createInMemoryBindingIndex([binding()])],
         ["read record snapshot failed",
-          depsWith({}, { read: async () => ({ get field() { return throwing(make())(); } }) }),
+          depsWith({}, { read: async () => admittedFixture(({ get field() { return throwing(make())(); } })) }),
           createInMemoryBindingIndex([binding()])],
         ["content hash computation failed",
           depsWith({ "stor-real": RECORD }, { contentHashOf: throwing(make()) as never }),
@@ -145,7 +147,9 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
         // Hash and verifier failures keep the record; earlier failures are retryable.
         const status = /^(content|signature)/.test(prefix) ? "unverifiable" : "indeterminate";
         await expect(resolveAndRead(index, LOGICAL, SELLER, deps))
-          .resolves.toMatchObject({ status, reason: `${prefix}: unknown error` });
+          .resolves.toMatchObject({ status, reason: prefix === "read record snapshot failed"
+            ? `${prefix}: external artifact requires exact raw-byte admission`
+            : `${prefix}: unknown error` });
       }
     },
   );
@@ -168,7 +172,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     const result = await resolveAndRead(index, LOGICAL, SELLER, {
       read: async (nativeAddress, anchorKind) => {
         observed = [nativeAddress, anchorKind];
-        return RECORD;
+        return admittedFixture(RECORD);
       },
       contentHashOf,
       verifySignature: () => true,
@@ -231,7 +235,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       LOGICAL,
       SELLER,
       depsWith({}, {
-        read: async () => { reads++; return null; },
+        read: async () => { reads++; return admittedFixture(null); },
         verifySignature: () => { verifications++; return true; },
       }),
     );
@@ -269,7 +273,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       LOGICAL,
       SELLER,
       depsWith({}, {
-        read: async () => { reads++; return null; },
+        read: async () => { reads++; return admittedFixture(null); },
         verifySignature: () => { verifications++; return true; },
       }),
     );
@@ -388,7 +392,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       const verifySignature = vi.fn(() => true);
       const r = await resolveAndRead(
         createInMemoryBindingIndex([binding()]), LOGICAL, SELLER,
-        depsWith({}, { read: async () => value as never, contentHashOf: contentHash, verifySignature }),
+        depsWith({}, { read: async () => admittedFixture(value as never), contentHashOf: contentHash, verifySignature }),
       );
       expect(r).toMatchObject({ status: "indeterminate", reason: expect.stringContaining("read record snapshot failed") });
       expect(contentHash).not.toHaveBeenCalled();
@@ -399,7 +403,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
   test("signature verifier: a valid signature keeps the read verified", async () => {
     const index = createInMemoryBindingIndex([binding()]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, {
-      read: async () => RECORD,
+      read: async () => admittedFixture(RECORD),
       contentHashOf,
       verifySignature: (rec) => rec.signature === "sig-real",
     });
@@ -411,7 +415,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
     // Hash is over the scope sans signature, so it still matches — but the sig check fails.
     const index = createInMemoryBindingIndex([binding()]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, {
-      read: async () => tampered,
+      read: async () => admittedFixture(tampered),
       contentHashOf,
       verifySignature: (rec) => rec.signature === "sig-real",
     });
@@ -462,7 +466,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
   test("unverifiable: malformed bytes that cannot be hashed return a diagnostic", async () => {
     const index = createInMemoryBindingIndex([binding()]);
     const r = await resolveAndRead(index, LOGICAL, SELLER, {
-      read: async () => RECORD,
+      read: async () => admittedFixture(RECORD),
       contentHashOf: () => {
         throw new Error("non-canonical number");
       },
@@ -498,7 +502,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       LOGICAL,
       SELLER,
       {
-        read: async () => mutableRecord,
+        read: async () => admittedFixture(mutableRecord),
         contentHashOf,
         verifySignature: async (record, resolvedBinding) => {
           entered();
@@ -544,7 +548,7 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       ...binding(),
       get nativeAddress() { reads += 1; return reads === 1 ? "stor-real" : "stor-attacker"; },
     };
-    const read = vi.fn(async (address: string) => (address === "stor-real" ? { ...RECORD } : { ...RECORD, price: "0" }));
+    const read = vi.fn(async (address: string) => admittedFixture(address === "stor-real" ? { ...RECORD } : { ...RECORD, price: "0" }));
     const seenByVerifier: string[] = [];
     const verifySignature = vi.fn((_record: Record<string, unknown>, resolved: AnchorBinding) => {
       seenByVerifier.push(resolved.nativeAddress, resolved.nativeAddress);

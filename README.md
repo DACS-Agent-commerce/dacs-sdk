@@ -162,8 +162,10 @@ an authorization verdict. `verifySettlementEvidence()` is the trust-bearing
 operation and requires the authenticated agreement, pinned rail, phase
 orchestrator, evidence reference, phase result, PC-2 address (for payment),
 expected deliverable locator (for delivery), plus key resolution and signature
-verification. Missing trust inputs fail as configuration errors rather than
-being silently skipped.
+verification. It also requires exact-byte admission through `admitArtifactJson`
+and a current JID-1 job ID. Missing trust inputs fail as configuration errors
+rather than being silently skipped. Historical signature inspection is explicitly
+selected through `verifyLegacySettlementEvidence`.
 
 Every write-capable Demos agent must supply a durable write journal. The
 filesystem implementation coordinates processes on one host and survives
@@ -683,6 +685,29 @@ Listing whose `serviceId` falls outside the CF-4 `listingId` grammar (which
 authenticates, and an address that read refuses is an `invalid-address`
 diagnostic, never a silent skip.
 
+External artifact reads must retain CF-5 provenance. `DemosAdapter.readAnchor`
+admits the exact public storage response bytes before parsing its `data` member.
+Custom adapters must call `admitArtifactJson(exactReceivedBytes)` (or select a
+member with its second argument after admitting the full envelope). Parsed
+objects, clones, changed admitted objects and reserialized external data do not
+establish that provenance. Discovery refuses them before content hashing or
+signature verification. Retain the admitted record through verification; the
+repository's owned snapshots preserve its admission capability. HTTP transport
+admission and the SDK's envelope/handshake snapshots preserve nested artifact
+provenance through `cloneWithArtifactAdmission` and `inheritArtifactAdmission`.
+The separate `verifyConstructedSettlementEvidence` authoring API is restricted
+to locally created evidence and retains current JID-1 and cryptographic checks.
+
+The four job-scoped address builders and current settlement verification require
+an exact JID-1 uppercase ULID. For historical inspection, explicitly select
+`legacyJobAddressing`, `verifyLegacySettlementEvidence`,
+`lookupLegacyBundleCopies` or `deriveLegacyReputation`. These archival interfaces
+do not establish current-profile semantic conformance and are never selected as
+fallbacks. Historical evidence-bound bundle replay explicitly sets
+`jobIdProfile: "legacy"` in its verifier dependencies; the default is current.
+`verifySettlementEvidence` requires an admitted record; structure-only
+inspection remains available through `validateSettlementEvidenceStructure`.
+
 For other artifact kinds, `createScanningArtifactRepository` composes the bound
 repository with `scanAnchorPage` and `resolveAndRead`. Supply the adapter,
 published index, explicit authorized publisher, expected owner, page fetcher and
@@ -731,6 +756,7 @@ returns `unverifiable` until a signature and authorization provider is supplied:
 
 ```ts
 import {
+  admitArtifactJson,
   contentHash,
   createInMemoryBindingStore,
   createScanningArtifactRepository,
@@ -740,7 +766,7 @@ import {
 const expectedOwner = "offline-seller";
 const logicalAddress = "dacs1:offline-seller:example:v1";
 const nativeAddress = "stor-offline-example";
-const artifact = { listingVersion: 1 }; // Synthetic, unsigned inspection bytes.
+const artifact = admitArtifactJson(new TextEncoder().encode('{"listingVersion":1}')); // Synthetic bytes.
 const bindings = createInMemoryBindingStore([{
   logicalAddress, nativeAddress, owner: expectedOwner,
   contentHash: contentHash(artifact), version: 1,

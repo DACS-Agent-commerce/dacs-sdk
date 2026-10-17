@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
@@ -60,7 +61,7 @@ const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
 const NOW = 1_777_000_000_000;
 const TX_HASH = "e".repeat(64);
 
-function authorization(jobId = "job-publication-1"): SellerPaymentAuthorization {
+function authorization(jobId = "7NDPS5RJ448HFDFTJVR53ZP995"): SellerPaymentAuthorization {
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1" as const,
     jobId,
@@ -393,13 +394,13 @@ function harness(value = authorization()): Harness {
       ? {
           disposition: "present",
           effectId: input.effectId,
-          evidence: structuredClone(state.anchored),
+          evidence: admittedFixture(structuredClone(state.anchored)),
         }
       : { disposition: "absent" },
     anchorEvidence: anchor,
     verifyAnchorReceipt: async () => ({ disposition: "pass" }),
     resolveEvidence: async () => state.anchored
-      ? { disposition: "present", evidence: structuredClone(state.anchored) }
+      ? { disposition: "present", evidence: admittedFixture(structuredClone(state.anchored)) }
       : { disposition: "absent" },
   };
   return {
@@ -480,7 +481,7 @@ describe("publishSellerSessionSettlement", () => {
   });
 
   it("keeps one effect identity as authenticated proof observations advance", async () => {
-    const value = authorization("job-publication-proof-replay");
+    const value = authorization("22G6BGH40AK66JYF48H6PS9RKH");
     const first = harness(value);
     const replay = harness(value);
     replay.resolveProof.mockResolvedValue(proofAuthentication(value, {
@@ -530,7 +531,7 @@ describe("publishSellerSessionSettlement", () => {
       };
     };
     h.deps.resolveEvidence = async () => anchoredEvidence
-      ? { disposition: "present", evidence: structuredClone(anchoredEvidence) }
+      ? { disposition: "present", evidence: admittedFixture(structuredClone(anchoredEvidence)) }
       : { disposition: "absent" };
 
     const result = await publishSellerSessionSettlement(request(h), h.deps);
@@ -609,7 +610,7 @@ describe("publishSellerSessionSettlement", () => {
     expect(available.anchor).not.toHaveBeenCalled();
 
     const substituted = harness();
-    const other = authorization("job-substituted");
+    const other = authorization("0XM48B0ZHHET4BWSV556YV5194");
     substituted.deps.receiptStore.inspectPermit = async () => ({
       status: "already-consumed",
       claim: claim(other),
@@ -843,7 +844,7 @@ describe("publishSellerSessionSettlement", () => {
       ? {
           disposition: "present",
           effectId: input.effectId,
-          evidence: structuredClone(committedEvidence),
+          evidence: admittedFixture(structuredClone(committedEvidence)),
         }
       : { disposition: "absent" };
     h.deps.anchorEvidence = async (input) => {
@@ -864,7 +865,7 @@ describe("publishSellerSessionSettlement", () => {
       return structuredClone(committedAnchor);
     };
     h.deps.resolveEvidence = async () => committedEvidence
-      ? { disposition: "present", evidence: structuredClone(committedEvidence) }
+      ? { disposition: "present", evidence: admittedFixture(structuredClone(committedEvidence)) }
       : { disposition: "absent" };
 
     const first = await publishSellerSessionSettlement(request(h), h.deps);
@@ -1114,7 +1115,7 @@ describe("publishSellerSessionSettlement", () => {
     badReadback.deps.resolveEvidence = async () => {
       const changed = structuredClone(badReadback.anchored!);
       changed.observedAt += 1;
-      return { disposition: "present", evidence: changed };
+      return { disposition: "present", evidence: admittedFixture(changed) };
     };
     expect(await publishSellerSessionSettlement(request(badReadback), badReadback.deps))
       .toMatchObject({ disposition: "rejected", reason: expect.stringContaining("readback differs") });

@@ -1,3 +1,4 @@
+import { admittedFixture } from "./helpers/admitted.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,7 +76,7 @@ function runtime(overrides: Partial<DacsDemosActorRuntimeV1["adapter"]> = {}):
       getPublicKey: async () => Uint8Array.from({ length: 32 }, () => 0x33),
       sign: async () => new Uint8Array(64),
       resolveIdentity: async (ref) => ({ ref, raw: {} }),
-      readAnchor: async () => value.artifact,
+      readAnchor: async () => admittedFixture(value.artifact),
       resolveAnchorByName: async () => ({ status: "present", address: "stor-funded-doctor" }),
       scanOwnAnchorsByNamePrefix: async () => ({ status: "ok", anchors: [] }),
       anchorWriteOnce: async () => ({

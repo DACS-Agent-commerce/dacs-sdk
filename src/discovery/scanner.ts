@@ -87,7 +87,8 @@ export function classifyAnchor(logicalAddress: string): AnchorKind {
   const scheme = "[a-z][a-z0-9-]*";
   const matches = (pattern: string): boolean => {
     const match = new RegExp(pattern).exec(logicalAddress);
-    return match !== null && match.slice(1).every(isCanonicalVariableSegment);
+    return match !== null && match[0] === logicalAddress &&
+      match.slice(1).every(isCanonicalVariableSegment);
   };
   if (matches(`^dacs1-revoked:${segment}:${listingId}:v[1-9][0-9]*$`)) {
     return "listing-revocation";
@@ -102,27 +103,27 @@ export function classifyAnchor(logicalAddress: string): AnchorKind {
   if (matches(`^dacs2:${jobId}:${scheme}:${segment}:v[1-9][0-9]*$`)) {
     return "verification-result";
   }
-  if (new RegExp(`^dacs3:commit:${jobId}$`).test(logicalAddress)) {
+  if (matches(`^dacs3:commit:${jobId}$`)) {
     return "agreement-commitment";
   }
   if (logicalAddress === "dacs4:registry:v0.1") return "rail-registry";
   if (matches(`^dacs4:payment:${jobId}:${segment}:${index}(?::resolved)?$`)) {
     return "settlement-evidence";
   }
-  if (new RegExp(`^dacs4:payment-disposition:${jobId}:${index}:${hash}$`).test(logicalAddress)) {
+  if (matches(`^dacs4:payment-disposition:${jobId}:${index}:${hash}$`)) {
     return "payment-disposition";
   }
-  if (new RegExp(`^dacs4:payload-attestation:${jobId}:${hash}:${index}$`).test(logicalAddress)) {
+  if (matches(`^dacs4:payload-attestation:${jobId}:${hash}:${index}$`)) {
     return "payload-attestation";
   }
-  if (new RegExp(`^dacs4:deliverable:${jobId}$`).test(logicalAddress)) return "deliverable";
-  if (new RegExp(`^dacs4:entitlement:${jobId}:${index}$`).test(logicalAddress)) {
+  if (matches(`^dacs4:deliverable:${jobId}$`)) return "deliverable";
+  if (matches(`^dacs4:entitlement:${jobId}:${index}$`)) {
     return "entitlement";
   }
-  if (new RegExp(`^dacs4:amendment:${jobId}:${hash}:${index}$`).test(logicalAddress)) {
+  if (matches(`^dacs4:amendment:${jobId}:${hash}:${index}$`)) {
     return "settlement-amendment";
   }
-  if (new RegExp(`^stor-${hash}$`).test(logicalAddress)) return "bundle";
+  if (matches(`^stor-${hash}$`)) return "bundle";
   if (matches(`^dacs5:rating:${jobId}:${segment}$`)) return "rating";
   return "unknown";
 }

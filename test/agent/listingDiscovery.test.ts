@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -207,7 +208,7 @@ function depsFor(
     index: createInMemoryBindingIndex(
       fixtures.map((fixture) => fixture.binding),
     ),
-    readAnchor: async (nativeAddress) => records.get(nativeAddress) ?? null,
+    readAnchor: async (nativeAddress) => admittedFixture(records.get(nativeAddress) ?? null),
     verify,
     ...over,
   };
@@ -454,7 +455,7 @@ describe("readListingByLogicalAddress (#54)", () => {
     await expect(
       readListingByLogicalAddress(fixture.logicalAddress, {
         ...depsFor([fixture]),
-        readAnchor: async () => null,
+        readAnchor: async () => admittedFixture(null),
       }),
     ).resolves.toMatchObject({
       status: "unreadable",
@@ -537,7 +538,7 @@ describe("readListingByLogicalAddress (#54)", () => {
     await expect(
       readListingByLogicalAddress(fixture.logicalAddress, {
         ...depsFor([fixture]),
-        readAnchor: async () => structuredClone(record),
+        readAnchor: async () => admittedFixture(structuredClone(record)),
       }),
     ).resolves.toMatchObject({
       status: "rejected",
@@ -736,7 +737,7 @@ describe("readListingByLogicalAddress (#54)", () => {
       readListingByLogicalAddress(valid.logicalAddress, depsFor([injected])),
     ).resolves.toMatchObject({
       status: "rejected",
-      code: "content-not-canonical",
+      code: "invalid-record",
     });
   });
 

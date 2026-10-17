@@ -37,7 +37,7 @@ import {
   verifyBundleCopy,
   verifyBundleCore,
   verifyCompositeVerificationRecord,
-  verifySettlementEvidence,
+  verifyConstructedSettlementEvidence,
   type AgreementArtifact,
   type ProtocolAnchorReceipt as AnchorReceipt,
   type AnchoredFinalityCommitment,
@@ -1325,7 +1325,7 @@ async function verifyEvidence(
   expectedDeliveryLocator: string,
   attestationRef: Readonly<AttestationRef>,
 ) {
-  return verifySettlementEvidence(
+  return verifyConstructedSettlementEvidence(
     evidence,
     evidence["phase"] === "pay-ap2"
       ? {

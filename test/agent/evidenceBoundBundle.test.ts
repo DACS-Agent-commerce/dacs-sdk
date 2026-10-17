@@ -50,6 +50,7 @@ const read = (name: string): any =>
 
 function depsFor(publicKeys: Record<string, string>): EvidenceBoundBundleVerifierDeps {
   return {
+    jobIdProfile: "legacy", // Byte-exact historical Standard fixtures. Explicit archival replay.
     resolvePublicKey: async (claim) => {
       const value = publicKeys[claim];
       return value === undefined
@@ -120,7 +121,7 @@ async function compactAuthority(options: {
   };
   const copies = await buildEvidenceBoundTwoSidedBundle(
     {
-      jobId: "ebfab-compact-authority-job",
+      jobId: "0C1906KNZ4AX9GYVRFVAGY8F89",
       outcome: "aborted-by-self",
       faultedParty: "buyer",
       listingRef: {
@@ -166,6 +167,17 @@ async function compactAuthority(options: {
 describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
   const corpus = read("bundle-settlement-evidence-bijection-v0.4.json");
   const deps = depsFor(corpus.publicKeys);
+
+  it("rejects historical jobs under the default current profile before key lookup", async () => {
+    let lookups = 0;
+    const historical = Object.values(corpus.executionAuthorities)[0] as EvidenceBoundBundleAuthority;
+    const result = await verifyEvidenceBoundFaultBundle(historical, {
+      resolvePublicKey: async () => { lookups++; return null; },
+      verify: () => true,
+    });
+    expect(result).toMatchObject({ decision: "rejected", reason: "jobId must be a JID-1 canonical ULID" });
+    expect(lookups).toBe(0);
+  });
 
   it("authenticates the Standard authority graphs and rejects every invalid graph", async () => {
     for (const [name, raw] of Object.entries<any>(corpus.executionAuthorities)) {
@@ -324,7 +336,7 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
       writer: string,
       signingKey: ReturnType<typeof privateKeyFromSeed>,
     ) => {
-      const jobId = "ebfab-qualified-evidence-job";
+      const jobId = "584EF1KZPYY15HM879XFWZYQG1";
       const listingScope = {
         listingId: "ebfab-qualified-evidence-listing",
         listingVersion: 1,
@@ -428,12 +440,12 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
             phaseIndex: 0,
             phaseKind: "deliver-entitlement",
             phaseOrchestrator,
-            evidenceLogicalAddress: "dacs4:evidence:ebfab-qualified-evidence-job:0",
+            evidenceLogicalAddress: "dacs4:evidence:584EF1KZPYY15HM879XFWZYQG1:0",
           },
         },
         verifiedReceiptByCanonicalRef: {
           [refKey]: {
-            logicalAddress: "dacs4:evidence:ebfab-qualified-evidence-job:0",
+            logicalAddress: "dacs4:evidence:584EF1KZPYY15HM879XFWZYQG1:0",
             nativeAddress: ref.anchor.locator,
             contentHash: ref.contentHash,
             transaction: "demos-testnet:tx-qualified-evidence",
@@ -927,11 +939,11 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
     const buyerClaim = `demos:0x${Buffer.from(buyerRaw).toString("hex")}`;
     const sellerClaim = `demos:0x${Buffer.from(sellerRaw).toString("hex")}`;
     const session = {
-      jobId: "ebfab-producer-job",
+      jobId: "5KMW0WNG2DQYS86BBGGQRN0E5J",
       outcome: "completed" as const,
       listingRef: { listingId: "listing-ebfab-producer", version: 1, contentHash: "a".repeat(64) },
       agreementRef: {
-        anchor: { kind: "storage-program" as const, locator: "dacs3:commit:ebfab-producer-job" },
+        anchor: { kind: "storage-program" as const, locator: "dacs3:commit:5KMW0WNG2DQYS86BBGGQRN0E5J" },
         contentHash: "b".repeat(64),
       },
       phaseSummary: [{ index: 0, kind: "commit-agreement" as const, outcome: "ok" as const }],

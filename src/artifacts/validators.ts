@@ -46,7 +46,7 @@ import type {
 import { canonicalizeDecimal } from "../canonical/decimal.js";
 import {
   assertPositiveAmount,
-  bundleAddress,
+  legacyJobAddressing,
   canonicalize,
   stripSignature,
 } from "../canonical/index.js";
@@ -2249,6 +2249,7 @@ export function isEvidenceBoundFaultBundleExtendedPointer(
 }
 
 /** DACS-5 §10.4.2 BB-4/BB-5 structural and self-consistency gate. */
+/** Shape validation also recognizes archival bindings; current derivations enforce JID-1. */
 export function isBundleBinding(v: unknown): v is BundleBinding {
   return (
     isObj(v) &&
@@ -2274,7 +2275,7 @@ export function isBundleBinding(v: unknown): v is BundleBinding {
     isComponentSignature(v.signature) &&
     v.signature.signer === v.signer &&
     v.logicalAddress ===
-      bundleAddress(v.jobId as string, v.role as "buyer" | "seller" | "orchestrator")
+      legacyJobAddressing.bundleAddress(v.jobId as string, v.role as "buyer" | "seller" | "orchestrator")
   );
 }
 

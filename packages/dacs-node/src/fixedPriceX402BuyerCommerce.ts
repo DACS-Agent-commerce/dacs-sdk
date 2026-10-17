@@ -1,3 +1,4 @@
+import { admitArtifactJson } from "@kynesyslabs/dacs";
 import {
   baseUnits,
   verifySettlementEvidence,
@@ -259,8 +260,7 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
             settlement.signedEvent.httpResource !== intent.httpResource ||
             response.contentType.split(";", 1)[0]?.trim().toLowerCase() !==
               "application/json") return false;
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(body);
-        const payload = JSON.parse(text) as unknown;
+        const payload = admitArtifactJson(body);
         if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
           return false;
         }

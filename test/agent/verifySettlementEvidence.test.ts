@@ -6,7 +6,7 @@ import { describe, expect, it, test, vi } from "vitest";
 
 import {
   validateSettlementEvidenceStructure,
-  verifySettlementEvidence,
+  verifyLegacySettlementEvidence as verifySettlementEvidence,
   type AuthenticatedEvidenceContext,
   type AuthenticatedEvidenceDeps,
   type EvidenceContext,

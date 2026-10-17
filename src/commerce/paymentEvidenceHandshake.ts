@@ -1,3 +1,4 @@
+import { cloneWithArtifactAdmission } from "../canonical/admittedArtifact.js";
 import { types as nodeTypes } from "node:util";
 
 import type {
@@ -502,7 +503,7 @@ const DEFAULT_RETRY_DELAY_MS = 1_000;
 const DEFAULT_LIMIT = 10;
 const INERT_RECEIVER = Object.freeze(Object.create(null)) as object;
 
-const clone = <T>(value: T): T => structuredClone(value);
+const clone = <T>(value: T): T => cloneWithArtifactAdmission(value);
 const hasOwn = (value: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 const nonEmpty = (value: unknown): value is string =>

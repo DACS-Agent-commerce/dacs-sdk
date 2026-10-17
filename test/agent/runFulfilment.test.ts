@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
@@ -995,7 +996,7 @@ describe("runFulfilmentCore", () => {
         .toBe(anchoredLocator);
       expect(result.bundleContribution.settlementEvidence.anchor.locator).toBe(anchoredLocator);
       expect(await verifySettlementEvidence(
-        result.evidence,
+        admittedFixture(result.evidence),
         {
           orchestrator: SELLER,
           agreement: { amount: "1", currency: "TEST" },

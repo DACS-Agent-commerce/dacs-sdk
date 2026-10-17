@@ -1,3 +1,4 @@
+import { admittedFixture } from "./helpers/admitted.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -261,7 +262,7 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
           : { status: "present" as const, address };
       }),
       readAnchor: vi.fn(async (address: string) =>
-        structuredClone(anchors.get(address) ?? null)),
+        admittedFixture(structuredClone(anchors.get(address) ?? null))),
       resolveDemosAnchorReceipt: vi.fn(async (input: {
         logicalAddress: string;
         nativeAddress: string;

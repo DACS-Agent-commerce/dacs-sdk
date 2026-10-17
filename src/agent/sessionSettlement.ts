@@ -19,7 +19,7 @@ import {
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import {
-  verifySettlementEvidence,
+  verifyConstructedSettlementEvidence,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
 import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
@@ -885,9 +885,9 @@ export async function verifyFinalizedSessionSettlement(
   }
   if (mismatch) return rejected("rejected", mismatch);
 
-  let evidenceVerification: Awaited<ReturnType<typeof verifySettlementEvidence>>;
+  let evidenceVerification: Awaited<ReturnType<typeof verifyConstructedSettlementEvidence>>;
   try {
-    evidenceVerification = await verifySettlementEvidence(
+    evidenceVerification = await verifyConstructedSettlementEvidence(
       settlement.evidence,
       {
         orchestrator: context.orchestrator,

@@ -30,6 +30,7 @@ export interface BoundArtifactAdapter {
     value: object,
     opts?: AnchorWriteOnceOptions,
   ): Promise<AnchorRef>;
+  /** External records must retain admitArtifactJson byte-admission provenance. */
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
 }
 

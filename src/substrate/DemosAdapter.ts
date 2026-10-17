@@ -1,3 +1,4 @@
+import { admitArtifactJson } from "../canonical/admittedArtifact.js";
 import { types as nodeTypes } from "node:util";
 import { Demos } from "@kynesyslabs/demosdk/websdk";
 import {
@@ -1605,17 +1606,20 @@ export class DemosAdapter implements SubstrateAdapter {
    * SR-2 anchoring via Demos Storage Programs. A logical name maps to one
    * storage program, created at `deriveStorageAddress(writer, name, nonce, "")`
    * where `nonce` is the writer's NEXT account nonce (#58 / DACS-Standard #242) —
-   * the node enforces sequential nonces and rejects the skeleton default 0. First
+   * the SDK sequences writes at +1; the node rejects stale nonces, including
+   * the skeleton default 0. These checks do not establish strict gap rejection. First
    * write creates the program (public-read ACL); later writes update it in place
    * at that address.
    *
    * Because the address folds in the create-time nonce, it is NOT re-derivable by
-   * a third party: readers must resolve by program name via the node's name index.
+   * a third party. Independent readers use the published logical-to-native
+   * BindingIndex and verify after reading. Name lookup is writer-local
+   * reconciliation only; the program name is an opaque write input.
    */
   /**
    * The account nonce a NEW storage program will be created under: the writer's
-   * next nonce (`getAddressNonce` + 1) per DACS-Standard #242. The node enforces
-   * sequential nonces and REJECTS the skeleton default of 0, so a fixed nonce
+   * next nonce (`getAddressNonce` + 1), the SDK sequencing policy. The node
+   * rejects stale nonces (not proven to reject every gap), so a fixed nonce
    * made every live create fail (#58).
    */
   private async nextAnchorNonce(key = this.walletQueueKey()): Promise<number> {
@@ -1639,9 +1643,10 @@ export class DemosAdapter implements SubstrateAdapter {
    *
    * IMPORTANT (#58 / DACS-Standard #242): this is NOT third-party derivable. The
    * physical address folds in the writer's account nonce at create time, so only
-   * the writer can compute it, and only BEFORE the create lands. A reader that
-   * doesn't know the write nonce MUST resolve by program name through the node's
-   * name index — precomputing the address is not a discovery mechanism.
+   * the writer can compute it, and only BEFORE the create lands. Consumers
+   * resolve through the published BindingIndex and verify after dereference.
+   * The name index is only for the writer's own reconciliation; precomputing
+   * this address is not a consumer discovery mechanism.
    */
   async anchorAddress(name: string): Promise<string> {
     if (!this.connected) {
@@ -2658,7 +2663,7 @@ export class DemosAdapter implements SubstrateAdapter {
       try {
         const readBack = await this.waitFor(
           ctx,
-          this.readAnchor(address),
+          this.readAnchorForReconciliation(address),
           "read visibility",
         );
         if (readBack && sha256Hex(canonicalize(readBack)) === expected) {
@@ -3170,7 +3175,7 @@ export class DemosAdapter implements SubstrateAdapter {
         : await this.readImmutableAnchor(resolution.address);
     const existing =
       expectedMetadata === undefined
-        ? await this.readAnchor(resolution.address)
+        ? await this.readAnchorForReconciliation(resolution.address)
         : record?.data;
     if (!existing) {
       throw new SubstrateError(
@@ -3766,12 +3771,12 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   /**
-   * SR-2 discovery — resolve a logical program NAME to its storage address,
-   * bound to the expected writer (#58 / DACS-Standard #242).
+   * SR-2 writer-local reconciliation of an opaque program name to its native
+   * address, bound to the expected writer (#58 / DACS-Standard #242).
    *
-   * This is the reader-side counterpart to {@link anchorAddress}: because the
-   * physical address folds in the writer's create-time nonce, a third party
-   * cannot precompute it and MUST look the name up through the node's name index.
+   * The physical address includes the writer's create-time nonce. Independent
+   * consumers use the published BindingIndex and post-read verification; this
+   * name index is not a consumer resolution key.
    *
    * OWNER BINDING IS LOAD-BEARING: a program name is not exclusive — anyone can
    * create a program with the same name — so resolving by name ALONE would let an
@@ -3903,7 +3908,49 @@ export class DemosAdapter implements SubstrateAdapter {
     return journalResolution ?? this.resolveAnchorByIndex(name, expectedOwner);
   }
 
+  /** Public DACS artifacts use public-read ACLs; retain exact transport bytes. */
   async readAnchor(address: string): Promise<Record<string, unknown> | null> {
+    try {
+      const response = await fetch(
+        `${this.config.rpc.replace(/\/$/, "")}/storage-program/${encodeURIComponent(address)}`,
+        { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(30_000) },
+      );
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`storage read HTTP ${response.status}`);
+      // Bound the stream before allocating the full response. Admission has an
+      // independent byte bound and rejects the complete envelope before data
+      // projection; response.json()/demosdk have already lost raw provenance.
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("storage read has no response body");
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > 1_048_576) throw new Error("storage response byte limit exceeded");
+          chunks.push(value);
+        }
+      } finally {
+        await reader.cancel();
+      }
+      const bytes = Buffer.concat(chunks, size);
+      const envelope = admitArtifactJson(bytes);
+      if (envelope.success === true && envelope.data != null) {
+        return admitArtifactJson(bytes, "data");
+      }
+      const marker = `${envelope.errorCode ?? ""} ${envelope.error ?? ""}`.toLowerCase();
+      if (marker.includes("not_found") || marker.includes("not found")) return null;
+      throw new Error("storage read returned an indeterminate response");
+    } catch (cause) {
+      throw new SubstrateError(`read anchor ${address} failed`, { cause });
+    }
+  }
+
+  // Writer-local reconciliation compares against the already owned write
+  // intent and never authenticates arbitrary externally supplied artifacts.
+  private async readAnchorForReconciliation(address: string): Promise<Record<string, unknown> | null> {
     try {
       const res = (await this.#demos.storagePrograms.read(address)) as {
         success?: boolean;

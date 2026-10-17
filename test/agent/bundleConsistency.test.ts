@@ -35,33 +35,33 @@ describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
       gates.set("both", resolve);
     });
     let starts = 0;
-    const lookup = lookupBundleCopies("job-1", async (address, role) => {
+    const lookup = lookupBundleCopies("02DAV3KGGXZ2N81SBRJDRAKPRV", async (address, role) => {
       calls.push([address, role]);
       starts += 1;
       if (starts === 2) gates.get("both")?.();
       await started;
-      return { disposition: "present", bundle: { jobId: "job-1", role } };
+      return { disposition: "present", bundle: { jobId: "02DAV3KGGXZ2N81SBRJDRAKPRV", role } };
     });
 
     await expect(lookup).resolves.toEqual({
       buyer: {
         disposition: "present",
-        bundle: { jobId: "job-1", role: "buyer" },
+        bundle: { jobId: "02DAV3KGGXZ2N81SBRJDRAKPRV", role: "buyer" },
       },
       seller: {
         disposition: "present",
-        bundle: { jobId: "job-1", role: "seller" },
+        bundle: { jobId: "02DAV3KGGXZ2N81SBRJDRAKPRV", role: "seller" },
       },
     });
     expect(calls).toEqual([
-      [bundleAddress("job-1", "buyer"), "buyer"],
-      [bundleAddress("job-1", "seller"), "seller"],
+      [bundleAddress("02DAV3KGGXZ2N81SBRJDRAKPRV", "buyer"), "buyer"],
+      [bundleAddress("02DAV3KGGXZ2N81SBRJDRAKPRV", "seller"), "seller"],
     ]);
   });
 
   test("preserves absent/indeterminate and converts reader failure to indeterminate", async () => {
     await expect(
-      lookupBundleCopies("job-2", async (_address, role) =>
+      lookupBundleCopies("0EEMT8F1WZQ2MVQ2NYY0RN5H20", async (_address, role) =>
         role === "buyer"
           ? { disposition: "absent" }
           : { disposition: "indeterminate", reason: "not finalized" },
@@ -72,7 +72,7 @@ describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
     });
 
     await expect(
-      lookupBundleCopies("job-2", async (_address, role) => {
+      lookupBundleCopies("0EEMT8F1WZQ2MVQ2NYY0RN5H20", async (_address, role) => {
         if (role === "buyer") throw new Error("rpc unavailable");
         return { disposition: "absent" };
       }),
@@ -87,9 +87,9 @@ describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
 
   test("ignores cross-session content and fails malformed responses closed", async () => {
     await expect(
-      lookupBundleCopies("job-3", async (_address, role) =>
+      lookupBundleCopies("15483QFPCZGPVQFVX87DA93PEQ", async (_address, role) =>
         role === "buyer"
-          ? { disposition: "present", bundle: { jobId: "job-other" } }
+          ? { disposition: "present", bundle: { jobId: "6HWAF9QYXQMMEC0BEP0K4MQA09" } }
           : { disposition: "present", bundle: {} },
       ),
     ).resolves.toMatchObject({
@@ -107,22 +107,22 @@ describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
       bundle: { jobId: string; phaseSummary: Array<{ index: number }> };
     } = {
       disposition: "present",
-      bundle: { jobId: "job-4", phaseSummary: [{ index: 0 }] },
+      bundle: { jobId: "075C6SB05K7KKMB9KEG4WRHKG0", phaseSummary: [{ index: 0 }] },
     };
-    const result = await lookupBundleCopies("job-4", async (_address, role) =>
+    const result = await lookupBundleCopies("075C6SB05K7KKMB9KEG4WRHKG0", async (_address, role) =>
       role === "buyer" ? returned : { disposition: "absent" },
     );
     returned.bundle.phaseSummary[0]!.index = 9;
     expect(result.buyer).toEqual({
       disposition: "present",
-      bundle: { jobId: "job-4", phaseSummary: [{ index: 0 }] },
+      bundle: { jobId: "075C6SB05K7KKMB9KEG4WRHKG0", phaseSummary: [{ index: 0 }] },
     });
   });
 
   test("rejects non-canonical job identifiers before reading", async () => {
     const read = vi.fn();
-    await expect(lookupBundleCopies(" job-1", read)).rejects.toThrow(
-      /jobId must be non-empty canonical text/,
+    await expect(lookupBundleCopies(" 02DAV3KGGXZ2N81SBRJDRAKPRV", read)).rejects.toThrow(
+      /jobId must be a JID-1 canonical ULID/,
     );
     expect(read).not.toHaveBeenCalled();
   });

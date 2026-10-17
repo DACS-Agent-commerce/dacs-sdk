@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2354,7 +2355,7 @@ async function publishAndVerifySellerSettlement(input: {
       ? {
           disposition: "present",
           effectId: request.effectId,
-          evidence: structuredClone(retainedEvidence),
+          evidence: admittedFixture(structuredClone(retainedEvidence)),
         }
       : { disposition: "absent" },
     anchorEvidence: async ({ logicalAddress, evidence, evidenceHash }) => {
@@ -2385,7 +2386,7 @@ async function publishAndVerifySellerSettlement(input: {
             reason: "settlement evidence anchor signature or binding mismatch",
           },
     resolveEvidence: async () => retainedEvidence
-      ? { disposition: "present", evidence: structuredClone(retainedEvidence) }
+      ? { disposition: "present", evidence: admittedFixture(structuredClone(retainedEvidence)) }
       : { disposition: "absent" },
   };
   const published = await publishSellerSessionSettlement({

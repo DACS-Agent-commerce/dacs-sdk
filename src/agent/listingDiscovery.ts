@@ -1,3 +1,4 @@
+import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type {
   LegacyMvpListing,
@@ -232,6 +233,7 @@ export type ListingReadResult =
 
 export interface ListingDiscoveryDeps {
   index: BindingIndex;
+  /** Return records admitted from exact external bytes via admitArtifactJson. */
   readAnchor: (
     nativeAddress: string,
     anchorKind?: string,
@@ -513,7 +515,7 @@ export async function readListingByLogicalAddress(
 
   let record: Record<string, unknown>;
   try {
-    const snapshot: unknown = structuredClone(readValue);
+    const snapshot: unknown = snapshotAdmittedArtifact(readValue);
     if (!isRecord(snapshot)) throw new Error("record is not a JSON object");
     record = snapshot;
   } catch (error) {

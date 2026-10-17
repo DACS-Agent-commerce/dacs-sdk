@@ -1,3 +1,4 @@
+import { inheritArtifactAdmission } from "@kynesyslabs/dacs";
 import { createHash, randomBytes } from "node:crypto";
 
 import {
@@ -499,7 +500,9 @@ function deepFreeze<T>(value: T): T {
 }
 
 function canonicalSnapshot<T>(value: T): T {
-  return deepFreeze(JSON.parse(canonicalize(value)) as T);
+  const snapshot = JSON.parse(canonicalize(value)) as T;
+  inheritArtifactAdmission(value, snapshot);
+  return deepFreeze(snapshot);
 }
 
 function withoutSignature(

@@ -1,3 +1,4 @@
+import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
 import type {
   AnchorReceipt,
   AttestationRef,
@@ -26,7 +27,7 @@ import {
   type SessionSettlementNativeProofRef,
 } from "../agent/sessionSettlement.js";
 import {
-  verifySettlementEvidence,
+  verifyConstructedSettlementEvidence,
   type EvidenceDeps,
 } from "../agent/verifySettlementEvidence.js";
 import {
@@ -1090,9 +1091,9 @@ export async function publishSellerSessionSettlement(
       contentHash: evidenceHash,
     },
   };
-  let signatureCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
+  let signatureCheck: Awaited<ReturnType<typeof verifyConstructedSettlementEvidence>>;
   try {
-    signatureCheck = await verifySettlementEvidence(evidence, context, deps.evidence);
+    signatureCheck = await verifyConstructedSettlementEvidence(evidence, context, deps.evidence);
   } catch {
     return failure(
       "indeterminate",
@@ -1214,15 +1215,20 @@ export async function publishSellerSessionSettlement(
       !isSettlementEvidence(resolution.evidence)) {
     return failure("error", "settlement evidence readback is malformed", effectId);
   }
+  try {
+    snapshotAdmittedArtifact(ownData(rawResolution as object, "evidence"));
+  } catch {
+    return failure("error", "settlement evidence readback requires raw-byte admission", effectId);
+  }
   const readEvidence = resolution.evidence;
   if (canonicalize(readEvidence) !== canonicalize(evidence) ||
       contentHash(readEvidence as unknown as Record<string, unknown>) !== evidenceHash ||
       readEvidence.signature.signer !== deps.signer.signer) {
     return failure("rejected", "settlement evidence readback differs from the signed publication", effectId);
   }
-  let readCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
+  let readCheck: Awaited<ReturnType<typeof verifyConstructedSettlementEvidence>>;
   try {
-    readCheck = await verifySettlementEvidence(
+    readCheck = await verifyConstructedSettlementEvidence(
       readEvidence,
       { ...context, attestationRef: structuredClone(evidenceRef) },
       deps.evidence,
