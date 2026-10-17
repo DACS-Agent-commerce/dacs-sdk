@@ -172,26 +172,36 @@ if fingerprints "$temp/newline-found" > /dev/null 2> "$temp/newline.err" || [ -e
   exit 1
 fi
 
-# A backslash inside a filename is supported, but one at its end makes the pinned patch
-# parser silently skip the file. The control must scan with its exact quoted-path fingerprint;
-# adding the unsupported path must then refuse the scan before Gitleaks writes a report.
-mkdir "$temp/backslash"
-cd "$temp/backslash"
+# Backslashes cannot round-trip through the pinned ignore loader. Refuse both an
+# interior and a trailing backslash, even when the slash counterpart also exists.
+for control_path in 'ordinary\name.txt' 'hidden\'; do
+  mkdir "$temp/backslash-${#control_path}"
+  cd "$temp/backslash-${#control_path}"
+  git init -q -b main
+  mkdir ordinary
+  printf 'marker-unreviewed\n' > ordinary/name.txt
+  commit_file "$control_path" marker-backslash backslash
+  backslash=$(git rev-parse HEAD)
+  printf '%s\n' "$backslash:$control_path:marker:1" > .gitleaksignore
+  rm -f "$temp/backslash-found"
+  if fingerprints "$temp/backslash-found" > /dev/null 2> "$temp/backslash.err" || [ -e "$temp/backslash-found" ] ||
+    ! grep -qx "$backslash" "$temp/backslash.err"; then
+    echo "self-test: the scan did not refuse a path containing a backslash before running Gitleaks" >&2
+    exit 1
+  fi
+done
+
+# Distinct invalid filename bytes would collapse to the same JSON fingerprint.
+mkdir "$temp/invalid-utf8"
+cd "$temp/invalid-utf8"
 git init -q -b main
-control_path='ordinary\name.txt'
-commit_file "$control_path" marker-backslash control
-printf '%s\n' "$(git rev-parse HEAD):$control_path:marker:1" > "$temp/backslash-expected"
-fingerprints "$temp/backslash-control-found" > "$temp/backslash-control.sorted"
-if ! diff -u "$temp/backslash-expected" "$temp/backslash-control.sorted"; then
-  echo "self-test: Gitleaks did not report the ordinary backslash path's fingerprint" >&2
-  exit 1
-fi
-commit_file 'hidden\' marker-hidden "trailing backslash"
-backslash=$(git rev-parse HEAD)
-if fingerprints "$temp/backslash-found" > /dev/null 2> "$temp/backslash.err" || [ -e "$temp/backslash-found" ] ||
-  ! grep -qx "$backslash" "$temp/backslash.err"; then
-  echo "self-test: the scan did not refuse a path ending in a backslash before running Gitleaks" >&2
+printf 'marker-invalid\n' > $'bad-\xff.txt'
+commit_file $'bad-\xfe.txt' marker-invalid "invalid UTF-8"
+invalid=$(git rev-parse HEAD)
+if fingerprints "$temp/invalid-found" > /dev/null 2> "$temp/invalid.err" || [ -e "$temp/invalid-found" ] ||
+  ! grep -qx "$invalid" "$temp/invalid.err"; then
+  echo "self-test: the scan did not refuse an invalid UTF-8 path before running Gitleaks" >&2
   exit 1
 fi
 
-echo "Secret scan self-test passed: $(grep -c '' "$temp/expected") fingerprints as expected; an octopus merge, a path containing a newline and a path ending in a backslash are refused."
+echo "Secret scan self-test passed: $(grep -c '' "$temp/expected") fingerprints as expected; an octopus merge, paths containing a newline or a backslash and invalid UTF-8 paths are refused."

@@ -90,17 +90,23 @@ reported by that run rather than creating a similarly named placeholder.
     parents), so nothing it changes itself would be scanned. Each scan fails
     without running Gitleaks if the history it scans has one, and lists it;
     merge one branch at a time instead;
-  - Gitleaks 8.30.1 silently skips a file whose path ends in a backslash.
-    Each scan fails before running Gitleaks if any commit in its history adds,
-    changes or deletes such a path, and lists those commits; rewrite that
-    history without it. A backslash elsewhere in a path is supported, and the
-    self-test checks its exact fingerprint;
+  - Gitleaks 8.30.1 changes backslashes to slashes when loading ignore
+    entries, so a backslash anywhere in a path prevents exact pinning and can
+    suppress a separate slash path. Its patch parser also skips a file whose
+    path ends in a backslash. Each scan fails before running Gitleaks if any
+    commit in its history adds, changes or deletes a backslash-containing
+    path, and lists those commits; rewrite that history without it;
+  - Gitleaks' JSON encoder replaces invalid UTF-8 filename bytes, so distinct
+    paths can share a fingerprint that cannot be pinned. Each scan uses
+    `iconv` to reject invalid UTF-8 paths before running Gitleaks and lists
+    the commits that add, change or delete them. The runner and local
+    reproduction must have `iconv`; rewrite such history with UTF-8 paths;
   - git prints a path containing a newline unquoted in a merge's `remerge`
     lines (see below), where it can pass for a line Gitleaks reads, and such a
     path's fingerprint can't be one `.gitleaksignore` line. Each scan fails
     without running Gitleaks if a commit in the history it scans adds, changes
     or deletes such a path, and lists those commits; rewrite that history
-    without the path. As with an octopus merge or a path ending in a backslash,
+    without the path. As with an octopus merge, a backslash path or an invalid UTF-8 path,
     one pull request head that has one, which anyone can open from a fork,
     stops the audit from scanning anything, on any branch, tag or pull request,
     until that pull request's branch is rewritten, or GitHub Support removes
@@ -144,10 +150,11 @@ reported by that run rather than creating a similarly named placeholder.
     the ruleset: it never runs on pull requests, so the check would never
     report.
 
-  Each run's summary and log list its findings: one line per distinct Gitleaks
-  fingerprint (`commit:file:rule:line`), with an ID and the number of findings.
-  A file name can itself hold a secret, so they never show a fingerprint's file
-  segment: besides the ID and the count, they show only the commit SHA, rule ID
+  The audit's “List findings” step writes to the summary and log: one line
+  per distinct Gitleaks fingerprint (`commit:file:rule:line`), with an ID and
+  the number of findings. A file name can itself hold a secret, so this output
+  never shows a fingerprint's file segment: besides the ID and the count, it
+  shows only the commit SHA, rule ID
   and line number, as Gitleaks wrote them in the fingerprint. A field that
   fails its check shows as `(invalid)`, and the commit of a finding that
   Gitleaks reported without one (see below) as `no-commit`. Gitleaks writes the report in the same
@@ -163,6 +170,11 @@ reported by that run rather than creating a similarly named placeholder.
   credential found is the control that protects it (see the operating rules
   below).
 
+  The scan wrapper also hides Gitleaks' invalid-ignore-entry diagnostics,
+  which otherwise print entire fingerprints for colon-containing filenames
+  even with `--redact=100`. Other scanner and Git diagnostics may name paths;
+  the filename-hiding guarantee above applies to the “List findings” output.
+
   Fingerprints already in `.gitleaksignore` are not reported. The list stops at
   900 KiB, but the run still gives the number of findings, of IDs and of IDs
   omitted from the list. A report that can't be read, including one over
@@ -172,7 +184,8 @@ reported by that run rather than creating a similarly named placeholder.
   To spot a new finding while the audit is red, first check the scan step's
   log: if it says `Nothing was scanned` or `The scan is partial`,
   `scripts/secret-scan.sh` failed the step because git failed, or the history
-  has an octopus merge or a path containing a newline, and findings may be
+  has an octopus merge or an unsupported path (newline, backslash or invalid
+  UTF-8), and findings may be
   missing. Compare the run with the last
   run whose findings were all reviewed, not just with the previous run. An ID
   that wasn't among that run's findings, or a higher count for an ID, is new.
@@ -183,7 +196,7 @@ reported by that run rather than creating a similarly named placeholder.
   The local reproduction also gives the exact fingerprint for
   `.gitleaksignore`. Run it in a fresh clone, which checks out `main` and has
   every branch and tag, after fetching the pull request heads, as the audit
-  does. It needs Gitleaks 8.30.1 and git 2.36 or later; an older git can't
+  does. It needs Gitleaks 8.30.1, `iconv` and git 2.36 or later; an older git can't
   show merges, and the self-test fails on it. Ignore your own git
   configuration: settings such as `log.abbrevCommit` or `color.ui` change what
   Gitleaks reads.
@@ -228,8 +241,8 @@ reported by that run rather than creating a similarly named placeholder.
   first hunk, the scan also drops any line that doesn't start as one of git's
   header lines. The self-test checks that the fingerprints of a conflict in
   `commitment.txt` and of a later file keep their commit and the file's own
-  path, and that paths containing a newline or ending in a backslash are
-  refused. Pin every finding as
+  path, and that paths containing a newline or a backslash, and invalid
+  UTF-8 paths, are refused. Pin every finding as
   `commit:file:rule:line`; the
   `.gitleaksignore` test rejects any other entry. An entry without a commit
   would hide that file, rule and line in every commit, so don't pin a finding

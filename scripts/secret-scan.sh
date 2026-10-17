@@ -59,27 +59,51 @@ if ! [ "$newlines" -eq 0 ]; then
   exit 1
 fi
 
-# Gitleaks 8.30.1's patch parser silently skips a quoted path ending in an escaped
-# backslash. Check the raw, NUL-delimited paths, including deleted paths and each merge
-# parent, rather than the quoted patch headers or just the current tree.
-count_trailing_backslashes() {
+# Gitleaks 8.30.1 normalizes every backslash to a slash when loading ignore entries,
+# so even an interior backslash cannot be pinned exactly and may suppress another path.
+# Its patch parser also skips trailing backslashes. Check raw, NUL-delimited paths,
+# including deleted paths and each merge parent, rather than quoted patch headers.
+count_backslashes() {
   local path count=0
   while IFS= read -r -d '' path; do
-    case "$path" in *\\) count=$((count + 1));; esac
+    case "$path" in *\\*) count=$((count + 1));; esac
   done
   echo "$count"
 }
 # shellcheck disable=SC2086
 if ! backslashes=$(git log --format=%H $LOG_OPTS --diff-merges=off |
-  git diff-tree --stdin -r -z --name-only --root -m --no-commit-id | count_trailing_backslashes); then
+  git diff-tree --stdin -r -z --name-only --root -m --no-commit-id | count_backslashes); then
   echo "Nothing was scanned: git failed to list the history's paths." >&2
   exit 1
 fi
 if ! [ "$backslashes" -eq 0 ]; then
-  echo "Nothing was scanned: Gitleaks can't read a path ending in a backslash. Rewrite the history without it; these commits add, change or delete one:" >&2
+  echo "Nothing was scanned: Gitleaks can't preserve a backslash path in an exact ignore entry. Rewrite the history without it; these commits add, change or delete one:" >&2
   # shellcheck disable=SC2086
   git log --format=%H $LOG_OPTS --diff-merges=off | while read -r commit; do
-    if ! [ "$(git diff-tree -r -z --name-only --root -m --no-commit-id "$commit" | count_trailing_backslashes)" -eq 0 ]; then
+    if ! [ "$(git diff-tree -r -z --name-only --root -m --no-commit-id "$commit" | count_backslashes)" -eq 0 ]; then
+      echo "$commit"
+    fi
+  done >&2
+  exit 1
+fi
+
+# Go's JSON encoding replaces invalid UTF-8 bytes with U+FFFD, collapsing distinct
+# filenames and producing fingerprints that cannot match their original ignore entries.
+# Validate the raw path bytes (NUL separators are valid UTF-8), with no locale-dependent
+# decoding or replacement. No filename is printed, only the commits that touch it.
+if ! command -v iconv > /dev/null; then
+  echo "Nothing was scanned: iconv is required to validate UTF-8 paths." >&2
+  exit 1
+fi
+# shellcheck disable=SC2086
+if ! git log --format=%H $LOG_OPTS --diff-merges=off |
+  git diff-tree --stdin -r -z --name-only --root -m --no-commit-id |
+  iconv -f UTF-8 -t UTF-8 > /dev/null 2> /dev/null; then
+  echo "Nothing was scanned: Gitleaks can't preserve an invalid UTF-8 path in JSON. Rewrite the history without it; these commits add, change or delete one:" >&2
+  # shellcheck disable=SC2086
+  git log --format=%H $LOG_OPTS --diff-merges=off | while read -r commit; do
+    if ! git diff-tree -r -z --name-only --root -m --no-commit-id "$commit" |
+      iconv -f UTF-8 -t UTF-8 > /dev/null 2> /dev/null; then
       echo "$commit"
     fi
   done >&2
@@ -121,7 +145,12 @@ chmod +x "$temp/bin/git"
 
 status=0
 PATH="$temp/bin:$PATH" "$gitleaks" git . --log-opts="$LOG_OPTS" "$@" 2> "$temp/gitleaks.log" || status=$?
-cat "$temp/gitleaks.log" >&2
+# The pinned ignore loader warns about colon-containing filenames and prints the
+# complete fingerprint even with --redact=100, although it still honors the pin.
+# Hide that entire diagnostic. Keep the raw log private for the partial-scan check.
+sed '/Invalid \.gitleaksignore entry/c\
+Gitleaks: ignore-entry diagnostic hidden (filename may be sensitive).
+' "$temp/gitleaks.log" >&2
 # Check git's own stderr, including warnings Gitleaks accepts without reporting an error.
 if [ -s "$SECRET_SCAN_GIT_STDERR" ] || grep -qF "stderr is not empty" "$temp/gitleaks.log"; then
   echo "The scan is partial: git failed during Gitleaks' run or wrote to stderr." >&2

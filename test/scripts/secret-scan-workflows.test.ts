@@ -673,7 +673,9 @@ describe("secret scan git log options", () => {
 
     for (const [kind, unsupportedPath, reason] of [
       ["newline", "nl\ncommit.txt", "after a path containing a newline, Gitleaks can report a finding under another commit or file"],
-      ["trailing-backslash", "hidden\\", "Gitleaks can't read a path ending in a backslash"],
+      ["trailing-backslash", "hidden\\", "Gitleaks can't preserve a backslash path in an exact ignore entry"],
+      ["interior-backslash", "ordinary\\name.txt", "Gitleaks can't preserve a backslash path in an exact ignore entry"],
+      ["backslash-directory", "ordinary\\/name.txt", "Gitleaks can't preserve a backslash path in an exact ignore entry"],
     ] as const) {
       it(`refuses a ${kind} path wherever the scanned history has one, and lists its commits`, async () => {
         const refusal = `Nothing was scanned: ${reason}. Rewrite the history without it; these commits add, change or delete one:\n`;
@@ -681,6 +683,7 @@ describe("secret scan git log options", () => {
         const root = join(directory, `${kind}-root`);
         await mkdir(root);
         git(root, ["init", "-q", "-b", "main"]);
+        await mkdir(join(root, unsupportedPath, ".."), { recursive: true });
         await commitFile(root, unsupportedPath, "root\n", "root");
         const rootSha = git(root, ["rev-parse", "HEAD"]);
         await commitFile(root, "README", "fixture\n", "readme");
@@ -698,6 +701,7 @@ describe("secret scan git log options", () => {
         git(merge, ["checkout", "-q", "main"]);
         await commitFile(merge, "main.txt", "main\n", "main");
         run(merge, ["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        await mkdir(join(merge, unsupportedPath, ".."), { recursive: true });
         await commitFile(merge, unsupportedPath, "merged\n", "merge");
         const mergeSha = git(merge, ["rev-parse", "HEAD"]);
         // In a directory, which git diff-tree lists as only `src` unless it recurses.
@@ -705,6 +709,7 @@ describe("secret scan git log options", () => {
         await mkdir(join(nested, "src"), { recursive: true });
         git(nested, ["init", "-q", "-b", "main"]);
         await commitFile(nested, "README", "fixture\n", "base");
+        await mkdir(join(nested, "src", unsupportedPath, ".."), { recursive: true });
         await commitFile(nested, `src/${unsupportedPath}`, "nested\n", "nested");
         const nestedSha = git(nested, ["rev-parse", "HEAD"]);
         await commitFile(nested, "README", "changed\n", "readme");
@@ -731,6 +736,7 @@ describe("secret scan git log options", () => {
         git(pull, ["init", "-q", "-b", "main"]);
         await commitFile(pull, "README", "fixture\n", "base");
         git(pull, ["checkout", "-q", "-b", "pull"]);
+        await mkdir(join(pull, unsupportedPath, ".."), { recursive: true });
         await commitFile(pull, unsupportedPath, "pull\n", "pull");
         const pullSha = git(pull, ["rev-parse", "HEAD"]);
         git(pull, ["update-ref", "refs/pull/9/head", "HEAD"]);
@@ -761,9 +767,144 @@ describe("secret scan git log options", () => {
           "--report-format=json", `--report-path=${report}`,
         ], { LOG_OPTS: logOpts });
         expect(result.status).toBe(1);
-        expect(result.stderr).toContain(`Gitleaks can't read a path ending in a backslash.`);
+        expect(result.stderr).toContain(`Gitleaks can't preserve a backslash path in an exact ignore entry.`);
         expect(result.stderr).toContain(`\n${sha}\n`);
         expect(existsSync(report)).toBe(false);
+      }
+    });
+
+    it.skipIf(!process.env.GITLEAKS)("refuses an interior backslash and its slash counterpart before applying a misleading ignore pin", async () => {
+      const repository = join(directory, "backslash-alias");
+      await mkdir(join(repository, "ordinary"), { recursive: true });
+      git(repository, ["init", "-q", "-b", "main"]);
+      await writeFile(join(repository, "ordinary\\name.txt"), "marker-reviewed\n");
+      await commitFile(repository, "ordinary/name.txt", "marker-unreviewed\n", "both paths");
+      const sha = git(repository, ["rev-parse", "HEAD"]);
+      await writeFile(join(repository, ".gitleaksignore"), `${sha}:ordinary\\name.txt:marker:1\n`);
+      for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+        const report = join(directory, "backslash-alias.json");
+        const result = runScript(repository, scanScriptPath, [
+          process.env.GITLEAKS ?? "", `--config=${markerConfig}`, "--no-banner",
+          "--report-format=json", `--report-path=${report}`,
+        ], { LOG_OPTS: logOpts });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("Gitleaks can't preserve a backslash path in an exact ignore entry.");
+        expect(result.stderr).toContain(`\n${sha}\n`);
+        expect(existsSync(report)).toBe(false);
+      }
+    });
+
+    for (const real of [false, true]) {
+      it.skipIf(real && !process.env.GITLEAKS)(`refuses byte-distinct invalid UTF-8 paths before ${real ? "pinned Gitleaks" : "the stub"} runs`, async () => {
+        const repository = join(directory, `invalid-utf8-${real}`);
+        await mkdir(repository);
+        git(repository, ["init", "-q", "-b", "main"]);
+        // Go's JSON encoder replaces each of these different bytes with U+FFFD.
+        const paths = [0xff, 0xfe].map((byte) => Buffer.concat([
+          Buffer.from(`${repository}/bad-`), Buffer.from([byte]), Buffer.from(".txt"),
+        ]));
+        for (const path of paths) await writeFile(path, "marker-invalid\n");
+        git(repository, ["add", "--all"]);
+        git(repository, ["commit", "-q", "-m", "invalid byte paths"]);
+        const added = git(repository, ["rev-parse", "HEAD"]);
+        for (const path of paths) await unlink(path);
+        git(repository, ["add", "--all"]);
+        git(repository, ["commit", "-q", "-m", "delete invalid byte paths"]);
+        const removed = git(repository, ["rev-parse", "HEAD"]);
+        for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+          const report = join(directory, `invalid-utf8-${real}.json`);
+          const result = runScript(repository, scanScriptPath, [
+            real ? process.env.GITLEAKS ?? "" : stub, `--config=${markerConfig}`, "--no-banner",
+            "--report-format=json", `--report-path=${report}`,
+          ], { LOG_OPTS: logOpts });
+          expect(result.status).toBe(1);
+          expect(result.stderr).toBe(
+            "Nothing was scanned: Gitleaks can't preserve an invalid UTF-8 path in JSON. Rewrite the history without it; these commits add, change or delete one:\n" +
+            `${removed}\n${added}\n`,
+          );
+          expect(existsSync(report)).toBe(false);
+        }
+        expect(await stubCalls()).toEqual([]);
+      });
+    }
+
+    for (const real of [false, true]) {
+      it.skipIf(real && !process.env.GITLEAKS)(`checks nested invalid UTF-8 merge paths on PR-only history with ${real ? "pinned Gitleaks" : "the stub"}, while accepting valid Unicode`, async () => {
+        const repository = join(directory, `invalid-utf8-merge-${real}`);
+        await mkdir(join(repository, "目录"), { recursive: true });
+        git(repository, ["init", "-q", "-b", "main"]);
+        await commitFile(repository, "目录/é.txt", "marker-unicode\n", "valid Unicode");
+        const valid = git(repository, ["rev-parse", "HEAD"]);
+        git(repository, ["checkout", "-q", "-b", "side"]);
+        await commitFile(repository, "side.txt", "side\n", "side");
+        git(repository, ["checkout", "-q", "-b", "pull", "main"]);
+        await commitFile(repository, "pull.txt", "pull\n", "pull");
+        run(repository, ["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        await writeFile(Buffer.concat([
+          Buffer.from(`${repository}/目录/bad-`), Buffer.from([0xff]), Buffer.from(".txt"),
+        ]), "marker-invalid\n");
+        git(repository, ["add", "--all"]);
+        git(repository, ["commit", "-q", "-m", "merge adds nested invalid path"]);
+        const merge = git(repository, ["rev-parse", "HEAD"]);
+        git(repository, ["update-ref", "refs/pull/9/head", "HEAD"]);
+        git(repository, ["checkout", "-q", "main"]);
+        git(repository, ["branch", "-q", "-D", "side", "pull"]);
+        const report = join(directory, `invalid-utf8-merge-${real}.json`);
+        const args = [real ? process.env.GITLEAKS ?? "" : stub, `--config=${markerConfig}`,
+          "--exit-code=0", "--no-banner", "--report-format=json", `--report-path=${report}`];
+        const audit = runScript(repository, scanScriptPath, args, { LOG_OPTS: AUDIT_LOG_OPTS });
+        expect(audit.status).toBe(1);
+        expect(audit.stderr).toContain("Gitleaks can't preserve an invalid UTF-8 path in JSON.");
+        expect(audit.stderr).toContain(`\n${merge}\n`);
+        expect(existsSync(report)).toBe(false);
+        expect(await stubCalls()).toEqual([]);
+        const required = runScript(repository, scanScriptPath, args, { LOG_OPTS: REQUIRED_LOG_OPTS });
+        expect(required.status).toBe(0);
+        if (real) {
+          expect(JSON.parse(await readFile(report, "utf8")).map((finding: { Fingerprint: string }) => finding.Fingerprint)).toEqual(
+            [`${valid}:目录/é.txt:marker:1`],
+          );
+        } else {
+          expect(await stubCalls()).toEqual(["git", ".", `--log-opts=${REQUIRED_LOG_OPTS}`, ...args.slice(1)]);
+        }
+      });
+    }
+
+    it.skipIf(!process.env.GITLEAKS)("honors a colon-filename pin without printing it, while leaving the other finding visible", async () => {
+      const repository = join(directory, "colon-pin");
+      await mkdir(repository);
+      git(repository, ["init", "-q", "-b", "main"]);
+      await writeFile(join(repository, "private:reviewed.txt"), "marker-reviewed\n");
+      await commitFile(repository, "other.txt", "marker-unreviewed\n", "two findings");
+      const sha = git(repository, ["rev-parse", "HEAD"]);
+      const pin = `${sha}:private:reviewed.txt:marker:1`;
+      const report = join(directory, "colon-pin.json");
+      for (const logOpts of [REQUIRED_LOG_OPTS, AUDIT_LOG_OPTS]) {
+        // First prove both findings exist, then prove the exact pin hides only its own.
+        await rm(join(repository, ".gitleaksignore"), { force: true });
+        const scan = () => runScript(repository, scanScriptPath, [
+          process.env.GITLEAKS ?? "", `--config=${markerConfig}`, "--redact=100", "--no-banner",
+          "--report-format=json", `--report-path=${report}`,
+        ], { LOG_OPTS: logOpts });
+        expect(scan().status).toBe(1);
+        const findings = JSON.parse(await readFile(report, "utf8"));
+        expect(findings.map((finding: { Fingerprint: string }) => finding.Fingerprint).sort()).toEqual(
+          [`${sha}:other.txt:marker:1`, pin].sort(),
+        );
+        await writeFile(join(repository, ".gitleaksignore"), `${pin}\n`);
+        const result = scan();
+        expect(result.status).toBe(1); // The unreviewed finding still fails the scan.
+        expect(result.stdout + result.stderr).not.toContain("private:reviewed.txt");
+        expect(result.stdout + result.stderr).not.toContain(pin);
+        expect(result.stderr).toContain("ignore-entry diagnostic hidden");
+        expect(JSON.parse(await readFile(report, "utf8")).map((finding: { Fingerprint: string }) => finding.Fingerprint)).toEqual(
+          [`${sha}:other.txt:marker:1`],
+        );
+        await writeFile(join(repository, ".gitleaksignore"), `${pin}\n${sha}:other.txt:marker:1\n`);
+        const clean = scan();
+        expect(clean.status).toBe(0);
+        expect(clean.stdout + clean.stderr).not.toContain("private:reviewed.txt");
+        expect(JSON.parse(await readFile(report, "utf8"))).toEqual([]);
       }
     });
 
@@ -837,7 +978,7 @@ describe("secret scan git log options", () => {
           expect(result.stderr).not.toContain("self-test:");
           expect(result.status).toBe(0);
           expect(result.stdout).toBe(
-            `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge, a path containing a newline and a path ending in a backslash are refused.\n`,
+            `Secret scan self-test passed: ${count} fingerprints as expected; an octopus merge, paths containing a newline or a backslash and invalid UTF-8 paths are refused.\n`,
           );
         });
       }
