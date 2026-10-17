@@ -888,21 +888,41 @@ Standard's `htlc9-asymmetric` and `htlc9-asymmetric-resolved` fixtures.
 A reader verifying such a record with `verifySettlementEvidence` passes the
 agreement's route as `rail.htlcRoute`
 (`{ sourceChainId, destChainId, htlcContracts: { source, dest } }`), with
-`sourceFinalitySec` and `safetyWindowSec`. It also supplies independently
-authenticated lock expiries in Unix seconds as `htlcExpiry: { source, dest }`.
-Missing or malformed chains, contracts or expiries give `error`. The lock and
+positive safe integer `sourceFinalitySec` and `safetyWindowSec`. It also supplies
+independently authenticated lock expiries in Unix seconds as
+`htlcExpiry: { source, dest }`. Missing or malformed required chains, contracts
+or expiries give `error`. The lock and
 claim must use the source chain and contract; the reveal must use the
 destination chain and contract. HTLC-7's absolute expiry margin must hold,
 and a success record must use `htlc-reveal` finality.
 
-For an interim failure carrying a reveal, the authenticated phase result must
+For an interim failure after a final reveal, the authenticated phase result must
 carry `asymmetric: true`, `ok: false` and `errorClass: "settlement-atomicity"`.
 Set this marker from the authenticated ST-8 state, independently of the record's
 reason text. It permits other structured reason spellings without interpreting
 a revealed, still recoverable swap as an ordinary timeout. HTLC-9 requires
 exactly one destination reveal; the source lock is optional in interim evidence.
 The SDK's projection includes it. An interim record carries no source claim,
-source refund or supersession. Structural validation alone may omit the route
+source refund or supersession.
+
+A failed or conclusively absent destination-claim attempt can still appear in
+an ordinary refund record. Supply `htlcReveal: { txRef, state: "failed" }` (or
+`"absent"`) from an independently authenticated observation, together with
+`result.asymmetric: false` and the exact evidence refs as `result.txRefs`.
+The disposition must name the exact reveal reference. Pending transactions and
+observer outages do not establish an unlanded attempt; a final reveal still
+requires ST-8 regardless of reason text.
+
+For an early failure before a lock exists, supply independently authenticated
+`htlcLockState: { source: "created", dest: "not-created" }` and only
+`htlcExpiry: { source }`, with `result.ok: false`, `result.asymmetric: false`
+and exact `result.txRefs`. Such evidence carries only lock/refund refs for
+created legs. If neither lock was created, mark both `"not-created"`, pass no
+refs, and omit `htlcExpiry`. Success and asymmetric evidence always require
+both expiries and the HTLC-7 margin. Never infer a missing lock from reason text
+or invent its expiry.
+
+Structural validation alone may omit the route
 and expiries and does not establish authenticated settlement.
 
 ST-8 maps onto the core's results as follows:

@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
 import { isSettlementEvidence } from "../../src/artifacts/validators.js";
-import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
+import { canonicalize, contentHash, sha256Hex, stripSignature } from "../../src/canonical/index.js";
+import { verifySettlementEvidence, type AuthenticatedEvidenceContext } from "../../src/agent/verifySettlementEvidence.js";
 
 import {
   advanceCrossChainHtlc,
@@ -8759,5 +8760,80 @@ test("an otherwise valid acquired claim missing its lease stays resumable", asyn
   run.shared.store = base;
   await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
     status: "waiting", reason: "htlc-destination-lock-finality-pending",
+  });
+});
+
+// Permanent versions of the review's failed-reveal and missing-lock probes.
+// Chain and signature callbacks are local fakes; these never submit a transaction.
+describe("authenticated refund evidence from core progress", () => {
+  function refundEvidence(progress: Extract<CrossChainHtlcProgress, { status: "refunded" | "refund-pending" | "refund-stalled" }>) {
+    const fixture = JSON.parse(readFileSync(new URL(
+      "../../vendor/DACS-Standard/conformance/fixtures/settlement/htlc9-asymmetric.json", import.meta.url,
+    ), "utf8")).settlementEvidence;
+    const ev = { ...fixture, jobId: JOB_ID, reason: progress.reason, paymentTxRefs: progress.txRefs.filter(
+      (ref) => ref.kind !== "htlc-lock" || ref.chainId === 84532,
+    ) };
+    const ctx: AuthenticatedEvidenceContext = {
+      orchestrator: ev.signature.signer,
+      agreement: { amount: "1.25", currency: "USDC" },
+      rail: {
+        railId: "htlc-route-1", railType: "cross-chain-htlc", asset: "USDC", handler: ev.phase,
+        sourceFinalitySec: 20, safetyWindowSec: 10,
+        htlcRoute: { sourceChainId: 84532, destChainId: 80002,
+          htlcContracts: { source: "source-contract", dest: "destination-contract" } },
+      },
+      attestationRef: { anchor: { kind: "storage-program", locator: `dacs4:payment:${JOB_ID}:htlc-route-1:2` },
+        contentHash: contentHash(stripSignature(ev)) },
+      paymentAddress: { railId: "htlc-route-1", phaseIndex: 2 },
+      result: { ok: false, errorClass: "permanent", asymmetric: false, txRefs: structuredClone(ev.paymentTxRefs) },
+    };
+    return { ev, ctx };
+  }
+  const deps = { resolvePublicKey: async () => new Uint8Array(32), verify: () => true };
+
+  test("a failed destination claim followed by both final refunds verifies", async () => {
+    const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    for (let n = 0; n < 3; n++) await advanceCrossChainHtlc(run.nextOwner());
+    h.actions["destination-claim"] = { state: "failed", txRef: refFor("destination-claim"),
+      authenticationHash: AUTH_HASH, reason: "reveal-reverted" };
+    run.setClock(1_700_000);
+    await advanceCrossChainHtlc(run.nextOwner());
+    const result = await advanceCrossChainHtlc(run.nextOwner());
+    expect(result).toEqual({ status: "refunded", reason: "destination-claim-unlanded",
+      refunds: { "source-refund": "final", "destination-refund": "final" },
+      txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"),
+        refFor("source-refund"), refFor("destination-refund")] });
+    if (result.status !== "refunded") throw new Error("expected refunded");
+    expect(h.broadcastRetained.mock.calls.map(([p]) => p.action)).toEqual([
+      "source-lock", "destination-lock", "destination-claim", "source-refund", "destination-refund",
+    ]);
+    const { ev, ctx } = refundEvidence(result);
+    ctx.htlcExpiry = { source: 1_700, dest: 1_200 };
+    ctx.htlcReveal = { txRef: refFor("destination-claim") as Extract<HtlcTxRef, { kind: "htlc-reveal" }>, state: "failed" };
+    expect(await verifySettlementEvidence(ev, ctx, deps)).toEqual({ decision: "pass", reasons: [] });
+  });
+
+  test("a source-only refund verifies when destination lock preparation never succeeded", async () => {
+    const h = harness({ sourceExpiry: 1_700 });
+    const original = h.adapter.prepareAction;
+    h.adapter.prepareAction = vi.fn<CrossChainHtlcAdapter["prepareAction"]>(async (request, fence) => {
+      if (request.action === "destination-lock") throw new Error("destination preparation unavailable");
+      return original(request, fence);
+    });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    await advanceCrossChainHtlc(run.nextOwner());
+    run.setClock(1_700_000);
+    await advanceCrossChainHtlc(run.nextOwner());
+    const result = await advanceCrossChainHtlc(run.nextOwner());
+    expect(result).toEqual({ status: "refunded", reason: "destination-lock-missing",
+      refunds: { "source-refund": "final" }, txRefs: [refFor("source-lock"), refFor("source-refund")] });
+    if (result.status !== "refunded") throw new Error("expected refunded");
+    expect(h.broadcastRetained.mock.calls.map(([p]) => p.action)).toEqual(["source-lock", "source-refund"]);
+    const { ev, ctx } = refundEvidence(result);
+    ctx.htlcLockState = { source: "created", dest: "not-created" };
+    ctx.htlcExpiry = { source: 1_700 };
+    expect(await verifySettlementEvidence(ev, ctx, deps)).toEqual({ decision: "pass", reasons: [] });
   });
 });

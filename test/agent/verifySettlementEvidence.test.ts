@@ -1069,6 +1069,66 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     ctx.result.asymmetric = true;
     expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
   });
+  const refundedReveal = () => {
+    const ev = htlcInterim();
+    ev.reason = "destination-claim-unlanded";
+    ev.paymentTxRefs.push(htlcRefund(ev, 84532), {
+      ...htlcRefund(ev, 80002), refundTxHash: `0x${"e".repeat(64)}`,
+    });
+    const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
+    ctx.result.asymmetric = false;
+    ctx.result.txRefs = structuredClone(ev.paymentTxRefs);
+    ctx.htlcReveal = { txRef: structuredClone(ev.paymentTxRefs[1]), state: "failed" };
+    return { ev, ctx };
+  };
+  test.each(["failed", "absent"] as const)(
+    "accepts both final refunds after an authenticated %s reveal attempt", async (state) => {
+      const { ev, ctx } = refundedReveal();
+      ctx.htlcReveal!.state = state;
+      expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
+    },
+  );
+  test.each(["omitted", "final", "wrong-ref", "no-result-refs", "wrong-result-refs", "asymmetric"])(
+    "a refunded reveal cannot bypass finality authentication: %s", async (defect) => {
+      const { ev, ctx } = refundedReveal();
+      if (defect === "omitted") delete ctx.htlcReveal;
+      if (defect === "final") ctx.htlcReveal!.state = "final";
+      if (defect === "wrong-ref") ctx.htlcReveal!.txRef.revealTxHash = `0x${"d".repeat(64)}`;
+      if (defect === "no-result-refs") delete ctx.result.txRefs;
+      if (defect === "wrong-result-refs") ctx.result.txRefs = [];
+      if (defect === "asymmetric") ctx.result.asymmetric = true;
+      expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("fail");
+    },
+  );
+  test.each([null, {}, { state: "pending" }, { state: "failed", txRef: null }])(
+    "refuses malformed reveal disposition: %j", async (observation) => {
+      const { ev, ctx } = refundedReveal();
+      ctx.htlcReveal = observation as never;
+      expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("error");
+    },
+  );
+  test.each(["chain", "contract"])("an unlanded reveal still binds its %s to the route", async (field) => {
+    const { ev, ctx } = refundedReveal();
+    if (field === "chain") ev.paymentTxRefs[1].chainId = 11155111;
+    else ev.paymentTxRefs[1].contractAddress = `0x${"d".repeat(40)}`;
+    ctx.htlcReveal!.txRef = structuredClone(ev.paymentTxRefs[1]);
+    ctx.result.txRefs = structuredClone(ev.paymentTxRefs);
+    ctx.attestationRef = { ...ctx.attestationRef, contentHash: contentHash(stripSignature(ev)) };
+    expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "fail", reasons: [
+      field === "chain" ? "HTLC failure references MUST use the pinned route chains by action role" :
+        "HTLC evidence MUST use the pinned source and destination contracts",
+    ] });
+  });
+  test("an authenticated final reveal with an alternate reason still requires ST-8", async () => {
+    const ev = htlcInterim();
+    ev.reason = "destination-timeout";
+    const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
+    ctx.htlcReveal = { txRef: structuredClone(ev.paymentTxRefs[1]), state: "final" };
+    ctx.result.asymmetric = false;
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("fail");
+    ctx.result.asymmetric = true;
+    expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
+  });
   test.each([true, "true"])("a successful HTLC result refuses an asymmetric marker of %s", async (asymmetric) => {
     const ev = htlcResolved();
     const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
@@ -1090,6 +1150,59 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("error");
     },
   );
+  const sourceOnlyRefund = () => {
+    const ev = htlcInterim();
+    ev.reason = "destination-lock-missing";
+    ev.paymentTxRefs = [ev.paymentTxRefs[0], htlcRefund(ev, 84532)];
+    const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
+    ctx.result.asymmetric = false;
+    ctx.result.txRefs = structuredClone(ev.paymentTxRefs);
+    ctx.htlcLockState = { source: "created", dest: "not-created" };
+    ctx.htlcExpiry = { source: 10_000 };
+    return { ev, ctx };
+  };
+  test("authenticates a source-only refund without inventing a destination expiry", async () => {
+    const { ev, ctx } = sourceOnlyRefund();
+    expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
+  });
+  test("authenticates an early failure before either lock exists", async () => {
+    const { ev, ctx } = sourceOnlyRefund();
+    ev.paymentTxRefs = [];
+    ctx.result.txRefs = [];
+    ctx.htlcLockState!.source = "not-created";
+    delete ctx.htlcExpiry;
+    ctx.attestationRef = { ...ctx.attestationRef, contentHash: contentHash(stripSignature(ev)) };
+    expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({ decision: "pass", reasons: [] });
+  });
+  test.each(["no-state", "created", "no-result-refs", "asymmetric", "destination-ref", "claim-ref", "no-source-expiry"])(
+    "source-only expiry exemption refuses %s", async (defect) => {
+      const { ev, ctx } = sourceOnlyRefund();
+      if (defect === "no-state") delete ctx.htlcLockState;
+      if (defect === "created") ctx.htlcLockState!.dest = "created";
+      if (defect === "no-result-refs") delete ctx.result.txRefs;
+      if (defect === "asymmetric") ctx.result.asymmetric = true;
+      if (defect === "destination-ref") ev.paymentTxRefs.push(htlcRefund(ev, 80002));
+      if (defect === "claim-ref") ev.paymentTxRefs.push(htlcResolved().paymentTxRefs[2]);
+      if (defect === "no-source-expiry") ctx.htlcExpiry = {};
+      ctx.result.txRefs = defect === "no-result-refs" ? undefined : structuredClone(ev.paymentTxRefs);
+      ctx.attestationRef = { ...ctx.attestationRef, contentHash: contentHash(stripSignature(ev)) };
+      const result = await verifySettlementEvidence(ev, ctx, signatureAccepted);
+      expect(["error", "fail"]).toContain(result.decision);
+      expect(result.reasons).toContain("authenticated HTLC payment evidence context requires absolute source and destination expiries in Unix seconds");
+    },
+  );
+  test.each([htlcResolved, htlcInterim])("success and asymmetric evidence cannot claim a missing destination leg", async (fixture) => {
+    const ev = fixture();
+    const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
+    ctx.htlcLockState = { source: "created", dest: "not-created" };
+    ctx.htlcExpiry = { source: 10_000 };
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("error");
+  });
+  test.each([null, {}, { source: "created", dest: "unknown" }])("refuses malformed lock state: %j", async (state) => {
+    const { ev, ctx } = sourceOnlyRefund();
+    ctx.htlcLockState = state as never;
+    expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("error");
+  });
   test.each([NaN, Infinity])("refuses a non-finite authenticated expiry: %s", async (source) => {
     const ev = htlcResolved();
     const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
@@ -1101,6 +1214,26 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
     ctx.htlcExpiry = { source, dest: 5_000 };
     expect((await verifySettlementEvidence(ev, ctx, signatureAccepted)).decision).toBe("fail");
+  });
+  test.each(["sourceFinalitySec", "safetyWindowSec"] as const)("HTLC-7 validates %s", async (parameter) => {
+    for (const value of [-1000, 0, 0.5]) {
+      const ev = htlcResolved();
+      const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
+      ctx.rail![parameter] = value;
+      // Ample margin otherwise; the invalid parameter alone must fail.
+      expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({
+        decision: "fail",
+        reasons: [`HTLC route MUST pin rail.${parameter} as a positive safe integer (HTLC-7)`],
+      });
+    }
+  });
+  test.each(["sourceFinalitySec", "safetyWindowSec"] as const)("HTLC-7 refuses unsafe %s at the JSON boundary", async (parameter) => {
+    const ev = htlcResolved();
+    const ctx = htlcAuthenticated(ev, htlcRail!.htlcRoute);
+    ctx.rail![parameter] = Number.MAX_SAFE_INTEGER + 1;
+    expect(await verifySettlementEvidence(ev, ctx, signatureAccepted)).toEqual({
+      decision: "error", reasons: ["evidence or verification context is not stable canonical JSON"],
+    });
   });
   test.each([undefined, null, {}, { source: "source-only" }])(
     "authenticated HTLC requires pinned contracts: %j", async (htlcContracts) => {
