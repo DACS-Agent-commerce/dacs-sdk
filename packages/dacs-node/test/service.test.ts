@@ -249,6 +249,7 @@ describe("authority-separated live role services", () => {
     overrides: Partial<DacsLiveRoleServiceOptionsV1> = {},
   ): DacsLiveRoleServiceOptionsV1 {
     return {
+      executionMode: "simulation",
       config: config(role),
       database,
       workerId: `${role}-worker`,

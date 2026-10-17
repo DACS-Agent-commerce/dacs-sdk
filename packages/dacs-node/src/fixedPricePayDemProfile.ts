@@ -1,3 +1,4 @@
+import type { ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import {
   captureFixedPricePayDemProtocolBinding,
   type AuthenticatedRailDefinition,
@@ -70,7 +71,8 @@ export interface DacsFixedPricePayDemSellerAdmissionRecordV1 {
   protocol: Readonly<FixedPricePayDemOrderInput["protocol"]>;
 }
 
-export interface DacsFixedPricePayDemSellerSessionPolicyOptionsV1 {
+export interface DacsFixedPricePayDemSellerSessionPolicyOptionsV1 extends ProfileExecutionPolicy {
+  readAnchorBytes?(locator: string): Promise<Uint8Array | null>;
   context: Readonly<DacsLiveRoleOperationContextV1>;
   rail: Readonly<AuthenticatedRailDefinition>;
   sellerPublicEndpoint: string;
@@ -278,6 +280,8 @@ export function createDacsFixedPricePayDemSellerSessionPolicyV1(
       }
       const admittedAt = options.now?.() ?? context.database.readTime();
       const resolved = await resolveDacsPayDemExistingListingV1({
+        executionMode: options.executionMode,
+        readAnchorBytes: options.readAnchorBytes,
         listingRef: application.listingRef,
         sellerAuthority: context.authority,
         sellerPublicKey,

@@ -1,3 +1,4 @@
+import type { ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import {
   baseUnits,
   captureFixedPriceX402ProtocolBinding,
@@ -177,7 +178,8 @@ export interface DacsFixedPriceX402SellerAdmissionRecordV1 {
   protocol: Readonly<FixedPriceX402OrderInput["protocol"]>;
 }
 
-export interface DacsFixedPriceX402SellerSessionPolicyOptionsV1 {
+export interface DacsFixedPriceX402SellerSessionPolicyOptionsV1 extends ProfileExecutionPolicy {
+  readAnchorBytes?(locator: string): Promise<Uint8Array | null>;
   context: Readonly<DacsLiveRoleOperationContextV1>;
   rail: Readonly<AuthenticatedRailDefinition>;
   sellerPublicEndpoint: string;
@@ -488,6 +490,8 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
       }
       const admittedAt = options.now?.() ?? context.database.readTime();
       const resolved = await resolveDacsX402ExistingListingV1({
+        executionMode: options.executionMode,
+        readAnchorBytes: options.readAnchorBytes,
         listingRef: application.listingRef,
         sellerAuthority: context.authority,
         sellerPublicKey,

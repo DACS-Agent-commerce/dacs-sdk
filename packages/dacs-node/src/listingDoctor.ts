@@ -1,4 +1,6 @@
 import {
+  requireAdmissibleProfile,
+  type ProfileExecutionPolicy,
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
   validateListingArtifact,
@@ -13,6 +15,7 @@ import {
   type RevocationBinding,
 } from "@kynesyslabs/dacs/artifacts";
 import {
+  admitRawJson,
   canonicalize,
   canonicalizeDecimal,
   contentHash,
@@ -54,7 +57,7 @@ export interface DacsPayDemListingDraftInspectionOptionsV1 {
   now: number;
 }
 
-export interface DacsX402ExistingListingResolutionOptionsV1 {
+export interface DacsX402ExistingListingResolutionOptionsV1 extends ProfileExecutionPolicy {
   listingRef: string;
   sellerAuthority: string;
   sellerPublicKey: Uint8Array;
@@ -65,6 +68,7 @@ export interface DacsX402ExistingListingResolutionOptionsV1 {
   maximumServiceAmount: string;
   now: number;
   readAnchor(locator: string): Promise<Record<string, unknown> | null>;
+  readAnchorBytes?(locator: string): Promise<Uint8Array | null>;
   authenticateAnchor(input: Readonly<{
     logicalAddress: string;
     nativeAddress: string;
@@ -74,7 +78,7 @@ export interface DacsX402ExistingListingResolutionOptionsV1 {
   readJson(url: string): Promise<unknown>;
 }
 
-export interface DacsPayDemExistingListingResolutionOptionsV1 {
+export interface DacsPayDemExistingListingResolutionOptionsV1 extends ProfileExecutionPolicy {
   listingRef: string;
   sellerAuthority: string;
   sellerPublicKey: Uint8Array;
@@ -85,6 +89,7 @@ export interface DacsPayDemExistingListingResolutionOptionsV1 {
   maximumServiceAmount: string;
   now: number;
   readAnchor(locator: string): Promise<Record<string, unknown> | null>;
+  readAnchorBytes?(locator: string): Promise<Uint8Array | null>;
   authenticateAnchor(input: Readonly<{
     logicalAddress: string;
     nativeAddress: string;
@@ -425,9 +430,17 @@ async function resolveDacsExistingListingV1(
   >,
   profile: "x402" | "pay-dem",
 ): Promise<Readonly<DacsX402ExistingListingResolutionV1>> {
+  try { requireAdmissibleProfile(options); } catch {
+    return Object.freeze({ status: "blocked", reasonCode: "corrective-profile-unreleased" });
+  }
+  if (!options.readAnchorBytes) {
+    return Object.freeze({ status: "blocked", reasonCode: "listing-original-json-unavailable" });
+  }
+  let receivedBytes: Uint8Array | null;
   let raw: Record<string, unknown> | null;
   try {
-    raw = await options.readAnchor(options.listingRef);
+    receivedBytes = await options.readAnchorBytes(options.listingRef);
+    raw = receivedBytes === null ? null : admitRawJson(receivedBytes) as Record<string, unknown>;
   } catch {
     return Object.freeze({ status: "blocked", reasonCode: "listing-anchor-read-unavailable" });
   }
@@ -472,8 +485,9 @@ async function resolveDacsExistingListingV1(
     return Object.freeze({ status: "blocked", reasonCode: "listing-registry-resolution-unavailable" });
   }
   const validation = await validateListingArtifact(
-    listing as unknown as Record<string, unknown>,
+    receivedBytes!,
     {
+      executionMode: options.executionMode,
       nowMs: () => options.now,
       verifyListingSignature: (input) => componentSignatureValid(
         input,
