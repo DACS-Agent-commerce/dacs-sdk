@@ -133,12 +133,18 @@ the step a member waits on is overdue, `sendAbort()`, any other send call, or
 `startAgreement()` answers `rejected` with "RFQ agreement timeout elapsed
 (RFQ-4)" and stores the `timeout` failure; the session stays `accepted` and
 nothing is signed or published. `startAgreement()` reads the trusted clock
-once, after verifying any stored contribution, and uses that one reading both
-for the deadline and as the new plan's `generatedAt`; if the clock fails it
-answers `indeterminate` and signs nothing. A send call on the member's own
-overdue turn records the timeout before the channel signer is called. A
-proposal the seller receives after its deadline, or whose plan the buyer dated
-after it, records the timeout before the seller signs anything.
+after verifying any stored contribution, and uses that one reading both for
+the deadline and as the new plan's `generatedAt`; if the clock fails it
+answers `indeterminate` and signs nothing. When a contribution is stored it
+also checks the deadline before calling the verifier, so an overdue job
+records its timeout even if the verifier never settles. After acceptance, a
+clock fault on a send call is `indeterminate` too, until the agreement is
+finalized. A send call on the member's own overdue turn records the timeout
+before the channel signer is called. A proposal the seller receives after its
+deadline records the timeout before the seller signs anything. So does a plan
+the buyer dated after that deadline, once the buyer's contribution verifies;
+an unverified one is refused (`rejected` for an invalid contribution,
+`indeterminate` if the verifier cannot decide) and nothing is stored.
 
 A record accepted by an SDK before this rule kept the last proposal's time in
 `awaitingSince`. The member that sent the accept counts its window from that

@@ -1878,9 +1878,12 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     }
     if (record.session.status !== "open") {
       const checked = await agreementClock(record);
-      return "timedOut" in checked
-        ? checked.timedOut
-        : { status: "rejected", reason: "RFQ session is already terminal", record };
+      if ("timedOut" in checked) return checked.timedOut;
+      // While the agreement step is pending, a clock fault decides nothing.
+      if ("clockFault" in checked && agreementDeadline(record) !== undefined) {
+        return checked.clockFault;
+      }
+      return { status: "rejected", reason: "RFQ session is already terminal", record };
     }
     const sender = roleClaim(record, role);
     if (record.session.expectedSender !== sender) {
@@ -2064,13 +2067,9 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         : { status: "rejected", reason: "RFQ agreement is already finalized", record };
     }
     // A proposal after the deadline is refused like a late turn, before the
-    // seller signs anything, so both members end in the timeout. So is a
-    // plan the buyer itself dated after our deadline.
+    // seller signs anything, so both members end in the timeout.
     const deadline = agreementDeadline(record);
-    if (
-      deadline !== undefined &&
-      (receivedAt > deadline || packet.plan.draft.generatedAt > deadline)
-    ) {
+    if (deadline !== undefined && receivedAt > deadline) {
       return recordTimeout(record, undefined, receivedAt);
     }
     let expectedPlan: Readonly<FixedPriceAgreementSigningPlan>;
@@ -2089,6 +2088,18 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       return {
         status: "rejected",
         reason: cause instanceof Error ? cause.message : "agreement proposal is invalid",
+        record,
+      };
+    }
+    // So is a plan the buyer itself dated after our deadline, but only once
+    // the buyer's contribution verifies: until then the date is unsigned.
+    // Packet admission already bound its role, party and plan hash.
+    if (deadline !== undefined && packet.plan.draft.generatedAt > deadline) {
+      const buyerSigned = await verifyContribution(expectedPlan, packet.buyerContribution);
+      if (buyerSigned === "valid") return recordTimeout(record, undefined, receivedAt);
+      return {
+        status: buyerSigned === "invalid" ? "rejected" : "indeterminate",
+        reason: `buyer agreement contribution is not cryptographically valid (${buyerSigned})`,
         record,
       };
     }
@@ -2470,11 +2481,16 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       // The proposal is in flight, unless our own stored contribution no
       // longer verifies: our signer used a stale or wrong key, so the seller
       // refuses that proposal. Only then start again.
-      const stored =
-        prior === undefined
-          ? undefined
-          : await verifyContribution(prior.plan, prior.contributions[0]!);
-      // The clock is read once, after every await before signing: the same
+      let stored: Awaited<ReturnType<typeof verifyContribution>> | undefined;
+      if (prior !== undefined) {
+        // An overdue agreement records its timeout before the verifier runs,
+        // so a verifier that never settles cannot hold the job open.
+        const overdue = await agreementClock(record);
+        if ("timedOut" in overdue) return overdue.timedOut;
+        if ("clockFault" in overdue) return overdue.clockFault;
+        stored = await verifyContribution(prior.plan, prior.contributions[0]!);
+      }
+      // The clock is read again after every await before signing: that one
       // reading decides the deadline and dates the plan.
       const checked = await agreementClock(record);
       if ("timedOut" in checked) return checked.timedOut;
