@@ -2,6 +2,7 @@ import { canonicalize, sha256Hex } from "../canonical/index.js";
 import {
   advanceLiquidityTankSettlement,
   createLiquidityTankIntent,
+  markLiquidityTankStoreCertified,
   type LiquidityTankAdapter,
   type LiquidityTankAuthority,
   type LiquidityTankIntent,
@@ -299,6 +300,20 @@ async function record(
   );
 }
 
+/**
+ * Reserves the signing slot for this lease, as the core does before it signs,
+ * ignoring the answer, then records the submission: each case checks
+ * `recordSubmission`'s own answer.
+ */
+async function submit(
+  handle: LiquidityTankStore,
+  input: Parameters<LiquidityTankStore["recordSubmission"]>[0],
+): Promise<LiquidityTankStoreWrite> {
+  const { submission: _submission, ...lease } = input;
+  await handle.reserveSigning(lease);
+  return handle.recordSubmission(input);
+}
+
 /** A fixture lock: the submission and the locked pending checkpoint, written at `now`. */
 async function lockWith(
   store: LiquidityTankStore,
@@ -309,7 +324,7 @@ async function lockWith(
   checkpointObservedAt = now,
 ) {
   const write = await acquire(store, fixture.intent, owner, now, leaseDurationMs);
-  await record("first submission", store.recordSubmission({ ...write, submission: fixture.submission }), true);
+  await record("first submission", submit(store, { ...write, submission: fixture.submission }), true);
   const checkpoint = fixture.lockedPending(checkpointObservedAt);
   await record("locked pending checkpoint", store.recordObservation({ ...write, observation: checkpoint }), true);
   return { write, checkpoint };
@@ -353,6 +368,7 @@ interface TakeoverRace {
 const TAKEOVER_RACES: readonly (readonly [string, (store: LiquidityTankStore, fixture: Fixture) => Promise<TakeoverRace>])[] = [
   ["recordSubmission", async (store, fixture) => {
     const write = await acquire(store, fixture.intent, "owner-a", T0);
+    await record("signing reservation", store.reserveSigning(write), true);
     return {
       write: (handle) => handle.recordSubmission({ ...write, now: T0 + LEASE_MS - 1, submission: fixture.submission }),
       takeoverAt: T0 + LEASE_MS,
@@ -361,7 +377,7 @@ const TAKEOVER_RACES: readonly (readonly [string, (store: LiquidityTankStore, fi
   }],
   ["recordObservation", async (store, fixture) => {
     const write = await acquire(store, fixture.intent, "owner-a", T0);
-    await record("submission", store.recordSubmission({ ...write, submission: fixture.submission }), true);
+    await record("submission", submit(store, { ...write, submission: fixture.submission }), true);
     const checkpoint = fixture.lockedPending(T0 + 1);
     return {
       write: (handle) => handle.recordObservation({ ...write, now: T0 + LEASE_MS - 1, observation: checkpoint }),
@@ -444,7 +460,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
   ["lease takeover raises the generation and fences the old owner", async (store, tag) => {
     const fixture = new Fixture(tag);
     const first = await acquire(store, fixture.intent, "owner-a", T0);
-    await record("submission", store.recordSubmission({ ...first, submission: fixture.submission }), true);
+    await record("submission", submit(store, { ...first, submission: fixture.submission }), true);
     const takeover = await claim(store, fixture.intent, "owner-b", T0 + LEASE_MS);
     check(takeover.status === "acquired", `claim after lease expiry returned ${takeover.status}`);
     check(takeover.lease.generation > first.generation, "takeover did not raise the generation");
@@ -471,7 +487,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     check(!await store.isCurrent({ ...stale, now: T0 + LEASE_MS }),
       "the same owner's stale generation is still current after its re-claim");
     await record("write with the same owner's stale generation",
-      store.recordSubmission({ ...stale, now: T0 + LEASE_MS, submission: again.submission }), false);
+      submit(store, { ...stale, now: T0 + LEASE_MS, submission: again.submission }), false);
     const inspected = await claim(store, again.intent, "owner-c", T0 + LEASE_MS * 2);
     check(inspected.status === "acquired" && inspected.submission === undefined,
       "a write with the same owner's stale generation was retained");
@@ -481,6 +497,8 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const fixture = new Fixture(tag);
     const write = await acquire(store, fixture.intent, "owner-a", T0);
     const expired = { ...write, now: T0 + LEASE_MS };
+    await record("signing reservation after lease expiry", store.reserveSigning(expired), false);
+    await record("signing reservation", store.reserveSigning(write), true);
     await record("submission after lease expiry",
       store.recordSubmission({ ...expired, submission: fixture.submission }), false);
     await record("submission", store.recordSubmission({ ...write, submission: fixture.submission }), true);
@@ -497,12 +515,12 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
   ["the first submission is kept and a replacement is refused", async (store, tag) => {
     const fixture = new Fixture(tag);
     const write = await acquire(store, fixture.intent, "owner-a", T0);
-    await record("first submission", store.recordSubmission({ ...write, submission: fixture.submission }), true);
-    await record("exact replay", store.recordSubmission({ ...write, submission: fixture.submission }), true);
-    await record("re-signed replacement", store.recordSubmission({
+    await record("first submission", submit(store, { ...write, submission: fixture.submission }), true);
+    await record("exact replay", submit(store, { ...write, submission: fixture.submission }), true);
+    await record("re-signed replacement", submit(store, {
       ...write, submission: retained(signedSubmission(fixture.intent, fixture.bridgeId, 2)),
     }), false);
-    await record("replacement on another bridge operation", store.recordSubmission({
+    await record("replacement on another bridge operation", submit(store, {
       ...write, submission: retained(signedSubmission(fixture.intent, fixture.otherBridgeId, 1)),
     }), false);
     const reclaimed = await claim(store, fixture.intent, "owner-b", T0 + LEASE_MS);
@@ -513,9 +531,9 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
   ["the first submission's receipt is its write's now, kept across replays and restarts", async (store, tag, reopen) => {
     const fixture = new Fixture(tag, 0);
     const write = await acquire(store, fixture.intent, "owner-a", T0);
-    await record("first submission", store.recordSubmission({ ...write, now: T0 + 1, submission: fixture.submission }), true);
+    await record("first submission", submit(store, { ...write, now: T0 + 1, submission: fixture.submission }), true);
     await record("exact replay a millisecond later",
-      store.recordSubmission({ ...write, now: T0 + 2, submission: fixture.submission }), true);
+      submit(store, { ...write, now: T0 + 2, submission: fixture.submission }), true);
     const waiting = await claim(store, fixture.intent, "owner-b", T0 + 3);
     check(waiting.status === "waiting" && waiting.submissionRecordedAt === T0 + 1,
       "a waiting claim does not return the first submission write's now as submissionRecordedAt");
@@ -539,21 +557,25 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const second = new Fixture(tag, 1);
     const firstWrite = await acquire(store, first.intent, "owner-a", T0);
     await record("first settlement's submission",
-      store.recordSubmission({ ...firstWrite, submission: first.submission }), true);
+      submit(store, { ...firstWrite, submission: first.submission }), true);
     const secondWrite = await acquire(store, second.intent, "owner-b", T0);
     const reuse = retained(signedSubmission(second.intent, first.bridgeId, 1));
     await record("second settlement reusing the bridge ID",
-      store.recordSubmission({ ...secondWrite, submission: reuse }), false);
+      submit(store, { ...secondWrite, submission: reuse }), false);
     // A refusal moves nothing: the bridge ID stays with the first settlement,
     // so the core's retry of a refused write is refused again.
     await record("second settlement reusing the bridge ID again",
-      store.recordSubmission({ ...secondWrite, submission: reuse }), false);
+      submit(store, { ...secondWrite, submission: reuse }), false);
     await record("first settlement's submission replayed after the refused reuse",
-      store.recordSubmission({ ...firstWrite, submission: first.submission }), true);
+      submit(store, { ...firstWrite, submission: first.submission }), true);
     const reopened = await reopen(store);
-    const resumed = await acquire(reopened, second.intent, "owner-c", T0 + LEASE_MS);
-    await record("after a restart, the second settlement reusing the bridge ID",
-      reopened.recordSubmission({ ...resumed, submission: reuse }), false);
+    // The second settlement's signing slot stays with its first lease, so a
+    // fresh third settlement tests the bridge-ID index after the restart.
+    const third = new Fixture(tag, 2);
+    const thirdWrite = await acquire(reopened, third.intent, "owner-c", T0 + LEASE_MS);
+    await record("after a restart, a third settlement reusing the bridge ID",
+      submit(reopened, { ...thirdWrite, submission: retained(signedSubmission(third.intent, first.bridgeId, 1)) }),
+      false);
     const inspected = await claim(reopened, second.intent, "inspector", T0 + LEASE_MS * 2);
     check(inspected.status === "acquired" && inspected.submission === undefined,
       "a refused reuse of another settlement's bridge ID was retained");
@@ -564,7 +586,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const write = await acquire(store, fixture.intent, "owner-a", T0);
     await record("observation before any submission",
       store.recordObservation({ ...write, observation: fixture.empty() }), false);
-    await record("submission", store.recordSubmission({ ...write, submission: fixture.submission }), true);
+    await record("submission", submit(store, { ...write, submission: fixture.submission }), true);
     await record("observation for another bridge operation",
       store.recordObservation({ ...write, observation: fixture.empty(T0, fixture.otherBridgeId) }), false);
     await record("empty", store.recordObservation({ ...write, observation: fixture.empty() }), true);
@@ -748,7 +770,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
   ["a timely completion of the lock a durable failure carries replaces it and blocks expiry", async (store, tag) => {
     const fixture = new Fixture(tag);
     const write = await acquire(store, fixture.intent, "owner-a", DEADLINE - 200, 500);
-    await record("first submission", store.recordSubmission({ ...write, submission: fixture.submission }), true);
+    await record("first submission", submit(store, { ...write, submission: fixture.submission }), true);
     // No checkpoint first: the bridge's first locked report is a failure that carries the lock.
     const failure = fixture.failedAfterLock(DEADLINE - 200);
     await record("failure carrying its lock", store.recordObservation({ ...write, observation: failure }), true);
@@ -773,7 +795,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
   ["a failure that carries its lock is expiry evidence only as the durable observation", async (store, tag) => {
     const durable = new Fixture(tag, 0);
     const write = await acquire(store, durable.intent, "owner-a", DEADLINE - 10);
-    await record("first submission", store.recordSubmission({ ...write, submission: durable.submission }), true);
+    await record("first submission", submit(store, { ...write, submission: durable.submission }), true);
     const failure = durable.failedAfterLock(DEADLINE - 200);
     await record("failure carrying its lock", store.recordObservation({ ...write, observation: failure }), true);
     const expire = (observation: LiquidityTankRecoveryEvidence, now = DUE) =>
@@ -817,7 +839,7 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
 
     const failing = new Fixture(tag, 1);
     const write = await acquire(store, failing.intent, "owner-a", DEADLINE - 10);
-    await record("first submission", store.recordSubmission({ ...write, submission: failing.submission }), true);
+    await record("first submission", submit(store, { ...write, submission: failing.submission }), true);
     const failure = failing.failedAfterLock(DEADLINE - 200);
     await record("failure carrying its lock", store.recordObservation({ ...write, observation: failure }), true);
     await expireAgainst("a durable failure that carries its lock", failing, write, failure);
@@ -902,14 +924,42 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     // phase's bridge operation, while its own is still free.
     const third = new Fixture(tag, 2);
     const thirdWrite = await acquire(reopened, third.intent, "owner-e", DEADLINE + LEASE_MS);
-    await record("after a restart, another phase reusing a settled bridge operation", reopened.recordSubmission({
+    await record("after a restart, another phase reusing a settled bridge operation", submit(reopened, {
       ...thirdWrite, submission: retained(signedSubmission(third.intent, locked.bridgeId, 1)),
     }), false);
-    await record("after a restart, another phase on its own bridge operation", reopened.recordSubmission({
+    await record("after a restart, another phase on its own bridge operation", submit(reopened, {
       ...thirdWrite, submission: third.submission,
     }), true);
   }],
 
+  ["the signing slot is reserved once per phase, survives a restart and is never handed to a later lease", async (store, tag, reopen) => {
+    const fixture = new Fixture(tag);
+    const write = await acquire(store, fixture.intent, "owner-a", T0);
+    await record("a first submission without a signing reservation",
+      store.recordSubmission({ ...write, submission: fixture.submission }), false);
+    await record("signing reservation", store.reserveSigning(write), true);
+    await record("the same lease reserving again", store.reserveSigning({ ...write, now: T0 + 1 }), true);
+    let reopened = await reopen(store);
+    const takeover = await acquire(reopened, fixture.intent, "owner-b", T0 + LEASE_MS);
+    const interrupted = await reopened.reserveSigning(takeover);
+    check(interrupted.status === "conflict" &&
+        (interrupted as { reason?: string }).reason === "liquidity-tank-signing-interrupted",
+      `after a restart, a later lease reserving an interrupted signing slot was answered ${interrupted.status}`);
+    await record("a later lease recording the first submission",
+      reopened.recordSubmission({ ...takeover, submission: fixture.submission }), false);
+    await record("the reserving lease writing after it expired",
+      reopened.recordSubmission({ ...write, now: T0 + LEASE_MS, submission: fixture.submission }), false);
+    reopened = await reopen(reopened);
+    const later = await acquire(reopened, fixture.intent, "owner-c", T0 + LEASE_MS * 2);
+    await record("a third lease after another restart", reopened.reserveSigning(later), false);
+    const inspected = await claim(await reopen(reopened), fixture.intent, "inspector", T0 + LEASE_MS * 3);
+    check(inspected.status === "acquired" && inspected.submission === undefined,
+      "an interrupted signing slot ended with a recorded submission");
+  }],
+  ["through the core, a worker stopped inside the signing window never leads to a second signature",
+    async (store, tag, reopen) => {
+      await signingWindowSequence(store, tag, reopen);
+    }],
   ["through the core, crashes and restarts never double-send, lock more than the intent or settle an expired phase",
     async (store, tag, reopen) => {
       await phaseSequence(store, tag, reopen, "settles");
@@ -955,8 +1005,8 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
       const other = await reopen(store);
       const resigned = retained(signedSubmission(fixture.intent, fixture.otherBridgeId, 2));
       const writes = await race(order,
-        () => store.recordSubmission({ ...write, submission: fixture.submission }),
-        () => other.recordSubmission({ ...write, submission: resigned }));
+        () => submit(store, { ...write, submission: fixture.submission }),
+        () => submit(other, { ...write, submission: resigned }));
       check(successes(...writes) === 1,
         `${successes(...writes)} of two concurrent submissions for one phase were recorded (${order})`);
       const kept = succeeded(writes[0]) ? fixture.submission : resigned;
@@ -975,8 +1025,8 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
       const firstWrite = await acquire(store, first.intent, "owner-a", T0);
       const secondWrite = await acquire(other, second.intent, "owner-b", T0);
       const writes = await race(order,
-        () => store.recordSubmission({ ...firstWrite, submission: first.submission }),
-        () => other.recordSubmission({
+        () => submit(store, { ...firstWrite, submission: first.submission }),
+        () => submit(other, {
           ...secondWrite, submission: retained(signedSubmission(second.intent, first.bridgeId, 1)),
         }));
       check(successes(...writes) === 1,
@@ -1143,20 +1193,20 @@ function modelBridge(intent: Readonly<LiquidityTankIntent>, tag: string, clock: 
 
 /**
  * `store` as the core-level cases hand it to the core, which runs only on a
- * store that declares its restart safety: a host runs these cases to earn
- * `restartSafety: "conformance-tested"`, so they declare it for the run.
+ * store the SDK certified: a host runs these cases to earn certification, so
+ * the handle is certified for the run.
  */
 function declaredUnderTest(store: LiquidityTankStore): LiquidityTankStore {
-  return {
-    restartSafety: "conformance-tested",
+  return markLiquidityTankStoreCertified({
     claim: (input) => store.claim(input),
     isCurrent: (input) => store.isCurrent(input),
+    reserveSigning: (input) => store.reserveSigning(input),
     recordSubmission: (input) => store.recordSubmission(input),
     recordObservation: (input) => store.recordObservation(input),
     recordRecoveryFailure: (input) => store.recordRecoveryFailure(input),
     recordRecoveryExpired: (input) => store.recordRecoveryExpired(input),
     recordSettlement: (input) => store.recordSettlement(input),
-  };
+  });
 }
 
 /** A handle on `store` whose next `recordSubmission` dies before reaching the store. */
@@ -1164,6 +1214,7 @@ function crashingBeforeSubmissionCommit(store: LiquidityTankStore): LiquidityTan
   return {
     claim: (input) => store.claim(input),
     isCurrent: (input) => store.isCurrent(input),
+    reserveSigning: (input) => store.reserveSigning(input),
     recordSubmission: async () => {
       throw new Error("worker stopped before the submission write committed");
     },
@@ -1221,14 +1272,10 @@ async function phaseSequence(
   };
 
   if (ending === "settles") {
-    // The worker stops after signing, before the submission is durable.
-    let progress = await run("worker-1", crashingBeforeSubmissionCommit(store));
-    check(progress.status === "indeterminate" && bridge.broadcast.size === 0,
-      "a submission whose write never committed was broadcast");
-    await restart();
-    // A fresh signature is stored and broadcast; the response is lost.
+    // The signature is stored and broadcast; the response is lost. (A worker
+    // stopped inside the signing window is `signingWindowSequence`.)
     bridge.loseNextBroadcastResponse();
-    progress = await run("worker-2");
+    let progress = await run("worker-2");
     check(progress.status === "indeterminate", `lost broadcast response returned ${progress.status}`);
     await restart();
     progress = await run("worker-3");
@@ -1241,7 +1288,7 @@ async function phaseSequence(
     now = DEADLINE + LEASE_MS;
     progress = await run("worker-5");
     check(progress.status === "settled", `settled phase after a restart returned ${progress.status}`);
-    check(bridge.prepared() === 2, `${bridge.prepared()} submissions were signed; expected 2`);
+    check(bridge.prepared() === 1, `${bridge.prepared()} submissions were signed; expected 1`);
   } else {
     let progress = await run("worker-1");
     check(progress.status === "settle-asymmetric", `locked bridge read returned ${progress.status}`);
@@ -1267,6 +1314,55 @@ async function phaseSequence(
   const final = await claim(await reopen(store), intent, "inspector", DEADLINE + LEASE_MS * 10);
   check(final.status === (ending === "settles" ? "settled" : "recovery-expired"),
     `the store reports ${final.status} after the phase ${ending === "settles" ? "settled" : "expired"}`);
+}
+
+/**
+ * A worker signs and stops before its submission is durable, with an adapter
+ * that broke its contract and already sent the bytes to the bridge. Every
+ * later worker, across restarts, must refuse to sign again: exactly one
+ * signature ever exists for the phase, and it locks no more than the intent.
+ */
+async function signingWindowSequence(initial: LiquidityTankStore, tag: string, reopen: Reopen): Promise<void> {
+  const intent = createLiquidityTankIntent(authorityFor(tag, 0));
+  let now = T0;
+  const bridge = modelBridge(intent, tag, () => now);
+  const amount = BigInt(intent.sourceAmountBaseUnits);
+  const leaky: LiquidityTankAdapter = {
+    ...bridge.adapter,
+    async prepareSubmission(bound, fence) {
+      const signed = await bridge.adapter.prepareSubmission(bound, fence);
+      const { submissionHash: _hash, ...unsigned } = signed as LiquidityTankPreparedSubmission;
+      await bridge.adapter.broadcastRetained(
+        { ...unsigned, submissionHash: sha256Hex(canonicalize(unsigned)) },
+        fence,
+      );
+      return signed;
+    },
+  };
+  let store = initial;
+  const run = (owner: string, handle: LiquidityTankStore) => advanceLiquidityTankSettlement({
+    authority: authorityFor(tag, 0),
+    owner,
+    store: declaredUnderTest(handle),
+    adapter: leaky,
+    verifier: bridge.verifier,
+    now: () => now,
+    leaseDurationMs: LEASE_MS,
+  });
+  let progress = await run("worker-1", crashingBeforeSubmissionCommit(store));
+  check(progress.status === "indeterminate", `a worker stopped in the signing window returned ${progress.status}`);
+  for (const owner of ["worker-2", "worker-3"]) {
+    store = await reopen(store);
+    now += LEASE_MS;
+    progress = await run(owner, store);
+    check(progress.status === "indeterminate" && progress.reason === "liquidity-tank-signing-interrupted",
+      `after a restart, ${owner} on an interrupted signing slot returned ${progress.status}` +
+        `${progress.status === "indeterminate" || progress.status === "waiting" ? ` ${progress.reason}` : ""}`);
+  }
+  check(bridge.prepared() === 1, `${bridge.prepared()} submissions were signed for one phase; expected 1`);
+  check(bridge.broadcast.size <= 1 && bridge.lockedTotal() <= amount,
+    `${bridge.broadcast.size} different signed submissions reached the bridge, locking ` +
+      `${bridge.lockedTotal()} base units for an intent of ${amount}`);
 }
 
 /**
@@ -1370,4 +1466,25 @@ export async function runLiquidityTankStoreConformance(
     }
   }
   return Object.freeze(results);
+}
+
+/**
+ * Runs every `runLiquidityTankStoreConformance` case through `createStore` and
+ * `reopenStore` and, only when every case passes, certifies `store` so the
+ * core will sign with it. The core never takes a store's word for its own
+ * restart safety: an uncertified store is refused before any claim as
+ * `liquidity-tank-store-uncertified`. `store` must be the production handle
+ * on the same backend `createStore` and `reopenStore` open; a store that
+ * declares itself volatile is never certified. Certification belongs to this
+ * module copy of the SDK and to this exact object: a wrapper or a copy of it
+ * is not certified.
+ */
+export async function certifyLiquidityTankStore(
+  options: LiquidityTankStoreConformanceOptions & { readonly store: LiquidityTankStore },
+): Promise<Readonly<{ certified: boolean; results: readonly LiquidityTankStoreConformanceResult[] }>> {
+  const results = await runLiquidityTankStoreConformance(options);
+  const certified = results.length === CASES.length && results.every((result) => result.passed) &&
+    options.store.restartSafety !== "volatile-acknowledged";
+  if (certified) markLiquidityTankStoreCertified(options.store);
+  return Object.freeze({ certified, results });
 }

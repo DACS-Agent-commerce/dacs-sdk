@@ -204,6 +204,14 @@ async function acquire(store: LiquidityTankStore, owner: string, now: number) {
   };
 }
 
+/** `acquire`, then the signing reservation the core takes before it signs. */
+async function acquireToSign(store: LiquidityTankStore, owner: string, now: number) {
+  const acquired = await acquire(store, owner, now);
+  const reserved = await store.reserveSigning(acquired.write);
+  if (reserved.status !== "recorded") throw new Error(`expected recorded, got ${reserved.status}`);
+  return acquired;
+}
+
 describe("createFsLiquidityTankStore", () => {
   test("passes every store conformance case, restarts and races included, through new instances", async () => {
     const dirs = new WeakMap<LiquidityTankStore, string>();
@@ -220,15 +228,35 @@ describe("createFsLiquidityTankStore", () => {
     expect(results.length).toBeGreaterThanOrEqual(28);
   }, 120_000);
 
-  test("declares that it passed conformance", async () => {
+  test("is certified by the SDK without declaring anything itself, and a copy of it is not", async () => {
     const store = await createFsLiquidityTankStore({ dir: await freshDir() });
-    expect(store.restartSafety).toBe("conformance-tested");
+    expect(store.restartSafety).toBeUndefined();
+    const run = (candidate: LiquidityTankStore) => advanceLiquidityTankSettlement({
+      authority: authority(),
+      owner: "worker-1",
+      store: candidate,
+      adapter: {
+        prepareSubmission: async () => {
+          const { submissionHash: _hash, ...unsigned } = submission();
+          return unsigned;
+        },
+        broadcastRetained: async () => {},
+        observe: async () => lockedPending(T0),
+      },
+      verifier: { authenticateObservation: async () => true, verifySignedSubmission: async () => true },
+      now: () => T0,
+      leaseDurationMs: 1_000,
+    });
+    await expect(run({ ...store })).resolves.toEqual({
+      status: "indeterminate", reason: "liquidity-tank-store-uncertified",
+    });
+    await expect(run(store)).resolves.toMatchObject({ status: "settle-asymmetric" });
   });
 
   test("a new instance on the same directory sees every committed row", async () => {
     const dir = await freshDir();
     const first = await createFsLiquidityTankStore({ dir });
-    const { write } = await acquire(first, "worker-1", T0);
+    const { write } = await acquireToSign(first, "worker-1", T0);
     await expect(first.recordSubmission({ ...write, submission: submission() }))
       .resolves.toEqual({ status: "recorded" });
     await expect(first.recordObservation({ ...write, now: T0 + 5, observation: lockedPending() }))
@@ -257,6 +285,10 @@ describe("createFsLiquidityTankStore", () => {
     const other = createLiquidityTankIntent(authority(1));
     const otherClaim = await restarted.claim({ intent: other, owner: "worker-3", now: T0, leaseDurationMs: 1_000 });
     if (otherClaim.status !== "acquired") throw new Error("expected acquired");
+    await restarted.reserveSigning({
+      settlementKey: other.settlementKey, bindingHash: other.bindingHash, owner: "worker-3",
+      generation: otherClaim.lease.generation, now: T0,
+    });
     await expect(restarted.recordSubmission({
       settlementKey: other.settlementKey, bindingHash: other.bindingHash, owner: "worker-3",
       generation: otherClaim.lease.generation, now: T0,
@@ -440,7 +472,7 @@ describe("createFsLiquidityTankStore", () => {
     const row = join(records, `${sha256Hex(intent.settlementKey)}.json`);
     const reservation = join(bridges, `${sha256Hex(BRIDGE_ID)}.json`);
     trace.root = dir;
-    const { write } = await acquire(store, "worker-1", T0);
+    const { write } = await acquireToSign(store, "worker-1", T0);
     await expect(store.recordSubmission({ ...write, submission: submission() }))
       .resolves.toEqual({ status: "recorded" });
     const before = await lstat(row);
@@ -451,8 +483,8 @@ describe("createFsLiquidityTankStore", () => {
     const publications = events
       .map((event, index) => ({ event, index }))
       .filter(({ event }) => event.endsWith(` -> ${row}`));
-    // The claim, the submission and the observation each replace the row.
-    expect(publications).toHaveLength(3);
+    // The claim, the signing reservation, the submission and the observation each replace the row.
+    expect(publications).toHaveLength(4);
     for (const { event, index } of publications) {
       expect(event).toMatch(/^rename /);
       const temporary = event.slice("rename ".length, event.indexOf(" -> "));
@@ -469,7 +501,7 @@ describe("createFsLiquidityTankStore", () => {
     const reserved = events.findIndex((event) => event.startsWith("link ") && event.endsWith(` -> ${reservation}`));
     expect(reserved).toBeGreaterThanOrEqual(0);
     expect(events.some((event) => event.startsWith("rename ") && event.endsWith(` -> ${reservation}`))).toBe(false);
-    expect(reserved).toBeLessThan((publications[1] as { index: number }).index);
+    expect(reserved).toBeLessThan((publications[2] as { index: number }).index);
     expect(events.slice(reserved + 1).some((later) => later === `sync ${bridges}`)).toBe(true);
     // No temporary is left behind.
     expect((await readdir(records)).filter((name) => name !== `${sha256Hex(intent.settlementKey)}.json`)).toEqual([]);
@@ -478,7 +510,7 @@ describe("createFsLiquidityTankStore", () => {
   test("a phase that loses the bridge-ID reservation race reports the conflict and commits nothing", async () => {
     const dir = await freshDir();
     const store = await createFsLiquidityTankStore({ dir });
-    const { write } = await acquire(store, "worker-1", T0);
+    const { write } = await acquireToSign(store, "worker-1", T0);
     const reservation = join(dir, "bridges", `${sha256Hex(BRIDGE_ID)}.json`);
     const otherKey = createLiquidityTankIntent(authority(1)).settlementKey;
     // Another phase publishes the same bridge ID after this write read the
@@ -501,7 +533,7 @@ describe("createFsLiquidityTankStore", () => {
   test("a row that was not written by the store reads as corrupt, and nothing is written over it", async () => {
     const dir = await freshDir();
     const store = await createFsLiquidityTankStore({ dir });
-    const { write } = await acquire(store, "worker-1", T0);
+    const { write } = await acquireToSign(store, "worker-1", T0);
     await store.recordSubmission({ ...write, submission: submission() });
     const row = join(dir, "records", `${sha256Hex(intent.settlementKey)}.json`);
     const written = await readFile(row, "utf8");
@@ -560,7 +592,7 @@ describe("createFsLiquidityTankStore", () => {
       const store = await createFsLiquidityTankStore({ dir });
       const row = join(dir, "records", `${sha256Hex(intent.settlementKey)}.json`);
       const read = async () => JSON.parse(await readFile(row, "utf8")) as Row;
-      const { write } = await acquire(store, "worker-1", T0);
+      const { write } = await acquireToSign(store, "worker-1", T0);
       const claimed = await read();
       await store.recordSubmission({ ...write, submission: submission() });
       const submitted = await read();
@@ -609,8 +641,16 @@ const CRASH_STEPS = [
   "row-directory-synced",
 ] as const;
 
-/** Runs the child store until it reaches `step`, then kills its process group with SIGKILL. */
-async function killChildAt(dir: string, step: string): Promise<string> {
+/**
+ * Runs the child store (or, with `mode` `"core"`, the core on it) until it
+ * reaches `step`, then kills its process group with SIGKILL.
+ */
+async function killChildAt(
+  dir: string,
+  step: string,
+  mode: "1" | "core" = "1",
+  env: Record<string, string> = {},
+): Promise<string> {
   const ready = join(dirname(dir), `reached-${step}`);
   const child = spawn(
     process.execPath,
@@ -628,7 +668,8 @@ async function killChildAt(dir: string, step: string): Promise<string> {
       stdio: "ignore",
       env: {
         ...process.env,
-        DACS_TANK_FS_CHILD: "1",
+        ...env,
+        DACS_TANK_FS_CHILD: mode,
         DACS_TANK_FS_DIR: dir,
         DACS_TANK_FS_READY: ready,
         DACS_TANK_FS_STOP: step,
@@ -672,10 +713,12 @@ async function outcome(call: () => Promise<{ status: string; reason?: string }>)
 }
 
 describe("createFsLiquidityTankStore after a crash while reserving a bridge ID", () => {
-  test("a store reopened after a SIGKILL at any reservation step finishes recordSubmission with the bytes signed before the kill", async () => {
+  test("a store reopened after a SIGKILL at any reservation step keeps the signing slot and the bridge ID with the killed lease", async () => {
     const crashIntent = createLiquidityTankIntent(crashAuthority());
     const other = createLiquidityTankIntent(crashAuthority(1));
     const reservationName = `${sha256Hex(CRASH_BRIDGE_ID)}.json`;
+    const { submissionHash: _hash, ...unsigned } = { ...crashSubmission(), authorityHash: other.bindingHash };
+    const reuse = { ...unsigned, submissionHash: sha256Hex(canonicalize(unsigned)) };
     const rows = [];
     for (const step of CRASH_STEPS) {
       const dir = await freshDir();
@@ -695,13 +738,20 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
       }));
       const otherClaim = await store.claim({ intent: other, owner: "worker-3", now, leaseDurationMs: 1_000 });
       if (otherClaim.status !== "acquired") throw new Error(`expected acquired, got ${otherClaim.status}`);
+      await store.reserveSigning({
+        settlementKey: other.settlementKey,
+        bindingHash: other.bindingHash,
+        owner: "worker-3",
+        generation: otherClaim.lease.generation,
+        now,
+      });
       const reused = await outcome(() => store.recordSubmission({
         settlementKey: other.settlementKey,
         bindingHash: other.bindingHash,
         owner: "worker-3",
         generation: otherClaim.lease.generation,
         now,
-        submission: { ...crashSubmission(), authorityHash: other.bindingHash },
+        submission: reuse,
       }));
       rows.push({
         step,
@@ -714,15 +764,91 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
       });
     }
     const committed = CRASH_STEPS.indexOf("row-renamed");
+    const published = CRASH_STEPS.indexOf("linked");
     expect(rows).toEqual(CRASH_STEPS.map((step, index) => ({
       step,
       reached: step,
-      // Once the row holds the submission, a restarted core reuses it.
+      // Once the row holds the submission, a restarted core reuses it; before
+      // that, the killed lease's signing slot is never handed to another lease.
       retained: index >= committed,
-      recorded: index >= committed ? "existing" : "recorded",
+      recorded: index >= committed ? "existing" : "conflict liquidity-tank-signing-interrupted",
       links: 1,
       bridges: [reservationName],
-      reused: "conflict liquidity-tank-bridge-cross-settlement-reuse",
+      // Once the killed write linked its reservation the bridge ID stays with
+      // its phase; before that it was never reserved, so another phase may take it.
+      reused: index >= published ? "conflict liquidity-tank-bridge-cross-settlement-reuse" : "recorded",
+    })));
+  }, 600_000);
+
+  test("a core killed between reserving and signing, after signing, or at any step of the submission write never leads to a second signature", async () => {
+    const steps = ["before-sign", "signed", ...CRASH_STEPS] as const;
+    const committed = steps.indexOf("row-renamed");
+    const rows = [];
+    for (const step of steps) {
+      const dir = await freshDir();
+      const log = join(dirname(dir), `${randomUUID()}-signed.log`);
+      writeFileSync(log, "");
+      const reached = await killChildAt(dir, step, "core", { DACS_TANK_FS_SIGNED_LOG: log });
+      let now = CRASH_T0 + 2_000;
+      const { operationHash } = createLiquidityTankIntent(crashAuthority());
+      let observation: LiquidityTankObservation = {
+        status: "empty", bridgeId: CRASH_BRIDGE_ID, operationHash,
+        history: ["empty"], observedAt: now, authenticationHash: "a".repeat(64),
+      };
+      // The restarted worker's adapter would sign different bytes: a second signature would show.
+      const prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async (bound) => {
+        const unsigned = {
+          ...crashSubmission(),
+          signedSubmissionBase64: Buffer.from("re-signed-after-the-kill", "utf8").toString("base64"),
+          preparedAt: now,
+          authorityHash: bound.bindingHash,
+        };
+        const { submissionHash: _hash, ...rest } = unsigned;
+        writeFileSync(log, `${sha256Hex(canonicalize(rest))}\n`, { flag: "a" });
+        return rest;
+      });
+      const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async () => {
+        observation = {
+          status: "pending", bridgeId: CRASH_BRIDGE_ID, operationHash,
+          history: ["empty", "pending"], observedAt: now, authenticationHash: "a".repeat(64),
+          lockTxHash: "fs-crash-lock-tx", recoveryDeadline: CRASH_T0 + 86_400_000,
+        };
+      });
+      const results = [];
+      for (const owner of ["worker-2", "worker-3"]) {
+        results.push(await advanceLiquidityTankSettlement({
+          authority: crashAuthority(),
+          owner,
+          // A short stale age reclaims the locks the killed child left.
+          store: await createFsLiquidityTankStore({ dir, lockStaleMs: 1 }),
+          adapter: { prepareSubmission, broadcastRetained, observe: async () => observation },
+          verifier: { authenticateObservation: async () => true, verifySignedSubmission: async () => true },
+          now: () => now,
+          leaseDurationMs: 1_000,
+        }).then((progress) => progress.status === "indeterminate" ? `${progress.status} ${progress.reason}` : progress.status));
+        now += 2_000;
+      }
+      const signatures = readFileSync(log, "utf8").split("\n").filter((line) => line !== "");
+      rows.push({
+        step,
+        reached,
+        results,
+        resigned: prepareSubmission.mock.calls.length,
+        distinctSignatures: new Set(signatures).size,
+        broadcast: [...new Set(broadcastRetained.mock.calls.map(([sent]) => sent.submissionHash))],
+      });
+    }
+    expect(rows).toEqual(steps.map((step, index) => ({
+      step,
+      reached: step,
+      // Before the row holds the bytes the phase is parked; after, the bytes
+      // signed before the kill are reused. Neither ever signs again.
+      results: index >= committed
+        ? ["settle-asymmetric", "settle-asymmetric"]
+        : ["indeterminate liquidity-tank-signing-interrupted", "indeterminate liquidity-tank-signing-interrupted"],
+      resigned: 0,
+      distinctSignatures: step === "before-sign" ? 0 : 1,
+      broadcast: index >= committed ? [crashSubmission().submissionHash] : [],
     })));
   }, 600_000);
 
@@ -770,11 +896,12 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
     now += 2_000;
     await expect(run("worker-2")).resolves.toMatchObject({ status: "settle-asymmetric" });
     // The removal is fsynced before the row that holds the submission is
-    // written: the claim's write is the only row write before it.
+    // written: the claim's and the signing reservation's writes are the only
+    // row writes before it.
     const row = join(dir, "records", `${sha256Hex(intent.settlementKey)}.json`);
     const finished = trace.events.indexOf(`sync ${bridges}`);
     expect(finished).toBeGreaterThanOrEqual(0);
-    expect(trace.events.slice(0, finished).filter((event) => event.endsWith(` -> ${row}`))).toHaveLength(1);
+    expect(trace.events.slice(0, finished).filter((event) => event.endsWith(` -> ${row}`))).toHaveLength(2);
     expect(prepareSubmission).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalled();
     expect(new Set(broadcastRetained.mock.calls.map(([sent]) => sent.submissionHash)).size).toBe(1);
@@ -795,7 +922,7 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
     for (const { shape, extra } of shapes) {
       const dir = await freshDir();
       const store = await createFsLiquidityTankStore({ dir });
-      const { write } = await acquire(store, "worker-1", T0);
+      const { write } = await acquireToSign(store, "worker-1", T0);
       const bridges = join(dir, "bridges");
       const reservation = join(bridges, base);
       await writeFile(reservation, JSON.stringify({ storeVersion: 1, bridgeId: BRIDGE_ID, settlementKey: intent.settlementKey }), {
@@ -835,7 +962,7 @@ describe("createFsLiquidityTankStore after a crash while reserving a bridge ID",
     const store = await createFsLiquidityTankStore({ dir });
     const otherStore = await createFsLiquidityTankStore({ dir });
     const other = createLiquidityTankIntent(authority(1));
-    const { write } = await acquire(store, "worker-1", T0);
+    const { write } = await acquireToSign(store, "worker-1", T0);
     const otherClaim = await otherStore.claim({ intent: other, owner: "worker-2", now: T0, leaseDurationMs: 1_000 });
     if (otherClaim.status !== "acquired") throw new Error("expected acquired");
     let resume = (): void => undefined;
@@ -1095,6 +1222,10 @@ describe("createFsLiquidityTankStore locks of other threads and module copies", 
           }
           const claimed = await store.claim({ intent: other, owner: "worker-1", now: T0, leaseDurationMs: 600_000 });
           if (claimed.status !== "acquired" && claimed.status !== "waiting") return `claimed ${claimed.status}`;
+          await store.reserveSigning({
+            settlementKey: other.settlementKey, bindingHash: other.bindingHash, owner: "worker-1",
+            generation: claimed.lease.generation, now: T0,
+          }).catch(() => undefined);
           return outcome(() => store.recordSubmission({
             settlementKey: other.settlementKey, bindingHash: other.bindingHash, owner: "worker-1",
             generation: claimed.lease.generation, now: T0, submission: otherSubmission,
@@ -1139,7 +1270,7 @@ describe("createFsLiquidityTankStore locks of other threads and module copies", 
     // A live lock of the first copy, paused inside the phase and bridge-ID locks.
     const liveDir = await freshDir();
     const first = await createFsLiquidityTankStore({ dir: liveDir, lockTimeoutMs: 5_000 });
-    const { write } = await acquire(first, "worker-1", T0);
+    const { write } = await acquireToSign(first, "worker-1", T0);
     let resume = (): void => undefined;
     const paused = new Promise<void>((reached) => {
       trace.linkTarget = join(liveDir, "bridges", `${sha256Hex(BRIDGE_ID)}.json`);
@@ -1397,7 +1528,7 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
     const reservation = `${sha256Hex(BRIDGE_ID)}.json`;
     const staging = join(dir, "bridges", `.${reservation}.${"0".repeat(48)}.tmp`);
     await writeFile(staging, "{}", { flag: "wx", mode: 0o600 });
-    const { write } = await acquire(store, "worker-1", T0);
+    const { write } = await acquireToSign(store, "worker-1", T0);
     const injected = failOnce((op, path) => op === "lstat" && path === staging, undefined, "ENOENT");
     trace.fault = injected;
     const recorded = await store.recordSubmission({ ...write, submission: submission() });
@@ -1415,7 +1546,7 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
     const store = await createFsLiquidityTankStore({ dir });
     await writeFile(join(dir, "bridges", `${sha256Hex(BRIDGE_ID)}.json`), JSON.stringify(reservation),
       { flag: "wx", mode: 0o600 });
-    const { write } = await acquire(store, "worker-1", T0);
+    const { write } = await acquireToSign(store, "worker-1", T0);
     await expect(store.recordSubmission({ ...write, submission: submission() }))
       .resolves.toEqual({ status: "corrupt", reason: "liquidity-tank-fs-record-corrupt" });
     const reclaimed = await store.claim({ intent, owner: "worker-1", now: T0 + 1, leaseDurationMs: 1_000 });
