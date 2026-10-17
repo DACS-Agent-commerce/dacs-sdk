@@ -11,6 +11,7 @@ import {
   type AuthenticatedEvidenceDeps,
   type EvidenceContext,
 } from "../../src/agent/verifySettlementEvidence.js";
+import { contentHash, stripSignature } from "../../src/canonical/index.js";
 import { ed25519Verify, publicKeyFromRaw } from "../../src/crypto/index.js";
 
 const CONF = join(
@@ -919,6 +920,87 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ev = htlcResolved();
     ev.paymentTxRefs[1].chainId = 84532;
     expect((await verify(ev, { rail: { ...htlcRail, htlcRoute: undefined } })).decision).toBe("fail");
+  });
+  test.each(["block-depth", "liquidity-tank", "commitment-level"])(
+    "htlc success with %s finality → fail (PC-6 binds htlc-reveal)",
+    async (model) => {
+      const ev = htlcResolved();
+      ev.settlementFinality.model = model;
+      expect(await verify(ev, { rail: htlcRail })).toEqual({
+        decision: "fail",
+        reasons: ["HTLC success evidence MUST use htlc-reveal finality (PC-6)"],
+      });
+    },
+  );
+
+  // The trust-bearing API selects the agreement's route (§9.5.4 setup); the
+  // signature is stubbed valid so the route is the only thing that decides.
+  const HTLC_RAIL_ID = "cross-chain-htlc-usdc";
+  const NO_ROUTE =
+    "authenticated HTLC payment evidence context requires the pinned route's source and destination chains";
+  const htlcAuthenticated = (
+    ev: Record<string, any>,
+    htlcRoute: unknown,
+  ): AuthenticatedEvidenceContext => {
+    const resolved = ev.supersedesEvidenceRef !== undefined;
+    return {
+      orchestrator: ev.signature.signer,
+      agreement: { amount: "25", currency: "USDC" },
+      rail: {
+        railId: HTLC_RAIL_ID,
+        railType: "cross-chain-htlc",
+        asset: "USDC",
+        handler: "pay-cross-chain-htlc",
+        sourceFinalitySec: 120,
+        safetyWindowSec: 600,
+        htlcRoute: htlcRoute as { sourceChainId: number; destChainId: number },
+      },
+      attestationRef: {
+        anchor: {
+          kind: "storage-program",
+          locator: `dacs4:payment:${ev.jobId}:${HTLC_RAIL_ID}:0${resolved ? ":resolved" : ""}`,
+        },
+        contentHash: contentHash(stripSignature(ev)),
+      },
+      paymentAddress: { railId: HTLC_RAIL_ID, phaseIndex: 0, resolved },
+      result: { ok: ev.outcome === "success", ...(ev.outcome === "success" ? {} : { errorClass: "settlement-atomicity" }) },
+    };
+  };
+  const signatureAccepted: AuthenticatedEvidenceDeps = {
+    resolvePublicKey: async () => new Uint8Array(32),
+    verify: () => true,
+  };
+  test.each([
+    ["resolved", htlcResolved],
+    ["interim", htlcInterim],
+  ] as const)("authenticated htlc9 %s fixture → pass on its pinned route", async (_name, fixture) => {
+    const ev = fixture();
+    expect(await verifySettlementEvidence(ev, htlcAuthenticated(ev, htlcRail!.htlcRoute), signatureAccepted))
+      .toEqual({ decision: "pass", reasons: [] });
+  });
+  test.each([
+    ["no route", undefined],
+    ["a route on one chain", { sourceChainId: 84532, destChainId: 84532 }],
+    ["string chain ids", { sourceChainId: "84532", destChainId: "80002" }],
+    ["a zero chain id", { sourceChainId: 0, destChainId: 80002 }],
+  ])("authenticated htlc evidence with %s is an error, never a pass", async (_name, route) => {
+    const ev = htlcResolved();
+    const result = await verifySettlementEvidence(ev, htlcAuthenticated(ev, route), signatureAccepted);
+    expect(result.decision).toBe("error");
+    expect(result.reasons).toContain(NO_ROUTE);
+  });
+  test("authenticated htlc evidence on two off-route chains is refused with or without a route", async () => {
+    // Distinct chains, lock and claim together: only the route can refuse it.
+    const ev = htlcResolved();
+    ev.paymentTxRefs[0].chainId = 11155111;
+    ev.paymentTxRefs[1].chainId = 421614;
+    ev.paymentTxRefs[2].chainId = 11155111;
+    const withoutRoute = await verifySettlementEvidence(ev, htlcAuthenticated(ev, undefined), signatureAccepted);
+    expect(withoutRoute).toEqual({ decision: "error", reasons: [NO_ROUTE] });
+    expect(await verifySettlementEvidence(ev, htlcAuthenticated(ev, htlcRail!.htlcRoute), signatureAccepted)).toEqual({
+      decision: "fail",
+      reasons: ["HTLC success evidence MUST carry the lock and claim on the source chain and the reveal on the destination chain"],
+    });
   });
   test.each([
     ["carries only the reveal", (ev: Record<string, any>) => { ev.paymentTxRefs = [ev.paymentTxRefs[1]]; }],

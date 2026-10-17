@@ -116,9 +116,11 @@ export interface EvidenceRailContext {
   safetyWindowSec?: number;
   /**
    * The pinned HTLC route's chains (`CrossChainRoute.sourceChainId` /
-   * `destChainId`). When supplied, the HTLC references must sit on them by
-   * role: the lock and claim on the source chain, the reveal on the
-   * destination chain.
+   * `destChainId`). The HTLC references must sit on them by role: the lock
+   * and claim on the source chain, the reveal on the destination chain.
+   * REQUIRED by `verifySettlementEvidence` for `pay-cross-chain-htlc`
+   * evidence (DACS-4 §9.5.4 route selection); optional for structural
+   * validation.
    */
   htlcRoute?: { sourceChainId: number; destChainId: number };
 }
@@ -157,8 +159,10 @@ export interface EvidenceContext {
    */
   expectedAnchorLocator?: string;
   /**
-   * Absolute HTLC expiry instants (unix ms/s), when a cross-chain-htlc route is
-   * being checked for the HTLC-7 timelock margin. Skipped when absent.
+   * Absolute HTLC expiry instants in Unix seconds (the unit of
+   * `rail.sourceFinalitySec` and `rail.safetyWindowSec`, which the HTLC-7
+   * margin adds to them), when a cross-chain-htlc route is being checked.
+   * Skipped when absent.
    */
   htlcExpiry?: { source: number; dest: number };
 }
@@ -484,6 +488,17 @@ async function evaluateSettlementEvidence(
           !isSafeUint(ctx.paymentAddress.phaseIndex)) {
         sawError = true;
         reasons.push("authenticated payment evidence context requires the exact PC-2 address tuple");
+      }
+      // §9.5.4: the agreement selects the route matching (sourceChainId,
+      // destChainId). Without it, references on any two other chains would
+      // pass the role check.
+      const route: unknown = isObj(ctx.rail) ? ctx.rail.htlcRoute : undefined;
+      if (phase === "pay-cross-chain-htlc" &&
+          (!isObj(route) || !isPositiveSafeInteger(route["sourceChainId"]) ||
+            !isPositiveSafeInteger(route["destChainId"]) ||
+            route["sourceChainId"] === route["destChainId"])) {
+        sawError = true;
+        reasons.push("authenticated HTLC payment evidence context requires the pinned route's source and destination chains");
       }
     }
     if (isDelivery && (!isStr(ctx.expectedAnchorLocator) ||
@@ -869,6 +884,9 @@ async function evaluateSettlementEvidence(
         fail("HTLC success evidence MUST carry the htlc-claim on the source lock's contract");
       } else if (reusesTxHash()) {
         fail("HTLC evidence MUST NOT reuse one transaction hash for two actions");
+      }
+      if (finality && finality["model"] !== "htlc-reveal") {
+        fail("HTLC success evidence MUST use htlc-reveal finality (PC-6)");
       }
     } else if (htlcInterim) {
       if (claims.length !== 0) fail("HTLC-9 interim evidence MUST NOT carry an htlc-claim");
