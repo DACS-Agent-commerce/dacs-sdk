@@ -295,13 +295,14 @@ export interface DemosRawClient {
   ): Promise<string>;
   getAddress(): string;
   getAddressNonce(address: string): Promise<number>;
+  // No index signatures: demosdk >=4.0.17 returns an interface, which TypeScript
+  // will not assign to one. Callers re-validate the result at runtime anyway.
   getNetworkInfo(): Promise<
     | {
         forks?: {
           osDenomination?: { activated?: boolean };
-          [name: string]: unknown;
         };
-        [name: string]: unknown;
+        chainId?: number | null;
       }
     | null
     | undefined
@@ -309,7 +310,6 @@ export interface DemosRawClient {
   getAddressInfo(address: string): Promise<
     | {
         balance?: bigint;
-        [name: string]: unknown;
       }
     | null
     | undefined
@@ -4093,22 +4093,27 @@ export class DemosAdapter implements SubstrateAdapter {
       );
     }
     const identities = new Identities();
-    if (parsed.kind === "web2" && parsed.platform === "domain") {
-      throw new Error(
-        "findSubjectsByClaim: domain reverse lookup is not exposed by the current Demos SDK",
+    let accounts;
+    if (parsed.kind === "web2") {
+      // A local binding lets TypeScript carry the "domain" exclusion to the call.
+      const { platform } = parsed;
+      if (platform === "domain") {
+        throw new Error(
+          "findSubjectsByClaim: domain reverse lookup is not exposed by the current Demos SDK",
+        );
+      }
+      accounts = await identities.getDemosIdsByWeb2Identity(
+        this.#demos,
+        platform,
+        parsed.handle,
+      );
+    } else {
+      accounts = await identities.getDemosIdsByWeb3Identity(
+        this.#demos,
+        `${parsed.chainType}.${parsed.subchain}`,
+        parsed.address,
       );
     }
-    const accounts = parsed.kind === "web2"
-      ? await identities.getDemosIdsByWeb2Identity(
-          this.#demos,
-          parsed.platform,
-          parsed.handle,
-        )
-      : await identities.getDemosIdsByWeb3Identity(
-          this.#demos,
-          `${parsed.chainType}.${parsed.subchain}`,
-          parsed.address,
-        );
     return (accounts ?? [])
       .map((a: { pubkey?: unknown }) => a.pubkey)
       .filter((p: unknown): p is string => typeof p === "string");
