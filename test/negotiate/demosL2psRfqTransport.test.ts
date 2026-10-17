@@ -4986,3 +4986,77 @@ describe("Demos L2PS RFQ frame admission guards", () => {
     await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
   });
 });
+
+describe("Demos L2PS RFQ membership mapping the transport cannot check", () => {
+  // The host maps the buyer's claim to an attacker's messaging key and back
+  // (docs: the §8.3.2 binding is the host's). Frames stay sealed under the
+  // members' key, so such a pair only stops delivery, and RFQ-4 ends the job.
+  test("a reciprocal pair of wrong answers discloses nothing, delivers nothing, and ends in the timeout", async () => {
+    const attackerCodec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+    // The buyer's own wrong mapping sends its offer to the attacker's key, which cannot open it.
+    const misrouted = await buyerWithSentOffer({
+      extra: {
+        peerForClaim: (claim) => (claim === SELLER ? THIRD_PEER : peerForClaim(claim)),
+        claimForPeer: (peer) => (peer === THIRD_PEER ? SELLER : peer === SELLER_PEER ? undefined : claimForPeer(peer)),
+      },
+    });
+    expect(misrouted.own).toMatchObject({ from: BUYER_PEER, to: THIRD_PEER });
+    await expect(Promise.resolve().then(() => attackerCodec.open(misrouted.own.encrypted, {
+      messageHash: misrouted.packet.packetId, fromPeer: BUYER_PEER, toPeer: THIRD_PEER,
+    }))).rejects.toThrow("authentication failed");
+
+    // The seller's wrong mapping takes the attacker's key for the buyer.
+    const sent = await buyerWithSentOffer();
+    const clock = { now: NOW };
+    const errors: Error[] = [];
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: sent.hub.peer(SELLER_PEER),
+      codec: sent.baseCodec,
+      l2psUid: L2PS_UID,
+      peerChannel: "loopback",
+      outboxStore: memorySendOutbox(),
+      localClaim: SELLER,
+      localPeerKey: SELLER_PEER,
+      peerForClaim: (claim) => (claim === BUYER ? THIRD_PEER : peerForClaim(claim)),
+      claimForPeer: (peer) => (peer === THIRD_PEER ? BUYER : peer === BUYER_PEER ? undefined : claimForPeer(peer)),
+      onError: (error) => errors.push(error),
+    });
+    const seller = createDurableRfqLifecycleClient({
+      ...clientOptions("seller", transport, durableReservation()),
+      nowMs: () => clock.now,
+    });
+    await seller.open(openInput());
+    const before = await seller.getStatus(JOB_ID);
+    const receive = vi.fn((packet: unknown) => seller.receive(packet));
+    transport.start(receive);
+    const emit = async (payload: DemosL2psRfqIncomingPayload) => {
+      for (const handler of sent.hub.handlers.get(SELLER_PEER) ?? []) handler(payload);
+      await transport.drain();
+    };
+    const { packetId } = sent.packet;
+    // The buyer's genuine frame, from a key this mapping does not know.
+    await emit({ from: BUYER_PEER, encrypted: structuredClone(sent.own.encrypted), messageHash: packetId });
+    // The attacker replays that frame from the key mapped to the buyer...
+    await emit({ from: THIRD_PEER, encrypted: structuredClone(sent.own.encrypted), messageHash: packetId });
+    // ...and seals the buyer's exact packet under its own key.
+    const forged = await attackerCodec.seal(
+      new TextEncoder().encode(canonicalize(sent.packet as never)),
+      { messageHash: packetId, fromPeer: THIRD_PEER, toPeer: SELLER_PEER },
+    );
+    await emit({ from: THIRD_PEER, encrypted: forged, messageHash: packetId });
+    expect(receive).not.toHaveBeenCalled();
+    expect(errors.length).toBeGreaterThanOrEqual(3);
+    expect(await seller.getStatus(JOB_ID)).toEqual(before);
+
+    // The seller waits on the buyer's first turn; once it is overdue the job ends unsent.
+    clock.now = NOW + 10_001;
+    await expect(seller.sendAbort(JOB_ID)).resolves.toMatchObject({
+      status: "rejected", reason: "RFQ turn timeout elapsed (RFQ-4)",
+    });
+    await expect(seller.getStatus(JOB_ID)).resolves.toMatchObject({
+      status: "ok", record: { failure: { class: "timeout" }, outbox: [] },
+    });
+    expect(sent.hub.messages.filter((message) => message.from === SELLER_PEER)).toHaveLength(0);
+    transport.stop();
+  });
+});
