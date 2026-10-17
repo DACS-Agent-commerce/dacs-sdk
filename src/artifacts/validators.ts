@@ -216,10 +216,15 @@ const isMinimalUnsignedDecimal = (v: unknown): v is string =>
 // byte-exact cross-stage migration into DACS-5 terminal bundles.
 const isIdentityBundleHash = (v: unknown): v is string =>
   isSha256(v) || (isStr(v) && /^sha256:[0-9a-f]{64}$/.test(v));
+// CORE §B.7: the generic signed-scope helpers omit both `signature` and
+// `signatures`. A single-signature artifact that also carries `signatures`
+// would leave those bytes outside its hash (SIG-5), so refuse it as ambiguous.
+const hasNoPluralSignatures = (v: Record<string, unknown>): boolean =>
+  !Object.prototype.hasOwnProperty.call(v, "signatures");
 const hasValidOptionalComponentSignature = (
   v: Record<string, unknown>,
 ): boolean =>
-  !Object.prototype.hasOwnProperty.call(v, "signatures") &&
+  hasNoPluralSignatures(v) &&
   (!Object.prototype.hasOwnProperty.call(v, "signature") ||
     isComponentSignature(v.signature));
 
@@ -920,7 +925,12 @@ function isListingBody(
 
 /** Unsigned DACS-1 §6.3.4 publication input; legacy shapes are refused. */
 export function isListingDraft(v: unknown): v is ListingDraft {
-  return isObj(v) && !("signature" in v) && isListingBody(v, true, true);
+  return (
+    isObj(v) &&
+    !("signature" in v) &&
+    !("signatures" in v) &&
+    isListingBody(v, true, true)
+  );
 }
 
 /**
@@ -932,6 +942,7 @@ export function isListingDraft(v: unknown): v is ListingDraft {
 export function isListingEnvelope(v: unknown): v is ListingEnvelope {
   if (
     !isObj(v) ||
+    !hasNoPluralSignatures(v) ||
     !isComponentSignature(v.signature) ||
     !isCanonicalBase64Url(v.signature.value) ||
     !isListingBody(v, false, false)
@@ -971,6 +982,7 @@ export function isRevocationMarker(v: unknown): v is RevocationMarker {
     /^[0-9a-f]{64}$/.test(v.listingContentHash) &&
     isSafeUint(v.revokedAt) &&
     isOptionalStr(v.reason) &&
+    hasNoPluralSignatures(v) &&
     isComponentSignature(v.signature) &&
     isCanonicalBase64Url(v.signature.value)
   );

@@ -371,6 +371,44 @@ describe("DACS-1 §6.3.4 RB-1..RB-6", () => {
     });
   }
 
+  // CORE §B.7 SIG-5: the generic scope also omits `signatures`, so a marker
+  // that gains one keeps its content hash and must not count as revoked.
+  it("refuses a revocation marker that also carries a signatures member", async () => {
+    const vector = vectors.vectors.find(
+      ({ name }) => name === "opaque-name-binding-resolves-revoked",
+    )!;
+    const check = (marker: Record<string, unknown>) =>
+      checkListingRevocation(
+        listingForVector(),
+        vectors.fixtures.listing.listingContentHash,
+        {
+          nowMs: () => now,
+          surfaces: [surfaceFor(vector.surface!)],
+          readMarker: async () => structuredClone(marker),
+          verifyMarkerSignature: ({ signedBytes, signature }) =>
+            ed25519Verify(
+              signedBytes,
+              Buffer.from(signature.value, "base64url"),
+              publicKeyFromRaw(
+                Buffer.from(vectors.publicKeys[signature.signer]!, "base64url"),
+              ),
+            ),
+        },
+      );
+    const marker = vectors.fixtures.markers["valid-v3"] as unknown as Record<
+      string,
+      unknown
+    >;
+    await expect(check(marker)).resolves.toMatchObject({ disposition: "revoked" });
+
+    const amended = { ...marker, signatures: [{ appended: true }] };
+    expect(contentHash(amended)).toBe(contentHash(marker));
+    await expect(check(amended)).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "marker-unreadable",
+    });
+  });
+
   it("does not erase a failed consulted surface with an active mirror", async () => {
     const result = await checkListingRevocation(
       listingForVector(),
@@ -820,6 +858,28 @@ describe("ordered ListingValidationDisposition", () => {
       disposition: "rejected",
       step: 4,
     });
+  });
+
+  // CORE §B.7 SIG-5: the generic scope omits `signature` and `signatures`. A
+  // Listing has one signature, so an appended `signatures` member would sit
+  // outside the hash its original signature still matches.
+  it("rejects a signed Listing that gains a top-level signatures member at step 1", async () => {
+    const { zero, deps } = negativeZeroSpellings();
+    await expect(validateListingArtifact(zero, deps())).resolves.toMatchObject({
+      disposition: "verified",
+      step: 9,
+    });
+
+    const amended = { ...structuredClone(zero), signatures: [{ appended: true }] };
+    expect(contentHash(amended)).toBe(contentHash(zero));
+    expect(canonicalize(amended)).not.toBe(canonicalize(zero));
+    const signature = vi.fn(deps().verifyListingSignature);
+    const result = await validateListingArtifact(amended, {
+      ...deps(),
+      verifyListingSignature: signature,
+    });
+    expect(result).toEqual({ disposition: "rejected", step: 1, reason: "schema-invalid" });
+    expect(signature).not.toHaveBeenCalled();
   });
 
   it("gives the direct revocation, capability and reachability readers the zero verdict", async () => {

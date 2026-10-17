@@ -359,6 +359,38 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     ).resolves.toBeNull(); // mutation breaks the original signature.
   });
 
+  it("refuses a top-level signatures member that the signed hash would omit", async () => {
+    const listing = fixture();
+    const amended = {
+      ...listing,
+      signatures: [{ appended: true }],
+    } as unknown as Record<string, unknown>;
+    // CORE §B.7 SIG-5: the generic scope omits `signature` and `signatures`,
+    // so the original single signature would still match the amended Listing.
+    expect(contentHash(amended)).toBe(
+      VECTOR.fixtures["listing-with-inert-extension"].artifactHash,
+    );
+    expect(isListingEnvelope(amended)).toBe(false);
+    expect(isListing(amended)).toBe(false);
+    expect(readListingArtifact(amended)).toBeNull();
+    await expect(
+      verifyReadableListingArtifact(amended, {
+        verify,
+        nowMs: () => 1_790_000_000_000,
+        resolvePublicKey: (claim) => {
+          const encoded = VECTOR.publicKeys[claim];
+          return encoded
+            ? Uint8Array.from(Buffer.from(encoded, "base64url"))
+            : null;
+        },
+      }),
+    ).resolves.toBeNull();
+
+    const { signature: _signature, ...draft } = listing;
+    expect(isListingDraft(draft)).toBe(true);
+    expect(isListingDraft({ ...draft, signatures: [] })).toBe(false);
+  });
+
   it("fails closed on the Standard vector with an unknown phase kind", () => {
     const unknown = structuredClone(
       VECTOR.fixtures["listing-with-unknown-phase"].listing,

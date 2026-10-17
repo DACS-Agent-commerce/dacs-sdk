@@ -67,6 +67,8 @@ export async function verifySignedArtifact(
 ): Promise<boolean> {
   const signature = signed["signature"];
   if (typeof signature !== "string") return false;
+  // One hex signature: `signatures` would be omitted from the hash (SIG-5).
+  if (Object.prototype.hasOwnProperty.call(signed, "signatures")) return false;
   const bytes = signedBytes(separator, contentHash(stripSignature(signed)));
   try {
     return await verify(bytes, fromHex(signature), publicKey);
