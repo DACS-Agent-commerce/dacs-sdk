@@ -990,7 +990,9 @@ as `pay-dem`. `pay-d402` reports `warn` because it is experimental and not a
 supported live rail; note that demosdk 4.0.17 and later broadcast real
 `d402_payment` transactions, so an acknowledged experimental settlement can
 move real DEM (Demos node 61b8e75 applies them through its bundled demosdk
-4.0.12). A pay-d402 payment that is not yet seen in a block stays
+4.0.12). `payD402Settle` requires a settlement store (`opts.store`), shared
+by every bridge for the wallet and durable across restarts; it has no
+per-bridge default. A pay-d402 payment that is not yet seen in a block stays
 indeterminate: resolve it by hash with `payD402ResumeSettlement`, never by
 paying again. Balance, nonce,
 storage, anchor-completion, and cost checks remain `blocked`, including in

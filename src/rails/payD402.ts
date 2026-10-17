@@ -2,7 +2,6 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import { CounterpartyError, DacsError } from "../errors.js";
 import {
-  createIdempotencyStore,
   settlementKey,
   type SettlementBinding,
   type SettlementIdempotencyStore,
@@ -27,7 +26,7 @@ import { DEM_CURRENCY, DEM_DECIMALS } from "./payDem.js";
  * `d402/client` source.
  *
  * ⚠️ EXPERIMENTAL — not a registered DACS-4 rail and not a supported live one.
- * The SDK classifies it `operator_gated` (§9.4.2 / RAV-R1, RAV-R3). It is NOT
+ * The SDK classifies it `operator_gated` (§9.4.4 / RAV-R1, RAV-R3). It is NOT
  * inert: demosdk 4.0.17 and later sign, confirm and broadcast a real
  * `d402_payment` transaction, and Demos node 61b8e75 applies it as a DEM
  * transfer from buyer to seller through its bundled demosdk 4.0.12
@@ -194,10 +193,27 @@ function parseRequirement(body: unknown): D402PaymentRequirement {
 }
 
 export interface PayD402SettleCoreDeps {
-  client: D402ClientLike;
+  /** The settle flow never reads back by hash, so `waitForSettlement` is not needed. */
+  client: Pick<D402ClientLike, "createPayment" | "settle">;
   fetchImpl: typeof fetch;
   /** The buyer's Demos address (recorded as `payer` on the result). */
   payerAddress: string;
+}
+
+/**
+ * Errors thrown before `createPayment` (402 fetch, body parse, abort guard).
+ * No payment exists yet, so `payD402Settle` releases its idempotency intent
+ * for these and a retry may pay. Every other throw stays ambiguous.
+ */
+const notPaidErrors = new WeakSet<object>();
+
+async function beforePayment<T>(step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    if (typeof err === "object" && err !== null) notPaidErrors.add(err);
+    throw err;
+  }
 }
 
 /**
@@ -211,25 +227,28 @@ export async function payD402SettleCore(
 ): Promise<SettleResult> {
   const { client, fetchImpl, payerAddress } = deps;
 
-  // 1. Initial request — expect a 402 with a payment requirement.
-  const initial = await fetchImpl(params.paywallUrl, params.requestInit);
-  if (initial.status !== 402) {
-    throw new CounterpartyError(
-      `d402: expected HTTP 402 from ${params.paywallUrl}, got ${initial.status}`,
-    );
-  }
-  const requirement = parseRequirement(await initial.json());
+  const requirement = await beforePayment(async () => {
+    // 1. Initial request — expect a 402 with a payment requirement.
+    const initial = await fetchImpl(params.paywallUrl, params.requestInit);
+    if (initial.status !== 402) {
+      throw new CounterpartyError(
+        `d402: expected HTTP 402 from ${params.paywallUrl}, got ${initial.status}`,
+      );
+    }
+    const offered = parseRequirement(await initial.json());
 
-  // 2. Abort guard: the advertised terms MUST match the agreement.
-  const m = termsMatchD402(
-    { recipient: params.recipient, amount: params.amount },
-    { recipient: requirement.recipient, amount: String(requirement.amount) },
-  );
-  if (!m.ok) {
-    throw new CounterpartyError(
-      `d402: 402 payment requirement does not match negotiated agreement: ${m.reason}`,
+    // 2. Abort guard: the advertised terms MUST match the agreement.
+    const m = termsMatchD402(
+      { recipient: params.recipient, amount: params.amount },
+      { recipient: offered.recipient, amount: String(offered.amount) },
     );
-  }
+    if (!m.ok) {
+      throw new CounterpartyError(
+        `d402: 402 payment requirement does not match negotiated agreement: ${m.reason}`,
+      );
+    }
+    return offered;
+  });
 
   // 3. Build the gasless d402_payment tx (does not broadcast yet).
   const payment = await client.createPayment(requirement);
@@ -286,7 +305,7 @@ function sameHash(a: string, b: string): boolean {
 }
 
 /**
- * This rail's availability, in the §9.4.2 spec vocabulary (issue #5: the
+ * This rail's availability, in the §9.4.4 spec vocabulary (issue #5: the
  * previous `"experimental"` was a fourth, SDK-local vocabulary). D402 is not a
  * supported live rail, although its settlement can move real DEM — that is
  * `operator_gated`: not selectable until an operator explicitly acknowledges
@@ -307,7 +326,7 @@ export interface PayD402RailConfig {
   /** Override fetch (tests / custom transport). Defaults to global fetch. */
   fetchImpl?: typeof fetch;
   /**
-   * REQUIRED to build the rail: D402 is not a supported live rail (§9.4.2
+   * REQUIRED to build the rail: D402 is not a supported live rail (§9.4.4
    * non-`live`). Constructing it without this explicit acknowledgement throws,
    * so it can never be wired as a `live` path by accident (RAV-R1). Set `true`
    * only for experimental use, knowing that settlement broadcasts a real
@@ -337,7 +356,7 @@ export interface PayD402Rail {
 export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD402Rail> {
   if (!config?.acknowledgeExperimental) {
     throw new DacsError(
-      "pay-d402 is EXPERIMENTAL and not a supported live rail (§9.4.2 non-`live`), but settling broadcasts a real " +
+      "pay-d402 is EXPERIMENTAL and not a supported live rail (§9.4.4 non-`live`), but settling broadcasts a real " +
         "d402_payment transaction that can move real DEM. Pass acknowledgeExperimental: true only for experimental " +
         "use — never select it as a live rail (RAV-R1).",
     );
@@ -396,7 +415,10 @@ function d402Request(
   req: SettleRequest,
   recipient: string,
 ): { amountOs: string; phaseIndex: number } {
-  const { amount, asset, expectedPayee, phase } = req;
+  const { amount, asset, expectedPayee, phase, rail } = req;
+  if (rail !== "pay-d402") {
+    throw new DacsError(`pay-d402 executor requires rail "pay-d402", got "${rail}"`);
+  }
   if (phase !== "pay-d402") {
     throw new DacsError(`pay-d402 executor requires phase "pay-d402", got "${phase}"`);
   }
@@ -441,19 +463,30 @@ function boundD402Result(
  *
  * Submission is at most once per `(rail, jobId, phaseIndex)`: a result that is
  * not a definitive success keeps its idempotency intent, so a retry refuses to
- * pay again instead of signing a second transfer. The default store covers
- * same-process retries; inject a durable store for restarts, and wire
- * `payD402ResumeSettlement` as runSession's `resumeSettlement`.
+ * pay again instead of signing a second transfer. Only a failure before any
+ * payment was created (402 fetch, body, abort guard) releases the intent.
+ *
+ * `opts.store` is REQUIRED and there is no per-bridge default: two bridges
+ * with private stores would each pay the same pending job. Pass one store,
+ * shared by every bridge for this wallet and durable across restarts (a
+ * `SettlementLog` adapter); the in-memory log covers one process only.
+ * Wire `payD402ResumeSettlement` as runSession's `resumeSettlement`.
  */
 export function payD402Settle(
   rail: PayD402Rail,
   paywall: PayD402Paywall,
-  opts: { store?: SettlementIdempotencyStore } = {},
+  opts: { store: SettlementIdempotencyStore },
 ): (req: SettleRequest) => Promise<SettleResult> {
+  const store = opts?.store;
+  if (typeof store?.once !== "function") {
+    throw new DacsError(
+      "pay-d402 settlement requires opts.store: one SettlementIdempotencyStore shared by every bridge for " +
+        "this wallet and durable across restarts; refusing to settle without it (double-pay risk)",
+    );
+  }
   const paywallUrl = paywall.url;
   const recipient = paywall.recipient;
   const network = paywall.network ?? "demos";
-  const store = opts.store ?? createIdempotencyStore();
   return async (req) => {
     const { amountOs, phaseIndex } = d402Request(req, recipient);
     const payer = rail.address;
@@ -472,16 +505,28 @@ export function payD402Settle(
       finality: { model: "bft-final" },
       resource: paywallUrl,
     } satisfies SettlementBinding;
-    return store.once(
+    // Set inside the submit callback; the assertion keeps TS from narrowing it away.
+    let notPaid = undefined as { err: unknown } | undefined;
+    const result = await store.once(
       settlementKey(req.rail, req.jobId, phaseIndex),
       binding,
-      async () =>
-        boundD402Result(
-          await rail.settle({ paywallUrl, recipient, amount: amountOs, network }),
-          { network, payer, recipient },
-          "pay-d402 settlement",
-        ),
+      async () => {
+        let settled: SettleResult;
+        try {
+          settled = await rail.settle({ paywallUrl, recipient, amount: amountOs, network });
+        } catch (err) {
+          if (typeof err !== "object" || err === null || !notPaidErrors.has(err)) throw err;
+          notPaid = { err };
+          return {
+            disposition: "not-invoked" as const,
+            result: { ok: false, txHash: "", chainId: network, payer, payee: recipient },
+          };
+        }
+        return boundD402Result(settled, { network, payer, recipient }, "pay-d402 settlement");
+      },
     );
+    if (notPaid) throw notPaid.err;
+    return result;
   };
 }
 
@@ -511,6 +556,14 @@ export function payD402ResumeSettlement(
     }
     const payer = rail.address;
     const included: SettleResult[] = [];
+    for (const attempt of attempts) {
+      if (attempt.chainId !== network) {
+        throw new DacsError(
+          `pay-d402 recovery attempt ${attempt.txHash} was recorded under network "${attempt.chainId}", ` +
+            `not the paywall's "${network}"; operator action required`,
+        );
+      }
+    }
     for (const attempt of attempts) {
       const read = boundD402Result(
         await rail.waitForSettlement({

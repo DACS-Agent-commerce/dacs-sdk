@@ -50,10 +50,12 @@ import {
   payD402ResumeSettlement,
   createPayD402Rail,
   PAY_D402_AVAILABILITY,
-  type D402ClientLike,
   type D402PaymentRequirement,
   type D402SettlementResult,
+  type PayD402Paywall,
   type PayD402Rail,
+  type PayD402SettleCoreDeps,
+  type PayD402WaitParams,
 } from "../../src/rails/payD402.js";
 import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
@@ -121,8 +123,8 @@ describe("termsMatchD402 (§4.1 abort guard, native DEM)", () => {
 /** A fake D402 client that records what it was asked to pay. */
 function fakeClient(
   over: Partial<{ result: D402SettlementResult; onCreate: (r: D402PaymentRequirement) => void }> = {},
-): D402ClientLike & { paid?: D402PaymentRequirement } {
-  const self: D402ClientLike & { paid?: D402PaymentRequirement } = {
+): PayD402SettleCoreDeps["client"] & { paid?: D402PaymentRequirement } {
+  const self: PayD402SettleCoreDeps["client"] & { paid?: D402PaymentRequirement } = {
     async createPayment(requirement) {
       self.paid = requirement;
       over.onCreate?.(requirement);
@@ -130,9 +132,6 @@ function fakeClient(
     },
     async settle() {
       return over.result ?? { success: true, hash: "0xdemhash", blockNumber: 42 };
-    },
-    async waitForSettlement() {
-      throw new Error("settleCore never waits by hash");
     },
   };
   return self;
@@ -275,6 +274,9 @@ describe("payD402SettleCore", () => {
     ["failed on chain", { success: false, hash: "0xfailed", blockNumber: 7, message: "Payment transaction failed on chain" }],
     ["success without a block number", { success: true, hash: "0xnoblock" }],
     ["success flagged pending", { success: true, pending: true, hash: "0xboth", blockNumber: 9 }],
+    ["success at a negative block", { success: true, hash: "0xneg", blockNumber: -1 }],
+    ["success at a fractional block", { success: true, hash: "0xfrac", blockNumber: 1.5 }],
+    ["success at an unsafe block number", { success: true, hash: "0xbig", blockNumber: 2 ** 53 }],
   ] as const)("%s is ok:false with its hash and no finality", async (_label, result) => {
     const res = await payD402SettleCore(params(), {
       client: fakeClient({ result: result as D402SettlementResult }),
@@ -288,6 +290,15 @@ describe("payD402SettleCore", () => {
       payer: PAYER,
       payee: RECIPIENT,
     });
+  });
+
+  test("inclusion at block 0 is a success", async () => {
+    const res = await payD402SettleCore(params(), {
+      client: fakeClient({ result: { success: true, hash: "0xgenesis", blockNumber: 0 } }),
+      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+      payerAddress: PAYER,
+    });
+    expect(res).toMatchObject({ ok: true, txHash: "0xgenesis", blockNumber: 0 });
   });
 
   test("a bare-DEM number amount (pre-fork) is rejected — OS base-unit string required", async () => {
@@ -313,7 +324,7 @@ describe("createPayD402Rail — experimental quarantine (RAV-R1)", () => {
       await expect(
         createPayD402Rail({ rpc: "https://rpc.d402.test", secret: "x", acknowledgeExperimental } as never),
       ).rejects.toThrow(
-        "pay-d402 is EXPERIMENTAL and not a supported live rail (§9.4.2 non-`live`), but settling broadcasts a real " +
+        "pay-d402 is EXPERIMENTAL and not a supported live rail (§9.4.4 non-`live`), but settling broadcasts a real " +
           "d402_payment transaction that can move real DEM. Pass acknowledgeExperimental: true only for experimental " +
           "use — never select it as a live rail (RAV-R1).",
       );
@@ -442,6 +453,9 @@ describe("payD402Settle bridge", () => {
     ...over,
   });
   const paywall = { url: URL, recipient: RECIPIENT, network: "demos:testnet" };
+  /** A bridge over its own in-memory store (one process, one bridge). */
+  const bridge = (r: PayD402Rail, p: PayD402Paywall = paywall) =>
+    payD402Settle(r, p, { store: createIdempotencyStore() });
   // A demosdk `pending` result as payD402SettleCore maps it.
   const pending: SettleResult = {
     ok: false,
@@ -467,32 +481,32 @@ describe("payD402Settle bridge", () => {
 
   test("converts the agreement's decimal DEM to OS and passes the paywall's network label", async () => {
     const { rail, seen } = recordingRail();
-    const res = await payD402Settle(rail, paywall)(request());
+    const res = await bridge(rail)(request());
     expect(seen).toEqual([{ paywallUrl: URL, recipient: RECIPIENT, amount: "1500000000", network: "demos:testnet" }]);
     expect(res).toMatchObject({ ok: true, chainId: "demos:testnet", blockNumber: 42, finality: { model: "bft-final" } });
   });
 
   test("defaults the label to \"demos\" when the paywall has none", async () => {
     const { rail, seen } = recordingRail();
-    await payD402Settle(rail, { url: URL, recipient: RECIPIENT })(request());
+    await bridge(rail, { url: URL, recipient: RECIPIENT })(request());
     expect(seen[0]?.["network"]).toBe("demos");
   });
 
+  /** A rail running the real settle flow over a fake client and paywall. */
+  const railOver = (
+    client: ReturnType<typeof fakeClient>,
+    fetchImpl = fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+  ): PayD402Rail => ({
+    address: PAYER,
+    settle: (p) => payD402SettleCore(p, { client, fetchImpl, payerAddress: PAYER }),
+    waitForSettlement: async () => {
+      throw new Error("not used");
+    },
+  });
+
   test("a 1.5 DEM agreement pays a 1500000000 OS paywall; the same digits as DEM do not", async () => {
-    const railOver = (client: ReturnType<typeof fakeClient>): PayD402Rail => ({
-      address: PAYER,
-      settle: (p) =>
-        payD402SettleCore(p, {
-          client,
-          fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
-          payerAddress: PAYER,
-        }),
-      waitForSettlement: async () => {
-        throw new Error("not used");
-      },
-    });
     const client = fakeClient();
-    expect(await payD402Settle(railOver(client), paywall)(request())).toMatchObject({
+    expect(await bridge(railOver(client))(request())).toMatchObject({
       ok: true,
       txHash: "0xdemhash",
     });
@@ -501,13 +515,14 @@ describe("payD402Settle bridge", () => {
     // 1500000000 DEM is a billion times the paywall price.
     const strict = fakeClient();
     await expect(
-      payD402Settle(railOver(strict), paywall)(request({ amount: "1500000000", jobId: "digits-as-dem" })),
+      bridge(railOver(strict))(request({ amount: "1500000000", jobId: "digits-as-dem" })),
     ).rejects.toThrow(/amount mismatch/);
     expect(strict.paid).toBeUndefined();
   });
 
   test.each([
     ["a non-DEM asset", { asset: "USDC" }, /DEM only/],
+    ["another rail", { rail: "pay-x402" }, /requires rail "pay-d402", got "pay-x402"/],
     ["another phase", { phase: "pay-x402" }, /requires phase "pay-d402"/],
     ["a zero amount", { amount: "0" }, /must be > 0/],
     ["sub-OS precision", { amount: "0.0000000001" }, /\S/],
@@ -515,23 +530,91 @@ describe("payD402Settle bridge", () => {
     ["a destination mismatch", { expectedPayee: "demos1wrong" }, /destination mismatch/],
   ] as const)("refuses %s before rail submission", async (_label, over, message) => {
     const { rail, seen } = recordingRail();
-    await expect(payD402Settle(rail, paywall)(request(over as Partial<SettleRequest>))).rejects.toThrow(message);
+    await expect(bridge(rail)(request(over as Partial<SettleRequest>))).rejects.toThrow(message);
     expect(seen).toEqual([]);
   });
 
   test("returns the request-bound payee when the 402 spells the recipient in another case", async () => {
     const { rail } = recordingRail([{ payee: RECIPIENT.toUpperCase() }]);
-    expect((await payD402Settle(rail, paywall)(request())).payee).toBe(RECIPIENT);
+    expect((await bridge(rail)(request())).payee).toBe(RECIPIENT);
   });
 
-  test("refuses a rail result for another payer", async () => {
-    const { rail } = recordingRail([{ payer: "demos1someoneelse" }]);
-    await expect(payD402Settle(rail, paywall)(request())).rejects.toThrow(/network or parties/);
+  test.each([
+    ["another payer", { payer: "demos1someoneelse" }],
+    ["another payee", { payee: "demos1someoneelse" }],
+    ["another network label", { chainId: "demos:other" }],
+  ] as const)("refuses a rail result for %s", async (_label, over) => {
+    const { rail } = recordingRail([over]);
+    await expect(bridge(rail)(request())).rejects.toThrow(
+      "pay-d402 settlement does not match the paywall network or parties",
+    );
+  });
+
+  test("refuses to build without a settlement store", () => {
+    const { rail, seen } = recordingRail();
+    for (const opts of [undefined, {}, { store: undefined }, { store: {} }]) {
+      expect(() => payD402Settle(rail, paywall, opts as never)).toThrow(/requires opts\.store/);
+    }
+    expect(seen).toEqual([]);
+  });
+
+  test("two bridges over one shared store never pay a pending job twice", async () => {
+    const store = createIdempotencyStore();
+    const first = pendingRail();
+    const second = recordingRail();
+    expect(await payD402Settle(first.rail, paywall, { store })(request())).toEqual(pending);
+    await expect(payD402Settle(second.rail, paywall, { store })(request())).rejects.toThrow(
+      /refusing to resubmit/,
+    );
+    expect(first.seen).toHaveLength(1);
+    expect(second.seen).toEqual([]);
+  });
+
+  test("a paywall fetch error before any payment can be retried", async () => {
+    let calls = 0;
+    const ok = fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" });
+    const flaky = (async (...args: Parameters<typeof fetch>) => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("fetch failed");
+      return ok(...args);
+    }) as typeof fetch;
+    const client = fakeClient();
+    const settle = bridge(railOver(client, flaky));
+    await expect(settle(request())).rejects.toThrow("fetch failed");
+    expect(client.paid).toBeUndefined();
+    expect(await settle(request())).toMatchObject({ ok: true, txHash: "0xdemhash" });
+    expect(client.paid?.amount).toBe("1500000000");
+  });
+
+  test("an abort-guard mismatch leaves no held intent", async () => {
+    let body: Record<string, string> = { recipient: "demos1attacker", amount: "1500000000", resourceId: "res-1" };
+    const paywallFetch = (async () => fetch402(body)(URL)) as typeof fetch;
+    const client = fakeClient();
+    const settle = bridge(railOver(client, paywallFetch));
+    await expect(settle(request())).rejects.toThrow(/recipient mismatch/);
+    expect(client.paid).toBeUndefined();
+    body = { ...body, recipient: RECIPIENT };
+    expect(await settle(request())).toMatchObject({ ok: true });
+  });
+
+  test("a throw after the payment was created still refuses a retry", async () => {
+    let settles = 0;
+    const client: ReturnType<typeof fakeClient> = {
+      ...fakeClient(),
+      async settle() {
+        settles += 1;
+        throw new Error("socket closed after broadcast");
+      },
+    };
+    const settle = bridge(railOver(client));
+    await expect(settle(request())).rejects.toThrow("socket closed after broadcast");
+    await expect(settle(request())).rejects.toThrow(/refusing to resubmit/);
+    expect(settles).toBe(1);
   });
 
   test("a pending payment is never paid twice in the same process", async () => {
     const { rail, seen } = pendingRail();
-    const settle = payD402Settle(rail, paywall);
+    const settle = bridge(rail);
     expect(await settle(request())).toEqual(pending);
     await expect(settle(request())).rejects.toThrow(/refusing to resubmit/);
     expect(seen).toHaveLength(1);
@@ -559,7 +642,7 @@ describe("payD402Settle bridge", () => {
 
   test("a definitive success is reused, not paid again", async () => {
     const { rail, seen } = recordingRail();
-    const settle = payD402Settle(rail, paywall);
+    const settle = bridge(rail);
     const a = await settle(request());
     expect(await settle(request())).toEqual(a);
     expect(seen).toHaveLength(1);
@@ -577,6 +660,7 @@ describe("payD402ResumeSettlement", () => {
   });
   function readRail(reads: Array<Partial<SettleResult>>) {
     const waited: string[] = [];
+    const waitParams: PayD402WaitParams[] = [];
     let settled = 0;
     const rail: PayD402Rail = {
       address: PAYER,
@@ -586,10 +670,11 @@ describe("payD402ResumeSettlement", () => {
       },
       waitForSettlement: async (p) => {
         waited.push(p.txHash);
+        waitParams.push(p);
         return { ok: false, txHash: p.txHash, chainId: p.network, payer: PAYER, payee: p.recipient, ...reads.shift() };
       },
     };
-    return { rail, waited, settled: () => settled };
+    return { rail, waited, waitParams, settled: () => settled };
   }
   const request = (priorAttempts?: SettleRequest["priorAttempts"]): SettleRequest => ({
     rail: "pay-d402",
@@ -652,9 +737,73 @@ describe("payD402ResumeSettlement", () => {
   });
 
   test("applies the same request checks as settlement", async () => {
-    const { rail } = readRail([]);
+    const { rail, waited } = readRail([]);
     await expect(
       payD402ResumeSettlement(rail, paywall)({ ...request([attempt("0xmine")]), asset: "USDC" }),
     ).rejects.toThrow(/DEM only/);
+    await expect(
+      payD402ResumeSettlement(rail, paywall)({ ...request([attempt("0xmine")]), rail: "pay-x402" }),
+    ).rejects.toThrow(/requires rail "pay-d402"/);
+    expect(waited).toEqual([]);
+  });
+
+  test("with several attempts and none included, returns the latest hash", async () => {
+    const { rail, waited } = readRail([{}, {}, {}]);
+    const res = await payD402ResumeSettlement(rail, paywall)(
+      request([attempt("0xa"), attempt("0xb"), attempt("0xc")]),
+    );
+    expect(res).toEqual({ ok: false, txHash: "0xc", chainId: "demos:testnet", payer: PAYER, payee: RECIPIENT });
+    expect(waited).toEqual(["0xa", "0xb", "0xc"]);
+  });
+
+  test("skips attempts without a hash, and refuses when none has one", async () => {
+    const { rail, waited } = readRail([included("0xa")]);
+    expect(await payD402ResumeSettlement(rail, paywall)(request([attempt(" "), attempt("0xa")]))).toMatchObject({
+      ok: true,
+      txHash: "0xa",
+    });
+    expect(waited).toEqual(["0xa"]);
+    await expect(payD402ResumeSettlement(rail, paywall)(request([attempt(""), attempt(" \t")]))).rejects.toThrow(
+      /no recorded transaction hash/,
+    );
+    expect(waited).toEqual(["0xa"]);
+  });
+
+  test("passes the wait options through, and none when unset", async () => {
+    const { rail, waitParams } = readRail([{}, {}]);
+    await payD402ResumeSettlement(rail, paywall, { wait: { timeoutMs: 7, pollIntervalMs: 1 } })(
+      request([attempt("0xa")]),
+    );
+    await payD402ResumeSettlement(rail, paywall)(request([attempt("0xa")]));
+    expect(waitParams).toEqual([
+      {
+        txHash: "0xa",
+        recipient: RECIPIENT,
+        network: "demos:testnet",
+        options: { timeoutMs: 7, pollIntervalMs: 1 },
+      },
+      { txHash: "0xa", recipient: RECIPIENT, network: "demos:testnet" },
+    ]);
+  });
+
+  test("refuses an attempt recorded under another network label before reading any", async () => {
+    const { rail, waited } = readRail([included("0xa")]);
+    await expect(
+      payD402ResumeSettlement(rail, paywall)(
+        request([attempt("0xa"), { txHash: "0xb", chainId: "demos:mainnet", ok: false }]),
+      ),
+    ).rejects.toThrow(/recorded under network "demos:mainnet", not the paywall's "demos:testnet"/);
+    expect(waited).toEqual([]);
+  });
+
+  test.each([
+    ["another network label", { chainId: "demos:other" }],
+    ["another payer", { payer: "demos1someoneelse" }],
+    ["another payee", { payee: "demos1someoneelse" }],
+  ] as const)("refuses a read-back for %s", async (_label, over) => {
+    const { rail } = readRail([{ ...included("0xa"), ...over }]);
+    await expect(payD402ResumeSettlement(rail, paywall)(request([attempt("0xa")]))).rejects.toThrow(
+      "pay-d402 recovery does not match the paywall network or parties",
+    );
   });
 });
