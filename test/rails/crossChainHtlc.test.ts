@@ -6995,6 +6995,84 @@ describe("retained store rows the core must refuse", () => {
       .resolves.toEqual({ status: "settled", settlement });
   });
 
+  // A host that lost its first `settled` result (a crash, a second worker)
+  // reads the session again: a settlement after a replacement must replay too.
+  const replaysUnchanged = async (
+    h: ReturnType<typeof harness>,
+    run: ReturnType<typeof runner>,
+    first: CrossChainHtlcProgress,
+  ) => {
+    expect(first).toMatchObject({ status: "settled" });
+    const preparations = h.prepareAction.mock.calls.length;
+    const broadcasts = h.broadcastRetained.mock.calls.length;
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual(first);
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
+    expect(h.broadcastRetained).toHaveBeenCalledTimes(broadcasts);
+  };
+  const failedSourceClaim = async () => {
+    const h = harness({ mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await advanceCrossChainHtlc(run.shared);
+    for (let call = 0; call < 3; call += 1) await advanceCrossChainHtlc(run.nextOwner());
+    const prior = h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .find((prepared) => prepared.action === "source-claim");
+    if (!prior || prior.txRef.kind !== "htlc-claim") throw new Error("expected source claim");
+    h.actions["source-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+    return { h, run, prior };
+  };
+
+  test("replays a settlement on the replacement source-claim attempt", async () => {
+    const { h, run, prior } = await failedSourceClaim();
+    h.setMode("source-claim", "final");
+    const first = await advanceCrossChainHtlc(run.nextOwner());
+    expect(first).toMatchObject({ status: "settled" });
+    if (first.status !== "settled") throw new Error("expected settled");
+    expect(first.settlement.txRefs[3]).not.toEqual(prior.txRef);
+    await replaysUnchanged(h, run, first);
+  });
+
+  test("replays a settlement on an earlier source-claim attempt that landed", async () => {
+    const { h, run, prior } = await failedSourceClaim();
+    h.setMode("source-claim", "throw-once");
+    await advanceCrossChainHtlc(run.nextOwner());
+    h.actions["source-claim"] = {
+      state: "final",
+      txRef: prior.txRef as Extract<HtlcTxRef, { kind: "htlc-claim" }>,
+      finalityReachedAt: 1_000_000,
+      finalityObservedAt: 1_000_000,
+      authenticationHash: AUTH_HASH,
+    };
+    const first = await advanceCrossChainHtlc(run.nextOwner());
+    expect(first).toMatchObject({ status: "settled", settlement: { txRefs: [{}, {}, {}, prior.txRef] } });
+    await replaysUnchanged(h, run, first);
+  });
+
+  test("replays a settlement after a reveal replacement", async () => {
+    const h = harness({ sourceExpiry: 5_000, destinationExpiry: 1_500, mode: { "destination-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    for (let call = 0; call < 3; call += 1) await advanceCrossChainHtlc(call === 0 ? run.shared : run.nextOwner());
+    const reveals = () => h.broadcastRetained.mock.calls
+      .map((call) => call[0])
+      .filter((prepared) => prepared.action === "destination-claim");
+    const prior = reveals()[0];
+    if (!prior) throw new Error("expected reveal");
+    h.actions["destination-claim"] = { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH };
+    await advanceCrossChainHtlc(run.nextOwner());
+    const replacement = reveals()[1];
+    if (!replacement) throw new Error("expected a replacement reveal");
+    h.actions["destination-claim"] = {
+      state: "final",
+      txRef: replacement.txRef as Extract<HtlcTxRef, { kind: "htlc-reveal" }>,
+      finalityObservedAt: 1_000_000,
+      revealedPreimageHex: PREIMAGE_HEX,
+      authenticationHash: AUTH_HASH,
+    };
+    const first = await advanceCrossChainHtlc(run.nextOwner());
+    expect(first).toMatchObject({ status: "settled", settlement: { txRefs: [{}, {}, replacement.txRef, {}] } });
+    await replaysUnchanged(h, run, first);
+  });
+
   const retainedCorruption: readonly (readonly [string, (claimed: Record<string, unknown>) => void])[] = [
     ["no retained rows", (c) => { c.prepared = []; }],
     ["no source-claim row", (c) => {
@@ -7002,6 +7080,11 @@ describe("retained store rows the core must refuse", () => {
     }],
     ["no destination-lock row", (c) => {
       c.prepared = (c.prepared as HtlcPreparedAction[]).filter((row) => row.action !== "destination-lock");
+    }],
+    // Each copy is a valid row; only the one-row-per-action check refuses it.
+    ["a duplicated destination-lock row", (c) => {
+      const rows = c.prepared as HtlcPreparedAction[];
+      c.prepared = [...rows, rows.find((row) => row.action === "destination-lock")!];
     }],
     ["no source-finality checkpoint", (c) => { delete c.sourceFinalityCheckpoint; }],
     ["no reveal checkpoint", (c) => { delete c.revealCheckpoint; }],
