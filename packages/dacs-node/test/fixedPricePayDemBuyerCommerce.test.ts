@@ -249,6 +249,7 @@ async function fixture() {
     receiptVerified: true,
     observed: {
       status: "included",
+      execution: "executed",
       txHash: TX_HASH,
       blockNumber: BLOCK_NUMBER,
       payer: BUYER_HEX,
@@ -507,6 +508,14 @@ describe("fixed-price native DEM buyer payment-evidence verification", () => {
       },
     }, expect.anything());
     await expect(onlyVerifierOutcome()).resolves.toEqual({ decision: "pass", reasons: [] });
+  });
+
+  it.each([undefined, "confirmed", "failed", true, null])("holds seller evidence without literal execution (%s)", async (execution) => {
+    const f = await fixture();
+    if (execution === undefined) delete f.state.observed.execution;
+    else f.state.observed.execution = execution;
+    await expect(f.verify()).resolves.toMatchObject({ disposition: "indeterminate" });
+    expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
   });
 
   it("rejects payment evidence authored by the buyer before observing settlement", async () => {

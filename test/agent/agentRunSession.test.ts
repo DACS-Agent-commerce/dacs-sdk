@@ -530,7 +530,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     const transfer = vi.fn(
       async ({ recipient, network }: Parameters<PayDemRail["settle"]>[0]) => ({
-        ok: true,
+        ok: true as const,
+        execution: "executed" as const,
         txHash: "11".repeat(32),
         chainId: network ?? "demos",
         payer: buyerDid,

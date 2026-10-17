@@ -609,14 +609,22 @@ record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. The bridge adds the exact
+`settlementStore`, and `reconcile`. The rail's timing bounds
+`inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
+`nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
+`payDem` to `createPayDemRail` unchanged; see
+[the pay-dem execution gate](./docs/pay-dem-execution.md) for what the rail
+requires of the node's transaction record after inclusion. The bridge adds the exact
 `(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
 amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
 `PayDemSettlementRecoveryContext` and must return either an exact
 `PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
 when authoritative observation proves no transfer for that tuple landed. A
-non-final observation must throw. Even authoritative absence does not revoke a
+settlement must carry `execution: "executed"`, set only after the node's
+transaction record for the hash shows the transfer executed; status-index
+`included` alone is not enough, and a reconciliation without it is refused
+(#338). A `failed` record or any other non-final observation must throw. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory

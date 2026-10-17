@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
+import { hasDefinitiveDemosFailure } from "../agent/settlementFailure.js";
 import type { SettleResult } from "../agent/runSessionCore.js";
 import {
   canonicalize,
@@ -320,6 +321,11 @@ function captureBoundResult(
       `${label} does not match the retained settlement network or parties`,
     );
   }
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
+      (binding.phase !== "pay-dem" || binding.agreementAsset !== "DEM" ||
+        !hasDefinitiveDemosFailure(result, binding.amount, binding.network))) {
+    throw new DacsError(`${label} terminal-failure proof does not bind the payment`);
+  }
   if (!result.ok) {
     if (result.finality !== undefined) {
       throw new DacsError(`${label} failure must not claim settlement finality`);
@@ -627,7 +633,7 @@ export function settlementKey(railId: string, jobId: string, phaseIndex: number)
 }
 
 function isDefinitive(result: Readonly<SettleResult>): boolean {
-  return result.ok && result.txHash.trim().length > 0;
+  return (result.ok && result.txHash.trim().length > 0) || hasDefinitiveDemosFailure(result);
 }
 
 function storeOptions(options: Readonly<SettlementIdempotencyStoreOptions>): Readonly<{

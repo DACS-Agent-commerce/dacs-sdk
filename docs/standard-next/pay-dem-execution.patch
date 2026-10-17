@@ -1,0 +1,146 @@
+diff --git a/conformance/vectors/security/README.md b/conformance/vectors/security/README.md
+index 39acb16..7e77cd8 100644
+--- a/conformance/vectors/security/README.md
++++ b/conformance/vectors/security/README.md
+@@ -61,6 +61,7 @@ promotion path — is specified in [CROSS-RUN.md](CROSS-RUN.md).
+ | [`metered-pricing-v0.3.json`](metered-pricing-v0.3.json) | DACS-3 §8.5.2 MTR-1..MTR-5; DACS-4 §9.4 PricingSpec | 22 | `accept` / `reject` |
+ | [`mixed-version-reconciliation-v0.3.json`](mixed-version-reconciliation-v0.3.json) | DACS-5 §10.4.3 mixed-version rule + §10.5.1 authoritative selection | 8 | `fail` / `pass` |
+ | [`outsider-binding-flooding-v0.3.json`](outsider-binding-flooding-v0.3.json) | DACS-5 §10.4.2 BB-6 authorized-candidate multiplicity + BB-7 side-level exhaustion (round-6 blocker #3) | 11 | `indeterminate` / `pass` |
++| [`pay-dem-execution-v0.1.json`](pay-dem-execution-v0.1.json) | DACS-4 §9.5.9; PC-4; PC-7 | 8 | `fail` / `indeterminate` / `pass` |
+ | [`payee-destination-binding-v0.1.json`](payee-destination-binding-v0.1.json) | DACS-3 §8.5/§8.6 PayeeBoundAgreementDocument compatibility; DACS-4 §9.5.1 PB-1..PB-3 | 28 | `error` / `fail` / `indeterminate` / `pass` |
+ | [`payload-attestation-binding-v0.1.json`](payload-attestation-binding-v0.1.json) | DACS-4 §9.6.3 DPA-1..DPA-9; §9.7; CORE §B.7; Demos §A.3 | 22 | `fail` / `indeterminate` / `pass` |
+ | [`phase-kind-divergence-v0.3.json`](phase-kind-divergence-v0.3.json) | DACS-5 §10.4.3 / §10.5.1 guard (ii) shared-index phase-kind divergence | 1 | `reject` |
+diff --git a/spec/DACS-4-SETTLE.md b/spec/DACS-4-SETTLE.md
+index d193e63..0e3f4fd 100644
+--- a/spec/DACS-4-SETTLE.md
++++ b/spec/DACS-4-SETTLE.md
+@@ -811,14 +811,14 @@ Native-DEM transfer on the Demos substrate: settle the agreed price in DEM direc
+ 2. Verify `amount.currency == "DEM"`; convert to OS base units (`1 DEM = 10^9 OS`, integer arithmetic, no float).
+ 3. Construct a native transfer to `payee.payeeAddress` for the OS amount (the substrate's native `send`).
+ 4. Submit via the payer's wallet (or via SR-3 proxy attestation when the wallet runs server-side); wait for inclusion.
+-5. On the transaction reaching the terminal **`included`** state (BFT finality, below), construct SettlementEvidence with `txRef` of kind `demos` (`txHash` + `blockNumber`) and `settlementFinality.model == "bft-final"`; anchor via SR-2; return success.
++5. After the status index reports **`included`**, read the transaction record for the retained signed hash. Verify its hash, signed nonce, inclusion block, native-send payer, payee and OS amount against the prepared transfer. Return success only when that bound record has status **`confirmed`**. Then construct SettlementEvidence with `txRef` of kind `demos` (`txHash` + `blockNumber`) and `settlementFinality.model == "bft-final"`; anchor via SR-2; return success.
+
+-**Finality.** Demos has **deterministic BFT finality**: a transaction reaching `included` in a forged block is final — there is no reorg or confirmation-depth wait. The evidence cites `{ txHash, blockNumber }` against the `bft-final` model (§9.7); `block-depth` / `commitment-level` do not apply (no meaningful depth or commitment tier exists). A transaction reaching the terminal `failed` state did not settle.
++**Finality.** Demos has **deterministic BFT finality**: inclusion in a forged block is final, but inclusion alone does not establish successful execution. The status index can report `included` for a stored transaction whose record is `failed`. A successful payment requires the bound `confirmed` transaction record described above; there is no reorg or confirmation-depth wait. The evidence cites `{ txHash, blockNumber }` against the `bft-final` model (§9.7); `block-depth` / `commitment-level` do not apply (no meaningful depth or commitment tier exists). A transaction reaching the terminal `failed` state did not settle.
+
+ **Failure modes.**
+
+ - payer DEM balance insufficient → `permanent`
+-- transaction reaches terminal `failed` on-chain → `permanent`
++- the transaction record is `failed` and binds the retained signed hash, nonce, inclusion block, payer, payee and OS amount → `permanent`. Preserve that bound failed-record proof, classification and transaction identity in durable state. Resume MUST reuse the terminal failure without rebroadcast or replacement debit; failure evidence MUST omit settlement finality. A missing or conflicting binding is indeterminate and MUST NOT authorize delivery, settlement accounting or rebroadcast.
+ - Demos node / RPC unreachable → `substrate` (ST-7 pause; `failed-substrate` if unrecovered)
+ - payer-side wallet rejects / declines to sign → `counterparty`
+
+@@ -1123,7 +1123,7 @@ type SettlementFinalityRecord = {
+        | "provider-receipt"     // Fiat (AP2). Historical pre-v0.6 x402 evidence may retain this model for replay; current x402 success evidence uses block-depth over its signed x402-event.
+        | "htlc-reveal"          // Cross-chain HTLC: the payee's source-side claim (htlc-claim) landed against the revealed preimage — the decisive success tx; the payer's destination claim revealed the preimage earlier. (Model token retained as "htlc-reveal" for back-compat.)
+        | "liquidity-tank"       // Native bridge liquidity-tank: bridge status transitions to "completed"
+-       | "bft-final"            // Native Demos (pay-dem, §9.5.9): the tx reached the terminal "included" state. Demos has deterministic BFT finality — inclusion is final, no block-depth or commitment tier applies.
++       | "bft-final"            // Native Demos (pay-dem, §9.5.9): the included tx has a bound confirmed execution record. Demos has deterministic BFT finality — inclusion is final, no block-depth or commitment tier applies.
+
+   // For model == "block-depth": the number of blocks waited before declaring confirmation.
+   // Sourced from rail.parameters.finalityBlocks; echoed here so the evidence record is self-describing.
+diff --git a/conformance/vectors/security/pay-dem-execution-v0.1.json b/conformance/vectors/security/pay-dem-execution-v0.1.json
+new file mode 100644
+index 0000000..3900f1f
+--- /dev/null
++++ b/conformance/vectors/security/pay-dem-execution-v0.1.json
+@@ -0,0 +1,97 @@
++{
++  "set": "pay-dem-execution-v0.1",
++  "spec": "DACS-4 §9.5.9; PC-4; PC-7",
++  "decisionModel": "Inclusion does not prove execution. A bound confirmed record passes; a bound failed record is permanent failure; incomplete or conflicting records remain indeterminate without rebroadcast.",
++  "count": 8,
++  "hash": "3c10e565b9db7d50eb3c4bb628ba2fa210cd076e200e41e6e0c13d28f40eff65",
++  "vectors": [
++    {
++      "name": "included-confirmed",
++      "input": {
++        "statusIndex": "included",
++        "recordStatus": "confirmed",
++        "recordNonce": 9,
++        "recordBlock": 42
++      },
++      "expected": "pass",
++      "executionState": "executed"
++    },
++    {
++      "name": "included-failed",
++      "input": {
++        "statusIndex": "included",
++        "recordStatus": "failed",
++        "recordNonce": 9,
++        "recordBlock": 42
++      },
++      "expected": "fail",
++      "executionState": "failed"
++    },
++    {
++      "name": "included-pending",
++      "input": {
++        "statusIndex": "included",
++        "recordStatus": "pending",
++        "recordNonce": 9,
++        "recordBlock": 42
++      },
++      "expected": "indeterminate",
++      "executionState": "indeterminate"
++    },
++    {
++      "name": "included-alias",
++      "input": {
++        "statusIndex": "included",
++        "recordStatus": "included",
++        "recordNonce": 9,
++        "recordBlock": 42
++      },
++      "expected": "indeterminate",
++      "executionState": "indeterminate"
++    },
++    {
++      "name": "finalized-alias",
++      "input": {
++        "statusIndex": "included",
++        "recordStatus": "finalized",
++        "recordNonce": 9,
++        "recordBlock": 42
++      },
++      "expected": "indeterminate",
++      "executionState": "indeterminate"
++    },
++    {
++      "name": "failed-wrong-nonce",
++      "input": {
++        "statusIndex": "included",
++        "recordStatus": "failed",
++        "recordNonce": 10,
++        "recordBlock": 42
++      },
++      "expected": "indeterminate",
++      "executionState": "indeterminate"
++    },
++    {
++      "name": "failed-missing-nonce",
++      "input": {
++        "statusIndex": "included",
++        "recordStatus": "failed",
++        "recordNonce": null,
++        "recordBlock": 42
++      },
++      "expected": "indeterminate",
++      "executionState": "indeterminate"
++    },
++    {
++      "name": "failed-wrong-block",
++      "input": {
++        "statusIndex": "included",
++        "recordStatus": "failed",
++        "recordNonce": 9,
++        "recordBlock": 43
++      },
++      "expected": "indeterminate",
++      "executionState": "indeterminate"
++    }
++  ]
++}

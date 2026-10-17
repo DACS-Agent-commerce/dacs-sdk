@@ -249,6 +249,12 @@ export type DemosTransferObservation =
   | { status: "failed" | "invalid"; reason?: string }
   | {
       status: "included";
+      /**
+       * Attest successful execution only after reading a `confirmed` record
+       * bound to this hash, block, payer, payee and amount. Inclusion alone is
+       * insufficient. Required before delivery or payment recovery accounting.
+       */
+      execution?: "executed";
       txHash: string;
       payer: string;
       payee: string;
@@ -1365,7 +1371,7 @@ function isDemosTransferObservationValue(
     return hasOnlyKeys(value, ["status", "reason"]) &&
       (value.reason === undefined || typeof value.reason === "string");
   }
-  return value.status === "included" && hasExactKeys(value, [
+  return value.status === "included" && value.execution === "executed" && hasExactKeys(value, [
     "status",
     "txHash",
     "payer",
@@ -1373,6 +1379,7 @@ function isDemosTransferObservationValue(
     "amountOs",
     "blockNumber",
     "includedAt",
+    "execution",
   ]) &&
     typeof value.txHash === "string" &&
     typeof value.payer === "string" &&

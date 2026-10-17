@@ -401,6 +401,10 @@ export async function observePayDemTransferCore(
 
   return {
     status: "included",
+    // Only the confirmed transaction record proves execution. The other
+    // accepted inclusion labels retain their legacy observation shape.
+    ...(transaction.status === "confirmed"
+      ? { execution: "executed" as const } : {}),
     txHash: requestedHash,
     payer,
     payee,
