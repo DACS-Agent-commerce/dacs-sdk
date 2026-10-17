@@ -303,6 +303,43 @@ describe("durable DACS-5 RatingRecord publication", () => {
     expect(effects.record?.state).toBe("completed");
   });
 
+  it("preserves a CF-4 combining-mark rater through publication effects and cold recovery", async () => {
+    // The claim is NFC, but percent-encoding the preceding colon puts U+0301
+    // next to the A in %3A. NFC-normalizing the address would corrupt that key.
+    const buyer = "did:example:\u0301buyer";
+    const base = await buyerRating();
+    const record = { ...base, rater: buyer,
+      signature: { ...base.signature, signer: buyer } } as RatingRecord;
+    const logicalAddress = ratingAddress(JOB_ID, buyer);
+    expect(logicalAddress.normalize("NFC")).not.toBe(logicalAddress);
+    const effects = new MemoryEffectStore();
+    const bound = repository();
+    const runtime = {
+      ...deps(effects, bound.repository),
+      authenticateRatingRecord: vi.fn(async () => ({ disposition: "valid" as const })),
+    };
+    const putIntent = vi.spyOn(effects, "putEffectIntent");
+    const input = { record, buyer, seller: SELLER, expectedOwner: BUYER_OWNER };
+    const first = await publishRatingRecordDurably(input, runtime);
+    expect(first).toMatchObject({ disposition: "published", recovered: false,
+      result: { logicalAddress } });
+    expect(putIntent.mock.calls[0]![0].input).toHaveProperty("logicalAddress", logicalAddress);
+    expect(effects.record).toMatchObject({ effectId: logicalAddress,
+      result: { logicalAddress } });
+    // JSON persistence loses no address bytes; a fresh store/repository instance
+    // must recover the completed effect without performing another anchor write.
+    const coldEffects = new MemoryEffectStore();
+    coldEffects.record = JSON.parse(JSON.stringify(effects.record));
+    coldEffects.inputJson = effects.inputJson;
+    const coldBound = repository(bound.state);
+    const recovered = await publishRatingRecordDurably(input, {
+      ...runtime, effectStore: coldEffects, repository: coldBound.repository,
+    });
+    expect(recovered).toMatchObject({ disposition: "published", recovered: true,
+      result: { logicalAddress } });
+    expect(bound.state.writes).toBe(1);
+  });
+
   it("recovers a lost response by re-driving only the same write-once bytes", async () => {
     const record = await buyerRating();
     const effects = new MemoryEffectStore();

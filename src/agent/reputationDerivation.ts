@@ -1,5 +1,6 @@
 import {
   bundleAddress,
+  isCurrentJobId,
   legacyJobAddressing,
   canonicalize,
   contentHash,
@@ -282,7 +283,12 @@ function deriveReputationCore(
   // Validate before reading party/window fields. With `trustBundles`, the caller
   // explicitly attests that this happened upstream; otherwise the synchronous
   // predicate is enforced as an actual boolean at runtime.
-  const candidates = validatedCandidates(bundles, deps);
+  const candidates = validatedCandidates(
+    addressOf === bundleAddress
+      ? bundles.filter((bundle) => isCurrentJobId(bundle?.jobId))
+      : bundles,
+    deps,
+  );
 
   const scoped = candidates.filter(
     (b) =>
@@ -709,6 +715,7 @@ export async function deriveReputationWithValidation(
   const accepted: AnyAttestationBundle[] = [];
   for (const bundle of capturedBundles) {
     try {
+      if (!isCurrentJobId(bundle.jobId)) continue;
       const decision: unknown = await validate(bundle);
       if (decision === true) {
         accepted.push(bundle);

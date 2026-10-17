@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { admitArtifactJson, snapshotAdmittedArtifact, cloneWithArtifactAdmission, inheritArtifactAdmission, canonicalize, contentHash, encodeAddressSegment } from "../../src/canonical/index.js";
-import { createInMemoryBindingStore, createScanningArtifactRepository } from "../../src/discovery/index.js";
+import { createInMemoryBindingStore, createScanningArtifactRepository, resolveAndRead } from "../../src/discovery/index.js";
 import { DemosAdapter } from "../../src/substrate/DemosAdapter.js";
 import { publicKeyFromRaw, verifyArtifact } from "../../src/crypto/index.js";
 import { verifySettlementEvidence, verifyLegacySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
@@ -17,6 +17,10 @@ const binding = { owner, logicalAddress, nativeAddress, contentHash: contentHash
 function repository(bytes: Uint8Array, parsed?: Record<string, unknown>) {
   const adapter = new DemosAdapter({ rpc: "https://offline.test" });
   vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes as BodyInit)));
+  // Keep the earlier parsed SDK transport viable: a transport failure must not
+  // satisfy a CF-5 rejection assertion when these tests run before the fix.
+  vi.spyOn(adapter.raw.storagePrograms, "read").mockImplementation(async () =>
+    JSON.parse(Buffer.from(bytes).toString("utf8")) as never);
   const store = createInMemoryBindingStore([binding]);
   const verify = vi.fn((record: Record<string, any>) =>
     record.recordVersion === "1" && record.jobId === original.jobId &&
@@ -47,7 +51,10 @@ describe("CF-5 through Demos transport and scanning repository", () => {
 
   test("rejects duplicate raw artifact members before hashing or verification", async () => {
     const raw = '{"overallDecision":"fail",' + JSON.stringify(original).slice(1);
-    const { repo, verify } = repository(envelope(raw));
+    const { repo, verify, adapter } = repository(envelope(raw));
+    await expect(adapter.readAnchor(nativeAddress)).rejects.toMatchObject({
+      cause: { stage: "profile", code: "DUPLICATE-MEMBER" },
+    });
     const result = await repo.scanPage();
     expect(result.results[0]?.outcome.status).toBe("indeterminate");
     expect(verify).not.toHaveBeenCalled();
@@ -58,7 +65,10 @@ describe("CF-5 through Demos transport and scanning repository", () => {
     // Use a new member if this corpus version names its timestamp differently.
     const input = raw === JSON.stringify(original)
       ? '{"rawNumber":9007199254740991.1,' + raw.slice(1) : raw;
-    const { repo, verify } = repository(envelope(input));
+    const { repo, verify, adapter } = repository(envelope(input));
+    await expect(adapter.readAnchor(nativeAddress)).rejects.toMatchObject({
+      cause: { stage: "profile", code: "NUMBER-OUTSIDE-DACS-MAGNITUDE" },
+    });
     expect((await repo.scanPage()).results[0]?.outcome.status).toBe("indeterminate");
     expect(verify).not.toHaveBeenCalled();
   });
@@ -153,7 +163,7 @@ describe("current payment verification ingress and archival inspection", () => {
     const deps = { resolvePublicKey: vi.fn(), verify: vi.fn() };
     const record = admitArtifactJson(Buffer.from(JSON.stringify(fixture.evidence)));
     expect(await verifySettlementEvidence(record, ctx, deps)).toEqual({
-      decision: "fail", reasons: ["jobId must be a JID-1 canonical ULID"],
+      decision: "error", reasons: ["jobId must be a JID-1 canonical ULID"],
     });
     expect(deps.resolvePublicKey).not.toHaveBeenCalled();
     expect(deps.verify).not.toHaveBeenCalled();
@@ -191,4 +201,21 @@ describe("current payment verification ingress and archival inspection", () => {
     expect(deps.resolvePublicKey).not.toHaveBeenCalled();
     expect(deps.verify).not.toHaveBeenCalled();
   });
+});
+
+
+test("CF-5 negative zero survives adapter and verified-read snapshots without normalizing wire keys", async () => {
+  const raw = '{"n":-0,"nested":[-0],"wire:é":"é"}';
+  const record = { n: 0, nested: [0], "wire:é": "é" };
+  const { adapter } = repository(envelope(raw));
+  const admitted = await adapter.readAnchor(nativeAddress);
+  expect(snapshotAdmittedArtifact(admitted)).toEqual(record);
+  expect(Object.is(admitted!.n, -0)).toBe(false);
+  const index = createInMemoryBindingStore([{ ...binding, contentHash: contentHash(record) }]);
+  const verify = vi.fn(() => true);
+  expect(await resolveAndRead(index, logicalAddress, owner, {
+    read: (address) => adapter.readAnchor(address), contentHashOf: contentHash, verifySignature: verify,
+  })).toMatchObject({ status: "verified", record });
+  expect(verify).toHaveBeenCalledOnce();
+  expect(() => snapshotAdmittedArtifact(JSON.parse(raw))).toThrow(/raw-byte admission/);
 });

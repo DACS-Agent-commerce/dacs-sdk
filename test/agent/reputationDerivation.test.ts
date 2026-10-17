@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   deriveReputation,
@@ -1139,5 +1139,26 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     );
 
     expect(result.metrics.averageBuyerRating).toBe(4);
+  });
+});
+
+
+describe("current reputation JID admission order", () => {
+  test("malformed job IDs cannot reach validators, role, absence or rating callbacks", async () => {
+    const invalid = bundle("job-abc", "completed", 1500);
+    const isValid = vi.fn(() => true);
+    const validate = vi.fn(async () => true);
+    const resolvePartyRole = vi.fn(() => "buyer" as const);
+    const copyAbsence = vi.fn(() => "absent" as const);
+    const resolveAndAuthenticateRating = vi.fn();
+    expect(deriveReputation(PARTY, [invalid], WINDOW, {
+      isValid, resolvePartyRole, copyAbsence,
+    }).bundleCount).toBe(0);
+    expect((await deriveReputationWithValidation(PARTY, [invalid], WINDOW, {
+      validate, resolvePartyRole, copyAbsence, resolveAndAuthenticateRating,
+    })).bundleCount).toBe(0);
+    for (const callback of [isValid, validate, resolvePartyRole, copyAbsence, resolveAndAuthenticateRating]) {
+      expect(callback).not.toHaveBeenCalled();
+    }
   });
 });

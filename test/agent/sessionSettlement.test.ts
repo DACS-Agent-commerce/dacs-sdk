@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
@@ -15,6 +16,7 @@ import {
 } from "../../src/artifacts/validators.js";
 import {
   canonicalize,
+  cloneWithArtifactAdmission,
   contentHash,
   encodeAddressSegment,
   sha256Hex,
@@ -203,7 +205,7 @@ function signedEvidence(input: {
 }
 
 function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
-  const evidence = signedEvidence(options);
+  const evidence = admittedFixture(signedEvidence(options));
   const evidenceHash = contentHash(evidence as unknown as Record<string, unknown>);
   const evidenceRef: AttestationRef = {
     anchor: {
@@ -282,14 +284,14 @@ function replacePaymentEvidence(input: {
     signedBytes(ARTIFACT_SEPARATORS.SettlementEvidence, hash),
     PRIVATE_KEY,
   );
-  input.settlement.evidence = {
+  input.settlement.evidence = admittedFixture({
     ...unsigned,
     signature: {
       algorithm: "ed25519",
       signer: ORCHESTRATOR,
       value: Buffer.from(signature).toString("base64url"),
     },
-  } as SettlementEvidence;
+  } as SettlementEvidence);
   input.settlement.evidenceRef.contentHash = hash;
   input.settlement.anchorReceipt.contentHash = hash;
   input.proof.settlementId = input.settlementId;
@@ -416,19 +418,19 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("rejects evidence/proof substitutions and a forged anchor", async () => {
     const { settlement, proof } = fixture();
-    const wrongEvidence = structuredClone(settlement);
+    const wrongEvidence = cloneWithArtifactAdmission(settlement);
     wrongEvidence.evidenceRef.contentHash = "f".repeat(64);
     expect((await verifyFinalizedSessionSettlement(
       context(), wrongEvidence, provider(proof),
     )).disposition).toBe("rejected");
 
-    const wrongProof = structuredClone(settlement);
+    const wrongProof = cloneWithArtifactAdmission(settlement);
     wrongProof.nativeProofRef.contentHash = "f".repeat(64);
     expect((await verifyFinalizedSessionSettlement(
       context(), wrongProof, provider(proof),
     )).disposition).toBe("rejected");
 
-    const forgedAnchor = structuredClone(settlement);
+    const forgedAnchor = cloneWithArtifactAdmission(settlement);
     forgedAnchor.anchorReceipt.state = "reorged";
     forgedAnchor.anchorReceipt.observationDisposition = "indeterminate";
     forgedAnchor.anchorReceipt.preservedReceiptHash = "1".repeat(64);
@@ -453,8 +455,9 @@ describe("verifyFinalizedSessionSettlement", () => {
     }
     expect(revalidate).toHaveBeenCalledOnce();
 
-    const tampered = structuredClone(settlement);
+    const tampered = cloneWithArtifactAdmission(settlement);
     tampered.evidence.reason = "different failure";
+    tampered.evidence = admittedFixture(tampered.evidence);
     expect((await verifyFinalizedSessionSettlement(
       context(), tampered, provider(proof),
     )).disposition).toBe("rejected");
@@ -522,7 +525,7 @@ describe("verifyFinalizedSessionSettlement", () => {
       negativeZero, settlement, provider(proof),
     )).disposition).toBe("error");
 
-    const partial = structuredClone(settlement) as unknown as Record<string, unknown>;
+    const partial = cloneWithArtifactAdmission(settlement) as unknown as Record<string, unknown>;
     delete partial.nativeProofRef;
     expect((await verifyFinalizedSessionSettlement(
       context(), partial, provider(proof),
@@ -605,7 +608,7 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("binds the evidence reference signer and receipt logical address locally", async () => {
     const { settlement, proof } = fixture();
-    const wrongAddress = structuredClone(settlement);
+    const wrongAddress = cloneWithArtifactAdmission(settlement);
     wrongAddress.anchorReceipt.logicalAddress = "evidence:5HEWNTYVX2Z47MHMKNDX8GXWHK:3";
     const addressAnchorVerifier = vi.fn(() => ({ disposition: "pass" as const }));
     expect(await verifyFinalizedSessionSettlement(
@@ -618,7 +621,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     });
     expect(addressAnchorVerifier).not.toHaveBeenCalled();
 
-    const wrongSigner = structuredClone(settlement);
+    const wrongSigner = cloneWithArtifactAdmission(settlement);
     wrongSigner.evidenceRef.signer = "did:demos:outsider";
     const signerAnchorVerifier = vi.fn(() => ({ disposition: "pass" as const }));
     expect(await verifyFinalizedSessionSettlement(
@@ -1045,7 +1048,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(initial.disposition).toBe("verified");
     if (initial.disposition !== "verified") return;
 
-    const refreshed = structuredClone(settlement);
+    const refreshed = cloneWithArtifactAdmission(settlement);
     refreshed.anchorReceipt.observedAt += 10_000;
     refreshed.anchorReceipt.blockRef = {
       id: "block-anchor-refreshed",

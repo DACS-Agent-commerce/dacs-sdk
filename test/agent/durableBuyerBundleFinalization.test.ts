@@ -1,3 +1,4 @@
+import { admitArtifactJson, snapshotAdmittedArtifact } from "../../src/canonical/admittedArtifact.js";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const protocolMocks = vi.hoisted(() => ({
@@ -608,6 +609,26 @@ describe("durable buyer bundle finalization", () => {
       expect(f.state.fences.every(({ fence }) => fence.idempotencyKey.length > 20)).toBe(true);
     },
   );
+
+  test("retains evidence admission through buyer capture, verification and cold recovery", async () => {
+    const f = await fixture("pure");
+    const bytes = Buffer.from('{"jobId":"01J8ME0SXKQ4T9V2RC5HJ6WX7D"}');
+    f.input.settlement.evidence = admitArtifactJson(bytes) as unknown as FinalizedSessionSettlement["evidence"];
+    const initial = await advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability);
+    expect(initial.disposition).toBe("finalised");
+    // Reconstruct operational input as a caller would after a cold restart,
+    // re-reading the exact evidence bytes at the trusted transport boundary.
+    const recoveredInput = { ...f.input, settlement: {
+      ...f.input.settlement,
+      evidence: admitArtifactJson(bytes) as unknown as FinalizedSessionSettlement["evidence"],
+    } };
+    const recovered = await advanceCompletedBuyerBundleDurable(recoveredInput, f.provider, f.durability);
+    expect(recovered.disposition).toBe("finalised");
+    expect(protocolMocks.verifySettlement.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const [, settlement] of protocolMocks.verifySettlement.mock.calls) {
+      expect(snapshotAdmittedArtifact(settlement.evidence)).toEqual(JSON.parse(bytes.toString()));
+    }
+  });
 
   test("authenticates and durably retains the complete buyer plus distinct-orchestrator signer set", async () => {
     const f = await fixture("pure", true);

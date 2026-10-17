@@ -37,7 +37,12 @@ import {
   type PayeeBoundAgreementDocument,
   type SettlementEvidence,
 } from "@kynesyslabs/dacs/artifacts";
-import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import {
+  canonicalize,
+  contentHash,
+  inheritArtifactAdmission,
+  sha256Hex,
+} from "@kynesyslabs/dacs/canonical";
 import { ed25519Verify, publicKeyFromRaw, signedBytes } from
   "@kynesyslabs/dacs/crypto";
 import { canonicalDemosAgentPublicKey, identityBundleHash } from
@@ -173,7 +178,9 @@ interface BuyerReviewMaterialV1 {
 }
 
 function copy<T>(value: T): T {
-  return JSON.parse(canonicalize(value)) as T;
+  const snapshot = JSON.parse(canonicalize(value)) as T;
+  inheritArtifactAdmission(value, snapshot);
+  return snapshot;
 }
 
 function plainObject(value: unknown): value is Readonly<Record<string, unknown>> {

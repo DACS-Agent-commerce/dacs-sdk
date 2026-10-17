@@ -1,5 +1,7 @@
 import {
   canonicalize,
+  cloneWithArtifactAdmission,
+  snapshotAdmittedArtifact,
   contentHash,
   encodeAddressSegment,
   sha256Hex,
@@ -19,7 +21,7 @@ import {
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import {
-  verifyConstructedSettlementEvidence,
+  verifySettlementEvidence,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
 import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
@@ -345,7 +347,7 @@ function exactJsonValue(value: unknown, seen = new WeakSet<object>()): boolean {
 function ownedJson<T>(value: T): T | null {
   if (!exactJsonValue(value)) return null;
   try {
-    return deepFreeze(structuredClone(value));
+    return deepFreeze(cloneWithArtifactAdmission(value));
   } catch {
     return null;
   }
@@ -843,7 +845,8 @@ function captureProofLookup(
 /**
  * Authenticate one finalized settlement. Calling with `mode: "recovery"`
  * deliberately repeats every live/native observation before returning the
- * retained result.
+ * retained result. Nested evidence must retain exact-byte admission in both
+ * modes; after persistence, re-read it through an admitted transport.
  */
 export async function verifyFinalizedSessionSettlement(
   contextInput: unknown,
@@ -853,6 +856,17 @@ export async function verifyFinalizedSessionSettlement(
 ): Promise<SessionSettlementVerification> {
   if (mode !== "initial" && mode !== "recovery") {
     return rejected("error", "settlement verification mode is invalid");
+  }
+  // Check the original nested artifact before any schema/hash/provider work.
+  // A parsed object, including one recovered from JSON storage, is not proof
+  // of the received bytes. Recovery callers must retain or re-read admission.
+  try {
+    const evidence = settlementInput !== null && typeof settlementInput === "object"
+      ? Object.getOwnPropertyDescriptor(settlementInput, "evidence")?.value
+      : undefined;
+    snapshotAdmittedArtifact(evidence);
+  } catch {
+    return rejected("error", "finalized settlement evidence requires raw-byte admission");
   }
   const context = ownedJson(contextInput);
   const settlement = ownedJson(settlementInput);
@@ -885,9 +899,9 @@ export async function verifyFinalizedSessionSettlement(
   }
   if (mismatch) return rejected("rejected", mismatch);
 
-  let evidenceVerification: Awaited<ReturnType<typeof verifyConstructedSettlementEvidence>>;
+  let evidenceVerification: Awaited<ReturnType<typeof verifySettlementEvidence>>;
   try {
-    evidenceVerification = await verifyConstructedSettlementEvidence(
+    evidenceVerification = await verifySettlementEvidence(
       settlement.evidence,
       {
         orchestrator: context.orchestrator,

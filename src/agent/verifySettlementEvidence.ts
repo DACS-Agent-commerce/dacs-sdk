@@ -1049,7 +1049,7 @@ export async function verifyConstructedSettlementEvidence(
 ): Promise<EvidenceVerification> {
   const snapshot = snapshotCanonicalJsonRead(record, "constructed settlement evidence");
   if (!isObj(snapshot) || !isCurrentJobId(snapshot.jobId)) {
-    return { decision: "fail", reasons: ["jobId must be a JID-1 canonical ULID"] };
+    return { decision: "error", reasons: ["jobId must be a JID-1 canonical ULID"] };
   }
   return evaluateSettlementEvidence(snapshot, ctx ?? {}, deps ?? {}, true);
 }

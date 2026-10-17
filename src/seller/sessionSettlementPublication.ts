@@ -1,4 +1,7 @@
-import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
+import {
+  cloneWithArtifactAdmission,
+  snapshotAdmittedArtifact,
+} from "../canonical/admittedArtifact.js";
 import type {
   AnchorReceipt,
   AttestationRef,
@@ -28,6 +31,7 @@ import {
 } from "../agent/sessionSettlement.js";
 import {
   verifyConstructedSettlementEvidence,
+  verifySettlementEvidence,
   type EvidenceDeps,
 } from "../agent/verifySettlementEvidence.js";
 import {
@@ -309,7 +313,7 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 function ownedJson<T>(value: T): T | null {
   try {
     if (!exactJson(value)) return null;
-    return deepFreeze(structuredClone(value));
+    return deepFreeze(cloneWithArtifactAdmission(value));
   } catch {
     return null;
   }
@@ -1226,9 +1230,9 @@ export async function publishSellerSessionSettlement(
       readEvidence.signature.signer !== deps.signer.signer) {
     return failure("rejected", "settlement evidence readback differs from the signed publication", effectId);
   }
-  let readCheck: Awaited<ReturnType<typeof verifyConstructedSettlementEvidence>>;
+  let readCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
   try {
-    readCheck = await verifyConstructedSettlementEvidence(
+    readCheck = await verifySettlementEvidence(
       readEvidence,
       { ...context, attestationRef: structuredClone(evidenceRef) },
       deps.evidence,
@@ -1251,7 +1255,7 @@ export async function publishSellerSessionSettlement(
   const settlement = deepFreeze({
     settlementVersion: "1" as const,
     outcome: "success" as const,
-    evidence: structuredClone(readEvidence),
+    evidence: snapshotAdmittedArtifact(readEvidence) as unknown as SettlementEvidence,
     evidenceRef: structuredClone(evidenceRef),
     anchorReceipt: structuredClone(anchorReceipt),
     nativeProofRef: structuredClone(authenticatedNativeProofRef),

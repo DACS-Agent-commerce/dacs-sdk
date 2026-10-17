@@ -45,13 +45,22 @@ Its optional second argument selects an object member from a fully admitted
 transport envelope. `DemosAdapter.readAnchor` uses this at the public storage
 transport boundary, with a 1 MiB response bound and a 30-second timeout.
 Custom adapters must retain exact bytes and use the same API before returning
-a record. `resolveAndRead`, Listing discovery and `verifySettlementEvidence`
+a record. CF-5-valid negative zero is projected to zero only after raw-token
+validation; object keys and string values retain their decoded text.
+`resolveAndRead`, Listing discovery and `verifySettlementEvidence`
 refuse unproven parsed objects before hashing or verifying. Owned discovery
 snapshots retain provenance; `cloneWithArtifactAdmission` and
 `inheritArtifactAdmission` preserve it through equivalent owned JSON snapshots,
 including admitted members of authenticated HTTP envelopes and payment requests.
 Neither helper grants provenance to unproven parsed data. Arbitrary clones,
-restored cache objects and objects changed since admission do not retain it. Re-read external bytes after a restart.
+restored cache objects and objects changed since admission do not retain it.
+
+`verifyFinalizedSessionSettlement` requires admission on its nested `evidence`
+before schema, hash or provider checks, in both initial and recovery modes.
+Seller publication and durable buyer snapshots preserve existing admission.
+After a restart, retain the original received bytes or re-read exact evidence
+through an admitted transport; serializing a parsed cache entry cannot restore
+that proof.
 
 Do not use `JSON.stringify` of an already parsed external object as evidence of
 original CF-5 admission. Locally constructed structural inspection remains

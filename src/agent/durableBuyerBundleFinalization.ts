@@ -12,7 +12,13 @@ import {
   isCanonicalBase64Url,
   isFaultAttestationBundle,
 } from "../artifacts/index.js";
-import { canonicalize, contentHash, sha256Hex } from "../canonical/index.js";
+import {
+  canonicalize,
+  cloneWithArtifactAdmission,
+  contentHash,
+  inheritArtifactAdmission,
+  sha256Hex,
+} from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import {
@@ -300,7 +306,7 @@ const isHash = (value: unknown): value is string =>
 const isNonEmpty = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value.trim() === value;
 
-const clone = <T>(value: T): T => structuredClone(value);
+const clone = cloneWithArtifactAdmission;
 
 function snapshotDataValue(
   value: unknown,
@@ -400,7 +406,9 @@ function snapshotDataValue(
 }
 
 function snapshotData<T>(value: T, subject: string): T {
-  return snapshotDataValue(value, subject, new Set()) as T;
+  const snapshot = snapshotDataValue(value, subject, new Set()) as T;
+  inheritArtifactAdmission(value, snapshot);
+  return snapshot;
 }
 
 async function callbackResult<T>(

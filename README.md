@@ -938,8 +938,10 @@ record is ciphertext, and under the extended-pointer pattern it is a pointer
 record: the binding hash covers those bytes, not the payload. For example, a
 `verified` encrypt-to-buyer row says only that the ciphertext matches its
 binding; decrypt it and compare `sha256Hex(canonicalize(cleartextPayload))`
-with the agreement's `deliverableContentHash` before treating it as delivered,
-as the fulfilment validators do. Payment-disposition and payload-attestation rows are
+with verified `SettlementEvidence.deliverableContentHash`, bound to the agreement
+and delivery anchor, before treating it as delivered. The agreement's
+`terms.deliverable.hash` hashes the deliverable specification.
+Payment-disposition and payload-attestation rows are
 classified as their own kinds and reach the verifier.
 The SDK ships no per-kind verifier for this seam. For settlement evidence,
 payment dispositions, payload attestations, deliverables and entitlements,

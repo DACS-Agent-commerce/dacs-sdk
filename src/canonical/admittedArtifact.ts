@@ -24,7 +24,9 @@ export function admitArtifactJson(
   member?: string,
   options?: Readonly<RawJsonAdmissionOptions>,
 ): Record<string, unknown> {
-  const root = admitRawJson(bytes, options);
+  // Raw-token validation must precede JSON's permitted -0 -> 0 projection.
+  // This owns the parsed tree without changing wire keys or string values.
+  const root: unknown = JSON.parse(JSON.stringify(admitRawJson(bytes, options)));
   if (root === null || typeof root !== "object" || Array.isArray(root)) {
     throw new DacsError("admitted artifact must be a JSON object");
   }
