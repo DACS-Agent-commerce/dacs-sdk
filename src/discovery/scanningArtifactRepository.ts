@@ -1,8 +1,8 @@
 import { attestationBundleHash } from "../agent/twoSidedBundle.js";
 import type { AnyAttestationBundle } from "../artifacts/types.js";
-import { contentHash } from "../canonical/index.js";
 import type { AnchorBinding, BindingIndex } from "./binding.js";
 import {
+  artifactBindingHashOf,
   createBoundArtifactRepository,
   type BoundArtifactRepository,
   type BoundArtifactRepositoryDeps,
@@ -521,8 +521,11 @@ export function createScanningArtifactRepository(
         row.code = "read-indeterminate";
         return adapter.readAnchor(address);
       },
-      // A bundle binding commits to the DACS-5 §10.4.1 hash, which role copies share.
-      contentHashOf: anchor.kind === "bundle" ? bundleRecordHash : contentHash,
+      // A bundle binding commits to the DACS-5 §10.4.1 hash, which role copies
+      // share; a deliverable binding to its complete payload (DACS-4 DV-1).
+      contentHashOf: anchor.kind === "bundle"
+        ? bundleRecordHash
+        : artifactBindingHashOf(anchor.logicalAddress),
       verifySignature: async (record, binding) => {
         try {
           // DACS-5 BB-4/BB-5 require a BundleBinding, which the generic binding

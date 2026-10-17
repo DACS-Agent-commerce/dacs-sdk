@@ -714,8 +714,10 @@ source at commit `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`,
 `nodeCall("getNetworkInfo")` response reports `nodeVersion`: the fixture's
 2026-10-17 capture advertises version `0.9.8`, commit
 `61b8e75aa8db5e408c49e1c3a89db4d673f45578`, built at
-`2026-10-14T16:45:24Z`, with `dirty: true`. That advertised source was also
-checked, but a dirty build cannot be reproduced from its commit alone: the
+`2026-10-14T16:45:24Z`, with `dirty: true`. That advertised source (branch
+`stabilisation`) was also checked. Neither commit is an ancestor of the other,
+and the history query, its handler and the storage operation set are the same
+at both. A dirty build cannot be reproduced from its commit alone, so the
 deployed node dependency remains unpinned. Missing, changed or dirty version
 information requires a fresh compatibility assessment; the fetcher does not
 gate on a reported version. Provenance does not authenticate RPC data, and
@@ -898,8 +900,22 @@ verifier: a generic binding carries none of the DACS-5 BundleBinding fields its
 verification needs. The inherited `write` binds the generic content hash, which
 keeps `anchoredByRole`, so a role copy published through it scans as
 `hash-mismatch`; do not publish bundles through the generic repository.
-Payment-disposition and payload-attestation rows are
+A deliverable (`dacs4:deliverable:{jobId}`) is an unsigned payload: its binding
+hash is the sha256 of the complete canonical payload (DACS-4 §9.6.1 DV-1), so a
+top-level `signature` or `signatures` member is bound like any other field.
+`write` and `read` use the same hash for that address, and every other kind
+binds its signed scope (`contentHash`). Payment-disposition and payload-attestation rows are
 classified as their own kinds and reach the verifier.
+The SDK ships no per-kind verifier for this seam. For settlement evidence,
+payment dispositions, payload attestations, deliverables and entitlements,
+`verified` means only that the bytes match the published binding and that your
+verifier returned `true`. It is not a payment or delivery verdict:
+before acting on payment or delivery, run the agreement-bound checks (DACS-4
+SB-1's complete PC-2 tuple, DPA-2's exact-byte digest, DV-1's deliverable hash),
+for example through `verifySettlementEvidence` or the fulfilment validators, or
+make your verifier perform them. The verifier receives the record as read, the
+binding and the classified anchor (`kind`, `logicalAddress`, `nativeAddress`),
+which is what it needs to check the logical slot.
 A missing or non-function `verifyArtifact` is refused when the repository is
 created. Neither classification, a verified artifact nor `exhausted: true`
 proves complete enumeration, freshness, or non-revocation;

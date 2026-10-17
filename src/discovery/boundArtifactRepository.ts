@@ -100,6 +100,20 @@ export interface BoundArtifactRepository {
   ): Promise<VerifiedRead>;
 }
 
+/**
+ * Hash a binding commits to for a record at this logical address. A DACS-4
+ * deliverable is an unsigned payload whose DV-1 hash covers the complete
+ * canonical payload (§9.6.1), so a top-level `signature` member there is data;
+ * every other kind binds its signed scope (`contentHash`, §7.2).
+ */
+export function artifactBindingHashOf(
+  logicalAddress: string,
+): (record: Record<string, unknown>) => string {
+  return classifyAnchor(logicalAddress) === "deliverable"
+    ? (record) => sha256Hex(canonicalize(record))
+    : contentHash;
+}
+
 function anchorOptionsWithLogicalAddress(
   logicalAddress: string,
   options: AnchorWriteOnceOptions | undefined,
@@ -278,7 +292,7 @@ export function createBoundArtifactRepository(
           cause: error,
         });
       }
-      const artifactContentHash = contentHash(pinnedArtifact);
+      const artifactContentHash = artifactBindingHashOf(logicalAddress)(pinnedArtifact);
       const envelopeHash = sha256Hex(canonicalize(pinnedArtifact));
       const anchor = await deps.adapter.anchorWriteOnce(
         storageName,
@@ -321,7 +335,7 @@ export function createBoundArtifactRepository(
     async read(logicalAddress, expectedOwner, verifySignature) {
       return resolveAndRead(deps.index, logicalAddress, expectedOwner, {
         read: (nativeAddress) => deps.adapter.readAnchor(nativeAddress),
-        contentHashOf: contentHash,
+        contentHashOf: artifactBindingHashOf(logicalAddress),
         ...(verifySignature === undefined ? {} : { verifySignature }),
       });
     },

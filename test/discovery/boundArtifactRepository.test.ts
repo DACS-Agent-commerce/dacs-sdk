@@ -121,6 +121,42 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     });
   });
 
+  // DACS-4 §9.6.1 DV-1: a deliverable is an unsigned payload hashed whole.
+  test("a deliverable binds its complete payload, so a changed signature member fails the hash", async () => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const writer = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend),
+      index: bindings,
+      publisher: bindings,
+    });
+    const deliverable = "dacs4:deliverable:01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+    const payload = { report: "ok", signature: "A" };
+    const payloadHash = sha256Hex(canonicalize(payload));
+    expect(payloadHash).not.toBe(contentHash(payload));
+
+    const written = await writer.write(deliverable, payload);
+    expect(written).toMatchObject({
+      status: "published",
+      binding: { logicalAddress: deliverable, contentHash: payloadHash },
+    });
+    expect(backend.anchorMetadata).toEqual([{
+      logicalAddress: deliverable,
+      contentHash: payloadHash,
+      envelopeHash: payloadHash,
+    }]);
+    const approve = () => true;
+    expect(await writer.read(deliverable, SELLER, approve)).toMatchObject({
+      status: "verified",
+      record: payload,
+    });
+
+    backend.records.set(written.anchor.address, { ...payload, signature: "B" });
+    expect(await writer.read(deliverable, SELLER, approve)).toMatchObject({
+      status: "hash-mismatch",
+    });
+  });
+
   test("retry after reconnect reuses the physical anchor and publication", async () => {
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();

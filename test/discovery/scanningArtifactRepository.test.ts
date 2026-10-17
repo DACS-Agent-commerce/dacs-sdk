@@ -607,6 +607,106 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(verifyArtifact).toHaveBeenCalledOnce();
   });
 
+  // DACS-4 §9.6.1 DV-1: a deliverable is an unsigned payload hashed whole, so a
+  // top-level `signature` member is data the binding commits to.
+  test("a deliverable row binds its complete payload, including a signature member", async () => {
+    const logicalAddress = `dacs4:deliverable:${JOB}`;
+    const published = { report: "ok", signature: "A" };
+    const entry = { nativeAddress: "stor-deliverable", logicalAddress, owner: OWNER };
+    const scan = async (bound: string, stored: Record<string, unknown>) => {
+      const verifyArtifact = vi.fn<ScanningArtifactRepositoryDeps["verifyArtifact"]>(() => true);
+      const fixture = setup([], {
+        verifyArtifact,
+        index: createInMemoryBindingIndex([{ ...entry, contentHash: bound }]),
+        adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
+          readAnchor: async () => structuredClone(stored) },
+      });
+      fixture.fetchPage.mockResolvedValue({ entries: [entry], nextCursor: null });
+      const [result] = (await fixture.repo.scanPage()).results;
+      expect(result?.anchor.kind).toBe("deliverable");
+      return { status: result?.outcome.status, verifierCalls: verifyArtifact.mock.calls.length };
+    };
+    const payloadHash = sha256Hex(canonicalize(published));
+    expect(payloadHash).not.toBe(contentHash(published));
+    expect(await scan(payloadHash, published)).toEqual({ status: "verified", verifierCalls: 1 });
+    // The same binding with a changed signature member never reaches the verifier.
+    expect(await scan(payloadHash, { ...published, signature: "B" }))
+      .toEqual({ status: "hash-mismatch", verifierCalls: 0 });
+    // A signature-omitting hash does not bind a deliverable's payload.
+    expect(await scan(contentHash(published), { ...published, signature: "B" }))
+      .toEqual({ status: "hash-mismatch", verifierCalls: 0 });
+  });
+
+  // DACS-4 SB-1 / DPA-2: the repository adds no payment or delivery semantics.
+  // A binding an attacker publishes for its own bytes always matches, so these
+  // vectors pin that a strict verifier gets the exact record, binding and slot,
+  // and that each of its refusals is final and never `verified`.
+  describe("payment and delivery rows through a strict verifier", () => {
+    const DIGEST = "ab".repeat(32);
+    const kinds = [
+      ["payment-disposition", `dacs4:payment-disposition:${JOB}:3:${DIGEST}`, "dacs-payment-disposition:v1"],
+      ["payload-attestation", `dacs4:payload-attestation:${JOB}:${DIGEST}:0`, "dacs-payload-attestation:v1"],
+    ] as const;
+    const strict = (domain: string): ScanningArtifactRepositoryDeps["verifyArtifact"] =>
+      (value, bound, anchor) => {
+        if (value.version !== "1") throw new UnsupportedArtifactKindError("unsupported version");
+        const signature = value.signature as { signer?: unknown; value?: unknown };
+        return value.domain === domain && value.digest === DIGEST &&
+          value.logicalAddress === anchor.logicalAddress && bound.logicalAddress === anchor.logicalAddress &&
+          signature.signer === bound.owner && signature.value === "public-test-signature";
+      };
+    const valid = (logicalAddress: string, domain: string): Record<string, unknown> => ({
+      version: "1", domain, logicalAddress, digest: DIGEST,
+      signature: { signer: OWNER, value: "public-test-signature" },
+    });
+    async function scanOne(logicalAddress: string, domain: string, value: Record<string, unknown>) {
+      const entry = { nativeAddress: "stor-dacs4", logicalAddress, owner: OWNER };
+      const verifyArtifact = vi.fn(strict(domain));
+      const fixture = setup([], {
+        verifyArtifact,
+        index: createInMemoryBindingIndex([{ ...entry, contentHash: contentHash(value) }]),
+        adapter: { getAddress: () => "buyer", anchorWriteOnce: async () => { throw new Error("unexpected write"); },
+          readAnchor: async () => structuredClone(value) },
+      });
+      fixture.fetchPage.mockResolvedValue({ entries: [entry], nextCursor: null });
+      const { results } = await fixture.repo.scanPage();
+      expect(results).toHaveLength(1);
+      return { result: results[0]!, verifyArtifact, entry };
+    }
+
+    test.each(kinds)("%s: a valid record verifies with the exact record, binding and slot", async (kind, address, domain) => {
+      const value = valid(address, domain);
+      const { result, verifyArtifact, entry } = await scanOne(address, domain, value);
+      expect(result).toMatchObject({ anchor: { kind }, outcome: { status: "verified", record: value } });
+      expect(verifyArtifact).toHaveBeenCalledExactlyOnceWith(
+        value,
+        { ...entry, contentHash: contentHash(value) },
+        { ...entry, kind },
+      );
+    });
+
+    test.each(kinds)("%s: every malformed vector is signature-invalid, never verified", async (kind, address, domain) => {
+      const base = valid(address, domain);
+      const vectors: Array<[string, Record<string, unknown>]> = [
+        ["signature", { ...base, signature: { signer: OWNER, value: "forged" } }],
+        ["signer", { ...base, signature: { signer: "mallory", value: "public-test-signature" } }],
+        ["domain", { ...base, domain: "dacs-other:v1" }],
+        ["slot", { ...base, logicalAddress: address.replace(JOB, "01J8ME0SXKQ4T9V2RC5HJ6WX7E") }],
+        ["digest", { ...base, digest: "cd".repeat(32) }],
+      ];
+      for (const [name, value] of vectors) {
+        const { result, verifyArtifact } = await scanOne(address, domain, value);
+        expect([name, result.anchor.kind, result.outcome.status]).toEqual([name, kind, "signature-invalid"]);
+        expect(verifyArtifact).toHaveBeenCalledOnce();
+      }
+    });
+
+    test.each(kinds)("%s: an unsupported version is a final unsupported-kind", async (kind, address, domain) => {
+      const { result } = await scanOne(address, domain, { ...valid(address, domain), version: "2" });
+      expect(result).toMatchObject({ anchor: { kind }, outcome: { status: "unverifiable", code: "unsupported-kind" } });
+    });
+  });
+
   // CORE JID-3: malformed job IDs reach no resolver or discovery surface.
   test("rows with malformed job IDs are never resolved or read", async () => {
     const malformed = ["dacs3:commit:not-a-ulid", `dacs3:commit:${JOB.toLowerCase()}`, "dacs4:deliverable:x"];
