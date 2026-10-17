@@ -6932,7 +6932,8 @@ describe("retained store rows the core must refuse", () => {
     ["another currency", (s) => ({ ...s, paymentAmount: { ...s.paymentAmount, currency: "USDT" } })],
     ["another finality model", (s) => ({ ...s, settlementFinality: { ...s.settlementFinality, model: "block-depth" } })],
     ["no source expiry", (s) => ({ ...s, settlementFinality: { ...s.settlementFinality, sourceExpiry: 0 } })],
-    // Only the expiry check itself refuses this one.
+    // The finality chronology accepts this one: only the positive-expiry check
+    // and the comparison with the checkpointed expiry refuse it.
     ["no source expiry and finality at time zero", (s) => ({
       ...s,
       settlementFinality: { ...s.settlementFinality, sourceExpiry: 0, finalityReachedAt: 0, finalityObservedAt: 0 },
@@ -6994,6 +6995,27 @@ describe("retained store rows the core must refuse", () => {
   test("replays an unchanged stored settlement", async () => {
     const { run, settlement } = await settledSession();
     await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store: withSettlement(run.shared.store, (s) => s) }))
+      .resolves.toEqual({ status: "settled", settlement });
+  });
+
+  test("replays the settlement it checked from a getter-backed settled claim", async () => {
+    const { run, settlement } = await settledSession();
+    const base = run.shared.store;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        if (claimed.status !== "settled") return claimed;
+        // The first read passes the checks; every later read names another amount.
+        let reads = 0;
+        const other = { ...claimed.settlement, paymentAmount: { ...claimed.settlement.paymentAmount, amount: "2" } };
+        return Object.defineProperty({ ...claimed }, "settlement", {
+          enumerable: true,
+          get: () => (reads++ === 0 ? claimed.settlement : other),
+        });
+      },
+    };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store }))
       .resolves.toEqual({ status: "settled", settlement });
   });
 

@@ -921,6 +921,13 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     ev.paymentTxRefs[1].chainId = 84532;
     expect((await verify(ev, { rail: { ...htlcRail, htlcRoute: undefined } })).decision).toBe("fail");
   });
+  test.each([
+    ["a null route", null],
+    ["a string route", "84532:80002"],
+  ])("htlc success with %s → fail, never a throw", async (_name, htlcRoute) => {
+    const ev = htlcResolved();
+    expect((await verify(ev, { rail: { ...htlcRail, htlcRoute: htlcRoute as never } })).decision).toBe("fail");
+  });
   test.each(["block-depth", "liquidity-tank", "commitment-level"])(
     "htlc success with %s finality → fail (PC-6 binds htlc-reveal)",
     async (model) => {
@@ -980,6 +987,8 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
   });
   test.each([
     ["no route", undefined],
+    ["a null route", null],
+    ["an array route", []],
     ["a route on one chain", { sourceChainId: 84532, destChainId: 84532 }],
     ["string chain ids", { sourceChainId: "84532", destChainId: "80002" }],
     ["a zero chain id", { sourceChainId: 0, destChainId: 80002 }],

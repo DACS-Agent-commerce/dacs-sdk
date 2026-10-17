@@ -858,12 +858,14 @@ async function evaluateSettlementEvidence(
     const locks = refsOf("htlc-lock");
     const reveals = refsOf("htlc-reveal");
     const claims = refsOf("htlc-claim");
-    const route = ctx.rail?.htlcRoute;
+    const route: unknown = ctx.rail?.htlcRoute;
+    // A route that is present but not an object (a host's `null`) matches no chains.
     const roleChainsMismatch = (sourceRefs: Record<string, unknown>[]): boolean => {
       const sourceChain = sourceRefs[0]!["chainId"];
       const destChain = reveals[0]!["chainId"];
       return sourceRefs.some((t) => t["chainId"] !== sourceChain) || sourceChain === destChain ||
-        (route !== undefined && (sourceChain !== route.sourceChainId || destChain !== route.destChainId));
+        (route !== undefined && (!isObj(route) || sourceChain !== route["sourceChainId"] ||
+          destChain !== route["destChainId"]));
     };
     // Pack topology: each action is its own transaction, and the claim spends
     // the lock's own contract.

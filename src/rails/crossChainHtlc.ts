@@ -1898,9 +1898,18 @@ export async function advanceCrossChainHtlc(
   }
   if (claimed.status === "waiting") return { status: "waiting", reason: "htlc-settlement-held" };
   if (claimed.status === "settled") {
-    return storedSettlementMatchesRetained(claimed, intent)
-      ? { status: "settled", settlement: claimed.settlement }
-      : { status: "indeterminate", reason: "htlc-stored-settlement-mismatch" };
+    const mismatch: CrossChainHtlcProgress = { status: "indeterminate", reason: "htlc-stored-settlement-mismatch" };
+    // Check and return one data copy: a getter-backed claim could otherwise
+    // pass one settlement through the check and return another.
+    let settled: Extract<HtlcStoreClaim, { status: "settled" }>;
+    try {
+      settled = structuredClone(claimed);
+    } catch {
+      return mismatch;
+    }
+    return storedSettlementMatchesRetained(settled, intent)
+      ? { status: "settled", settlement: settled.settlement }
+      : mismatch;
   }
   if (claimed.status === "conflict") {
     // The store holds this session under another salt or binding, or the salt
