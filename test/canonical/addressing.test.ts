@@ -115,16 +115,25 @@ describe("CF-4 logical addressing (§6.3.4)", () => {
 
   // The builders refuse what classifyAnchor refuses in a variable segment.
   test.each([
-    ["a C1 control", "evm\u0085erc20"],
     ["a lone high surrogate", "evm\ud800erc20"],
     ["a lone low surrogate", "evm\udc00erc20"],
-    ["a tab", "evm\terc20"],
     ["non-NFC text", "café"],
   ])("rejects a variable segment with %s", (_name, value) => {
     expect(() => attestationAddress("job-abc", "lei", value, 3)).toThrow(/identifier/);
     expect(() => paymentEvidenceAddress("job-abc", value, 0)).toThrow(/railId/);
     expect(() => ratingAddress("job-abc", value)).toThrow(/rater/);
   });
+
+  test.each(["my wallet", "id\tvalue", "id\u0000value", "id\u0085value"])(
+    "preserves scheme-specific text %j for the artifact verifier", (value) => {
+      const job = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
+      const address = attestationAddress(job, "cci-xm", `evm:1:${value}`, 1);
+      expect(address).toBe(`dacs2:${job}:cci-xm:evm%3A1%3A${value}:v1`);
+      expect(classifyAnchor(address)).toBe("verification-result");
+      expect(classifyAnchor(ratingAddress(job, `cci-xm:evm:1:${value}`))).toBe("rating");
+      expect(classifyAnchor(paymentEvidenceAddress(job, value, 0))).toBe("settlement-evidence");
+    },
+  );
 
   test("accepts a paired surrogate, and the classifier agrees", () => {
     const address = ratingAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7D", "did:web:😀.example");

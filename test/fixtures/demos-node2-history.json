@@ -243,5 +243,20 @@
       "error": "Storage program not found: stor-0000000000000000000000000000000000000000",
       "errorCode": "NOT_FOUND"
     }
+  },
+  "networkInfoProvenance": {
+    "source": "https://node2.demos.sh, read-only nodeCall getNetworkInfo",
+    "capturedAt": "2026-10-17",
+    "nodeVersion": {
+      "name": "demos-node-software",
+      "version": "0.9.8",
+      "commit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+      "commitShort": "61b8e75",
+      "commitMessage": "verify anchor peer pairing signature",
+      "branch": "stabilisation",
+      "dirty": true,
+      "builtAt": "2026-10-14T16:45:24Z"
+    },
+    "assessment": "Advertised commit checked; dirty build is not reproducible from the commit. Deployment remains unpinned. Missing, different or dirty provenance needs fresh compatibility assessment; row validation is always required."
   }
 }

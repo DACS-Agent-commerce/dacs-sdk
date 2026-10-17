@@ -709,12 +709,18 @@ behind the cursor, are seen only by a new traversal. These ordering, status,
 row-shape and not-found assumptions were checked against the `kynesyslabs/node`
 source at commit `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`,
 `@kynesyslabs/demosdk` 4.0.16, and node2 testnet responses recorded on
-2026-10-15 and 2026-10-16, including a real DACS create row
-(`test/fixtures/demos-node2-history.json`). The deployed node is
-newer than `ac8f45f`: its rows carry fields that source does not produce, and
-it records failed transactions. The node reports no version, so the fetcher
-cannot check one; a node whose ordering, status or row shape differs from these
-is not supported. A cursor from an earlier release (`dacs-demos-history-v1.`)
+2026-10-15 through 2026-10-17, including a real DACS create row
+(`test/fixtures/demos-node2-history.json`). The read-only
+`nodeCall("getNetworkInfo")` response reports `nodeVersion`: the fixture's
+2026-10-17 capture advertises version `0.9.8`, commit
+`61b8e75aa8db5e408c49e1c3a89db4d673f45578`, built at
+`2026-10-14T16:45:24Z`, with `dirty: true`. That advertised source was also
+checked, but a dirty build cannot be reproduced from its commit alone: the
+deployed node dependency remains unpinned. Missing, changed or dirty version
+information requires a fresh compatibility assessment; the fetcher does not
+gate on a reported version. Provenance does not authenticate RPC data, and
+row validation remains required. A node whose ordering, status or row shape
+differs from these is not supported. A cursor from an earlier release (`dacs-demos-history-v1.`)
 requires a restart from null; `enumerateListings` returns `retryCursor: null`
 for it.
 
@@ -880,10 +886,11 @@ final `unclassified`: it is neither resolved, read nor verified. That includes
 a DACS address whose job ID is not a canonical uppercase ULID, which is never
 repaired, and one that is not canonical CF-4: a variable segment (such as a
 claim or rail ID) with a lowercase or unneeded `%` escape, a raw `?`, `&`, `=`
-or `%`, whitespace, a control character or decoded non-NFC text, or a fixed segment
+or `%`, a lone surrogate or decoded non-NFC text, or a fixed segment
 outside its grammar (a `listingId` that is not 1 to 128 URL-safe ASCII
 characters, or a `scheme` that is not a lowercase token). The CF-2 form of a
-ClaimReference inside a segment is left to the verifier. A DACS-5 bundle row (`stor-` and 64 hex characters, a shape a DACS-1
+ClaimReference inside a segment, including scheme-specific whitespace or control
+restrictions, is left to the verifier. A DACS-5 bundle row (`stor-` and 64 hex characters, a shape a DACS-1
 stor-cred slot shares) is read and checked against the binding's hash over the
 DACS-5 §10.4.1 scope, which omits `signatures` and `anchoredByRole`, then is a
 final `unverifiable` with `code: "unsupported-kind"` without calling the
@@ -954,14 +961,16 @@ diagnostics. `invalid-seller` and `invalid-options` are caller errors;
 `historyPageSize`, when supplied, must be an integer from 1 through 100.
 
 When upgrading, handle the new `history-error` enumeration status explicitly.
-`attestationAddress`, `paymentEvidenceAddress` and `ratingAddress` reject C1
-controls (U+0080–U+009F) and lone surrogates in variable identifiers, in addition
-to whitespace, other controls and non-NFC text. Validate inputs before calling
-these builders or handle their `DacsError`. NFC is checked on the decoded value,
+`attestationAddress`, `paymentEvidenceAddress` and `ratingAddress` reject empty
+values, lone surrogates and non-NFC text in variable identifiers. Scheme-specific
+identifier and rail restrictions belong to their verifiers. Validate inputs
+before calling these builders or handle their `DacsError`. NFC is checked on the decoded value,
 before CF-4 delimiter encoding; discovery applies the same text rule.
 The bound repository applies that segment validation to recognized CF-4 keys
 and publishes the exact encoded address, preserving its bytes even when the
-encoded form itself is not NFC.
+encoded form itself is not NFC. Demos transport metadata, retained transaction
+evidence and native metadata comparisons preserve those encoded strings;
+CF-1 normalization of signed DACS artifacts is unchanged.
 Large timestamp groups still have the 100-row window limit described above;
 repeated boundary restarts require an operational alert.
 

@@ -68,12 +68,12 @@ function requireStructuralSegment(value: string, label: string): void {
   }
 }
 
-/** Shared CF-4 text rule, applied to the raw (decoded) variable-segment value. */
+/** CF-4 text rule; scheme-specific identifier grammar belongs to its verifier. */
 export function isCanonicalAddressSegmentValue(value: string): boolean {
   return (
     value.length > 0 &&
     value.normalize("NFC") === value &&
-    !/[\s\p{Cc}\p{Cs}]/u.test(value)
+    !/\p{Cs}/u.test(value)
   );
 }
 

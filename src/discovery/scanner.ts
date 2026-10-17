@@ -52,7 +52,7 @@ export type AnchorKind =
  * A CF-4 variable segment is canonical when it is exactly what the SDK's
  * encoder produces for its decoded value: the reserved delimiters are escaped
  * with uppercase hex, nothing else is escaped, and the value is non-empty,
- * NFC-normalized text without whitespace, control characters or lone surrogates.
+ * NFC-normalized Unicode scalar text. Identifier grammar is left to verifiers.
  * Check NFC before encoding: a delimiter escape's final hex letter can compose
  * with a following combining mark even when the decoded value is already NFC.
  */

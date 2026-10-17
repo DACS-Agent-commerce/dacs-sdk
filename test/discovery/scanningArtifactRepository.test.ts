@@ -103,6 +103,45 @@ function setup(ids: string[], over: Partial<ScanningArtifactRepositoryDeps> = {}
 }
 
 describe("createScanningArtifactRepository (#54)", () => {
+  test.each<ArtifactScanDeferredRow["code"]>([
+    "index-indeterminate", "binding-not-yet-visible", "read-indeterminate",
+    "record-not-yet-visible", "verifier-unavailable",
+  ])("resumes persisted deferred code %s without discarding it", async (code) => {
+    const fixture = setup(["a"]);
+    const deferred = { ...deferredRow("z"), code };
+    const input = {
+      ...state("next"), metadata: new Map([["stor-z", logical("z")]]), deferred: [deferred],
+    };
+    const result = await fixture.repo.scanPage(input);
+    expect(result.status).toBe("page");
+    expect(result.state.exhausted).toBe(true);
+    expect(result.state.deferred).toEqual([deferred]);
+    expect(fixture.fetchPage).toHaveBeenCalledWith("next", expect.any(Number));
+    expect(fixture.readAnchor).toHaveBeenCalledExactlyOnceWith("stor-a");
+  });
+
+  test("an unknown index status cannot admit a valid-looking binding", async () => {
+    const fixture = setup(["a"], {
+      index: { resolve: async () => ({ status: "unexpected", binding: binding("a") }) as never },
+    });
+    const result = await fixture.repo.scanPage();
+    expect(result).toMatchObject({ status: "indeterminate", code: "index-indeterminate" });
+    expect(result.state.seen.size).toBe(0);
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
+    expect(fixture.verifyArtifact).not.toHaveBeenCalled();
+  });
+
+  test("resumes handled rows without redundant metadata and avoids duplicate reads", async () => {
+    const fixture = setup(["a"]);
+    const input = { ...state("next"), seen: new Map([["stor-a", logical("a")]]) };
+    const result = await fixture.repo.scanPage(input);
+    expect(result).toMatchObject({ status: "page", results: [], state: { exhausted: true, pagesConsumed: 2 } });
+    expect(result.state.seen).toEqual(input.seen);
+    expect(fixture.fetchPage).toHaveBeenCalledExactlyOnceWith("next", expect.any(Number));
+    expect(fixture.readAnchor).not.toHaveBeenCalled();
+    expect(fixture.verifyArtifact).not.toHaveBeenCalled();
+  });
+
   test.each([undefined, null, 7, {}, ["disagree"]])(
     "malformed index reason (%j) preserves retry state without claiming conflict",
     async (reason) => {

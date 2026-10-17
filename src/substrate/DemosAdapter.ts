@@ -18,6 +18,8 @@ import {
   rawPublicKey,
 } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
+import { canonicalizeWireJson } from "../canonical/jcs.js";
+import { snapshotWireJsonRead } from "../canonical/snapshot.js";
 import {
   assertDemosCciResponseBounds,
   parseClaimRef,
@@ -87,6 +89,9 @@ const RECEIPT_HISTORY_MAX_PAGES = 100;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const exactJsonHash = (value: Record<string, unknown>): string =>
   sha256Hex(canonicalize(value));
+// Transport metadata can contain CF-4 keys whose encoded spelling is not NFC.
+const metadataJsonHash = (value: Record<string, unknown>): string =>
+  sha256Hex(canonicalizeWireJson(value));
 
 export interface DemosAnchorReceiptLookup {
   logicalAddress: string;
@@ -250,7 +255,7 @@ function demosTransferAmountOs(
 function sameOptionalJsonObject(left: unknown, right: unknown): boolean {
   if (left === undefined && right === undefined) return true;
   return isJsonObject(left) && isJsonObject(right) &&
-    canonicalize(left) === canonicalize(right);
+    canonicalizeWireJson(left) === canonicalizeWireJson(right);
 }
 
 type MutableReceipt = Omit<AnchorAttemptReceipt, "attempts" | "timings"> & {
@@ -501,7 +506,7 @@ function journalPortableValue(
 }
 
 function serializeSignedTransaction(value: unknown): string {
-  return canonicalize(journalPortableValue(value));
+  return canonicalizeWireJson(journalPortableValue(value));
 }
 
 /**
@@ -1149,7 +1154,7 @@ export class DemosAdapter implements SubstrateAdapter {
         nativeResult.metadata === null
       ? undefined
       : isJsonObject(nativeResult.metadata)
-        ? exactJsonHash(nativeResult.metadata)
+        ? metadataJsonHash(nativeResult.metadata)
         : null;
     if (metadataHash === null || metadataHash !== evidence.nativeRead.metadataHash) {
       return false;
@@ -1366,7 +1371,7 @@ export class DemosAdapter implements SubstrateAdapter {
             nativeObservation.metadata === null
           ? undefined
           : isJsonObject(nativeObservation.metadata)
-            ? exactJsonHash(nativeObservation.metadata)
+            ? metadataJsonHash(nativeObservation.metadata)
             : null;
         if (metadataHash === null) {
           throw new SubstrateError("Demos receipt metadata is malformed");
@@ -1917,7 +1922,7 @@ export class DemosAdapter implements SubstrateAdapter {
           const metadataMatches = record.metadataHash === undefined
             ? true
             : isJsonObject(metadata) &&
-              exactJsonHash(metadata) === record.metadataHash;
+              metadataJsonHash(metadata) === record.metadataHash;
           const provenanceTx = record.operation === "create"
             ? result.createdByTx
             : result.lastModifiedByTx;
@@ -2013,7 +2018,7 @@ export class DemosAdapter implements SubstrateAdapter {
     let signed: unknown;
     try {
       signed = JSON.parse(record.signedTransaction) as unknown;
-      if (canonicalize(signed) !== record.signedTransaction) throw new Error();
+      if (canonicalizeWireJson(signed) !== record.signedTransaction) throw new Error();
     } catch {
       throw this.fail(
         ctx,
@@ -2067,7 +2072,7 @@ export class DemosAdapter implements SubstrateAdapter {
     const payloadMetadataMatches = record.metadataHash === undefined
       ? payload?.metadata === undefined
       : isJsonObject(payload?.metadata) &&
-        exactJsonHash(payload.metadata) === record.metadataHash;
+        metadataJsonHash(payload.metadata) === record.metadataHash;
     if (
       content?.type !== "storageProgram" ||
       typeof content.from !== "string" ||
@@ -3243,7 +3248,7 @@ export class DemosAdapter implements SubstrateAdapter {
     expected: Record<string, unknown>,
   ): boolean {
     try {
-      return actual !== null && canonicalize(actual) === canonicalize(expected);
+      return actual !== null && canonicalizeWireJson(actual) === canonicalizeWireJson(expected);
     } catch (error) {
       throw new SubstrateError(
         "read immutable anchor returned non-canonicalizable metadata",
@@ -3364,7 +3369,7 @@ export class DemosAdapter implements SubstrateAdapter {
         throw new DacsError("anchorWriteOnce metadata must be a JSON object");
       }
       try {
-        const pinned = JSON.parse(canonicalize(opts.metadata)) as unknown;
+        const pinned = snapshotWireJsonRead(opts.metadata, "anchorWriteOnce metadata");
         if (!isJsonObject(pinned)) throw new Error("metadata is not an object");
         metadata = pinned;
       } catch (error) {
@@ -3397,7 +3402,7 @@ export class DemosAdapter implements SubstrateAdapter {
       const valueHash = exactJsonHash(data);
       const metadataHash = metadata === undefined
         ? undefined
-        : exactJsonHash(metadata);
+        : metadataJsonHash(metadata);
       const lease = this.activeWriteLease!;
       const retained = [...lease.snapshot.records]
         .reverse()

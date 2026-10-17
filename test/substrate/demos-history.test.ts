@@ -72,6 +72,22 @@ function clientWith(
 }
 
 describe("createDemosHistoryPageFetcher (#54)", () => {
+  test("rejects a confirmed READ_STORAGE query presented as a transaction", async () => {
+    const fetchPage = createDemosHistoryPageFetcher(clientWith(async () => [
+      row({ hash: "read-query", operation: "READ_STORAGE" }),
+    ]), OWNER);
+    await expect(fetchPage(null, 2)).rejects.toThrow(/inconsistent storage metadata/);
+  });
+
+  test.each([" 1", "1 ", "0x10", "01", "-1"])(
+    "rejects nondecimal transaction timestamp %j", async (timestamp) => {
+      const fetchPage = createDemosHistoryPageFetcher(clientWith(async () => [
+        row({ hash: "bad-timestamp", timestamp }),
+      ]), OWNER);
+      await expect(fetchPage(null, 2)).rejects.toThrow(/no transaction timestamp/);
+    },
+  );
+
   test("is exported publicly and extracts logical metadata, never programName", async () => {
     expect(createDemosHistoryPageFetcherFromRoot).toBe(
       createDemosHistoryPageFetcher,

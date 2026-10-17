@@ -90,9 +90,6 @@ describe("classifyAnchor (§6.3.4 logical-address kinds)", () => {
     ["a bare %", "evm-erc20%USDC"],
     ["an escaped non-reserved byte", "evm-erc20%41USDC"],
     ["a truncated escape", "evm-erc20%3"],
-    ["a space", "evm erc20"],
-    ["a tab", "evm\terc20"],
-    ["a control character", "evm\u0000erc20"],
     ["a lone surrogate", "evm\ud800erc20"],
     ["non-NFC text", "café"],
   ])("a variable segment with %s makes every address that carries it unknown", (_name, value) => {
@@ -108,6 +105,18 @@ describe("classifyAnchor (§6.3.4 logical-address kinds)", () => {
       expect(classifyAnchor(address), address).toBe("unknown");
     }
   });
+
+  test.each(["my wallet", "my\twallet", "my\u0000wallet", "my\u0085wallet"])(
+    "leaves scheme-specific whitespace/control text %j to verifiers", (identifier) => {
+      const claim = `cci-xm%3Aevm%3A1%3A${identifier}`;
+      expect(classifyAnchor(`dacs1:${claim}:svc:v1`)).toBe("listing");
+      expect(classifyAnchor(`dacs1-revoked:${claim}:svc:v1`)).toBe("listing-revocation");
+      expect(classifyAnchor(`dacs2:${JOB}:cci-xm:evm%3A1%3A${identifier}:v1`)).toBe("verification-result");
+      expect(classifyAnchor(`dacs2:composite:${JOB}:${claim}`)).toBe("verification-composite");
+      expect(classifyAnchor(`dacs5:rating:${JOB}:${claim}`)).toBe("rating");
+      expect(classifyAnchor(`dacs4:payment:${JOB}:${identifier}:0`)).toBe("settlement-evidence");
+    },
+  );
 
   test("an escaped % is canonical CF-4, so the decoded value is left to the verifier", () => {
     // `%25` is how CF-4 writes a literal `%`; the tuple comparison rejects a

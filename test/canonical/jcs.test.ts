@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runInNewContext } from "node:vm";
+import { canonicalizeWireJson } from "../../src/canonical/jcs.js";
 
 import {
   canonicalize,
@@ -17,6 +18,13 @@ import {
 
 // §7.1 / §7.2 canonicalize vectors (DACS-Standard §14).
 describe("canonicalize (§7.1)", () => {
+  it("keeps transport strings exact while CF-1 still normalizes artifact values", () => {
+    const value = { z: ["cafe\u0301"], a: "key%3A\u0301x" };
+    expect(canonicalizeWireJson(value)).toBe('{"a":"key%3A\u0301x","z":["cafe\u0301"]}');
+    expect(canonicalize(value)).toBe('{"a":"key%3Áx","z":["café"]}');
+    expect(() => canonicalizeWireJson({ value: "\ud800" })).toThrow(/surrogate/);
+  });
+
   it("canon-key-order: object members ordered by UTF-16 code unit of key", () => {
     expect(canonicalize({ b: 1, a: 2, A: 3 })).toBe('{"A":3,"a":2,"b":1}');
   });
