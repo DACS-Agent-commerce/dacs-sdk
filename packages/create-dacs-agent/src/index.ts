@@ -208,6 +208,17 @@ export async function createDacsAgentProject(
   if (run && !install) {
     throw new Error("--run cannot be combined with --no-install");
   }
+  // The generated Docker lifecycle starts its compose project name with the
+  // directory's name, unnormalised, so that names differing only in case or
+  // punctuation do not share one; a digest of the project's random identity
+  // and the directory's path follows it.
+  if (mode === "live-demos" && deployment === "docker" &&
+      !/^[a-z0-9][a-z0-9_-]*$/.test(basename(requestedTargetDirectory))) {
+    throw new Error(
+      "a Docker deployment's directory name must be a compose project name: " +
+        "lower-case letters, digits, _ and -, starting with a letter or digit",
+    );
+  }
   const parent = await stableProjectParent(requestedTargetDirectory);
   const targetDirectory = resolve(parent.path, basename(requestedTargetDirectory));
   await prepareFreshTarget(targetDirectory);
@@ -263,11 +274,12 @@ export async function createDacsAgentProject(
       "install",
       "--ignore-scripts",
       "--omit=optional",
+      "--no-fund",
     ], targetDirectory);
     if (mode === "live-demos") {
       // The host kit's reviewed SQLite adapter is the only dependency allowed
       // to run a native install lifecycle in the generated live project.
-      await runCommand(npm, ["rebuild", "better-sqlite3"], targetDirectory);
+      await runCommand(npm, ["rebuild", "better-sqlite3", "--ignore-scripts=false"], targetDirectory);
     }
   }
   let doctor: CreatedDacsAgentProject["doctor"] = "not-run";
