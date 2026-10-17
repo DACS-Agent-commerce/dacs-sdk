@@ -7,6 +7,7 @@ import {
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import type { AttestationRef } from "../artifacts/types.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BASE64URL_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
@@ -75,20 +76,20 @@ export type Ap2TransactionBindingDecision =
   | { decision: "fail"; action: "reject-replay"; submitNewPayment: false }
   | { decision: "error"; action: "refuse-conflict"; submitNewPayment: false };
 
-/** AP2-6 byte-exact provider idempotency key. */
+/**
+ * AP2-6 byte-exact provider idempotency key. AP2-6 / CORE JID-3: the job id
+ * must pass JID-1 before it is hashed.
+ */
 export function deriveAp2IdempotencyKey(
   jobId: string,
   phaseIndex: number,
 ): string {
-  if (typeof jobId !== "string" || jobId.length === 0) {
-    throw new DacsError("pay-ap2: jobId must be a non-empty string");
-  }
+  requireCanonicalJobId(jobId, "pay-ap2: jobId");
   if (!Number.isSafeInteger(phaseIndex) || phaseIndex < 0) {
     throw new DacsError("pay-ap2: phaseIndex must be a non-negative safe integer");
   }
-  return sha256Hex(
-    `dacs-ap2-idem:v1:${jobId.normalize("NFC")}:${phaseIndex}`,
-  );
+  // A JID-1 id is ASCII, so it is already in NFC.
+  return sha256Hex(`dacs-ap2-idem:v1:${jobId}:${phaseIndex}`);
 }
 
 /**

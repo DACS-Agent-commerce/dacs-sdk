@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -25,26 +27,50 @@ const CHANGED_TRANSACTION_ID = "iECTDxg6jDyMmaBix8DHKhNnhNqCzzEgD4RJ-tXvuXM";
 const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const OTHER_JOB_ID = `${JOB_ID.slice(0, -1)}W`;
 const AGREEMENT_HASH = "a".repeat(64);
+const AP2_CORPUS = JSON.parse(readFileSync(new URL(
+  "../../vendor/DACS-Standard/conformance/vectors/security/ap2-handler-safety-v0.6.json",
+  import.meta.url,
+), "utf8")) as { hash: string; count: number; vectors: Array<{
+  name: string; op: string; jobId: string; phaseIndex: unknown;
+  expected: "pass" | "error"; expectedKey?: string;
+}> };
+const AP2_KEY_VECTORS = AP2_CORPUS.vectors.filter((vector) => vector.op === "derive-idempotency-key");
 
-// Exact 30 cases from DACS-Standard@662be1d4
-// conformance/vectors/security/ap2-handler-safety-v0.6.json
-// declared vector hash: f85b678a1e91db0707a97a792134adb8d2ba87da57f715abd42a109d38dba745.
-describe("DACS-4 v0.6 AP2 30-case safety corpus", () => {
-  test.each([
-    ["ap2-key-base", JOB_ID, 3, "326c806fa163e7ec2c97f512d479a846a67291c8c4092d55395068e35356eb97"],
-    ["ap2-key-phase-separation", JOB_ID, 4, "7b80ba1a15d989611ed25599fb25d7e7071b52c30a01c54fed23138371f058a4"],
-    ["ap2-key-job-separation", OTHER_JOB_ID, 3, "e255e8c5eacfbeadbefbeee884bad22bf2164894a890bb9a7ceb934d99062f3b"],
-    ["ap2-key-nfc-normalization", "cafe\u0301-job", 0, "2128576ea9daf4765462705820c909c9f40cad744fa7b46298e495579c4eb184"],
-  ])("%s", (_name, jobId, phaseIndex, expected) => {
-    expect(deriveAp2IdempotencyKey(jobId, phaseIndex)).toBe(expected);
+// conformance/vectors/security/ap2-handler-safety-v0.6.json at the Standard
+// revision pinned in package.json (d45c0a2: 66 vectors, hash asserted below).
+// The key vectors are replayed from that file. The other cases are hand-written
+// from the earlier 30-case corpus at DACS-Standard@662be1d4.
+describe("DACS-4 AP2 handler safety corpus", () => {
+  // The key vectors are read from the pinned corpus, so a withdrawn or
+  // changed vector cannot survive here as a hard-coded copy.
+  test("replays exactly the pinned AP2-6 key vectors", () => {
+    expect(AP2_CORPUS).toMatchObject({
+      count: 66,
+      hash: "f5566a4d096b0bf77382725f292aac2f828ffc59e4c8c0265a353d2723b5ff2e",
+    });
+    expect(AP2_KEY_VECTORS.map(({ name }) => name)).toEqual([
+      "ap2-key-base",
+      "ap2-key-phase-separation",
+      "ap2-key-job-separation",
+      "ap2-key-noncanonical-unicode-error",
+      "ap2-key-overflow-job-error",
+      "ap2-key-negative-phase-error",
+      "ap2-key-string-phase-error",
+    ]);
+    expect(AP2_KEY_VECTORS.find(({ name }) => name === "ap2-key-job-separation")?.jobId)
+      .toBe(OTHER_JOB_ID);
   });
 
-  test("ap2-key-negative-phase-error", () => {
-    expect(() => deriveAp2IdempotencyKey(JOB_ID, -1)).toThrow();
-  });
-
-  test("ap2-key-string-phase-error", () => {
-    expect(() => deriveAp2IdempotencyKey(JOB_ID, "03" as never)).toThrow();
+  test.each(AP2_KEY_VECTORS.map((vector) => [vector.name, vector] as const))("%s", (_name, vector) => {
+    if (vector.expected === "pass") {
+      expect(deriveAp2IdempotencyKey(vector.jobId, vector.phaseIndex as number)).toBe(vector.expectedKey);
+      return;
+    }
+    expect(vector.expected).toBe("error");
+    const refusal = vector.name.endsWith("-phase-error")
+      ? /pay-ap2: phaseIndex must be a non-negative safe integer/
+      : /pay-ap2: jobId must be a canonical uppercase ULID/;
+    expect(() => deriveAp2IdempotencyKey(vector.jobId, vector.phaseIndex as never)).toThrow(refusal);
   });
 
   test.each([

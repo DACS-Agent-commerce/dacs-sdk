@@ -71,6 +71,7 @@ import {
   readListingArtifact,
 } from "../artifacts/validators.js";
 import { identityBundleHash } from "../identity/index.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
 
 type SessionSettlementEvidence =
@@ -2755,7 +2756,12 @@ export async function runSessionCore(
   const deps = captureSessionDeps(inputDeps);
   listingRef = protocolString(listingRef, "listingRef", { allowColon: true });
   if (resumeJobId !== undefined) {
-    resumeJobId = protocolString(resumeJobId, "resume jobId");
+    // CORE JID-3: a resume id is validated before the Listing read, identity
+    // authentication or any jobId-derived key.
+    resumeJobId = requireCanonicalJobId(
+      protocolString(resumeJobId, "resume jobId"),
+      "resume jobId",
+    );
   }
   const terms = snapshotCanonicalJson(inputTerms, "session terms");
   const runtime = deps;
@@ -3063,7 +3069,7 @@ export async function runSessionCore(
   // A caller-supplied jobId requests recovery; otherwise this is a fresh
   // admission. Invalid Listings and unsupported pipelines fail before minting
   // a new id; an expired recovery uses the caller's exact prior id below.
-  const jobId = resumeJobId ?? deps.newJobId();
+  const jobId = resumeJobId ?? requireCanonicalJobId(deps.newJobId(), "new session jobId");
   const buyerBundleHash = identityBundleHash(deps.buyerIdentityBundle);
   let buyerIdentityAuthenticated: unknown;
   try {

@@ -27,7 +27,7 @@ const binding = (
 ): Readonly<SettlementBinding> => Object.freeze({
   bindingVersion: "1",
   railId: "evm-erc20-usdc",
-  jobId: "job-1",
+  jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   phaseIndex: 0,
   phase: "pay-evm-erc20",
   amount: "1000000",
@@ -39,7 +39,7 @@ const binding = (
   finality: Object.freeze({ model: "block-depth", finalityBlocks: 12 }),
   ...override,
 });
-const KEY = "evm-erc20-usdc:job-1:0";
+const KEY = "evm-erc20-usdc:01ARZ3NDEKTSV4RRFFQ69G5FAV:0";
 
 describe("settlement idempotency store (#43)", () => {
   test("a repeated call for the same key returns the recorded result WITHOUT resubmitting", async () => {
@@ -608,14 +608,14 @@ describe("settlement idempotency store (#43)", () => {
     const terms = binding();
     const bindingHash = settlementBindingHash(terms);
     const first = await log.claimIntent({
-      key: "evm-erc20-usdc:job-1:0",
+      key: "evm-erc20-usdc:01ARZ3NDEKTSV4RRFFQ69G5FAV:0",
       bindingHash,
       owner: "first",
       now: 0,
       leaseDurationMs: 10,
     });
     const second = await log.claimIntent({
-      key: "evm-erc20-usdc:job-1:0",
+      key: "evm-erc20-usdc:01ARZ3NDEKTSV4RRFFQ69G5FAV:0",
       bindingHash,
       owner: "second",
       now: 11,
@@ -625,24 +625,53 @@ describe("settlement idempotency store (#43)", () => {
       throw new Error("expected two generations");
     }
     await expect(log.putOutcome({
-      key: "evm-erc20-usdc:job-1:0",
+      key: "evm-erc20-usdc:01ARZ3NDEKTSV4RRFFQ69G5FAV:0",
       bindingHash,
       lease: first.lease,
       result: ok("0xstale"),
       now: 11,
     })).resolves.toEqual({ status: "stale" });
     await expect(log.releaseIntent({
-      key: "evm-erc20-usdc:job-1:0",
+      key: "evm-erc20-usdc:01ARZ3NDEKTSV4RRFFQ69G5FAV:0",
       bindingHash,
       lease: first.lease,
       now: 11,
     })).resolves.toBe("stale");
     await expect(log.isCurrent({
-      key: "evm-erc20-usdc:job-1:0",
+      key: "evm-erc20-usdc:01ARZ3NDEKTSV4RRFFQ69G5FAV:0",
       bindingHash,
       lease: second.lease,
       now: 11,
     })).resolves.toBe(true);
+  });
+
+  test("one fixed owner across a restart is fenced by generation alone", async () => {
+    const log = createInMemorySettlementLog();
+    const bindingHash = settlementBindingHash(binding());
+    const claim = (now: number) => log.claimIntent({
+      key: KEY,
+      bindingHash,
+      owner: "fixed-owner",
+      now,
+      leaseDurationMs: 10,
+    });
+    const paused = await claim(0);
+    const restarted = await claim(10);
+    if (paused.status !== "acquired" || restarted.status !== "acquired") {
+      throw new Error("expected two generations");
+    }
+    expect(restarted.lease).toMatchObject({ owner: "fixed-owner", generation: 2, stage: "reconcile" });
+    // The paused process's own clock is still inside its original lease.
+    const stale = { key: KEY, bindingHash, lease: paused.lease, now: 5 };
+    await expect(log.isCurrent(stale)).resolves.toBe(false);
+    await expect(log.grantRecovery({
+      ...stale,
+      owner: "fixed-owner",
+      leaseDurationMs: 10,
+    })).resolves.toEqual({ status: "stale" });
+    await expect(log.putOutcome({ ...stale, result: ok("0xstale") })).resolves.toEqual({ status: "stale" });
+    await expect(log.releaseIntent(stale)).resolves.toBe("stale");
+    await expect(log.isCurrent({ ...stale, lease: restarted.lease, now: 10 })).resolves.toBe(true);
   });
 
   test("rejects lease arithmetic that would exceed safe integer time", async () => {
@@ -688,7 +717,7 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     asset: "USDC",
     payee: "0xpayee",
     expectedPayee: "0xpayee",
-    jobId: "job-1",
+    jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     phaseIndex: 0,
   };
   const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
@@ -721,21 +750,34 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
   });
 
   test("settlementKey is (railId, jobId, phaseIndex)", () => {
-    expect(settlementKey("evm-erc20-usdc", "job-1", 0)).toBe("evm-erc20-usdc:job-1:0");
+    expect(settlementKey("evm-erc20-usdc", "01ARZ3NDEKTSV4RRFFQ69G5FAV", 0)).toBe("evm-erc20-usdc:01ARZ3NDEKTSV4RRFFQ69G5FAV:0");
   });
 
-  test("settlementKey rejects a non-NFC job id instead of aliasing it", () => {
-    expect(() => settlementKey("evm-erc20-usdc", "cafe\u0301-job", 0)).toThrow(
-      /exact NFC/,
+  test("settlementKey refuses a non-JID-1 job id instead of aliasing it (CORE JID-3)", () => {
+    for (const jobId of ["job-1", "cafe\u0301-job", "01arz3ndektsv4rrffq69g5fav", ""]) {
+      expect(() => settlementKey("evm-erc20-usdc", jobId, 0)).toThrow(
+        /settlement key jobId must be a canonical uppercase ULID/,
+      );
+    }
+    expect(() => settlementKey("evm-erc20-usdc\u0301", "01ARZ3NDEKTSV4RRFFQ69G5FAV", 0)).toThrow(
+      /exact NFC rail identifier/,
     );
+  });
+
+  test("settlementKey refuses a negative phase index instead of keying `:-1`", () => {
+    for (const phaseIndex of [-1, Number.MIN_SAFE_INTEGER]) {
+      expect(() => settlementKey("pay-dem", "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex)).toThrow(
+        /non-negative phase index/,
+      );
+    }
   });
 
   test("settlementKey rejects delimiter collisions between rail and job ids", () => {
-    expect(settlementKey("x402:default", "job", 0)).toBe(
-      "x402:default:job:0",
+    expect(settlementKey("x402:default", "01ARZ3NDEKTSV4RRFFQ69G5FAV", 0)).toBe(
+      "x402:default:01ARZ3NDEKTSV4RRFFQ69G5FAV:0",
     );
-    expect(() => settlementKey("x402", "default:job", 0)).toThrow(
-      /colon-free job id/,
+    expect(() => settlementKey("x402", "default:01ARZ3NDEKTSV4RRFFQ69G5FAV", 0)).toThrow(
+      /canonical uppercase ULID/,
     );
   });
 });

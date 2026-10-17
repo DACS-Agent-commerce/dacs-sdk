@@ -14,6 +14,7 @@ import type {
   SellerVerificationResult,
 } from "../agent/runFulfilmentCore.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { x402PaywallSettlementKey } from "../rails/x402Paywall.js";
 import type {
   X402PaywallAuthorizationContext,
@@ -295,7 +296,7 @@ function isCommittedSessionScope(value: unknown): value is X402SellerCommittedSe
     "commitmentContentHash",
     "commitmentFinalizedAt",
     "expected",
-  ]) && value.scopeVersion === "1" && isNonEmpty(value.jobId) &&
+  ]) && value.scopeVersion === "1" && isCanonicalJobId(value.jobId) &&
     isSafeUint(value.paymentPhaseIndex) && isSafeUint(value.deliveryPhaseIndex) &&
     value.deliveryPhaseIndex > value.paymentPhaseIndex && typeof value.payer === "string" &&
     EVM_ADDRESS_RE.test(value.payer) && isNonEmpty(value.payerPayingKey) &&
@@ -578,7 +579,7 @@ function captureSettlementStore(source: X402PaywallSettlementStore): X402Paywall
 function validPreContext(context: Readonly<X402PaywallPreSettlementContext>): boolean {
   return isRecord(context) && isRecord(context.request) &&
     typeof context.request.getUrl === "function" &&
-    isNonEmpty(context.jobId) && isSafeUint(context.phaseIndex) &&
+    isCanonicalJobId(context.jobId) && isSafeUint(context.phaseIndex) &&
     typeof context.payer === "string" && EVM_ADDRESS_RE.test(context.payer) &&
     validExpectedTerms(context.expected) &&
     requirementsMatch(context.paymentRequirements, context.expected) &&
@@ -937,6 +938,11 @@ export function createX402SellerSpine<T = unknown>(
     let httpResource: string;
     try {
       const jobId = context.jobId;
+      // CORE JID-3: a non-canonical job id reaches neither a request getter
+      // nor the committed-session resolver.
+      if (!isCanonicalJobId(jobId)) {
+        return { disposition: "rejected", reason: "seller-session-request-invalid" };
+      }
       const phaseIndex = context.phaseIndex;
       const payer = context.payer;
       const requestSource = context.request;
@@ -1068,7 +1074,8 @@ export function createX402SellerSpine<T = unknown>(
 
   const recoverPaymentAuthorization: X402SellerSpine<T>["recoverPaymentAuthorization"] =
     async ({ jobId, phaseIndex }) => {
-      if (!isNonEmpty(jobId) || !isSafeUint(phaseIndex)) {
+      // CORE JID-3: a non-canonical job id reaches neither the key nor the store.
+      if (!isCanonicalJobId(jobId) || !isSafeUint(phaseIndex)) {
         return { disposition: "rejected", reason: "seller-recovery-scope-invalid" };
       }
       const settlementKey = x402PaywallSettlementKey({ jobId, phaseIndex });
