@@ -4,6 +4,7 @@ import {
 } from "@kynesyslabs/dacs";
 import { isReadableAnchorReceipt } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { sameCanonicalClaimIdentity } from "@kynesyslabs/dacs/identity";
 import {
   createBuyerPaymentEvidenceHandshake,
   createSellerPaymentEvidenceHandshake,
@@ -723,7 +724,9 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
     // The native receipt authenticates the writer; it supplies no independent
     // issuer proof. Custom verifiers can support such proofs explicitly.
     if (completion.evidenceRef.signer !== undefined &&
-        completion.evidenceRef.signer !== request.evidence.signature.signer) {
+        !sameCanonicalClaimIdentity(
+          completion.evidenceRef.signer, request.evidence.signature.signer,
+        )) {
       return { disposition: "invalid" as const,
         reason: "seller payment-evidence issuer is unsupported" };
     }

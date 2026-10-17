@@ -412,9 +412,14 @@ describe("live payment-evidence runtime", () => {
     });
   });
 
-  it.each(["default", "x402", "pay-dem"] as const)(
-    "%s seller verifier rejects a buyer-authenticated forged issuer without completing the request",
-    async (verifier) => {
+  it.each((["default", "x402", "pay-dem"] as const).flatMap((verifier) =>
+    [SELLER, undefined, `${SELLER}?role=publisher`].map((referenceSigner) => ({
+      verifier,
+      referenceSigner,
+    })),
+  ))(
+    "$verifier seller verifier rejects forged issuers and accepts a valid completion (signer: $referenceSigner)",
+    async ({ verifier, referenceSigner }) => {
       const database = await open("seller");
       const artifact = evidence();
       const evidenceHash = contentHash(artifact as unknown as Record<string, unknown>);
@@ -466,7 +471,11 @@ describe("live payment-evidence runtime", () => {
       const anchored = anchor(logicalAddress, evidenceHash);
       // Recompute the completion hash, so rejection cannot come from a stale
       // message hash or missing buyer transport authentication.
-      for (const signer of [`did:demos:agent:${"9".repeat(64)}`, BUYER]) {
+      for (const signer of [
+        `did:demos:agent:${"9".repeat(64)}`,
+        `did:demos:agent:${"9".repeat(64)}?role=publisher`,
+        BUYER,
+      ]) {
         const forged = createPaymentEvidenceAnchorCompletion({
           request,
           ...anchored,
@@ -486,15 +495,26 @@ describe("live payment-evidence runtime", () => {
       expect(verifyDemosAnchorReceipt).not.toHaveBeenCalled();
       expect(readAnchor).not.toHaveBeenCalled();
 
-      const genuine = createPaymentEvidenceAnchorCompletion({ request, ...anchored });
+      const genuineAnchor = {
+        ...anchored,
+        evidenceRef: {
+          anchor: anchored.evidenceRef.anchor,
+          contentHash: anchored.evidenceRef.contentHash,
+          ...(referenceSigner === undefined ? {} : { signer: referenceSigner }),
+        },
+      };
+      const genuine = createPaymentEvidenceAnchorCompletion({ request, ...genuineAnchor });
       await expect(runtime.handleMessage(
         authenticated("payment-evidence-completion", genuine, BUYER, SELLER),
         { role: "seller" } as DacsLiveRoleInboundOperationContextV1,
       )).resolves.toEqual({ disposition: "accepted" });
-      await expect(runtime.anchorEvidence(sellerOperation, input)).resolves.toMatchObject({
+      const retained = await runtime.anchorEvidence(sellerOperation, input);
+      expect(retained).toMatchObject({
         disposition: "anchored",
-        evidenceRef: { signer: SELLER },
       });
+      if (retained.disposition === "anchored") {
+        expect(retained.evidenceRef).toEqual(genuineAnchor.evidenceRef);
+      }
       expect(verifyDemosAnchorReceipt).toHaveBeenCalled();
     },
   );

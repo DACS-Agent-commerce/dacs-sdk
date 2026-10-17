@@ -15,7 +15,11 @@ vi.mock("../src/payDemSellerPayment.js", () => ({
   }),
 }));
 
-import type { AnchorReceipt, SettlementEvidence } from "@kynesyslabs/dacs/artifacts";
+import type {
+  AnchorReceipt,
+  AttestationRef,
+  SettlementEvidence,
+} from "@kynesyslabs/dacs/artifacts";
 import { contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   createDacsFixedPricePayDemSellerPaymentEvidenceV1,
@@ -26,6 +30,7 @@ import type { DacsLiveRoleOperationContextV1 } from "../src/roleRuntime.js";
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"1".repeat(64)}`;
 const SELLER = `did:demos:agent:${"2".repeat(64)}`;
+const QUALIFIED_SELLER = `${SELLER}?role=publisher`;
 const OTHER_ISSUER = `did:demos:agent:${"9".repeat(64)}`;
 const EFFECT_ID = "seller-publication-issuer";
 const LOGICAL_ADDRESS = `dacs4:payment:${JOB_ID}:rail:0`;
@@ -103,7 +108,8 @@ function fixture(rail: "x402" | "pay-dem") {
 }
 
 describe.each(["x402", "pay-dem"] as const)("%s publication issuer admission", (rail) => {
-  it.each([SELLER, undefined, OTHER_ISSUER, BUYER])(
+  it.each([SELLER, QUALIFIED_SELLER, undefined, OTHER_ISSUER,
+    `${OTHER_ISSUER}?role=publisher`, BUYER])(
     "admits only authenticated evidence attribution or an unsigned reference: %s",
     async (signer) => {
       const f = fixture(rail);
@@ -111,21 +117,27 @@ describe.each(["x402", "pay-dem"] as const)("%s publication issuer admission", (
         operation: { order: { buyer: BUYER, seller: SELLER } } as never,
         retained: {} as never,
       });
+      const evidenceRef: AttestationRef = {
+        anchor: { kind: "storage-program", locator: LOGICAL_ADDRESS },
+        contentHash: f.evidenceHash,
+        ...(signer === undefined ? {} : { signer }),
+      };
       const result = await resolved.dependencies.verifyAnchorReceipt({
         effectId: EFFECT_ID,
         expectedWriter: BUYER,
-        evidenceRef: {
-          anchor: { kind: "storage-program", locator: LOGICAL_ADDRESS },
-          contentHash: f.evidenceHash,
-          ...(signer === undefined ? {} : { signer }),
-        },
+        evidenceRef,
         anchorReceipt: f.receipt,
       });
-      if (signer === SELLER || signer === undefined) {
+      if (signer === SELLER || signer === QUALIFIED_SELLER || signer === undefined) {
         expect(result).toEqual({ disposition: "pass" });
         expect(f.verifyDemosAnchorReceipt).toHaveBeenCalledWith(f.receipt);
         expect(f.readAnchor).toHaveBeenCalledWith(f.receipt.nativeAddress);
         expect(f.putEffectIntent).toHaveBeenCalledOnce();
+        expect(f.putEffectIntent.mock.calls[0]?.[0].input).toMatchObject({ evidenceRef });
+        await expect(resolved.dependencies.resolveEvidence({
+          effectId: EFFECT_ID,
+          evidenceRef,
+        })).resolves.toMatchObject({ disposition: "present" });
       } else {
         expect(result).toMatchObject({ disposition: "fail" });
         expect(f.verifyDemosAnchorReceipt).not.toHaveBeenCalled();
@@ -135,23 +147,25 @@ describe.each(["x402", "pay-dem"] as const)("%s publication issuer admission", (
     },
   );
 
-  it("still requires a verified native receipt for the evidence author", async () => {
-    const f = fixture(rail);
-    f.verifyDemosAnchorReceipt.mockResolvedValue(false);
-    const resolved = await f.composed.settlement.resolvePublication({
-      operation: { order: { buyer: BUYER, seller: SELLER } } as never,
-      retained: {} as never,
-    });
-    await expect(resolved.dependencies.verifyAnchorReceipt({
-      effectId: EFFECT_ID,
-      expectedWriter: BUYER,
-      evidenceRef: {
-        anchor: { kind: "storage-program", locator: LOGICAL_ADDRESS },
-        contentHash: f.evidenceHash,
-        signer: SELLER,
-      },
-      anchorReceipt: f.receipt,
-    })).resolves.toMatchObject({ disposition: "indeterminate" });
-    expect(f.putEffectIntent).not.toHaveBeenCalled();
-  });
+  it.each([SELLER, QUALIFIED_SELLER, undefined])(
+    "still requires a verified native receipt for an admissible signer: %s", async (signer) => {
+      const f = fixture(rail);
+      f.verifyDemosAnchorReceipt.mockResolvedValue(false);
+      const resolved = await f.composed.settlement.resolvePublication({
+        operation: { order: { buyer: BUYER, seller: SELLER } } as never,
+        retained: {} as never,
+      });
+      await expect(resolved.dependencies.verifyAnchorReceipt({
+        effectId: EFFECT_ID,
+        expectedWriter: BUYER,
+        evidenceRef: {
+          anchor: { kind: "storage-program", locator: LOGICAL_ADDRESS },
+          contentHash: f.evidenceHash,
+          ...(signer === undefined ? {} : { signer }),
+        },
+        anchorReceipt: f.receipt,
+      })).resolves.toMatchObject({ disposition: "indeterminate" });
+      expect(f.putEffectIntent).not.toHaveBeenCalled();
+    },
+  );
 });

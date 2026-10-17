@@ -103,11 +103,13 @@ the exact evidence, buyer-written receipt and independently resolved readback
 have all passed the SDK publisher's checks.
 
 The built-in Demos seller receipt verifiers support an omitted reference signer
-or the authenticated evidence author as signer. They reject a distinct issuer
-because the Demos receipt alone does not authenticate that issuer. Applications
-using independent issuers must supply method-specific `verifyAnchorReceipt`
-callbacks for completion and settlement publication that authenticate the issuer
-proof as well as the finalized receipt.
+or a signer with the authenticated evidence author's CORE CF-3 identity.
+Advisory ClaimReference parameters do not change that identity; their exact
+canonical bytes remain in messages and retained references. They reject a
+distinct issuer because the Demos receipt alone does not authenticate that
+issuer. Applications using independent issuers must supply method-specific
+`verifyAnchorReceipt` callbacks for completion and settlement publication that
+authenticate the issuer proof as well as the finalized receipt.
 
 Live buyer and seller databases also expose `createHttpInboxStore()` and
 `createHttpOutboxStore()`. The inbox atomically retains the complete canonical

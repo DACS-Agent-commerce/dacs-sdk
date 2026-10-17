@@ -9,7 +9,10 @@ import {
 import { isSettlementEvidence } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { ed25519Verify, publicKeyFromRaw } from "@kynesyslabs/dacs/crypto";
-import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
+import {
+  canonicalDemosAgentPublicKey,
+  sameCanonicalClaimIdentity,
+} from "@kynesyslabs/dacs/identity";
 
 import type { DacsFixedPriceX402SellerSettlementV1 } from
   "./fixedPriceX402SellerSettlement.js";
@@ -370,7 +373,9 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
     verifyAnchorReceipt: async ({ request, completion }) => {
       if (completion.anchorReceipt.writer !== context.peerAuthority ||
           (completion.evidenceRef.signer !== undefined &&
-            completion.evidenceRef.signer !== request.evidence.signature.signer) ||
+            !sameCanonicalClaimIdentity(
+              completion.evidenceRef.signer, request.evidence.signature.signer,
+            )) ||
           completion.anchorReceipt.logicalAddress !== request.logicalAddress ||
           completion.anchorReceipt.contentHash !== request.evidenceHash ||
           completion.evidenceRef.anchor.locator !== request.logicalAddress ||
@@ -515,7 +520,7 @@ export function createDacsFixedPriceX402SellerPaymentEvidenceV1(
           }) {
             if (expectedWriter !== operation.order.buyer ||
                 (evidenceRef.signer !== undefined &&
-                  evidenceRef.signer !== operation.order.seller) ||
+                  !sameCanonicalClaimIdentity(evidenceRef.signer, operation.order.seller)) ||
                 anchorReceipt.writer !== expectedWriter ||
                 anchorReceipt.logicalAddress !== evidenceRef.anchor.locator ||
                 anchorReceipt.contentHash !== evidenceRef.contentHash) {
@@ -626,7 +631,9 @@ export function createDacsFixedPricePayDemSellerPaymentEvidenceV1(
     verifyAnchorReceipt: async ({ request, completion }) => {
       if (completion.anchorReceipt.writer !== context.peerAuthority ||
           (completion.evidenceRef.signer !== undefined &&
-            completion.evidenceRef.signer !== request.evidence.signature.signer) ||
+            !sameCanonicalClaimIdentity(
+              completion.evidenceRef.signer, request.evidence.signature.signer,
+            )) ||
           completion.anchorReceipt.logicalAddress !== request.logicalAddress ||
           completion.anchorReceipt.contentHash !== request.evidenceHash ||
           completion.evidenceRef.anchor.locator !== request.logicalAddress ||
@@ -761,7 +768,7 @@ export function createDacsFixedPricePayDemSellerPaymentEvidenceV1(
           }) {
             if (expectedWriter !== operation.order.buyer ||
                 (evidenceRef.signer !== undefined &&
-                  evidenceRef.signer !== operation.order.seller) ||
+                  !sameCanonicalClaimIdentity(evidenceRef.signer, operation.order.seller)) ||
                 anchorReceipt.writer !== expectedWriter ||
                 anchorReceipt.logicalAddress !== evidenceRef.anchor.locator ||
                 anchorReceipt.contentHash !== evidenceRef.contentHash) {
