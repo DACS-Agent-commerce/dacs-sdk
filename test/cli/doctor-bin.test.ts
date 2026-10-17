@@ -947,6 +947,15 @@ process.stdout.write(JSON.stringify(await runDoctor({ rpc: process.argv[1] })));
       await withRpc(demosNode({
         getLastBlockNumber: { result: 200, response: 4242, require_reply: false, extra: null },
       }), async (url) => {
+        // The fixture answers the unknown nodeCall as node 61b8e75 does, not as an HTTP 404.
+        const unknown = await fetch(url, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ method: "nodeCall", params: [{ message: "getNetworkInfo", data: {} }] }),
+        });
+        expect(unknown.status).toBe(200);
+        expect(await unknown.json()).toEqual({
+          result: 404, response: { error: "Unknown message", message: "getNetworkInfo" }, require_reply: false, extra: null,
+        });
         const { code, report } = await runBuiltDoctor(url);
         expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("pass");
         expect(report.checks.find((c) => c.id === "rpc.node-revision")).toMatchObject({
