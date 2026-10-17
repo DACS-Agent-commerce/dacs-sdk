@@ -64,6 +64,15 @@ syncBuiltinESMExports();
 const { createFsLiquidityTankStore } = await import(pathToFileURL(join(repo, "src/rails/liquidityTankFs.ts")).href);
 const store = await createFsLiquidityTankStore({ dir, lockTimeoutMs: 60_000 });
 const claimed = await store.claim({ intent, owner: "worker-thread", now, leaseDurationMs: 600_000 });
+// The core reserves the signing slot before it signs; a "phase lock" stop
+// holds the phase lock at this reservation's row write.
+await store.reserveSigning({
+  settlementKey: intent.settlementKey,
+  bindingHash: intent.bindingHash,
+  owner: "worker-thread",
+  generation: claimed.lease.generation,
+  now,
+});
 await store.recordSubmission({
   settlementKey: intent.settlementKey,
   bindingHash: intent.bindingHash,

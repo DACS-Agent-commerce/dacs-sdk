@@ -552,7 +552,7 @@ describe("advanceLiquidityTankSettlement", () => {
   );
 
   test.each(["accessor", "proxy"] as const)(
-    "rejects a prepared-submission %s before persistence and safely retries",
+    "rejects a prepared-submission %s before persistence and never signs the phase again",
     async (kind) => {
       const touched = vi.fn();
       const h = harness();
@@ -594,13 +594,15 @@ describe("advanceLiquidityTankSettlement", () => {
       expect(recordSubmission).not.toHaveBeenCalled();
       expect(h.broadcastRetained).not.toHaveBeenCalled();
 
+      // The refused bytes may have left the adapter, so the signing slot their
+      // lease reserved is never handed to a later lease.
       await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
         status: "indeterminate",
-        reason: "liquidity-tank-status-transition-unresolved",
+        reason: "liquidity-tank-signing-interrupted",
       });
-      expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(2);
-      expect(recordSubmission).toHaveBeenCalledTimes(1);
-      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+      expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(recordSubmission).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
     },
   );
 
@@ -786,6 +788,7 @@ describe("advanceLiquidityTankSettlement", () => {
         restartSafety: "volatile-acknowledged",
         claim,
         isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
+        reserveSigning: vi.fn<LiquidityTankStore["reserveSigning"]>(async () => ({ status: "recorded" })),
         recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(async (input) => {
           retainedSubmission = input.submission;
           retainedReceipt = input.now;
@@ -849,6 +852,7 @@ describe("advanceLiquidityTankSettlement", () => {
         },
       })),
       isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
+      reserveSigning: vi.fn<LiquidityTankStore["reserveSigning"]>(async () => ({ status: "recorded" })),
       recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(
         async () => ({ status: "recorded" }),
       ),
@@ -913,6 +917,7 @@ describe("advanceLiquidityTankSettlement", () => {
       restartSafety: "volatile-acknowledged",
       claim,
       isCurrent: vi.fn<LiquidityTankStore["isCurrent"]>(async () => true),
+      reserveSigning: vi.fn<LiquidityTankStore["reserveSigning"]>(async () => ({ status: "recorded" })),
       recordSubmission: vi.fn<LiquidityTankStore["recordSubmission"]>(async (input) => {
         retainedSubmission = input.submission;
         retainedReceipt = input.now;
@@ -2955,6 +2960,9 @@ describe("advanceLiquidityTankSettlement", () => {
         isCurrent(input: Parameters<LiquidityTankStore["isCurrent"]>[0]) {
           return this.#inner.isCurrent(input);
         }
+        reserveSigning(input: Parameters<LiquidityTankStore["reserveSigning"]>[0]) {
+          return this.#inner.reserveSigning(input);
+        }
         recordSubmission(input: Parameters<LiquidityTankStore["recordSubmission"]>[0]) {
           return this.#inner.recordSubmission(input);
         }
@@ -3042,6 +3050,7 @@ describe("advanceLiquidityTankSettlement", () => {
           submissionRecordedAt: 1_000,
         })),
         isCurrent: vi.fn(async () => true),
+        reserveSigning: vi.fn<LiquidityTankStore["reserveSigning"]>(async () => ({ status: "recorded" })),
       };
       const h = harness();
       const originalExec = RegExp.prototype.exec;
@@ -3628,6 +3637,7 @@ describe("advanceLiquidityTankSettlement", () => {
           submissionRecordedAt: 1_000,
         })),
         isCurrent: vi.fn(async () => true),
+        reserveSigning: vi.fn<LiquidityTankStore["reserveSigning"]>(async () => ({ status: "recorded" })),
         recordObservation: vi.fn(async () => ({ status: "recorded" as const })),
       };
       const h = harness();
@@ -3685,6 +3695,7 @@ describe("advanceLiquidityTankSettlement", () => {
         ...createInMemoryLiquidityTankStore(VOLATILE),
         claim: vi.fn(async () => claimed as never),
         isCurrent: vi.fn(async () => true),
+        reserveSigning: vi.fn<LiquidityTankStore["reserveSigning"]>(async () => ({ status: "recorded" })),
         recordObservation: vi.fn(async () => ({ status: "recorded" as const })),
       };
     }
@@ -4048,6 +4059,7 @@ describe("advanceLiquidityTankSettlement", () => {
       generation: claim.lease.generation,
       now: 1_000,
     };
+    await expect(store.reserveSigning(writeAuthority)).resolves.toEqual({ status: "recorded" });
     await expect(store.recordSubmission({
       ...writeAuthority,
       submission: {
@@ -4398,8 +4410,9 @@ describe("advanceLiquidityTankSettlement", () => {
     await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
       .resolves.toEqual({
         status: "indeterminate",
-        reason: "liquidity-tank-submission-preparation-unavailable",
+        reason: "liquidity-tank-signing-reservation-uncertain",
       });
+    expect(h.prepareSubmission).not.toHaveBeenCalled();
     expect(recordSubmission).not.toHaveBeenCalled();
     expect(h.broadcastRetained).not.toHaveBeenCalled();
   });
@@ -5133,6 +5146,7 @@ describe("round 10", () => {
           settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
           owner: "w", generation: claim.lease.generation, now: D - 10,
         };
+        await expect(store.reserveSigning(write)).resolves.toEqual({ status: "recorded" });
         await store.recordSubmission({ ...write, submission: {
           submissionVersion: "1", authorityHash: intent.bindingHash, operationHash: intent.operationHash,
           bridgeId: BRIDGE_ID, substrateTxHash: "demos-native-bridge-tx",
@@ -5280,11 +5294,14 @@ describe("round 10", () => {
   });
 
   describe("finding 8: a crash between signing and the submission write", () => {
-    test("leads to a fresh signature, and the first bytes are never broadcast", async () => {
+    test("never leads to a second signature, even when the adapter already revealed the first bytes", async () => {
       const h = harness();
       let signed = 0;
+      // An adapter that broke its contract: every signature it makes leaves it.
+      const revealed: string[] = [];
       h.adapter.prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async (bound) => {
         signed += 1;
+        revealed.push(signedTransfer(bound, { nonce: signed }).signedSubmissionBase64);
         return {
           submissionVersion: "1",
           authorityHash: bound.bindingHash,
@@ -5313,17 +5330,59 @@ describe("round 10", () => {
         reason: "liquidity-tank-submission-persistence-uncertain",
       });
       expect(h.broadcastRetained).not.toHaveBeenCalled();
-      const first = signedTransfer(createLiquidityTankIntent(authority()), { nonce: 1 });
-      const second = signedTransfer(createLiquidityTankIntent(authority()), { nonce: 2 });
-      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
-        status: "settled",
+      // Every later lease, the restarted worker's included, refuses to sign.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+          status: "indeterminate",
+          reason: "liquidity-tank-signing-interrupted",
+        });
+      }
+      expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(new Set(revealed).size).toBe(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    });
+
+    test("a reservation that was never confirmed still parks the phase if it committed", async () => {
+      const h = harness();
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
+      // The reservation commits, then the worker stops before it learns so.
+      const store: LiquidityTankStore = {
+        ...inner,
+        reserveSigning: async (input) => {
+          await inner.reserveSigning(input);
+          throw new Error("worker stopped after the reservation committed");
+        },
+      };
+      const run = runner({ store, adapter: h.adapter });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-signing-reservation-uncertain",
       });
-      expect(h.adapter.prepareSubmission).toHaveBeenCalledTimes(2);
-      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
-      expect(h.broadcastRetained.mock.calls.map(([submission]) => submission.signedSubmissionBase64))
-        .toEqual([second.signedSubmissionBase64]);
-      expect(h.broadcastRetained.mock.calls.map(([submission]) => submission.signedSubmissionBase64))
-        .not.toContain(first.signedSubmissionBase64);
+      await expect(advanceLiquidityTankSettlement({ ...run.nextOwner(), store: inner })).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-signing-interrupted",
+      });
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+    });
+
+    test("a store without reserveSigning is never asked to sign, but finishes a phase already recorded", async () => {
+      const h = harness();
+      h.setAfterBroadcast(completed(h.operationHash));
+      const inner = createInMemoryLiquidityTankStore(VOLATILE);
+      const { reserveSigning: _reserve, ...rest } = inner;
+      const legacy = rest as LiquidityTankStore;
+      const run = runner({ store: legacy, adapter: h.adapter });
+      await expect(advanceLiquidityTankSettlement(run.shared)).resolves.toEqual({
+        status: "indeterminate",
+        reason: "liquidity-tank-store-signing-reservation-unavailable",
+      });
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
+      await expect(advanceLiquidityTankSettlement({ ...run.nextOwner(), store: inner }))
+        .resolves.toMatchObject({ status: "settled" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      await expect(advanceLiquidityTankSettlement({ ...run.nextOwner(), store: legacy }))
+        .resolves.toMatchObject({ status: "settled" });
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -5346,6 +5405,7 @@ describe("round 10", () => {
       };
       await expect(store.recordSubmission({ ...expired, submission }))
         .resolves.toEqual({ status: "stale", reason: "expired-lease" });
+      await expect(store.reserveSigning(write)).resolves.toEqual({ status: "recorded" });
       await expect(store.recordSubmission({ ...write, submission })).resolves.toEqual({ status: "recorded" });
       await expect(store.recordObservation({ ...expired, observation: completed(intent.operationHash) }))
         .resolves.toEqual({ status: "stale", reason: "expired-lease" });
@@ -5415,14 +5475,15 @@ describe("round 11", () => {
       expect(h.observe).not.toHaveBeenCalled();
       expect(h.broadcastRetained).not.toHaveBeenCalled();
       expect(recordRecoveryExpired).not.toHaveBeenCalled();
-      // Once the adapter stamps milliseconds, the next owner signs afresh and locks.
+      // The refused bytes were signed under a reservation, so even once the
+      // adapter stamps milliseconds the next owner never signs the phase again.
       h.setPreparedAt(PREPARED_AT_MS + 1_000);
       h.setAfterBroadcast(lockedPendingAt(h.operationHash, PREPARED_AT_MS + 2_000));
-      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toMatchObject({
-        status: "settle-asymmetric", reason: "tank-locked-unreleased", pastDeadline: false,
+      await expect(advanceLiquidityTankSettlement(run.nextOwner())).resolves.toEqual({
+        status: "indeterminate", reason: "liquidity-tank-signing-interrupted",
       });
-      expect(h.prepareSubmission).toHaveBeenCalledTimes(2);
-      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
     });
 
     test.each([
@@ -5558,6 +5619,7 @@ describe("round 11", () => {
         settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
         owner: "w", generation: claim.lease.generation, now: PREPARED_AT_MS,
       };
+      await expect(store.reserveSigning(write)).resolves.toEqual({ status: "recorded" });
       await expect(store.recordSubmission({ ...write, submission: {
         submissionVersion: "1", authorityHash: intent.bindingHash, operationHash: intent.operationHash,
         bridgeId: BRIDGE_ID, substrateTxHash: "demos-native-bridge-tx",
@@ -5638,6 +5700,10 @@ describe("round 12", () => {
     const intent = createLiquidityTankIntent(authority());
     const seeded = await inner.claim({ intent, owner: "first-owner", now: recordedAt, leaseDurationMs: 1 });
     if (seeded.status !== "acquired") throw new Error("expected acquired");
+    await expect(inner.reserveSigning({
+      settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+      owner: "first-owner", generation: seeded.lease.generation, now: recordedAt,
+    })).resolves.toEqual({ status: "recorded" });
     await expect(inner.recordSubmission({
       settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
       owner: "first-owner", generation: seeded.lease.generation, now: recordedAt,
@@ -5695,6 +5761,7 @@ describe("round 12", () => {
         owner: "seed", generation: seeded.lease.generation, now: seedNow,
       };
       const lock = pending(intent.operationHash, true, seconds(DEADLINE_MS), HOST_MS);
+      await expect(store.reserveSigning(write)).resolves.toEqual({ status: "recorded" });
       await expect(store.recordSubmission({ ...write, submission: retainedSubmission(seconds(HOST_MS)) }))
         .resolves.toEqual({ status: "recorded" });
       await expect(store.recordObservation({ ...write, observation: lock })).resolves.toEqual({ status: "recorded" });
@@ -5963,7 +6030,7 @@ describe("round 12", () => {
 });
 
 describe("final review, round 1", () => {
-  describe("finding 1: the core runs only on a store that declares its restart safety", () => {
+  describe("finding 1: the core runs only on a store the SDK certified, or a volatile one in development", () => {
     /** The reference store without its declaration, as a host store that never ran conformance. */
     function undeclared(): LiquidityTankStore {
       const { restartSafety: _declared, ...store } = createInMemoryLiquidityTankStore(VOLATILE);
@@ -5976,13 +6043,15 @@ describe("final review, round 1", () => {
       ["the boolean true", () => ({ ...undeclared(), restartSafety: true as never })],
       ["a differently cased value", () => ({ ...undeclared(), restartSafety: "Conformance-Tested" as never })],
       ["a getter", () => Object.defineProperty(undeclared(), "restartSafety", {
-        get: () => "conformance-tested", enumerable: true,
+        get: () => "volatile-acknowledged", enumerable: true,
       })],
+      // The audit's sequence: a volatile store relabeled as having passed conformance.
+      ["a self-declared conformance-tested", () => ({ ...undeclared(), restartSafety: "conformance-tested" as never })],
     ])("a store with %s is refused before any claim or signature", async (_label, build) => {
       const h = harness();
       h.setAfterBroadcast(completed(h.operationHash));
       const store = build();
-      const calls = (["claim", "isCurrent", "recordSubmission", "recordObservation",
+      const calls = (["claim", "isCurrent", "reserveSigning", "recordSubmission", "recordObservation",
         "recordRecoveryFailure", "recordRecoveryExpired", "recordSettlement"] as const)
         .map((method) => vi.spyOn(store, method));
       const verifier = {
@@ -5990,7 +6059,7 @@ describe("final review, round 1", () => {
         verifySignedSubmission: vi.fn(async () => true),
       } satisfies LiquidityTankVerifier;
       await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter, verifier }).shared))
-        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-store-restart-safety-undeclared" });
+        .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-store-uncertified" });
       for (const call of calls) expect(call).not.toHaveBeenCalled();
       expect(h.prepareSubmission).not.toHaveBeenCalled();
       expect(h.broadcastRetained).not.toHaveBeenCalled();
@@ -6026,7 +6095,7 @@ describe("final review, round 1", () => {
         }],
       ] as const)("in %s, a volatile store is refused before any claim or signature", async (_label, setEnv) => {
         const store = createInMemoryLiquidityTankStore(VOLATILE);
-        const calls = (["claim", "isCurrent", "recordSubmission", "recordObservation",
+        const calls = (["claim", "isCurrent", "reserveSigning", "recordSubmission", "recordObservation",
           "recordRecoveryFailure", "recordRecoveryExpired", "recordSettlement"] as const)
           .map((method) => vi.spyOn(store, method));
         const h = harness();
@@ -6055,24 +6124,32 @@ describe("final review, round 1", () => {
         }).shared)).resolves.toMatchObject({ status: "settled" });
       });
 
-      test("a store declaring conformance-tested still settles in production", async () => {
+      // The audit's reproduction: before this change such a store settled, and
+      // after a restart signed and broadcast a second bridge operation.
+      test("a volatile store relabeled conformance-tested is refused in production before any claim", async () => {
         vi.stubEnv("NODE_ENV", "production");
-        const store = { ...createInMemoryLiquidityTankStore(VOLATILE), restartSafety: "conformance-tested" as const };
+        const store = {
+          ...createInMemoryLiquidityTankStore(VOLATILE), restartSafety: "conformance-tested" as never,
+        } as LiquidityTankStore;
+        const claim = vi.spyOn(store, "claim");
         const h = harness();
         h.setAfterBroadcast(completed(h.operationHash));
         await expect(advanceLiquidityTankSettlement(runner({ store, adapter: h.adapter }).shared))
-          .resolves.toMatchObject({ status: "settled" });
+          .resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-store-uncertified" });
+        expect(claim).not.toHaveBeenCalled();
+        expect(h.prepareSubmission).not.toHaveBeenCalled();
       });
     });
 
     test.each([
-      ["an object", () => ({ ...undeclared(), restartSafety: "conformance-tested" as const })],
+      ["an object", () => ({ ...undeclared(), restartSafety: "conformance-tested" as never })],
       ["a class instance", () => {
         const inner = undeclared();
         class HostStore {
-          readonly restartSafety = "conformance-tested" as const;
+          readonly restartSafety = "conformance-tested" as never;
           claim = inner.claim;
           isCurrent = inner.isCurrent;
+          reserveSigning = inner.reserveSigning;
           recordSubmission = inner.recordSubmission;
           recordObservation = inner.recordObservation;
           recordRecoveryFailure = inner.recordRecoveryFailure;
@@ -6081,12 +6158,12 @@ describe("final review, round 1", () => {
         }
         return new HostStore() satisfies LiquidityTankStore;
       }],
-    ])("a host store that declares it passed conformance, as %s, settles", async (_label, build) => {
+    ])("a host store that only declares it passed conformance, as %s, is refused", async (_label, build) => {
       const h = harness();
       h.setAfterBroadcast(completed(h.operationHash));
-      await expect(advanceLiquidityTankSettlement(runner({ store: build(), adapter: h.adapter }).shared))
-        .resolves.toMatchObject({ status: "settled" });
-      expect(h.prepareSubmission).toHaveBeenCalledTimes(1);
+      await expect(advanceLiquidityTankSettlement(runner({ store: build() as LiquidityTankStore, adapter: h.adapter })
+        .shared)).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-store-uncertified" });
+      expect(h.prepareSubmission).not.toHaveBeenCalled();
     });
   });
   describe("finding 2: a verifier outage is retried, not refused", () => {

@@ -69,18 +69,31 @@ holds only with a store that keeps every row across process restarts, commits
 each write atomically and passes `runLiquidityTankStoreConformance` (see
 [Store conformance](#store-conformance)). The core cannot tell a lost row from
 a fresh phase, so it refuses, before any claim, preparation or signature, a
-store that does not declare `restartSafety` (see
-[Declaring restart safety](#declaring-restart-safety)). The SDK ships one
-durable store, `createFsLiquidityTankStore` for a single host (see
-[Durable filesystem store](#durable-filesystem-store)); it passes conformance
-in the SDK's tests and declares `"conformance-tested"`. The exported in-memory
+store the SDK has not certified (see
+[Store certification](#store-certification)). A store's own word is never
+enough. The SDK ships one durable store, `createFsLiquidityTankStore` for a
+single host (see [Durable filesystem store](#durable-filesystem-store)); it
+passes conformance in the SDK's tests and the SDK certifies every handle it
+returns. A host store is certified by `certifyLiquidityTankStore`, which runs
+every conformance case first. The exported in-memory
 store loses everything on restart, refuses to construct without
 `{ acknowledgeVolatile: true }`, and declares itself `"volatile-acknowledged"`.
 It is for tests and development only: the core permits it only with an explicit
 `NODE_ENV=development` or `NODE_ENV=test`. An unset, empty, unknown or unreadable
-environment is refused before any claim. The declaration is the host's, and the core does
-not check it: it checks only that the value is one of the two strings, so a
-non-durable store that declares `"conformance-tested"` also runs end to end.
+environment is refused before any claim.
+
+**One signature per phase, by construction.** Before the core asks the adapter
+to sign, it durably reserves the phase's one signing slot with
+`store.reserveSigning`, a compare-and-set on the current lease. A phase whose
+slot an earlier lease reserved but whose submission was never recorded is never
+signed again: every later call returns `indeterminate`
+`liquidity-tank-signing-interrupted` without calling the adapter. So a worker
+that stops after signing and before `recordSubmission` commits cannot lead to a
+second, different signature, even if the adapter already revealed the first
+bytes. The price is liveness: any interruption inside the signing window (a
+crash, a preparation throw, refused bytes, a lease that runs out while
+signing) parks the phase for an operator. Keep `leaseDurationMs` well above the
+adapter's signing deadline.
 
 **A shared tank's balance comes from the bridge, not the core.** The core
 checks one operation at a time. That the bridge never locks more than a tank's
@@ -100,8 +113,8 @@ const result = await advanceLiquidityTankSettlement({
   authority,
   owner: workerId,
   adapter: nativeBridgeAdapter satisfies LiquidityTankAdapter,
-  // Durable and atomic, passes runLiquidityTankStoreConformance, and
-  // declares restartSafety: "conformance-tested".
+  // Durable and atomic, and certified by certifyLiquidityTankStore against
+  // its real backend (or createFsLiquidityTankStore on one host).
   store: durableStore satisfies LiquidityTankStore,
   verifier: createLiquidityTankEvmFinalityVerifier({
     verifier: hostVerifier satisfies LiquidityTankVerifier,
@@ -138,16 +151,14 @@ to `prepareSubmission` and checks the returned authority, operation hash and
 bridge ID. It does not decode `signedSubmissionBase64` itself: the host's
 `verifySignedSubmission` must, before the bytes are stored or broadcast.
 
-**Adapter contract for the signing window.** `prepareSubmission` must not
-broadcast, log, cache for later sending or otherwise reveal the signed bytes
-before `recordSubmission` commits them. If the worker stops after signing but
-before that write commits, the next owner finds no retained submission and
-signs a fresh one; the first bytes must never reach the bridge, or the buyer
-pays twice. This is an adapter-review requirement, not a guarantee of the
-core: the core can neither enforce nor detect it, and its tests show the safe
-outcome only for an adapter that keeps it. Review every live adapter for it,
-with a test against that adapter showing `prepareSubmission` neither
-broadcasts nor keeps the bytes for later sending.
+**The signing window.** `prepareSubmission` should still not broadcast, log
+or keep the signed bytes before `recordSubmission` commits them, but safety no
+longer rests on it: the core reserves the phase's signing slot durably before
+the call and never signs a phase whose reservation an earlier lease holds
+without a recorded submission (`liquidity-tank-signing-interrupted`). If the
+worker stops in between, at most the one set of bytes it signed can ever
+exist. An operator resolves such a phase from the bridge: whether those bytes
+landed is a question for the bridge, never for a fresh signature.
 
 The retained submission hash and bytes are validated before any adapter effect
 or store write. Corrupted retained state returns the retry-safe indeterminate
@@ -595,6 +606,17 @@ reviewing the host phase handler:
 
 ## Store contract
 
+**Signing reservation.** `reserveSigning` is a compare-and-set on the current
+lease at `now`: it records `{ owner, generation, reservedAt }` only on a row
+with no submission, no terminal outcome and no reservation, answers `existing`
+to the same owner and generation, and answers `conflict`
+`liquidity-tank-signing-interrupted` to any other lease, forever. The
+reservation is durable like every other field, and `recordSubmission` refuses
+a first submission whose lease does not hold it (`liquidity-tank-signing-unreserved`
+or `liquidity-tank-signing-interrupted`). A row that already holds a submission
+needs no reservation, so rows written before reservations existed stay valid;
+drain phases that were inside the signing window before upgrading.
+
 **Leases.** An acquired claim must return a lease whose `owner` is the
 caller's, whose `generation` is a positive safe integer above any earlier one
 for the key, and whose `expiresAt` is exactly `now + leaseDurationMs` from the
@@ -741,38 +763,38 @@ const failed = results.filter((result) => !result.passed);
 if (failed.length > 0) throw new Error(JSON.stringify(failed));
 ```
 
-The two cases that drive the core hand it the store under test with
-`restartSafety: "conformance-tested"` added, so a host can run the suite
-before its store declares anything.
+The cases that drive the core hand it the store under test certified for the
+run, so a host can run the suite before its store is certified.
 
-### Declaring restart safety
+### Store certification
 
-`LiquidityTankStore.restartSafety` is the store's declaration of how it
-survives a restart. `advanceLiquidityTankSettlement` reads it as a data
-property (own or inherited, never a getter) right after binding the store's
-methods. Unless it is exactly one of these two strings, the core returns
-`indeterminate` `liquidity-tank-store-restart-safety-undeclared` before any
-claim, preparation, signature, observation or broadcast:
+`advanceLiquidityTankSettlement` runs only on a store this module of the SDK
+certified, and refuses any other before any claim, preparation, signature,
+observation or broadcast as `indeterminate` `liquidity-tank-store-uncertified`.
+A value the store declares about itself, such as the former
+`restartSafety: "conformance-tested"`, certifies nothing:
 
-- **`"conformance-tested"`**: the store is durable and atomic and passes every
-  `runLiquidityTankStoreConformance` case against its real backend. A host
-  store sets it once it does.
-- **`"volatile-acknowledged"`**: the store loses every row on restart, and its
-  caller has said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile:
-  true })` sets it. For tests and development only, never production: the
-  core runs end to end on it, and after a restart signs a second bridge
-  operation. Unless `process.env.NODE_ENV` is exactly `"development"` or
-  `"test"`, the core refuses it before any claim with
-  `indeterminate` `liquidity-tank-store-volatile-in-production`. That is a
-  backstop for a mis-wired production process, not a check of the store: the
-  core cannot tell production from development any other way.
+- **`createFsLiquidityTankStore`** certifies every handle it returns.
+- **A host store** is certified by
+  `await certifyLiquidityTankStore({ createStore, reopenStore, store })`,
+  which runs every `runLiquidityTankStoreConformance` case through
+  `createStore` and `reopenStore` and certifies `store`, the production handle
+  on that same backend, only when every case passes. It returns
+  `{ certified, results }`. Certification belongs to that exact object in that
+  module copy of the SDK: a wrapper or a spread copy of it, or the same store
+  handed to another copy of the SDK, is refused (it fails closed).
+- **`"volatile-acknowledged"`**: `createInMemoryLiquidityTankStore({
+  acknowledgeVolatile: true })` sets it. For tests and development only: unless
+  `process.env.NODE_ENV` is exactly `"development"` or `"test"`, the core
+  refuses it before any claim with `indeterminate`
+  `liquidity-tank-store-volatile-in-production`. A store that declares it is
+  never certified.
 
-The field is optional in the TypeScript type so that a store under
-development can run the suite, but the core refuses a store without it. It is
-the host's declaration, not a proof: the core checks only that it is one of
-the two strings, not that the store is durable, and a host that declares
-`"conformance-tested"` for a store that never passed the suite has removed the
-only runtime gate. Review it with the store.
+Certification is evidence about the backend, not a proof: the suite reopens
+handles inside one process, so it cannot show that rows survive a real process
+or machine restart, and a backend restored from an older backup can lose a
+reservation it once held. Certify the store against its real production
+backend.
 
 ### Durable filesystem store
 
@@ -843,8 +865,8 @@ same fields, and runs each one under a per-phase filesystem lock:
   with `liquidity-tank-fs-record-corrupt`, and no write replaces it.
 
 The SDK's tests run every `runLiquidityTankStoreConformance` case against it,
-reopening a new store on the same directory for each restart and race, and it
-declares `restartSafety: "conformance-tested"`. Its lock serializes writers on
+reopening a new store on the same directory for each restart and race, and the
+SDK certifies every handle it returns. Its lock serializes writers on
 one host only; workers on several hosts need a shared database store that
 passes the suite. Every process sharing one directory must also share a PID
 namespace (the same container, or all on the host): owners are told apart by
@@ -916,9 +938,9 @@ Host configuration is refused the same way, before any claim or effect:
   upgraded with the SDK, or whose `recordRecoveryFailure` is missing,
   accessor-backed or a `Proxy`—returns reason
   `liquidity-tank-store-recovery-capability-unavailable` on every call.
-- **A store that does not declare `restartSafety`** (see
-  [Declaring restart safety](#declaring-restart-safety)) returns
-  `liquidity-tank-store-restart-safety-undeclared` on every call.
+- **A store the SDK has not certified** (see
+  [Store certification](#store-certification)) returns
+  `liquidity-tank-store-uncertified` on every call.
 - **A store that declares `"volatile-acknowledged"`, without explicit
   `NODE_ENV=development` or `NODE_ENV=test`**, returns
   `liquidity-tank-store-volatile-in-production` on every call.
@@ -940,8 +962,13 @@ operator rather than polling:
 - `liquidity-tank-settlement-binding-conflict`;
 - `liquidity-tank-retained-state-corrupt`;
 - `liquidity-tank-store-recovery-capability-unavailable`;
-- `liquidity-tank-store-restart-safety-undeclared`: the store does not declare
-  how it survives a restart;
+- `liquidity-tank-store-uncertified`: the store was not certified by this SDK;
+- `liquidity-tank-signing-interrupted`: an earlier lease reserved the phase's
+  signing slot and never recorded a submission; it may have signed bytes, so
+  the phase is never signed again. Resolve it from the bridge;
+- `liquidity-tank-signing-reservation-refused` and
+  `liquidity-tank-store-signing-reservation-unavailable`: the store refused,
+  or does not offer, `reserveSigning`;
 - `liquidity-tank-store-volatile-in-production`: a process outside explicit
   development/test mode was given a store that declares
   `"volatile-acknowledged"`;
@@ -1132,10 +1159,9 @@ atomically, and pass `runLiquidityTankStoreConformance`.
   and `demos.sign` refuse every EVM origin address (see the signing note
   above), and its `POLYGON` USDC address is marked as Mumbai's, not Amoy's
   (`build/bridge/nativeBridgeTypes.js:19`);
-- a review of the live adapter's signing window, with a test against the
-  real SDK transport that `prepareSubmission` sends no signed bytes (no
-  `confirm` or `broadcast`; reads such as the nonce are allowed) and keeps no
-  copy of them, and bounded deadlines on every adapter and verifier call;
+- bounded deadlines on every adapter and verifier call, and an operator
+  procedure for `liquidity-tank-signing-interrupted` phases, which the core
+  parks rather than re-signs;
 - one versioned bridge API and DTO, agreed between the Standard and the Demos
   SDK and node, carrying what the core and the verifier need (see
   [Adapter trust boundary](#adapter-trust-boundary)), with its SDK and node

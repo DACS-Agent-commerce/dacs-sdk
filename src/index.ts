@@ -1330,6 +1330,7 @@ export {
   type LiquidityTankPhaseOutcome,
   type AdvanceLiquidityTankInput,
   runLiquidityTankStoreConformance,
+  certifyLiquidityTankStore,
   type LiquidityTankStoreConformanceOptions,
   type LiquidityTankStoreConformanceResult,
   createFsLiquidityTankStore,

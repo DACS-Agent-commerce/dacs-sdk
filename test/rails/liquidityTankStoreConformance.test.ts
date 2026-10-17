@@ -1,19 +1,23 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  advanceLiquidityTankSettlement,
   createInMemoryLiquidityTankStore,
+  createLiquidityTankIntent,
   type LiquidityTankLease,
   type LiquidityTankObservation,
   type LiquidityTankStore,
   type LiquidityTankStoreClaim,
 } from "../../src/rails/liquidityTank.js";
 import {
+  certifyLiquidityTankStore,
   runLiquidityTankStoreConformance,
   type LiquidityTankStoreConformanceOptions,
   type LiquidityTankStoreConformanceResult,
 } from "../../src/rails/liquidityTankStoreConformance.js";
 import * as rails from "../../src/rails/index.js";
 import * as root from "../../src/index.js";
+import { CRASH_BRIDGE_ID, CRASH_T0, crashAuthority, crashSubmission } from "../fixtures/liquidityTankFsCrash.js";
 
 const VOLATILE = { acknowledgeVolatile: true } as const;
 const IDENTITY_REOPEN =
@@ -43,6 +47,8 @@ const CASE = {
   completionLock: "a late completion is expiry evidence only for the durable lock and its deadline",
   contradictionCas: "a contradiction expires a lock only when stamped after its checkpoint and after the deadline, never while the operation is live",
   restart: "retained state survives a restart",
+  signingSlot: "the signing slot is reserved once per phase, survives a restart and is never handed to a later lease",
+  signingWindow: "through the core, a worker stopped inside the signing window never leads to a second signature",
   settles: "through the core, crashes and restarts never double-send, lock more than the intent or settle an expired phase",
   expires: "through the core, an expired phase stays expired across restarts and a late release",
   claimRace: "concurrent claims elect exactly one owner, on a fresh phase or a takeover",
@@ -54,7 +60,9 @@ const CASE = {
   coreRace: "through the core, two workers starting one phase at once broadcast at most once",
 } as const;
 
-const RESTART_CASES = [CASE.receipt, CASE.bridge, CASE.restart, CASE.settles, CASE.expires];
+const RESTART_CASES = [
+  CASE.receipt, CASE.bridge, CASE.restart, CASE.signingSlot, CASE.signingWindow, CASE.settles, CASE.expires,
+];
 const RACE_CASES = [
   CASE.claimRace, CASE.submissionRace, CASE.bridgeRace, CASE.completionExpiryRace,
   CASE.settlementExpiryRace, CASE.takeoverRace, CASE.coreRace,
@@ -84,6 +92,7 @@ function database(
     const handle: LiquidityTankStore = {
       claim: (input) => db.claim(input),
       isCurrent: (input) => db.isCurrent(input),
+      reserveSigning: (input) => db.reserveSigning(input),
       recordSubmission: (input) => db.recordSubmission(input),
       recordObservation: (input) => db.recordObservation(input),
       recordRecoveryFailure: (input) => db.recordRecoveryFailure(input),
@@ -137,6 +146,7 @@ function rowsWithBridgeIndex(index: "process" | "racey" | "moved on refusal"): L
     const handle: LiquidityTankStore = {
       claim: (input) => row(input.intent.settlementKey).claim(input),
       isCurrent: (input) => row(input.settlementKey).isCurrent(input),
+      reserveSigning: (input) => row(input.settlementKey).reserveSigning(input),
       recordSubmission: async (input) => {
         const owner = owners.get(input.submission.bridgeId);
         if (owner !== undefined && owner !== input.settlementKey) {
@@ -229,6 +239,7 @@ function rewritingWrites(
 ): Partial<LiquidityTankStore> {
   return {
     isCurrent: (input) => inner.isCurrent(rewrite(input)),
+    reserveSigning: (input) => inner.reserveSigning(rewrite(input)),
     recordSubmission: (input) => inner.recordSubmission(rewrite(input)),
     recordObservation: (input) => inner.recordObservation(rewrite(input)),
     recordRecoveryFailure: (input) => inner.recordRecoveryFailure(rewrite(input)),
@@ -568,7 +579,7 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
     () => rowsWithBridgeIndex("moved on refusal"),
     /second settlement reusing the bridge ID again: store answered recorded/],
   [CASE.bridge, "forgets its bridge-ID index on a restart", () => rowsWithBridgeIndex("process"),
-    /after a restart, the second settlement reusing the bridge ID: store answered recorded/],
+    /after a restart, a third settlement reusing the bridge ID: store answered recorded/],
   [CASE.ordering, "accepts a status regression",
     () => database(accepting("recordObservation", "liquidity-tank-status-regression")),
     /regression to empty: store answered recorded/],
@@ -745,8 +756,29 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
   [CASE.restart, "keeps its bridge-ID index in process memory (code review B2)",
     () => rowsWithBridgeIndex("process"),
     /after a restart, another phase reusing a settled bridge operation: store answered recorded/],
+  [CASE.signingSlot, "hands an interrupted signing slot to a later lease", () => database((inner) => ({
+    reserveSigning: async (input) => {
+      const result = await inner.reserveSigning(input);
+      return result.status === "conflict" && result.reason === "liquidity-tank-signing-interrupted"
+        ? { status: "recorded" }
+        : result;
+    },
+  })), /after a restart, a later lease reserving an interrupted signing slot was answered recorded/],
+  [CASE.signingSlot, "records a first submission without a signing reservation",
+    () => database(accepting("recordSubmission", "liquidity-tank-signing-unreserved")),
+    /a first submission without a signing reservation: store answered recorded/],
+  [CASE.signingWindow, "starts empty after a restart", forgetful,
+    /after a restart, worker-2 on an interrupted signing slot returned/],
+  [CASE.signingWindow, "lets a later lease sign an interrupted phase", () => database((inner) => ({
+    reserveSigning: async (input) => {
+      const result = await inner.reserveSigning(input);
+      return result.status === "conflict" && result.reason === "liquidity-tank-signing-interrupted"
+        ? { status: "recorded" }
+        : result;
+    },
+  })), /after a restart, worker-2 on an interrupted signing slot returned/],
   [CASE.settles, "starts empty after a restart", forgetful,
-    /step 3 \(worker-3\): 2 different signed submissions were broadcast, locking 2500000 base units for an intent of 1250000/],
+    /step 2 \(worker-3\): 2 different signed submissions were broadcast, locking 2500000 base units for an intent of 1250000/],
   [CASE.settles, "hands back retained observations the bridge never issued", () => database((inner) => ({
     claim: async (input) => {
       const claimed = await inner.claim(input);
@@ -896,7 +928,9 @@ const BROKEN: readonly (readonly [string, string, () => LiquidityTankStoreConfor
       recordRecoveryExpired: checkThenWrite((input) => inner.recordRecoveryExpired(input)),
       recordSettlement: checkThenWrite((input) => inner.recordSettlement(input)),
     };
-  }), /recordSubmission by the old owner landed after another owner took its lease over/],
+  // Its recordSubmission, rewritten onto the new lease, is refused: that lease
+  // never reserved the signing slot. Its observation write still lands.
+  }), /recordObservation by the old owner landed after another owner took its lease over/],
   [CASE.coreRace, "grants two overlapping claims", () => database(raceyClaims),
     /2 of two workers starting one phase at once went past the claim/],
   [CASE.coreRace, "treats a phase as free until its submission is written", () => database((inner) => ({
@@ -961,7 +995,7 @@ describe("runLiquidityTankStoreConformance", () => {
       },
     })));
     expect(failedNames(results)).toEqual([
-      CASE.firstSubmission, CASE.bridge, CASE.restart, CASE.submissionRace, CASE.bridgeRace,
+      CASE.firstSubmission, CASE.bridge, CASE.restart, CASE.signingSlot, CASE.submissionRace, CASE.bridgeRace,
     ]);
   });
 
@@ -988,5 +1022,73 @@ describe("runLiquidityTankStoreConformance", () => {
   test("is exported from the rails and root barrels", () => {
     expect(rails.runLiquidityTankStoreConformance).toBe(runLiquidityTankStoreConformance);
     expect(root.runLiquidityTankStoreConformance).toBe(runLiquidityTankStoreConformance);
+    expect(rails.certifyLiquidityTankStore).toBe(certifyLiquidityTankStore);
+    expect(root.certifyLiquidityTankStore).toBe(certifyLiquidityTankStore);
+  });
+});
+
+describe("certifyLiquidityTankStore", () => {
+  /** One fresh phase through the core on `store`, in production mode. */
+  const advance = async (store: LiquidityTankStore) => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const { operationHash } = createLiquidityTankIntent(crashAuthority());
+      return await advanceLiquidityTankSettlement({
+        authority: crashAuthority(),
+        owner: "worker-1",
+        store,
+        adapter: {
+          prepareSubmission: async () => {
+            const { submissionHash: _hash, ...unsigned } = crashSubmission();
+            return unsigned;
+          },
+          broadcastRetained: async () => {},
+          observe: async () => ({
+            status: "pending", bridgeId: CRASH_BRIDGE_ID, operationHash, history: ["empty", "pending"],
+            observedAt: CRASH_T0, authenticationHash: "a".repeat(64),
+            lockTxHash: "certified-lock-tx", recoveryDeadline: CRASH_T0 + 86_400_000,
+          }),
+        },
+        verifier: { authenticateObservation: async () => true, verifySignedSubmission: async () => true },
+        now: () => CRASH_T0,
+        leaseDurationMs: 1_000,
+      });
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+  };
+  const uncertified = { status: "indeterminate", reason: "liquidity-tank-store-uncertified" };
+
+  test("certifies the exact store handle only after every case passes, and the core then signs with it", async () => {
+    const options = database();
+    const store = await options.createStore();
+    await expect(advance(store)).resolves.toEqual(uncertified);
+    const certification = await certifyLiquidityTankStore({ ...options, store });
+    expect(certification.certified).toBe(true);
+    expect(certification.results.every((result) => result.passed)).toBe(true);
+    await expect(advance(store)).resolves.toMatchObject({ status: "settle-asymmetric" });
+    // A copy or a wrapper of the certified handle is not certified.
+    await expect(advance({ ...store })).resolves.toEqual(uncertified);
+  });
+
+  test("never certifies a store that fails a case", async () => {
+    const options = forgetful();
+    const store = await options.createStore();
+    const { restartSafety: _volatile, ...undeclared } = store;
+    const certification = await certifyLiquidityTankStore({ ...options, store: undeclared });
+    expect(certification.certified).toBe(false);
+    await expect(advance(undeclared)).resolves.toEqual(uncertified);
+  });
+
+  test("never certifies a store that declares itself volatile, even when every case passes", async () => {
+    const options = database();
+    const store = { ...(await options.createStore()), restartSafety: "volatile-acknowledged" as const };
+    const certification = await certifyLiquidityTankStore({ ...options, store });
+    expect(certification.results.every((result) => result.passed)).toBe(true);
+    expect(certification.certified).toBe(false);
+    await expect(advance(store)).resolves.toEqual({
+      status: "indeterminate", reason: "liquidity-tank-store-volatile-in-production",
+    });
   });
 });

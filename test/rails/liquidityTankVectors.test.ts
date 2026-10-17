@@ -771,6 +771,7 @@ function reservationMovedOnRefusal(): LiquidityTankStore {
     restartSafety: "volatile-acknowledged",
     claim: (input) => row(input.intent.settlementKey).claim(input),
     isCurrent: (input) => row(input.settlementKey).isCurrent(input),
+    reserveSigning: (input) => row(input.settlementKey).reserveSigning(input),
     recordSubmission: async (input) => {
       const owner = owners.get(input.submission.bridgeId);
       if (owner !== undefined && owner !== input.settlementKey) {
@@ -805,17 +806,18 @@ describe("one bridge operation settles one phase (sweep N1)", () => {
     return { first, retry, broadcasts: third.broadcastRetained.mock.calls.length };
   };
 
-  test("the shipped store refuses the second phase's reuse on every attempt, so it never settles on the first phase's operation", async () => {
-    const refused = { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
+  const refused = { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
+  // The retry's lease is not the one that reserved the signing slot, so it never signs again.
+  const parked = { status: "indeterminate", reason: "liquidity-tank-signing-interrupted" };
+
+  test("the shipped store refuses the second phase's reuse, and its retry never signs again, so it never settles on the first phase's operation", async () => {
     await expect(twoPhases(createInMemoryLiquidityTankStore(VOLATILE)))
-      .resolves.toEqual({ first: refused, retry: refused, broadcasts: 0 });
+      .resolves.toEqual({ first: refused, retry: parked, broadcasts: 0 });
   });
 
-  test("a store whose refusal moves the reservation settles the second phase unpaid, which the conformance case refuses", async () => {
-    const { first, retry, broadcasts } = await twoPhases(reservationMovedOnRefusal());
-    expect(first).toEqual({ status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" });
-    expect(retry).toMatchObject({ status: "settled", settlement: { txRef: { bridgeId: BRIDGE_ID } } });
-    expect(broadcasts).toBe(0);
+  test("a store whose refusal moves the bridge-ID reservation still cannot settle the second phase: its retry never signs again", async () => {
+    await expect(twoPhases(reservationMovedOnRefusal()))
+      .resolves.toEqual({ first: refused, retry: parked, broadcasts: 0 });
   });
 });
 
