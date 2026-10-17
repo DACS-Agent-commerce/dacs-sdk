@@ -301,8 +301,9 @@ describe("actor-separated payment-evidence handshake", () => {
     "authenticates a distinct attestation issuer on both completion paths (%s)", async (mode) => {
       const issuer = "did:example:independent-issuer";
       const verifySeller = vi.fn<SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(
-        ({ completion }) => {
+        ({ request, completion }) => {
           expect(completion.evidenceRef.signer).toBe(issuer);
+          expect(request.evidence.signature.signer).toBe(SELLER);
           expect(completion.anchorReceipt.writer).toBe(BUYER);
           return mode === "seller-invalid"
             ? { disposition: "invalid", reason: "issuer proof invalid" }
@@ -313,8 +314,9 @@ describe("actor-separated payment-evidence handshake", () => {
       const candidate = await queueRequest(sellerHandshake);
       const anchored = finalAnchor(candidate);
       anchored.evidenceRef.signer = issuer;
-      const verifyReceipt = vi.fn<BuyerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(({ completion }) => {
+      const verifyReceipt = vi.fn<BuyerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(({ request, completion }) => {
         expect(completion.evidenceRef.signer).toBe(issuer);
+        expect(request.evidence.signature.signer).toBe(SELLER);
         expect(completion.anchorReceipt.writer).toBe(BUYER);
         return mode === "buyer-invalid"
           ? { disposition: "invalid" as const, reason: "issuer proof invalid" }
@@ -338,6 +340,7 @@ describe("actor-separated payment-evidence handshake", () => {
       }
       expect(completions).toHaveLength(1);
       const completion = completions[0]!.completion;
+      expect(completion.evidenceRef.signer).toBe(issuer);
       if (mode === "seller-invalid") {
         await expect(sellerHandshake.receiveCompletion(completion, {})).rejects.toThrow(
           "completion invalid",

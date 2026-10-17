@@ -719,7 +719,14 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
   const context = options.context;
   const store = context.database.createPaymentEvidenceHandshakeStore();
   const retryDelayMs = timing(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS);
-  const verifyAnchorReceipt = options.verifyAnchorReceipt ?? (async ({ completion }) => {
+  const verifyAnchorReceipt = options.verifyAnchorReceipt ?? (async ({ request, completion }) => {
+    // The native receipt authenticates the writer; it supplies no independent
+    // issuer proof. Custom verifiers can support such proofs explicitly.
+    if (completion.evidenceRef.signer !== undefined &&
+        completion.evidenceRef.signer !== request.evidence.signature.signer) {
+      return { disposition: "invalid" as const,
+        reason: "seller payment-evidence issuer is unsupported" };
+    }
     try {
       return await context.demos.adapter.verifyDemosAnchorReceipt(
         completion.anchorReceipt,

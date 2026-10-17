@@ -551,6 +551,7 @@ describe("publishSellerSessionSettlement", () => {
     expect(result.disposition).toBe("published");
     if (result.disposition !== "published") return;
     expect(result.settlement.evidence.signature.signer).toBe(ORCHESTRATOR);
+    expect(result.settlement.evidenceRef.signer).toBe(issuer);
     expect(result.settlement.anchorReceipt.writer).toBe(BUYER);
     expect(observedWriter).toEqual({ role: "buyer", primaryClaim: BUYER });
     expect(expectedReceiptWriter).toBe(BUYER);
