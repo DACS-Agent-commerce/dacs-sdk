@@ -224,8 +224,9 @@ async function defaultAdapterFactory(config: {
   const http = demosHttpClient();
   return {
     connect: async (signal) => {
-      // demosdk's connect() is this GET, which must answer 2xx.
-      await http.get(config.rpc, { signal });
+      // demosdk sets its RPC URL only for HTTP 200, even when Axios accepts other 2xx statuses.
+      const response = await http.get(config.rpc, { signal });
+      if (response.status !== 200) throw new Error("Demos RPC connection requires HTTP 200");
       if (config.secret !== undefined) await raw.connectWallet(config.secret);
     },
     getAddress: () => raw.getAddress(),
@@ -585,9 +586,9 @@ export async function runDoctorForCli(
     );
   } else if (options.rail === "pay-d402") {
     checks.push(
-      check("rail.availability", "warn", "pay-d402 is experimental, not a supported live rail", {
+      check("rail.availability", "fail", "pay-d402 is disabled", {
         data: { availability: PAY_D402_AVAILABILITY },
-        detail: "demosdk 4.0.17 and later sign and broadcast real d402_payment transactions, so a preview settlement can move real DEM.",
+        detail: "Funded D402 use and DACS session settlement are unavailable; acknowledgement cannot enable them.",
       }),
     );
   } else if (options.rail === "x402" || options.rail === "evm-erc20") {

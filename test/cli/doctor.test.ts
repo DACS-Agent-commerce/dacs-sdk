@@ -691,14 +691,14 @@ describe("dacs doctor", () => {
     });
   });
 
-  it("reports pay-d402 as operator_gated (§9.4.4 vocabulary)", async () => {
+  it("reports pay-d402 as disabled", async () => {
     const report = await runDoctor({ offline: true, rail: "pay-d402" });
 
     const rail = report.checks.find((c) => c.id === "rail.availability");
     expect(rail).toEqual({
-      id: "rail.availability", status: "warn", summary: "pay-d402 is experimental, not a supported live rail",
-      data: { availability: "operator_gated" },
-      detail: "demosdk 4.0.17 and later sign and broadcast real d402_payment transactions, so a preview settlement can move real DEM.",
+      id: "rail.availability", status: "fail", summary: "pay-d402 is disabled",
+      data: { availability: "disabled" },
+      detail: "Funded D402 use and DACS session settlement are unavailable; acknowledgement cannot enable them.",
     });
   });
 

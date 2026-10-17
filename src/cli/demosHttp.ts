@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 
 /** The part of axios doctor's read-only probes use; `signal` cancels the request. */
 export interface DemosHttpClient {
-  get(url: string, config: { signal?: AbortSignal }): Promise<unknown>;
+  get(url: string, config: { signal?: AbortSignal }): Promise<{ status: number }>;
   post(
     url: string,
     body: unknown,

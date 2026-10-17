@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import { runSessionCore, type SessionDeps, type SettleResult } from "../../src/agent/runSessionCore.js";
@@ -99,35 +99,28 @@ async function sessionDeps(
 }
 
 describe("pay-d402 through runSessionCore", () => {
-  test("pending, restart, still pending, then included: one payment and bft-final demos evidence", async () => {
+  test.each([undefined, "job-d402"])("unregistered rail cannot pay or complete, including recovery %s", async (resumeJobId) => {
     const kv = new Map<string, Record<string, unknown>>();
     const store = createInMemorySessionStore();
-
-    const first = d402Rail();
-    await expect(runSessionCore("stor:listing", terms, await sessionDeps(kv, store, first.rail))).rejects.toThrow(
-      /remains indeterminate/,
-    );
-    expect(first.paid).toEqual([
-      { paywallUrl: paywall.url, recipient: RECIPIENT, amount: "1500000000", network: "demos:testnet" },
-    ]);
-
-    // A restarted process: fresh rail and bridge store, the same session store.
-    const second = d402Rail([{}, { ok: true, blockNumber: 77, txRefKind: "demos", finality: { model: "bft-final" } }]);
-    const resumed = await sessionDeps(kv, store, second.rail);
-    await expect(runSessionCore("stor:listing", terms, resumed, "job-d402")).rejects.toThrow(/remains indeterminate/);
-    await expect(runSessionCore("stor:listing", terms, resumed, "job-d402")).resolves.toMatchObject({
-      outcome: "completed",
-    });
-    expect(second.paid).toEqual([]);
-    expect(second.waited).toEqual(["0xpend", "0xpend"]);
-
-    const evidence = [...kv.values()].filter((v) => Array.isArray(v["paymentTxRefs"]));
-    expect(evidence).toHaveLength(1);
-    expect(evidence[0]).toMatchObject({
-      outcome: "success",
-      paymentTxRefs: [{ kind: "demos", txHash: "0xpend", blockNumber: 77 }],
-      paymentAmount: { amount: "1.5", currency: "DEM" },
-      settlementFinality: { model: "bft-final" },
-    });
+    const { rail, paid, waited } = d402Rail();
+    const deps = await sessionDeps(kv, store, rail);
+    // Even a custom executor claiming success cannot admit an unregistered phase.
+    const settle = vi.fn(async () => ({
+      ok: true, txHash: "0xincluded", chainId: "demos:testnet", payer: PAYER, payee: RECIPIENT,
+      blockNumber: 77, txRefKind: "demos" as const, finality: { model: "bft-final" as const },
+    }));
+    const resumeSettlement = vi.fn(settle);
+    const anchor = vi.fn(deps.anchor);
+    const sign = vi.fn(deps.sign);
+    await expect(runSessionCore("stor:listing", terms, {
+      ...deps, settle, resumeSettlement, anchor, sign,
+    }, resumeJobId)).rejects.toThrow(/pay-d402 is unregistered and unavailable/);
+    expect(settle).not.toHaveBeenCalled();
+    expect(resumeSettlement).not.toHaveBeenCalled();
+    expect(anchor).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+    expect(paid).toEqual([]);
+    expect(waited).toEqual([]);
+    expect([...kv.keys()]).toEqual(["stor:listing"]);
   });
 });

@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { ed25519Verify, publicKeyFromRaw } from "../../src/crypto/ed25519.js";
 import {
   readAuthenticatedDomainClaims,
   verifyDemosGcrDomainClaims,
   type DemosGcrResolution,
+  type DemosGcrDomainMetadata,
   type DomainArtifactAuthentication,
   type DomainClaimArtifactLike,
 } from "../../src/identity/domainClaimVerification.js";
@@ -215,6 +216,37 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
       }
     });
   }
+
+  test.each([
+    ["inclusion height", (m: DemosGcrDomainMetadata) => { m.sourceTransaction.blockNumber += 1; }],
+    ["inclusion time", (m: DemosGcrDomainMetadata) => { m.recordedAt += 1; }],
+    ["context", (m: DemosGcrDomainMetadata) => { m.context = "web2.other"; }],
+    ["proof URL", (m: DemosGcrDomainMetadata) => { m.proofUrl = "https://agent.example/other"; }],
+  ] as const)("rejects an independently authenticated %s disagreement", async (_label, change) => {
+    const vector = fixture.vectors.find((v) => v.name === "canonical-production")!;
+    const authoritative = resolution(vector);
+    expect(authoritative.status).toBe("authenticated");
+    if (authoritative.status !== "authenticated") throw new Error("missing authenticated fixture");
+    const resolveGcr = vi.fn(() => authoritative);
+    const deps = {
+      authenticateArtifact: authenticate(vector.artifact),
+      requiredMethod: vector.requiredMethod,
+      recipeDefaultMaxAgeSec: vector.recipeDefaultMaxAgeSec,
+      evaluatedAt: vector.evaluatedAt,
+      resolveGcr,
+    };
+    // Prove the unchanged signature, writer, proof profile and freshness pass.
+    expect((await verifyDemosGcrDomainClaims(vector.artifact.unsigned, deps)).verdict).toBe("pass");
+    change(authoritative.record);
+    const verdict = await verifyDemosGcrDomainClaims(vector.artifact.unsigned, deps);
+    expect(verdict.verdict).toBe("fail");
+    expect(verdict.diagnostic.code).toBe("source-record-mismatch");
+    const presented = vector.artifact.unsigned.claims[0]!.metadata!["demosGcrDomain"] as DemosGcrDomainMetadata;
+    expect(resolveGcr).toHaveBeenCalledTimes(2);
+    for (const args of resolveGcr.mock.calls) {
+      expect(args).toEqual([presented.sourceTransaction]);
+    }
+  });
 
   test.each([undefined, "canonical-domain-v0.6", "historical-domain-alias"] as const)(
     "authenticated bundle bytes preserve legacy reads with profile %s",
