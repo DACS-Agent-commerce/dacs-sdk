@@ -277,7 +277,8 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
    * called. After acceptance it does the same once the agreement step is
    * overdue: the buyer's proposal `timeoutMs` after acceptance, or the
    * seller's contribution `timeoutMs` after that proposal's plan was
-   * generated.
+   * generated. After acceptance a clock fault is "indeterminate" too, until
+   * the agreement is finalized.
    */
   sendAbort(
     jobId: string,
@@ -311,10 +312,12 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
    * plan with the current signer and sends a new proposal; while the new
    * contribution does not verify either, it answers "indeterminate" and
    * stores nothing. Once the agreement step is overdue (see sendAbort()), it
-   * records the timeout instead. It reads the clock once, after verifying
-   * any stored contribution: that reading both decides the deadline and
-   * dates a new plan. If the clock fails it answers "indeterminate" and
-   * signs nothing.
+   * records the timeout instead. It reads the clock after verifying any
+   * stored contribution, and uses that one reading both for the deadline and
+   * to date a new plan. When a contribution is stored it also checks the
+   * deadline before calling the verifier, so an overdue job records its
+   * timeout even if the verifier never settles. If the clock fails it
+   * answers "indeterminate" and signs nothing.
    */
   startAgreement(jobId: string): Promise<DurableRfqLifecycleResult<TSignature>>;
   getStatus(jobId: string): Promise<DurableRfqRecordLoad<TSignature>>;
@@ -339,6 +342,7 @@ const MAX_CAS_ATTEMPTS = 16;
  */
 const MAX_TERMINAL_REASON_CHARS = 4_096;
 const AGREEMENT_TIMEOUT_REASON = "RFQ agreement timeout elapsed (RFQ-4)";
+const FUTURE_PLAN_REASON = "buyer dated the RFQ agreement plan after the seller's deadline";
 const HASH = /^[0-9a-f]{64}$/;
 const SIGNATURE_ALGORITHMS: ReadonlySet<string> = new Set(
   COMPONENT_SIGNATURE_ALGORITHMS,
@@ -2091,17 +2095,12 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         record,
       };
     }
-    // So is a plan the buyer itself dated after our deadline, but only once
-    // the buyer's contribution verifies: until then the date is unsigned.
-    // Packet admission already bound its role, party and plan hash.
+    // We never countersign a plan the buyer dated after our deadline, but the
+    // date is the buyer's clock, not ours: it refuses the packet and stores
+    // nothing. Only our own trusted clock records the timeout, so a buyer
+    // clock running ahead cannot end the job before our deadline.
     if (deadline !== undefined && packet.plan.draft.generatedAt > deadline) {
-      const buyerSigned = await verifyContribution(expectedPlan, packet.buyerContribution);
-      if (buyerSigned === "valid") return recordTimeout(record, undefined, receivedAt);
-      return {
-        status: buyerSigned === "invalid" ? "rejected" : "indeterminate",
-        reason: `buyer agreement contribution is not cryptographically valid (${buyerSigned})`,
-        record,
-      };
+      return { status: "rejected", reason: FUTURE_PLAN_REASON, record };
     }
     try {
       sellerContribution = await createFixedPriceAgreementSignatureContribution(

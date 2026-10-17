@@ -141,10 +141,17 @@ records its timeout even if the verifier never settles. After acceptance, a
 clock fault on a send call is `indeterminate` too, until the agreement is
 finalized. A send call on the member's own overdue turn records the timeout
 before the channel signer is called. A proposal the seller receives after its
-deadline records the timeout before the seller signs anything. So does a plan
-the buyer dated after that deadline, once the buyer's contribution verifies;
-an unverified one is refused (`rejected` for an invalid contribution,
-`indeterminate` if the verifier cannot decide) and nothing is stored.
+deadline records the timeout before the seller signs anything. The seller
+also never countersigns a plan the buyer dated after the seller's deadline,
+but that date is the buyer's clock: `receive()` answers `rejected` with "buyer
+dated the RFQ agreement plan after the seller's deadline", calls no verifier
+and stores nothing. Only the seller's own trusted clock records the timeout,
+so a buyer clock running ahead cannot end the job early. Such a buyer cannot
+make a plan the seller will sign (a re-sign keeps the stored plan), so the
+job ends in the RFQ-4 timeout at the seller's own deadline. With clocks in
+step this never happens: a plan dated after the seller's deadline also
+arrives after it. Keep both members' trusted clocks within a small fraction
+of `timeoutMs` of each other.
 
 A record accepted by an SDK before this rule kept the last proposal's time in
 `awaitingSince`. The member that sent the accept counts its window from that
@@ -643,7 +650,12 @@ lifecycle's own write failed following the acknowledgement. Before any resend,
 the transport opens the stored frame once and compares it canonically with the
 packet. If the frame does not open (for example, after a key rotated under the
 same `codecId`) or opens to other bytes, the result is `indeterminate` and
-nothing is sent. Within one process, outbox work for each packet runs one call
+nothing is sent. `publish` itself reads no history before such a resend: once
+the grace has passed it resends the stored frame. The durable lifecycle calls
+it again only after `reconcile` answers `absent`; a host that drives the
+transport directly must do the same, and even then a late first send can
+land after that history read, so only the node's unique `messageHash` keeps
+one stored row. Within one process, outbox work for each packet runs one call
 at a time, so a concurrent `publish` and `resumeOutbox()` cannot both seal a
 frame; serializing drivers across processes stays the host's job.
 
