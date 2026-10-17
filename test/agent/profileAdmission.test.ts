@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CORRECTIVE_PROFILE, requireAdmissibleProfile } from "../../src/profile.js";
 import { DACS_STANDARD_PIN } from "../../src/version.js";
-import { createAgent } from "../../src/agent/Agent.js";
+import { buildAgent, createAgent, createUnsafeManualAgent } from "../../src/agent/Agent.js";
 import { validateListingArtifact } from "../../src/agent/listingValidation.js";
 import { runSessionCore } from "../../src/agent/runSessionCore.js";
 import { discoverListings } from "../../src/agent/discover.js";
@@ -11,7 +11,18 @@ import { createFixedPricePayDemSellerCoordinator, createInMemoryFixedPricePayDem
 
 describe("unreleased corrective profile admission", () => {
   it.each(["live", "simulation"] as const)("refuses a %s label on a connected Demos factory before any node call", async (executionMode) => {
-    await expect(createAgent({ demosRpc: "https://node.example", executionMode })).rejects.toThrow(/unreleased/);
+    for (const factory of [createAgent, createUnsafeManualAgent]) {
+      await expect(factory({ demosRpc: "https://node.example", executionMode })).rejects.toThrow(/unreleased/);
+    }
+  });
+
+  it("refuses publication on an already connected live adapter before signing or writing", async () => {
+    const effect = vi.fn();
+    const config = { demosRpc: "https://node.example", executionMode: "live" as "live" | "simulation" };
+    const agent = buildAgent({ sign: effect, anchorWriteOnce: effect } as never, config);
+    config.executionMode = "simulation";
+    await expect(agent.publishListing({} as never)).rejects.toThrow(/unreleased/);
+    expect(effect).not.toHaveBeenCalled();
   });
 
   it("pins the complete candidate tuple and has no live release to admit", () => {

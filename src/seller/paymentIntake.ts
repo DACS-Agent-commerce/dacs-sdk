@@ -1,3 +1,4 @@
+import { types as nodeTypes } from "node:util";
 import { randomBytes } from "node:crypto";
 import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
@@ -27,6 +28,8 @@ import {
 } from "../rails/payDem.js";
 import {
   isVerifiedListingAdmission,
+  getListingReaderProvenance,
+  sameListingReaderResult,
   type ListingValidationResult,
 } from "../agent/listingValidation.js";
 import {
@@ -185,6 +188,9 @@ export interface SellerPayloadVerificationProducerAdmission {
  */
 export interface SellerListingAtCommitResolution {
   rawListing: Record<string, unknown>;
+  /** Original ordered-reader result object. Restored checkpoints must re-admit
+   * their original bytes using trusted historical validation dependencies; a
+   * serialized copy or base64 rendering alone does not retain provenance. */
   validation: ListingValidationResult;
   payloadVerificationProducerAdmission?: SellerPayloadVerificationProducerAdmission;
 }
@@ -2344,9 +2350,18 @@ export async function verifySellerPaymentIntake(
     committed.commitment.committedAt > agreement.terms.deadline
   ) return reject("commitment-agreement-mismatch");
 
+  let listingProvenance: ListingValidationResult | null = null;
   const listingCall = await callSecurityBoundaryWithInput(
     agreement.listingRef,
-    (listingRef) => resolveListingAtCommit.call(deps, listingRef),
+    async (listingRef) => {
+      const resolved = await resolveListingAtCommit.call(deps, listingRef);
+      // Inspect only a data descriptor: hostile resolver views must not run code.
+      const descriptor = resolved && typeof resolved === "object" && !nodeTypes.isProxy(resolved)
+        ? Object.getOwnPropertyDescriptor(resolved, "validation") : undefined;
+      listingProvenance = descriptor && "value" in descriptor
+        ? getListingReaderProvenance(descriptor.value) : null;
+      return resolved;
+    },
   );
   if (listingCall.status === "threw") {
     return indeterminate("listing-resolution-unavailable");
@@ -2373,7 +2388,8 @@ export async function verifySellerPaymentIntake(
       ? indeterminate(`listing-${listingResult.reason}`)
       : reject(`listing-${listingResult.reason}`);
   }
-  if (!isVerifiedListingAdmission(listingAtCommit.rawListing, listingResult) ||
+  if (listingProvenance === null || !sameListingReaderResult(listingResult, listingProvenance) ||
+      !isVerifiedListingAdmission(listingAtCommit.rawListing, listingResult) ||
       listingResult.listingContentHash !== agreement.listingRef.contentHash) {
     return reject("listing-at-commit-admission-mismatch");
   }

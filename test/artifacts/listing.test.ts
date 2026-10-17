@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
-  authenticateReadableListingArtifact,
-  verifyReadableListingArtifact,
+  authenticateReadableListingArtifact as authenticateBytes,
+  verifyReadableListingArtifact as verifyBytes,
 } from "../../src/agent/discover.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
@@ -54,6 +54,11 @@ const VECTOR = JSON.parse(readFileSync(VECTOR_PATH, "utf8")) as {
     "listing-with-unknown-phase": { listing: Record<string, unknown> };
   };
 };
+
+const localBytes = (value: Record<string, unknown> | Uint8Array) =>
+  value instanceof Uint8Array ? value : Buffer.from(JSON.stringify(value));
+const verifyReadableListingArtifact: typeof verifyBytes = (raw, deps) => verifyBytes(localBytes(raw), deps);
+const authenticateReadableListingArtifact: typeof authenticateBytes = (raw, deps) => authenticateBytes(localBytes(raw), deps);
 
 const fixture = (): Listing =>
   structuredClone(VECTOR.fixtures["listing-with-inert-extension"].listing);
@@ -306,6 +311,7 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     };
     draft.validity.notBefore = 0;
     draft.futureOptionalMetadata["weights"] = [0, { floor: 0 }];
+    draft.acceptedRails = [{ railId: "x402:default", parameters: { zero: 0, nested: [0] } }];
     const signed = await signComponentArtifact(
       draft,
       ARTIFACT_SEPARATORS.Listing,
@@ -321,7 +327,8 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     // the same signed bytes on the wire as far as JCS is concerned.
     const text = JSON.stringify(signed)
       .replace(/"notBefore":0(?=[,}])/, '"notBefore":-0.0')
-      .replace('"weights":[0,{"floor":0}]', '"weights":[-0,{"floor":-0e2}]');
+      .replace('"weights":[0,{"floor":0}]', '"weights":[-0,{"floor":-0e2}]')
+      .replace('"zero":0', '"zero":-0.0');
     const received = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
     expect(
       Object.is((received["validity"] as { notBefore: number }).notBefore, -0),
@@ -335,7 +342,8 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
       compatibility: "normative",
     });
 
-    const verified = await verifyReadableListingArtifact(received, {
+    expect(isListing(received)).toBe(true);
+    const verified = await verifyBytes(Buffer.from(text), {
       verify,
       nowMs: () => 1_790_000_000_000,
       resolvePublicKey: (claim) => (claim === signer ? signerKey : null),

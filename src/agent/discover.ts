@@ -170,6 +170,22 @@ function snapshotListingArtifact(
   }
 }
 
+/** Original bytes are mandatory for normative public verification. */
+function snapshotReceivedListingArtifact(
+  input: Record<string, unknown> | Uint8Array,
+): Record<string, unknown> | null {
+  try {
+    if (nodeTypes.isUint8Array(input)) {
+      return snapshotListingArtifact(admitRawJson(copyRawJsonBytes(input)) as Record<string, unknown>);
+    }
+    const snapshot = snapshotListingArtifact(input as Record<string, unknown>);
+    return snapshot && !Object.prototype.hasOwnProperty.call(snapshot, "dacsVersion")
+      ? snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Authenticate a structurally valid Listing without applying its admission
  * clock. Recovery uses this narrower gate only after runSessionCore proves an
@@ -269,11 +285,11 @@ async function authenticateListingSnapshot(
 }
 
 export async function authenticateReadableListingArtifact(
-  raw: Record<string, unknown>,
+  raw: Record<string, unknown> | Uint8Array,
   deps: DiscoverDeps,
 ): Promise<ReadableListing | null> {
   const capturedDeps = captureDiscoverDeps(deps);
-  const snapshot = snapshotListingArtifact(raw);
+  const snapshot = snapshotReceivedListingArtifact(raw);
   return snapshot
     ? authenticateListingSnapshot(snapshot, capturedDeps)
     : null;
@@ -285,7 +301,7 @@ export async function authenticateReadableListingArtifact(
  * artifact before returning it.
  */
 export async function verifyReadableListingArtifact(
-  raw: Record<string, unknown>,
+  raw: Record<string, unknown> | Uint8Array,
   deps: DiscoverDeps,
 ): Promise<ReadableListing | null> {
   const capturedDeps = captureDiscoverDeps(deps);
@@ -294,7 +310,7 @@ export async function verifyReadableListingArtifact(
       "Listing verification requires deps.verify or explicit trustListings: true",
     );
   }
-  const snapshot = snapshotListingArtifact(raw);
+  const snapshot = snapshotReceivedListingArtifact(raw);
   if (!snapshot) return null;
   const readable = readListingArtifact(snapshot);
   if (!readable) return null;
@@ -362,7 +378,7 @@ export async function discoverListings(
     if (!receivedBytes && Object.prototype.hasOwnProperty.call(snapshot, "dacsVersion")) {
       continue;
     }
-    const readable = await verifyReadableListingArtifact(snapshot, capturedDeps);
+    const readable = await verifyReadableListingArtifact(receivedBytes ?? snapshot, capturedDeps);
     if (!readable) continue;
     if (readable.compatibility === "normative") {
       if (!capturedDeps.validateListing) {
@@ -376,7 +392,7 @@ export async function discoverListings(
         const capturedValidation = snapshotCanonicalJsonRead(
           await capturedDeps.validateListing(
             snapshotCanonicalJson(snapshot, "Listing validator input"),
-            receivedBytes,
+            receivedBytes && copyRawJsonBytes(receivedBytes),
           ),
           "Listing validation result",
         );

@@ -1085,6 +1085,7 @@ describe("ordered ListingValidationDisposition", () => {
           disposition: "verified",
           step: 9,
           reason: "verified",
+          receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
           listing: exactListing,
           listingContentHash: contentHash(listing),
           payloadVerificationCapability: admissionCapability(exactListing),

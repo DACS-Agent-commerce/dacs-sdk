@@ -586,7 +586,8 @@ export function createDacsLiveRoleServiceV1(
   rawOptions: Readonly<DacsLiveRoleServiceOptionsV1>,
 ): Readonly<DacsLiveRoleServiceV1> {
   const options = captureServiceOptions(rawOptions);
-  requireAdmissibleProfile(options);
+  // These resources own live transport/storage authority; labels cannot release it.
+  requireAdmissibleProfile({});
   const config = validateDacsAgentConfig(options.config);
   if (config.mode !== "live-demos" || config.profile !== DACS_NODE_LIVE_PROFILE ||
       (config.role !== "buyer" && config.role !== "seller")) {

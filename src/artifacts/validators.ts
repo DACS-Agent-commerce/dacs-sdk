@@ -139,7 +139,6 @@ function isExactJsonValue(
   if (typeof value === "string") return isSafeJsonString(value);
   if (typeof value === "number") {
     return Number.isFinite(value) &&
-      !Object.is(value, -0) &&
       Math.abs(value) <= Number.MAX_SAFE_INTEGER;
   }
   if (
@@ -185,7 +184,7 @@ function isExactJsonValue(
   }
 }
 
-/** Exact canonical JSON object tree used by signed generic data/parameter fields. */
+/** Exact JSON data tree in the received CF-5 number domain; JCS maps -0 to 0. */
 export function isExactJsonRecord(
   value: unknown,
 ): value is Record<string, unknown> {

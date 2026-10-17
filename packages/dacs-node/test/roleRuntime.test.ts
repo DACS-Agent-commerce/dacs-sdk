@@ -18,6 +18,26 @@ import {
   type DacsDemosAdapterV1,
 } from "../src/index.js";
 
+// These lifecycle fixtures use local adapters/loopback transport. Model a released
+// profile only inside this test module; production refusal is pinned separately.
+vi.mock("../../../src/profile.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../src/profile.js")>(),
+  requireAdmissibleProfile: vi.fn(),
+}));
+
+// The role runtime's injected local service seam must also supply an explicit
+// policy to its coordinators. This wrapper exists only in this test module.
+vi.mock("../src/service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/service.js")>();
+  return {
+    ...actual,
+    createDacsBuyerServiceV1: (options: Parameters<typeof actual.createDacsBuyerServiceV1>[0]) =>
+      actual.createDacsBuyerServiceV1({ ...options, executionMode: "simulation" }),
+    createDacsSellerServiceV1: (options: Parameters<typeof actual.createDacsSellerServiceV1>[0]) =>
+      actual.createDacsSellerServiceV1({ ...options, executionMode: "simulation" }),
+  };
+});
+
 const SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const PEER_SEED = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
 const PRIVATE_KEY = privateKeyFromSeed(SEED);

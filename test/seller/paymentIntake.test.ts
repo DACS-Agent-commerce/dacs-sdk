@@ -1,4 +1,4 @@
-import { validateFixtureListingArtifact as validateListingArtifact } from "../fixtures/receivedListing.js";
+import { admitFixtureListing, validateFixtureListingArtifact as validateListingArtifact } from "../fixtures/receivedListing.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -77,10 +77,10 @@ type Context = {
   deps: SellerPaymentIntakeDeps;
 };
 
-function listingAtCommitResolution(
+async function listingAtCommitResolution(
   listing: Listing,
   admittedAt = 900,
-): SellerListingAtCommitResolution {
+): Promise<SellerListingAtCommitResolution> {
   const listingRef = {
     listingId: listing.listingId,
     version: listing.listingVersion,
@@ -92,16 +92,7 @@ function listingAtCommitResolution(
   if (!dpaSelected) {
     return {
       rawListing: listing as unknown as Record<string, unknown>,
-      validation: {
-        disposition: "verified",
-        step: 9,
-        reason: "verified",
-        receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
-        listing,
-        listingContentHash: listingRef.contentHash,
-        revocation: "absent",
-        railResolution: { disposition: "verified", reason: "verified" },
-      },
+      validation: await admitFixtureListing(listing),
     };
   }
   const deliverable = listing.offering.deliverable;
@@ -114,24 +105,7 @@ function listingAtCommitResolution(
   const deliverableSpecHash = sha256Hex(canonicalize(deliverable));
   return {
     rawListing: listing as unknown as Record<string, unknown>,
-    validation: {
-      disposition: "verified",
-      step: 9,
-      reason: "verified",
-      receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
-      listing,
-      listingContentHash: listingRef.contentHash,
-      revocation: "absent",
-      railResolution: { disposition: "verified", reason: "verified" },
-      payloadVerificationCapability: {
-        operation: "verify",
-        disposition: "supported",
-        reason: "supported",
-        verificationMethodKind: deliverable.verificationMethod.kind,
-        verificationMethodHash,
-        deliverableSpecHash,
-      },
-    },
+    validation: await admitFixtureListing(listing),
     payloadVerificationProducerAdmission: {
       operation: "produce",
       disposition: "supported",
@@ -885,7 +859,7 @@ describe("verifySellerPaymentIntake", () => {
     });
     expect(validation).toMatchObject({ disposition: "verified", step: 9 });
     expect(Object.is(validation.listing?.acceptedRails![0]!.parameters!.floor, 0)).toBe(true);
-    const resolution = { ...listingAtCommitResolution(ctx.listing), rawListing: raw, validation };
+    const resolution = { ...await listingAtCommitResolution(ctx.listing), rawListing: raw, validation };
     ctx.deps.resolveListingAtCommit = async () => resolution;
     const listingRef = {
       listingId: ctx.listing.listingId,
@@ -911,6 +885,25 @@ describe("verifySellerPaymentIntake", () => {
       fulfilment: "none",
     });
   });
+
+  it.each(["missing bytes", "re-rendered bytes", "copied reader result", "mutated reader result"])(
+    "refuses historical admission with %s before claiming a payment", async (kind) => {
+      const ctx = makeContext("pay-dem");
+      const resolution = await listingAtCommitResolution(ctx.listing);
+      if (kind === "mutated reader result") resolution.validation.reason = "caller-replaced";
+      else resolution.validation = structuredClone(resolution.validation);
+      if (kind === "missing bytes") delete resolution.validation.receivedJsonBase64;
+      if (kind === "re-rendered bytes") {
+        resolution.validation.receivedJsonBase64 = Buffer.from(JSON.stringify(ctx.listing)).toString("base64");
+      }
+      ctx.deps.resolveListingAtCommit = async () => resolution;
+      let claims = 0;
+      ctx.deps.receiptStore.claim = async () => { claims++; throw new Error("must not claim"); };
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "rejected", reason: "listing-at-commit-admission-mismatch", fulfilment: "none",
+      });
+      expect(claims).toBe(0);
+    });
 
   it("verifies pay-DEM in OS, emits exact normative evidence, and claims once", async () => {
     const store = createInMemorySellerReceiptStore();
@@ -1193,7 +1186,7 @@ describe("verifySellerPaymentIntake", () => {
       consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     ctx.deps.resolveListingAtCommit = async () => {
-      const resolution = listingAtCommitResolution(ctx.listing);
+      const resolution = await listingAtCommitResolution(ctx.listing);
       mutate(resolution);
       return resolution;
     };
@@ -1207,7 +1200,7 @@ describe("verifySellerPaymentIntake", () => {
 
   it("requires the raw Listing, reader result and producer admission from one checkpoint", async () => {
     const ctx = makeContext("pay-dem");
-    const resolution = listingAtCommitResolution(ctx.listing);
+    const resolution = await listingAtCommitResolution(ctx.listing);
     ctx.deps.resolveListingAtCommit = async () =>
       resolution.validation as never;
     let claims = 0;
@@ -1259,9 +1252,9 @@ describe("verifySellerPaymentIntake", () => {
     };
     repinListing(unexpected);
     unexpected.deps.resolveListingAtCommit = async () => ({
-      ...listingAtCommitResolution(unexpected.listing),
+      ...await listingAtCommitResolution(unexpected.listing),
       payloadVerificationProducerAdmission:
-        listingAtCommitResolution(makeContext("pay-dem").listing)
+        (await listingAtCommitResolution(makeContext("pay-dem").listing))
           .payloadVerificationProducerAdmission!,
     });
     await expect(verifySellerPaymentIntake(unexpected.input, unexpected.deps))
@@ -1455,7 +1448,7 @@ describe("verifySellerPaymentIntake", () => {
       consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     ctx.deps.resolveListingAtCommit = async () => new Proxy(
-      listingAtCommitResolution(ctx.listing),
+      await listingAtCommitResolution(ctx.listing),
       {},
     );
 

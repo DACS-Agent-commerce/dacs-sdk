@@ -5,6 +5,13 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// These lifecycle fixtures use local adapters/loopback transport. Model a released
+// profile only inside this test module; production refusal is pinned separately.
+vi.mock("../../../src/profile.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../src/profile.js")>(),
+  requireAdmissibleProfile: vi.fn(),
+}));
+
 const authenticated = vi.hoisted(() => ({ value: true }));
 vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@kynesyslabs/dacs")>()),

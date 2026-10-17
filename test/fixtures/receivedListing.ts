@@ -66,3 +66,28 @@ export function runFixtureSessionCore(...args: Parameters<typeof runSessionCore>
   }
   return runSessionCore(args[0], args[1], deps, args[3]);
 }
+
+/** Full ordered admission for locally authored seller historical fixtures. */
+export async function admitFixtureListing(listing: import("../../src/artifacts/types.js").Listing) {
+  const result = await validateFixtureListingArtifact(listing as unknown as Record<string, unknown>, {
+    executionMode: "simulation",
+    nowMs: () => listing.validity.notBefore,
+    verifyListingSignature: () => true,
+    verifyIdentityPresentation: () => true,
+    verifySellerControl: () => true,
+    resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
+    revocation: { surfaces: [{ kind: "well-known", status: "active", integrity: "verified" }],
+      readMarker: async () => null, verifyMarkerSignature: () => true },
+    loadRailResolution: () => ({
+      trustPhase: "PA-1", trustPolicyAcceptsPA1: true,
+      registry: { state: "not-used", entries: [], definitions: [] },
+      inCodeDefinitions: (listing.acceptedRails ?? []).map((rail) => ({
+        railId: rail.railId, railVersion: rail.railVersion ?? 1,
+        phaseHandler: listing.pipeline.find((phase) => phase.kind.startsWith("pay-"))!.kind,
+        governanceAnchoring: "in-code" as const, signatureValid: true as const,
+      })),
+    }),
+  });
+  if (result.disposition !== "verified") throw new Error(`fixture admission failed: ${result.reason}`);
+  return result;
+}

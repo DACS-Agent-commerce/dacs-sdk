@@ -339,7 +339,8 @@ export interface SessionDeps extends ProfileExecutionPolicy {
   /**
    * Verify the anchored listing before any external effect is taken from it
    * (#41). Receives the raw stored artifact (signature intact) and the seller
-   * claim it advertises; must return true only if the signature verifies AND
+   * claim it advertises, plus an owned copy of the original bytes when present;
+   * must return true only if the signature verifies AND
    * binds to that seller.
    *
    * This is enforced INDEPENDENTLY of discovery: a session may be handed a ref
@@ -353,6 +354,7 @@ export interface SessionDeps extends ProfileExecutionPolicy {
   verifyListing?: (
     raw: Record<string, unknown>,
     sellerClaim: string,
+    receivedBytes?: Uint8Array,
   ) => Promise<boolean> | boolean;
   /**
    * Authenticate the exact buyer-owned legacy Agreement recovered while
@@ -2891,7 +2893,7 @@ export async function runSessionCore(
       const rawValidation = snapshotCanonicalJsonRead(
         await deps.validateListing(
           snapshotCanonicalJson(storedRecord, "Listing validator input"),
-          receivedListingBytes,
+          receivedListingBytes && copyRawJsonBytes(receivedListingBytes),
         ),
         "Listing validation result",
       );
@@ -3027,6 +3029,7 @@ export async function runSessionCore(
             snapshotCanonicalJson(storedRecord, "Listing verifier input"),
           ),
           listingView.sellerClaim,
+          receivedListingBytes && copyRawJsonBytes(receivedListingBytes),
         )) === true;
     } catch {
       verified = false; // a throwing verifier is not a pass

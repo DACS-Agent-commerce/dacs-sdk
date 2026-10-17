@@ -400,7 +400,8 @@ export function prepareDacsPayDemPurchaseV1(
 export function createDacsPurchaseQueueExecutorV1(
   options: Readonly<DacsPurchaseQueueExecutorOptionsV1>,
 ): DacsGuardedExecutorV1 {
-  requireAdmissibleProfile(options);
+  // These resources own live transport/storage authority; labels cannot release it.
+  requireAdmissibleProfile({});
   const executionMode = options.executionMode;
   if (options === null || typeof options !== "object" ||
       options.database === null || typeof options.database !== "object" ||

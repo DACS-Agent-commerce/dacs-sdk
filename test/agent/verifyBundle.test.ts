@@ -7,7 +7,7 @@ import {
 } from "../../src/index.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
-import { contentHash } from "../../src/canonical/index.js";
+import { admitRawJson, contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -1504,6 +1504,25 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
       true,
     );
     expect(result.refs.every(({ verdict }) => verdict === "ok")).toBe(true);
+  });
+
+  test("verifies admitted negative-zero dependency values with the same signed scopes as zero", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    Object.assign(fx.listing, { metrics: { zero: 0 } });
+    const listingScope = { ...fx.listing };
+    delete listingScope.signature;
+    fx.listing.signature = await componentSignature(listingScope, ARTIFACT_SEPARATORS.Listing, sellerDid, signSeller);
+    (fx.agreement.listingRef as { contentHash: string }).contentHash = contentHash(fx.listing);
+    await resignAgreement(fx, [{ party: buyerDid, sign: signBuyer }, { party: sellerDid, sign: signSeller }]);
+    (fx.bundle.agreementRef as { contentHash: string }).contentHash = contentHash(fx.agreement);
+    (fx.bundle.listingRef as { contentHash: string }).contentHash = contentHash(fx.listing);
+    await resignFixture(fx, [{ party: buyerDid, sign: signBuyer }, { party: sellerDid, sign: signSeller }]);
+    const positive = await verifyBundleCore("ref", depsFor(fx));
+    expect(positive.ok).toBe(true);
+    fx.listing = admitRawJson(Buffer.from(JSON.stringify(fx.listing).replace('"zero":0', '"zero":-0.0'))) as Record<string, unknown>;
+    const negative = await verifyBundleCore("ref", depsFor(fx));
+    expect(negative).toEqual(positive);
+    expect(Object.is((fx.listing.metrics as { zero: number }).zero, -0)).toBe(true);
   });
 
   test("rejects accessor and Proxy dependency bags before reading artifacts", async () => {

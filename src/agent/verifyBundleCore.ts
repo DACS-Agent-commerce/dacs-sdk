@@ -284,7 +284,7 @@ function snapshotRecord(
   // into a valid-looking signed record.
   if (!isExactJsonRecord(value)) return null;
   try {
-    const captured = deepFreezeSnapshot(structuredClone(value));
+    const captured = deepFreezeSnapshot(snapshotCanonicalJsonRead(value, "bundle dependency"));
     return isExactJsonRecord(captured) ? captured : null;
   } catch {
     return null;

@@ -185,7 +185,33 @@ export type VerifiedListingAdmission = ListingValidationResult & {
   disposition: "verified";
   listing: Listing;
   listingContentHash: string;
+  receivedJsonBase64: string;
 };
+
+// Runtime provenance is deliberately non-serializable. Historical resolvers must
+// re-admit original bytes through the ordered reader after restoring a checkpoint.
+const readerAdmissions = new WeakMap<object, ListingValidationResult>();
+
+/** Capture the exact owned reader result without invoking caller-owned views. */
+export function getListingReaderProvenance(result: unknown): ListingValidationResult | null {
+  if (result === null || typeof result !== "object" || nodeTypes.isProxy(result)) return null;
+  const retained = readerAdmissions.get(result);
+  return retained ? structuredClone(retained) : null;
+}
+
+/** Compare each field separately so a maximum-depth Listing stays in profile. */
+export function sameListingReaderResult(left: ListingValidationResult, right: ListingValidationResult): boolean {
+  try {
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    return leftKeys.length === rightKeys.length && leftKeys.every((key, index) =>
+      key === rightKeys[index] &&
+      canonicalize(snapshotCanonicalJsonRead(left[key as keyof ListingValidationResult], "Listing reader field")) ===
+      canonicalize(snapshotCanonicalJsonRead(right[key as keyof ListingValidationResult], "Listing reader field")));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Bind an ordered reader result to the exact current Listing admitted by a
@@ -207,19 +233,16 @@ export function isVerifiedListingAdmission(
     return false;
   }
   try {
-    let received: unknown;
-    if (result.receivedJsonBase64 !== undefined) {
-      if (typeof result.receivedJsonBase64 !== "string") return false;
-      const receivedBytes = Buffer.from(result.receivedJsonBase64, "base64");
-      if (receivedBytes.toString("base64") !== result.receivedJsonBase64) return false;
-      received = admitRawJson(receivedBytes);
-    }
+    if (typeof result.receivedJsonBase64 !== "string") return false;
+    const receivedBytes = Buffer.from(result.receivedJsonBase64, "base64");
+    if (receivedBytes.toString("base64") !== result.receivedJsonBase64) return false;
+    const received = admitRawJson(receivedBytes);
     // Apply the same received-number policy as the ordered reader before its
     // shape check, retaining every signed extension in the owned comparison.
     const capturedRaw = snapshotCanonicalJsonRead(raw, "admitted Listing");
     if (
       !isListing(capturedRaw) ||
-      (received !== undefined && canonicalize(received) !== canonicalize(capturedRaw)) ||
+      canonicalize(received) !== canonicalize(capturedRaw) ||
       canonicalize(result.listing) !== canonicalize(capturedRaw) ||
       contentHash(capturedRaw) !== result.listingContentHash ||
       contentHash(result.listing as unknown as Record<string, unknown>) !==
@@ -1512,7 +1535,7 @@ export async function validateListingArtifact(
       ...payloadCapabilityField,
     };
   }
-  return {
+  const result: ListingValidationResult = {
     disposition: "verified",
     step: 9,
     reason: "verified",
@@ -1524,6 +1547,8 @@ export async function validateListingArtifact(
     railResolution,
     ...payloadCapabilityField,
   };
+  readerAdmissions.set(result, structuredClone(result));
+  return result;
 }
 
 export type ListingReachability = "reachable" | "unreachable" | "indeterminate";

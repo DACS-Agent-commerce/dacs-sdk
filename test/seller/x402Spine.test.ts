@@ -1,3 +1,4 @@
+import { admitFixtureListing } from "../fixtures/receivedListing.js";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -428,7 +429,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
   const paymentIntakeDeps: Omit<SellerPaymentIntakeDeps, "receiptStore"> = {
     executionMode: "simulation",
     resolveCommittedAgreement: async () => committed,
-    resolveListingAtCommit: async () => listingResolution,
+    resolveListingAtCommit: async () => ({ ...listingResolution, validation: await admitFixtureListing(listing) }),
     resolveRail: async ({ railRegistryVersion }) => ({
       disposition: "verified",
       rail,

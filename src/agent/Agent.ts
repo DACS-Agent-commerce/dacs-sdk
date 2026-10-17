@@ -952,6 +952,7 @@ function captureAgentRuntimeConfig(
 }
 
 async function connectAgentAdapter(config: AgentConfig): Promise<ConnectedAgentInput> {
+  requireAdmissibleProfile({});
   if (config === null || typeof config !== "object" || nodeTypes.isProxy(config)) {
     throw new DacsError("AgentConfig must be stable data");
   }
@@ -1122,8 +1123,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     getAddress: publicReads.getAddress,
     getPublicKey: () =>
       getPublicKeyMethod?.() ?? missingAdapterCapability("getPublicKey"),
-    sign: (bytes: Uint8Array) =>
-      signMethod?.(bytes) ?? missingAdapterCapability("sign"),
+    sign: (bytes: Uint8Array) => {
+      requireAdmissibleProfile({ executionMode });
+      return signMethod?.(bytes) ?? missingAdapterCapability("sign");
+    },
   });
   const anchoring = Object.freeze({
     getAddress: publicReads.getAddress,
@@ -1132,14 +1135,18 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       name: string,
       value: object,
       options?: Parameters<SubstrateAdapter["anchorWriteOnce"]>[2],
-    ) => anchorWriteOnceMethod?.(name, value, options) ??
-      missingAdapterCapability("anchorWriteOnce"),
+    ) => {
+      requireAdmissibleProfile({ executionMode });
+      return anchorWriteOnceMethod?.(name, value, options) ?? missingAdapterCapability("anchorWriteOnce");
+    },
     anchorAndWait: (
       name: string,
       value: object,
       options?: Parameters<SubstrateAdapter["anchorAndWait"]>[2],
-    ) => anchorAndWaitMethod?.(name, value, options) ??
-      missingAdapterCapability("anchorAndWait"),
+    ) => {
+      requireAdmissibleProfile({ executionMode });
+      return anchorAndWaitMethod?.(name, value, options) ?? missingAdapterCapability("anchorAndWait");
+    },
   });
   const loadListingRailResolution = stableAgentMethod<
     AgentConfig["loadListingRailResolution"]
@@ -1747,6 +1754,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     },
 
     async publishListing(listingInput: ListingDraft): Promise<PublishResult> {
+      requireAdmissibleProfile({ executionMode });
       if (artifactRepository === null) {
         throw new DacsError(
           "publishListing requires AgentConfig.bindings.publisher so the logical-to-native binding is published",
@@ -2312,7 +2320,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           // #41 — verify the listing against the key in its own agentId before
           // vetting or settlement. Without this the money path would run on an
           // unverified listing (and the gate below would throw).
-          verifyListing: async (raw, sellerClaim) => {
+          verifyListing: async (raw, sellerClaim, receivedBytes) => {
             if (expectedContentHash !== null) {
               try {
                 if (contentHash(raw) !== expectedContentHash) return false;
@@ -2325,7 +2333,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             // fresh sessions must be in-window, while an expired recovery must
             // first prove an exact signed Agreement and authenticated successful
             // SettlementEvidence before this callback is reached.
-            const verified = await authenticateReadableListingArtifact(raw, {
+            const verified = await authenticateReadableListingArtifact(receivedBytes ?? raw, {
               verify: ed25519RawVerify,
               resolvePublicKey: resolveCanonicalSigningKeyForRead,
             });

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { discoverListings } from "../../src/agent/discover.js";
+import { authenticateReadableListingArtifact, verifyReadableListingArtifact, discoverListings } from "../../src/agent/discover.js";
 import { validateListingArtifact, isVerifiedListingAdmission, type ListingValidationDeps } from "../../src/agent/listingValidation.js";
 import { runSessionCore, type SessionDeps } from "../../src/agent/runSessionCore.js";
 import { contentHash } from "../../src/canonical/index.js";
@@ -65,6 +65,23 @@ const terms = { price: { amount: "1", asset: "USDC", decimals: 6, rail: "pay-x40
   deliveryPhase: "deliver-attested-payload", deliveryFormat: "application/json" };
 
 describe("Listing CF-5 ingress before verification or effects", () => {
+  it.each([verifyReadableListingArtifact, authenticateReadableListingArtifact])(
+    "requires original bytes at public authentication before any verifier callback", async (authenticate) => {
+      const listing = listingFixture();
+      const verify = vi.fn(() => true);
+      const deps = { verify, resolvePublicKey: () => rawPublicKey(publicKey), nowMs: () => 1_790_000_000_000 };
+      expect(await authenticate(listing as unknown as Record<string, unknown>, deps)).toBeNull();
+      expect(verify).not.toHaveBeenCalled();
+      const text = JSON.stringify(listing);
+      for (const malformed of [text.replace("{", '{"listingId":"ignored",'),
+        text.replace('"magnitude":9007199254740991', '"magnitude":9007199254740991.1')]) {
+        expect(await authenticate(Buffer.from(malformed), deps)).toBeNull();
+      }
+      expect(verify).not.toHaveBeenCalled();
+      expect(await authenticate(Buffer.from(text), deps)).toMatchObject({ compatibility: "normative" });
+      expect(verify).toHaveBeenCalled();
+    });
+
   it("owns the exact internal byte view without invoking shadowed properties", async () => {
     const bytes = new Uint8Array(Buffer.from(JSON.stringify(listingFixture())));
     const getter = vi.fn(() => { throw new Error("must use intrinsic byte slots"); });
@@ -122,6 +139,24 @@ describe("Listing CF-5 ingress before verification or effects", () => {
     const session = sessionDeps(listing);
     await expect(runSessionCore("listing", terms, session)).rejects.toThrow(/CF-5 provenance/);
     expect(session.validateListing).not.toHaveBeenCalled();
+    expect(session.settle).not.toHaveBeenCalled();
+  });
+
+  it("retains session bytes independently of the ordered validator's byte view", async () => {
+    const bytes = Buffer.from(JSON.stringify(listingFixture()));
+    const session = sessionDeps(bytes);
+    session.validateListing = async (_raw, received) => {
+      const result = await validateListingArtifact(received!, validationDeps());
+      received!.fill(0);
+      return result;
+    };
+    session.verifyListing = vi.fn((_raw, _seller, received) => {
+      expect(Buffer.from(received!).equals(bytes)).toBe(true);
+      return false;
+    });
+    await expect(runSessionCore("listing", terms, session)).rejects.toThrow(/failed signature verification/);
+    expect(session.verifyListing).toHaveBeenCalledOnce();
+    expect(session.sign).not.toHaveBeenCalled();
     expect(session.settle).not.toHaveBeenCalled();
   });
 

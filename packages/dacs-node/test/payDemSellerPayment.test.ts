@@ -1,3 +1,4 @@
+import { admitFixtureListing } from "../../../test/fixtures/receivedListing.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -249,7 +250,7 @@ function fixture(receiptStore: SellerReceiptStore) {
         },
         railRegistryVersion: 7,
       }),
-      resolveListingAtCommit: async () => listingAtCommit,
+      resolveListingAtCommit: async () => ({ ...listingAtCommit, validation: await admitFixtureListing(listing) }),
       resolveRail: async ({ railRegistryVersion }: { railRegistryVersion: number }) => ({
         disposition: "verified" as const,
         rail: {

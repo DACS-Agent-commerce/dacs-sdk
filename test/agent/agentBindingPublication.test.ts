@@ -181,7 +181,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
     const { adapter, state } = fakeAdapter();
     expect(() =>
       buildAgent(adapter, {
-        demosRpc: "mem",
+        executionMode: "simulation", demosRpc: "mem",
         wallet: "secret",
         ...PUBLICATION_CAPABILITIES,
         bindings: { index: {}, publisher: {} },
@@ -192,7 +192,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
 
   test("fails before scanning, signing, or anchoring when publication authority is absent", async () => {
     const { adapter, state } = fakeAdapter();
-    const agent = buildAgent(adapter, { demosRpc: "mem", wallet: "secret" });
+    const agent = buildAgent(adapter, { executionMode: "simulation", demosRpc: "mem", wallet: "secret" });
 
     await expect(agent.publishListing(LISTING)).rejects.toThrow(
       /requires AgentConfig\.bindings/,
@@ -207,7 +207,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
     );
     const bindings = createInMemoryBindingStore();
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       wallet: "secret",
       ...PUBLICATION_CAPABILITIES,
       bindings: { index: bindings, publisher: bindings },
@@ -232,7 +232,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
       const { adapter, state } = fakeAdapter();
       const bindings = createInMemoryBindingStore();
       const agent = buildAgent(adapter, {
-        demosRpc: "mem",
+        executionMode: "simulation", demosRpc: "mem",
         wallet: "secret",
         ...PUBLICATION_CAPABILITIES,
         bindings: { index: bindings, publisher: bindings },
@@ -261,7 +261,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
     const { adapter, state } = fakeAdapter();
     const bindings = createInMemoryBindingStore();
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       wallet: "secret",
       ...PUBLICATION_CAPABILITIES,
       bindings: { index: bindings, publisher: bindings },
@@ -301,7 +301,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
     const { adapter, state } = fakeAdapter();
     const bindings = createInMemoryBindingStore();
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       wallet: "secret",
       ...PUBLICATION_CAPABILITIES,
       bindings: { index: bindings, publisher: bindings },
@@ -400,7 +400,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
       },
     };
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       wallet: "secret",
       ...PUBLICATION_CAPABILITIES,
       bindings: { index: bindings, publisher },
@@ -435,7 +435,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
     const { adapter, state } = fakeAdapter();
     const bindings = createInMemoryBindingStore();
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       wallet: "secret",
       ...PUBLICATION_CAPABILITIES,
       bindings: {
@@ -472,7 +472,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
       },
     ]);
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       wallet: "secret",
       ...PUBLICATION_CAPABILITIES,
       bindings: { index: bindings, publisher: bindings },
@@ -507,7 +507,7 @@ describe("Agent.publishListing binding publication (#54)", () => {
       },
     };
     const agent = buildAgent(adapter, {
-      demosRpc: "mem",
+      executionMode: "simulation", demosRpc: "mem",
       wallet: "secret",
       ...PUBLICATION_CAPABILITIES,
       bindings: { index: bindings, publisher },

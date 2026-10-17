@@ -11,6 +11,13 @@ import type { IdentityBundle } from "../../src/artifacts/types.js";
 import type { AuthenticateDemosCciInput } from "../../src/identity/demosCci.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 
+// Only the fully mocked connected-construction fixtures model a released profile.
+// The real factories' unconditional refusal is covered in profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/profile.js")>(),
+  requireAdmissibleProfile: vi.fn(),
+}));
+
 async function createConnectedFixture(config: AgentConfig) {
   const { adapter: _manualAuthority, ...agent } = await createUnsafeManualAgent(config);
   return agent;
