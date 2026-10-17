@@ -10,6 +10,7 @@ import {
   isSettlementEvidence,
   prepareCompletedSellerBundleCounterSignatureRequest,
   verifyCompletedSellerBundleCounterSignatureRequest,
+  verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
 } from "@kynesyslabs/dacs";
 import type {
@@ -188,7 +189,7 @@ function receipt(
   return {
     receiptVersion: "1",
     substrate: "demos",
-    finalityProfile: "demos-bft-confirmed-native-read",
+    finalityProfile: "demos-bft-final",
     logicalAddress,
     nativeAddress,
     contentHash: contentHash(artifact),
@@ -650,8 +651,15 @@ async function payDemFixture() {
     preliminaryRequest, rail, receipts };
 }
 
-async function x402AuditHarness() {
+async function x402AuditHarness(
+  railParameters: Readonly<Record<string, unknown>> = {},
+) {
   const f = await fixture();
+  const parameters: Record<string, unknown> = { ...f.rail.parameters, ...railParameters };
+  for (const [key, value] of Object.entries(railParameters)) {
+    if (value === undefined) delete parameters[key];
+  }
+  f.rail.parameters = parameters as typeof f.rail.parameters;
   const root = mkdtempSync(join(tmpdir(), "dacs-buyer-audit-"));
   roots.push(root);
   const database = await openDacsNodeSqliteDatabase({
@@ -861,7 +869,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     const { audit, authenticated, f } = await x402AuditHarness();
     const observationCalls = mocks.observeX402Transfer.mock.calls.length;
 
-    for (const finalityBlocks of [undefined, 1, 3]) {
+    for (const finalityBlocks of [1, 3]) {
       await expect(audit.bundleTransport.resolveVerification({
         authenticated,
         request: requestWithFinality(f, finalityBlocks),
@@ -870,11 +878,110 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     expect(mocks.observeX402Transfer).toHaveBeenCalledTimes(observationCalls);
   });
 
+  // DACS-4 §9.7: `finalityBlocks?: number` — the echo is optional, and the
+  // depth the buyer re-observes comes from the authenticated rail policy.
+  it("accepts conforming evidence that omits the finality echo", async () => {
+    const { audit, authenticated, f, observation } = await x402AuditHarness();
+    await expect(audit.bundleTransport.resolveVerification({
+      authenticated,
+      request: requestWithFinality(f, undefined),
+    })).resolves.toMatchObject({ input: { session: expect.anything() } });
+    expect(mocks.observeX402Transfer).toHaveBeenCalled();
+    // The authenticated depth (2) still governs the buyer's own re-observation.
+    mocks.observeX402Transfer.mockResolvedValueOnce({ ...observation, confirmations: 1 });
+    await expect(audit.bundleTransport.resolveVerification({
+      authenticated,
+      request: requestWithFinality(f, undefined),
+    })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+  });
+
+  // The audit's material goes on to the SDK settlement verification that
+  // DurableBuyerBundleFinalization runs, so evidence with or without the echo
+  // has to pass there too, still at the authenticated depth.
+  it.each([2, undefined])(
+    "verifies the finalized session settlement of evidence with echo %s",
+    async (finalityBlocks) => {
+      const { audit, authenticated, f, observation, pair } = await x402AuditHarness();
+      const request = requestWithFinality(f, finalityBlocks);
+      const preliminary = await audit.bundleTransport.resolveVerification({
+        authenticated,
+        request,
+      });
+      // The consumed authorization carries the signed shape: no own depth
+      // member at all when the evidence omits the echo.
+      const consumedFinality = preliminary.input.fulfilment.consumedPaymentAuthorization
+        .evidenceInput.settlementFinality;
+      if (finalityBlocks === undefined) {
+        expect(consumedFinality).not.toHaveProperty("finalityBlocks");
+      } else {
+        expect(consumedFinality).toHaveProperty("finalityBlocks", finalityBlocks);
+      }
+      const exactRequest = prepareCompletedSellerBundleCounterSignatureRequest({
+        ...preliminary.input,
+        seller: {
+          ...preliminary.input.seller,
+          signer: async (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+        },
+      });
+      mocks.bundleRequest.mockResolvedValue(exactRequest);
+      const material = await audit.audit.resolveMaterial({
+        operation: { order: pair.buyer },
+        retained: { application: f.application },
+      } as never);
+      const verify = () => verifyFinalizedSessionSettlement(
+        material.input.settlementContext,
+        material.input.settlement,
+        material.durability.settlementVerification,
+      );
+      const verified = await verify();
+      expect(verified).toMatchObject({ disposition: "verified" });
+      if (verified.disposition !== "verified" || verified.value.outcome !== "success") {
+        return;
+      }
+      expect(verified.value.nativeObservation.finality).toEqual(
+        material.input.settlement.evidence.settlementFinality,
+      );
+      expect(material.input.settlementContext.rail.finality).toEqual({
+        model: "block-depth",
+        finalityBlocks: 2,
+      });
+      // The buyer's re-observation is still held to the authenticated depth.
+      mocks.observeX402Transfer.mockResolvedValueOnce({ ...observation, confirmations: 1 });
+      await expect(verify()).resolves.toEqual({
+        disposition: "rejected",
+        reason: "native settlement: buyer-audit-native-settlement-conflict",
+      });
+    },
+  );
+
+  // The DACS-4 phase card makes rail.parameters.finalityBlocks optional; the
+  // L2 default (1) applies, as in the seller's payment intake.
+  it("audits a rail without a finalityBlocks parameter at the L2 default depth", async () => {
+    const { audit, authenticated, f, observation } = await x402AuditHarness({
+      finalityBlocks: undefined,
+    });
+    for (const finalityBlocks of [undefined, 1]) {
+      await expect(audit.bundleTransport.resolveVerification({
+        authenticated,
+        request: requestWithFinality(f, finalityBlocks),
+      })).resolves.toMatchObject({ input: { session: expect.anything() } });
+    }
+    mocks.observeX402Transfer.mockResolvedValueOnce({ ...observation, confirmations: 0 });
+    await expect(audit.bundleTransport.resolveVerification({
+      authenticated,
+      request: requestWithFinality(f, undefined),
+    })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+    await expect(audit.bundleTransport.resolveVerification({
+      authenticated,
+      request: requestWithFinality(f, 2),
+    })).rejects.toMatchObject({ reasonCode: "buyer-audit-evidence-invalid" });
+  });
+
   it.each([
-    {},
     { finalityBlocks: 0 },
     { finalityBlocks: 1.5 },
-  ])("rejects an unavailable or invalid authenticated x402 finality depth", async (
+    { finalityBlocks: "2" },
+  ])("rejects an invalid explicit x402 finality depth %j", async (
     parameters,
   ) => {
     const f = await fixture();

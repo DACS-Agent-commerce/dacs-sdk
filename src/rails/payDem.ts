@@ -7,6 +7,7 @@ import {
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import { parseCanonicalClaimReference } from "../identity/claimReference.js";
 import { canonicalDemosAgentPublicKey } from "../identity/demos.js";
 import {
@@ -1834,6 +1835,8 @@ export function payDemSettle(
       phase,
       rail: railId,
     } = req;
+    // CORE JID-3: an alias of a jobId must not key a second transfer.
+    requireCanonicalJobId(jobId, "pay-dem jobId");
     if (phase !== "pay-dem") {
       throw new DacsError(
         `pay-dem executor requires phase "pay-dem", got "${phase}"`,

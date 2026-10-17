@@ -1,0 +1,110 @@
+{
+  "fixtureVersion": "1",
+  "recordedAt": "2026-10-15",
+  "endpoint": "https://node2.demos.sh",
+  "note": "Read-only probes; nothing was signed or sent. demosdk 4.0.16 nodeCall returns body.response on HTTP 2xx; its Storage Program read throws on any non-2xx.",
+  "deployment": {
+    "version": "0.9.9 RC",
+    "commit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578"
+  },
+  "sourceVerified": "kynesyslabs/node@ac8f45f02fc9c25082ce9b83595c2e3916b49c5a",
+  "demosdk": "4.0.16",
+  "reads": {
+    "txMissing": {
+      "httpStatus": 200,
+      "body": {
+        "result": 400,
+        "response": "error",
+        "require_reply": false,
+        "extra": null
+      }
+    },
+    "blockBeyondHead": {
+      "httpStatus": 200,
+      "body": {
+        "result": 404,
+        "response": "error",
+        "extra": "Block not found",
+        "require_reply": false
+      }
+    },
+    "blockZero": {
+      "httpStatus": 200,
+      "body": {
+        "result": 400,
+        "response": "error",
+        "extra": "Block number not provided",
+        "require_reply": false
+      }
+    },
+    "storageMissing": {
+      "httpStatus": 404,
+      "body": {
+        "success": false,
+        "error": "Storage program not found: stor-cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    "txFound": {
+      "httpStatus": 200,
+      "body": {
+        "result": 200,
+        "response": {
+          "hash": "d6ef7077d8795f37ae28ca3272803385c91dc6146dce7ff1921ee1e2bc149ee8",
+          "status": "confirmed",
+          "blockNumber": 529470,
+          "contentKeys": [
+            "type",
+            "from",
+            "to",
+            "from_ed25519_address",
+            "amount",
+            "nonce",
+            "timestamp",
+            "transaction_fee",
+            "data",
+            "gcr_edits"
+          ],
+          "ed25519_signature": null
+        },
+        "require_reply": false,
+        "extra": null
+      }
+    },
+    "blockFound": {
+      "httpStatus": 200,
+      "body": {
+        "result": 200,
+        "response": {
+          "number": 529470,
+          "hash": "564254d1b2fc4b87c2e4a68dfbf00c14e207a90cfae14e91e76fb8136dd46823",
+          "status": "confirmed",
+          "timestamp": 1791962290,
+          "orderedTransactionsIncludesTx": true,
+          "validationDataKeys": [
+            "signatures"
+          ]
+        },
+        "require_reply": false,
+        "extra": ""
+      }
+    },
+    "storageFound": {
+      "httpStatus": 200,
+      "keys": [
+        "success",
+        "storageAddress",
+        "owner",
+        "programName",
+        "encoding",
+        "data",
+        "metadata",
+        "acl",
+        "storageLocation",
+        "sizeBytes",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  }
+}

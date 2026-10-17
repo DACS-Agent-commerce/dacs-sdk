@@ -416,3 +416,159 @@ describe("evmErc20SettleCore (direct ERC-20 transfer rail)", () => {
     ).rejects.toThrow(/invalid base-unit amount/);
   });
 });
+
+describe("verifyEvmTransferFinality (DACS-4 SB-1 exact event and chain binding)", () => {
+  const request = {
+    chainId: 84532,
+    transactionHash: TX_HASH,
+    tokenAddress: TOKEN,
+    payerAddress: PAYER,
+    payeeAddress: RECIPIENT,
+    amount: 1000000n,
+    minimumConfirmations: 2,
+  };
+  const OTHER = "0x9999999999999999999999999999999999999999";
+  const APPROVAL_TOPIC =
+    "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925";
+
+  async function exactLog(): Promise<Record<string, unknown>> {
+    const receipt = await finalityClient().getTransactionReceipt({ hash: TX_HASH }) as {
+      logs: Array<Record<string, unknown>>;
+    };
+    return structuredClone(receipt.logs[0]!);
+  }
+
+  function withLogs(logs: unknown[]): EvmTransferFinalityClient {
+    const base = finalityClient();
+    return finalityClient({
+      getTransactionReceipt: async (input) => ({
+        ...(await base.getTransactionReceipt(input) as object),
+        logs,
+      }),
+    });
+  }
+
+  // SB-1: the event's token contract, payer, payee destination and exact
+  // amount MUST all match. Each near miss differs from the exact event in one
+  // member only, so only that member's check can exclude it.
+  test.each<[string, (log: Record<string, unknown>) => void]>([
+    ["a removed (reorged-out) log", (log) => { log.removed = true; }],
+    ["another token contract", (log) => { log.address = OTHER; }],
+    ["another transaction", (log) => { log.transactionHash = `0x${"e".repeat(64)}`; }],
+    ["another block number", (log) => { log.blockNumber = 101n; }],
+    ["another block hash", (log) => { log.blockHash = FINALITY_HASH; }],
+    ["two topics", (log) => { log.topics = (log.topics as string[]).slice(0, 2); }],
+    ["an ERC-721 shaped fourth topic", (log) => {
+      log.topics = [...log.topics as string[], `0x${"0".repeat(63)}1`];
+    }],
+    ["an Approval event", (log) => {
+      log.topics = [APPROVAL_TOPIC, ...(log.topics as string[]).slice(1)];
+    }],
+    ["another payer", (log) => {
+      log.topics = [(log.topics as string[])[0], topic(OTHER), topic(RECIPIENT)];
+    }],
+    ["another payee", (log) => {
+      log.topics = [(log.topics as string[])[0], topic(PAYER), topic(OTHER)];
+    }],
+    ["one base unit short", (log) => {
+      log.data = `0x${999999n.toString(16).padStart(64, "0")}`;
+    }],
+    ["one base unit over", (log) => {
+      log.data = `0x${1000001n.toString(16).padStart(64, "0")}`;
+    }],
+    ["a non-canonical amount word", (log) => { log.data = `0x${1000000n.toString(16)}`; }],
+  ])("refuses %s as the settlement event", async (_label, mutate) => {
+    const nearMiss = await exactLog();
+    mutate(nearMiss);
+    await expect(verifyEvmTransferFinality(request, withLogs([nearMiss])))
+      .rejects.toThrow("exact ERC-20 Transfer event is missing");
+  });
+
+  test("selects the one exact event among near misses", async () => {
+    const decoys = await Promise.all([
+      (log: Record<string, unknown>) => { log.removed = true; },
+      (log: Record<string, unknown>) => { log.address = OTHER; },
+      (log: Record<string, unknown>) => {
+        log.topics = [APPROVAL_TOPIC, ...(log.topics as string[]).slice(1)];
+      },
+      (log: Record<string, unknown>) => { log.data = `0x${"0".repeat(64)}`; },
+    ].map(async (mutate, index) => {
+      const decoy = await exactLog();
+      mutate(decoy);
+      decoy.logIndex = index;
+      return decoy;
+    }));
+    const exact = { ...await exactLog(), logIndex: 9 };
+    await expect(verifyEvmTransferFinality(request, withLogs([...decoys, exact])))
+      .resolves.toMatchObject({ logIndex: 9, confirmations: 2 });
+  });
+
+  test("checks the RPC chain before it waits for or reads any receipt", async () => {
+    const waitForTransactionReceipt = vi.fn(async () => {
+      throw new Error("must not wait on another chain");
+    });
+    await expect(verifyEvmTransferFinality(request, finalityClient({
+      getChainId: async () => 8453,
+      waitForTransactionReceipt,
+    }))).rejects.toThrow("RPC chain id does not match the negotiated network");
+    expect(waitForTransactionReceipt).not.toHaveBeenCalled();
+  });
+
+  test("refuses a receipt for another transaction", async () => {
+    const base = finalityClient();
+    await expect(verifyEvmTransferFinality(request, finalityClient({
+      getTransactionReceipt: async (input) => ({
+        ...(await base.getTransactionReceipt(input) as object),
+        transactionHash: `0x${"e".repeat(64)}`,
+      }),
+    }))).rejects.toThrow("receipt transaction hash does not match the submitted transaction");
+  });
+
+  test.each([
+    ["inclusion", 100n, "RPC returned the wrong inclusion block"],
+    ["confirmation", 101n, "RPC returned the wrong confirmation block"],
+  ])("refuses a mis-numbered %s block", async (_label, misnumbered, message) => {
+    const base = finalityClient();
+    await expect(verifyEvmTransferFinality(request, finalityClient({
+      getBlock: async (input) => {
+        const block = await base.getBlock(input) as Record<string, unknown>;
+        return input.blockNumber === misnumbered
+          ? { ...block, number: misnumbered + 7n }
+          : block;
+      },
+    }))).rejects.toThrow(message);
+  });
+
+  // The decisive inclusion and finality blocks are re-read after the event
+  // check. A change between the two reads must restart the whole snapshot,
+  // never let the first view stand.
+  test.each<[string, bigint, Record<string, unknown>]>([
+    ["inclusion parent hash", 100n, { parentHash: `0x${"e".repeat(64)}` }],
+    ["finality hash", 101n, { hash: `0x${"e".repeat(64)}` }],
+    ["finality parent hash", 101n, { parentHash: `0x${"e".repeat(64)}` }],
+    ["finality timestamp", 101n, { timestamp: 1_700_000_012n }],
+  ])("restarts the snapshot when the %s changes on re-read", async (
+    _label,
+    changedBlock,
+    change,
+  ) => {
+    const base = finalityClient();
+    let receiptReads = 0;
+    let changedReads = 0;
+    const observed = await verifyEvmTransferFinality(request, finalityClient({
+      getTransactionReceipt: async (input) => {
+        receiptReads += 1;
+        return base.getTransactionReceipt(input);
+      },
+      getBlock: async (input) => {
+        const block = await base.getBlock(input) as Record<string, unknown>;
+        if (input.blockNumber !== changedBlock) return block;
+        changedReads += 1;
+        // Only the first snapshot's re-read sees the flapping view.
+        return changedReads === 2 ? { ...block, ...change } : block;
+      },
+    }));
+    expect(observed).toMatchObject({ logIndex: 7, finalityObservedAt: 1_700_000_011_000 });
+    expect(receiptReads).toBe(2);
+  });
+});

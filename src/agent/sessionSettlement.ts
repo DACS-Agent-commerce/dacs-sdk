@@ -600,12 +600,16 @@ function finalityMatchesPolicy(
 ): boolean {
   if (finality.model !== policy.model) return false;
   if (policy.model === "block-depth") {
+    // DACS-4 §9.7: the echo is optional; when present it must be the
+    // authenticated rail pin, and when absent that pin still applies.
     return finality.model === "block-depth" &&
-      finality.finalityBlocks === policy.finalityBlocks;
+      (finality.finalityBlocks === undefined ||
+        finality.finalityBlocks === policy.finalityBlocks);
   }
   if (policy.model === "commitment-level") {
     return finality.model === "commitment-level" &&
-      finality.finalityCommitmentLevel === policy.finalityCommitmentLevel;
+      (finality.finalityCommitmentLevel === undefined ||
+        finality.finalityCommitmentLevel === policy.finalityCommitmentLevel);
   }
   return true;
 }

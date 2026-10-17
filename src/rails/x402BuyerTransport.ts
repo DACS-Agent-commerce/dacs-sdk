@@ -1,6 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import type { X402BuyerEvmDisclosureRecovery } from "./x402BuyerEvmAuthorization.js";
 import {
   createX402BuyerSettlementIntent,
@@ -161,20 +162,6 @@ function captureChallengeClient(value: unknown): Readonly<X402BuyerChallengeClie
   });
 }
 
-function hasOnlyUnicodeScalars(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (next < 0xdc00 || next > 0xdfff) return false;
-      index += 1;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
-}
-
 export function captureX402BuyerPreparationAuthority(
   value: unknown,
 ): Readonly<X402BuyerPreparationAuthority> | null {
@@ -211,9 +198,9 @@ export function captureX402BuyerPreparationAuthority(
   const chainMatch = typeof data.network === "string"
     ? /^eip155:([1-9][0-9]*)$/.exec(data.network)
     : null;
-  if (typeof data.jobId !== "string" || data.jobId.length === 0 ||
-      /[\u0000-\u001f\u007f]/.test(data.jobId) ||
-      !hasOnlyUnicodeScalars(data.jobId) ||
+  // JID-3: the jobId selects the SB-3 nonce, so it must pass JID-1 before the
+  // challenge request or any signing operation can use this authority.
+  if (!isCanonicalJobId(data.jobId) ||
       !Number.isSafeInteger(data.phaseIndex) || Number(data.phaseIndex) < 0 ||
       Object.is(data.phaseIndex, -0) ||
       typeof data.railId !== "string" || !/^[\x20-\x7e]+$/.test(data.railId) ||

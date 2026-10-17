@@ -232,8 +232,8 @@ const MUTANTS = Object.freeze([
     target: "src/fixedPriceX402BuyerAudit.ts",
     replacements: [[
       "paymentAnchor.artifact.settlementFinality.finalityBlocks !==\n" +
-        "                authenticatedFinalityBlocks) ||",
-      "false) ||",
+        "                authenticatedFinalityBlocks)) ||",
+      "false)) ||",
     ], [
       "finalityBlocks: authenticatedFinalityBlocks,",
       "finalityBlocks: capturedPaymentFinality.finalityBlocks,",

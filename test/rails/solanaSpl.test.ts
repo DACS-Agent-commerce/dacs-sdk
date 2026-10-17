@@ -30,7 +30,7 @@ function authority(
   overrides: Partial<SolanaSplSettlementAuthority> = {},
 ): SolanaSplSettlementAuthority {
   return {
-    jobId: "job-solana-spl-1",
+    jobId: "01JA9SPAYSP000000000000001",
     phaseIndex: 2,
     railId: "solana-devnet-usdc",
     railDescriptorHash: HASH,
@@ -192,12 +192,42 @@ describe("createSolanaSplSettlementIntent", () => {
   });
 
   test("uses an unambiguous structured settlement-key preimage", () => {
-    expect(solanaSplSettlementKey({ jobId: "a:b", railId: "c", phaseIndex: 1 }))
-      .not.toBe(solanaSplSettlementKey({ jobId: "a", railId: "b:c", phaseIndex: 1 }));
+    const jobId = authority().jobId;
+    expect(solanaSplSettlementKey({ jobId, railId: "b:c", phaseIndex: 1 }))
+      .not.toBe(solanaSplSettlementKey({ jobId, railId: "b", phaseIndex: 1 }));
+  });
+
+  // CORE JID-3: a spelling of the jobId is refused, never NFC-repaired into a key.
+  test.each([
+    ["lower-case alias", authority().jobId.toLowerCase()],
+    ["decomposed Unicode", "cafe\u0301-job"],
+    ["free-form", "job-solana-spl-1"],
+    ["overflow", `8${authority().jobId.slice(1)}`],
+  ])("refuses a %s jobId before deriving a key or intent", (_name, jobId) => {
+    expect(() => solanaSplSettlementKey({ jobId, railId: "solana-devnet-usdc", phaseIndex: 2 }))
+      .toThrow(/canonical uppercase ULID/);
+    expect(() => createSolanaSplSettlementIntent(authority({ jobId })))
+      .toThrow(/canonical uppercase ULID/);
   });
 });
 
 describe("advanceSolanaSplSettlement", () => {
+  test("refuses a lower-case jobId alias before the store or the adapter", async () => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const claim = vi.spyOn(store, "claim");
+    const preflightCall = vi.fn();
+    const prepareSignedTransfer = vi.fn();
+    const result = await advanceSolanaSplSettlement(input({
+      authority: authority({ jobId: authority().jobId.toLowerCase() }),
+      store,
+      adapter: adapter({ preflight: preflightCall, prepareSignedTransfer }),
+    }));
+    expect(result).toMatchObject({ status: "failed", errorClass: "permanent" });
+    expect(claim).not.toHaveBeenCalled();
+    expect(preflightCall).not.toHaveBeenCalled();
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+  });
+
   test.each([
     ["short decoded value", "2".repeat(64)],
     ["65-byte decoded value", "1".repeat(65)],

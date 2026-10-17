@@ -522,9 +522,11 @@ function isPaymentFinality(value: unknown): value is SellerPaymentFinality {
     return exactKeys(value, ["model", "finalityObservedAt"]) &&
       isUint(value.finalityObservedAt);
   }
+  // DACS-4 §9.7: the depth echo is optional; a present one is a positive depth.
   return value.model === "block-depth" &&
-    exactKeys(value, ["model", "finalityBlocks", "finalityObservedAt"]) &&
-    isUint(value.finalityBlocks) && value.finalityBlocks > 0 &&
+    exactKeys(value, ["model", "finalityObservedAt"], ["finalityBlocks"]) &&
+    (value.finalityBlocks === undefined ||
+      (isUint(value.finalityBlocks) && value.finalityBlocks > 0)) &&
     isUint(value.finalityObservedAt);
 }
 

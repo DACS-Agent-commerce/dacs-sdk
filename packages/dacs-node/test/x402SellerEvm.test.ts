@@ -17,7 +17,10 @@ import {
   EIP3009_AUTHORIZATION_USED_TOPIC,
   ERC20_TRANSFER_TOPIC,
 } from "@kynesyslabs/dacs";
-import { createDacsX402SellerEvmObserverV1 } from "../src/x402SellerEvm.js";
+import {
+  classifyDacsAuthenticatedX402ChainV1,
+  createDacsX402SellerEvmObserverV1,
+} from "../src/x402SellerEvm.js";
 
 const ASSET = `0x${"44".repeat(20)}`;
 const PAYER = `0x${"55".repeat(20)}`;
@@ -307,6 +310,115 @@ describe("seller x402 canonical EVM observation", () => {
     })).toEqual({
       disposition: "unsupported",
       reason: "settlement-chain-unregistered",
+    });
+  });
+
+  // The public classifier holds its own chain operand to the rail's chain,
+  // even when the candidate rail is an exact clone.
+  it.each([1, 8453])("classifies no chain but the rail's own (chain %i)", (chainId) => {
+    const authenticatedRail = rail();
+    const classify = classifyDacsAuthenticatedX402ChainV1(authenticatedRail as never);
+    expect(classify({
+      chainId,
+      rail: structuredClone(authenticatedRail) as never,
+    })).toEqual({
+      disposition: "unsupported",
+      reason: "settlement-chain-unregistered",
+    });
+    expect(classify({
+      chainId: 84532,
+      rail: structuredClone(authenticatedRail) as never,
+    })).toEqual({ disposition: "l2" });
+  });
+});
+
+// DACS-4 §9.5.2 step 6: without rail.parameters.finalityBlocks the observer
+// waits 12 confirmations on Ethereum mainnet and 1 elsewhere, and dates
+// finality at the block that reached that depth.
+describe("seller x402 observer default depth without finalityBlocks", () => {
+  const TX_BLOCK = 0x60;
+  const blockHash = (n: number) => `0x${n.toString(16).padStart(64, "0")}`;
+  const blockTimestamp = (n: number) => 1_800_000_000 + n * 12;
+
+  function railWithoutDepth(chainId: number) {
+    const value = Object.freeze({
+      ...rail(),
+      asset: { kind: "erc20" as const, chainId, contract: ASSET, symbol: "USDC", decimals: 6 },
+      parameters: { authorization: "eip-3009" },
+    });
+    dependencies.provenance.set(value, Object.freeze({ registryVersion: 1 }));
+    return value;
+  }
+
+  function chainAt(chainId: number, finalizedHead: number) {
+    return vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as {
+        id: number;
+        method: string;
+        params: unknown[];
+      };
+      let result: unknown;
+      if (request.method === "eth_chainId") result = `0x${chainId.toString(16)}`;
+      else if (request.method === "eth_getTransactionReceipt") {
+        result = {
+          transactionHash: TX,
+          blockNumber: `0x${TX_BLOCK.toString(16)}`,
+          blockHash: blockHash(TX_BLOCK),
+          status: "0x1",
+          logs: [transferLog(), authorizationLog()].map((log) => ({
+            ...log,
+            blockHash: blockHash(TX_BLOCK),
+          })),
+        };
+      } else if (request.method === "eth_getBlockByNumber") {
+        const tag = request.params[0] as string;
+        const n = tag === "finalized" ? finalizedHead : Number.parseInt(tag, 16);
+        result = {
+          number: `0x${n.toString(16)}`,
+          hash: blockHash(n),
+          timestamp: `0x${blockTimestamp(n).toString(16)}`,
+        };
+      } else throw new Error(`unexpected RPC ${request.method}`);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+  }
+
+  function observe(chainId: number, finalizedHead: number) {
+    return createDacsX402SellerEvmObserverV1({
+      rail: railWithoutDepth(chainId) as never,
+      rpcUrl: "https://rpc.example",
+      authorizationSearchFromBlock: 0,
+      fetchImpl: chainAt(chainId, finalizedHead) as never,
+    }).observeX402Transfer({ chainId, txHash: TX });
+  }
+
+  it("waits for 12 confirmations on Ethereum mainnet", async () => {
+    for (const confirmations of [1, 11]) {
+      await expect(observe(1, TX_BLOCK + confirmations - 1)).resolves.toMatchObject({
+        status: "pending",
+        reason: "settlement-confirmations-pending",
+      });
+    }
+    await expect(observe(1, TX_BLOCK + 11)).resolves.toMatchObject({
+      status: "finalized",
+      confirmations: 12,
+      finalityObservedAt: blockTimestamp(TX_BLOCK + 11) * 1000,
+    });
+    await expect(observe(1, TX_BLOCK + 20)).resolves.toMatchObject({
+      status: "finalized",
+      confirmations: 21,
+      finalityObservedAt: blockTimestamp(TX_BLOCK + 11) * 1000,
+    });
+  });
+
+  it("accepts one confirmation on another chain", async () => {
+    await expect(observe(84532, TX_BLOCK)).resolves.toMatchObject({
+      status: "finalized",
+      confirmations: 1,
+      finalityObservedAt: blockTimestamp(TX_BLOCK) * 1000,
     });
   });
 });

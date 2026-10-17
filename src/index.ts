@@ -305,6 +305,7 @@ export {
   type FsDemosWriteJournalOptions,
 } from "./substrate/demosWriteJournalFs.js";
 export {
+  DEMOS_BFT_FINALITY_PROFILE,
   assertDemosWriteEvidence,
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
@@ -1559,6 +1560,9 @@ export {
   type X402SettlementChainClassification,
   type SellerPaymentIntakeDeps,
   type SellerPaymentIntakeResult,
+  resolveX402FinalityBlocks,
+  type X402FinalityPolicyRail,
+  type X402FinalityPolicyResolution,
   publishSellerSessionSettlement,
   type SellerSessionSettlementPublicationRequest,
   type SellerSessionSettlementNativeProofBinding,

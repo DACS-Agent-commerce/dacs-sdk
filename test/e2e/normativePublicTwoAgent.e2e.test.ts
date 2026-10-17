@@ -3850,7 +3850,8 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
     expect(bundles.buyerFinalization.buyerBundle.anchoredByRole).toBe("buyer");
     expect(bundles.sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
     expect(bundles.standardLimitations).toEqual(["DACS-Standard#331"]);
-  }, 30_000);
+    // About 26 s on its own; a parallel suite pushes it past a 30 s budget.
+  }, 60_000);
 
   test("recovers the same run after a real process crash without replaying effects", async () => {
     const root = await tempDir("issue114-whole-process");
@@ -4017,7 +4018,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
       expect(await filesBelow(receiptDir)).toEqual([]);
       expect(await filesBelow(fulfilmentDir)).toEqual([]);
     }
-  });
+  }, 15_000);
 
   test("rejects a seller identity that does not control the pinned Listing", async () => {
     const published = await publishAndDiscoverListing();

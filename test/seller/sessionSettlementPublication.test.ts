@@ -479,6 +479,92 @@ describe("publishSellerSessionSettlement", () => {
     expect(verified.disposition).toBe("verified");
   });
 
+  // DACS-4 §9.7: the finality depth echo is optional. A record without it is
+  // published and verified against the authenticated rail depth.
+  it("publishes and verifies an x402 record that omits the optional depth echo", async () => {
+    const value = authorization("job-publication-echo-less");
+    value.evidenceInput.settlementFinality = {
+      model: "block-depth",
+      finalityObservedAt: NOW,
+    };
+    value.evidenceHash = sha256Hex(canonicalize(value.evidenceInput));
+    const artifact = {
+      ...proof(value),
+      finalityObservedAt: NOW,
+    };
+    const h = harness(value);
+    h.nativeProofRef = {
+      ...h.nativeProofRef,
+      contentHash: sha256Hex(canonicalize(artifact)),
+    };
+    h.resolveProof.mockImplementation(async () => proofAuthentication(value, artifact));
+    const result = await publishSellerSessionSettlement(request(h), h.deps);
+    expect(result).toMatchObject({ disposition: "published" });
+    if (result.disposition !== "published") return;
+    expect(result.settlement.evidence.settlementFinality).toEqual({
+      model: "block-depth",
+      finalityObservedAt: NOW,
+    });
+    const verified = await verifyFinalizedSessionSettlement(
+      context(value),
+      result.settlement,
+      {
+        authenticateContext: () => ({ disposition: "pass" }),
+        verifyEvidenceAnchor: () => ({ disposition: "pass" }),
+        resolveNativeProof: () => ({ disposition: "present", artifact }),
+        revalidateSettlement: (input) => ({
+          disposition: "pass",
+          outcome: "success",
+          binding: {
+            jobId: input.context.jobId,
+            railId: input.context.rail.railId,
+            phaseIndex: input.context.paymentPhaseIndex,
+            settlementId: value.settlementId,
+          },
+          nativeObservation: {
+            observationVersion: "1",
+            kind: "authenticated-x402-event",
+            observedAt: NOW + 2,
+            finality: structuredClone(value.evidenceInput.settlementFinality),
+            sessionBinding: {
+              disposition: "established",
+              kind: "eip3009",
+              bindingHash: "8".repeat(64),
+            },
+            details: { chainId: 8453, logIndex: 2 },
+          },
+        }),
+        evidence: h.deps.evidence,
+      },
+    );
+    expect(verified).toMatchObject({ disposition: "verified" });
+
+    // A present echo still has to be a positive depth, and the proof may not
+    // carry an undefined member in place of the omitted one.
+    for (const [finality, proofArtifact] of [
+      [{ model: "block-depth", finalityBlocks: 0, finalityObservedAt: NOW }, artifact],
+      [value.evidenceInput.settlementFinality, { ...artifact, confirmations: undefined }],
+    ] as const) {
+      const malformed = harness(value);
+      malformed.resolveProof.mockImplementation(async () => {
+        const authenticated = proofAuthentication(value, proofArtifact);
+        if (authenticated.disposition === "authenticated") {
+          authenticated.binding.settlementFinality = structuredClone(finality);
+          if (authenticated.proof.encoding === "jcs") {
+            authenticated.proof.artifact = proofArtifact;
+          }
+        }
+        return authenticated;
+      });
+      await expect(publishSellerSessionSettlement(request(malformed), malformed.deps))
+        .resolves.toEqual({
+          disposition: "error",
+          reason: "authenticated native proof resolution is malformed",
+        });
+      expect(malformed.sign).not.toHaveBeenCalled();
+    }
+  });
+
   it("keeps one effect identity as authenticated proof observations advance", async () => {
     const value = authorization("job-publication-proof-replay");
     const first = harness(value);
