@@ -1,4 +1,5 @@
 import {
+  copyRawJsonBytes,
   requireAdmissibleProfile,
   type ProfileExecutionPolicy,
   getAuthenticatedRailProvenance,
@@ -439,7 +440,8 @@ async function resolveDacsExistingListingV1(
   let receivedBytes: Uint8Array | null;
   let raw: Record<string, unknown> | null;
   try {
-    receivedBytes = await options.readAnchorBytes(options.listingRef);
+    const bytes = await options.readAnchorBytes(options.listingRef);
+    receivedBytes = bytes === null ? null : copyRawJsonBytes(bytes);
     raw = receivedBytes === null ? null : admitRawJson(receivedBytes) as Record<string, unknown>;
   } catch {
     return Object.freeze({ status: "blocked", reasonCode: "listing-anchor-read-unavailable" });

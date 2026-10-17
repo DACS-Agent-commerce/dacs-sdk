@@ -1,3 +1,4 @@
+import { copyRawJsonBytes } from "../canonical/rawJson.js";
 import { types as nodeTypes } from "node:util";
 import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
@@ -1221,8 +1222,9 @@ export async function validateListingArtifact(
     }
     // Admit the supplied view before decoding it, schema checks or hashing.
     // Retain our own copy before any verifier or resolver can run.
-    const received = admitRawJson(raw);
-    receivedJsonBase64 = Buffer.from(raw).toString("base64");
+    const bytes = copyRawJsonBytes(raw);
+    const received = admitRawJson(bytes);
+    receivedJsonBase64 = Buffer.from(bytes).toString("base64");
     capturedRaw = snapshotCanonicalJsonReceived(
       received as Record<string, unknown>,
       "Listing validation artifact",

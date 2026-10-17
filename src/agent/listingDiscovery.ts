@@ -1,3 +1,4 @@
+import { copyRawJsonBytes } from "../canonical/rawJson.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { types as nodeTypes } from "node:util";
 import { captureExecutionMode, requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
@@ -520,7 +521,7 @@ export async function readListingByLogicalAddress(
   let receivedBytes: Uint8Array | undefined;
   try {
     if (nodeTypes.isUint8Array(readValue)) {
-      receivedBytes = Buffer.from(readValue);
+      receivedBytes = copyRawJsonBytes(readValue);
       readValue = admitRawJson(receivedBytes);
     }
     const snapshot: unknown = structuredClone(readValue);

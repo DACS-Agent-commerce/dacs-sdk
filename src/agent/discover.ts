@@ -1,5 +1,5 @@
 import { types as nodeTypes } from "node:util";
-import { admitRawJson } from "../canonical/rawJson.js";
+import { admitRawJson, copyRawJsonBytes } from "../canonical/rawJson.js";
 import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -350,8 +350,8 @@ export async function discoverListings(
     if (!raw) continue;
     let receivedBytes: Uint8Array | undefined;
     if (nodeTypes.isUint8Array(raw)) {
-      receivedBytes = Buffer.from(raw);
       try {
+        receivedBytes = copyRawJsonBytes(raw);
         raw = admitRawJson(receivedBytes) as Record<string, unknown>;
       } catch {
         continue;

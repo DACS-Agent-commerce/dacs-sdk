@@ -1,5 +1,6 @@
 export {
   admitRawJson,
+  copyRawJsonBytes,
   RawJsonAdmissionError,
   type RawJsonAdmissionOptions,
   type RawJsonAdmissionStage,

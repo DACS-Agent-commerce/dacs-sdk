@@ -1,4 +1,4 @@
-import type { ProfileExecutionPolicy } from "@kynesyslabs/dacs";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import {
   captureFixedPricePayDemProtocolBinding,
   type AuthenticatedRailDefinition,
@@ -249,6 +249,7 @@ export function loadDacsFixedPricePayDemSellerAdmissionV1(
 export function createDacsFixedPricePayDemSellerSessionPolicyV1(
   options: Readonly<DacsFixedPricePayDemSellerSessionPolicyOptionsV1>,
 ): Readonly<DacsFixedPricePayDemSellerSessionPolicyV1> {
+  requireAdmissibleProfile(options);
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" || typeof options.sellerPublicEndpoint !== "string" ||
       typeof options.sellerPayee !== "string" ||

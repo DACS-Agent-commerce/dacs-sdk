@@ -1,4 +1,4 @@
-import type { ProfileExecutionPolicy } from "@kynesyslabs/dacs";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import {
   baseUnits,
   captureFixedPriceX402ProtocolBinding,
@@ -462,6 +462,7 @@ export function loadDacsFixedPriceX402SellerAdmissionV1(
 export function createDacsFixedPriceX402SellerSessionPolicyV1(
   options: Readonly<DacsFixedPriceX402SellerSessionPolicyOptionsV1>,
 ): Readonly<DacsFixedPriceX402SellerSessionPolicyV1> {
+  requireAdmissibleProfile(options);
   if (!plainObject(options) || !plainObject(options.context) ||
       options.context.role !== "seller" || typeof options.sellerPublicEndpoint !== "string" ||
       typeof options.sellerPayee !== "string" ||

@@ -1,5 +1,5 @@
 import { types as nodeTypes } from "node:util";
-import { admitRawJson } from "../canonical/rawJson.js";
+import { admitRawJson, copyRawJsonBytes } from "../canonical/rawJson.js";
 import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import {
@@ -2782,7 +2782,7 @@ export async function runSessionCore(
   let stored = await deps.readListing(listingRef);
   let receivedListingBytes: Uint8Array | undefined;
   if (nodeTypes.isUint8Array(stored)) {
-    receivedListingBytes = Buffer.from(stored);
+    receivedListingBytes = copyRawJsonBytes(stored);
     stored = admitRawJson(receivedListingBytes);
   }
   if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {

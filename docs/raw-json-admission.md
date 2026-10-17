@@ -50,8 +50,9 @@ ordered DACS-1 §6.3.4 reader
 reachability helpers, the rail resolver `resolveListingRails`, anchored
 discovery through `readListingByLogicalAddress`, the result binder
 `isVerifiedListingAdmission` used by seller payment intake, and the received
-message of DACS-3 channel admission (`admitChannelMessage`). Each of
-these also normalises an in-memory `-0` it is handed directly. Other entry
+message of DACS-3 channel admission (`admitChannelMessage`). The object-oriented helpers in this list also normalize an in-memory `-0`.
+The ordered reader instead requires original bytes and admits `-0` from their
+number tokens before normalizing it. Other entry
 points that take received data are not covered by this list. The structural
 guards `isListing` and `readListingArtifact` inspect the caller's
 value as is and may give a stricter answer for it. To use these with an
@@ -77,11 +78,32 @@ On Demos, `DemosAdapter.readAnchor` returns a storage program's `data` already
 parsed by `@kynesyslabs/demosdk`. The SDK writes Listings with the `json`
 encoding, and the node stores that member as `jsonb` and serves it through
 `JSON.stringify` (`kynesyslabs/node@ac8f45f0`), so the publisher's exact bytes
-are gone before any reader receives them. Live Listing reads therefore carry no
-CF-5 provenance. Closing that needs a storage format that keeps the exact
-bytes, not a change to the read path.
+are gone before any reader receives them. These parsed Listing reads carry no CF-5 provenance and cannot admit a new
+normative session. `validateListingArtifact` requires a `Uint8Array` or `Buffer`
+of the original artifact JSON, and refuses parsed objects before verification.
+The session and discovery boundaries also refuse parsed-only normative Listings
+before hashing them. A substrate may implement `readAnchorBytes` to supply exact
+original bytes; it must not reconstruct them from JSONB or an already parsed
+response. Demos does not currently provide that capability. Retaining those bytes
+requires a compatible storage/transport format.
 
 Tests vendor the byte-exact upstream `raw-json-profile-v0.1.json` corpus from
 that revision. All 59 outcomes and accepted canonical bytes are checked, along
 with API misuse, resource bounds, prototype-named members, view offsets and
 hostile-depth cases.
+
+The SDK-wide pin `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20` also declares an
+**unreleased corrective candidate**, not an admissible live profile. Its complete
+tuple is CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5.
+Agent construction and the Listing, session, seller payment and live coordinator
+entry points default to refusing live protocol action before dependency calls.
+Copying this pin or tuple into an artifact or caller-supplied profile record does
+not grant admission. `executionMode: "simulation"` is explicit trusted local
+policy for non-live conformance fixtures with injected local dependencies; it is
+not live profile evidence. The connected Demos `createAgent` factory remains
+unavailable even with a simulation label; simulations use injected local
+dependencies. Successful reader/session results identify this mode.
+A future live release needs both a coordinated release pin and verifier- or
+orchestrator-owned, authenticated evidence binding the exact session and every
+expected participant identity to that exact pin and complete tuple. The current
+SDK has no switch that admits such a live release.

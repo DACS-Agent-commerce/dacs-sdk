@@ -998,7 +998,8 @@ async function connectAgentAdapter(config: AgentConfig): Promise<ConnectedAgentI
 export async function createAgent(
   config: AgentConfig,
 ): Promise<Agent> {
-  requireAdmissibleProfile(config);
+  // This factory owns a real Demos transport; a simulation label cannot enable it.
+  requireAdmissibleProfile({});
   const connected = await connectAgentAdapter(config);
   return buildAgent(connected.adapter, connected.runtimeConfig);
 }
