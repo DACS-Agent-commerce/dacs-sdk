@@ -259,6 +259,7 @@ describe("native DEM process recovery", () => {
       retryDelayMs: 1,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-after-kill",
       operations: { payment },

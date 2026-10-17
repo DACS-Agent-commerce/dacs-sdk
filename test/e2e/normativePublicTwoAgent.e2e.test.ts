@@ -1,3 +1,5 @@
+import { discoverFixtureListings as discoverListings } from "../fixtures/receivedListing.js";
+import { validateFixtureListingArtifact as validateListingArtifact } from "../fixtures/receivedListing.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,7 +39,6 @@ import {
   createX402BuyerPaidRequestTransport,
   createX402SellerSpine,
   deriveFixedPriceAgreement,
-  discoverListings,
   ed25519Sign,
   ed25519Verify,
   encodeAddressSegment,
@@ -59,7 +60,6 @@ import {
   respondToFixedPriceAgreementProposalDurable,
   sha256Hex,
   signedBytes,
-  validateListingArtifact,
   verifyBundleCopy,
   verifyCompletedSellerBundleCounterSignatureRequest,
   verifyDurableSellerTerminalResult,
@@ -505,7 +505,10 @@ async function publishAndDiscoverListing(): Promise<PublishedListing> {
 
   const discovered = await discoverListings(
     [published.ref],
-    async (ref) => anchored.get(ref) ?? null,
+    async (ref) => {
+      const value = anchored.get(ref);
+      return value ? Buffer.from(JSON.stringify(value)) : null;
+    },
     {
       verify: (bytes, signature, publicKey) =>
         ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
@@ -1379,6 +1382,7 @@ async function createSellerRuntime(input: {
     };
   };
   const paymentIntakeDeps: Omit<SellerPaymentIntakeDeps, "receiptStore"> = {
+    executionMode: "simulation",
     resolveCommittedAgreement: async () => committedResolution,
     resolveListingAtCommit: async () => listingResolution,
     resolveRail: async ({ railRegistryVersion }) => ({

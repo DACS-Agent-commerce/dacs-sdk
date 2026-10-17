@@ -377,6 +377,7 @@ async function fixture() {
   } as never;
   let clock = NOW;
   const policy = createDacsFixedPriceX402SellerSessionPolicyV1({
+    executionMode: "simulation",
     context,
     rail: admission.rail as never,
     sellerPublicEndpoint: "https://seller.example",

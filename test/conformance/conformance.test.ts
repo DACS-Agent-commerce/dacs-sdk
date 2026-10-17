@@ -1,3 +1,4 @@
+import { validateFixtureListingArtifact as validateListingArtifact } from "../fixtures/receivedListing.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +54,6 @@ import {
   vetPhaseFailureClass,
 } from "../../src/agent/vetSemantics.js";
 import {
-  validateListingArtifact,
   type ListingValidationDeps,
 } from "../../src/agent/listingValidation.js";
 import {

@@ -96,6 +96,7 @@ function fixture() {
     keys,
     draft,
     options: {
+      executionMode: "simulation" as const,
       draft,
       sellerAuthority: authority,
       sellerPublicKey: publicKey,
@@ -140,6 +141,7 @@ function payDemFixture() {
     ...value,
     draft,
     options: {
+      executionMode: "simulation" as const,
       draft,
       sellerAuthority: value.options.sellerAuthority,
       sellerPublicKey: value.options.sellerPublicKey,
@@ -205,6 +207,7 @@ async function publishedPayDemFixture() {
     options: {
       ...value.options,
       listingRef,
+      readAnchorBytes: async (locator: string) => locator === listingRef ? Buffer.from(JSON.stringify(listing)) : null,
       readAnchor: vi.fn(async (locator: string) => locator === listingRef
         ? listing as unknown as Record<string, unknown> : null),
       authenticateAnchor: vi.fn(async (input: { logicalAddress: string }) =>
@@ -361,6 +364,7 @@ describe("existing x402 Listing doctor", () => {
       ...value.options,
       listingRef,
       now: 1_000,
+      readAnchorBytes: async (locator: string) => locator === listingRef ? Buffer.from(JSON.stringify(listing)) : null,
       readAnchor: vi.fn(async (locator: string) => locator === listingRef
         ? listing as unknown as Record<string, unknown> : null),
       authenticateAnchor: vi.fn(async (input: { logicalAddress: string }) =>

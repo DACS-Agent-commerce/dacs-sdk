@@ -550,6 +550,7 @@ describe("native DEM buyer payment track", () => {
       },
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator",
       operations: {
@@ -625,6 +626,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-missing-fee",
       operations: { agreement: success, payment },
@@ -702,6 +704,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice: () => { events.push("notice-queued"); },
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-generated-composition",
       operations: { agreement: success, payment },
@@ -825,6 +828,7 @@ describe("native DEM buyer payment track", () => {
         publishNotice,
       });
       const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
         store: database.createPayDemCoordinatorStore("buyer"),
         workerId: "buyer-coordinator-stale-after-intent",
         operations: { agreement: success, payment },
@@ -900,6 +904,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice: vi.fn(),
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-generated-denial",
       operations: { agreement: success, payment },
@@ -1004,6 +1009,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice: vi.fn(),
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-begin-ack-unknown",
       operations: { agreement: success, payment },
@@ -1125,6 +1131,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-preparation-failure",
       operations: { agreement: success, payment },
@@ -1193,6 +1200,7 @@ describe("native DEM buyer payment track", () => {
       publishNotice,
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-missing-pre-broadcast-fence",
       operations: { agreement: success, payment },
@@ -1255,6 +1263,7 @@ describe("native DEM buyer payment track", () => {
       retryDelayMs: 1,
     });
     const initial = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: first.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-before-restart",
       operations: { agreement: success, payment: firstPayment },
@@ -1299,6 +1308,7 @@ describe("native DEM buyer payment track", () => {
       retryDelayMs: 1,
     });
     const resumed = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: restarted.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-after-restart",
       operations: { payment: resumedPayment },
@@ -1397,6 +1407,7 @@ describe("native DEM buyer payment track", () => {
       retryDelayMs: 1,
     });
     const initial = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: first.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-before-actor-restore",
       operations: { agreement: success, payment: firstPayment },
@@ -1431,6 +1442,7 @@ describe("native DEM buyer payment track", () => {
       retryDelayMs: 1,
     });
     const resumed = createFixedPricePayDemBuyerCoordinator({
+      executionMode: "simulation",
       store: first.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-after-actor-restore",
       operations: { payment: resumedPayment },

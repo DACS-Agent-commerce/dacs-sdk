@@ -163,6 +163,7 @@ describe("fixed-price pay-dem seller session policy", () => {
       demos: { adapter: {} },
     };
     const policy = createDacsFixedPricePayDemSellerSessionPolicyV1({
+    executionMode: "simulation",
       context: context as never,
       rail: {} as never,
       sellerPublicEndpoint: "https://seller.example/buy",
@@ -194,6 +195,7 @@ describe("fixed-price pay-dem seller session policy", () => {
   it("rejects an x402-shaped order before resolving any Listing", async () => {
     const value = await fixture();
     const policy = createDacsFixedPricePayDemSellerSessionPolicyV1({
+    executionMode: "simulation",
       context: {
         role: "seller", authority: SELLER, peerAuthority: BUYER,
         database: { readTime: () => 1_000 }, demos: { adapter: {} },

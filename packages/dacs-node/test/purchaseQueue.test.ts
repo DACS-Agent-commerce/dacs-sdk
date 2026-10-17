@@ -253,6 +253,7 @@ describe("guarded x402 purchase queue", () => {
     });
     databases.push(database);
     const executor = createDacsPurchaseQueueExecutorV1({
+      executionMode: "simulation",
       prepared,
       database,
       workerId: "buyer-queue-test",
@@ -309,6 +310,7 @@ describe("guarded x402 purchase queue", () => {
     });
     databases.push(database);
     const executor = createDacsPurchaseQueueExecutorV1({
+      executionMode: "simulation",
       prepared,
       database,
       workerId: "buyer-resume-test",
@@ -384,6 +386,7 @@ describe("guarded pay-dem purchase queue", () => {
     });
     databases.push(database);
     const executor = createDacsPurchaseQueueExecutorV1({
+      executionMode: "simulation",
       prepared,
       database,
       workerId: "pay-dem-buyer-queue-test",

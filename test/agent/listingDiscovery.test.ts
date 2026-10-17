@@ -1,3 +1,4 @@
+import { fixtureListingRead } from "../fixtures/receivedListing.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -209,10 +210,11 @@ function depsFor(
     fixtures.map((fixture) => [fixture.nativeAddress, fixture.record]),
   );
   return {
+    executionMode: "simulation",
     index: createInMemoryBindingIndex(
       fixtures.map((fixture) => fixture.binding),
     ),
-    readAnchor: async (nativeAddress) => records.get(nativeAddress) ?? null,
+    readAnchor: async (nativeAddress) => fixtureListingRead(records.get(nativeAddress) ?? null),
     verify,
     ...over,
   };
@@ -222,6 +224,7 @@ function normativeValidationDeps(
   primaryClaim = SELLER.did,
 ): ListingValidationDeps {
   return {
+    executionMode: "simulation",
     nowMs: () => 1_780_000_000_000,
     verifyListingSignature: ({ signedBytes, signature }) =>
       signature.signer === primaryClaim &&

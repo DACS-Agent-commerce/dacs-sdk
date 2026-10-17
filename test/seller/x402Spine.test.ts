@@ -417,6 +417,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
       disposition: "verified",
       step: 9,
       reason: "verified",
+      receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
       listing,
       listingContentHash: listingRef.contentHash,
       revocation: "absent",
@@ -425,6 +426,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
   };
   const receiptStore = createInMemorySellerReceiptStore();
   const paymentIntakeDeps: Omit<SellerPaymentIntakeDeps, "receiptStore"> = {
+    executionMode: "simulation",
     resolveCommittedAgreement: async () => committed,
     resolveListingAtCommit: async () => listingResolution,
     resolveRail: async ({ railRegistryVersion }) => ({

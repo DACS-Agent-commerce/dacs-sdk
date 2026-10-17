@@ -360,6 +360,7 @@ async function fixture() {
       : `${role}:${track}`,
   });
   const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
     store,
     workerId: "buyer-worker",
     operations: Object.fromEntries([
@@ -371,6 +372,7 @@ async function fixture() {
     ].map((track) => [track, operation("buyer", track)])),
   });
   const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
     store,
     workerId: "seller-worker",
     operations: Object.fromEntries([

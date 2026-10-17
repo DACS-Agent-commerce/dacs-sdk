@@ -1,8 +1,8 @@
+import { runFixtureSessionCore as runSessionCore } from "../fixtures/receivedListing.js";
 import { describe, expect, test } from "vitest";
 
 import { buildSignedArtifact, verifySignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
-  runSessionCore,
   sessionAnchorName,
   type SessionDeps,
 } from "../../src/agent/runSessionCore.js";

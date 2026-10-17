@@ -1,10 +1,11 @@
+import { validateFixtureListingArtifact as validateListingArtifact } from "../fixtures/receivedListing.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
 import { admitRawJson, canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
-import { validateListingArtifact } from "../../src/agent/listingValidation.js";
+
 import {
   ed25519Sign,
   ed25519Verify,
@@ -95,6 +96,7 @@ function listingAtCommitResolution(
         disposition: "verified",
         step: 9,
         reason: "verified",
+        receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
         listing,
         listingContentHash: listingRef.contentHash,
         revocation: "absent",
@@ -116,6 +118,7 @@ function listingAtCommitResolution(
       disposition: "verified",
       step: 9,
       reason: "verified",
+      receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
       listing,
       listingContentHash: listingRef.contentHash,
       revocation: "absent",
@@ -376,6 +379,7 @@ function makeContext(
     x402Observation,
   });
   ctx.deps = {
+    executionMode: "simulation",
     resolveCommittedAgreement: async () => ctx.committed,
     resolveListingAtCommit: async () => listingAtCommitResolution(ctx.listing),
     resolveRail: async ({ railRegistryVersion }) => ({

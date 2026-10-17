@@ -1,3 +1,5 @@
+import { discoverFixtureListings as discoverListings } from "../fixtures/receivedListing.js";
+import { validateFixtureListingArtifact as validateListingArtifact } from "../fixtures/receivedListing.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,12 +14,11 @@ import {
   isVerifiedListingAdmission,
   resolveListingPayloadVerificationCapability,
   resolveListingRails,
-  validateListingArtifact,
   type ListingRailResolutionInput,
   type ListingValidationDeps,
   type RevocationSurface,
 } from "../../src/agent/listingValidation.js";
-import { discoverListings } from "../../src/agent/discover.js";
+
 import type {
   IdentityBundle,
   Listing,
@@ -1066,7 +1067,7 @@ describe("ordered ListingValidationDisposition", () => {
     ).rejects.toThrow(/validateListing.*signature validity alone/);
 
     await expect(
-      discoverListings(["listing"], async () => listing, {
+      discoverListings(["listing"], async () => Buffer.from(JSON.stringify(listing)), {
         ...common,
         validateListing: () => ({
           disposition: "indeterminate",
@@ -1078,7 +1079,7 @@ describe("ordered ListingValidationDisposition", () => {
     ).resolves.toEqual([]);
 
     await expect(
-      discoverListings(["listing"], async () => listing, {
+      discoverListings(["listing"], async () => Buffer.from(JSON.stringify(listing)), {
         ...common,
         validateListing: () => ({
           disposition: "verified",
@@ -1092,7 +1093,7 @@ describe("ordered ListingValidationDisposition", () => {
     ).resolves.toHaveLength(1);
 
     await expect(
-      discoverListings(["listing"], async () => listing, {
+      discoverListings(["listing"], async () => Buffer.from(JSON.stringify(listing)), {
         ...common,
         validateListing: () => ({
           disposition: "verified",
@@ -1106,7 +1107,7 @@ describe("ordered ListingValidationDisposition", () => {
     const substituted = fixture();
     substituted.listingId = "substituted-listing";
     await expect(
-      discoverListings(["listing"], async () => listing, {
+      discoverListings(["listing"], async () => Buffer.from(JSON.stringify(listing)), {
         ...common,
         validateListing: () => ({
           disposition: "verified",
@@ -1309,7 +1310,7 @@ describe("ordered ListingValidationDisposition", () => {
     await expect(
       discoverListings(
         ["listing"],
-        async () => listing as unknown as Record<string, unknown>,
+        async () => Buffer.from(JSON.stringify(listing)),
         {
         trustListings: true,
         nowMs: deps.nowMs,

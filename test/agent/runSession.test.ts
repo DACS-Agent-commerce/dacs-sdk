@@ -1,9 +1,10 @@
+import { runFixtureSessionCore as runSessionCore } from "../fixtures/receivedListing.js";
+import { fixtureListingRead } from "../fixtures/receivedListing.js";
 import { describe, expect, test, vi } from "vitest";
 
 import { sizedListing } from "../fixtures/sizedListing.js";
 
 import {
-  runSessionCore,
   type SessionDeps,
   type SessionTerms,
 } from "../../src/agent/runSessionCore.js";
@@ -152,7 +153,7 @@ const authenticateClaimedVetFinality: NonNullable<
 > = async ({ claimed }) => claimed ? structuredClone(claimed) : null;
 
 function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
-  return {
+  const deps: SessionDeps = {
     buyerId: BUYER_ID,
     buyerIdentityBundle: BUYER_IDENTITY,
     authenticateBuyerIdentityBundle: () => true,
@@ -178,6 +179,9 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     validateListing: (raw) => verifiedAdmissionFor(raw as unknown as Listing),
     ...overrides,
   };
+  const read = deps.readListing;
+  deps.readListing = async (ref) => fixtureListingRead(await read(ref));
+  return deps;
 }
 
 function normativeDpaListing(): Listing {
@@ -248,6 +252,7 @@ function verifiedAdmissionFor(listing: Listing) {
     disposition: "verified" as const,
     step: 9 as const,
     reason: "verified",
+    receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
     listing,
     listingContentHash: contentHash(
       listing as unknown as Record<string, unknown>,

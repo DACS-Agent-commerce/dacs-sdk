@@ -1,6 +1,8 @@
+import { discoverListings as discoverReceivedListings } from "../../src/agent/discover.js";
+import { discoverFixtureListings as discoverListings } from "../fixtures/receivedListing.js";
 import { describe, expect, test } from "vitest";
 
-import { discoverListings } from "../../src/agent/discover.js";
+
 import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
@@ -106,7 +108,7 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
       },
     });
     await expect(
-      discoverListings(["ref:proxy"], async () => live, TRUST),
+      discoverReceivedListings(["ref:proxy"], async () => live, { ...TRUST, executionMode: "simulation" }),
     ).resolves.toEqual([]);
     // Resolving any Promise-like value performs one unavoidable `then` probe;
     // the SDK itself must not traverse the proxy-backed artifact after that.
@@ -166,7 +168,7 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
       },
     } as unknown as Record<string, unknown>;
     await expect(
-      discoverListings(["normative"], async () => normative, {
+      discoverListings(["normative"], async () => Buffer.from(JSON.stringify(normative)), {
         trustListings: true,
         nowMs: () => Number.NaN,
       }),

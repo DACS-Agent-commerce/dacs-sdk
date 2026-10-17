@@ -1,3 +1,4 @@
+import { discoverFixtureListings as discoverListings } from "../fixtures/receivedListing.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +7,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   authenticateReadableListingArtifact,
-  discoverListings,
   verifyReadableListingArtifact,
 } from "../../src/agent/discover.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
@@ -70,6 +70,7 @@ const verifiedAdmissionFor = (listing: Listing) => {
     disposition: "verified" as const,
     step: 9 as const,
     reason: "verified",
+    receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
     listing,
     listingContentHash: contentHash(
       listing as unknown as Record<string, unknown>,
@@ -91,6 +92,18 @@ const verify = (bytes: Uint8Array, signature: Uint8Array, key: Uint8Array) =>
   ed25519Verify(bytes, signature, publicKeyFromRaw(key));
 
 describe("normative DACS-1 §6.3.4 Listing", () => {
+  it.each([
+    "commit-identity-bound-agreement",
+    "commit-identity-bound-payee-agreement",
+  ])("refuses the unsupported Standard phase %s", (kind) => {
+    const listing = fixture();
+    listing.pipeline[0] = { kind } as never;
+    expect(isListing(listing)).toBe(false);
+    expect(isListingDraft(listing)).toBe(false);
+    // The reader envelope preserves the discriminator for ordered step-7 refusal.
+    expect(isListingEnvelope(listing)).toBe(true);
+  });
+
   it("accepts and verifies the pinned Standard SIG-5 Listing vector", async () => {
     const listing = fixture();
     const signer = listing.signature.signer;
@@ -125,7 +138,7 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
 
     const found = await discoverListings(
       ["stor:listing"],
-      async () => listing as unknown as Record<string, unknown>,
+      async () => Buffer.from(JSON.stringify(listing)),
       {
         verify: async (bytes, signature, key) => {
           const valid = verify(bytes, signature, key);
