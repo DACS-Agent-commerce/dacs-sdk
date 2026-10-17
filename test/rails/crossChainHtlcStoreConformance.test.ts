@@ -3,9 +3,12 @@ import { describe, expect, test } from "vitest";
 import {
   createInMemoryCrossChainHtlcStore,
   type CrossChainHtlcStore,
+  type HtlcStoreClaim,
   type HtlcStoreWrite,
 } from "../../src/rails/crossChainHtlc.js";
 import { checkCrossChainHtlcStore } from "../../src/rails/crossChainHtlcStoreConformance.js";
+
+type SettledClaim = Extract<HtlcStoreClaim, { status: "settled" }>;
 
 const memory = () => createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
 
@@ -155,17 +158,55 @@ describe("checkCrossChainHtlcStore", () => {
         return rest;
       },
     }), /^the settled session's rows and checkpoints survive unchanged$/],
+    ["drops a settled session's source-finality checkpoint", (inner: CrossChainHtlcStore): CrossChainHtlcStore => ({
+      ...inner,
+      async claim(input) {
+        const result = await inner.claim(input);
+        if (result.status !== "settled") return result;
+        const { sourceFinalityCheckpoint: _dropped, ...rest } = result;
+        return rest;
+      },
+    }), /^the settled session's rows and checkpoints survive unchanged$/],
+    ["drops a settled session's source-lock and source-claim rows", (inner: CrossChainHtlcStore): CrossChainHtlcStore => ({
+      ...inner,
+      async claim(input) {
+        const result = await inner.claim(input);
+        return result.status === "settled"
+          ? { ...result, prepared: result.prepared.filter((row) => row.action !== "source-lock" && row.action !== "source-claim") }
+          : result;
+      },
+    }), /^the settled session's rows and checkpoints survive unchanged$/],
+    ["drops a settled session's source-claim history", (inner: CrossChainHtlcStore): CrossChainHtlcStore => ({
+      ...inner,
+      async claim(input) {
+        const result = await inner.claim(input);
+        return result.status === "settled" ? { ...result, sourceClaimAttemptHistory: [] } : result;
+      },
+    }), /^the settled session's rows and checkpoints survive unchanged$/],
   ] as const)("catches a store that %s on restart, in the restart case only", async (_label, restarted, detail) => {
     const { makeStore, reopen } = durable(restarted);
     const failing = (await checkCrossChainHtlcStore(makeStore, { reopen })).filter((check) => !check.ok);
     expect(failing).toEqual([{ name: expect.stringMatching(RESTART_CASE), ok: false, detail: expect.stringMatching(detail) }]);
   });
 
-  test("fails the settlement case, and only it, for a store that claims a settlement without its rows", async () => {
+  // The core replays a settlement only against every row and checkpoint it
+  // names, so a settled claim that drops any one of them must fail the kit.
+  test.each([
+    ["its rows", (claimed: SettledClaim): HtlcStoreClaim => ({ ...claimed, prepared: [] })],
+    ["its destination-lock row", (claimed: SettledClaim): HtlcStoreClaim => ({
+      ...claimed,
+      prepared: claimed.prepared.filter((row) => row.action !== "destination-lock"),
+    })],
+    ["its source-finality checkpoint", (claimed: SettledClaim): HtlcStoreClaim => {
+      const { sourceFinalityCheckpoint: _dropped, ...rest } = claimed;
+      return rest;
+    }],
+    ["its source-claim history", (claimed: SettledClaim): HtlcStoreClaim => ({ ...claimed, sourceClaimAttemptHistory: [] })],
+  ] as const)("fails the settlement case, and only it, for a store that claims a settlement without %s", async (_label, drop) => {
     const makeStore = broken((inner) => ({
       async claim(input) {
         const result = await inner.claim(input);
-        return result.status === "settled" ? { ...result, prepared: [] } : result;
+        return result.status === "settled" ? drop(result) : result;
       },
     }));
     const failing = (await checkCrossChainHtlcStore(makeStore)).filter((check) => !check.ok && !RESTART_CASE.test(check.name));

@@ -606,7 +606,8 @@ only when it names exactly the checkpointed source lock, the destination lock
 bound to that checkpoint, the checkpointed reveal and a retained source-claim
 attempt, with the checkpointed source expiry. Otherwise, and when a row or
 checkpoint is missing, it returns `indeterminate`
-`htlc-stored-settlement-mismatch` and moves nothing.
+`htlc-stored-settlement-mismatch` and moves nothing. Retrying cannot clear a
+settled row, so `htlcNeedsOperator` pages it.
 
 This checkpoint is the causal ordering proof between chains. Source and
 destination timestamps belong to different ledger clock domains, so the core
@@ -1039,6 +1040,11 @@ map as follows:
     past the source expiry the adapter reports the source lock claimed by a
     claim the core sent that it also reports unlanded, or by one the core
     replaced, an adapter fault that polling does not clear;
+  - `indeterminate` with reason `htlc-stored-settlement-mismatch`: the store
+    returned the session `settled`, but the settlement does not name exactly
+    its retained rows and checkpoints, or one is missing, a store fault that
+    retrying does not clear; the session may be paid, so reconcile the store
+    against the chains and keep the salt;
   - `indeterminate` with reason `htlc-call-input-invalid`: the call's owner,
     lease, authority or hashlock deriver is unusable, a host error; correct
     the input and call again, keeping the salt;

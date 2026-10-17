@@ -232,6 +232,36 @@ async function retainedPrepared(s: Leased): Promise<readonly Readonly<HtlcPrepar
   return claimed.prepared;
 }
 
+/**
+ * Records under `s`'s lease every row and checkpoint `settlement(s.intent,
+ * SOURCE_EXPIRY, hashSuffix)` names: the source lock and its finality
+ * checkpoint, the bound destination lock, the reveal and its checkpoint, and a
+ * source claim replaced once, so the settlement names the earlier attempt.
+ */
+async function recordSettledRows(s: Leased, hashSuffix = ""): Promise<void> {
+  const row = (action: HtlcAction, txHash: string, sourceFinalityCheckpointHash?: string) =>
+    prepared(s.intent, action, `${txHash}${hashSuffix}`, sourceFinalityCheckpointHash);
+  const lock = row("source-lock", "lock-s");
+  const finality = sourceFinality(lock);
+  const reveal = row("destination-claim", "reveal-1");
+  const claim = row("source-claim", "claim-1");
+  expectStatus(await s.store.recordPrepared({ ...writer(s), prepared: lock }), ["recorded"], "source lock");
+  expectStatus(await s.store.recordSourceFinality({ ...writer(s), checkpoint: finality }), ["recorded"], "source finality");
+  expectStatus(await s.store.recordPrepared({
+    ...writer(s),
+    prepared: row("destination-lock", "lock-d", crossChainHtlcSourceFinalityCheckpointHash(finality)),
+  }), ["recorded"], "destination lock");
+  expectStatus(await s.store.recordPrepared({ ...writer(s), prepared: reveal }), ["recorded"], "reveal row");
+  expectStatus(await s.store.recordRevealFinal({ ...writer(s), checkpoint: revealCheckpoint(reveal) }), ["recorded"], "reveal");
+  expectStatus(await s.store.recordPrepared({ ...writer(s), prepared: claim }), ["recorded"], "source claim");
+  expectStatus(await s.store.replacePreparedSourceClaim({
+    ...writer(s), now: NOW, priorEffectHash: claim.effectHash,
+    priorTxRef: claim.txRef as Extract<HtlcTxRef, { kind: "htlc-claim" }>,
+    failedObservation: { state: "failed", txRef: claim.txRef, authenticationHash: AUTH_HASH },
+    replacement: row("source-claim", "claim-2"),
+  }), ["recorded"], "source-claim replacement");
+}
+
 /** A claim's intent, rows (in action order), claim histories and checkpoints, canonicalized. */
 function retainedState(claimed: HtlcStoreClaim): string {
   if (claimed.status !== "waiting" && claimed.status !== "acquired" && claimed.status !== "settled") {
@@ -422,9 +452,7 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
     const a = await acquire(await make());
     const done = settlement(a.intent);
     expectStatus(await a.store.recordSettlement({ ...writer(a), settlement: done }), REFUSED, "settlement before the reveal");
-    const reveal = prepared(a.intent, "destination-claim", "reveal-1");
-    expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: reveal }), ["recorded"], "reveal row");
-    expectStatus(await a.store.recordRevealFinal({ ...writer(a), checkpoint: revealCheckpoint(reveal) }), ["recorded"], "reveal");
+    await recordSettledRows(a);
     const retained = retainedState(await a.store.claim({
       intent: a.intent, secrets: a.secrets, owner: "reader", now: NOW, leaseDurationMs: LEASE_MS,
     }));
@@ -595,11 +623,8 @@ function restartCase(reopen: CrossChainHtlcStoreCheckOptions["reopen"]): readonl
       failedObservation: failed(claim(1)), replacement: claim(2),
     }), ["recorded"], "source-claim replacement");
     const settled = await acquire(store, session(JOB_IDS[1]), "worker-c");
-    const settledReveal = prepared(settled.intent, "destination-claim", "reveal-1-two");
     const done = settlement(settled.intent, SOURCE_EXPIRY, "-two");
-    expectStatus(await store.recordPrepared({ ...writer(settled), prepared: settledReveal }), ["recorded"], "second reveal");
-    expectStatus(await store.recordRevealFinal({ ...writer(settled), checkpoint: revealCheckpoint(settledReveal) }),
-      ["recorded"], "second reveal checkpoint");
+    await recordSettledRows(settled, "-two");
     expectStatus(await store.recordSettlement({ ...writer(settled), settlement: done }), ["recorded"], "settlement");
     const settledBefore = retainedState(await store.claim({
       intent: settled.intent, secrets: settled.secrets, owner: "reader", now: NOW, leaseDurationMs: LEASE_MS,
@@ -681,7 +706,8 @@ function restartCase(reopen: CrossChainHtlcStoreCheckOptions["reopen"]): readonl
  *
  * The restart case needs `options.reopen`. It drives one session to a
  * replaced reveal and a replaced source claim with both checkpoints, and
- * settles another, then reopens the store. The reopened store must return the
+ * settles another over every row and checkpoint its settlement names, then
+ * reopens the store. The reopened store must return the
  * same live lease, intent, rows, checkpoints and claim histories, a higher
  * generation on takeover, and the same settlement. It must still refuse the
  * old generation, another salt or preimage, a reused salt, effect or

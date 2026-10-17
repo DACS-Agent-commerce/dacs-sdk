@@ -6984,8 +6984,10 @@ describe("retained store rows the core must refuse", () => {
     const { h, run } = await settledSession();
     const preparations = h.prepareAction.mock.calls.length;
     const store = withSettlement(run.shared.store, mutate);
-    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store }))
-      .resolves.toEqual({ status: "indeterminate", reason: "htlc-stored-settlement-mismatch" });
+    const progress = await advanceCrossChainHtlc({ ...run.nextOwner(), store });
+    expect(progress).toEqual({ status: "indeterminate", reason: "htlc-stored-settlement-mismatch" });
+    // Retrying cannot clear a settled row, and the session may be paid.
+    expect(htlcNeedsOperator(progress)).toBe(true);
     expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
   });
 
@@ -7111,8 +7113,9 @@ describe("retained store rows the core must refuse", () => {
         return copy as unknown as HtlcStoreClaim;
       },
     };
-    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store }))
-      .resolves.toEqual({ status: "indeterminate", reason: "htlc-stored-settlement-mismatch" });
+    const progress = await advanceCrossChainHtlc({ ...run.nextOwner(), store });
+    expect(progress).toEqual({ status: "indeterminate", reason: "htlc-stored-settlement-mismatch" });
+    expect(htlcNeedsOperator(progress)).toBe(true);
     expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
   });
 

@@ -761,7 +761,8 @@ export function htlcNeedsOperator(progress: Readonly<CrossChainHtlcProgress>): b
     case "indeterminate":
       return progress.reason === "htlc-source-observers-disagree" ||
         progress.reason === "htlc-call-input-invalid" ||
-        progress.reason === "htlc-source-lock-disposition-contradicted";
+        progress.reason === "htlc-source-lock-disposition-contradicted" ||
+        progress.reason === "htlc-stored-settlement-mismatch";
     default:
       return false;
   }
