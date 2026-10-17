@@ -10,12 +10,13 @@ import {
   verifyDemosGcrDomainClaims,
   type DemosGcrResolution,
   type DomainArtifactAuthentication,
-  type DomainArtifactProfile,
   type DomainClaimArtifactLike,
 } from "../../src/identity/domainClaimVerification.js";
 
+import { serializeDomainClaimArtifact, type DomainClaimProducerInput } from "../../src/identity/index.js";
+
 interface VectorArtifact {
-  unsigned: DomainClaimArtifactLike & { producerDacs1Version: string };
+  unsigned: DomainClaimArtifactLike;
   canonicalHex: string;
   contentHash: string;
   signingPublicKey: string;
@@ -24,6 +25,7 @@ interface VectorArtifact {
 
 interface DomainVector {
   name: string;
+  producerInput?: DomainClaimProducerInput;
   expected: "pass" | "fail" | "indeterminate" | "error";
   artifact: VectorArtifact;
   authoritativeGcr: Record<string, unknown>;
@@ -54,7 +56,11 @@ interface DomainVector {
     sessionPublicKey?: unknown;
     boundPresentationHash?: unknown;
   };
-  want?: { semanticClaims?: string[] };
+  want?: {
+    semanticClaims?: string[];
+    metadataEqualsAuthority?: boolean;
+    originalBytesPreserved?: boolean;
+  };
 }
 
 interface DomainFixture {
@@ -71,23 +77,6 @@ const fixtureBytes = readFileSync(
   ),
 );
 const fixture = JSON.parse(fixtureBytes.toString("utf8")) as DomainFixture;
-
-// This map models authenticated release provenance. The production API never
-// reads producerDacs1Version from the signed artifact to authorize aliases.
-const historicalVectors = new Set([
-  "legacy-decomposed-unicode-nfc-idna-read",
-  "legacy-mixed-case-ascii-read",
-  "legacy-alias-original-byte-preservation",
-  "historical-alias-pair-deduplicates",
-]);
-const trustedProfiles = new Map<string, DomainArtifactProfile>(
-  fixture.vectors.map((vector) => [
-    vector.artifact.contentHash,
-    historicalVectors.has(vector.name)
-      ? "historical-domain-alias"
-      : "canonical-domain-v0.6",
-  ]),
-);
 
 function authenticate(
   envelope: VectorArtifact,
@@ -123,16 +112,8 @@ function authenticate(
     if (!signatureValid) {
       return { status: "invalid", reason: "presentation signature is invalid" };
     }
-    const profile = trustedProfiles.get(digest);
-    if (!profile) {
-      return {
-        status: "indeterminate",
-        reason: "authenticated producer profile is unavailable",
-      };
-    }
     return {
       status: "authenticated",
-      profile,
       signingPublicKey: envelope.signingPublicKey,
       contentHash: digest,
     };
@@ -168,20 +149,36 @@ function resolution(vector: DomainVector): DemosGcrResolution {
 }
 
 describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
-  test("pins the exact merged Standard #346 corpus", () => {
+  test("pins the exact package-pinned Standard corpus", () => {
     expect(fixture.set).toBe("domain-claim-gcr-v0.4");
-    expect(fixture.vectors).toHaveLength(52);
-    expect(fixture.count).toBe(52);
+    expect(fixture.vectors).toHaveLength(63);
+    expect(fixture.count).toBe(63);
     expect(fixture.hash).toBe(
-      "ce7982c76a78066f9ae5c13e2737b6a5a574755cec1d3b6ed7c48e9bca23e7b8",
+      "465395b6c94e20766838367539e9cd1609bfa40a952c7ed54965550a401fe024",
     );
     expect(createHash("sha256").update(fixtureBytes).digest("hex")).toBe(
-      "fc1734ddbd148e09738abdcc9e017ae5a0ad961a7fd022cc75c75dfd9e108e2e",
+      "0a28643dbd4d41423f204ae23dec6c4b8cb7312cdceac72d3be495a675a4b6d7",
     );
   });
 
   for (const vector of fixture.vectors) {
-    test(`replays ${vector.name}`, async () => {
+    test(`${vector.producerInput ? "produces" : "replays"} ${vector.name}`, async () => {
+      if (vector.producerInput) {
+        const emittedBytes = Buffer.from(serializeDomainClaimArtifact(vector.producerInput), "utf8");
+        const emitted = JSON.parse(emittedBytes.toString("utf8")) as DomainClaimArtifactLike;
+        // Producer cases judge actual output, never the supplied reader artifact.
+        const matches = isDeepStrictEqual(emitted, vector.artifact.unsigned) &&
+          emittedBytes.toString("hex") === vector.artifact.canonicalHex;
+        expect(matches ? "pass" : "fail").toBe(vector.expected);
+        expect(emitted.claims.every((claim) => claim.ref.startsWith("domain:"))).toBe(true);
+        const nativeHosts = vector.producerInput.claims.map((claim) =>
+          (claim.metadata["demosGcrDomain"] as { hostname: string }).hostname);
+        expect(emitted.claims.map((claim) => claim.ref)).toEqual(
+          [...new Set(nativeHosts)].map((hostname) => `domain:${hostname}`),
+        );
+        expect(emitted.presentedBy).toBe(`domain:${nativeHosts[vector.producerInput.presentedByClaimIndex]}`);
+        return;
+      }
       const verdict = await verifyDemosGcrDomainClaims(vector.artifact.unsigned, {
         authenticateArtifact: authenticate(vector.artifact),
         requiredMethod: vector.requiredMethod,
@@ -208,8 +205,68 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
       if (vector.want?.semanticClaims) {
         expect(verdict.semanticClaims).toEqual(vector.want.semanticClaims);
       }
+      if (vector.want?.metadataEqualsAuthority) {
+        expect(verdict.data?.demosGcrDomain).toEqual(vector.authoritativeGcr);
+      }
+      if (vector.want?.originalBytesPreserved) {
+        expect(verdict.originalRefs).toEqual(vector.artifact.unsigned.claims.map((claim) => claim.ref));
+        expect(verdict.originalPresentedBy).toBe(vector.artifact.unsigned.presentedBy);
+        expect(verdict.authentication?.contentHash).toBe(vector.artifact.contentHash);
+      }
     });
   }
+
+  test.each([undefined, "canonical-domain-v0.6", "historical-domain-alias"] as const)(
+    "authenticated bundle bytes preserve legacy reads with profile %s",
+    async (profile) => {
+      const vector = fixture.vectors.find((v) => v.name === "legacy-mixed-case-ascii-read")!;
+      const verdict = await readAuthenticatedDomainClaims(vector.artifact.unsigned, {
+        authenticateArtifact: (artifact) => ({ ...authenticate(vector.artifact)(artifact), profile }),
+      });
+      expect(verdict.verdict).toBe("pass");
+      expect(verdict.semanticClaims).toEqual(["domain:agent.example"]);
+      expect(verdict.originalRefs).toEqual(["web2:domain:Agent.Example"]);
+    },
+  );
+
+  test.each([undefined, "2"])("reader rejects unsupported authenticated bundle version %s", async (bundleVersion) => {
+    const artifact = structuredClone(fixture.vectors.find((v) => v.name === "canonical-production")!.artifact.unsigned);
+    if (bundleVersion === undefined) delete artifact.bundleVersion;
+    else artifact.bundleVersion = bundleVersion;
+    const verdict = await readAuthenticatedDomainClaims(artifact, {
+      authenticateArtifact: () => ({ status: "authenticated", signingPublicKey: "11".repeat(32), contentHash: "22".repeat(32) }),
+    });
+    expect(verdict.verdict).toBe("error");
+    expect(verdict.semanticClaims).toEqual([]);
+  });
+
+  test("producer deduplicates aliases and keeps presentedBy bound to the source position", () => {
+    const vector = fixture.vectors.find((v) => v.name === "current-producer-dual-alias-with-mixed-case-rejected")!;
+    const input = structuredClone(vector.producerInput!);
+    input.presentedByClaimIndex = 1;
+    const emitted = JSON.parse(serializeDomainClaimArtifact(input));
+    expect(emitted.claims).toHaveLength(1);
+    expect(emitted.presentedBy).toBe("domain:agent.example");
+    input.claims[1]!.metadata = structuredClone(input.claims[1]!.metadata);
+    (input.claims[1]!.metadata["demosGcrDomain"] as { recordedAt: number }).recordedAt += 1;
+    expect(() => serializeDomainClaimArtifact(input)).toThrow(/conflicting metadata/);
+  });
+
+  test.each([
+    ["missing source transaction", (m: Record<string, unknown>) => { delete m["sourceTransaction"]; }],
+    ["extra metadata", (m: Record<string, unknown>) => { m["proofBody"] = "copied"; }],
+    ["wrong context", (m: Record<string, unknown>) => { m["context"] = "web2.other"; }],
+    ["wrong hostname", (m: Record<string, unknown>) => { m["hostname"] = "other.example"; }],
+    ["uppercase account", (m: Record<string, unknown>) => { m["account"] = (m["account"] as string).toUpperCase(); }],
+    ["wrong proof URL", (m: Record<string, unknown>) => { m["proofUrl"] = "https://agent.example/other"; }],
+    ["unsafe time", (m: Record<string, unknown>) => { m["recordedAt"] = Number.MAX_SAFE_INTEGER + 1; }],
+    ["boolean height", (m: Record<string, unknown>) => { (m["sourceTransaction"] as Record<string, unknown>)["blockNumber"] = true; }],
+    ["prefixed hash", (m: Record<string, unknown>) => { (m["sourceTransaction"] as Record<string, unknown>)["txHash"] = "0x" + "11".repeat(32); }],
+  ] as const)("producer rejects %s", (_name, change) => {
+    const input = structuredClone(fixture.vectors.find((v) => v.name === "canonical-production")!.producerInput!);
+    change(input.claims[0]!.metadata["demosGcrDomain"] as Record<string, unknown>);
+    expect(() => serializeDomainClaimArtifact(input)).toThrow();
+  });
 
   test("invalid historical bytes never cross the alias-fold boundary", async () => {
     const vector = fixture.vectors.find(

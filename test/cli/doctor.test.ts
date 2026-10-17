@@ -258,6 +258,15 @@ describe("dacs doctor", () => {
     expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("fail");
   });
 
+  it.each(["", "   "])("classifies an empty library wallet secret as a credential error: %j", async (walletSecret) => {
+    const factory = vi.fn(() => ({ connect: vi.fn(), getAddress: vi.fn() }));
+    const report = await runDoctor({ rpc: "https://node.example", walletSecret, adapterFactory: factory });
+    expect(report.checks.find((c) => c.id === "config.secrets")).toMatchObject({ status: "fail", summary: "Wallet secret is empty" });
+    expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("skip");
+    expect(report.exitCode).toBe(1);
+    expect(factory).not.toHaveBeenCalled();
+  });
+
   it("separates adapter load failures from RPC reachability failures", async () => {
     const report = await runDoctor({
       rpc: "https://node.example",

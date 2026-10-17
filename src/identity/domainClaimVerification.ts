@@ -26,8 +26,8 @@ export interface DomainClaimArtifactLike {
 export type DomainArtifactAuthentication =
   | {
       status: "authenticated";
-      /** Trusted release/profile classification, not a field read from the artifact. */
-      profile: DomainArtifactProfile;
+      /** Informational release classification; never authorizes or forbids alias reads. */
+      profile?: DomainArtifactProfile;
       signingPublicKey: string;
       contentHash: string;
     }
@@ -36,7 +36,7 @@ export type DomainArtifactAuthentication =
 export interface AuthenticatedDomainArtifactDeps {
   /**
    * Authenticate the exact captured artifact bytes, content hash and signature,
-   * and classify its producer profile from trusted provenance.
+   * and report its release profile for diagnostics only.
    */
   authenticateArtifact: (
     artifact: Readonly<DomainClaimArtifactLike>,
@@ -86,7 +86,7 @@ export interface AuthenticatedDomainClaimRead {
   /** Post-authentication identity used for primary-claim/reputation semantics. */
   semanticPresentedBy?: string;
   authentication?: Readonly<{
-    profile: DomainArtifactProfile;
+    profile?: DomainArtifactProfile;
     signingPublicKey: string;
     contentHash: string;
   }>;
@@ -261,7 +261,7 @@ function authenticatedCoordinates(
 ): NonNullable<AuthenticatedDomainClaimRead["authentication"]> | null {
   if (
     auth.status !== "authenticated" ||
-    (auth.profile !== "canonical-domain-v0.6" &&
+    (auth.profile !== undefined && auth.profile !== "canonical-domain-v0.6" &&
       auth.profile !== "historical-domain-alias") ||
     !HEX_32.test(auth.signingPublicKey) ||
     !HEX_32.test(auth.contentHash)
@@ -269,7 +269,7 @@ function authenticatedCoordinates(
     return null;
   }
   return {
-    profile: auth.profile,
+    ...(auth.profile === undefined ? {} : { profile: auth.profile }),
     signingPublicKey: auth.signingPublicKey,
     contentHash: auth.contentHash,
   };
@@ -281,13 +281,11 @@ type SemanticDerivation =
 
 function deriveSemanticDomainClaims(
   refs: readonly string[],
-  profile: DomainArtifactProfile,
 ): SemanticDerivation {
   const semanticClaims: string[] = [];
   let policyViolation: DomainClaimDiagnostic | undefined;
   for (const ref of refs) {
     let hostname: string | null = null;
-    let isLegacy = false;
     if (ref.startsWith("domain:")) {
       const originalHost = ref.slice("domain:".length);
       if (isCanonicalDomainHostname(originalHost)) {
@@ -309,7 +307,6 @@ function deriveSemanticDomainClaims(
         );
       }
     } else if (ref.startsWith("web2:domain:")) {
-      isLegacy = true;
       hostname = canonicalizeNativeDomainHostname(
         ref.slice("web2:domain:".length),
       );
@@ -347,12 +344,7 @@ function deriveSemanticDomainClaims(
 
     const semantic = `domain:${hostname}`;
     if (!semanticClaims.includes(semantic)) semanticClaims.push(semantic);
-    if (isLegacy && profile === "canonical-domain-v0.6") {
-      policyViolation ??= diagnostic(
-        "legacy-alias-forbidden",
-        "the authenticated current producer profile cannot emit web2:domain aliases",
-      );
-    }
+
   }
   return { ok: true, semanticClaims, ...(policyViolation ? { policyViolation } : {}) };
 }
@@ -456,9 +448,19 @@ export async function readAuthenticatedDomainClaims(
       originalPresentation,
     );
   }
+  if (artifact.bundleVersion !== "1") {
+    return result(
+      "error",
+      "artifact-malformed",
+      "domain claims require authenticated bundleVersion 1 bytes",
+      originalRefs,
+      [],
+      authentication,
+      originalPresentation,
+    );
+  }
   const derived = deriveSemanticDomainClaims(
     originalRefs,
-    authentication.profile,
   );
   if (!derived.ok) {
     return result(
@@ -479,7 +481,6 @@ export async function readAuthenticatedDomainClaims(
   ) {
     const presented = deriveSemanticDomainClaims(
       [originalPresentedBy],
-      authentication.profile,
     );
     if (!presented.ok) {
       return result(

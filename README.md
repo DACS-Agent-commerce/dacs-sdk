@@ -71,11 +71,16 @@ before recipe-family qualification and four-state aggregation.
 
 Domain ClaimReferences use a strict trust boundary. Native Demos
 `web2.domain` records may be converted to the current lower-case ASCII
-`domain:` producer form with `domainClaimReferenceFromNativeHostname()`. A
+`domain:` producer form with `domainClaimReferenceFromNativeHostname()`.
+`serializeDomainClaimArtifact()` emits the complete unsigned canonical domain
+presentation, validates persistent native metadata, and deduplicates domain
+claims before signing. A
 signed current `domain:` reference is never repaired during reading. Historical
 `web2:domain:` aliases are available only through
 `readAuthenticatedDomainClaims()`, which authenticates the original artifact
-before deriving a separate, deduplicated semantic claim set. For persistent GCR
+before deriving a separate, deduplicated semantic claim set. Alias compatibility
+is selected by authenticated `bundleVersion: "1"` bytes and does not depend on
+producer release metadata. For persistent GCR
 evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
 transaction/finality, writer, validation-profile, freshness and presentation-
 control inputs; it never treats copied bundle metadata as authority.

@@ -347,6 +347,7 @@ export {
   createInMemorySettlementLog,
   settlementBindingHash,
   settlementKey,
+  SettlementNotInvokedError,
   type SettlementBinding,
   type SettlementEffectFence,
   type SettlementIdempotencyStore,

@@ -1,8 +1,9 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
-import { CounterpartyError, DacsError } from "../errors.js";
+import { CounterpartyError, DacsError, faultCategory } from "../errors.js";
 import {
   settlementKey,
+  SettlementNotInvokedError,
   type SettlementBinding,
   type SettlementIdempotencyStore,
 } from "./idempotency.js";
@@ -200,19 +201,25 @@ export interface PayD402SettleCoreDeps {
   payerAddress: string;
 }
 
-/**
- * Errors thrown before `createPayment` (402 fetch, body parse, abort guard).
- * No payment exists yet, so `payD402Settle` releases its idempotency intent
- * for these and a retry may pay. Every other throw stays ambiguous.
- */
-const notPaidErrors = new WeakSet<object>();
+/** A fresh failure bound to exactly one call's parameters, never the cause's identity. */
+class D402PreflightError extends DacsError {
+  constructor(readonly invocation: PayD402SettleParams, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), {
+      cause,
+      category: faultCategory(cause),
+    });
+    Object.freeze(this);
+  }
+}
 
-async function beforePayment<T>(step: () => Promise<T>): Promise<T> {
+async function beforePayment<T>(
+  invocation: PayD402SettleParams,
+  step: () => Promise<T>,
+): Promise<T> {
   try {
     return await step();
   } catch (err) {
-    if (typeof err === "object" && err !== null) notPaidErrors.add(err);
-    throw err;
+    throw new D402PreflightError(invocation, err);
   }
 }
 
@@ -227,7 +234,7 @@ export async function payD402SettleCore(
 ): Promise<SettleResult> {
   const { client, fetchImpl, payerAddress } = deps;
 
-  const requirement = await beforePayment(async () => {
+  const requirement = await beforePayment(params, async () => {
     // 1. Initial request — expect a 402 with a payment requirement.
     const initial = await fetchImpl(params.paywallUrl, params.requestInit);
     if (initial.status !== 402) {
@@ -388,7 +395,7 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
     address: demos.getAddress(),
     settle: (params) =>
       payD402SettleCore(
-        { ...params, network: params.network ?? network },
+        params.network === undefined ? { ...params, network } : params,
         { client, fetchImpl, payerAddress: demos.getAddress() },
       ),
     waitForSettlement: async ({ txHash, recipient, network: label, options }) =>
@@ -505,28 +512,30 @@ export function payD402Settle(
       finality: { model: "bft-final" },
       resource: paywallUrl,
     } satisfies SettlementBinding;
-    // Set inside the submit callback; the assertion keeps TS from narrowing it away.
-    let notPaid = undefined as { err: unknown } | undefined;
-    const result = await store.once(
+    return store.once(
       settlementKey(req.rail, req.jobId, phaseIndex),
       binding,
       async () => {
+        const invocation = { paywallUrl, recipient, amount: amountOs, network };
         let settled: SettleResult;
         try {
-          settled = await rail.settle({ paywallUrl, recipient, amount: amountOs, network });
+          settled = await rail.settle(invocation);
         } catch (err) {
-          if (typeof err !== "object" || err === null || !notPaidErrors.has(err)) throw err;
-          notPaid = { err };
-          return {
-            disposition: "not-invoked" as const,
-            result: { ok: false, txHash: "", chainId: network, payer, payee: recipient },
-          };
+          if (!(err instanceof D402PreflightError) || err.invocation !== invocation) {
+            // A rail/client cannot supply the store's clean-release signal.
+            if (err instanceof SettlementNotInvokedError) {
+              throw new DacsError("pay-d402 rail failed without current preflight proof", { cause: err });
+            }
+            throw err;
+          }
+          throw new SettlementNotInvokedError(
+            { ok: false, txHash: "", chainId: network, payer, payee: recipient },
+            err.cause,
+          );
         }
         return boundD402Result(settled, { network, payer, recipient }, "pay-d402 settlement");
       },
     );
-    if (notPaid) throw notPaid.err;
-    return result;
   };
 }
 

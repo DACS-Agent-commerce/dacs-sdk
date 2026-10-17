@@ -57,7 +57,7 @@ import {
   type PayD402SettleCoreDeps,
   type PayD402WaitParams,
 } from "../../src/rails/payD402.js";
-import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog, SettlementNotInvokedError } from "../../src/rails/idempotency.js";
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
 
 const RECIPIENT = "demos1recipientaddress0000000000000000000000";
@@ -610,6 +610,19 @@ describe("payD402Settle bridge", () => {
     await expect(settle(request())).rejects.toThrow("socket closed after broadcast");
     await expect(settle(request())).rejects.toThrow(/refusing to resubmit/);
     expect(settles).toBe(1);
+  });
+
+  test("a client's store-disposition exception does not authorize a payment retry", async () => {
+    const client = fakeClient();
+    let effects = 0;
+    client.settle = async () => {
+      effects += 1;
+      throw new SettlementNotInvokedError({ ok: false, txHash: "", chainId: "demos:testnet", payer: PAYER, payee: RECIPIENT }, new Error("client failure"));
+    };
+    const settle = bridge(railOver(client));
+    await expect(settle(request())).rejects.toThrow(/without current preflight proof/);
+    await expect(settle(request())).rejects.toThrow(/refusing to resubmit/);
+    expect(effects).toBe(1);
   });
 
   test("a pending payment is never paid twice in the same process", async () => {

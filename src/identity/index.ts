@@ -61,6 +61,8 @@ export {
 export {
   canonicalizeNativeDomainHostname,
   domainClaimReferenceFromNativeHostname,
+  serializeDomainClaimArtifact,
+  type DomainClaimProducerInput,
   isCanonicalDomainHostname,
 } from "./domainHost.js";
 export {

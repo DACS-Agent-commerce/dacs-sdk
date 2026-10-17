@@ -393,7 +393,11 @@ export async function runDoctorForCli(
   );
 
   checks.push(
-    options.walletSecret
+    options.walletSecret !== undefined && options.walletSecret.trim().length === 0
+      ? check("config.secrets", "fail", "Wallet secret is empty", {
+          remediation: "Provide a non-empty wallet secret, or omit it for read-only diagnostics.",
+        })
+      : options.walletSecret
       ? check("config.secrets", "pass", "Wallet secret was provided and redacted", {
           data: { walletSecret: redactSecret(options.walletSecret) },
         })
@@ -433,7 +437,7 @@ export async function runDoctorForCli(
 
   let adapter: DoctorAdapter | null = null;
   if (checks.some((c) => c.id.startsWith("config.") && c.status === "fail")) {
-    checks.push(check(RPC_REACHABLE, "skip", "Credential file admission failed; RPC connection skipped"));
+    checks.push(check(RPC_REACHABLE, "skip", "Credential admission failed; RPC connection skipped"));
   } else if (options.offline) {
     checks.push(check(RPC_REACHABLE, "skip", "Offline mode skips RPC reachability"));
   } else if (!options.rpc) {

@@ -1,6 +1,9 @@
 import { isIP } from "node:net";
 import { domainToASCII, domainToUnicode } from "node:url";
 
+import { canonicalize } from "../canonical/index.js";
+import { DacsError } from "../errors.js";
+
 const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /**
@@ -95,4 +98,77 @@ export function domainClaimReferenceFromNativeHostname(
 ): `domain:${string}` | null {
   const hostname = canonicalizeNativeDomainHostname(value);
   return hostname === null ? null : `domain:${hostname}`;
+}
+
+/** Native inputs for a new DACS-1 domain-only presentation, before signing. */
+export interface DomainClaimProducerInput {
+  producerVersion: "dacs1-domain-v1";
+  bundleVersion: "1";
+  subject: string;
+  claims: Array<{
+    nativeContext: "web2.domain";
+    hostname: string;
+    metadata: Record<string, unknown>;
+  }>;
+  presentedByClaimIndex: number;
+  presentedAt: number;
+}
+
+/**
+ * Serialize a new domain presentation from native hostnames. Every position,
+ * including presentedBy, uses the canonical domain reference; historical alias
+ * compatibility is confined to reading existing signed presentations.
+ */
+export function serializeDomainClaimArtifact(input: DomainClaimProducerInput): string {
+  // Capture JSON values once, before deriving any references or emitted bytes.
+  const captured = JSON.parse(canonicalize(input)) as DomainClaimProducerInput;
+  const exact = (value: unknown, keys: string[]): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  if (!exact(captured, ["producerVersion", "bundleVersion", "subject", "claims", "presentedByClaimIndex", "presentedAt"]) ||
+      captured.producerVersion !== "dacs1-domain-v1" || captured.bundleVersion !== "1" ||
+      typeof captured.subject !== "string" || !Array.isArray(captured.claims) ||
+      captured.claims.length === 0 || !Number.isSafeInteger(captured.presentedByClaimIndex) ||
+      captured.presentedByClaimIndex < 0 || captured.presentedByClaimIndex >= captured.claims.length ||
+      !Number.isSafeInteger(captured.presentedAt) || captured.presentedAt < 0) {
+    throw new DacsError("invalid domain producer input");
+  }
+  const emitted = new Map<string, { ref: string; metadata: Record<string, unknown> }>();
+  const sourceRefs: string[] = [];
+  for (const claim of captured.claims) {
+    if (!exact(claim, ["nativeContext", "hostname", "metadata"])) {
+      throw new DacsError("invalid native domain claim input");
+    }
+    const ref = domainClaimReferenceFromNativeHostname(claim.hostname);
+    if (claim.nativeContext !== "web2.domain" || ref === null) {
+      throw new DacsError("domain producer requires a valid native web2.domain hostname");
+    }
+    const metadata = claim.metadata;
+    const native = metadata?.demosGcrDomain as Record<string, unknown> | undefined;
+    const tx = native?.sourceTransaction as Record<string, unknown> | undefined;
+    const hex = (value: unknown): boolean => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+    const natural = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
+    const host = ref.slice("domain:".length);
+    if (!exact(metadata, ["demosGcrDomain"]) ||
+        !exact(native, ["context", "hostname", "account", "proofUrl", "sourceTransaction", "recordedAt"]) ||
+        native.context !== "web2.domain" || native.hostname !== host || !hex(native.account) ||
+        native.proofUrl !== `https://${host}/.well-known/demos-cci.txt` || !natural(native.recordedAt) ||
+        !exact(tx, ["txHash", "blockNumber"]) || !hex(tx.txHash) || !natural(tx.blockNumber)) {
+      throw new DacsError("invalid persistent Demos domain metadata");
+    }
+    const output = { ref, metadata };
+    const previous = emitted.get(ref);
+    if (previous && canonicalize(previous) !== canonicalize(output)) {
+      throw new DacsError("duplicate semantic domain has conflicting metadata");
+    }
+    if (!previous) emitted.set(ref, output);
+    sourceRefs.push(ref);
+  }
+  return canonicalize({
+    bundleVersion: captured.bundleVersion,
+    subject: captured.subject,
+    claims: [...emitted.values()],
+    presentedBy: sourceRefs[captured.presentedByClaimIndex],
+    presentedAt: captured.presentedAt,
+  });
 }
