@@ -43,7 +43,9 @@ Negative zero (for example `-0.0`) is an admitted CORE §B.2 number that
 serialises as `0`. The following APIs treat an admitted `-0` exactly like `0`,
 and their owned snapshots hold `0`: `contentHash`, `stripSignature`,
 `canonicalSignedScope`, `signArtifact` and `verifyArtifact`, the
-component-signature and Listing verifiers, the ordered DACS-1 §6.3.4 reader
+component-signature verifier, the Listing verifiers `discoverListings`,
+`verifyReadableListingArtifact` and `authenticateReadableListingArtifact`, the
+ordered DACS-1 §6.3.4 reader
 `validateListingArtifact` with its revocation, payload-capability and
 reachability helpers, the rail resolver `resolveListingRails`, anchored
 discovery through `readListingByLogicalAddress`, the result binder

@@ -218,7 +218,11 @@ export interface SessionDeps {
     buyerId: string;
     jobId: string;
   }) => Promise<boolean> | boolean;
-  /** Read the (signed) listing at a ref. */
+  /**
+   * Read the (signed) listing at a ref. Return plain, writable JSON data: the
+   * session start owns it with the strict received snapshot, which refuses
+   * frozen or read-only objects as "listing not found or invalid".
+   */
   readListing: (ref: string) => Promise<unknown>;
   /**
    * Optional caller-held LR-1 tuple selected before entering the session. The

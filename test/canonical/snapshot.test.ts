@@ -125,6 +125,19 @@ describe("negative zero by snapshot boundary", () => {
     expect(Object.is(snapshotCanonicalJsonRead(frozen, "stored artifact").n, 0))
       .toBe(true);
   });
+
+  // allowNegativeZero relaxes only -0: other out-of-profile numbers still fail.
+  it.each([
+    ["unsafe integer", { n: 2 ** 53 }],
+    ["negative unsafe integer in an array", { n: [-(2 ** 53)] }],
+    ["NaN", { n: NaN }],
+    ["Infinity", { n: Infinity }],
+  ])("still refuses %s at the read and received boundaries", (_label, value) => {
+    expect(() => snapshotCanonicalJsonReceived(value, "received artifact"))
+      .toThrow(/received artifact is not stable canonical JSON/);
+    expect(() => snapshotCanonicalJsonRead(value, "stored artifact"))
+      .toThrow(/stored artifact is not stable canonical JSON/);
+  });
 });
 
 describe("strict canonical snapshot", () => {

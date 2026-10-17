@@ -245,9 +245,12 @@ export function snapshotCanonicalJsonConfig<T>(value: T, label: string): T {
  * §B.2 serialises it as `0`, so the owned snapshot holds `0` and hashes,
  * signed scopes and verifiers agree with the admitted bytes instead of failing.
  *
- * Keep authoring/signing inputs on {@link snapshotCanonicalJson}: accepting a
- * read-only view or negative zero here is deliberately limited to values
- * already returned from a read boundary.
+ * This is also the hashing boundary: `stripSignature`, `contentHash` and so
+ * `signArtifact` own every input here, so they normalise an in-memory `-0`.
+ * The authoring refusal of read-only views and `-0` applies only to
+ * {@link snapshotCanonicalJson} / `snapshotCanonicalJsonObject` callers such as
+ * `signComponentArtifact`, `buildComponentSignature` and
+ * `prepareChannelMessageSigningInput`.
  */
 export function snapshotCanonicalJsonRead<T>(value: T, label: string): T {
   return snapshotCanonicalJsonInternal(value, label, false, true, true);
