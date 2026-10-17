@@ -75,7 +75,12 @@ export interface SellerFixedPriceAgreementContextQuery {
   queryVersion: "1";
   jobId: string;
   listingPin: Readonly<ListingPin>;
-  /** Untrusted candidate terms supplied only so local policy can validate rail, payout, and time. */
+  /**
+   * Untrusted candidate terms supplied only so local policy can validate rail,
+   * payout, time, any metered quantity, and any `terms.additionalTerms`.
+   * Return only a quantity and additional terms that seller policy itself
+   * admits; copying them unchecked signs whatever the buyer wrote.
+   */
   candidateDraft: Readonly<UnsignedAgreementArtifact>;
   planHash: string;
   agreementHash: string;
@@ -116,7 +121,10 @@ export interface DurableSellerFixedPriceAgreementDurability {
   /**
    * Resolve seller-local authenticated inputs. A `present` result asserts that
    * Listing signature/validity/revocation, identities, Vet refs, rail snapshot,
-   * payout policy, and generatedAt were authenticated independently.
+   * payout policy, metered quantity, additional terms, and generatedAt were
+   * authenticated independently. The proposal is accepted only when the plan
+   * derived from this context, including `meteredQuantity` and
+   * `additionalTerms`, equals the offered plan exactly.
    */
   resolveAuthenticatedAgreementContext: (
     query: Readonly<SellerFixedPriceAgreementContextQuery>,
@@ -785,7 +793,7 @@ function captureAgreementContext(value: unknown): FixedPriceAgreementInput {
     "buyer",
     "seller",
     "generatedAt",
-  ], ["selectedRail", "payoutBindings"])) {
+  ], ["selectedRail", "payoutBindings", "meteredQuantity", "additionalTerms"])) {
     throw new TypeError("authenticated seller agreement context is malformed");
   }
   return captured as unknown as FixedPriceAgreementInput;
