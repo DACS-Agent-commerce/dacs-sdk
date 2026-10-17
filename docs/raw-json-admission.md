@@ -46,18 +46,21 @@ and their owned snapshots hold `0`: `contentHash`, `stripSignature`,
 component-signature and Listing verifiers, the ordered DACS-1 §6.3.4 reader
 `validateListingArtifact` with its revocation, payload-capability and
 reachability helpers, the rail resolver `resolveListingRails`, anchored
-discovery through `readListingByLogicalAddress`, and the result binder
-`isVerifiedListingAdmission` used by seller payment intake. Each of
+discovery through `readListingByLogicalAddress`, the result binder
+`isVerifiedListingAdmission` used by seller payment intake, and the received
+message of DACS-3 channel admission (`admitChannelMessage`). Each of
 these also normalises an in-memory `-0` it is handed directly. Other entry
-points that take received data are not covered by this list. Channel admission
-(`admitChannelMessage`) still refuses an in-memory `-0` as malformed, and the
-structural guards `isListing` and `readListingArtifact` inspect the caller's
+points that take received data are not covered by this list. The structural
+guards `isListing` and `readListingArtifact` inspect the caller's
 value as is and may give a stricter answer for it. To use these with an
 admitted value, own it first by re-parsing its canonical bytes
 (`JSON.parse(canonicalize(value))`), which holds `0`. Locally authored
-component artifacts should use `0`: `signComponentArtifact`,
-`buildComponentSignature` and the SDK's other authoring boundaries refuse an
-in-memory `-0` as a non-wire alias.
+artifacts and local state should use `0`: `signComponentArtifact`,
+`buildComponentSignature`, `prepareChannelMessageSigningInput` and the
+admission context of `admitChannelMessage` refuse an in-memory `-0` as a
+non-wire alias. Other helpers may own their input the way the read
+boundaries above do and hold `0`; neither spelling changes a hash or a
+comparison.
 Wire-format reads that must keep a transport's exact JSON also refuse it,
 because their owned copy is not re-parsed from canonical bytes.
 
