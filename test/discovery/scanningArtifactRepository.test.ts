@@ -120,12 +120,37 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(fixture.readAnchor).toHaveBeenCalledExactlyOnceWith("stor-a");
   });
 
+  test("resumes a persisted deferred row without an owner and adds no owner key", async () => {
+    const fixture = setup(["a"]);
+    const { owner: _owner, ...ownerless } = deferredRow("z").anchor;
+    const input = {
+      ...state("next"), metadata: new Map([["stor-z", logical("z")]]),
+      deferred: [{ ...deferredRow("z"), anchor: ownerless }],
+    };
+    const result = await fixture.repo.scanPage(input);
+    expect(result.state.deferred).toEqual(input.deferred);
+    expect(Object.keys(result.state.deferred[0]!.anchor)).not.toContain("owner");
+  });
+
+  test("the unsupported-kind error class carries its name and code", () => {
+    const error = new UnsupportedArtifactKindError("v9");
+    expect(error).toBeInstanceOf(Error);
+    expect({ name: error.name, code: error.code, message: error.message }).toEqual({
+      name: "UnsupportedArtifactKindError", code: "unsupported-kind", message: "v9",
+    });
+  });
+
   test("an unknown index status cannot admit a valid-looking binding", async () => {
     const fixture = setup(["a"], {
       index: { resolve: async () => ({ status: "unexpected", binding: binding("a") }) as never },
     });
     const result = await fixture.repo.scanPage();
     expect(result).toMatchObject({ status: "indeterminate", code: "index-indeterminate" });
+    expect(result.results.map(({ outcome }) => outcome)).toEqual([{
+      status: "indeterminate",
+      code: "index-indeterminate",
+      reason: "binding resolution failed: binding index returned an unknown status",
+    }]);
     expect(result.state.seen.size).toBe(0);
     expect(fixture.readAnchor).not.toHaveBeenCalled();
     expect(fixture.verifyArtifact).not.toHaveBeenCalled();
@@ -343,7 +368,10 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect([...first.results, ...second.results].map(({ anchor, outcome }) => [anchor.kind, outcome.status])).toEqual([
       ["listing", "verified"], ["bundle", "unverifiable"], ["listing-revocation", "verified"], ["agreement-commitment", "verified"],
     ]);
-    expect(first.results[1]?.outcome).toMatchObject({ code: "unsupported-kind" });
+    expect(first.results[1]?.outcome).toMatchObject({
+      code: "unsupported-kind",
+      reason: "signature verification threw: bundle rows need DACS-5 BundleBinding verification",
+    });
     expect(second.state.seen.size).toBe(4);
     expect(first.state.seen.size).toBe(2);
     expect(verify).toHaveBeenCalledTimes(3);
@@ -394,7 +422,9 @@ describe("createScanningArtifactRepository (#54)", () => {
     const fixture = setup(["a"], { index: { resolve } });
     fixture.fetchPage.mockResolvedValue({ entries: [{ ...row("a"), owner: "other" }], nextCursor: null });
     const result = await fixture.repo.scanPage();
-    expect(result.results[0]?.outcome.status).toBe("binding-mismatch");
+    expect(result.results[0]?.outcome).toEqual({
+      status: "binding-mismatch", reason: "history row owner does not match expectedOwner",
+    });
     expect(resolve).not.toHaveBeenCalled();
     expect(fixture.readAnchor).not.toHaveBeenCalled();
     expect(fixture.verifyArtifact).not.toHaveBeenCalled();
@@ -514,6 +544,9 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(result.results.map(({ outcome }) => outcome.status)).toEqual([
       "unverifiable", "conflict", "conflict", "verified",
     ]);
+    expect(result.results[2]?.outcome).toMatchObject({
+      reason: expect.stringContaining("published binding points at a different native address than the history row"),
+    });
     expect(result.state.seen.size).toBe(ids.length);
     expect(fixture.verifyArtifact).toHaveBeenCalledOnce();
   });
@@ -1014,6 +1047,17 @@ describe("createScanningArtifactRepository (#54)", () => {
     expect(result).toMatchObject({ status: "restart-required", code, results: [], deferred: [] });
     expect(result.state).toEqual(state(null));
     expect(fixture.fetchPage).not.toHaveBeenCalled();
+  });
+
+  test.each<[ArtifactScanRestartCode, Partial<ArtifactScanState>, string]>([
+    ["foreign-owner-state", { owner: "other" }, "scan state belongs to a different owner"],
+    ["cursor-cycle", { consumedCursors: new Set(["cur", "old"]), pagesConsumed: 3 },
+      "history cursor cycle detected at cur"],
+  ])("a %s restart names its cause", async (code, over, reason) => {
+    const fixture = setup(["w"]);
+    expect(await fixture.repo.scanPage(resumable(over))).toMatchObject({
+      status: "restart-required", code, reason,
+    });
   });
 
   test("a restart from a state saved before pendingRow and deferred reports earlier rows again", async () => {
