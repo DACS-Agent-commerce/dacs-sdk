@@ -1680,37 +1680,44 @@ export async function advanceCrossChainHtlc(
   const authorizeDestinationClaim = input.authorizeDestinationClaim === true;
   const store = input.store;
   const adapter = input.adapter;
-  // Check callback shape before binding or claiming a session. A host can
-  // correct these dependencies and resume with the same retained salt.
-  if (!store || !adapter || [
-    store.claim,
-    store.isCurrent,
-    store.recordPrepared,
-    store.replacePreparedSourceClaim,
-    store.recordRevealFinal,
-    store.recordSettlement,
-    adapter.observe,
-    adapter.prepareAction,
-    adapter.broadcastRetained,
-  ].some((callback) => typeof callback !== "function")) return inputInvalid;
-  const claimSettlement = store.claim.bind(store);
-  const isCurrentSettlement = store.isCurrent.bind(store);
-  const recordPrepared = store.recordPrepared.bind(store);
-  const recordSourceFinality = typeof store.recordSourceFinality === "function"
-    ? store.recordSourceFinality.bind(store)
-    : undefined;
-  const replacePreparedSourceClaim = store.replacePreparedSourceClaim.bind(store);
-  const replacePreparedDestinationClaim = typeof store.replacePreparedDestinationClaim === "function"
-    ? store.replacePreparedDestinationClaim.bind(store)
-    : undefined;
-  const recordRevealFinal = store.recordRevealFinal.bind(store);
-  const recordSettlement = store.recordSettlement.bind(store);
-  const observeLedger = adapter.observe.bind(adapter);
-  const observeSourceLedger = typeof adapter.observeSourceLeg === "function"
-    ? adapter.observeSourceLeg.bind(adapter)
-    : undefined;
-  const prepareAdapterAction = adapter.prepareAction.bind(adapter);
-  const broadcastAdapterAction = adapter.broadcastRetained.bind(adapter);
+  // Capture callbacks once: a getter can change or throw on a later read.
+  // Malformed dependencies remain correctable before any session is claimed.
+  const callbacks = (() => {
+    try {
+      if (!store || !adapter) return undefined;
+      const { claim, isCurrent, recordPrepared, recordSourceFinality,
+        replacePreparedSourceClaim, replacePreparedDestinationClaim,
+        recordRevealFinal, recordSettlement } = store;
+      const { observe, observeSourceLeg, prepareAction, broadcastRetained } = adapter;
+      if ([claim, isCurrent, recordPrepared, replacePreparedSourceClaim,
+        recordRevealFinal, recordSettlement, observe, prepareAction, broadcastRetained]
+        .some((callback) => typeof callback !== "function")) return undefined;
+      return {
+        claimSettlement: claim.bind(store),
+        isCurrentSettlement: isCurrent.bind(store),
+        recordPrepared: recordPrepared.bind(store),
+        recordSourceFinality: typeof recordSourceFinality === "function"
+          ? recordSourceFinality.bind(store) : undefined,
+        replacePreparedSourceClaim: replacePreparedSourceClaim.bind(store),
+        replacePreparedDestinationClaim: typeof replacePreparedDestinationClaim === "function"
+          ? replacePreparedDestinationClaim.bind(store) : undefined,
+        recordRevealFinal: recordRevealFinal.bind(store),
+        recordSettlement: recordSettlement.bind(store),
+        observeLedger: observe.bind(adapter),
+        observeSourceLedger: typeof observeSourceLeg === "function"
+          ? observeSourceLeg.bind(adapter) : undefined,
+        prepareAdapterAction: prepareAction.bind(adapter),
+        broadcastAdapterAction: broadcastRetained.bind(adapter),
+      };
+    } catch {
+      return undefined;
+    }
+  })();
+  if (!callbacks) return inputInvalid;
+  const { claimSettlement, isCurrentSettlement, recordPrepared, recordSourceFinality,
+    replacePreparedSourceClaim, replacePreparedDestinationClaim, recordRevealFinal,
+    recordSettlement, observeLedger, observeSourceLedger, prepareAdapterAction,
+    broadcastAdapterAction } = callbacks;
   const now = input.now ?? Date.now;
   // Input that cannot even name a session (an unusable owner, lease,
   // authority or hashlock deriver) says nothing about whether one exists:
@@ -1771,6 +1778,12 @@ export async function advanceCrossChainHtlc(
   } catch {
     return { status: "indeterminate", reason: "htlc-settlement-store-unavailable" };
   }
+  if (!claimed || typeof claimed !== "object" ||
+      !["acquired", "waiting", "settled", "conflict", "corrupt"].includes(claimed.status) ||
+      ((claimed.status === "conflict" || claimed.status === "corrupt") &&
+        typeof claimed.reason !== "string")) {
+    return { status: "indeterminate", reason: "htlc-settlement-store-claim-invalid" };
+  }
   if ("intent" in claimed) {
     try {
       if (canonicalize(claimed.intent) !== canonicalize(intent)) {
@@ -1808,7 +1821,7 @@ export async function advanceCrossChainHtlc(
       reason: "htlc-destination-claim-replacement-store-unsupported",
     };
   }
-  if (claimed.lease.owner !== owner ||
+  if (!claimed.lease || typeof claimed.lease !== "object" || claimed.lease.owner !== owner ||
       !Number.isSafeInteger(claimed.lease.generation) || claimed.lease.generation <= 0 ||
       !Number.isSafeInteger(claimed.lease.expiresAt) || claimed.lease.expiresAt <= claimNow) {
     return { status: "indeterminate", reason: "htlc-settlement-store-lease-invalid" };
