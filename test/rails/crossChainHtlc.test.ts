@@ -27,6 +27,8 @@ import {
   type HtlcLockTerms,
   type HtlcObservedAction,
   type HtlcPreparedAction,
+  type HtlcRevealCheckpoint,
+  type HtlcSourceFinalityCheckpoint,
   type HtlcStoreClaim,
   type HtlcStoreWrite,
   type HtlcTxRef,
@@ -6180,6 +6182,31 @@ describe("secret handling, persistence, effect binding, observations and evidenc
     expect(Buffer.from(short[0]!).equals(Buffer.from(short[1]!))).toBe(false);
   });
 
+  test("HTLC-4: a restarted caller settles with only the salt recovered from its vault", async () => {
+    // The host persists the salt it generated (as a vault would, encoded) and
+    // keeps no copy in process; every later call, each one a takeover as after
+    // a restart, decodes it again. The core needs no other secret.
+    const generated = generateHtlcBuyerSalt();
+    const vault = new Map([[JOB_ID, Buffer.from(generated).toString("base64")]]);
+    const preimageHex = Buffer.from(deriveHtlcPreimage({
+      buyerSalt: generated,
+      jobId: JOB_ID,
+      agreementHash: AGREEMENT_HASH,
+    })).toString("hex");
+    generated.fill(0);
+    const recovered = () => Uint8Array.from(Buffer.from(vault.get(JOB_ID)!, "base64"));
+    const h = harness();
+    const run = runner({ adapter: h.adapter, buyerSalt: recovered() });
+    let result = await advanceCrossChainHtlc(run.shared);
+    for (let call = 0; call < 3; call += 1) {
+      result = await advanceCrossChainHtlc({ ...run.nextOwner(), buyerSalt: recovered() });
+    }
+    expect(result).toMatchObject({ status: "settled" });
+    expect(h.prepareAction.mock.calls.map((call) => call[0].action))
+      .toEqual(["source-lock", "destination-lock", "destination-claim", "source-claim"]);
+    expect(h.preimages.get("source-claim")).toBe(preimageHex);
+  });
+
   test("HTLC-2: never hands the buyer salt to any adapter call", async () => {
     const salt = generateHtlcBuyerSalt();
     const h = harness();
@@ -6938,6 +6965,20 @@ describe("retained store rows the core must refuse", () => {
       txRefs: [...s.txRefs.slice(0, 3), { ...s.txRefs[3], claimTxHash: "" }],
     })],
     ["an unauthenticated settlement", (s) => ({ ...s, authenticationHash: "A".repeat(64) })],
+    // Same shape as the retained rows, other values: only the retained-row
+    // comparison refuses these.
+    ...([
+      ["another source-lock hash", 0, "lockTxHash"],
+      ["another destination-lock hash", 1, "lockTxHash"],
+      ["another reveal hash", 2, "revealTxHash"],
+      ["another claim hash", 3, "claimTxHash"],
+    ] as const).map(([name, index, field]) => [name, (s: CrossChainHtlcSettlement) => ({
+      ...s,
+      txRefs: s.txRefs.map((ref, at) => at === index
+        ? { ...ref, [field]: `${(ref as unknown as Record<string, string>)[field]}-other` }
+        : ref),
+    })] as const),
+    ["a later source expiry", (s) => ({ ...s, settlementFinality: { ...s.settlementFinality, sourceExpiry: s.settlementFinality.sourceExpiry + 1 } })],
   ];
   test.each(settlementCorruption)("refuses to replay a stored settlement with %s", async (_name, mutate) => {
     const { h, run } = await settledSession();
@@ -6952,6 +6993,44 @@ describe("retained store rows the core must refuse", () => {
     const { run, settlement } = await settledSession();
     await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store: withSettlement(run.shared.store, (s) => s) }))
       .resolves.toEqual({ status: "settled", settlement });
+  });
+
+  const retainedCorruption: readonly (readonly [string, (claimed: Record<string, unknown>) => void])[] = [
+    ["no retained rows", (c) => { c.prepared = []; }],
+    ["no source-claim row", (c) => {
+      c.prepared = (c.prepared as HtlcPreparedAction[]).filter((row) => row.action !== "source-claim");
+    }],
+    ["no destination-lock row", (c) => {
+      c.prepared = (c.prepared as HtlcPreparedAction[]).filter((row) => row.action !== "destination-lock");
+    }],
+    ["no source-finality checkpoint", (c) => { delete c.sourceFinalityCheckpoint; }],
+    ["no reveal checkpoint", (c) => { delete c.revealCheckpoint; }],
+    ["a later checkpointed source expiry", (c) => {
+      const checkpoint = c.sourceFinalityCheckpoint as HtlcSourceFinalityCheckpoint;
+      c.sourceFinalityCheckpoint = { ...checkpoint, sourceExpiry: checkpoint.sourceExpiry + 1 };
+    }],
+    ["a reveal checkpoint with another source expiry", (c) => {
+      const checkpoint = c.revealCheckpoint as HtlcRevealCheckpoint;
+      c.revealCheckpoint = { ...checkpoint, sourceExpiry: checkpoint.sourceExpiry + 1 };
+    }],
+  ];
+  test.each(retainedCorruption)("refuses to replay a stored settlement claimed with %s", async (_name, mutate) => {
+    const { h, run } = await settledSession();
+    const preparations = h.prepareAction.mock.calls.length;
+    const base = run.shared.store;
+    const store: CrossChainHtlcStore = {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        if (claimed.status !== "settled") return claimed;
+        const copy = structuredClone(claimed) as unknown as Record<string, unknown>;
+        mutate(copy);
+        return copy as unknown as HtlcStoreClaim;
+      },
+    };
+    await expect(advanceCrossChainHtlc({ ...run.nextOwner(), store }))
+      .resolves.toEqual({ status: "indeterminate", reason: "htlc-stored-settlement-mismatch" });
+    expect(h.prepareAction).toHaveBeenCalledTimes(preparations);
   });
 
   const leaseCorruption: readonly (readonly [string, (lease: HtlcLease, now: number) => unknown])[] = [

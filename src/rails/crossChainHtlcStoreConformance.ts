@@ -234,7 +234,7 @@ async function retainedPrepared(s: Leased): Promise<readonly Readonly<HtlcPrepar
 
 /** A claim's intent, rows (in action order), claim histories and checkpoints, canonicalized. */
 function retainedState(claimed: HtlcStoreClaim): string {
-  if (claimed.status !== "waiting" && claimed.status !== "acquired") {
+  if (claimed.status !== "waiting" && claimed.status !== "acquired" && claimed.status !== "settled") {
     throw new ContractViolation(`read of the retained state returned ${claimed.status}`);
   }
   return canonicalize({
@@ -418,13 +418,16 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
     expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: prepared(a.intent, "source-refund", "refund-s") }),
       REFUSED, "source refund after the reveal");
   }],
-  ["settlement: it needs the reveal checkpoint and its expiry, is write-once, and ends the session", async (make) => {
+  ["settlement: it needs the reveal checkpoint and its expiry, is write-once, ends the session, and is claimed with its rows", async (make) => {
     const a = await acquire(await make());
     const done = settlement(a.intent);
     expectStatus(await a.store.recordSettlement({ ...writer(a), settlement: done }), REFUSED, "settlement before the reveal");
     const reveal = prepared(a.intent, "destination-claim", "reveal-1");
     expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: reveal }), ["recorded"], "reveal row");
     expectStatus(await a.store.recordRevealFinal({ ...writer(a), checkpoint: revealCheckpoint(reveal) }), ["recorded"], "reveal");
+    const retained = retainedState(await a.store.claim({
+      intent: a.intent, secrets: a.secrets, owner: "reader", now: NOW, leaseDurationMs: LEASE_MS,
+    }));
     expectStatus(await a.store.recordSettlement({ ...writer(a), settlement: settlement(a.intent, SOURCE_EXPIRY + 1) }),
       REFUSED, "settlement with another source expiry");
     expectStatus(await a.store.recordSettlement({ ...writer(a), settlement: { ...done, txRefs: done.txRefs.slice(1) } }),
@@ -439,6 +442,8 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
     expectStatus(claimed, ["settled"], "claim after settlement");
     if (claimed.status === "settled") {
       expectTrue(canonicalize(claimed.settlement) === canonicalize(done), "claim returns the recorded settlement");
+      // The core replays a settlement only against the rows it names.
+      expectTrue(retainedState(claimed) === retained, "claim returns the retained rows and checkpoints with the settlement");
     }
     expectTrue(!(await a.store.isCurrent({ ...writer(a), now: NOW })), "a settled session has no current lease");
   }],
@@ -596,6 +601,9 @@ function restartCase(reopen: CrossChainHtlcStoreCheckOptions["reopen"]): readonl
     expectStatus(await store.recordRevealFinal({ ...writer(settled), checkpoint: revealCheckpoint(settledReveal) }),
       ["recorded"], "second reveal checkpoint");
     expectStatus(await store.recordSettlement({ ...writer(settled), settlement: done }), ["recorded"], "settlement");
+    const settledBefore = retainedState(await store.claim({
+      intent: settled.intent, secrets: settled.secrets, owner: "reader", now: NOW, leaseDurationMs: LEASE_MS,
+    }));
     const read = (from: CrossChainHtlcStore) => from.claim({
       intent: a.intent, secrets: a.secrets, owner: "reader", now: a.lease.expiresAt - 1, leaseDurationMs: LEASE_MS,
     });
@@ -656,6 +664,7 @@ function restartCase(reopen: CrossChainHtlcStoreCheckOptions["reopen"]): readonl
     expectStatus(settledClaim, ["settled"], "claim of the settled session after reopening");
     if (settledClaim.status === "settled") {
       expectTrue(canonicalize(settledClaim.settlement) === canonicalize(done), "the settlement survives unchanged");
+      expectTrue(retainedState(settledClaim) === settledBefore, "the settled session's rows and checkpoints survive unchanged");
     }
   }];
 }

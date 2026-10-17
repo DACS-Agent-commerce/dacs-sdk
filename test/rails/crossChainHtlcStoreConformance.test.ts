@@ -146,10 +146,34 @@ describe("checkCrossChainHtlcStore", () => {
           : result;
       },
     }), /^claim of the settled session after reopening: expected settled, got acquired/],
+    ["drops a settled session's checkpoints", (inner: CrossChainHtlcStore): CrossChainHtlcStore => ({
+      ...inner,
+      async claim(input) {
+        const result = await inner.claim(input);
+        if (result.status !== "settled") return result;
+        const { revealCheckpoint: _dropped, ...rest } = result;
+        return rest;
+      },
+    }), /^the settled session's rows and checkpoints survive unchanged$/],
   ] as const)("catches a store that %s on restart, in the restart case only", async (_label, restarted, detail) => {
     const { makeStore, reopen } = durable(restarted);
     const failing = (await checkCrossChainHtlcStore(makeStore, { reopen })).filter((check) => !check.ok);
     expect(failing).toEqual([{ name: expect.stringMatching(RESTART_CASE), ok: false, detail: expect.stringMatching(detail) }]);
+  });
+
+  test("fails the settlement case, and only it, for a store that claims a settlement without its rows", async () => {
+    const makeStore = broken((inner) => ({
+      async claim(input) {
+        const result = await inner.claim(input);
+        return result.status === "settled" ? { ...result, prepared: [] } : result;
+      },
+    }));
+    const failing = (await checkCrossChainHtlcStore(makeStore)).filter((check) => !check.ok && !RESTART_CASE.test(check.name));
+    expect(failing).toEqual([{
+      name: expect.stringMatching(/^settlement: /),
+      ok: false,
+      detail: "claim returns the retained rows and checkpoints with the settlement",
+    }]);
   });
 
   test.each([

@@ -473,6 +473,17 @@ export type HtlcStoreClaim =
       status: "settled";
       intent: Readonly<CrossChainHtlcIntent>;
       settlement: Readonly<CrossChainHtlcSettlement>;
+      /**
+       * The retained rows, claim histories and both checkpoints, unchanged
+       * from the last `acquired` claim. The core replays the settlement only
+       * when its references and source expiry are exactly the retained ones,
+       * so a settled claim without both checkpoints is never replayed.
+       */
+      prepared: readonly Readonly<HtlcPreparedAction>[];
+      sourceClaimAttemptHistory: readonly Readonly<HtlcSourceClaimAttemptHistoryEntry>[];
+      destinationClaimAttemptHistory: readonly Readonly<HtlcDestinationClaimAttemptHistoryEntry>[];
+      sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>;
+      revealCheckpoint?: Readonly<HtlcRevealCheckpoint>;
     }
   | { status: "conflict" | "corrupt"; reason: string };
 
@@ -1672,6 +1683,97 @@ function storedSettlementMatchesIntent(
   }
 }
 
+/**
+ * Validates the retained rows against the intent: the source lock first, then
+ * its source-finality checkpoint, then every row with that checkpoint (which
+ * binds a destination lock). Throws on any mismatch.
+ */
+function captureRetainedActions(
+  claimed: Readonly<Pick<Extract<HtlcStoreClaim, { status: "acquired" }>, "prepared" | "sourceFinalityCheckpoint">>,
+  intent: Readonly<CrossChainHtlcIntent>,
+): {
+  retainedActions: readonly Readonly<HtlcPreparedAction>[];
+  sourceFinalityCheckpoint: Readonly<HtlcSourceFinalityCheckpoint> | undefined;
+} {
+  const retainedSourceLocks = claimed.prepared.filter((item) => item.action === "source-lock");
+  if (retainedSourceLocks.length > 1) {
+    throw new DacsError("pay-cross-chain-htlc: retained action duplicate");
+  }
+  const rawSourceLock = retainedSourceLocks[0];
+  let validatedSourceLock: Readonly<HtlcPreparedAction> | undefined;
+  if (rawSourceLock) {
+    const { effectHash, ...unsigned } = rawSourceLock;
+    validatedSourceLock = validatePrepared(unsigned, intent, "source-lock");
+    if (validatedSourceLock.effectHash !== effectHash) {
+      throw new DacsError("pay-cross-chain-htlc: retained action integrity mismatch");
+    }
+  }
+  const sourceFinalityCheckpoint = claimed.sourceFinalityCheckpoint === undefined
+    ? undefined
+    : captureSourceFinalityCheckpoint(claimed.sourceFinalityCheckpoint, validatedSourceLock);
+  const retainedActions = claimed.prepared.map((item) => {
+    const { effectHash, ...unsigned } = item;
+    const validated = validatePrepared(
+      unsigned,
+      intent,
+      item.action,
+      sourceFinalityCheckpoint,
+    );
+    if (validated.effectHash !== effectHash) {
+      throw new DacsError("pay-cross-chain-htlc: retained action integrity mismatch");
+    }
+    return validated;
+  });
+  return { retainedActions, sourceFinalityCheckpoint };
+}
+
+/**
+ * A stored settlement is replayed only if it names exactly the retained
+ * transactions: the checkpointed source lock, the destination lock bound to
+ * that checkpoint, the checkpointed reveal and a retained source-claim
+ * attempt, with the checkpointed source expiry. A settled row that names
+ * another valid-looking claim or a later expiry would otherwise turn an
+ * unrelated or late claim into a success.
+ */
+function storedSettlementMatchesRetained(
+  claimed: Readonly<Extract<HtlcStoreClaim, { status: "settled" }>>,
+  intent: Readonly<CrossChainHtlcIntent>,
+): boolean {
+  try {
+    if (!storedSettlementMatchesIntent(claimed.settlement, intent) ||
+        claimed.sourceFinalityCheckpoint === undefined || claimed.revealCheckpoint === undefined) {
+      return false;
+    }
+    const { retainedActions, sourceFinalityCheckpoint } = captureRetainedActions(claimed, intent);
+    const prepared = new Map(retainedActions.map((item) => [item.action, item] as const));
+    if (!sourceFinalityCheckpoint || prepared.size !== retainedActions.length) return false;
+    const sourceClaimHistory = captureClaimAttemptHistory(
+      claimed.sourceClaimAttemptHistory,
+      prepared,
+      intent,
+      "source-claim",
+    );
+    const destinationClaimHistory = captureClaimAttemptHistory(
+      claimed.destinationClaimAttemptHistory,
+      prepared,
+      intent,
+      "destination-claim",
+    );
+    const revealCheckpoint = captureRevealCheckpoint(claimed.revealCheckpoint, prepared, destinationClaimHistory);
+    const destinationLock = prepared.get("destination-lock");
+    const [sourceLockRef, destinationLockRef, revealRef, sourceClaimRef] = claimed.settlement.txRefs;
+    return destinationLock !== undefined &&
+      sameRef(sourceLockRef!, sourceFinalityCheckpoint.sourceLockTxRef) &&
+      sameRef(destinationLockRef!, destinationLock.txRef) &&
+      sameRef(revealRef!, revealCheckpoint.revealTxRef) &&
+      namesRetainedAttempt(sourceClaimRef!, prepared.get("source-claim"), sourceClaimHistory) &&
+      claimed.settlement.settlementFinality.sourceExpiry === sourceFinalityCheckpoint.sourceExpiry &&
+      revealCheckpoint.sourceExpiry === sourceFinalityCheckpoint.sourceExpiry;
+  } catch {
+    return false;
+  }
+}
+
 export async function advanceCrossChainHtlc(
   input: Readonly<AdvanceCrossChainHtlcInput>,
 ): Promise<CrossChainHtlcProgress> {
@@ -1795,7 +1897,7 @@ export async function advanceCrossChainHtlc(
   }
   if (claimed.status === "waiting") return { status: "waiting", reason: "htlc-settlement-held" };
   if (claimed.status === "settled") {
-    return storedSettlementMatchesIntent(claimed.settlement, intent)
+    return storedSettlementMatchesRetained(claimed, intent)
       ? { status: "settled", settlement: claimed.settlement }
       : { status: "indeterminate", reason: "htlc-stored-settlement-mismatch" };
   }
@@ -1870,35 +1972,7 @@ export async function advanceCrossChainHtlc(
   let retainedActions: readonly Readonly<HtlcPreparedAction>[];
   let sourceFinalityCheckpoint: Readonly<HtlcSourceFinalityCheckpoint> | undefined;
   try {
-    const retainedSourceLocks = claimed.prepared.filter((item) => item.action === "source-lock");
-    if (retainedSourceLocks.length > 1) {
-      throw new DacsError("pay-cross-chain-htlc: retained action duplicate");
-    }
-    const rawSourceLock = retainedSourceLocks[0];
-    let validatedSourceLock: Readonly<HtlcPreparedAction> | undefined;
-    if (rawSourceLock) {
-      const { effectHash, ...unsigned } = rawSourceLock;
-      validatedSourceLock = validatePrepared(unsigned, intent, "source-lock");
-      if (validatedSourceLock.effectHash !== effectHash) {
-        throw new DacsError("pay-cross-chain-htlc: retained action integrity mismatch");
-      }
-    }
-    sourceFinalityCheckpoint = claimed.sourceFinalityCheckpoint === undefined
-      ? undefined
-      : captureSourceFinalityCheckpoint(claimed.sourceFinalityCheckpoint, validatedSourceLock);
-    retainedActions = claimed.prepared.map((item) => {
-      const { effectHash, ...unsigned } = item;
-      const validated = validatePrepared(
-        unsigned,
-        intent,
-        item.action,
-        sourceFinalityCheckpoint,
-      );
-      if (validated.effectHash !== effectHash) {
-        throw new DacsError("pay-cross-chain-htlc: retained action integrity mismatch");
-      }
-      return validated;
-    });
+    ({ retainedActions, sourceFinalityCheckpoint } = captureRetainedActions(claimed, intent));
   } catch (error) {
     return {
       status: "failed",
@@ -3339,7 +3413,16 @@ export function createInMemoryCrossChainHtlcStore(
           return { status: "conflict", reason: "htlc-settlement-binding-or-secret-conflict" };
         }
         if (existing.settlement) {
-          return { status: "settled", intent: existing.intent, settlement: existing.settlement };
+          return {
+            status: "settled",
+            intent: existing.intent,
+            settlement: existing.settlement,
+            prepared: [...existing.prepared.values()],
+            sourceClaimAttemptHistory: existing.sourceClaimAttemptHistory,
+            destinationClaimAttemptHistory: existing.destinationClaimAttemptHistory,
+            sourceFinalityCheckpoint: existing.sourceFinalityCheckpoint,
+            revealCheckpoint: existing.revealCheckpoint,
+          };
         }
         if (existing.lease.expiresAt > input.now) {
           return {

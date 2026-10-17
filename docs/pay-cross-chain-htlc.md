@@ -600,6 +600,14 @@ reject a destination lock when the checkpoint is absent or the binding does not
 match. Claims and takeovers must return the checkpoint; the core validates the
 retained binding before observing the ledger or revealing the preimage.
 
+A `settled` claim returns the settlement together with the same retained
+rows, claim histories and both checkpoints. The core replays the settlement
+only when it names exactly the checkpointed source lock, the destination lock
+bound to that checkpoint, the checkpointed reveal and a retained source-claim
+attempt, with the checkpointed source expiry. Otherwise, and when a row or
+checkpoint is missing, it returns `indeterminate`
+`htlc-stored-settlement-mismatch` and moves nothing.
+
 This checkpoint is the causal ordering proof between chains. Source and
 destination timestamps belong to different ledger clock domains, so the core
 does not numerically order a destination transaction's `includedAt` against the
@@ -649,7 +657,8 @@ durable state, as a process restart would. The kit's restart case needs it.
 That case retains a session with a replaced reveal, a replaced source claim
 and both checkpoints, plus a settled session, then reopens the store. The
 reopened store must return the same live lease, intent, rows, checkpoints,
-claim histories and settlement, and give a takeover a higher generation. It
+claim histories and settlement (the settled session's rows and checkpoints
+included), and give a takeover a higher generation. It
 must still refuse a write from the old generation, another salt or preimage,
 a reused salt, effect or transaction, and a second row or checkpoint. Without
 `reopen` the restart case fails with `not checked: no reopen hook`, so the
@@ -875,6 +884,13 @@ projection carries it. The host adds `evidenceVersion`, `jobId`, `phase`,
 `observedAt` and the signature. The projection reproduces the pinned
 Standard's `htlc9-asymmetric` and `htlc9-asymmetric-resolved` fixtures.
 
+A reader verifying such a record with `verifySettlementEvidence` passes the
+agreement's route as `rail.htlcRoute` (`{ sourceChainId, destChainId }`), with
+`sourceFinalitySec` and `safetyWindowSec`. Without a route of two distinct
+positive integer chain ids the verdict is `error`, never `pass`. With it, the
+lock and claim must sit on the source chain and the reveal on the destination
+chain, and a success record must use `htlc-reveal` finality.
+
 ST-8 maps onto the core's results as follows:
 
 - `settle-asymmetric`: anchor the interim record. `recoveryDeadline` is the
@@ -923,8 +939,13 @@ const authority = crossChainHtlcAuthorityFromRail(rail, {
 ```
 
 It refuses a rail that is not branded by `resolveRail` (RAV-R5), not a
-`cross-chain-htlc` rail, or `disabled` or `failed` (RAV-R2). A host still runs
-its own RAV-R3 preflight for any other rail that is not `live`. It also
+`cross-chain-htlc` rail, or `disabled` or `failed` (RAV-R2). It has no
+production-mode input, so it does not refuse a `mocked` rail, and it runs no
+RAV-R3 preflight. The host must select the rail through
+`evaluateRailAvailabilitySelection` at the session selection boundary, before
+building the authority: that gate applies RAV-R1..RAV-R5, including refusing a
+`mocked` rail in production, failing closed when the mode is missing, and the
+preflight of a rail that is not `live`. It also
 refuses a selection field the rail owns. `railDescriptorHash` is the
 definition's authenticated content hash. The route is the one whose
 `(sourceChainId, destChainId)` equals the selection exactly: `1` and `"1"` are
