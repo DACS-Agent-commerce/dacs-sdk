@@ -34,6 +34,7 @@ export {
 } from "./Agent.js";
 export {
   verifyBundleCore,
+  AttestationRefRejection,
   type VerifyBundleDeps,
   type SignatureVerdict,
   type RefCheck,
