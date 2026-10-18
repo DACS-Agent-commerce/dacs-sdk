@@ -353,7 +353,7 @@ describe("registry/container workflow wiring", () => {
     // No job-level `if:`: always(), failure() or !cancelled() there would run
     // the publish job after the acceptance job failed.
     expect(job).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
-      environment: "npm-prerelease-gated", permissions: "\ncontents: read\nid-token: write" });
+      environment: "npm-prerelease-gated", permissions: "\ncontents: read\nactions: read\nid-token: write" });
     expect(job).not.toHaveProperty("if");
     // The OIDC permission is the publish job's alone; the called acceptance
     // gets neither it nor any secret, and nothing in it can continue on error.
@@ -410,13 +410,18 @@ describe("registry/container workflow wiring", () => {
     expect(Object.keys(guard)).toEqual(["runs-on", "permissions", "steps"]);
     expect(guard.permissions).toBe("\ncontents: read\nactions: read");
     expect(guard.steps).not.toMatch(/continue-on-error|\bif:/);
-    const run = (environment: unknown, policies: unknown) => {
+    const run = (environment: unknown, policies: unknown, beforePublish = false) => {
       const directory = mkdtempSync(join(tmpdir(), "dacs-publish-environment-"));
       scratch.push(directory);
       const checkout = join(directory, "checkout");
       mkdirSync(join(checkout, "scripts"), { recursive: true });
       writeFileSync(join(checkout, "scripts/check-publish-environment.mjs"),
         readFileSync(join(repoRoot, "scripts/check-publish-environment.mjs")));
+      // The publisher stub performs no external write. A failing recheck must
+      // stop before it is invoked, even after the earlier job admitted setup.
+      const published = join(directory, "published");
+      writeFileSync(join(checkout, "scripts/publish-release-set.mjs"),
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(published)}, "called");`);
       const fixture = (name: string, value: unknown) => {
         if (value === undefined) return "echo 'gh: Not Found (HTTP 404)' >&2; exit 1";
         writeFileSync(join(directory, name), JSON.stringify(value));
@@ -428,25 +433,34 @@ describe("registry/container workflow wiring", () => {
         `  *) ${fixture("environment.json", environment)} ;;\nesac` });
       const runnerTemp = join(directory, "runner-temp");
       mkdirSync(runnerTemp);
-      const result = runBash(["-e", "-c", workflowStepScript("Require the protected publish environment", publish)], {
+      const result = runBash(["-e", "-c", workflowStepScript(beforePublish
+        ? "Publish or safely resume the exact release set" : "Require the protected publish environment", publish)], {
         cwd: checkout, env: { PATH, GITHUB_REPOSITORY: "DACS-Agent-commerce/dacs-sdk", RUNNER_TEMP: runnerTemp,
           GH_TOKEN: "test-token" } });
-      return { ...result, calls: existsSync(calls) ? readFileSync(calls, "utf8") : "" };
+      return { ...result, calls: existsSync(calls) ? readFileSync(calls, "utf8") : "", published: existsSync(published) };
     };
     const reviewers = { type: "required_reviewers", prevent_self_review: true,
       reviewers: [{ type: "User", reviewer: { login: "maintainer" } }] };
-    const protectedEnvironment = { name: "npm-prerelease-gated", protection_rules: [reviewers, { type: "branch_policy" }],
+    const protectedEnvironment = { name: "npm-prerelease-gated", can_admins_bypass: false, protection_rules: [reviewers, { type: "branch_policy" }],
       deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } };
     const tagOnly = { total_count: 1, branch_policies: [{ name: "v*", type: "tag" }] };
     const passed = run(protectedEnvironment, tagOnly);
     expect(passed.status, passed.stdout + passed.stderr).toBe(0);
     expect(passed.calls).toBe("api repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated\n" +
       "api repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated/deployment-branch-policies\n");
+    const rechecked = run(protectedEnvironment, tagOnly, true);
+    expect(rechecked.status, rechecked.stdout + rechecked.stderr).toBe(0);
+    expect(rechecked.published).toBe(true);
+    const changed = run({ ...protectedEnvironment, can_admins_bypass: true }, tagOnly, true);
+    expect(changed.status).not.toBe(0);
+    expect(changed.published).toBe(false);
     // As GitHub creates it on first use: no rules, every branch may deploy.
     const created = { name: "npm-prerelease-gated", protection_rules: [], deployment_branch_policy: null };
     for (const [environment, policies, reason] of [
       [undefined, tagOnly, undefined],
       [created, { total_count: 0, branch_policies: [] }, "it has no required reviewers"],
+      ...[true, undefined, null, "false"].map(can_admins_bypass =>
+        [{ ...protectedEnvironment, can_admins_bypass }, tagOnly, "does not prohibit admin bypass"] as const),
       [{ ...protectedEnvironment, protection_rules: [{ ...reviewers, reviewers: [] }] }, tagOnly, "it has no required reviewers"],
       [{ ...protectedEnvironment, protection_rules: [{ ...reviewers, prevent_self_review: false }] }, tagOnly,
         "it does not prevent self-review"],

@@ -408,7 +408,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function demosObservationUnanswered(value: unknown): boolean {
   if (!isRecord(value) || Array.isArray(value)) return true;
   if (typeof value.result === "number" && value.result !== 200) return true;
-  const record = isRecord(value.response) ? value.response : value;
+  // A retained RPC envelope is never itself the transaction/block record.
+  const record = typeof value.result === "number" || Object.hasOwn(value, "response")
+    ? value.response : value;
   return !isRecord(record) || Array.isArray(record);
 }
 

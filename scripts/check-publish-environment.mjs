@@ -21,6 +21,7 @@ export function publishEnvironmentProblems(environment, policies) {
     return [`the ${PUBLISH_ENVIRONMENT} environment does not exist or is another environment`];
   }
   const problems = [];
+  if (environment.can_admins_bypass !== false) problems.push("it does not prohibit admin bypass");
   const rules = Array.isArray(environment.protection_rules) ? environment.protection_rules : [];
   const reviewers = rules.filter(rule => rule?.type === "required_reviewers" &&
     Array.isArray(rule.reviewers) && rule.reviewers.length > 0);
@@ -48,6 +49,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       `publication: ${problems.join("; ")}. Complete owner step 1 in docs/npm-prerelease-release.md first.\n`);
     process.exit(1);
   }
-  process.stdout.write(`${PUBLISH_ENVIRONMENT} has required reviewers, prevents self-review and deploys only ` +
+  process.stdout.write(`${PUBLISH_ENVIRONMENT} has required reviewers, prevents self-review and admin bypass, and deploys only ` +
     `from the ${PUBLISH_TAG_PATTERN} tag pattern\n`);
 }

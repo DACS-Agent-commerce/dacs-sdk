@@ -61,6 +61,7 @@ jobs:
     environment: npm-prerelease-gated
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -117,6 +118,13 @@ jobs:
 
       - name: Publish or safely resume the exact release set
         env:
+          GH_TOKEN: ${{ github.token }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DACS_NPM_PUBLISH_CONFIRM: publish:${{ inputs.confirm_version }}:next
-        run: node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next
+        run: |
+          api="repos/$GITHUB_REPOSITORY/environments/npm-prerelease-gated"
+          gh api "$api" > "$RUNNER_TEMP/publish-environment.json"
+          gh api "$api/deployment-branch-policies" > "$RUNNER_TEMP/publish-environment-policies.json"
+          node scripts/check-publish-environment.mjs "$RUNNER_TEMP/publish-environment.json" \
+            "$RUNNER_TEMP/publish-environment-policies.json"
+          node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next

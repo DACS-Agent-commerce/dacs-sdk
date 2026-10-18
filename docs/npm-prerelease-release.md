@@ -54,17 +54,21 @@ GitHub creates a missing environment the first time a job names it, with no
 reviewers and no deployment rule. So the publish job also needs a
 `publish-environment` job, which names no environment and fails unless
 `npm-prerelease-gated` already exists with a required reviewer, "Prevent
-self-review" on, and deployments limited to tag patterns (owner step 1 below).
+self-review" on, administrator bypass disabled, and deployments limited to tag patterns (owner step 1 below).
 Until step 1 is done, every dispatch fails there; none publishes unapproved.
 It reads the environment through the REST API with the workflow token's
-`actions: read` permission.
+`actions: read` permission. The publish step repeats this check immediately
+before invoking the publisher, so a change during approval or package checks
+fails closed. These are point-in-time checks: repository administrators remain
+trusted to keep the environment and workflow protected during publication.
 
 For the first release, configure the `npm-prerelease-gated` environment's
 `NPM_TOKEN` secret with the minimum npm permission required to create all three
 public packages. After package creation, configure each npm package's trusted
 publisher for this repository, `publish-prerelease-gated.yml`, and the
 `npm-prerelease-gated` environment, then remove the long-lived publish token.
-Only the publish job is granted `contents: read` and `id-token: write`; npm
+Only the publish job is granted `id-token: write`; it also has `contents: read`
+and `actions: read` for the protection recheck. npm
 trusted publishing uses that short-lived OIDC identity and automatically
 attaches provenance. See npm's official
 [trusted publishing](https://docs.npmjs.com/trusted-publishers/) and
@@ -87,7 +91,8 @@ repository or the organization still give it.
 
 1. Create the `npm-prerelease-gated` environment (Settings → Environments → New
    environment). Add the maintainers as required reviewers, turn on "Prevent
-   self-review", and limit its deployment branches and tags to the tag pattern
+   self-review", disable "Allow administrators to bypass configured protection
+   rules", and limit its deployment branches and tags to the tag pattern
    `v*`.
 2. If the first release still needs a token, create the `NPM_TOKEN` secret in
    the `npm-prerelease-gated` environment only, with the minimum permission from

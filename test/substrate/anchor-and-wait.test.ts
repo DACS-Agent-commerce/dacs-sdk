@@ -1254,7 +1254,8 @@ describe("DemosAdapter.anchorAndWait", () => {
     // Unanswered: the payloads the node answers over HTTP 200 for a record it
     // does not have or a handler that threw, which demosdk returns as is, and
     // an RPC envelope a client might keep.
-    for (const payload of ["error", "Error in nodeCall: ", null, [], { result: 404, response: "block not found" },
+    for (const payload of ["error", "Error in nodeCall: ", null, [], ...[undefined, null, "error", [], 0, false].map(response => ({ result: 200, response })),
+      { result: 404, response: "block not found" },
       { result: 400, response: "error", require_reply: false, extra: "db error" }]) {
       raw.getTxByHash.mockResolvedValueOnce(payload);
       await unanswered();
