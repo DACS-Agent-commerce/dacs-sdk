@@ -20,6 +20,26 @@ describe("pinned read-only node observations", () => {
     expect(manifest.deploymentOverlay).toBeNull();
     expect(manifest.executionFailedTransaction.observed).toBe(false);
   });
+  it("keeps deployment qualification open and separates source inspection from observed execution", () => {
+    const register = JSON.parse(readFileSync(new URL("../../conformance/tp1-register.json", import.meta.url), "utf8"));
+    expect(register.nodeObservationEvidence.deploymentQualified).toBe(false);
+    expect(manifest.qualification).toContain("not a reproducible or qualified node build");
+    expect(manifest.executionFailedTransaction.sourceInference).toContain("execution failures are not recorded and surface as unknown");
+    expect(manifest.executionFailedTransaction.sourceInference).toContain("not evidence");
+    const l2 = register.rows.find((r: any) => r.id === "L2");
+    expect(l2.summary).toContain("source inference");
+    expect(l2.summary).toContain("executable bytes are unqualified");
+  });
+  it("records the lowercase DID reader restriction as a labelled gap against the base", () => {
+    const register = JSON.parse(readFileSync(new URL("../../conformance/tp1-register.json", import.meta.url), "utf8"));
+    const gap = register.rows.find((r: any) => r.id === "G11");
+    expect(gap.kind).toBe("gap");
+    expect(gap.status).toBe("open");
+    expect(gap.label).toBe("TP-1 wire requires lowercase DID claims");
+    const doc = readFileSync(new URL("../../docs/testnet-profile-tp1.md", import.meta.url), "utf8");
+    expect(doc).toContain(`| G11 |`);
+    expect(doc).toContain(gap.label);
+  });
   it("distinguishes numeric-zero RPC refusal from string-zero genesis availability", () => {
     expect(read("block0.json").http).toBe(200);
     expect(body("block0.json").result).toBe(400);

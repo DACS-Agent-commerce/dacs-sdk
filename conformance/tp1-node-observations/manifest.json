@@ -12,7 +12,7 @@
   "qualification": "Observed responses only. Deployment bytes and overlay were not supplied; this is not a reproducible or qualified node build.",
   "executionFailedTransaction": {
     "observed": false,
-    "sourceInference": "The pinned chainTransactions.ts getTransactionStatus maps stored records to included without checking execution; no live failed transfer was initiated or captured."
+    "sourceInference": "The inspected chainTransactions.ts getTransactionStatus maps stored records to included without checking execution. Its comment says execution failures are not recorded and surface as unknown. This is not evidence that failed execution is included by the deployed node; no live failed transfer was initiated or captured."
   },
   "sha256": {
     "network.json": "47be850fce3fdf95e46eb5f5d416953f4e639a3a158b29e8764e8e2901ca4b8f",

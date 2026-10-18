@@ -5,6 +5,7 @@
 // (DACS_WIRE_IMPL), and every vector the mutant targets must then fail.
 // The working tree is never edited. One test process runs at a time.
 //
+// Read-only target validation: node scripts/wire/mutate-wire-checks.mjs --check
 // Usage: node scripts/wire/mutate-wire-checks.mjs --scratch <empty-or-new dir> [--report <file>]
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,9 +13,19 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, i, all) => (i % 2 === 0 ? [...pairs, [value.replace(/^--/, ""), all[i + 1]]] : pairs), []));
-if (!args.scratch) throw new Error("--scratch is required");
-const scratch = resolve(args.scratch);
+const args = {};
+for (let i = 2; i < process.argv.length; i++) {
+  const option = process.argv[i];
+  if (option === "--check") args.check = true;
+  else if (option === "--scratch" || option === "--report") {
+    const value = process.argv[++i];
+    if (!value || value.startsWith("--")) throw new Error(`${option} requires a path`);
+    args[option.slice(2)] = value;
+  } else throw new Error(`unknown option: ${option}`);
+}
+const checkOnly = args.check === true;
+if (!args.scratch && !checkOnly) throw new Error("--scratch is required (or use --check)");
+const scratch = args.scratch ? resolve(args.scratch) : undefined;
 
 const M = (id, file, find, replace, catches) => ({ id, file, find, replace, catches });
 /** A mutant that edits several files at once: [[file, find, replace], ...]. */
@@ -78,7 +89,7 @@ const MUTANTS = [
   M("delegated request matches the retained Agreement", "wire/envelope.ts", ' fail("peer_delegation_agreement_mismatch", 409);', " void 0;", ["request/delegated-agreement-mismatch"]),
   M("retained Agreement has a deadline", "wire/envelope.ts", 'if (!isUint(deadline)) fail("peer_delegation_deadline", 409);', "", ["request/delegated-agreement-no-deadline"]),
   M("delegation ends by the Agreement deadline", "wire/envelope.ts", "verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, deadline: deadline as number });", "", ["request/delegated-delegation-beyond-agreement-deadline"]),
-  M("expired delegation is readback only", "wire/envelope.ts", "return { body, readbackOnly: true };", "return { body, readbackOnly: false };", ["request/expired-delegation-readback-only"]),
+  M("expired delegation cannot start an effect", "wire/envelope.ts", 'if (!isReadRoute(request.path)) fail("peer_delegation_expired", 408);', "", ["request/expired-delegation-readback-only"]),
   M("delegation expiry", "wire/delegation.ts", "(!allowExpired && p.expiresAt <= time)", "false", ["delegation/expired"]),
   M("delegation notBefore", "wire/delegation.ts", "p.notBefore > time || ", "", ["delegation/not-yet-valid"]),
   M("delegation seller scope", "wire/delegation.ts", "(seller !== undefined && p.seller !== seller)", "false", ["delegation/wrong-seller-scope"]),
@@ -91,7 +102,7 @@ const MUTANTS = [
   M("response body binding", "wire/response.ts", "bodyHash !== sha256Hex(responseBytes) || ", "", ["response/wrong-body"]),
   M("response principal", "wire/envelope.ts", 'if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");', "", ["response/signer-not-seller"]),
   M("response identity binding", "wire/response.ts", "!sameCanonical(identity, expected) || ", "", ["response/identity-mismatch"]),
-  M("response request-hash binding", "wire/response.ts", "requestHash !== sha256Hex(canonicalize(request)) || ", "", ["response/request-hash-mismatch"]),
+  M("response request-hash binding", "wire/response.ts", "requestHash !== expectedRequestHash || ", "", ["response/request-hash-mismatch"]),
   M("response expiry", "wire/response.ts", "expiresAt <= received.now ||", "", ["response/expired"]),
   M("response lifetime", "wire/response.ts", "expiresAt > received.now + DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs", "false", ["response/lifetime-over-60s"]),
   M("endpoint proof: exact endpoint", "wire/discovery.ts", 'if (p.publicEndpoint !== listing.publicEndpoint) fail("discovery_endpoint_mismatch", 502);', "", ["discovery/endpoint-mismatch"]),
@@ -125,7 +136,7 @@ const MUTANTS = [
   ], ["response/local-binding-changed"]),
   M("verifier's current connection (check)", "wire/envelope.ts", "  assertTp1Binding(c.binding, c.local);\n", "", ["request/local-binding-changed-before-check"]),
   M("verifier's current connection (delegation)", "wire/delegation.ts", "  assertTp1Binding(binding, local);\n  const listingPin = suppliedPin", "  const listingPin = suppliedPin", ["delegation/local-binding-changed"]),
-  M("verifier's current connection (discovery)", "wire/discovery.ts", "  assertTp1Binding(binding, local);\n  const listing = ownedConfig", "  const listing = ownedConfig", ["discovery/local-binding-changed"]),
+  M("verifier's current connection (discovery)", "wire/discovery.ts", "  assertTp1Binding(binding, local);\n  let listing: VerifiedListingEndpoint;", "  let listing: VerifiedListingEndpoint;", ["discovery/local-binding-changed"]),
   // One owned copy of each signer's payload or request: without it, a payload whose profile changes
   // between reads is checked as the bound profile and signed, or embedded, as another. Where the bytes function a
   // signer calls has its own copy that already refuses the vector, the mutant removes both copies: each alone is
@@ -135,7 +146,7 @@ const MUTANTS = [
   M("discovery payload owned copy", "wire/discovery.ts", 'const payload = ownedArtifact(supplied, "discovery_invalid", 500) as DiscoveryPayload;', "const payload = supplied as DiscoveryPayload;", ["signing/discovery-payload-changes-between-reads"]),
   MF("response request owned copy (with the request hash's)", [
     ["wire/response.ts", 'const request = ownedArtifact(supplied, "peer_envelope_invalid", 500) as WireRequestPayload;', "const request = supplied as WireRequestPayload;"],
-    ["wire/envelope.ts", 'sha256Hex(canonicalize(ownedArtifact(request, "peer_envelope_invalid", 500)));', "sha256Hex(canonicalize(request));"],
+    ["wire/envelope.ts", 'const copy = ownedArtifact(request, "peer_envelope_invalid", 500);', "const copy = request;"],
   ], ["signing/response-request-changes-between-reads"]),
   MF("request delegation owned copy (with the envelope's)", [
     ["wire/response.ts", 'input.delegation ? ownedArtifact(input.delegation, "peer_delegation_invalid") as SellerSessionDelegation : null', "input.delegation ? input.delegation as SellerSessionDelegation : null"],
@@ -143,6 +154,27 @@ const MUTANTS = [
   ], ["signing/request-delegation-edited-while-signing"]),
   M("check takes only a verified envelope", "wire/envelope.ts", "openedBinding(opened, envelope) !== c.binding ||", "", ["request/check-unopened-envelope", "request/check-copied-envelope", "request/check-other-binding"]),
 ];
+
+// Validate the replay plan without applying a mutant, copying source or starting tests.
+// This mode can run in ordinary CI even when mutation execution is delegated.
+if (checkOnly) {
+  const vectors = JSON.parse(readFileSync(join(root, "vectors/dacs-seller-http-v1.json"), "utf8")).vectors;
+  const ids = new Set();
+  for (const mutant of MUTANTS) {
+    if (ids.has(mutant.id)) throw new Error(`duplicate check: ${mutant.id}`);
+    ids.add(mutant.id);
+    const edits = mutant.edits ?? (Array.isArray(mutant.find) ? mutant.find : [[mutant.find, mutant.replace]]).map(([find, replace]) => [mutant.file, find, replace]);
+    for (const [file, find] of edits) {
+      const source = readFileSync(join(root, "src", file), "utf8");
+      if (!find || source.split(find).length !== 2) throw new Error(`${mutant.id}: the mutated text must occur exactly once in ${file}`);
+    }
+    for (const id of mutant.catches) {
+      if (vectors.filter((v) => v.id === id).length !== 1) throw new Error(`${mutant.id}: missing or duplicate vector ${id}`);
+    }
+  }
+  console.log(`${MUTANTS.length} named checks have current source targets and vectors; no mutations applied`);
+  process.exit(0);
+}
 
 if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true });
 mkdirSync(scratch, { recursive: true });

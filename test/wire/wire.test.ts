@@ -111,7 +111,7 @@ describe("TESTNET_PROFILE_TP1", () => {
 });
 
 describe("conformance/tp1-register.json", () => {
-  it("is the proposed TP-1 seed: L1-L4 and G1-G9, the declaration and base of TESTNET_PROFILE_TP1", () => {
+  it("is the proposed TP-1 seed: L1-L4 and G1-G11, the declaration and base of TESTNET_PROFILE_TP1", () => {
     const register = JSON.parse(readFileSync(new URL("../../conformance/tp1-register.json", import.meta.url), "utf8"));
     expect(register.profile).toBe(TESTNET_PROFILE_TP1.id);
     expect(register.revision).toBe(TESTNET_PROFILE_TP1.revision);
@@ -142,7 +142,7 @@ describe("conformance/tp1-register.json", () => {
     expect(register.network.canonicalDigest).toBe(TESTNET_PROFILE_TP1.network.approvedIdentityRecordDigests[0]);
     expect(register.network.composition).toContain("broadcast refusal is not checked");
     expect(register.base).toEqual({ repo: "DACS-Standard", commit: TESTNET_PROFILE_TP1.base.commit, status: "proposed reference revision; composition qualification pending" });
-    expect(register.rows.map((row: { id: string }) => row.id)).toEqual(["L1", "L2", "L3", "L4", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10"]);
+    expect(register.rows.map((row: { id: string }) => row.id)).toEqual(["L1", "L2", "L3", "L4", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11"]);
     // Evidence is public ({repo, commit, path, lines} in a public repository) or
     // a private {source, provenance} reference; pinnedBy names files in this repository.
     const evidenceOk = (e: Record<string, unknown>) => {
@@ -178,7 +178,7 @@ describe("conformance/tp1-register.json", () => {
     expect(register.qualification.every((q: { result: string }) => q.result === "not checked")).toBe(true);
   });
 
-  it("L2 and G10 state today's false success and give the executed-payment check and the hold as intended only", () => {
+  it("L2 and G10 state the included-status false-success risk and give the executed-payment check and the hold as intended only", () => {
     const text = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
     const register = JSON.parse(text("conformance/tp1-register.json"));
     const row = (id: string) => register.rows.find((r: { id: string }) => r.id === id) as Record<string, string>;
@@ -195,7 +195,7 @@ describe("conformance/tp1-register.json", () => {
     expect(register.qualification.some((q: { subject: string; result: string }) => q.subject.includes("seller pay-dem observer") && q.result === "not checked")).toBe(true);
     expect(declaration).toContain("This statement covers only the buyer rail");
     expect(page).toContain("The seller observer is separately not checked");
-    expect(row("G10").summary).toMatch(/^A failed pay-dem transfer is reported as success today/);
+    expect(row("G10").summary).toMatch(/^A failed pay-dem transfer reported as `included` would be returned as success/);
     expect(row("G10").tp1).toMatch(/does not present it as an implemented protection until an effect-path test proves it/);
     expect(page.slice(0, page.indexOf("\n## "))).toMatch(/\*\*Known problem: a failed payment can be reported as paid\.\*\*/);
   });

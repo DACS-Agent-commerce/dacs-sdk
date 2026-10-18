@@ -52,17 +52,18 @@ function replaceId<T extends { jobId: string }>(p: T, value: unknown): T {
   if (value === missing) delete (copy as Partial<T>).jobId;
   return copy;
 }
-const refuses = async (fn: () => unknown, code: string) => {
-  await expect(Promise.resolve().then(fn)).rejects.toMatchObject({ code });
+const refuses = async (fn: () => unknown, code: string, status?: number) => {
+  await expect(Promise.resolve().then(fn)).rejects.toMatchObject({ code, ...(status === undefined ? {} : { status }) });
 };
 
 describe("wire canonical job-ID admission", () => {
   it.each(invalidIds)("rejects %s before signing, hashing or seller effects", async (_name, id) => {
     const x = world();
+    const responseHeader = await w.signWireResponse(x.request, 200, "{}", { ...x.context, signer: x.seller, now: NOW });
     const request = replaceId(x.request, id), delegation = replaceId(x.delegation, id);
     const requestHeader = header(signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer));
     const delegated = signed(delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer);
-    x.buyer.calls = 0;
+    x.buyer.calls = x.seller.calls = 0;
     let effects = 0;
     await refuses(() => { w.openWireEnvelope(requestHeader, "request", x.context); effects++; }, "peer_envelope_invalid");
     await refuses(() => w.verifySellerSessionDelegation(delegated, { binding: x.binding, local: LOCAL }), "peer_delegation_invalid");
@@ -71,10 +72,22 @@ describe("wire canonical job-ID admission", () => {
     await refuses(() => w.wireRequestHash(request), "peer_envelope_invalid");
     await refuses(() => w.wireEnvelopeSigningBytes(request), "peer_envelope_invalid");
     await refuses(() => w.signWireEnvelope(request, { ...x.context, signer: x.buyer }), "peer_envelope_invalid");
-    await refuses(() => w.signWireRequest({ ...x.input, jobId: id } as w.WireRequestInput), "peer_envelope_invalid");
-    await refuses(() => w.signWireResponse(request, 200, "{}", { ...x.context, signer: x.seller, now: NOW }), "peer_envelope_invalid");
-    await refuses(() => w.verifyWireResponse(request, { ...x.context, header: "invalid", status: 200, body: Buffer.from("{}"), now: NOW }), "peer_envelope_invalid");
+    await refuses(() => w.signWireRequest({ ...x.input, jobId: id } as unknown as w.WireRequestInput), "peer_envelope_invalid");
+    await refuses(() => w.signWireResponse(request, 200, "{}", { ...x.context, signer: x.seller, now: NOW }), "peer_envelope_invalid", 500);
+    await refuses(() => w.verifyWireResponse(request, { ...x.context, header: responseHeader, status: 200, body: Buffer.from("{}"), now: NOW }), "peer_envelope_invalid", 500);
     expect(effects + x.buyer.calls + x.seller.calls).toBe(0);
+  });
+  it.each(["kind", "version", "bodyHash", "seller", "nonce", "listingPin"])("response boundaries refuse malformed retained %s before signing or reading the answer", async (field) => {
+    const x = world();
+    const responseHeader = await w.signWireResponse(x.request, 200, "{}", { ...x.context, signer: x.seller, now: NOW });
+    expect(w.verifyWireResponse(x.request, { ...x.context, header: responseHeader, status: 200, body: Buffer.from("{}"), now: NOW }).principal).toBe(x.seller.claim);
+    x.seller.calls = 0;
+    const absent = { ...x.request }; delete (absent as any)[field];
+    for (const request of [{ ...x.request, [field]: field === "kind" ? "response" : "wrong" }, absent]) {
+      await refuses(() => w.signWireResponse(request as w.WireRequestPayload, 200, "{}", { ...x.context, signer: x.seller, now: NOW }), "peer_envelope_invalid", 500);
+      await refuses(() => w.verifyWireResponse(request as w.WireRequestPayload, { ...x.context, header: responseHeader, status: 200, body: Buffer.from("{}"), now: NOW }), "peer_envelope_invalid", 500);
+    }
+    expect(x.seller.calls).toBe(0);
   });
   it.each(["kind", "version", "bodyHash", "seller", "nonce", "listingPin"])("request hash rejects invalid %s", async (field) => {
     const x = world();
@@ -154,6 +167,19 @@ describe("endpoint proof purchase gate", () => {
     await refuses(() => w.verifyEndpointProof(bytes, { listing: { seller: x.seller.claim, publicEndpoint: nfd, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_endpoint_mismatch");
     const getter = Object.defineProperty({ seller: x.seller.claim, listingPin: PIN }, "publicEndpoint", { enumerable: true, get() { throw new Error("must not run"); } });
     await refuses(() => w.verifyEndpointProof(bytes, { listing: getter as never, binding: x.binding, local: LOCAL, now: NOW }), "wire_input_invalid");
+  });
+  it("refuses uppercase DID claims at each receiver without rewriting signed bytes", async () => {
+    const x = world();
+    for (const role of ["buyer", "seller"] as const) {
+      const request = { ...x.request, [role]: x.request[role].replace(/^did:/, "DID:") };
+      await refuses(() => w.openWireEnvelope(header(signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context), "peer_envelope_invalid");
+      const delegation = { ...x.delegation, [role]: x.delegation[role].replace(/^did:/, "DID:") };
+      await refuses(() => w.verifySellerSessionDelegation(signed(delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer), { binding: x.binding, local: LOCAL }), "peer_delegation_invalid");
+    }
+    const document = signed({ ...x.discovery, seller: x.seller.claim.replace(/^did:/, "DID:") }, w.DACS_SELLER_HTTP_DOMAINS.discovery, x.seller);
+    await refuses(() => w.verifyEndpointProof(Buffer.from(canonicalize(document)), { listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_invalid");
+    const { bytes } = await proof(x);
+    await refuses(() => w.verifyEndpointProof(bytes, { listing: { seller: x.seller.claim.replace(/^did:/, "DID:"), publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "wire_input_invalid");
   });
   it("declares canonical lowercase DID-only admission and refuses uppercase wire claims before signing", async () => {
     const x = world();

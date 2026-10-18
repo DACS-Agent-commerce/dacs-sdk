@@ -152,7 +152,8 @@ below):
    hash; the Listing pin; a required delegation; the delegation's scope,
    Agreement deadline and expiry.
 3. `signWireResponse(request, status, text, ctx)`: the kept tuple, before the
-   request or the body is read; the lifetime override; the body's size and
+   request or the body is read; the retained request's complete shape and hash;
+   the lifetime override; the body's size and
    admission; the signer's claim; then `signWireEnvelope`, which checks the
    kept tuple and the profile again before it calls the signer.
 
@@ -333,9 +334,11 @@ one owned, data-only copy at entry and checks and uses only that copy.
   `bindTp1Profile`'s options) are read once, field by field, through their own
   data properties, so no getter or Proxy trap runs. A Proxy, an accessor or a
   prototype other than `Object.prototype` or `null` is refused
-  (`wire_input_invalid`). The records inside them (a Listing pin, a job, a
-  Listing, the retained artifacts, a refusal list) are copied as above, and
-  body bytes are copied once through the typed array's own slots. The body
+  (`wire_input_invalid`). The records inside them (a Listing pin, a job,
+  the retained artifacts, a refusal list) are copied as above. The verified
+  Listing is copied with `snapshotWireJsonRead`, which preserves its endpoint
+  bytes without NFC normalization and refuses the same non-data inputs.
+  Body bytes are copied once through the typed array's own slots. The body
   that is admitted is then the body that is hashed.
 - **What is not copied:** a binding and an opened envelope are proved by
   membership in a set the SDK holds, and are frozen. A signer is a callback:
@@ -465,10 +468,12 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
   Each negative names the check that refuses it, and
   `test/wire/vectors.test.ts` checks that each received revision vector is
   correctly signed by its party, so only the profile gate can refuse it.
-  `scripts/wire/mutate-wire-checks.mjs` disables each check in a scratch copy
-  and shows its vectors then fail (85 mutants; the ten for the revision and
-  the kept tuple, and two connection mutants whose pattern the kept-tuple
-  check changed, have not been run in their current form).
+  `scripts/wire/mutate-wire-checks.mjs` defines 85 named-check replay plans.
+  Its `--check` mode verifies all source targets and vector IDs without
+  applying mutations or running tests. Request producer fixtures use the
+  selected `DACS_WIRE_IMPL` for signing, discovery and proof verification.
+  Mutation execution for the current plans is pending CPU; no current kill
+  count is claimed.
 - The original-behaviour capture in `test/wire/fixtures/`: the plugin
   implementation has no static wire fixture (its wire tests generate wallets
   per run), so this file is a **capture** of the unmodified original module's
