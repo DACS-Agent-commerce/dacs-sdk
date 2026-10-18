@@ -2112,6 +2112,115 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     expect((await record(sellerClient)).agreement?.finalized).toBeDefined();
   });
 
+  /**
+   * The seller accepts at NOW, so its window runs to DEADLINE; the buyer
+   * proposes at NOW + 1,000. The seller's agreement signer and verifier are
+   * the caller's, so a test can make them slow.
+   */
+  async function slowSeller(seller: {
+    sign?: (bytes: Uint8Array) => Promise<Uint8Array>;
+    verify?: (
+      input: Parameters<typeof verifyAgreement>[0],
+    ) => Promise<ReturnType<typeof verifyAgreement>>;
+  }) {
+    const { clock, nowMs } = scriptedClock();
+    const network = createInMemoryRfqLifecycleNetwork<string>();
+    const reservation = durableReservation();
+    const { buyerClient } = clients(network.transport, reservation, nowMs);
+    const signer = agreementSigner(SELLER, sellerKeys.privateKey);
+    const sellerClient = createDurableRfqLifecycleClient({
+      role: "seller",
+      store: createInMemoryDurableRfqLifecycleStore<string>(),
+      transport: network.transport,
+      reserveChannelId: reservation,
+      signChannelMessage: channelSigner(sellerKeys.privateKey),
+      verifyChannelMessage: verifyChannel,
+      agreementSigner: seller.sign === undefined ? signer : { ...signer, sign: seller.sign },
+      verifyAgreementContribution: seller.verify ?? verifyAgreement,
+      nowMs,
+    });
+    await buyerClient.open(openInput());
+    await sellerClient.open(openInput());
+    await buyerClient.sendOffer(JOB_ID, OFFER);
+    await deliver(network, SELLER, sellerClient);
+    await sellerClient.sendAccept(JOB_ID);
+    await deliver(network, BUYER, buyerClient);
+    clock.now = NOW + 1_000;
+    await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    const proposal = network.take(SELLER);
+    if (proposal?.kind !== "agreement-proposal") throw new Error("no proposal");
+    return { clock, network, buyerClient, sellerClient, proposal };
+  }
+
+  test("a seller signer that settles after the deadline records the timeout instead of finalizing", async () => {
+    let slow = true;
+    const { clock, network, sellerClient, proposal } = await slowSeller({
+      sign: async (bytes) => {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        if (slow) clock.now = DEADLINE + 1;
+        return ed25519Sign(null, bytes, sellerKeys.privateKey);
+      },
+    });
+    // The proposal arrives exactly at the deadline, inside the window.
+    clock.now = DEADLINE;
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+    const failed = await record(sellerClient);
+    expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: DEADLINE + 1 });
+    expect(failed.agreement).toBeUndefined();
+    expect(failed.inboxPacketIds).not.toContain(proposal.packetId);
+    expect(network.pending(BUYER)).toBe(0);
+    // The timeout is terminal: a faster signer does not revive the job.
+    slow = false;
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+    expect(await record(sellerClient)).toEqual(failed);
+    expect(network.pending(BUYER)).toBe(0);
+  });
+
+  test("a seller verifier that settles after the deadline records the timeout instead of finalizing", async () => {
+    let slow = false;
+    const verify = vi.fn(async (input: Parameters<typeof verifyAgreement>[0]) => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      if (slow) clock.now = DEADLINE + 1;
+      return verifyAgreement(input);
+    });
+    const { clock, network, sellerClient, proposal } = await slowSeller({ verify });
+    slow = true;
+    clock.now = DEADLINE;
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+    expect(verify).toHaveBeenCalled();
+    const failed = await record(sellerClient);
+    expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: DEADLINE + 1 });
+    expect(failed.agreement).toBeUndefined();
+    expect(network.pending(BUYER)).toBe(0);
+  });
+
+  test("a clock fault after the seller signs stores nothing, and the same proposal finalizes once the clock answers", async () => {
+    const { clock, network, buyerClient, sellerClient, proposal } = await slowSeller({});
+    const before = await record(sellerClient);
+    // The receipt reading is in the window; the reading after signing fails.
+    clock.script = [NOW + 9_000, "throw"];
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({
+      status: "indeterminate", reason: "trusted clock unavailable",
+    });
+    expect(clock.script).toEqual([]);
+    expect(await record(sellerClient)).toEqual(before);
+    expect(network.pending(BUYER)).toBe(0);
+    clock.now = NOW + 9_500;
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({ status: "ready" });
+    const finalized = await record(sellerClient);
+    expect(finalized.agreement?.finalized).toBeDefined();
+    expect(finalized.outbox.at(-1)).toMatchObject({ packet: { kind: "agreement-contribution" } });
+    expect(finalized.updatedAt).toBeGreaterThanOrEqual(NOW + 9_500);
+    await deliver(network, BUYER, buyerClient);
+    expect((await record(buyerClient)).agreement?.finalized).toEqual(finalized.agreement?.finalized);
+  });
+
   test("a future-dated proposal the buyer did not sign is refused without a timeout", async () => {
     const { clock, nowMs } = scriptedClock();
     const network = createInMemoryRfqLifecycleNetwork<string>();

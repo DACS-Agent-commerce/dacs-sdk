@@ -292,7 +292,9 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
    * Apply one counterparty packet. "rejected" is the lifecycle's answer about
    * the packet: it is malformed or misrouted; its job does not exist, has
    * failed, or is stored corrupt or in an unsupported version; its RFQ turn
-   * timed out; or the turn, plan or counterparty contribution is refused.
+   * or agreement step timed out (for a seller, also when its agreement signer
+   * or verifier settles after the deadline, which is checked again before
+   * finalizing); or the turn, plan or counterparty contribution is refused.
    * It gives "indeterminate" instead, stores nothing, and the same packet may
    * be received again, when the store load fails; the clock, a verifier or
    * the agreement signer fails, cannot decide or answers malformed; the stored
@@ -2124,17 +2126,24 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     );
     if ("failed" in finalizing) return finalizing.failed;
     const { finalized } = finalizing;
+    // Our signer and the verifier may have run past the deadline, so read
+    // the trusted clock again: we never finalize after it (RFQ-4), and a
+    // clock fault stores nothing, so the same proposal may be received again.
+    const checked = await agreementClock(record);
+    if ("timedOut" in checked) return checked.timedOut;
+    if ("clockFault" in checked) return checked.clockFault;
+    const { now } = checked;
     const response = makePacket(record, {
       kind: "agreement-contribution",
       sellerContribution,
     });
     const outbox = [
       ...structuredClone(record.outbox),
-      { packet: response, state: "pending" as const, attempts: 0, updatedAt: receivedAt },
+      { packet: response, state: "pending" as const, attempts: 0, updatedAt: now },
     ];
     const staged = await write(
       record,
-      nextRecord(record, receivedAt, {
+      nextRecord(record, now, {
         inboxPacketIds: [...record.inboxPacketIds, packet.packetId],
         outbox,
         agreement: {
