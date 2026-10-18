@@ -85,6 +85,11 @@ producer release metadata. For persistent GCR
 evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
 transaction/finality, writer, validation-profile, freshness and presentation-
 control inputs; it never treats copied bundle metadata as authority.
+
+Upgrade note: durable Vet pins created before domain-alias folding can fail
+closed during recovery because the aliases now count under the `domain`
+scheme in requirement paths. Re-run Vet to create a new pin before resuming.
+
 The pinned native node does not itself establish the strict
 `demos-web2-domain-v1` proof-body grammar: its parser accepts alternate tags and
 its fetch path trims whitespace. Native GCR inclusion alone therefore leaves
@@ -806,6 +811,13 @@ response bytes match `contentHash`, while `receiptTransactionRef` is the native
 hash is never mislabeled as a Storage Program locator, and the raw Stripe body
 (which can include provider secrets) is never published as public DACS content.
 
+DAHR supports textual responses (`text/*`, JSON, XML, and `+json`/`+xml`
+media types); binary or missing content types are rejected. Its response hash
+covers the node-decoded UTF-8 text. At the pinned Demos node `61b8e75`,
+broadcasting a DAHR POST repeats the request without its body or authorization.
+Use only idempotent or read-only POST endpoints, and spell the request header
+`Content-Type` with that casing for the node's request handling.
+
 The opt-in live test is
 `test/integration/ap2-stripe-dahr.live.test.ts`. It requires an isolated Demos
 wallet, durable state directory, the official AP2 Python runtime, the two Stripe
@@ -948,7 +960,9 @@ read-only `getNetworkInfo` node call and compares its commit with the
 `kynesyslabs/node` revision this doctor was verified against
 (`61b8e75aa8db5e408c49e1c3a89db4d673f45578`). It passes only for that commit,
 reported under that revision's package name and version
-(`demos-node-software` `0.9.8`), with a clean build. A different, unreported,
+(`demos-node-software` `0.9.8`), and self-reported as a clean build. The build
+metadata is self-reported; the observed node2 build reports uncommitted changes
+and therefore warns. A different, unreported,
 or uncommitted build, or another package name or version, reports
 `warn`, which does not change the exit code: the RPC verdict was not verified
 against that node source.

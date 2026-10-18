@@ -56,4 +56,15 @@ export function assertDahrCommitment(
       result.requestHash !== requestHash || response.requestHash !== requestHash) {
     throw new SubstrateError("DAHR canonical web2Request commitment does not match the request and response");
   }
+  // The pinned node decodes bytes as UTF-8 before hashing. An authenticated
+  // hash therefore cannot make an arbitrary binary response byte-preserving.
+  // Inspect the committed headers only after authenticating their hash.
+  const contentTypes = Object.entries(result.headers as Record<string, unknown>)
+    .filter(([name]) => name.toLowerCase() === "content-type");
+  const contentType = contentTypes.length === 1 && typeof contentTypes[0]![1] === "string"
+    ? contentTypes[0]![1].split(";", 1)[0]!.trim().toLowerCase()
+    : "";
+  if (!/^(?:text\/[a-z0-9!#$&^_.+-]+|application\/(?:json|xml)|[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+\+(?:json|xml))$/.test(contentType)) {
+    throw new SubstrateError("DAHR body is not byte-preserving: unsupported response content-type");
+  }
 }

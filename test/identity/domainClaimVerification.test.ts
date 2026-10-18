@@ -15,6 +15,8 @@ import {
 } from "../../src/identity/domainClaimVerification.js";
 
 import { canonicalize } from "../../src/canonical/index.js";
+import { deriveIdentityTier } from "../../src/identity/tier.js";
+import { aggregatePresenceAwareCompositeVerification } from "../../src/agent/compositeVerification.js";
 import { authenticatedIdentityBundleSemantics } from "../../src/identity/domainClaimVerification.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
 import { serializeDomainClaimArtifact, type DomainClaimProducerInput } from "../../src/identity/index.js";
@@ -215,10 +217,28 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
         // Authenticate original corpus bytes/signature before using the semantic view.
         expect(authenticate(vector.artifact)(vector.artifact.unsigned).status).toBe("authenticated");
         const original = vector.artifact.unsigned as unknown as IdentityBundle;
-        // Tier proof callbacks and oneOf/primary decisions have independent
-        // passing/refusal controls in tier.test.ts and partyVet.test.ts.
         expect(authenticatedIdentityBundleSemantics(original).claims.map((claim) => claim.ref))
           .toEqual(vector.want.semanticClaims);
+        const baseline = { ...original, claims: original.claims.filter((claim) =>
+          claim.ref === "domain:agent.example") };
+        expect(baseline.claims).toHaveLength(1);
+        for (const verified of [false, true]) {
+          const baselineTier = deriveIdentityTier(baseline, () => verified);
+          expect(baselineTier).toBe(verified ? "verified" : "self-declared");
+          expect(deriveIdentityTier(original, () => verified) !== baselineTier)
+            .toBe(vector.want.tierGain);
+        }
+        for (const scheme of ["domain", "lei"]) {
+          const aggregate = (bundle: IdentityBundle) => aggregatePresenceAwareCompositeVerification({
+            bundle, evaluatedAt: vector.evaluatedAt, verified: [],
+            presentedClaimControlled: true,
+            requirement: { requirementVersion: "1", required: [],
+              oneOf: [[{ scheme, verificationRequired: false }]] },
+          });
+          const baselineDecision = aggregate(baseline);
+          expect(baselineDecision).toBe(scheme === "domain" ? "pass" : "fail");
+          expect(aggregate(original) !== baselineDecision).toBe(vector.want.oneOfGain);
+        }
       }
       if (vector.want?.metadataEqualsAuthority) {
         expect(verdict.data?.demosGcrDomain).toEqual(vector.authoritativeGcr);

@@ -36,8 +36,8 @@ function dahrTransaction(url = "https://example.com/data", headers = {}, body?: 
       sessionId: "session", payload: "", authorization: "",
       web2Request: {
         raw: { action: "startProxy", url, method: body === undefined ? "GET" : "POST", headers },
-        result: { targetUrl: url, status: 200, headers: {},
-          responseHash: sha256Hex("ok"), responseHeadersHash: sha256Hex(""),
+        result: { targetUrl: url, status: 200, headers: { "content-type": "text/plain" },
+          responseHash: sha256Hex("ok"), responseHeadersHash: sha256Hex("content-type:text/plain"),
           ...(body === undefined ? {} : { requestHash: sha256Hex(body) }) },
       },
     } }] },
@@ -326,7 +326,7 @@ describe("DemosAdapter", () => {
     const startProxy = vi.fn(async () => ({
       data: "ok",
       status: 200,
-      responseHash: sha256Hex("ok"), responseHeadersHash: sha256Hex(""), headers: {},
+      responseHash: sha256Hex("ok"), responseHeadersHash: sha256Hex("content-type:text/plain"), headers: { "content-type": "text/plain" },
       txHash: "0xdahr",
       timestamp: 1,
     }));
@@ -426,7 +426,7 @@ describe("DemosAdapter", () => {
       const stopProxy = vi.fn(async () => undefined);
       const response: Mutable = {
         data, status: 200, responseHash: sha256Hex(data),
-        responseHeadersHash: sha256Hex(""), headers: {}, txHash: "0xdahr", timestamp: 3,
+        responseHeadersHash: sha256Hex("content-type:text/plain"), headers: { "content-type": "text/plain" }, txHash: "0xdahr", timestamp: 3,
         ...(change.body === undefined ? {} : { requestHash: sha256Hex(change.body) }),
       };
       change.response?.(response);
@@ -457,7 +457,7 @@ describe("DemosAdapter", () => {
       ["a substituted body", { response: (r) => { r.data = "fabricated"; } }],
       ["a substituted response hash", { response: (r) => { r.responseHash = "a".repeat(64); } }],
       ["a substituted response headers hash", { response: (r) => { r.responseHeadersHash = "b".repeat(64); } }],
-      ["substituted response headers", { response: (r) => { r.headers = { "content-type": "text/plain" }; } }],
+      ["substituted response headers", { response: (r) => { r.headers = { "content-type": "text/html" }; } }],
       ["substituted transaction headers", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.headers = { vary: "accept" }; } }],
       ["an unexpected request body hash", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.requestHash = "c".repeat(64); } }],
       ["a different request body hash", { body: "request", response: (r) => { r.requestHash = "c".repeat(64); } }],
@@ -482,6 +482,44 @@ describe("DemosAdapter", () => {
           headers: { "x-roles": ["a", "b"], "content-type": "text/plain", date: "now" } }); },
       });
       expect(outcome).toMatchObject({ body, responseHash, responseHeadersHash, anchorTxRef: "0xdahr" });
+    });
+
+    it.each([
+      "text/plain", "TEXT/CSV; charset=utf-8", "application/json",
+      "application/problem+json", "application/xml", "application/atom+xml",
+    ])("accepts committed textual content type %s", async (contentType) => {
+      const headers = { "Content-Type": contentType };
+      const responseHeadersHash = sha256Hex(`content-type:${contentType}`);
+      const { outcome } = await dahrFetch({
+        transaction: (tx) => Object.assign(tx.content.data[1].message.web2Request.result,
+          { headers, responseHeadersHash }),
+        response: (r) => Object.assign(r, { headers, responseHeadersHash }),
+      });
+      expect(outcome).toMatchObject({ body: "ok", responseHeadersHash, anchorTxRef: "0xdahr" });
+    });
+
+    it.each([
+      { "content-type": "application/octet-stream" },
+      { "content-type": "image/png" },
+      { "content-type": "application/pdf" },
+      { "content-type": "application/json-invalid" },
+      { "content-type": "" },
+      {},
+      { "content-type": ["text/plain", "image/png"] },
+      { "content-type": "text/plain", "Content-Type": "image/png" },
+    ])("refuses unsupported committed content type %j even with matching hashes", async (headers) => {
+      const responseHeadersHash = sha256Hex(Object.entries(headers)
+        .map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(", ") : value])
+        .sort(([a], [b]) => a! < b! ? -1 : a! > b! ? 1 : 0)
+        .map(([key, value]) => `${key}:${value}`).join("\n"));
+      const { outcome } = await dahrFetch({
+        transaction: (tx) => Object.assign(tx.content.data[1].message.web2Request.result,
+          { headers, responseHeadersHash }),
+        response: (r) => Object.assign(r, { headers, responseHeadersHash }),
+      });
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe(
+        "DAHR body is not byte-preserving: unsupported response content-type");
     });
 
     it.each(["", "requesté ☕\n"])("forwards exact POST payload %j to the SDK", async (body) => {
