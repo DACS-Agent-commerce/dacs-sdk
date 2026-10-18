@@ -6,11 +6,12 @@
 // The working tree is never edited. One test process runs at a time.
 //
 // Read-only target validation: node scripts/wire/mutate-wire-checks.mjs --check
-// Usage: node scripts/wire/mutate-wire-checks.mjs --scratch <empty-or-new dir> [--report <file>]
+// Usage: node scripts/wire/mutate-wire-checks.mjs --scratch <empty-or-new dir outside the checkout> [--report <file>]
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createOwnedScratch } from "./scratch-directory.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const args = {};
@@ -25,7 +26,7 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 const checkOnly = args.check === true;
 if (!args.scratch && !checkOnly) throw new Error("--scratch is required (or use --check)");
-const scratch = args.scratch ? resolve(args.scratch) : undefined;
+const scratchParent = args.scratch ? resolve(args.scratch) : undefined;
 
 const M = (id, file, find, replace, catches) => ({ id, file, find, replace, catches });
 /** A mutant that edits several files at once: [[file, find, replace], ...]. */
@@ -176,8 +177,9 @@ if (checkOnly) {
   process.exit(0);
 }
 
-if (existsSync(scratch)) rmSync(scratch, { recursive: true, force: true });
-mkdirSync(scratch, { recursive: true });
+const owned = createOwnedScratch(scratchParent, root);
+const scratch = owned.path;
+try {
 cpSync(join(root, "src"), join(scratch, "src"), { recursive: true });
 const reportFile = join(scratch, "vitest.json");
 
@@ -218,3 +220,7 @@ const summary = { baseline: { total: baseline.total, failed: baseline.failed.siz
 if (args.report) writeFileSync(resolve(args.report), `${JSON.stringify(summary, null, 2)}\n`);
 console.log(`${summary.caught}/${summary.mutants} mutants caught by their named vectors; baseline ${baseline.total} vector tests passed`);
 process.exitCode = summary.caught === summary.mutants ? 0 : 1;
+
+} finally {
+  owned.cleanup();
+}
