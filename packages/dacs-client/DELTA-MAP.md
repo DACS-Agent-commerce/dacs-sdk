@@ -246,14 +246,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `docs/raw-json-admission.md:1` |
 | 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `src/canonical/rawJson.ts:8`, `src/canonical/rawJson.ts:13` |
 | 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `test/canonical/rawJson.test.ts:1` |
-| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/package.json:1` |
-| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` |
-| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/HOLD.json:1` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/package.json:1` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` |
+| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
 
 ## Original moved files
 

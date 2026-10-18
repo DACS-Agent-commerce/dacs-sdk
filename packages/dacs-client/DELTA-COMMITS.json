@@ -96,7 +96,7 @@
     ]
   },
   {
-    "sha": null,
+    "sha": "2ec400580428d4643f81f33c5132a0398366c4e6",
     "subject": "delta(client): D16 preserve the configured RPC byte budget",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -107,6 +107,17 @@
       "packages/dacs-client/scripts/check-hold.mjs",
       "packages/dacs-client/src/util/http.mjs",
       "packages/dacs-client/test/rpc-byte-budget.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 pin the reviewed tripwire policy update",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/check-provenance.test.mjs"
     ]
   }
 ]

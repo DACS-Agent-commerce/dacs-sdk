@@ -368,11 +368,17 @@ test("the freeze record and generator retain reviewed step-1 policy text", () =>
   const record = JSON.parse(readFileSync(join(PACKAGE_DIR, "HOLD.json"), "utf8"));
   const step1 = JSON.parse(reviewed("HOLD.json"));
   const hold = record.holds[0], original = step1.holds[0];
-  assert.ok(hold.rule.startsWith(publicationPolicy(original.rule)), "the complete reviewed freeze rule must remain a prefix");
+  // Reconcile only the reviewed tripwire exception clause. The remainder of
+  // the publication's freeze rule must still be retained word for word.
+  const reviewedRule = publicationPolicy(original.rule).replace(
+    "the root lockfile's workspace registration is its one exception",
+    "the root lockfile's workspace registration, reviewed CI gate and exact test-fixture fingerprints in .gitleaksignore are its only exceptions, each still pinned to exact outside-file bytes",
+  );
+  assert.ok(hold.rule.startsWith(reviewedRule), "the reviewed freeze rule must remain a prefix except for the exact tripwire clause update");
   assert.equal(record.step1Freeze.schema, step1.step1Freeze.schema);
   assert.equal(record.step1Freeze.outside.what, step1.step1Freeze.outside.what);
   assert.deepEqual(record.step1Freeze.literalNameTripwire.exceptions['package-lock.json'], step1.step1Freeze.literalNameTripwire.exceptions['package-lock.json']);
-  assert.deepEqual(Object.keys(record.step1Freeze.literalNameTripwire.exceptions).sort(), ['.github/workflows/ci.yml','package-lock.json']);
+  assert.deepEqual(Object.keys(record.step1Freeze.literalNameTripwire.exceptions).sort(), ['.github/workflows/ci.yml','.gitleaksignore','package-lock.json']);
   for (const key of ["schema", "package", "gate"]) assert.equal(record[key], step1[key], key);
   for (const key of ["id", "delta", "sourceRepository", "sourceCommit", "files"]) assert.deepEqual(hold[key], original[key], key);
   for (const key of ["sourceFix", "condition", "probe"]) assert.equal(hold.liftRequires[key], publicationPolicy(original.liftRequires[key]), key);
