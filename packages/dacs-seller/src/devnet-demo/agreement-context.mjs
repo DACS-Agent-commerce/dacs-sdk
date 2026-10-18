@@ -69,8 +69,8 @@ function partyVetState(store,writer) {
   const read=async(jobId)=>{const row=await store.read(keyFor(jobId));return row?clone(mine(row,jobId)):null;};
   // change is synchronous: undefined keeps the row, null deletes it.
   const update=async(jobId,change)=>{
-    const row=await store.update(keyFor(jobId),(stored)=>{
-      const current=stored?mine(stored,jobId):null,next=change(current&&clone(current));
+    const row=await store.update(keyFor(jobId),(stored,rows)=>{
+      const current=stored?mine(stored,jobId):null,next=change(current&&clone(current),rows);
       return next===undefined||next===null?next:{...next,version:PARTY_VET_STATE,writer,jobId,revision:(current?.revision ?? 0)+1};
     });
     return row&&clone(row);
@@ -197,7 +197,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     {nowMs:now,resolve:async()=>null,resolveRecipe:async()=>null,isRecipeSignerAuthorized:()=>false,isVerifyResultSignerAuthorized:()=>false,
       resolvePublicKey:signature=>signature.signer===authority?authority:null,verify:verifier.verify,verifyAuthorityAttestation:()=> 'unresolved'});
   const validReceipt = async (read,logicalAddress,artifact,authority) => read?.status==='present'
-    && ['accepted','finalized'].includes(read.receipt?.state)
+    && ['accepted','included','finalized'].includes(read.receipt?.state)
     && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority})==='valid';
   async function sellerSession(job) {
     let kept=(await state.read(job.jobId))?.presentation;
@@ -207,16 +207,15 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       const challenge=await counterparty.issueChallenge({jobId:job.jobId,buyer,seller:wallet.claim});
       if(challenge?.issuer!==buyer || challenge?.jobId!==job.jobId || challenge?.seller!==wallet.claim
         || !/^[a-f0-9]{64}$/.test(challenge?.sessionNonce??'') || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt<=now()) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
-      // This durable key prevents even a broken buyer issuer from reusing a
-      // challenge in another job, including after provider restart.
-      const key=`seller-challenge/${sha256Hex(canonicalize([buyer,challenge.sessionNonce]))}`;
-      await store.update(key,current=>{
-        if(current && current.jobId!==job.jobId) fail('seller_challenge_reused','buyer challenge was already presented for another job');
-        return current?undefined:{jobId:job.jobId,buyer,sessionNonce:challenge.sessionNonce};
-      });
       const {presentation:_publicationProof,...identity}=listing.seller.identity;
       const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
-      kept=(await state.update(job.jobId,current=>{
+      kept=(await state.update(job.jobId,(current,rows)=>{
+        // Claim the nonce in the job row, under the store transaction. It is
+        // retained across restarts and released with the ended purchase.
+        if(rows().some(([,row])=>row.jobId!==job.jobId && row.writer===wallet.claim
+          && row.presentation?.challenge?.issuer===buyer
+          && row.presentation.challenge.sessionNonce===challenge.sessionNonce))
+          fail('seller_challenge_reused','buyer challenge was already presented for another job');
         if(!current?.binding || !same(current.binding,job.binding)) fail('binding-changed','seller presentation binding changed');
         if(current.presentation)return undefined;
         return {...current,presentation:value};
@@ -464,6 +463,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function resolveBuyer({scope,buyerIdentityBundle},{writable=()=>true}={}) {
     assertAccess(buyerIdentityBundle.presentedBy);
     if(!counterpartyReady())return {disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
+    // Upgrade cleanup: earlier versions retained a second fence row after the
+    // job itself was deleted. Such ended jobs no longer own a challenge.
+    for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/') && !(await state.read(row.jobId)))
+      await store.update(key,current=>current?.jobId===row.jobId?null:undefined);
     const produced=await jobVet(scope,buyerIdentityBundle,writable);
     if(produced.refused?.code==='party_vet_non_pass')return produced.refused;
     if(produced.refused==='legacy')return{disposition:'rejected',reason:LEGACY_REASON,code:LEGACY_PARTY_VET_STATE};
@@ -539,7 +542,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     try{
       const scope=await retainedScope({jobId,buyer:buyerIdentityBundle.presentedBy});
       if(!scope||!same(scope.listingPin,pin)||scope.generatedAt!==generatedAt||scope.buyerBundleHash!==identityBundleHash(buyerIdentityBundle))return null;
-      return await recoverBuyer({scope,buyerIdentityBundle})?contexts.get(canonicalize(scope))??null:null;
+      return (await recoverBuyer({scope,buyerIdentityBundle}))?.disposition==='present'?contexts.get(canonicalize(scope))??null:null;
     }catch{return null;}
   }
   // The seller is answered only from a context that matches its request
@@ -553,7 +556,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(found)return await contextAuthentic(found.input)?answer(found):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
     const kept=(await state.read(jobId))?.seller ?? null;
     const durable=kept?.generatedAts.includes(generatedAt)?{input:{...kept.input,generatedAt},vetRequirements:kept.vetRequirements}:null;
-    if(durable&&matches(durable.input) && await recoverBuyer({scope:{...((await state.read(jobId)).binding.scope),generatedAt},buyerIdentityBundle}))return answer(durable);
+    if(durable&&matches(durable.input)){
+      const recovered=await recoverBuyer({scope:{...((await state.read(jobId)).binding.scope),generatedAt},buyerIdentityBundle});
+      return recovered?.disposition==='present'?answer(durable):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
+    }
     const recovered=retainedScope?await recoverSeller({jobId,pin,buyerIdentityBundle,generatedAt}):null;
     if(recovered&&matches(recovered.input))return answer(recovered);
     if(!forJob.length&&!kept)return{disposition:'indeterminate',reason:'buyer context is not retained'};
@@ -569,6 +575,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     drops.add(jobId);
     if(running.has(jobId))return false;
     await state.update(jobId,()=>null);
+    for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/') && row.jobId===jobId)
+      await store.update(key,current=>current?.jobId===jobId?null:undefined);
     drops.delete(jobId);
     return true;
   }

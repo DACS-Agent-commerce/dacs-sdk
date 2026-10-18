@@ -20,8 +20,9 @@ test('B1 per-buyer unpaid-start limit refuses before any policy hold, log, journ
 test('B2 global unpaid-start limit covers different buyers before all effects, including after restart',async t=>{
  const w=await world(t,{limits:{maxStartsPerHour:1,maxStartsPerBuyerPerHour:5}});assert.equal((await exchange(w.handler,await w.wire())).status,200);const before=w.effects();
  const refused=await exchange(w.handler,await w.wire({actor:w.other,jobId:JOBS[1]}));assert.equal(JSON.parse(refused.text).error,'unpaid_start_limit');assert.deepEqual(w.effects(),before);
- const reopened=createSellerTransportStore({path:w.path});t.after(()=>reopened.close());const input=await w.wire({actor:w.other,jobId:JOBS[1]});const request=w.auth.readRequest(input.header),body=JSON.parse(input.text);
- await assert.rejects(w.route.reserve(request,body,reopened),{code:'context_challenge_consumed'});assert.deepEqual(w.effects(),before);
+ const reopened=createSellerTransportStore({path:w.path});t.after(()=>reopened.close());const input=await w.wire({actor:w.other,jobId:JOBS[1],fresh:true});const request=w.auth.readRequest(input.header),body=JSON.parse(input.text);
+ await assert.rejects(w.route.reserve(request,body,reopened),{code:'unpaid_start_limit'});
+ assert.throws(()=>reopened.attemptContextPresentation(request,body),{code:'context_challenge_consumed'});assert.deepEqual(w.effects(),before);
 });
 test('B3 accepted start at the exact one-hour boundary is outside the rolling count; one millisecond before is still inside',async t=>{
  const w=await world(t);await exchange(w.handler,await w.wire());w.advance(3599999);const before=w.effects();assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,409);assert.deepEqual(w.effects(),before);
@@ -258,19 +259,11 @@ test('B36 total context capacity consumes an attempted presentation but refuses 
  const w=await world(t,{maxContextRecords:1,limits:{maxStartsPerHour:100,maxStartsPerBuyerPerHour:100}});
  const next=await w.wire({jobId:JOBS[1],actor:w.other});
  assert.equal((await exchange(w.handler,await w.wire())).status,200);
- w.advance(3600001);
- const before=w.effects();
- const result=await exchange(w.handler,next); // refresh only transport expiry; keep the issued presentation
- assert.equal(result.status,409);assert.equal(JSON.parse(result.text).error,'context_challenge_expired');
- const body=JSON.parse(next.text),text=JSON.stringify(body);
- const client=createSellerTransportClientAuth({buyerSigner:w.other,seller:w.seller.claim,resolveJob:()=>({listingPin:w.pin,agreementHash:sellerContextScopeHash(body.scope)}),now:w.now});
- const signed=await client.request(SELLER_CONTEXT_PATH,body,text);
- const refusal=await exchange(w.handler,{text,header:signed.header});
- assert.equal(refusal.status,409); assert.equal(JSON.parse(refusal.text).error,'context_challenge_consumed');
+ const before=w.effects(),result=await exchange(w.handler,next);
+ assert.equal(result.status,503);assert.equal(JSON.parse(result.text).error,'peer_context_capacity');
  assert.deepEqual(w.effects(),before);
- const db=new DatabaseSync(w.path,{readOnly:true});
- try { assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce = ?').get(body.buyerIdentityBundle.sessionNonce).attempted,1); }
- finally { db.close(); }
+ const body=JSON.parse(next.text),db=new DatabaseSync(w.path,{readOnly:true});
+ try{assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce = ?').get(body.buyerIdentityBundle.sessionNonce).attempted,1);}finally{db.close();}
  const scope=sellerContextChallengeScope({...body.scope,generatedAt:w.now()});
  const challengeBody={scope},challengeText=JSON.stringify(challengeBody);
  const challengeClient=createSellerTransportClientAuth({buyerSigner:w.other,seller:w.seller.claim,resolveJob:()=>({listingPin:w.pin,agreementHash:sellerContextScopeHash(scope)}),now:w.now});

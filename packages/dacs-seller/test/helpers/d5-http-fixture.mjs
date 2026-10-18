@@ -29,8 +29,9 @@ async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},m
  const agent={claim:seller.claim,listingPin:pin,agreementState:()=>({proposal:null,contribution:null})};
  const handler=createSellerHttpHandler(agent,{authentication:auth,context:route,...http});
  const bundles=new Map();
- const wire=async({actor=buyer,jobId=JOBS[0],alter=()=>{}}={})=>{
+ const wire=async({actor=buyer,jobId=JOBS[0],alter=()=>{},fresh=false}={})=>{
   const cacheKey=actor.claim+jobId+time;
+  if(fresh)bundles.delete(cacheKey);
   const bundle=structuredClone(bundles.get(cacheKey)??bundleFor(actor)),scope={source:'d5-test-context/v1',wallet:'0x'+actor.claim.slice(16),jobId,buyer:actor.claim,buyerBundleHash:identityBundleHash(bundle),seller:seller.claim,listingPin:pin,rail:{railId:'demos-native:DEM',railVersion:1},payee:listing.payee,price:listing.price,generatedAt:time};
   const body={scope,buyerIdentityBundle:bundle};alter(body);
   // Challenge issuance is fixture setup. HTTP issuance and its own limits

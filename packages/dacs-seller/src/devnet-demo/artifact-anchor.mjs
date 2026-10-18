@@ -107,17 +107,39 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   if(!owner || wallet.getWriteProfile()?.demoArtifactPublication?.policy!==DEVNET_DEMO_ARTIFACT_POLICY) throw new TypeError('the packaged seller wallet does not carry the demo artifact publication policy');
   const keyFor=(logicalAddress)=>`demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
 
+  function liveNonceRows(rows,outcomes=rows) {
+    const rejected=outcomes.map(([,row])=>row).filter(row=>row?.stage==='rejected'&&row.error==='broadcast_rejected'&&row.transaction?.content?.from===owner);
+    return rows.filter(([,row])=>!rejected.some(done=>canonicalize(done.transaction.content)===canonicalize((row?.signedTransaction??row?.transaction)?.content??null)))
+      .filter(([,row])=>!(!row?.hash&&!row?.signedTransaction&&(['closing','unsigned','rejected'].includes(row?.stage)||(row?.stage==='denied'&&row.error==='user_rejected'))));
+  }
+
+  async function liveSourceRows() {
+    const sourceRows=await sourceCapability.journal.entries();
+    return liveNonceRows(sourceRows,[...sourceRows,...await journal.entries()]);
+  }
+
   async function observeSource(hash,projection,writeProof) {
     let observed=await sourceCapability.binding({phase:'readback',address:owner,hash,...(writeProof?{writeProof}:{})});
     if(observed.disposition==='pending' && signRpc && projection?.content?.type==='storageProgram') {
-      await sourceCapability.recoverStorageWrite({signedTransaction:projection,signRpc});
+      const recoveryKey=`demo/recovery/${hash}`;
+      await journal.withWalletLock(recoveryKey,async()=>{
+        const prior=await journal.get(recoveryKey),projectionHash=exactHash(projection);
+        if(prior){
+          if(prior.projectionHash!==projectionHash)fail('invalid','retained recovery projection differs');
+          return; // An interrupted or uncertain resend never authorizes another.
+        }
+        await assertQualifiedDeployment(sourceCapability);
+        await journal.put(recoveryKey,{stage:'intent',projectionHash});
+        await sourceCapability.recoverStorageWrite({signedTransaction:projection,signRpc});
+        await journal.put(recoveryKey,{stage:'issued',projectionHash});
+      });
       observed=await sourceCapability.binding({phase:'readback',address:owner,hash});
     }
     return observed;
   }
 
   async function reconcilePriorSourceLane() {
-    const pending=(await sourceCapability.journal.entries()).map(([,value])=>value).filter((value)=>value?.signedTransaction?.content?.from===owner&&value.stage!=='observed');
+    const pending=(await liveSourceRows()).map(([,value])=>value).filter((value)=>value?.signedTransaction?.content?.from===owner&&value.stage!=='observed');
     const hashes=new Set(pending.map((value)=>value.hash).filter((value)=>typeof value==='string'&&value.length>0));
     if(hashes.size>1) fail('indeterminate','more than one retained seller source transaction requires readback');
     if(hashes.size===1){
@@ -135,7 +157,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // seller CREATE. Release it only after a fresh authenticated readback shows
   // that exact original signed CREATE included; no new transaction is signed.
   async function reconcilePriorWalletLane() {
-    const rows=(await journal.entries()).filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.stage==='broadcast-started'&&value?.signedTransaction?.content?.from===owner);
+    const rows=liveNonceRows(await journal.entries()).filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.stage==='broadcast-started'&&value?.signedTransaction?.content?.from===owner);
     for(const [key,value] of rows){
       const projection=typeof value.hash==='string'?await publicProjection(value.hash):null;
       if(!projection||value.signedTransaction?.hash!==value.hash||canonicalize(projection)!==canonicalize(value.signedTransaction)) fail('indeterminate','the retained seller wallet CREATE differs from its original public projection');
@@ -212,7 +234,11 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     const value=clone(artifact), jobId=value.jobId ?? `listing:${value.listingId}`, receiptContentHash=contentHash(value);
     if((artifactKind==='Deliverable')!==Boolean(deliveryBinding) || (deliveryBinding && !deliveryBindingValid(deliveryBinding,value,logicalAddress,receiptContentHash))) fail('invalid','demo Deliverable is not bound to the exact Agreement, Listing, fulfilment, amount and payload');
     const input={logicalAddress,artifact:value,artifactKind,writer,receiptContentHash,...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
-    return journal.withWalletLock(`demo/nonce/${exactHash([network,sourceCapability.pins.chainIdentity,owner])}`,()=>journal.withWalletLock(keyFor(logicalAddress),async()=>{
+    // The source owns the atomic wallet lane used by ALL its CREATE writers,
+    // including writers using other journals. An artifact-local lock cannot
+    // establish that guarantee. Unintegrated hosts may still read retained data.
+    if(typeof sourceCapability.withWalletNonceLock!=='function') fail('nonce_lane_unavailable','the source must provide a shared atomic wallet nonce lane');
+    return sourceCapability.withWalletNonceLock({owner,network,chainIdentity:sourceCapability.pins.chainIdentity},()=>journal.withWalletLock(`demo/nonce/${exactHash([network,sourceCapability.pins.chainIdentity,owner])}`,()=>journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
       if(retained) {
         if(retained.inputHash!==exactHash(input)) fail('conflict','immutable demo artifact intent differs');
@@ -236,8 +262,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       // Retained signed or reserved bytes fence this nonce even after inclusion.
       // Wait for the RPC to catch up instead of preparing a duplicate CREATE.
       const priorRows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
-      const retainedNonces=priorRows.filter(([,row])=>!(!row?.hash&&!row?.signedTransaction&&(row?.stage==='closing'||(row?.stage==='denied'&&row.error==='user_rejected'))))
-        .flatMap(([,row])=>[row?.transaction,row?.signedTransaction])
+      const retainedNonces=liveNonceRows(priorRows).flatMap(([,row])=>[row?.transaction,row?.signedTransaction])
         .filter(tx=>tx?.content?.from===owner).map(tx=>tx.content.nonce);
       if(retainedNonces.some(n=>!Number.isSafeInteger(n)||n<0)) fail('indeterminate','retained seller nonce is invalid');
       if(current===Number.MAX_SAFE_INTEGER||retainedNonces.some(n=>n>current)) fail('indeterminate','seller nonce RPC has not caught up with retained CREATEs');
@@ -259,6 +284,13 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
         if(allowed!==true) fail('not-authorized',`the caller withdrew this write (${typeof allowed==='string'?allowed.slice(0,160):'no answer'}); no intent was stored and nothing was sent`);
       }
       await journal.put(keyFor(logicalAddress),intent);
+      // Recheck after durable intent publication too: an older host writer
+      // bypassing the shared-lane contract must not race a known reservation.
+      const sourceRows=await liveSourceRows();
+      if(sourceRows.some(([,row])=>row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce>=nonce)){
+        await journal.put(keyFor(logicalAddress),{...intent,stage:'unsigned',error:'nonce-lane-changed'});
+        fail('indeterminate','source wallet nonce lane changed during CREATE reservation');
+      }
       const answer=await wallet.request({method:'sendTransaction',params:[{kind:DEVNET_DEMO_ARTIFACT_KIND,profile:DEVNET_AGREEMENT_PROFILE,network,owner:writer,artifactKind,jobId,
         logicalAddress,contentHash:receiptContentHash,envelopeHash:exactHash(value),transaction}]});
       if(answer?.error?.code===OPERATOR_CLOSING) {
@@ -268,13 +300,20 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
         return {status:'indeterminate',reason:`${OPERATOR_CLOSING}: ${answer.error.message ?? 'the operator is closing'}`.slice(0,240),noResend:true};
       }
       if(!answer?.success) {
-        await journal.put(keyFor(logicalAddress),{...intent,stage:answer?.error?.code==='user_rejected'?'denied':'issued',error:answer?.error?.code ?? 'wallet-response-missing'});
+        // The packaged wallet journals signed bytes before submission. Only a
+        // completed failure with no signed transaction in either durable journal
+        // proves an unsigned attempt. Ambiguous signed outcomes keep the floor.
+        const rows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
+        const signed=liveNonceRows(rows).some(([,row])=>row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
+        const code=answer?.error?.code;
+        const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
+        await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});
         return {status:answer?.error?.code==='user_rejected'?'rejected':'indeterminate',reason:`${answer?.error?.code ?? 'wallet-response-missing'}: ${answer?.error?.message ?? 'wallet response missing'}`.slice(0,240),noResend:true};
       }
       const issued={...intent,stage:'issued',hash:answer.data.hash};
       await journal.put(keyFor(logicalAddress),issued);
       return observe(input,issued,answer.data.writeProof);
-    }));
+    })));
   }
   async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false}) {
     if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier)) return {status:'rejected',reason:'demo read scope differs'};

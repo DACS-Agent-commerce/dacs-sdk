@@ -49,7 +49,8 @@ function storeOver(backend, limits) {
     remainingJobs: Math.max(0, limits.maxJobs - rows.jobs), remainingBytes: Math.max(0, limits.maxTotalBytes - rows.bytes) });
   // change(current) answers undefined (no change), null (delete the row) or
   // the next row. It must be synchronous: nothing may interleave between the
-  // read and the write.
+  // read and the write. The second argument reads all rows in that same
+  // transaction, for uniqueness checks spanning jobs.
   async function update(key, change) {
     checkKey(key);
     if (typeof change !== 'function') fail('journal-invalid', 'party Vet store change must be a function');
@@ -58,7 +59,7 @@ function storeOver(backend, limits) {
     try { return backend.transaction(() => {
       const current = backend.get(key);
       let next;
-      try { next = change(current === null ? null : structuredClone(current)); } catch (error) { refused = { error }; throw error; }
+      try { next = change(current === null ? null : structuredClone(current), () => structuredClone(backend.entries())); } catch (error) { refused = { error }; throw error; }
       if (typeof next?.then === 'function') fail('journal-invalid', 'party Vet store changes are synchronous');
       if (next === undefined) return current;
       if (next === null) { backend.remove(key); return null; }

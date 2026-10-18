@@ -9,8 +9,8 @@ export function bundleFor(signer,nonce=randomBytes(32).toString('hex')){const va
 export function recordFor({jobId,identityBundle,requirement},signer,overallDecision='pass'){
  return signComponentArtifact({recordVersion:'1',jobId,evaluatedParty:identityBundle.presentedBy,bundleHash:identityBundleHash(identityBundle),requirementHash:sha256Hex(canonicalize(requirement)),freshness:[],supplementary:[],dealSpecific:[],overallDecision,generatedAt:T},'dacs-composite:v1:',{algorithm:'ed25519',signer:signer.claim,sign:bytes=>signer.sign(bytes)});
 }
-export function fixture(){
- const seller=key(),buyer=key(),records=new Map(),store=createInMemoryPartyVetStore(),seen=[],nonces=new Set();
+export function fixture({maxJobs}={}){
+ const seller=key(),buyer=key(),records=new Map(),store=createInMemoryPartyVetStore({maxJobs}),seen=[],nonces=new Set();
  const controls={receiptState:'finalized',receiptVerdict:'valid',wrongSigner:false,decision:'pass',nonce:null,relayOnly:false};
  const listing={seller:{identity:bundleFor(seller)},pin:{listingId:'bilateral',version:1,contentHash:'b'.repeat(64)},payee:'0x'+seller.claim.slice(16),price:{amount:'1',currency:'DEM'},buyerRequirement:{requirementVersion:'1',required:[],preferredPresentation:'any'}};
  const anchor={writer:seller.claim,hasIntent:async address=>records.has(address),readRetained:async({logicalAddress})=>{const row=records.get(logicalAddress);return row?{...structuredClone(row),receipt:{...row.receipt,state:controls.receiptState}}:{status:'absent'};},read:async input=>anchor.readRetained(input),verifyReceipt:async()=>controls.receiptVerdict,publish:async({logicalAddress,artifact})=>{

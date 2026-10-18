@@ -7,16 +7,31 @@ import {join} from 'node:path';
 import {createPublicKey,verify} from 'node:crypto';
 import vm from 'node:vm';
 import * as core from '@kynesyslabs/dacs';
+import * as local from './local-anchor-fixture.mjs';
+import * as lifecycleProtocol from './lifecycle-protocol-fixture.mjs';
+import {fixtureListing} from '../fixtures/listings.mjs';
 import {key,bundleFor,T,JOBS} from './bilateral-vet-fixture.mjs';
 const {createSellerDurableState}=await import('../../src/dacs/seller-durable-state.mjs');
 const forbidden=()=>{throw new Error('external effect reached before lifecycle admission')};
-export async function agentFixture({paid=false,collision=false}={}){
+export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false}={}){
  const seller=key(),buyer=key(),dir=mkdtempSync(join(tmpdir(),'seller-agent-gates-'));
- const pin={listingId:'agent-gates',version:1,contentHash:'b'.repeat(64)},listing={pin,seller:{identity:bundleFor(seller)},pipeline:[],terms:{},offering:{title:'fixture'}};
- const store=await createSellerDurableState({dir,signer:seller,listingPin:pin});store.retainContext({admittedAt:T,validation:{disposition:'verified'}});
- for(const jobId of JOBS)await store.withJob(jobId,()=>{
+ const listing=lifecycle?fixtureListing({claim:seller.claim,signBytes:seller.sign},{now:T}):{pin:{listingId:'agent-gates',version:1,contentHash:'b'.repeat(64)},seller:{identity:bundleFor(seller)},pipeline:[],terms:{},offering:{title:'fixture'}};
+ const pin=lifecycle?lifecycleProtocol.listingPin(listing):listing.pin;
+ const anchors=lifecycle?local.localAnchor({now:()=>T+1000}):{read:forbidden,write:forbidden},agreements=new Map();
+ const controls={observation:null};
+ let store=await createSellerDurableState({dir,signer:seller,listingPin:pin});store.retainContext({admittedAt:T,validation:{disposition:'verified',step:9,reason:'verified',listing,listingContentHash:pin.contentHash,revocation:'absent',railResolution:{disposition:'verified',reason:'verified'}}});
+ for(const jobId of JOBS)await store.withJob(jobId,async()=>{
   const buyerBundle=bundleFor(buyer);
   const session={jobId,buyerBundle,buyerBundleHash:core.identityBundleHash(buyerBundle),stage:paid?'delivered':'proposed'};
+  if(lifecycle){
+   const ref=role=>({anchor:{kind:'storage-program',locator:'vet-'+role},contentHash:'d'.repeat(64)});
+   const draft=core.deriveFixedPriceAgreement({jobId,verifiedListing:{disposition:'verified',listing,pin},buyer:{identityBundle:buyerBundle,vetRecordRef:ref('buyer')},seller:{identityBundle:listing.seller.identity,vetRecordRef:ref('seller')},selectedRail:{railId:'demos-native:DEM',railVersion:1},payoutBindings:[{railId:'demos-native:DEM',phaseIndex:2,payeeAddress:seller.claim.slice(16)}],generatedAt:T});
+   const agreement=await core.signFixedPriceAgreement(draft,{party:buyer.claim,algorithm:'ed25519',sign:buyer.sign},{party:seller.claim,algorithm:'ed25519',sign:seller.sign});
+   const address=core.fixedPriceAgreementLogicalAddress(jobId),hash=core.contentHash(agreement);
+   await anchors.write({logicalAddress:address,artifact:agreement,writer:buyer.claim,writerSignature:local.signAnchorWrite(buyer.sign,address,hash)});
+   agreements.set(jobId,agreement);
+   Object.assign(session,{agreement,agreementHash:hash,agreementRef:local.fixtureRef(address,hash),phaseResults:[{index:0,step:listing.pipeline[0],invokedAt:T,result:{ok:true,contextDelta:{}},contextDelta:{}}],transportIdentity:{agreementHash:hash}});
+  }
   if(paid)session.payment={settlementId:'demos:one',txHash:'a'.repeat(64),deliveredAt:T};
   store.saveSession(session);
  });
@@ -25,14 +40,23 @@ export async function agentFixture({paid=false,collision=false}={}){
  const verifyComponent=({signedBytes,signature})=>{try{return verify(null,signedBytes,createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),Buffer.from(signature.signer.slice(16),'hex')]),format:'der',type:'spki'}),Buffer.from(signature.value,'base64url'));}catch{return false}};
  const protocolNames=['agreementInput','agreementTerms','assembleBundleCopies','bundleAddress','bundleSession','bundleSigningPlan','commitmentReader','commitmentSession','commitmentVerifier','contributionVerifier','deliverableAddress','deliveryEvidenceAddress','verifyAnchoredCopy','verifyDelivery','verifyPaymentEvidence'];
  const protocol=Object.fromEntries(protocolNames.map(n=>[n,forbidden]));Object.assign(protocol,{ed25519Deps:{},DEM_RAIL_DEFINITION:{},RAIL_REGISTRY_VERSION:1,listingPin:l=>l.pin,protocolSupport:()=>({supported:true,phases:{payment:2,delivery:3}})});
+ if(lifecycle)Object.assign(protocol,lifecycleProtocol);
+ const deriveStorageAddress=(owner,name,nonce,salt)=>'stor-'+core.sha256Hex(`${owner}:${name}:${nonce}:${salt}`).slice(0,40);
+ let signatureCapability;
+ if(lifecycle){
+  const authModule=new vm.SourceTextModule(readFileSync(new URL('../../src/dacs/commit-on-signature.mjs',import.meta.url),'utf8'));
+  const dependencies={'@kynesyslabs/dacs':core,'../wallet/demos-signature.mjs':{addressForClaim:c=>'0x'+c.slice(16),verifyDemosSignature:({address,message,signature})=>lifecycleProtocol.verifyBytes(Buffer.from(message),Buffer.from(signature,'base64url'),Buffer.from(address.slice(2),'hex'))},'./wallet-transactions.mjs':{deriveStorageAddress}};
+  await authModule.link(spec=>{const values=dependencies[spec];return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value] of Object.entries(values))this.setExport(key,value);});});await authModule.evaluate();signatureCapability=authModule.namespace;
+ }
+
  const modules={
   '@kynesyslabs/dacs':core,'node:path':await import('node:path'),
   '../devnet-demo/buyer-access.mjs':{operatorBuyerAccessConfig:()=>null},
   '../wallet/demos-signature.mjs':{addressForClaim:c=>'0x'+c.slice(16)},
-  './commit-on-signature.mjs':{commitOnSignatureConfig:v=>v,verifySignatureAgreement:forbidden,verifyAgreementCreateAuthorization:forbidden},
+  './commit-on-signature.mjs':lifecycle?signatureCapability:{commitOnSignatureConfig:v=>v,verifySignatureAgreement:forbidden,verifyAgreementCreateAuthorization:forbidden},
   './delivery-evidence.mjs':{isNativeDeliveryEvidence:forbidden},
   './listing.mjs':{validateListing:async()=>({disposition:'verified'}),verifyComponent,DEM_RAIL:{railId:'demos-native:DEM',railVersion:1}},
-  './fixture-anchors.mjs':Object.fromEntries(['fixtureRef','signAnchorWrite','verifyFixtureRecord','verifyFixtureReceipt','fixtureTxRef','canonicalSignature'].map(n=>[n,forbidden])),
+  './fixture-anchors.mjs':lifecycle?local:Object.fromEntries(['fixtureRef','signAnchorWrite','verifyFixtureRecord','verifyFixtureReceipt','fixtureTxRef','canonicalSignature'].map(n=>[n,forbidden])),
   './seller-durable-state.mjs':{createSellerDurableState:async()=>store},
   './native-payment-evidence-consumer.mjs':{NATIVE_PAYMENT_EVIDENCE:'native-fixture',nativePaymentEvidenceConfig:()=>null,checkNativePaymentEvidence:forbidden},
   './dem-delivery-context-consumer.mjs':{demDeliveryContextConfig:()=>null,resolveDemDeliverySellerContext:forbidden},
@@ -42,6 +66,22 @@ export async function agentFixture({paid=false,collision=false}={}){
  };
  const module=new vm.SourceTextModule(readFileSync(new URL('../../src/dacs/seller-agent.mjs',import.meta.url),'utf8'));
  await module.link(async spec=>{const values=modules[spec];if(!values)throw new Error('missing isolated host capability '+spec);return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value] of Object.entries(values))this.setExport(key,value);});});await module.evaluate();
- const agent=await module.namespace.createSellerAgent({signer:seller,listing,anchors:{read:forbidden,write:forbidden},observeDemosTransfer:forbidden,durableDirectory:dir,now:()=>T});
- return {agent,store,seller,buyer,pin,close:()=>{agent.close();rmSync(dir,{recursive:true,force:true});}};
+ const create=()=>module.namespace.createSellerAgent({signer:seller,listing,anchors,observeDemosTransfer:lifecycle?async hash=>controls.observation??({status:'included',txHash:hash,payer:buyer.claim.slice(16),payee:seller.claim.slice(16),amountOs:'2500000000',blockNumber:8,includedAt:T+2000}):forbidden,durableDirectory:dir,commitOnSignature:early,now:()=>T+2000});
+ let agent=await create();
+ const negotiate=async(jobId,{anchor=true}={})=>{
+  const buyerIdentityBundle=bundleFor(buyer),input=lifecycleProtocol.agreementInput({jobId,listing,buyerBundle:buyerIdentityBundle,generatedAt:T}),draft=core.deriveFixedPriceAgreement(input),plan=core.createFixedPriceAgreementSigningPlan(draft);
+  const buyerContribution=await core.createFixedPriceAgreementSignatureContribution(plan,'buyer',{party:buyer.claim,algorithm:'ed25519',sign:buyer.sign});
+  const material={proposalVersion:'1',plan,buyerContribution},proposal={...material,proposalHash:core.sha256Hex(core.canonicalize(material))};
+  const transportIdentity={jobId,planHash:plan.planHash,agreementHash:plan.agreementHash,buyer:buyer.claim,seller:seller.claim,proposalHash:proposal.proposalHash};
+  const progress=await agent.receiveProposal({proposal,transportIdentity,buyerIdentityBundle});
+  if(progress.disposition!=='complete')throw new Error('seller negotiation did not complete: '+JSON.stringify(progress));
+  const agreement=await core.finalizeFixedPriceAgreementContributions(plan,[buyerContribution,progress.contribution],lifecycleProtocol.contributionVerifier),address=core.fixedPriceAgreementLogicalAddress(jobId);
+  agreements.set(jobId,agreement);
+  if(anchor)await anchors.write({logicalAddress:address,artifact:agreement,writer:buyer.claim,writerSignature:local.signAnchorWrite(buyer.sign,address,core.contentHash(agreement))});
+  const owner='0x'+buyer.claim.slice(16),programName=core.logicalToStorageProgramName(address),storageAddress=deriveStorageAddress(owner,programName,1,'');
+  const content={type:'storageProgram',from:owner,from_ed25519_address:owner,to:storageAddress,nonce:1,amount:0,data:['storageProgram',{operation:'CREATE_STORAGE_PROGRAM',programName,storageAddress,salt:'',encoding:'json',storageLocation:'onchain',acl:{mode:'public'},data:agreement,metadata:{logicalAddress:address,artifactKind:'Agreement',contentHash:core.contentHash(agreement),envelopeHash:core.sha256Hex(core.canonicalize(agreement))}}]};
+  const hash=core.sha256Hex(JSON.stringify(content)),signedProjection={content,hash,signature:{type:'ed25519',data:buyer.sign(Buffer.from(hash)).toString('base64url')}};
+  return {jobId,agreement,signedProjection};
+ };
+ return {get agent(){return agent;},reopen:async()=>{agent.close();store=await createSellerDurableState({dir,signer:seller,listingPin:pin});agent=await create();return agent;},get store(){return store;},negotiate,seller,buyer,pin,listing,anchors,agreements,controls,protocol,close:()=>{agent.close();rmSync(dir,{recursive:true,force:true});}};
 }

@@ -57,3 +57,54 @@ test('native publisher separates seller writer from buyer CVR verifier with real
  assert.equal((await native.open().publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:w.buyer.claim})).status,'indeterminate');
  assert.equal(native.captured.length,1);assert.equal(native.captured[0].owner,w.seller.claim);
 });
+
+for(const state of ['unknown','dropped','replaced','reorged'])test(`seller-only ${state} receipt blocks publication and suspends retained context`,async()=>{
+ const w=fixture(),input=w.input(),address=compositeVerificationAddress(JOBS[0],w.seller.claim);
+ const read=w.anchor.readRetained,publish=w.anchor.publish;
+ let faulty=false;
+ const patch=(row,key)=>faulty&&key===address&&row.receipt?{...row,receipt:{...row.receipt,state}}:row;
+ w.anchor.readRetained=async i=>patch(await read(i),i.logicalAddress);
+ w.anchor.publish=async i=>patch(await publish(i),i.logicalAddress);
+ faulty=true;await assert.rejects(w.provider().resolveBuyer(input),{code:'seller_vet_receipt_invalid'});
+ faulty=false;const p=w.provider();assert.equal((await p.resolveBuyer(input)).disposition,'present');
+ faulty=true;assert.equal(await w.provider().recoverBuyer(input),null);
+ const request={jobId:JOBS[0],listingPin:w.listing.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt};
+ assert.equal((await p.resolveSeller(request)).disposition,'indeterminate');
+ assert.equal((await w.provider().resolveSeller(request)).disposition,'indeterminate');
+});
+test('included seller CVR receipt is accepted while the buyer CVR remains finalized',async()=>{
+ const w=fixture(),address=compositeVerificationAddress(JOBS[0],w.seller.claim),read=w.anchor.readRetained,publish=w.anchor.publish;
+ const patch=(row,key)=>key===address&&row.receipt?{...row,receipt:{...row.receipt,state:'included'}}:row;
+ w.anchor.readRetained=async i=>patch(await read(i),i.logicalAddress);w.anchor.publish=async i=>patch(await publish(i),i.logicalAddress);
+ const input=w.input();assert.equal((await w.provider().resolveBuyer(input)).disposition,'present');
+ assert.equal((await w.provider().recoverBuyer(input)).disposition,'present');
+});
+test('ended jobs free challenge capacity across many sessions and provider restarts',async()=>{
+ const w=fixture({maxJobs:1});
+ for(let i=0;i<12;i++){
+  const p=w.provider(),jobId='01ARZ3NDEKTSV4RRFFQ69G5F'+String(i).padStart(2,'0');
+  assert.equal((await p.resolveBuyer(w.input(jobId))).disposition,'present');
+  p.release({jobId});await p.sweep(()=>true);
+  assert.equal(w.store.usage().jobs,0);
+ }
+});
+test('transient readback remains indeterminate after restart and recovers once the RPC returns',async()=>{
+ const w=fixture(),p=w.provider(),input=w.input();await p.resolveBuyer(input);
+ const request={jobId:JOBS[0],listingPin:w.listing.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt};
+ const read=w.anchor.readRetained;w.anchor.readRetained=async()=>({status:'indeterminate',reason:'RPC unavailable'});
+ assert.equal((await p.resolveSeller(request)).disposition,'indeterminate');
+ const restarted=w.provider();assert.equal((await restarted.resolveSeller(request)).disposition,'indeterminate');
+ w.anchor.readRetained=read;assert.equal((await restarted.resolveSeller(request)).disposition,'present');
+});
+
+test('an orphaned fence from the earlier provider is reclaimed before binding at capacity',async()=>{
+ const w=fixture({maxJobs:1});await w.store.update('seller-challenge/legacy',()=>({jobId:JOBS[1],buyer:w.buyer.claim,sessionNonce:'e'.repeat(64)}));
+ assert.equal((await w.provider().resolveBuyer(w.input())).disposition,'present');
+ assert.equal(w.store.usage().jobs,1);assert.ok((await w.store.entries()).every(([key])=>key.startsWith('party-vet/')));
+});
+test('concurrent providers cannot claim the same buyer-issued seller challenge for different jobs',async()=>{
+ const w=fixture();w.controls.nonce='e'.repeat(64);
+ const results=await Promise.allSettled(JOBS.map(id=>w.provider().resolveBuyer(w.input(id))));
+ assert.equal(results.filter(r=>r.status==='fulfilled'&&r.value.disposition==='present').length,1);
+ assert.equal(results.find(r=>r.status==='rejected').reason.code,'seller_challenge_reused');
+});

@@ -22,8 +22,8 @@ There is no completed code sweep at either frozen head. Publication was approved
 | #58 older F4 TTY descriptors | Frozen fix ported | operator-approval-closing.test.mjs includes stderr TTY; execution awaits D1's stop-request module |
 | #58 older F5 journal-busy close and state lock after CLI shutdown | Host integration remains unrun; no CLI is ported | D12 must close all writers before releasing the process-lifetime state lock; S3 tests refusal beside a live holder |
 | #59 verifier-issued presentation nonce / bilateral challenges | Buyer context binding fixed; bilateral qualification remains blocked S-15/G2 | B22–B25/B27–B28/B30 execute seller-issued scope/job-bound challenges, lifetime, consumption on attempt, retention, and issuance limits. D11/S-15 must integrate buyer preparation; no bilateral qualification is claimed |
-| #59 evaluated seller signs its own Vet | Blocked S-15 and R-2/G3; outside D5 under PLAN §8 brief 6 | PLAN G3 assigns buyer-written Vet ordering to S-15 and requires R-2's base-authority reading. Exact manual holds are not a conformance repair |
-| #59 seller evaluated against Listing buyer requirement | Restricted in TP-1 (empty buyer requirement on sellers); WS-2/R-2 register entry G10 `empty-buyer-requirement-on-sellers` and its declaration label are required | VPC2 test uses a non-empty Listing buyer requirement and independent empty seller requirement through production, retention and recovery; B7 rejects a request-supplied seller requirement |
+| #59 evaluated seller signs its own Vet | Fixed in the standalone provider | The buyer signs the seller CVR; strict signer, decision and independent receipt checks run before context publication and during recovery. Host qualification remains unsupported. |
+| #59 seller evaluated against Listing buyer requirement | Explicit empty seller requirement in PROFILE.json; no normative exceptions or proposed G10 dependency | VPC2 test uses a non-empty Listing buyer requirement and independent empty seller requirement through production, retention and recovery; B7 rejects a request-supplied seller requirement |
 | #59 valid CVR with non-pass overall decision | Fixed | VPC4 tests every non-pass decision for both parties, initially and on recovery, with a pass control; B21/B31 execute definite HTTP/client refusal and retained admission accounting |
 | #59 demosdk range described as a pin | Not applicable to the copied context module's dependency declaration; no new demosdk pin is claimed | The cited chain.mjs is not moved here. D2 supplies the Node signer and exact dependency evidence |
 | #59 whole-module mutation bar / missing final code sweeps | Not completed | Six focused mutants are killed, with one selected test per process. This is not a whole-module sweep or an independent code review |
@@ -62,18 +62,14 @@ The plugin-only shutdown and saved-purchase wiring still need their destination
 host/client tests. No mutation or historical pass count is promoted to this head.
 
 
-Authority boundary evidence: DACS-2 §7.7.2 at `662be1d` (local pinned copy
-line 1162) and proposed TP-1 base `d45c0a2` (line 1179) both require the
-counterparty verifier to sign. The seller signer is still used at
-`agreement-context.mjs` in `produce`, including the evaluated seller.
-PLAN §8 brief 6 explicitly assigns the authority reading to R-2 and the
-buyer-written Vet/order to S-15 (§0.4, §0.2 G3). This is a blocked S-15 item,
-not another D1–D17 delta, and D5 remains partial. No base-rule determination
-or profile qualification is inferred from an empty requirement or manual hold.
+Authority boundary evidence: DACS-2 §7.7.2 at the profile's pinned Standard
+`d45c0a2` requires the counterparty verifier to sign. The provider obtains the
+buyer's signed seller CVR, verifies its decision and receipt independently, and
+retains it with the per-job seller presentation. The native publisher keeps
+writer and verifier identities separate. Runnable bilateral tests cover these
+gates. Historical PLAN/G10 proposals are not normative authority; PROFILE.json
+and ADMISSION.md retain unsupported deployment/host qualification explicitly.
 
-The policy-ledger dry-check/reserve race remains P3 and is executed by B29;
-ADMISSION.md states the remaining hold/release lines. Refusal logging callbacks
-were removed because refused traffic must not grow the decision log. The decision-log check remains required in D12.
 
 ## Copied tests whose expectations D5 replaced
 

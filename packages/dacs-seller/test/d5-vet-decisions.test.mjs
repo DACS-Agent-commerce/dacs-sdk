@@ -69,3 +69,14 @@ test('VPC4 an unknown authenticated decision cannot become pass or a classified 
  await assert.rejects(p.recoverBuyer({scope,buyerIdentityBundle:bundle}),/unknown DACS-2 verification decision/);
  assert.equal(p.contexts.size,0);
 });
+
+test('a truthy authenticated non-pass recovery result never authorizes a durable seller context',async()=>{
+ records=new Map();decision='pass';nonPassParty=buyer;
+ assert.equal((await provider().resolveBuyer({scope,buyerIdentityBundle:bundle})).disposition,'present');
+ // Simulate a genuine authenticated non-pass record. This test file's strict
+ // verifier intentionally accepts it so the disposition check decides alone.
+ records.get(compositeVerificationAddress(jobId,seller)).overallDecision='fail';
+ const fresh=provider();
+ const answer=await fresh.resolveSeller({jobId,listingPin:{listingId:'D5',version:1,contentHash:'b'.repeat(64)},buyerIdentityBundle:bundle,generatedAt:scope.generatedAt});
+ assert.equal(answer.disposition,'indeterminate');assert.equal(fresh.contexts.size,0);
+});

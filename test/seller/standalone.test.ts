@@ -14,9 +14,14 @@ const files = [
   'seller-raw-json.test.mjs', 'devnet-storage-write-recovery.test.mjs',
   'settlement-collisions.test.mjs', 'seller-lifecycle-gates.test.mjs', 'provenance-checkout.test.mjs',
 ];
+const [major=0,minor=0]=process.versions.node.split('.').map(Number);
+const supported=major>22 || (major===22 && minor>=15);
+if(process.env.DACS_REQUIRE_SELLER_TESTS==='1' && !supported)
+  throw new Error('Seller tests require Node >=22.15; the required CI seller suite cannot skip');
+if(!supported)process.stderr.write('Seller tests skipped: Node >=22.15 is required (node:sqlite and registerHooks)\n');
 const artifacts=mkdtempSync(join(tmpdir(),'seller-standalone-'));
 process.stderr.write(`seller TAP artifacts: ${artifacts}\n`);
-describe.sequential('standalone seller conformance gates',()=>{
+describe.skipIf(!supported).sequential('standalone seller conformance gates',()=>{
   for(const file of files)it(file,()=>{
     try { const output=execFileSync(process.execPath,['--experimental-vm-modules','--disable-warning=ExperimentalWarning','--test','--test-concurrency=1',fileURLToPath(new URL(`../../packages/dacs-seller/test/${file}`,import.meta.url))],{encoding:'utf8',timeout:90000,maxBuffer:8*1024*1024}); writeFileSync(join(artifacts,file+'.tap'),output); } catch(error) { const failure=error as {stdout?:string;stderr?:string}; writeFileSync(join(artifacts,file+'.tap'),`${failure.stdout??''}\n${failure.stderr??''}`); throw new Error(`${file}\n${failure.stdout??''}\n${failure.stderr??''}`); }
   },100000);

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 const {createSellerHttpHandler,createSellerAgentClient}=await import('../src/dacs/seller-http.mjs');
 import {exchange,key} from './helpers/d5-http-fixture.mjs';
-const {createSellerTransportServerAuth,createSellerTransportStore}=await import('../src/dacs/seller-transport-auth.mjs');
+const {createSellerTransportServerAuth,createSellerTransportStore,createSellerTransportClientAuth}=await import('../src/dacs/seller-transport-auth.mjs');
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -21,9 +21,16 @@ for(const raw of ['{"x":0,"x":1}','{"n":9007199254740991.1}','{"x":1e-400}','\uf
  let auth=0;const client=createSellerAgentClient({url:'http://127.0.0.1',fetchImpl:async()=>new Response(raw,{status:200,headers:{'content-type':'application/json'}}),authentication:{request:async()=>({header:'fixture',payload:{}}),verifyResponse:()=>{auth++;}}});
  await assert.rejects(client.propose({}),{code:'seller_unavailable'});assert.equal(auth,0);
 });
-test('decoded authentication envelope rejects duplicate names and lossy numeric tokens before signature checks',()=>{
+test('decoded authentication envelope rejects duplicate names and lossy numeric tokens before signature checks',async()=>{
  const seller=key(),dir=mkdtempSync(join(tmpdir(),'seller-json-')),store=createSellerTransportStore({path:join(dir,'transport.sqlite')});
  try{const auth=createSellerTransportServerAuth({sellerSigner:seller,listingPin:{listingId:'raw',version:1,contentHash:'a'.repeat(64)},store});
-  for(const raw of ['{"payload":{},"payload":{},"signature":"x"}','{"payload":{"n":9007199254740991.1},"signature":"x"}','\ufeff{}'])assert.throws(()=>auth.readRequest(Buffer.from(raw).toString('base64url')),{code:'peer_envelope_invalid'});
+  const buyer=key(),pin={listingId:'raw',version:Number.MAX_SAFE_INTEGER,contentHash:'a'.repeat(64)};
+  const client=createSellerTransportClientAuth({buyerSigner:buyer,seller:seller.claim,resolveJob:()=>({listingPin:pin,agreementHash:'b'.repeat(64)}),now:()=>1800000000000});
+  const {header}=await client.request('/dacs/v1/payments',{jobId:'01ARZ3NDEKTSV4RRFFQ69G5FAW'},'{}');
+  assert.equal(auth.readRequest(header).buyer,buyer.claim,'signed control verifies');
+  const raw=Buffer.from(header,'base64url').toString();
+  const changed=[raw.replace('"payload":','"payload":{},"payload":'),raw.replace('9007199254740991','9007199254740991.1')];
+  for(const text of changed){assert.notEqual(text,raw);assert.throws(()=>auth.readRequest(Buffer.from(text).toString('base64url')),{code:'peer_envelope_invalid'});}
+
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });

@@ -121,3 +121,13 @@ and confirmation operations. The trusted source capability must independently
 verify that exact pin through `verifyDeployment`. No live artifact is currently
 supplied by this package; absent or dirty deployment evidence refuses before
 intent creation or a wallet request.
+
+Native CREATE preparation requires the source capability's
+`withWalletNonceLock({owner, network, chainIdentity}, work)`. The source must hold
+one durable atomic lane across nonce reads, reservations and wallet outcomes for
+**every** writer of that wallet, including writers with separate journals. A
+source without this capability refuses new CREATEs with `nonce_lane_unavailable`.
+The standalone snapshot supplies no host implementation or deployment
+qualification for this contract. Retained recovery rechecks deployment
+qualification and permits at most one unchanged resend per original transaction;
+an uncertain resend remains held for authenticated readback.
