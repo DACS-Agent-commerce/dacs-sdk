@@ -11,6 +11,9 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export const PUBLISH_ENVIRONMENT = "npm-prerelease-gated";
+// The only deployment rule owner step 1 sets: release tags. A broader pattern
+// such as `*` would let any tag a writer pushes deploy to the environment.
+export const PUBLISH_TAG_PATTERN = "v*";
 
 // Every reason the environment cannot gate publication; empty when it can.
 export function publishEnvironmentProblems(environment, policies) {
@@ -29,8 +32,8 @@ export function publishEnvironmentProblems(environment, policies) {
     problems.push("its deployments are not limited to custom tag patterns");
   } else if (!list || list.length === 0 || policies.total_count !== list.length) {
     problems.push("its deployment tag patterns could not be read in full");
-  } else if (list.some(policy => policy?.type !== "tag" || typeof policy.name !== "string" || policy.name === "")) {
-    problems.push("a deployment pattern other than a tag pattern can deploy to it");
+  } else if (list.some(policy => policy?.type !== "tag" || policy.name !== PUBLISH_TAG_PATTERN)) {
+    problems.push(`a deployment pattern other than the ${PUBLISH_TAG_PATTERN} tag pattern can deploy to it`);
   }
   return problems;
 }
@@ -46,5 +49,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
   process.stdout.write(`${PUBLISH_ENVIRONMENT} has required reviewers, prevents self-review and deploys only ` +
-    "from tag patterns\n");
+    `from the ${PUBLISH_TAG_PATTERN} tag pattern\n`);
 }

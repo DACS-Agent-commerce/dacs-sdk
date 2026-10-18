@@ -25,6 +25,9 @@ export const POLICY_FINDINGS_SCHEMA = "dacs-registry-policy-findings/v1";
 // Every entry under the final image's node_modules (runtime-image-inventory.mjs).
 export { RUNTIME_IMAGE_INVENTORY_SCHEMA };
 const baselinePath = new URL("./registry-container-audit-baseline.json", import.meta.url);
+// The release the acceptance packs and installs: the checkout's own version,
+// as verify-registry-container-consumer.sh reads it.
+export const RELEASE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
 
 function validIds(ids) {
@@ -528,11 +531,33 @@ export function classifyPolicyChecks(summary, baseline) {
   };
 }
 
+// The findings of each blocked check that the #191 baseline does not record,
+// so a blocked run's log names them. Diagnostic only: it decides nothing.
+export function unlistedPolicyFindings(summary, baseline, blocked) {
+  const findings = summary?.securityGate?.findings ?? {};
+  const known = baseline?.policyFindings ?? {};
+  const outside = (items, knownItems, same) => (Array.isArray(items) ? items : [])
+    .filter(item => !(Array.isArray(knownItems) && knownItems.some(entry => same(item, entry))));
+  const inventory = findings.productionImageInventory ?? {};
+  const named = {
+    registryDependency: () => outside(findings.gitDependencies, known.gitDependencies, gitIdentity),
+    productionImage: () => [
+      ...(inventory.scanComplete === true ? [] : ["image inventory scan incomplete"]),
+      ...(Array.isArray(inventory.errors) ? inventory.errors.map(error => `inventory error: ${String(error)}`) : []),
+      ...(Array.isArray(inventory.missing) ? inventory.missing.map(item => `missing: ${JSON.stringify(item)}`) : []),
+      ...outside(findings.productionImageDependencies, known.productionImageDependencies, imageIdentity)],
+    engineStrict: () => outside(findings.engine?.violations, known.engineViolations, engineIdentity),
+    lockSbom: () => outside(findings.lockSbom?.problems, known.lockSbomProblems, sbomIdentity),
+    physicalSbom: () => outside(findings.physicalSbom?.problems, known.physicalSbomProblems, sbomIdentity),
+  };
+  return Object.fromEntries(blocked.filter(name => name in named).map(name => [name, named[name]()]));
+}
+
 // "fail" (the default) or "warn": what an advisory ID outside the baseline does.
 export const UNLISTED_ADVISORY_POLICIES = ["fail", "warn"];
 
 export function registryContainerDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8")),
-  { unlistedAdvisories = "fail" } = {}) {
+  { unlistedAdvisories = "fail", packageVersion = RELEASE_VERSION } = {}) {
   if (!UNLISTED_ADVISORY_POLICIES.includes(unlistedAdvisories)) {
     throw new Error(`unknown unlisted-advisory policy ${JSON.stringify(unlistedAdvisories)}`);
   }
@@ -548,6 +573,12 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
       summary.securityGate?.findings?.schema !== POLICY_FINDINGS_SCHEMA) {
     return { exitCode: 1, failureClass: "functional",
       message: "registry/container acceptance summary embeds evidence with an unexpected schema" };
+  }
+  // A summary for another (or no) version says nothing about this release:
+  // its candidates were checked against the version it names.
+  if (typeof packageVersion !== "string" || packageVersion === "" || summary.packageVersion !== packageVersion) {
+    return { exitCode: 1, failureClass: "functional", message: "registry/container acceptance summary is for package " +
+      `version ${JSON.stringify(summary.packageVersion)}, not the release version ${JSON.stringify(packageVersion)}` };
   }
   if (summary.functionalPassed !== true || summary.generatedTestsPassed !== true) {
     return { exitCode: 1, failureClass: "functional", message: "functional registry/container rehearsal failed" };
@@ -588,8 +619,12 @@ export function registryContainerDisposition(summary, baseline = JSON.parse(read
       (audit === "unlisted" ? `; advisory IDs not in the #191 baseline (a pull-request warning; the scheduled drift job ` +
         `and release paths fail on them): ${policy.unlistedAdvisories.join(", ")}` : ""), ...policy };
   }
+  const unlisted = Object.entries(unlistedPolicyFindings(summary, baseline, named("blocked")))
+    .map(([name, items]) => `${name}: ${items.length ? items.map(item =>
+      typeof item === "string" ? item : JSON.stringify(item)).join("; ") : "no finding recorded"}`);
   return { exitCode: 3, failureClass: "policy", checks: states, message: "functional registry/container rehearsal passed, " +
     `but the #191 security gate is blocked beyond the recorded baseline (${named("blocked").join(", ")})` +
+    (unlisted.length ? `; findings outside the #191 baseline: ${unlisted.join(" | ")}` : "") +
     (policy.unlistedAdvisories.length ? `; advisory IDs not in the #191 baseline: ${policy.unlistedAdvisories.join(", ")}. ` +
       "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : "") +
     (unlistedDirect.length ? `; of those, high or critical on a direct dependency, which fail pull requests too: ` +

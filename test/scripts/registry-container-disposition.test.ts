@@ -13,7 +13,8 @@ import { afterEach, describe, expect, it } from "vitest";
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
 const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings,
   classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines,
-  registryDependencyViolations, runtimeImageInventoryFindings } = await import(dispositionModulePath);
+  registryDependencyViolations, runtimeImageInventoryFindings, RELEASE_VERSION, unlistedPolicyFindings } =
+  await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 
@@ -28,6 +29,7 @@ const completeInventory = { scanComplete: true, errors: [], missing: [] };
 function baselineOnlySummary() {
   return {
     schema: "dacs-registry-container-acceptance/v1",
+    packageVersion: JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string,
     generatedTestsPassed: true,
     functionalPassed: true,
     docker: { policy: { schema: "dacs-runtime-image-policy/v1" } },
@@ -153,6 +155,8 @@ function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAu
   for (const name of ["registry-container-disposition.mjs", "runtime-image-inventory.mjs"]) {
     writeFileSync(join(checkout, "scripts", name), readFileSync(join(repoRoot, "scripts", name)));
   }
+  // The disposition reads the release version from the checkout's manifest.
+  writeFileSync(join(checkout, "package.json"), readFileSync(join(repoRoot, "package.json")));
   writeFileSync(join(checkout, "scripts/registry-container-audit-baseline.json"),
     readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json")));
   const write = summary === undefined ? "" : [
@@ -196,6 +200,21 @@ describe("registry/container acceptance disposition", () => {
     expect(registryContainerDisposition({ ...baselineOnlySummary(), schema: "other/v1" }).exitCode).toBe(1);
     expect(registryContainerDisposition({ ...baselineOnlySummary(), generatedTestsPassed: false }).exitCode)
       .toBe(1);
+  });
+
+  it("refuses a summary for another or no package version", () => {
+    const { packageVersion: version, ...unversioned } = baselineOnlySummary();
+    expect(version).toBe(RELEASE_VERSION);
+    for (const summary of [unversioned, { ...unversioned, packageVersion: "999.999.999" },
+      { ...unversioned, packageVersion: `${version}-other` }, { ...unversioned, packageVersion: null }]) {
+      expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass: "functional",
+        message: expect.stringContaining(`not the release version ${JSON.stringify(version)}`) });
+    }
+    // The version is the caller's release, never the summary's own claim.
+    expect(registryContainerDisposition(baselineOnlySummary(), undefined, { packageVersion: "0.0.0" }).exitCode).toBe(1);
+    expect(registryContainerDisposition(baselineOnlySummary(), undefined, { packageVersion: "" }).exitCode).toBe(1);
+    expect(registryContainerDisposition({ ...baselineOnlySummary(), packageVersion: "1.2.3" }, undefined,
+      { packageVersion: "1.2.3" }).exitCode).toBe(4);
   });
 
   it.each([
@@ -435,13 +454,22 @@ describe("registry/container workflow wiring", () => {
       [{ ...protectedEnvironment, deployment_branch_policy: { protected_branches: true, custom_branch_policies: false } },
         tagOnly, "not limited to custom tag patterns"],
       [protectedEnvironment, { total_count: 2, branch_policies: [{ name: "v*", type: "tag" }, { name: "main", type: "branch" }] },
-        "other than a tag pattern"],
+        "other than the v* tag pattern"],
+      // Only the runbook's pattern: `*`, or any other tag pattern, lets a
+      // non-release tag deploy.
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "*", type: "tag" }] }, "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 2, branch_policies: [{ name: "v*", type: "tag" }, { name: "*", type: "tag" }] },
+        "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "release-*", type: "tag" }] },
+        "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "v*", type: "branch" }] },
+        "other than the v* tag pattern"],
       [protectedEnvironment, { total_count: 31, branch_policies: [{ name: "v*", type: "tag" }] }, "could not be read in full"],
       // Custom policies with no pattern let nothing deploy; a nameless tag
       // policy names no pattern.
       [protectedEnvironment, { total_count: 0, branch_policies: [] }, "could not be read in full"],
-      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "", type: "tag" }] }, "other than a tag pattern"],
-      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: null, type: "tag" }] }, "other than a tag pattern"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "", type: "tag" }] }, "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: null, type: "tag" }] }, "other than the v* tag pattern"],
       [protectedEnvironment, undefined, undefined],
       [{ ...protectedEnvironment, name: "npm-prerelease" }, tagOnly, "does not exist"],
     ] as const) {
@@ -597,6 +625,9 @@ async function runToConsumerStage() {
 }
 
 const CANDIDATE_VERSION = "0.1.0-test";
+// A summary the producer composed for CANDIDATE_VERSION, judged as that release.
+const candidateDisposition = (summary: unknown, baseline?: unknown, options: Record<string, unknown> = {}) =>
+  registryContainerDisposition(summary, baseline, { packageVersion: CANDIDATE_VERSION, ...options });
 const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 
@@ -843,13 +874,17 @@ describe("registry/container evidence", () => {
     }
     expect(() => writeSummary({ "release-provenance.json": JSON.stringify({ version: "999.999.999" }) })).toThrow();
 
-    // The disposition re-checks the schemas the summary embeds.
+    // The disposition re-checks the schemas the summary embeds, and the
+    // release version the summary was composed for.
     const passing = writeSummary();
-    expect(registryContainerDisposition(passing).exitCode).toBe(4);
+    expect(passing.packageVersion).toBe(CANDIDATE_VERSION);
+    expect(candidateDisposition(passing).exitCode).toBe(4);
+    expect(registryContainerDisposition(passing)).toMatchObject({ exitCode: 1, failureClass: "functional" });
+    expect(candidateDisposition({ ...passing, packageVersion: "999.999.999" }).exitCode).toBe(1);
     const embedded = (change: (summary: typeof passing) => void) => {
       const summary = structuredClone(passing);
       change(summary);
-      return registryContainerDisposition(summary);
+      return candidateDisposition(summary);
     };
     for (const schema of [undefined, "wrong/v999"]) {
       expect(embedded((summary) => { summary.docker.policy.schema = schema; }))
@@ -875,22 +910,22 @@ describe("registry/container evidence", () => {
       registryDependencyOnly: true, generatedTestsPassed: true, functionalPassed: true,
       doctor: { observedExitCode: 5, disposition: "blocked-without-credentials" },
     });
-    expect(registryContainerDisposition(passing).exitCode).toBe(4);
+    expect(candidateDisposition(passing).exitCode).toBe(4);
 
     const violation = writeSummary({ "dependency-policy.json": JSON.stringify({
       schema: "dacs-registry-dependency-policy/v1",
       passed: false, violations: [{ location: "package.json", value: "file:../dacs" }],
     }) });
     expect(violation.registryDependencyOnly).toBe(false);
-    expect(registryContainerDisposition(violation).exitCode).toBe(3);
+    expect(candidateDisposition(violation).exitCode).toBe(3);
 
     const failedTests = writeSummary({ "generated-tests.exit-code": "1\n" });
     expect(failedTests).toMatchObject({ generatedTestsPassed: false, functionalPassed: false });
-    expect(registryContainerDisposition(failedTests).exitCode).toBe(1);
+    expect(candidateDisposition(failedTests).exitCode).toBe(1);
 
     const doctor = writeSummary({ "doctor.exit-code": "0\n" });
     expect(doctor).toMatchObject({ functionalPassed: false, doctor: { disposition: "unexpected" } });
-    expect(registryContainerDisposition(doctor).exitCode).toBe(1);
+    expect(candidateDisposition(doctor).exitCode).toBe(1);
   });
 });
 
@@ -1269,7 +1304,7 @@ describe("assessed advisories", () => {
     const summary = writeSummary({ "audit-policy.json": JSON.stringify(policy), "npm-audit.exit-code": "1\n" });
     expect(summary.securityGate.passed).toBe(true);
     expect(summary.audit).toMatchObject({ assessedAdvisories: [assessedId], directAdvisories: [] });
-    expect(registryContainerDisposition(summary, assessed)).toMatchObject({ exitCode: 0 });
+    expect(candidateDisposition(summary, assessed)).toMatchObject({ exitCode: 0 });
     expect(writeSummary({ "audit-policy.json": JSON.stringify({ ...policy, passed: false }), "npm-audit.exit-code": "1\n" })
       .securityGate.passed).toBe(false);
     expect(writeSummary({ "audit-policy.json": JSON.stringify({ ...policy, observedAdvisories: [], assessedAdvisories: [] }),
@@ -1475,6 +1510,16 @@ describe("runtime-image package inventory", () => {
     expect(classifyPolicyChecks(summary, baseline).productionImage).toBe("blocked");
   });
 
+  it("lists every extra image package when neither named package is present", () => {
+    const policy = JSON.parse(readFileSync(b7b180fFile("runtime-image-policy.json"), "utf8"));
+    const summary = b7b180fEvidence({
+      "runtime-image-policy.json": JSON.stringify({ ...policy, typescriptPresent: false, rubicSdkPresent: false }),
+      "runtime-image-inventory.json": add("node_modules/vitest", "vitest", "3.2.4"),
+    });
+    expect(summary.securityGate.findings.productionImageDependencies).toEqual([
+      { name: "vitest", location: "node_modules/vitest", version: "3.2.4", integrity: null }]);
+  });
+
   it("lists a named package once when it is also outside the closure", () => {
     const summary = b7b180fEvidence({
       "generated-package-lock.json": withDev("node_modules/typescript"),
@@ -1512,6 +1557,24 @@ describe("runtime-image package inventory", () => {
     const elsewhere = { ...narrow, policyFindings: { ...narrow.policyFindings, productionImageDependencies: [
       ...baseline.policyFindings.productionImageDependencies, { name: "vitest", location: "node_modules/x/node_modules/vitest" }] } };
     expect(classifyPolicyChecks(summary, elsewhere).productionImage).toBe("blocked");
+  });
+
+  // A blocked run's log must say which findings the baseline lacks, so they
+  // can be reviewed without the run's artifacts.
+  it("names the findings outside the baseline when it blocks", () => {
+    const summary = b7b180fEvidence({ "runtime-image-inventory.json": add("node_modules/vitest", "vitest", "3.2.4") });
+    const recorded = baseline.policyFindings.physicalSbomProblems as string[];
+    summary.securityGate.physicalSbomExitCode = 1;
+    summary.securityGate.findings.physicalSbom = { exitCode: 1, code: "ESBOMPROBLEMS",
+      problems: [...recorded, "invalid: left-pad@9.9.9 node_modules/left-pad"] };
+    const result = registryContainerDisposition(summary, baseline);
+    expect(result).toMatchObject({ exitCode: 3,
+      checks: { productionImage: "blocked", physicalSbom: "blocked" } });
+    expect(result.message).toContain('productionImage: {"name":"vitest","location":"node_modules/vitest"');
+    expect(result.message).toContain("physicalSbom: invalid: left-pad@9.9.9 node_modules/left-pad");
+    for (const problem of recorded) expect(result.message).not.toContain(problem);
+    expect(unlistedPolicyFindings(summary, baseline, ["physicalSbom"]))
+      .toEqual({ physicalSbom: ["invalid: left-pad@9.9.9 node_modules/left-pad"] });
   });
 
   it("reports a lock without packages as an incomplete scan", () => {
