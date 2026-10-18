@@ -132,6 +132,12 @@ export interface DacsBundleSignatureRequestV1 {
   requiredCounterSigners: readonly string[];
 }
 
+/** Finalized role-owned CVR exchanged before a terminal plan is selected. */
+export interface DacsVetTerminalEvidenceV1 {
+  vetEvidenceVersion: "1";
+  terminalInput: Readonly<PrepareVetTerminalBundleInput>;
+}
+
 export interface DacsVetTerminalBundleProposalV1 {
   proposalVersion: "1";
   terminalInput: Readonly<PrepareVetTerminalBundleInput>;
@@ -162,8 +168,8 @@ export interface DacsHttpPayloadByType {
   "payment-evidence-completion": PaymentEvidenceAnchorCompletion;
   "bundle-signature-request": DacsBundleSignatureRequestV1;
   "bundle-signature-response": BundleSignature;
-  "terminal-bundle-proposal-buyer": DacsVetTerminalBundleProposalV1;
-  "terminal-bundle-proposal-seller": DacsVetTerminalBundleProposalV1;
+  "terminal-bundle-proposal-buyer": DacsVetTerminalBundleProposalV1 | DacsVetTerminalEvidenceV1;
+  "terminal-bundle-proposal-seller": DacsVetTerminalBundleProposalV1 | DacsVetTerminalEvidenceV1;
   "terminal-bundle-contribution-buyer": TerminalBundleSignatureContribution;
   "terminal-bundle-contribution-seller": TerminalBundleSignatureContribution;
   "diagnostic-probe-buyer": DacsHttpDiagnosticProbePayloadV1;

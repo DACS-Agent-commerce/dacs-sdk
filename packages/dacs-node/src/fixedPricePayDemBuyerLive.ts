@@ -1,3 +1,4 @@
+import { admitDacsNativeLiveGraph } from "./sessionProfileAdmission.js";
 import {
   createPayDemSellerObserver,
   type AuthenticatedRailDefinition,
@@ -56,6 +57,9 @@ export interface DacsFixedPricePayDemBuyerLiveOptionsV1 {
 export async function createDacsFixedPricePayDemBuyerLiveV1(
   options: Readonly<DacsFixedPricePayDemBuyerLiveOptionsV1>,
 ): Promise<Readonly<DacsBuyerPayDemLiveCommerceGraphV1>> {
+  if (typeof options.context.authenticateSessionProfile !== "function") {
+    throw new TypeError("native DEM live profile requires independent session profile admission");
+  }
   const observer = options.observeDemosTransfer === undefined
     ? createPayDemSellerObserver({
         rpc: options.demosRpcUrl,
@@ -93,7 +97,7 @@ export async function createDacsFixedPricePayDemBuyerLiveV1(
         rail: options.rail,
         recipeRegistryVersion: options.recipeRegistryVersion,
       });
-  return createDacsBuyerPayDemLiveCommerceAssemblyV1({
+  const graph = await createDacsBuyerPayDemLiveCommerceAssemblyV1({
     context: options.context,
     workerId: options.workerId,
     sessionBootstrap: {
@@ -134,4 +138,5 @@ export async function createDacsFixedPricePayDemBuyerLiveV1(
           createInput: terminalInput,
         } }),
   });
+  return admitDacsNativeLiveGraph(graph, options.context);
 }

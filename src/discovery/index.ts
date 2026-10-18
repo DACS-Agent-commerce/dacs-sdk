@@ -59,3 +59,6 @@ export {
   type BundleBindingNonObservationReason,
   type ResolveBundleBindingCandidatesInput,
 } from "./bundleBindingCandidates.js";
+
+export { authenticateSessionProfile, requireAuthenticatedSessionProfile } from "./sessionProfileAdmission.js";
+export type { AuthenticateSessionProfile } from "./sessionProfileAdmission.js";

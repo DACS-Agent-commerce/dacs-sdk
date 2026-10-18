@@ -1,3 +1,4 @@
+import { admitDacsSessionProfile } from "./sessionProfileAdmission.js";
 import {
   ARTIFACT_SEPARATORS,
   COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
@@ -535,6 +536,7 @@ export function createDacsFixedPriceBuyerAuditV1(
     if (payDem !== isPayDemOrder(order)) {
       throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-profile-invalid");
     }
+    if (payDem) await admitDacsSessionProfile(context, order.jobId);
     const signedScope = scope(request);
     const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
     const session = isPayDemOrder(order)
@@ -1730,6 +1732,8 @@ export function createDacsFixedPriceBuyerAuditV1(
             },
           },
         }, {
+          ...(payDem ? { authenticateSessionProfile: () =>
+            context.authenticateSessionProfile!(operation.order.jobId) } : {}),
           deadline: verifierDeadline,
           sellerFinalizationProvider: material.provider,
           // The copy at its exact native address (DACS-5 BB-5 step 6); the

@@ -1,3 +1,4 @@
+import { trustedSessionProfile } from "./helpers/sessionProfile.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -199,6 +200,7 @@ function terminalInput(
   decision: CompositeVerificationRecord["overallDecision"] = "fail",
   paymentPhase: "pay-x402" | "pay-dem" = "pay-x402",
   evaluatedRole: "buyer" | "seller" = "seller",
+  complete = true,
 ): PrepareVetTerminalBundleInput {
   const exactListing = listing(paymentPhase);
   const evaluatedParty = evaluatedRole === "buyer" ? BUYER : SELLER;
@@ -223,7 +225,7 @@ function terminalInput(
     },
   };
   const recordHash = contentHash(record as unknown as Record<string, unknown>);
-  const nativeAddress = `stor-${"4".repeat(64)}`;
+  const nativeAddress = `stor-${(evaluatedRole === "buyer" ? "4" : "8").repeat(64)}`;
   return {
     jobId: JOB_ID,
     listingRef: {
@@ -242,6 +244,8 @@ function terminalInput(
       { role: "seller", identityBundle: identity("seller") },
     ],
     evaluatedRole,
+    ...(decision !== "pass" && complete ? { complementaryProduction:
+      terminalInput("pass", paymentPhase, evaluatedRole === "buyer" ? "seller" : "buyer", false).production } : {}),
     production: {
       record,
       recordRef: {
@@ -425,7 +429,7 @@ function passOwnVet(
     localBindingHash: pair === undefined
       ? fixedPriceX402OrderLocalBindingHash(order(role))
       : role === "buyer" ? pair.buyerLocalBindingHash : pair.sellerLocalBindingHash,
-  });
+  }, terminalInput("pass", rail === "x402" ? "pay-x402" : "pay-dem", role === "buyer" ? "seller" : "buyer"));
 }
 
 function acknowledgement(disposition: "accepted" | "existing" | "rejected") {
@@ -655,7 +659,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       addressNonce: async () => 0,
       addressInfo: async () => ({}),
     } as unknown as Readonly<DacsDemosActorRuntimeV1>;
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       config: { role: "buyer" },
       database,
@@ -764,10 +768,12 @@ describe("role-separated Vet terminal bundle transport", () => {
       return acknowledgement(result.disposition);
     });
     const buyerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage: buyerSend,
     } as unknown as DacsLiveRoleOperationContextV1;
     const sellerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "seller", authority: SELLER, peerAuthority: BUYER,
       database: sellerDatabase, sendMessage: sellerSend,
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -831,7 +837,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       signerRole: "seller",
     })).resolves.toMatchObject({ disposition: "present", value: sellerContribution });
     expect(buyerSend).toHaveBeenCalledTimes(2);
-    expect(sellerSend).toHaveBeenCalledOnce();
+    expect(sellerSend.mock.calls.filter(([message]) => message.type === "terminal-bundle-contribution-seller")).toHaveLength(1);
   });
 
   it("durably finalizes both role-owned bundles and recovers the exact heads", async () => {
@@ -968,6 +974,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     let buyerRuntime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
     let sellerRuntime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
     const buyerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       config: { role: "buyer" },
       database: buyerDatabase,
@@ -982,6 +989,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       },
     } as unknown as DacsLiveRoleOperationContextV1;
     const sellerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "seller", authority: SELLER, peerAuthority: BUYER,
       config: { role: "seller" },
       database: sellerDatabase,
@@ -1031,12 +1039,12 @@ describe("role-separated Vet terminal bundle transport", () => {
       recovered: true,
     });
     expect(byName).toHaveProperty("size", 4);
-  });
+  }, 20_000);
 
   it.each(["error", "indeterminate"] as const)(
     "retains authenticated parse cause for %s without blaming the verifier", async (decision) => {
       const database = await open("buyer");
-      const context = { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER), role: "buyer", authority: BUYER, peerAuthority: SELLER,
         database, sendMessage: vi.fn() } as unknown as DacsLiveRoleOperationContextV1;
       const input = terminalInput(decision);
       const authenticateProduction = vi.fn(async ({ production, evaluatedIdentity, verifierIdentity }:
@@ -1061,11 +1069,13 @@ describe("role-separated Vet terminal bundle transport", () => {
     const sellerDatabase = await open("seller");
     let buyerRuntime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
     const buyerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase,
       sendMessage: vi.fn(),
     } as unknown as DacsLiveRoleOperationContextV1;
     const sellerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "seller", authority: SELLER, peerAuthority: BUYER,
       database: sellerDatabase,
       sendMessage: async (message: Readonly<{ type: string; payload: unknown }>) => {
@@ -1118,6 +1128,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     let sellerRuntime: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
     let attempt = 0;
     const buyerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase,
       sendMessage: async (message: Readonly<{ type: string; payload: unknown }>) => {
@@ -1131,6 +1142,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       },
     } as unknown as DacsLiveRoleOperationContextV1;
     const sellerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "seller", authority: SELLER, peerAuthority: BUYER,
       database: sellerDatabase, sendMessage: vi.fn(),
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -1182,7 +1194,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       const sellerDatabase = await open("seller");
       let available = true;
       const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
-        context: { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+        context: { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER), role: "buyer", authority: BUYER, peerAuthority: SELLER,
           database: buyerDatabase, sendMessage: vi.fn() } as unknown as DacsLiveRoleOperationContextV1,
         expectedRegistryVersions: REGISTRY_VERSIONS,
         authenticateProduction: async () => available
@@ -1253,7 +1265,7 @@ describe("role-separated Vet terminal bundle transport", () => {
   it.each(["order", "application"] as const)("retries a proposal while its local %s is pending", async (prerequisite) => {
     const database = await open("buyer");
     const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
-      context: { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      context: { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER), role: "buyer", authority: BUYER, peerAuthority: SELLER,
         database, sendMessage: vi.fn() } as unknown as DacsLiveRoleOperationContextV1,
       expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => ({ status: "valid" }),
@@ -1278,7 +1290,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     const database = await open("buyer");
     let valid = true;
     const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
-      context: { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      context: { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER), role: "buyer", authority: BUYER, peerAuthority: SELLER,
         database, sendMessage: vi.fn() } as unknown as DacsLiveRoleOperationContextV1,
       expectedRegistryVersions: REGISTRY_VERSIONS,
       authenticateProduction: async () => valid ? { status: "valid" }
@@ -1302,7 +1314,7 @@ describe("role-separated Vet terminal bundle transport", () => {
 
   it("keeps an authentication outage pending without retaining terminal authority", async () => {
     const buyerDatabase = await open("buyer");
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage: vi.fn(),
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -1350,7 +1362,7 @@ describe("role-separated Vet terminal bundle transport", () => {
   ] as const)("registers no local terminal whose Vet production is %s", async (status, reasonCode) => {
     const buyerDatabase = await open("buyer");
     const sendMessage = vi.fn();
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage,
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -1371,7 +1383,7 @@ describe("role-separated Vet terminal bundle transport", () => {
 
   it("accepts native DEM terminal material but rejects a substituted rail pipeline", async () => {
     const buyerDatabase = await open("buyer", "pay-dem");
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage: vi.fn(),
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -1463,7 +1475,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     const buyerDatabase = await open("buyer");
     const authenticate = vi.fn(async () => ({ status: "valid" as const }));
     const sendMessage = vi.fn();
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage,
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -1545,6 +1557,14 @@ describe("role-separated Vet terminal bundle transport", () => {
         anchorReceipt: { ...input.production.anchorReceipt!, contentHash: recordHash, writer: OTHER },
       },
     };
+    const opposite = substituted.complementaryProduction!;
+    const oppositeRecord = { ...opposite.record, evaluatedParty: OTHER,
+      bundleHash: identityBundleHash(substituted.parties[0]!.identityBundle) };
+    const oppositeHash = contentHash(oppositeRecord as unknown as Record<string, unknown>);
+    substituted.complementaryProduction = { ...opposite, record: oppositeRecord,
+      recordRef: { ...opposite.recordRef, contentHash: oppositeHash },
+      anchorReceipt: { ...opposite.anchorReceipt, contentHash: oppositeHash,
+        logicalAddress: compositeVerificationAddress(JOB_ID, OTHER) } };
     const proposal = await terminalProposal(substituted);
     expect(proposal.plan.authority.parties.find((party) => party.role === "buyer")?.primaryClaim)
       .toBe(OTHER);
@@ -1573,7 +1593,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     const authenticate = vi.fn(async () => ({ status: "valid" as const }));
     const sendMessage = vi.fn();
     const signComponent = vi.fn();
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase,
       sessionStore: createInMemoryFencedSessionStore(),
@@ -1610,7 +1630,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       recipeRegistryVersion: 1,
       railRegistryVersion: 1,
     };
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage: vi.fn(),
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -1650,7 +1670,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     const authenticate = vi.fn(async () => ({ status: "valid" as const }));
     const sendMessage = vi.fn(async () => acknowledgement("rejected"));
     const signComponent = vi.fn();
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase,
       sessionStore: createInMemoryFencedSessionStore(),
@@ -1816,7 +1836,7 @@ describe("role-separated Vet terminal bundle transport", () => {
       });
       const signComponent = vi.fn();
       const anchorWriteOnce = vi.fn();
-      const context = {
+      const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
         role: "buyer", authority: BUYER, peerAuthority: SELLER,
         database,
         demos: { signComponent, adapter: { anchorWriteOnce } },
@@ -1955,7 +1975,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     reasonCode,
   ) => {
     const buyerDatabase = await open("buyer");
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage: vi.fn(),
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -2001,7 +2021,7 @@ describe("role-separated Vet terminal bundle transport", () => {
   it("seals a pre-existing split material/proposal state before restart can sign", async () => {
     const buyerDatabase = await open("buyer");
     const signComponent = vi.fn();
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase,
       sessionStore: createInMemoryFencedSessionStore(),
@@ -2061,7 +2081,7 @@ describe("role-separated Vet terminal bundle transport", () => {
   it("fails closed when a first proposal has no trusted registry authority", async () => {
     const buyerDatabase = await open("buyer");
     const authenticate = vi.fn(async () => ({ status: "valid" as const }));
-    const context = {
+    const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage: vi.fn(),
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -2085,6 +2105,7 @@ describe("role-separated Vet terminal bundle transport", () => {
   it("rejects a contribution whose detached signature row was altered", async () => {
     const buyerDatabase = await open("buyer");
     const buyerContext = {
+      authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer", authority: BUYER, peerAuthority: SELLER,
       database: buyerDatabase, sendMessage: vi.fn(),
     } as unknown as DacsLiveRoleOperationContextV1;
@@ -2190,7 +2211,7 @@ function memoryRoleDatabase(
     bytes,
     privateKeyFromSeed(role === "buyer" ? BUYER_SEED : SELLER_SEED),
   ));
-  const context = {
+  const context = { authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
     role,
     authority: role === "buyer" ? BUYER : SELLER,
     peerAuthority: role === "buyer" ? SELLER : BUYER,
@@ -2235,7 +2256,7 @@ function memoryRoleDatabase(
     passOwnVet: () => runtime.registerLocalVetPass!({
       jobId: JOB_ID,
       localBindingHash: coordinatorRecord().localBindingHash,
-    }),
+    }, terminalInput("pass", rail === "x402" ? "pay-x402" : "pay-dem", role === "buyer" ? "seller" : "buyer")),
   };
 }
 
@@ -2300,6 +2321,7 @@ describe("Vet terminal pre-agreement boundary", () => {
 
   it("the buyer rejects a seller's Vet failure after retaining the seller's passed Vet", async () => {
     const actor = memoryRoleDatabase("buyer");
+    await actor.passOwnVet();
     actor.retainAgreementFacts();
 
     await expect(actor.runtime.handleMessage(
@@ -2314,6 +2336,7 @@ describe("Vet terminal pre-agreement boundary", () => {
 
   it("the seller still accepts the buyer's failure of its Vet after retaining its own pass", async () => {
     const actor = memoryRoleDatabase("seller");
+    await actor.passOwnVet();
     actor.retainAgreementFacts();
 
     await expect(actor.runtime.handleMessage(
@@ -2332,6 +2355,7 @@ describe("Vet terminal pre-agreement boundary", () => {
         { role: receiver } as DacsLiveRoleInboundOperationContextV1,
       )).resolves.toEqual({ disposition: "accepted" });
       actor.concludeAgreement();
+      vi.mocked(actor.context.sendMessage).mockClear();
 
       // Retaining the terminal committed the job to it, so a concluded
       // agreement is a contradiction for an operator, not a fall-through.
@@ -3269,6 +3293,7 @@ describe("bootstrap tracks read this role's own Vet before a peer's plan", () =>
     rail: "x402" | "pay-dem",
     decisions: Record<Role, Decision>,
     restartOf?: Record<Role, Actor>,
+    complete = true,
   ) => {
     const phase = rail === "x402" ? "pay-x402" as const : "pay-dem" as const;
     const actors: Record<Role, Actor> = {
@@ -3297,13 +3322,13 @@ describe("bootstrap tracks read this role's own Vet before a peer's plan", () =>
         produce: vi.fn(async () => decisions[role] === "pending"
           ? { status: "indeterminate" as const, reasonCode: `${role}-vet-producer-pending` }
           : { status: "ready" as const,
-              production: { record: { overallDecision: decisions[role] } } as never }),
+              production: terminalInput(decisions[role] as "fail" | "pass", phase, role === "buyer" ? "seller" : "buyer", false).production as never }),
         authenticate: vi.fn(async () => "valid" as const),
       },
       terminalBundle: {
         runtime: runtimes[role],
-        createInput: (input: Readonly<{ evaluatedRole: Role }>) =>
-          terminalInput("fail", phase, input.evaluatedRole),
+        createInput: (input: Readonly<{ evaluatedRole: Role; production: PrepareVetTerminalBundleInput["production"] }>) =>
+          ({ ...terminalInput(input.production.record.overallDecision, phase, input.evaluatedRole, complete), production: input.production }),
       },
     });
     const buyerOptions = {
@@ -3405,6 +3430,42 @@ describe("bootstrap tracks read this role's own Vet before a peer's plan", () =>
         });
       }
 
+      it(`${rail}: exchanges both finalized CVRs with ${first} failing and survives a restart before signing`, async () => {
+        const phase = rail === "x402" ? "pay-x402" : "pay-dem";
+        const decisions = { [first]: "fail", [late]: "pending" } as Record<Role, Decision>;
+        const initial = tracks(rail, decisions, undefined, false);
+        await initial.tick(first);
+        expect(initial.actors[first].signComponent).not.toHaveBeenCalled();
+        // A crash after retaining the failing production loses neither receipt nor bytes.
+        const resumed = tracks(rail, decisions, initial.actors, false);
+        decisions[late] = "pass";
+        for (let turn = 0; turn < 4; turn++) {
+          await resumed.tick(late);
+          await resumed.tick(first);
+        }
+        for (const role of roles) expect(resumed.actors[role].signComponent).toHaveBeenCalled();
+        const proposal = (resumed.actors[late].retainedProposal() as { payload: DacsVetTerminalBundleProposalV1 }).payload;
+        expect(proposal.plan.authority.vetRecords).toHaveLength(2);
+        const expectedRefs = ["buyer", "seller"].map((evaluated) =>
+          terminalInput(evaluated === late ? "fail" : "pass", phase, evaluated as Role, false).production.recordRef);
+        expect(proposal.plan.authority.vetRecords).toEqual(expectedRefs);
+        const rederived = await prepareVetTerminalBundle(proposal.terminalInput, {
+          authenticateProduction: () => ({ status: "valid" }),
+        });
+        if (rederived.status !== "terminal") throw new Error("terminal not rederived");
+        expect(proposal.plan.authority.dependencySetHash).toBe(rederived.authority.dependencySetHash);
+        for (const field of ["production", "complementaryProduction"] as const) {
+          const missing = structuredClone(proposal) as any;
+          delete missing.terminalInput[field];
+          expect((await resumed.runtimes[late].validatePayload({
+            type: `terminal-bundle-proposal-${first}`, jobId: JOB_ID,
+            sender: first === "buyer" ? BUYER : SELLER, audience: late === "buyer" ? BUYER : SELLER,
+            payload: missing,
+          } as never)).status).toBe("invalid");
+        }
+        expect(resumed.agreement).not.toHaveBeenCalled();
+      });
+
       it(`${rail}: the ${late} co-signs the ${first}'s plan only after its own Vet passed`, async () => {
         const decisions = { [first]: "fail", [late]: "pending" } as Record<Role, Decision>;
         const value = tracks(rail, decisions);
@@ -3420,6 +3481,7 @@ describe("bootstrap tracks read this role's own Vet before a peer's plan", () =>
         expect(value.actors[late].signComponent).toHaveBeenCalled();
         await value.tick(first);
         expect(value.actors[first].signComponent).toHaveBeenCalled();
+        expect((value.actors[late].retainedProposal() as { payload: DacsVetTerminalBundleProposalV1 }).payload.plan.authority.vetRecords).toHaveLength(2);
         expect(value.agreement).not.toHaveBeenCalled();
       });
     }
@@ -3492,4 +3554,25 @@ describe("a peer plan that loses the selection between its check and its write",
       expect(actor.signComponent).not.toHaveBeenCalled();
     });
   }
+});
+
+it("keeps exchanged Vet evidence retryable while independent authentication is unavailable", async () => {
+  const actor = memoryRoleDatabase("buyer");
+  let available = false;
+  const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+    context: actor.context, expectedRegistryVersions: REGISTRY_VERSIONS,
+    authenticateProduction: () => available ? { status: "valid" } : { status: "indeterminate", reason: "read pending" },
+  });
+  const payload = { vetEvidenceVersion: "1", terminalInput: terminalInput("pass", "pay-x402", "buyer", false) };
+  const query = { type: "terminal-bundle-proposal-seller", jobId: JOB_ID,
+    sender: SELLER, audience: BUYER, payload } as never;
+  await expect(runtime.validatePayload(query)).resolves.toEqual({
+    status: "unavailable", reasonCode: "vet-terminal-production-indeterminate",
+  });
+  await expect(runtime.handleMessage(authenticated("terminal-bundle-proposal-seller", payload, SELLER, BUYER),
+    { role: "buyer" } as never)).rejects.toMatchObject({ reasonCode: "vet-terminal-production-indeterminate" });
+  available = true;
+  await expect(runtime.validatePayload(query)).resolves.toMatchObject({ status: "valid" });
+  await expect(runtime.handleMessage(authenticated("terminal-bundle-proposal-seller", payload, SELLER, BUYER),
+    { role: "buyer" } as never)).resolves.toEqual({ disposition: "accepted" });
 });

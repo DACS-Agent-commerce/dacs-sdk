@@ -532,13 +532,14 @@ async function finalizeLocalVetPass(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   delay: number,
   operation: Readonly<FixedPriceX402TrackOperationInput>,
+  input: Parameters<DacsSessionVetTerminalTrackV1["createInput"]>[0],
 ): Promise<Readonly<FixedPriceX402TrackOperationResult> | undefined> {
   if (terminalBundle === undefined) return undefined;
   try {
     await terminalBundle.runtime.registerLocalVetPass?.({
       jobId: operation.order.jobId,
       localBindingHash: operation.order.localBindingHash,
-    });
+    }, await terminalBundle.createInput(input));
   } catch (error) {
     return error instanceof DacsVetTerminalBundleTransportError &&
         error.reasonCode.endsWith("-conflict")
@@ -950,7 +951,10 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
         },
       );
     }
-    const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation);
+    const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation, {
+      operation, retained, buyerIdentity: presentation.buyerIdentity, sellerIdentity: challenge.sellerIdentity,
+      evaluatedRole: "seller", production: sellerVet.production, vetInvokedAt: sellerVetInvokedAt,
+    });
     if (passed !== undefined) return passed;
     if (resolvedRequirements.buyer.required.length !== 0 ||
         (resolvedRequirements.buyer.oneOf?.length ?? 0) !== 0 ||
@@ -1194,7 +1198,10 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
         },
       );
     }
-    const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation);
+    const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation, {
+      operation, retained, buyerIdentity: presentation.buyerIdentity, sellerIdentity: challenge.sellerIdentity,
+      evaluatedRole: "buyer", production: buyerVet.production, vetInvokedAt: buyerVetInvokedAt,
+    });
     if (passed !== undefined) return passed;
     if (buyerRequirement.required.length !== 0 ||
         (buyerRequirement.oneOf?.length ?? 0) !== 0) {

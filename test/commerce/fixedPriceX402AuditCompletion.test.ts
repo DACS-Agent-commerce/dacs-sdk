@@ -556,7 +556,7 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       seller: BUYER.did,
       sellerClosure: fx.input.sellerClosure,
       copies: fx.input.copies,
-    }, fx.deps)).rejects.toThrow(/changed an order party/);
+    }, fx.deps)).rejects.toThrow(/authenticated role authority/);
   });
 
   it("rejects a non-canonical job id before granting audit-complete authority", async () => {

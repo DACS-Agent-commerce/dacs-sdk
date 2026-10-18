@@ -1,3 +1,4 @@
+import { createClassifiedDemosSellerBundleReads } from "../../packages/dacs-node/src/demosSellerBundleReads.js";
 import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../../src/errors.js";
 import { readFileSync } from "node:fs";
 
@@ -3438,7 +3439,7 @@ describe("completed two-sided session gate over a real seller closure", () => {
     });
     // The closure was re-verified through the captured provider's own reads,
     // with nothing written.
-    expect(retained.provider.resolveSellerBundle).toHaveBeenCalledWith(bundleAddress(JOB_ID, "seller"));
+    expect(retained.provider.resolveSellerBundle).toHaveBeenCalledWith(bundleAddress(JOB_ID, "seller"), retained.result.binding);
     expect(retained.provider.resolveBundleBinding).toHaveBeenCalled();
     expect(retained.provider.resolveDependency).toHaveBeenCalled();
     expect(providerWriteCounts(retained.fixture)).toEqual({ submit: 1, publish: 1 });
@@ -3463,6 +3464,25 @@ describe("completed two-sided session gate over a real seller closure", () => {
     await expect(verifyCompletedTwoSidedSession(input, deps)).resolves.toMatchObject({
       state: "audit-complete",
     });
+  });
+
+  test.each(["undiscovered", "unanswered"])("passes retained seller binding through the real host adapter when the index is %s", async (reason) => {
+    const { retained, input, deps } = await composition();
+    const bound = vi.fn(async (_role: string, carried: readonly unknown[] = []) =>
+      carried.some((candidate) => canonicalize(candidate) === canonicalize(retained.result.binding))
+        ? { disposition: "present", anchored: { bundle: retained.result.sellerBundle,
+            nativeAddress: retained.result.nativeAddress, anchorReceipt: retained.result.anchorReceipt } }
+        : { disposition: "indeterminate", reason: `bundle-binding-${reason}` });
+    const reads = createClassifiedDemosSellerBundleReads({
+      resolveBoundRoleBundle: bound, resolveBundleBinding: retained.provider.resolveBundleBinding,
+    } as never, JOB_ID);
+    const provider = { ...retained.provider, ...reads };
+    await expect(verifyCompletedTwoSidedSession(input, { ...deps, sellerFinalizationProvider: provider }))
+      .resolves.toMatchObject({ state: "audit-complete" });
+    expect(bound).toHaveBeenCalledWith("seller", [retained.result.binding]);
+    bound.mockResolvedValueOnce({ disposition: "indeterminate", reason: "bundle-binding-equivocation" } as never);
+    await expect(verifyCompletedTwoSidedSession(input, { ...deps, sellerFinalizationProvider: provider }))
+      .rejects.toThrow(/indeterminate/);
   });
 
   test("accepts the BB-6 selected equal seller copy through the real retained-closure verifier", async () => {

@@ -1894,3 +1894,6 @@ export {
   type VerifyComponentSignatureInput,
   type VerifyComponentSignatureDeps,
 } from "./artifacts/index.js";
+
+export { authenticateSessionProfile, requireAuthenticatedSessionProfile } from "./discovery/sessionProfileAdmission.js";
+export type { AuthenticateSessionProfile } from "./discovery/sessionProfileAdmission.js";

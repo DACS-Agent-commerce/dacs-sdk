@@ -1,3 +1,4 @@
+import { trustedSessionProfile } from "./helpers/sessionProfile.js";
 import {
   ARTIFACT_SEPARATORS,
   BUNDLE_BINDING_SEPARATOR,
@@ -151,6 +152,7 @@ function harness(role: Role, discovery: DacsBundleBindingDiscoverySurfaceV1[] = 
     verifyDemosAnchorReceipt: vi.fn(async () => true),
   };
   const context = {
+    authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
     role,
     authority: role === "buyer" ? BUYER : SELLER,
     config: { role },
@@ -543,6 +545,17 @@ describe("BundleBinding discovery surfaces (DACS-1 §6.3.5, §6.3.6)", () => {
       return structuredClone(documents[url]);
     });
   }
+
+  it("treats an A2A card without optional DACS metadata as an answered empty surface", async () => {
+    const readJson = vi.fn(async () => ({ name: "A2A-only agent" }));
+    const surface = createWellKnownBundleBindingSurfaceV1({ endpoint: "https://seller.example", readJson });
+    await expect(surface.discover({ jobId: JOB_ID, role: "seller", signer: SELLER })).resolves.toEqual([]);
+    expect(readJson).toHaveBeenCalledExactlyOnceWith("https://seller.example/.well-known/agent.json");
+    for (const dacs of [null, {}, { dacsVersion: "2" }]) {
+      readJson.mockResolvedValueOnce({ name: "invalid", dacs } as never);
+      await expect(surface.discover({ jobId: JOB_ID, role: "seller", signer: SELLER })).rejects.toThrow();
+    }
+  });
 
   it("reads the well-known bundleBindings index and checks its indexHash and origin", async () => {
     const ok = reader({

@@ -54,6 +54,7 @@ export function createWellKnownBundleBindingSurfaceV1(options: Readonly<{
     kind: "well-known" as const,
     async discover() {
       const card = await readJson(new URL("/.well-known/agent.json", endpoint).toString());
+      if (plainRecord(card) && !Object.hasOwn(card, "dacs")) return [];
       if (!plainRecord(card) || !plainRecord(card.dacs) || card.dacs.dacsVersion !== "1") {
         throw new TypeError("agent card has no DACS block");
       }

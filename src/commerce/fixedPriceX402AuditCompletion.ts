@@ -1,3 +1,4 @@
+import { requireAuthenticatedSessionProfile, COMPLETED_SESSION_MODULE_VERSIONS, type AuthenticateSessionProfile } from "../discovery/sessionProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 import { DACS_STANDARD_PIN } from "../version.js";
 
@@ -142,6 +143,8 @@ export interface FixedPricePayDemAuditCompletionInput {
 }
 
 export interface CompletedTwoSidedSessionDeps {
+  /** Mandatory for native live composition; independently authenticated deployment admission. */
+  authenticateSessionProfile?: AuthenticateSessionProfile;
   /**
    * Existing strict seller finalization provider. Its dependency graph is the
    * authoritative completed-session manifest: Listing, DACS-2 composites,
@@ -233,9 +236,7 @@ export interface FixedPriceX402AuditCompletionDeps
   extends CompletedTwoSidedSessionDeps {}
 
 /** Native-DEM alias retained as an explicit discoverable public surface. */
-export const COMPLETED_SESSION_MODULE_VERSIONS = Object.freeze({
-  core: "0.3", dacs1: "0.7", dacs2: "0.6", dacs3: "0.5", dacs4: "0.8", dacs5: "0.5",
-} as const);
+export { COMPLETED_SESSION_MODULE_VERSIONS } from "../discovery/sessionProfileAdmission.js";
 
 export interface FixedPricePayDemAuditCompletionDeps extends CompletedTwoSidedSessionDeps {
   /**
@@ -922,6 +923,11 @@ export async function verifyCompletedTwoSidedSession(
   // One deadline, from here to the result, bounds every read below.
   const deadline = armDeadline(capturedDeps.deadline);
   try {
+    if (deps.authenticateSessionProfile !== undefined) {
+      const admission = await within(unanswered(() => deps.authenticateSessionProfile!(),
+        "trusted session profile admission"), deadline, "trusted session profile admission");
+      requireAuthenticatedSessionProfile(admission, retained);
+    }
     return await verifyCompletedTwoSidedSessionWithin(retained, capturedDeps, deadline);
   } finally {
     deadline.disarm();

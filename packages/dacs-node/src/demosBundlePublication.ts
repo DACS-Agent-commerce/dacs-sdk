@@ -6,6 +6,7 @@ import {
   bundleAddress,
   isBundleBindingNonObservation,
   resolveBundleBindingCandidates,
+  authenticateSessionProfile,
   verifyBundleCopy,
   type BundleBinding,
   type FaultAttestationBundle,
@@ -357,7 +358,12 @@ export function createDacsDemosBundlePublicationV1(
 
   const resolveBoundRoleBundle: DacsDemosBundlePublicationV1["resolveBoundRoleBundle"] =
     async (role, carried = []) => {
-      const signer = authority(input, role);
+      const admitted = await authenticateSessionProfile(
+        context.authenticateSessionProfile === undefined ? undefined :
+          () => context.authenticateSessionProfile!(input.jobId),
+        { jobId: input.jobId, buyer: input.buyer, seller: input.seller },
+      );
+      const signer = admitted[role]!;
       const candidates: unknown[] = [...ownBindings, ...carried];
       const surfaces = [() => demosBindingProgram(role), ...discovery.map((surface) =>
         () => surface.discover({ jobId: input.jobId, role, signer }))];
@@ -375,6 +381,7 @@ export function createDacsDemosBundlePublicationV1(
         jobId: input.jobId,
         role,
         candidates,
+        authenticateSessionProfile: () => context.authenticateSessionProfile!(input.jobId),
         // The session's authenticated role holder prunes before any fetch.
         roleHolder: signer,
         verifyBindingSignature,

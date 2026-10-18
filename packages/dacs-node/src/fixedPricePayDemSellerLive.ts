@@ -1,3 +1,4 @@
+import { admitDacsNativeLiveGraph } from "./sessionProfileAdmission.js";
 import {
   createPayDemSellerObserver,
   type AuthenticatedRailDefinition,
@@ -60,6 +61,9 @@ export interface DacsFixedPricePayDemSellerLiveOptionsV1 {
 export async function createDacsFixedPricePayDemSellerLiveV1(
   options: Readonly<DacsFixedPricePayDemSellerLiveOptionsV1>,
 ): Promise<Readonly<DacsSellerPayDemLiveCommerceGraphV1>> {
+  if (typeof options.context.authenticateSessionProfile !== "function") {
+    throw new TypeError("native DEM live profile requires independent session profile admission");
+  }
   if (options.context.role !== "seller" ||
       options.context.commerceStores.role !== "seller") {
     throw new TypeError("fixed-price pay-dem seller live options are invalid");
@@ -111,7 +115,7 @@ export async function createDacsFixedPricePayDemSellerLiveV1(
         rail: options.rail,
         recipeRegistryVersion: options.recipeRegistryVersion,
       });
-  return createDacsSellerPayDemLiveCommerceAssemblyV1({
+  const graph = await createDacsSellerPayDemLiveCommerceAssemblyV1({
     context: options.context,
     workerId: options.workerId,
     sessionBootstrap: {
@@ -155,4 +159,5 @@ export async function createDacsFixedPricePayDemSellerLiveV1(
           createInput: terminalInput,
         } }),
   });
+  return admitDacsNativeLiveGraph(graph, options.context);
 }

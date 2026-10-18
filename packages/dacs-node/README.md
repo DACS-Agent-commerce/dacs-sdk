@@ -219,6 +219,17 @@ phase. A peer's plan selected just before another process commits the job to
 the agreement is refused like one that arrives after it, and the agreement
 decides the job.
 
+The two roles exchange their exact finalized Vet productions before selecting a
+terminal plan. The existing role-specific terminal proposal messages also carry
+`{ vetEvidenceVersion: "1", terminalInput }` during this exchange. Each recipient
+independently authenticates the CVR, its role/session joins and finalized receipt.
+The productions are retained in insert-once rows. Both CVR references, in buyer
+then seller evaluation order, enter `vetRecords`; the same ordered references and
+receipts determine the dependency hash. A plan missing either record is refused.
+A failure waits for the other production, and restart resumes from the retained
+bytes. `registerLocalVetPass(order, input)` retains the full passing production;
+a legacy marker without it cannot authorize a signature.
+
 No role signs a plan before its own Vet result is durable and agrees with it:
 its own failure is that plan, or its own Vet of the peer passed and the plan is
 the peer's failure of this role. A peer's plan that arrives earlier is selected
@@ -266,6 +277,18 @@ A plan that differs from the selected one is classified:
 Both evidence loaders are optional members of
 `DacsVetTerminalBundleTransportRuntimeV1`, so existing implementations of the
 interface still conform.
+
+Native DEM live factories require a verifier-owned
+`context.authenticateSessionProfile(jobId)` callback, also configurable on the
+role runtime. It must authenticate the exact session's buyer and seller, the
+pinned Standard release and every module version from deployment authority
+independent of caller input and artifacts. It returns
+`{ status: "valid", releasePin, moduleVersions, roles }`, with exactly one
+`{ jobId, role, participant }` entry for each role. Every native operation and
+inbound entry point rechecks this authority before effects; missing or conflicting
+admission refuses the action. The public BundleBinding resolver requires the same
+independent callback before deriving an address, and the Demos publication adapter
+checks it before discovery. Configure this authority for both roles before use.
 
 The fixed-price live factories also connect that runtime to the agreement
 worker. The first local objective `fail` stores a durable Vet invocation,

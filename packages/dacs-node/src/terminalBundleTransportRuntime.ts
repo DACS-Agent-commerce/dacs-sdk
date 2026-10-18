@@ -52,6 +52,7 @@ import type {
   DacsHttpPayloadValidationV1,
   DacsHttpPayloadValidatorV1,
   DacsVetTerminalBundleProposalV1,
+  DacsVetTerminalEvidenceV1,
 } from "./transport/envelope.js";
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
 
@@ -70,7 +71,7 @@ const PLAN_CONFLICT_SEQUENCES = new WeakMap<
 type Role = "buyer" | "seller";
 type BindingKind = "material" | "proposal" | "contribution";
 type TransportRecordKind =
-  BindingKind | "conflict" | "equivocation" | "selection" | "disagreement" | "local-vet";
+  BindingKind | "conflict" | "equivocation" | "selection" | "disagreement" | "local-vet" | "local-evidence" | "peer-evidence";
 
 /**
  * Operator-action reason when this role's own Vet failure and the peer's first
@@ -179,6 +180,7 @@ export interface DacsVetTerminalBundleTransportRuntimeV1 {
    */
   registerLocalVetPass?(
     order: Readonly<{ jobId: string; localBindingHash: string }>,
+    input?: Readonly<PrepareVetTerminalBundleInput>,
   ): Promise<void>;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
@@ -293,6 +295,7 @@ function otherRole(role: Role): Role {
 
 function isPendingValidationPrerequisite(error: unknown): error is DacsVetTerminalBundleTransportError {
   return error instanceof DacsVetTerminalBundleTransportError && (
+    error.reasonCode === "vet-terminal-production-indeterminate" ||
     error.reasonCode === "vet-terminal-order-pending" ||
     error.reasonCode === "vet-terminal-order-input-pending" ||
     error.reasonCode === "vet-terminal-proposal-version-authority-unavailable"
@@ -1235,6 +1238,51 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     }
   };
 
+  const evidenceAt = (kind: "local-evidence" | "peer-evidence", jobId: string) =>
+    context.database.loadEffectInput("session", transportId(role, kind, jobId)) as
+      Readonly<DacsVetTerminalEvidenceV1> | undefined;
+
+  const storeEvidence = async (kind: "local-evidence" | "peer-evidence",
+    evidence: Readonly<DacsVetTerminalEvidenceV1>, localBindingHash?: string) => {
+    const jobId = evidence.terminalInput.jobId;
+    const bindingHash = localBindingHash ?? (await loadOrder(context, jobId)).localBindingHash;
+    const id = transportId(role, kind, jobId);
+    const put = context.database.putEffectIntent({ kind: "session", effectId: id,
+      bindingHash, input: evidence, idempotencyKey: id, jobId });
+    if (put.status === "conflict") throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+  };
+
+  const captureEvidence = async (value: unknown, jobId: string) => {
+    const evidence = frozenJsonSnapshot(value, "vet-terminal-evidence") as unknown as
+      Readonly<DacsVetTerminalEvidenceV1>;
+    if (!plainObject(evidence) || !exactFields(evidence, ["vetEvidenceVersion", "terminalInput"]) ||
+        evidence.vetEvidenceVersion !== "1" || evidence.terminalInput?.jobId !== jobId ||
+        evidence.terminalInput.evaluatedRole !== role ||
+        evidence.terminalInput.complementaryProduction !== undefined) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-evidence-invalid");
+    }
+    await assertProposalOrder({ terminalInput: evidence.terminalInput } as DacsVetTerminalBundleProposalV1, true);
+    const parties = evidence.terminalInput.parties;
+    if (parties.find((party) => party.role === role)?.identityBundle.presentedBy !== context.authority ||
+        parties.find((party) => party.role === peerRole)?.identityBundle.presentedBy !== context.peerAuthority) {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-evidence-invalid");
+    }
+    const prepared = await prepareVetTerminalBundle(evidence.terminalInput, { authenticateProduction: safeAuthenticator });
+    if (prepared.status === "indeterminate") throw new DacsVetTerminalBundleTransportError("vet-terminal-production-indeterminate");
+    if (prepared.status !== "pass" && prepared.status !== "terminal") {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-evidence-invalid");
+    }
+    return evidence;
+  };
+
+  const sendEvidence = async (evidence: Readonly<DacsVetTerminalEvidenceV1>) => {
+    const message = { jobId: evidence.terminalInput.jobId, payload: evidence,
+      idempotencyKey: `vet-terminal-evidence:v1:${sha256Hex(canonicalize(evidence))}` };
+    await context.sendMessage(role === "buyer"
+      ? { ...message, type: "terminal-bundle-proposal-buyer" }
+      : { ...message, type: "terminal-bundle-proposal-seller" });
+  };
+
   const assessProposalCandidate = async (
     value: unknown,
   ): Promise<ProposalAssessment> => {
@@ -1242,6 +1290,9 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     let prepared: PreparedVetTerminalBundle;
     try {
       proposal = captureProposal(value);
+      if (proposal.terminalInput.complementaryProduction === undefined) {
+        throw new DacsVetTerminalBundleTransportError("vet-terminal-evidence-incomplete");
+      }
     } catch {
       return Object.freeze({
         disposition: "rejected" as const,
@@ -1661,6 +1712,13 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       : proposal.terminalInput.evaluatedRole !== role) {
       throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
     }
+    if (local.status === "passed") {
+      const evidence = evidenceAt("local-evidence", proposal.terminalInput.jobId);
+      if (evidence === undefined) throw new DacsVetTerminalBundleTransportError(DACS_VET_TERMINAL_LOCAL_VET_PENDING);
+      if (!canonicalEqual(evidence.terminalInput.production, proposal.terminalInput.complementaryProduction)) {
+        throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+      }
+    }
   };
 
   // The peer stops only once it sees this role's own plan, so the notice is
@@ -1787,6 +1845,10 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     try {
       await assertNoPlanConflict(context, input.jobId);
       if (input.type === proposalType) {
+        if (plainObject(input.payload) && input.payload.vetEvidenceVersion === "1") {
+          await captureEvidence(input.payload, input.jobId);
+          return payloadValidation(true, "vet-terminal-evidence-invalid");
+        }
         await loadOrder(context, input.jobId);
         // Validation never writes. An authentic plan that conflicts with the
         // selected one passes transport validation so the inbox keeps the
@@ -2026,8 +2088,25 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     },
     loadPlanDisagreementEvidence: loadDisagreement,
     async registerLocalTerminal(input) {
-      const terminalInput = frozenJsonSnapshot(input, "vet-terminal-input") as
+      let terminalInput = frozenJsonSnapshot(input, "vet-terminal-input") as
         Readonly<PrepareVetTerminalBundleInput>;
+      if (terminalInput.complementaryProduction === undefined) {
+        const evidence = Object.freeze({ vetEvidenceVersion: "1" as const, terminalInput });
+        // Exact bytes survive a crash before the peer answers or a plan is selected.
+        let prepared: PreparedVetTerminalBundle;
+        try { prepared = await prepareVetTerminalBundle(terminalInput, { authenticateProduction: safeAuthenticator }); }
+        catch { throw new DacsVetTerminalBundleTransportError("vet-terminal-input-invalid"); }
+        if (prepared.status !== "terminal") throw new DacsVetTerminalBundleTransportError(
+          prepared.status === "pass" ? "vet-terminal-production-passed" :
+            prepared.status === "invalid" ? "vet-terminal-production-invalid" : "vet-terminal-production-indeterminate");
+        await storeEvidence("local-evidence", evidence);
+        await sendEvidence(evidence);
+        const peer = evidenceAt("peer-evidence", terminalInput.jobId);
+        if (peer === undefined) throw new DacsVetTerminalBundleTransportError("vet-terminal-production-indeterminate");
+        const authenticated = await captureEvidence(peer, terminalInput.jobId);
+        terminalInput = frozenJsonSnapshot({ ...terminalInput,
+          complementaryProduction: authenticated.terminalInput.production }, "vet-terminal-input") as PrepareVetTerminalBundleInput;
+      }
       await assertNoPlanConflict(context, terminalInput.jobId);
       let prepared: PreparedVetTerminalBundle;
       try {
@@ -2084,7 +2163,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
     // Needs no order lookup, so a healthy job whose order the terminal cannot
     // project is not blocked here; the pass is checked against the order
     // where a peer's plan is decided.
-    async registerLocalVetPass(order) {
+    async registerLocalVetPass(order, input) {
       if (!plainObject(order) || !exactFields(order, ["jobId", "localBindingHash"]) ||
           typeof order.jobId !== "string" || order.jobId.length === 0 ||
           typeof order.localBindingHash !== "string" || !HASH_RE.test(order.localBindingHash)) {
@@ -2097,6 +2176,9 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
           (selection !== undefined && captureSelection(selection).source === "material")) {
         throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
       }
+      // Claim the caller's already authenticated result before any asynchronous work.
+      // A crash here leaves no signing authority: the full production must still
+      // be retained and independently rechecked before the plan can be co-signed.
       // A failure registered concurrently claims the same row first or finds
       // this pass there.
       await claimLocalVetResult(jobId, Object.freeze({
@@ -2105,6 +2187,19 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         kind: "local-vet-pass" as const,
         evaluatedRole: peerRole,
       }));
+      let evidence: Readonly<DacsVetTerminalEvidenceV1> | undefined;
+      if (input !== undefined) {
+        const terminalInput = frozenJsonSnapshot(input, "vet-terminal-pass-input") as PrepareVetTerminalBundleInput;
+        if (terminalInput.jobId !== jobId || terminalInput.evaluatedRole !== peerRole ||
+            terminalInput.complementaryProduction !== undefined) {
+          throw new DacsVetTerminalBundleTransportError("vet-terminal-evidence-invalid");
+        }
+        const prepared = await prepareVetTerminalBundle(terminalInput, { authenticateProduction: safeAuthenticator });
+        if (prepared.status !== "pass") throw new DacsVetTerminalBundleTransportError("vet-terminal-production-indeterminate");
+        evidence = Object.freeze({ vetEvidenceVersion: "1", terminalInput });
+        await storeEvidence("local-evidence", evidence, localBindingHash);
+      }
+      if (evidence !== undefined) await sendEvidence(evidence);
     },
     async advanceRegisteredTerminal(jobId) {
       if (typeof jobId !== "string" || jobId.length === 0) {
@@ -2204,6 +2299,11 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       if (validation.status !== "valid") return rejected(validation.reasonCode);
       try {
         if (envelope.type === `terminal-bundle-proposal-${peerRole}`) {
+          if (plainObject(envelope.payload) && "vetEvidenceVersion" in envelope.payload && envelope.payload.vetEvidenceVersion === "1") {
+            const evidence = await captureEvidence(envelope.payload, envelope.jobId);
+            await storeEvidence("peer-evidence", evidence);
+            return Object.freeze({ disposition: "accepted" as const });
+          }
           const assessment = await assessProposal(envelope.payload, "peer");
           if (assessment.disposition === "indeterminate") {
             throw new DacsVetTerminalBundleTransportError(assessment.reasonCode);

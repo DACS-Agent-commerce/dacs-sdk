@@ -356,3 +356,35 @@ describe("terminal Vet bundle preparation", () => {
     expect(getterCalls).toBe(0);
   });
 });
+
+// The available opposite-direction record must be in both the inventory and receipt closure.
+test("authenticates and commits the complete two-role Vet set", async () => {
+  const fail = input();
+  const pass = production("pass");
+  pass.record = { ...pass.record, evaluatedParty: BUYER, bundleHash: identityBundleHash(identity("buyer")),
+    signature: { ...pass.record.signature, signer: SELLER } };
+  const hash = contentHash(pass.record as unknown as Record<string, unknown>);
+  pass.recordRef = { ...pass.recordRef, signer: SELLER, contentHash: hash,
+    anchor: { kind: "storage-program", locator: `stor-${"99".repeat(32)}` } };
+  pass.anchorReceipt = { ...pass.anchorReceipt, writer: SELLER, contentHash: hash,
+    nativeAddress: pass.recordRef.anchor.locator,
+    logicalAddress: compositeVerificationAddress(JOB_ID, BUYER) };
+  const calls: unknown[] = [];
+  const result = await prepareVetTerminalBundle({ ...fail, complementaryProduction: pass }, {
+    authenticateProduction: (value) => { calls.push(value); return { status: "valid" }; },
+  });
+  expect(result.status).toBe("terminal");
+  if (result.status !== "terminal") throw new Error();
+  expect(calls).toHaveLength(2);
+  expect(result.authority.vetRecords).toEqual([pass.recordRef, fail.production.recordRef]);
+  const single = await prepareVetTerminalBundle(fail, authentication());
+  if (single.status !== "terminal") throw new Error();
+  expect(single.authority.dependencySetHash).not.toBe(result.authority.dependencySetHash);
+  const wrong = structuredClone(pass);
+  wrong.anchorReceipt.contentHash = "00".repeat(32);
+  await expect(prepareVetTerminalBundle({ ...fail, complementaryProduction: wrong }, authentication())).rejects.toThrow(/session roles and anchor/);
+  await expect(prepareVetTerminalBundle({ ...fail, complementaryProduction: pass }, {
+    authenticateProduction: ({ production }) => production.record.overallDecision === "pass"
+      ? { status: "invalid", reason: "opposite record rejected" } : { status: "valid" },
+  })).resolves.toMatchObject({ status: "invalid" });
+});

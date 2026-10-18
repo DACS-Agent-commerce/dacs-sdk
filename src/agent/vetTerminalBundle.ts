@@ -94,6 +94,8 @@ export interface PrepareVetTerminalBundleInput {
   parties: readonly Readonly<VetTerminalSessionParty>[];
   evaluatedRole: "buyer" | "seller";
   production: Readonly<VetProduction>;
+  /** The other direction's available finalized CVR; authenticated independently. */
+  complementaryProduction?: Readonly<VetProduction>;
 }
 
 export type VetProductionAuthentication =
@@ -234,7 +236,7 @@ function validListingRef(value: unknown): value is ListingRef {
 
 function captureInput(source: Readonly<PrepareVetTerminalBundleInput>): PrepareVetTerminalBundleInput {
   const input = canonicalSnapshot(source, "Vet terminal input");
-  if (Object.keys(input).length !== 11 ||
+  if ((Object.keys(input).length !== 11 + (input.complementaryProduction === undefined ? 0 : 1)) ||
       ![
         "jobId", "listingRef", "pipeline", "vetPhaseIndex", "vetInvokedAt", "startedAt",
         "recipeRegistryVersion", "railRegistryVersion", "parties", "evaluatedRole",
@@ -304,7 +306,8 @@ function assertProductionBindings(
       !sameCanonicalClaimIdentity(anchorReceipt.writer,
         verifier.identityBundle.presentedBy) ||
       anchorReceipt.state !== "finalized" ||
-      anchorReceipt.observationDisposition !== "established") {
+      anchorReceipt.observationDisposition !== "established" ||
+      anchorReceipt.observedAt < record.generatedAt) {
     throw new DacsError("Vet production is not bound to the exact session roles and anchor");
   }
 }
@@ -381,6 +384,26 @@ export async function prepareVetTerminalBundle(
   const authentication = captureAuthentication(rawAuthentication);
   if (authentication.status !== "valid") return deepFreeze(authentication);
 
+  // Authenticate the opposite direction with the same session/role/receipt joins.
+  const productions = [{ role: input.evaluatedRole, production: input.production }];
+  if (input.complementaryProduction !== undefined) {
+    const { complementaryProduction, ...base } = input;
+    const complementary = captureInput({ ...base, evaluatedRole: verifier.role,
+      production: complementaryProduction });
+    assertProductionBindings(complementary, verifier, evaluated);
+    let checked: VetProductionAuthentication;
+    try {
+      checked = captureAuthentication(await authenticateProduction(deepFreeze({
+        production: complementary.production, evaluatedIdentity: verifier.identityBundle,
+        verifierIdentity: evaluated.identityBundle,
+      })));
+    } catch { return deepFreeze({ status: "indeterminate", reason: "complementary Vet authentication failed" }); }
+    if (checked.status !== "valid") return deepFreeze(checked);
+    productions.push({ role: verifier.role, production: complementary.production });
+  }
+  productions.sort((a, b) => a.role < b.role ? -1 : a.role > b.role ? 1 : 0);
+  const vetRecords = productions.map(({ production }) => production.recordRef);
+  const finalizedReceipts = productions.map(({ production }) => production.anchorReceipt);
   const record = deepFreeze(canonicalSnapshot(input.production.record, "Vet record"));
   if (record.overallDecision === "pass") return deepFreeze({ status: "pass", record });
   if (record.overallDecision !== "fail" && record.overallDecision !== "indeterminate" &&
@@ -405,17 +428,18 @@ export async function prepareVetTerminalBundle(
     : record.overallDecision === "error" ? "authenticated-vet-error" as const
       : "authenticated-vet-indeterminate" as const;
 
-  const endedAt = input.production.anchorReceipt.observedAt;
-  if (!isSafeUint(endedAt) || endedAt < input.vetInvokedAt || endedAt < record.generatedAt) {
+  const endedAt = Math.max(...finalizedReceipts.map((receipt) => receipt.observedAt));
+  if (!isSafeUint(endedAt) || input.production.anchorReceipt.observedAt < input.vetInvokedAt ||
+      endedAt < input.vetInvokedAt || endedAt < record.generatedAt) {
     throw new DacsError("Vet terminal time precedes the authenticated phase evidence");
   }
   const parties = input.parties.map((party) => ({
     role: party.role,
     bundleHash: identityBundleHash(party.identityBundle),
     primaryClaim: party.identityBundle.presentedBy,
-    ...(party.role === input.evaluatedRole
-      ? { vetRecordRef: input.production.recordRef }
-      : {}),
+    ...(productions.find((entry) => entry.role === party.role) === undefined ? {} : {
+      vetRecordRef: productions.find((entry) => entry.role === party.role)!.production.recordRef,
+    }),
   }));
   const sessionRecord: VetFailureTerminalSessionRecord = {
     recordVersion: "1",
@@ -471,8 +495,8 @@ export async function prepareVetTerminalBundle(
         bundleHash,
         primaryClaim,
       })),
-      vetRecords: [input.production.recordRef],
-      finalizedReceipts: [input.production.anchorReceipt],
+      vetRecords,
+      finalizedReceipts,
     })),
     listingRef: input.listingRef,
     parties: verifiedParties,
@@ -483,13 +507,8 @@ export async function prepareVetTerminalBundle(
       errorClass,
       attestationRef: input.production.recordRef,
     }],
-    // DACS-5 §10.4.3 asks for "the available `vetRecords`". This lists the
-    // terminal CVR only: both roles derive their plans from that one
-    // authenticated production, so the two copies stay canonically equal
-    // (§10.4.1). The other direction's passing CVR, which the signer checks
-    // before it signs, is not listed. The Standard does not say whether
-    // "available" includes it, and no vector settles it.
-    vetRecords: [input.production.recordRef],
+    // Inventory and dependency closure use the same authenticated, role-ordered set.
+    vetRecords,
     settlementEvidence: [],
     recipeRegistryVersion: input.recipeRegistryVersion,
     railRegistryVersion: input.railRegistryVersion,

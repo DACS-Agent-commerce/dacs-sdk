@@ -1,3 +1,4 @@
+import { DACS_STANDARD_PIN, COMPLETED_SESSION_MODULE_VERSIONS } from "../../src/index.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -66,6 +67,11 @@ function input(
     jobId: JOB_ID,
     role: "seller",
     candidates,
+    authenticateSessionProfile: () => ({ status: "valid", releasePin: DACS_STANDARD_PIN,
+      moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS, roles: [
+        { jobId: JOB_ID, role: "buyer", participant: BUYER },
+        { jobId: JOB_ID, role: "seller", participant: extra.roleHolder ?? SELLER },
+      ] }),
     verifyBindingSignature: (entry) => entry.signature.value === GOOD,
     fetchCopy(address) {
       fetched.push(address);
@@ -475,4 +481,80 @@ describe("BundleBinding non-observation reasons", () => {
       expect(isUnresolvedBundleBindingCandidateSet(reason), String(reason)).toBe(true);
     }
   });
+});
+
+// BB-5 admission must precede even signature verification and native reads.
+it("refuses a resolver without independent session profile authority before any effects", async () => {
+  const one = copy("admission");
+  const { value, fetched } = input([binding("stor-" + "1".repeat(40), one)], {});
+  delete (value as Partial<ResolveBundleBindingCandidatesInput>).authenticateSessionProfile;
+  let signatures = 0;
+  value.verifyBindingSignature = () => { signatures++; return true; };
+  await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/profile.*authority|admission/);
+  expect(signatures).toBe(0);
+  expect(fetched).toEqual([]);
+});
+
+it("rejects substituted deployment authority before candidate verification or fetch", async () => {
+  const { value, fetched } = input([], {});
+  const trusted = await value.authenticateSessionProfile!() as any;
+  const invalid = [
+    { ...trusted, releasePin: "historical" },
+    { ...trusted, moduleVersions: { core: "0.3" } },
+    { ...trusted, roles: [trusted.roles[0], trusted.roles[0]] },
+    { ...trusted, roles: trusted.roles.map((entry: any) => ({ ...entry, jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" })) },
+    { ...trusted, roles: trusted.roles.map((entry: any) => ({ ...entry, role: "orchestrator" })) },
+  ];
+  for (const bad of invalid) {
+    value.authenticateSessionProfile = () => bad;
+    await expect(resolveBundleBindingCandidates(value)).rejects.toThrow();
+    expect(fetched).toEqual([]);
+  }
+});
+
+it("bounds decoded candidate lists before any admission or native read", async () => {
+  const { value, fetched } = input(new Array(1025).fill(null), {});
+  let admissions = 0;
+  value.authenticateSessionProfile = () => { admissions++; throw new Error("unreachable"); };
+  await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/candidate list exceeds/);
+  expect(admissions).toBe(0);
+  expect(fetched).toEqual([]);
+});
+
+it("captures candidate and request bytes before asynchronous admission", async () => {
+  const one = copy("captured");
+  const address = "stor-" + "1".repeat(40);
+  const candidate = binding(address, one);
+  const { value, fetched } = input([candidate], { [address]: one });
+  const authenticate = value.authenticateSessionProfile;
+  value.authenticateSessionProfile = async () => {
+    candidate.nativeAddress = "stor-" + "2".repeat(40);
+    value.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
+    return await authenticate();
+  };
+  await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({ disposition: "present" });
+  expect(fetched).toEqual([address]);
+});
+
+it("admits the requested orchestrator role independently of artifact parties", async () => {
+  const one = { ...copy("orchestrator"), parties: [{ role: "orchestrator", primaryClaim: SELLER }] };
+  const address = "stor-" + "1".repeat(40);
+  const candidate = binding(address, one, { role: "orchestrator", logicalAddress: bundleAddress(JOB_ID, "orchestrator") });
+  const { value } = input([candidate], { [address]: one }, {
+    role: "orchestrator", authenticateSessionProfile: () => ({ status: "valid", releasePin: DACS_STANDARD_PIN,
+      moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS, roles: [{ jobId: JOB_ID, role: "orchestrator", participant: SELLER }] }),
+    verifyCopy: () => ({ valid: true, signers: [SELLER], fullySigned: true, abortStanding: false }),
+  });
+  await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({ disposition: "present" });
+});
+
+it("never invokes candidate accessors while capturing an unadmitted request", async () => {
+  let touched = 0;
+  const malicious = Object.defineProperty({}, "logicalAddress", {
+    enumerable: true, get: () => { touched++; return bundleAddress(JOB_ID, "seller"); },
+  });
+  const { value } = input([malicious], {});
+  value.authenticateSessionProfile = () => { throw new Error("admission refused"); };
+  await expect(resolveBundleBindingCandidates(value)).rejects.toThrow("admission refused");
+  expect(touched).toBe(0);
 });

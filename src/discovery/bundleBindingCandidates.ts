@@ -1,3 +1,5 @@
+import { types as nodeTypes } from "node:util";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 /**
  * DACS-5 §10.4.2 BB-5..BB-7 candidate-set resolution for one `(jobId, role)`
  * on a write-input-mapping substrate.
@@ -8,12 +10,12 @@
  * module applies, in order:
  *
  * - BB-5 checks 1-5 and BB-4: check the wire shape and supported version,
- *   select the requested logical address, role and trusted role holder (when
- *   supplied), authenticate, then check the signed `jobId` and logical address
+ *   admit the exact session/profile/role map from verifier-owned authority,
+ *   select the requested logical address and admitted role holder, authenticate, then check the signed `jobId` and logical address
  *   derived from the binding's own signed `jobId` and `role`. Failing bindings
  *   are discarded.
  * - BB-6: candidates grouped by authenticated `signer`, pruned before any fetch
- *   to the role holder when a co-signed role map supplies one; each signer's
+ *   to the independently admitted role holder; each signer's
  *   distinct native addresses fetched in ascending `(bundleContentHash,
  *   nativeAddress)` order, at most {@link BUNDLE_BINDING_FETCH_BUDGET} per
  *   signer; BB-5 checks 7-9 after the fetch; collapse of canonically equal
@@ -30,24 +32,26 @@
 import type { BundleBinding } from "../artifacts/types.js";
 import { hasBundleBindingEnvelope, isBundleBinding } from "../artifacts/validators.js";
 import { bundleAddress, canonicalize } from "../canonical/index.js";
-import { DacsError, SubstrateError } from "../errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../errors.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import type { BundleCopyRole, CopyValidity } from "../agent/bundleCopyValidity.js";
 import { attestationBundleHash } from "../agent/twoSidedBundle.js";
+import { authenticateSessionProfile, type AuthenticateSessionProfile } from "./sessionProfileAdmission.js";
 
 /** BB-6: N, the fetch budget per authenticated signer per `(jobId, role)`. */
 export const BUNDLE_BINDING_FETCH_BUDGET = 8;
 
 export interface ResolveBundleBindingCandidatesInput {
+  /** Required independent session/role/release/module admission before resolution. */
+  authenticateSessionProfile: AuthenticateSessionProfile;
   jobId: string;
   role: BundleCopyRole;
   /** Raw records from every consulted discovery surface; untrusted. */
   candidates: readonly unknown[];
   /**
-   * BB-6 pre-fetch prune: the primary claim holding `role` in an
-   * already-fetched copy of this job that carries every §10.4.1 required
-   * signature. When given, only that signer's bindings are authenticated or
-   * fetched.
+   * Optional assertion about the expected holder. Independent profile admission
+   * must establish this same participant; caller input never supplies authority.
+   * Only the admitted holder's bindings are authenticated or fetched.
    */
   roleHolder?: string;
   /**
@@ -164,6 +168,22 @@ export async function resolveBundleBindingCandidates(
   input: Readonly<ResolveBundleBindingCandidatesInput>,
 ): Promise<BundleBindingCandidateResolution> {
   requireCanonicalJobId(input.jobId, "BundleBinding requested jobId");
+  // Capture the request and candidate bytes before invoking application code.
+  if (!Array.isArray(input.candidates) || nodeTypes.isProxy(input.candidates) || input.candidates.length > 1024) {
+    throw new IndeterminateSubstrateError("BundleBinding candidate list exceeds its admission limit");
+  }
+  const candidates = Array.from({ length: input.candidates.length }, (_, index) => {
+    const entry = Object.getOwnPropertyDescriptor(input.candidates, String(index));
+    if (entry === undefined || !("value" in entry)) return null;
+    try { return snapshotCanonicalJsonRead(entry.value, "BundleBinding candidate"); }
+    catch { return null; }
+  });
+  input = { ...input, candidates };
+  const admitted = await authenticateSessionProfile(input.authenticateSessionProfile, { jobId: input.jobId }, input.role);
+  const roleHolder = admitted[input.role]!;
+  if (input.roleHolder !== undefined && input.roleHolder !== roleHolder) {
+    throw new DacsError("requested role holder differs from authenticated profile authority");
+  }
   const logicalAddress = bundleAddress(input.jobId, input.role);
   // Select this request's scope before authenticating a captured envelope or
   // interpreting its signed jobId. Neither unrelated signed records nor
@@ -178,7 +198,7 @@ export async function resolveBundleBindingCandidates(
     }
     if (!hasBundleBindingEnvelope(candidate)) continue;
     if (candidate.logicalAddress !== logicalAddress || candidate.role !== input.role ||
-        (input.roleHolder !== undefined && candidate.signer !== input.roleHolder)) continue;
+        candidate.signer !== roleHolder) continue;
     let signed = false;
     try {
       // The hook sees the actual signed payload, including an unchecked

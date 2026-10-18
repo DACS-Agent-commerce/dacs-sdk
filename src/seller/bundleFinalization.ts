@@ -397,6 +397,7 @@ export interface SellerBundleFinalizationProvider {
    */
   resolveSellerBundle: (
     logicalAddress: string,
+    carried?: Readonly<BundleBinding>,
   ) => Promise<SellerBundleLookup> | SellerBundleLookup;
   submitSellerBundle: (
     logicalAddress: string,
@@ -3318,10 +3319,11 @@ function unavailableUnlessPermanent(error: unknown, message: string): Error {
 async function resolveBundle(
   logicalAddress: string,
   provider: SellerBundleFinalizationProvider,
+  carried?: Readonly<BundleBinding>,
 ): Promise<SellerBundleLookup> {
   let raw: SellerBundleLookup;
   try {
-    raw = await provider.resolveSellerBundle(logicalAddress);
+    raw = await provider.resolveSellerBundle(logicalAddress, carried);
   } catch (error) {
     throw unavailableUnlessPermanent(error, "seller bundle lookup errored and is indeterminate");
   }
@@ -3979,7 +3981,7 @@ export async function verifyFinalizedSellerBundleReadOnly(
     retainedAnchored,
     retainedProvider,
   );
-  const current = await resolveBundle(logicalAddress, retainedProvider);
+  const current = await resolveBundle(logicalAddress, retainedProvider, result.binding);
   if (current.disposition === "indeterminate") {
     throw new IndeterminateSubstrateError(
       `retained seller bundle readback is indeterminate: ${current.reason}`,

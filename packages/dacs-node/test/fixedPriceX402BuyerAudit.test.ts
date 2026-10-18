@@ -1,3 +1,4 @@
+import { trustedSessionProfile } from "./helpers/sessionProfile.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -751,6 +752,7 @@ async function x402AuditHarness() {
     sign: vi.fn(),
   };
   const context = {
+    authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
     role: "buyer",
     authority: BUYER,
     peerAuthority: SELLER,
@@ -957,6 +959,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
 
     expect(() => createDacsFixedPriceX402BuyerAuditV1({
       context: {
+        authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
         role: "buyer",
         evm: { role: "buyer", address: BUYER_EVM },
       } as never,
@@ -1052,6 +1055,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       sign: vi.fn(),
     };
     const context = {
+    authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
       role: "buyer",
       authority: BUYER,
       peerAuthority: SELLER,
@@ -1230,6 +1234,7 @@ async function completionHarness(
     }),
   });
   const context = {
+    authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
     role: "buyer",
     authority: BUYER,
     peerAuthority: SELLER,

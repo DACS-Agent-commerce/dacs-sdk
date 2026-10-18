@@ -1,3 +1,4 @@
+import { trustedSessionProfile } from "./helpers/sessionProfile.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -529,6 +530,7 @@ async function memoryAgreementHarness(profile: "x402" | "pay-dem") {
         const anchors = new Map<string, Record<string, unknown>>();
         const receipts = new Map<string, ProtocolAnchorReceipt>();
         const context = {
+            authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
             role, authority: role === "buyer" ? BUYER : SELLER, peerAuthority: role === "buyer" ? SELLER : BUYER, database, config: { role }, sessionStore: createInMemoryFencedSessionStore(),
             demos: {
                 signComponent: vi.fn(async (bytes: Uint8Array) => ed25519Sign(bytes, privateKeyFromSeed(role === "buyer" ? BUYER_SEED : SELLER_SEED))),
@@ -581,16 +583,32 @@ async function memoryAgreementHarness(profile: "x402" | "pay-dem") {
         expect(seller.record.tracks).toEqual({});
         expect(loadDacsAgreementTerminalBoundaryForOrderV1(seller.context, seller.record as never).sellerResponseRetained).toBe(true);
     };
+    const terminalProduction = (evaluatedRole: "buyer" | "seller", decision: "pass" | "fail") => {
+        const verifier = evaluatedRole === "seller" ? BUYER : SELLER;
+        const record = { ...production.record, overallDecision: decision,
+            evaluatedParty: evaluatedRole === "seller" ? SELLER : BUYER,
+            bundleHash: identityBundleHash(identity(evaluatedRole === "seller" ? SELLER : BUYER)),
+            signature: { ...production.record.signature, signer: verifier } };
+        const recordHash = contentHash(record as unknown as Record<string, unknown>);
+        const nativeAddress = evaluatedRole === "seller" ? finalizedReceipt.nativeAddress : `stor-${"9".repeat(40)}`;
+        return { record, recordRef: { ...production.recordRef, contentHash: recordHash, signer: verifier,
+            anchor: { kind: "storage-program" as const, locator: nativeAddress } },
+            anchorReceipt: { ...finalizedReceipt, nativeAddress, contentHash: recordHash,
+                logicalAddress: compositeVerificationAddress(JOB_ID, record.evaluatedParty), writer: verifier,
+                state: "finalized" as const, observationDisposition: "established" as const } };
+    };
+    const terminalPassInput = (role: "buyer" | "seller") => ({
+        jobId: JOB_ID, listingRef: { listingId: exactListing.listingId, version: exactListing.listingVersion, contentHash: seller.application.listingContentHash }, pipeline: exactListing.pipeline,
+        vetPhaseIndex: 0, startedAt: NOW - 2000, vetInvokedAt: NOW - 1000, recipeRegistryVersion: 1, railRegistryVersion: 1,
+        parties: [{ role: "buyer" as const, identityBundle: identity(BUYER) }, { role: "seller" as const, identityBundle: identity(SELLER) }],
+        evaluatedRole: role === "buyer" ? "seller" as const : "buyer" as const,
+        production: terminalProduction(role === "buyer" ? "seller" : "buyer", "pass"),
+    });
     const terminalRuntime = () => createDacsVetTerminalBundleTransportRuntimeV1({ context: seller.context, expectedRegistryVersions: { recipeRegistryVersion: 1, railRegistryVersion: 1 }, authenticateProduction: async () => ({ status: "valid" }) });
     const failure = async (evaluatedRole: "buyer" | "seller" = "seller") => {
-        const verifier = evaluatedRole === "seller" ? BUYER : SELLER;
-        const record = { ...production.record, overallDecision: "fail" as const, evaluatedParty: evaluatedRole === "seller" ? SELLER : BUYER, bundleHash: identityBundleHash(identity(evaluatedRole === "seller" ? SELLER : BUYER)), signature: { ...production.record.signature, signer: verifier } };
-        const recordHash = contentHash(record as unknown as Record<string, unknown>);
-        const input = {
-            jobId: JOB_ID, listingRef: { listingId: exactListing.listingId, version: exactListing.listingVersion, contentHash: seller.application.listingContentHash }, pipeline: exactListing.pipeline,
-            vetPhaseIndex: 0, startedAt: NOW - 2000, vetInvokedAt: NOW - 1000, recipeRegistryVersion: 1, railRegistryVersion: 1,
-            parties: [{ role: "buyer" as const, identityBundle: identity(BUYER) }, { role: "seller" as const, identityBundle: identity(SELLER) }], evaluatedRole,
-            production: { record, recordRef: { ...production.recordRef, contentHash: recordHash, signer: verifier }, anchorReceipt: { ...finalizedReceipt, contentHash: recordHash, logicalAddress: compositeVerificationAddress(JOB_ID, record.evaluatedParty), writer: verifier, state: "finalized" as const, observationDisposition: "established" as const } },
+        const input = { ...terminalPassInput(evaluatedRole === "buyer" ? "seller" : "buyer"),
+            production: terminalProduction(evaluatedRole, "fail"),
+            complementaryProduction: terminalProduction(evaluatedRole === "buyer" ? "seller" : "buyer", "pass"),
         };
         const prepared = await prepareVetTerminalBundle(input, { authenticateProduction: async () => ({ status: "valid" }) });
         if (prepared.status !== "terminal")
@@ -604,9 +622,9 @@ async function memoryAgreementHarness(profile: "x402" | "pay-dem") {
     const ownVetPassed = (role: "buyer" | "seller") => {
         const actor = role === "buyer" ? buyer : seller;
         return createDacsVetTerminalBundleTransportRuntimeV1({ context: actor.context, expectedRegistryVersions: { recipeRegistryVersion: 1, railRegistryVersion: 1 }, authenticateProduction: async () => ({ status: "valid" }) })
-            .registerLocalVetPass!({ jobId: JOB_ID, localBindingHash: actor.record.localBindingHash });
+            .registerLocalVetPass!({ jobId: JOB_ID, localBindingHash: actor.record.localBindingHash }, terminalPassInput(role));
     };
-    return { buyer, seller, request, production, publish, signResponse, terminalRuntime, failure, inbound, sellerRuntime, startOrder, ownVetPassed };
+    return { buyer, seller, request, production, publish, signResponse, terminalRuntime, failure, inbound, sellerRuntime, startOrder, ownVetPassed, terminalPassInput };
 }
 describe("memory-backed agreement and Vet terminal recovery", () => {
     it.each(["x402", "pay-dem"] as const)("publishes %s proposals using the real session Vet output", async (profile) => {
@@ -674,9 +692,7 @@ type MemoryHarness = Awaited<ReturnType<typeof memoryAgreementHarness>>;
 // is answered (the seller's Vet of the buyer passes), so only the terminal and
 // phase checks decide whether the seller reaches the agreement step.
 function bootstrapTranscript(h: MemoryHarness) {
-    const record = { ...h.production.record, evaluatedParty: BUYER, bundleHash: identityBundleHash(identity(BUYER)), signature: { ...h.production.record.signature, signer: SELLER } };
-    const recordHash = contentHash(record as unknown as Record<string, unknown>);
-    const buyerPass = { record, recordRef: { ...h.production.recordRef, contentHash: recordHash, signer: SELLER }, anchorReceipt: { ...h.production.anchorReceipt, contentHash: recordHash, logicalAddress: compositeVerificationAddress(JOB_ID, BUYER), writer: SELLER } };
+    const buyerPass = h.terminalPassInput("seller").production;
     const init = { bootstrapVersion: "1", order: h.seller.exactOrder, application: h.seller.application, sellerChallenge: "1".repeat(64) };
     const challenge = { bootstrapVersion: "1", initPayloadHash: "2".repeat(64), sellerChallenge: init.sellerChallenge, buyerChallenge: "3".repeat(64), sellerIdentity: identity(SELLER) };
     const presentation = { bootstrapVersion: "1", challengePayloadHash: "4".repeat(64), buyerChallenge: challenge.buyerChallenge, buyerIdentity: identity(BUYER) };
@@ -703,7 +719,7 @@ function sellerBootstrapTrack(
         agreementProposalReady,
         agreement,
         vet: { produce: async () => ({ status: "ready", production: buyerPass }), authenticate: async () => "valid" },
-        terminalBundle: { runtime: h.terminalRuntime(), createInput: vi.fn() },
+        terminalBundle: { runtime: h.terminalRuntime(), createInput: () => h.terminalPassInput("seller") },
     } as never);
 }
 
@@ -915,7 +931,7 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
         await h.ownVetPassed("buyer");
         await expect(buyerTerminal.handleMessage(fromSeller, { role: "buyer" } as DacsLiveRoleInboundOperationContextV1)).resolves.toEqual({ disposition: "accepted" });
         expect(await h.publish()).toEqual({ disposition: "rejected", reason: "agreement-vet-terminal-phase-conflict" });
-        expect(h.buyer.context.sendMessage).not.toHaveBeenCalled();
+        expect(vi.mocked(h.buyer.context.sendMessage).mock.calls.map(([message]) => message.type)).not.toContain("agreement-proposal");
     });
 
     it.each(["x402", "pay-dem"] as const)("still co-signs a genuine %s buyer-proposed seller failure before any proposal or response", async (profile) => {

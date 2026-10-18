@@ -33,11 +33,11 @@ export function createClassifiedDemosSellerBundleReads(
   jobId: string,
 ): Pick<SellerBundleFinalizationReadProvider, "resolveSellerBundle" | "resolveBundleBinding"> {
   return {
-    async resolveSellerBundle(logicalAddress: string) {
+    async resolveSellerBundle(logicalAddress: string, carried?: Readonly<BundleBinding>) {
       if (logicalAddress !== bundleAddress(jobId, "seller")) {
         throw new DacsError("seller bundle reads serve only this job's seller bundle");
       }
-      const bound = await publication.resolveBoundRoleBundle("seller");
+      const bound = await publication.resolveBoundRoleBundle("seller", carried === undefined ? [] : [carried]);
       return bound.disposition === "present"
         ? { disposition: "present" as const, anchored: bound.anchored }
         : { disposition: "indeterminate" as const, reason: bound.reason };
