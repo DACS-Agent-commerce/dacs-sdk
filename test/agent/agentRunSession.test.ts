@@ -1258,6 +1258,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           asset: "USDC",
           handler: "pay-x402",
           network: "eip155:84532",
+          assetSpec: { kind: "erc20", chainId: 84532 },
+          networkSpec: { kind: "x402-resource" },
         },
         attestationRef: evidenceRef,
         paymentAddress: {
@@ -1275,7 +1277,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(
       directEvidenceVerdict.decision,
       directEvidenceVerdict.reasons.join("; "),
-    ).toBe("pass");
+    ).toBe("error");
+    expect(directEvidenceVerdict.reasons.join(" ")).toContain("unreleased corrective candidate");
     store.set(
       evidenceRef.anchor.locator,
       evidence as unknown as Record<string, unknown>,
@@ -1429,13 +1432,9 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     });
     const configuredVerdict = await agent.verifyBundle("stor:bundle");
     expect(evidenceContextCalls).toBe(1);
-    expect(configuredVerdict.reason).toBeUndefined();
-    expect(configuredVerdict).toMatchObject({
-      ok: true,
-      fullyVerified: true,
-    });
+    expect(configuredVerdict.ok).toBe(false);
     await expect(agent.getReputation(normativeBuyerDid, ["stor:bundle"]))
-      .resolves.toMatchObject({ totalAgreements: 1, completed: 1 });
+      .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
     expect(verifierCalls).toBe(2);
     expect(evidenceContextCalls).toBe(2);
 

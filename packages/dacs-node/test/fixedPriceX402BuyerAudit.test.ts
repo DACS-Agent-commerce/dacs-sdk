@@ -60,10 +60,14 @@ const mocks = vi.hoisted(() => ({
   sessionFacts: vi.fn(),
 }));
 
-vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@kynesyslabs/dacs")>()),
-  getAuthenticatedRailProvenance: mocks.provenance,
-}));
+// Historical signature/recovery composition is explicit in this fixture.
+// Current candidate refusal is covered at the core public entry points.
+vi.mock("@kynesyslabs/dacs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@kynesyslabs/dacs")>();
+  return { ...actual, getAuthenticatedRailProvenance: mocks.provenance,
+    verifySettlementEvidence: actual.verifyLegacySettlementEvidence,
+    verifyFinalizedSessionSettlement: actual.verifyLegacyFinalizedSessionSettlement };
+});
 
 vi.mock("../src/fixedPriceX402Profile.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/fixedPriceX402Profile.js")>()),
@@ -192,7 +196,8 @@ function receipt(
     finalityProfile: "demos-bft-confirmed-native-read",
     logicalAddress,
     nativeAddress,
-    contentHash: contentHash(artifact),
+    contentHash: logicalAddress.startsWith("dacs4:deliverable:")
+      ? sha256Hex(canonicalize(artifact)) : contentHash(artifact),
     transactionRef: { kind: "demos-storage-program", value: `tx:${nativeAddress}` },
     writer,
     state: "finalized",
@@ -380,8 +385,8 @@ async function fixture() {
   }, ARTIFACT_SEPARATORS.SettlementEvidence, SELLER);
   const paymentLogicalAddress = `dacs4:payment:${JOB_ID}:x402%3Atest:2`;
   const paymentRef = ref(paymentLogicalAddress, paymentEvidence, SELLER);
-  const deliverable = { result: "delivered" };
-  const deliverableHash = contentHash(deliverable);
+  const deliverable = { result: "delivered", signature: "payload data", signatures: ["payload data"] };
+  const deliverableHash = sha256Hex(canonicalize(deliverable));
   const deliverableLogicalAddress = `dacs4:deliverable:${JOB_ID}`;
   const deliveryEvidence = signComponent({
     evidenceVersion: "1" as const,

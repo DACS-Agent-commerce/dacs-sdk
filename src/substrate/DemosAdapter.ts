@@ -3938,6 +3938,9 @@ export class DemosAdapter implements SubstrateAdapter {
       const bytes = Buffer.concat(chunks, size);
       const envelope = admitArtifactJson(bytes);
       if (envelope.success === true && envelope.data != null) {
+        if (envelope.storageAddress !== address) {
+          throw new Error("storage response address does not match requested anchor");
+        }
         return admitArtifactJson(bytes, "data");
       }
       const marker = `${envelope.errorCode ?? ""} ${envelope.error ?? ""}`.toLowerCase();

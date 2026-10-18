@@ -1,3 +1,4 @@
+import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../version.js";
 import {
   canonicalize,
   cloneWithArtifactAdmission,
@@ -21,7 +22,7 @@ import {
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import {
-  verifySettlementEvidence,
+  verifyLegacySettlementEvidence,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
 import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
@@ -843,12 +844,24 @@ function captureProofLookup(
 }
 
 /**
- * Authenticate one finalized settlement. Calling with `mode: "recovery"`
- * deliberately repeats every live/native observation before returning the
- * retained result. Nested evidence must retain exact-byte admission in both
- * modes; after persistence, re-read it through an admitted transport.
+ * Current finalized-settlement authority is unavailable at the unreleased
+ * corrective-candidate Standard pin, in both initial and recovery modes.
+ * No provider callback can admit the missing coordinated release.
  */
 export async function verifyFinalizedSessionSettlement(
+  contextInput: unknown,
+  settlementInput: unknown,
+  providerInput: SessionSettlementVerificationProvider,
+  mode: "initial" | "recovery" = "initial",
+): Promise<SessionSettlementVerification> {
+  return rejected("error", DACS_CURRENT_PROFILE_ADMISSION_ERROR);
+}
+
+/**
+ * Explicit archival verification; never grants current-profile admission.
+ * Recovery repeats all native observations and retains raw-byte admission.
+ */
+export async function verifyLegacyFinalizedSessionSettlement(
   contextInput: unknown,
   settlementInput: unknown,
   providerInput: SessionSettlementVerificationProvider,
@@ -899,9 +912,9 @@ export async function verifyFinalizedSessionSettlement(
   }
   if (mismatch) return rejected("rejected", mismatch);
 
-  let evidenceVerification: Awaited<ReturnType<typeof verifySettlementEvidence>>;
+  let evidenceVerification: Awaited<ReturnType<typeof verifyLegacySettlementEvidence>>;
   try {
-    evidenceVerification = await verifySettlementEvidence(
+    evidenceVerification = await verifyLegacySettlementEvidence(
       settlement.evidence,
       {
         orchestrator: context.orchestrator,

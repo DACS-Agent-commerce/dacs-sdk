@@ -1,3 +1,4 @@
+import { publishSellerSessionSettlement as publishCurrentSettlement } from "../../src/seller/sessionSettlementPublication.js";
 import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, it, vi } from "vitest";
 
@@ -23,22 +24,22 @@ import {
   signedBytes,
 } from "../../src/crypto/index.js";
 import {
-  verifyFinalizedSessionSettlement,
+  verifyLegacyFinalizedSessionSettlement as verifyFinalizedSessionSettlement,
   type SessionSettlementContext,
   type SessionSettlementNativeProofRef,
   type SessionSettlementVerificationProvider,
 } from "../../src/agent/sessionSettlement.js";
 import {
-  publishSellerSessionSettlement,
+  publishLegacySellerSessionSettlement as publishSellerSessionSettlement,
   type SellerSessionSettlementPublicationDeps,
   type SellerSessionSettlementPublicationRequest,
   type SellerSessionSettlementNativeProofAuthentication,
 } from "../../src/seller/sessionSettlementPublication.js";
 import {
-  publishSellerSessionSettlement as rootPublishSellerSessionSettlement,
+  publishLegacySellerSessionSettlement as rootPublishSellerSessionSettlement,
 } from "../../src/index.js";
 import {
-  publishSellerSessionSettlement as sellerPublishSellerSessionSettlement,
+  publishLegacySellerSessionSettlement as sellerPublishSellerSessionSettlement,
 } from "../../src/seller/index.js";
 import type {
   SellerFulfilmentHandoff,
@@ -1161,4 +1162,18 @@ describe("publishSellerSessionSettlement", () => {
     expect(h.sign).not.toHaveBeenCalled();
     expect(h.anchor).not.toHaveBeenCalled();
   });
+});
+
+
+it("current candidate publication refuses before inspection, signing or anchoring", async () => {
+  const inspectPermit = vi.fn();
+  const sign = vi.fn();
+  const anchorEvidence = vi.fn();
+  const result = await publishCurrentSettlement({} as never, {
+    receiptStore: { inspectPermit }, signer: { sign }, anchorEvidence,
+  } as never);
+  expect(result).toMatchObject({ disposition: "error", reason: expect.stringContaining("unreleased corrective candidate") });
+  expect(inspectPermit).not.toHaveBeenCalled();
+  expect(sign).not.toHaveBeenCalled();
+  expect(anchorEvidence).not.toHaveBeenCalled();
 });

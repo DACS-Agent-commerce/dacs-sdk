@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { encodePaymentResponseHeader } from "@x402/core/http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createPublicClient,
   erc20Abi,
@@ -91,7 +91,7 @@ import {
   prepareCompletedSellerBundleCounterSignatureRequest,
   prepareX402BuyerSettlement,
   projectDurableSellerAuditPending,
-  publishSellerSessionSettlement,
+  publishLegacySellerSessionSettlement as publishSellerSessionSettlement,
   resumeDeliveryFinalisation,
   publicKeyFromRaw,
   privateKeyFromSeed,
@@ -104,7 +104,7 @@ import {
   validateFixedPriceAgreementBinding,
   verifyBundleCopy,
   verifyDurableSellerTerminalResult,
-  verifyFinalizedSessionSettlement,
+  verifyLegacyFinalizedSessionSettlement as verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
   x402PaywallSettlementKey,
   type AgreementArtifact,
@@ -6690,4 +6690,11 @@ describe("issue #114 guarded funded two-agent spine", () => {
       }
     }, 900_000);
   }
+});
+
+// This existing lifecycle fixture exercises explicit historical inspection.
+// Current release-admission refusal has separate public entry-point tests.
+vi.mock("../../src/agent/sessionSettlement.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/agent/sessionSettlement.js")>();
+  return { ...actual, verifyFinalizedSessionSettlement: actual.verifyLegacyFinalizedSessionSettlement };
 });

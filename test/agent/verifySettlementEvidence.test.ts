@@ -628,6 +628,76 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     expect((await verify(htlc(), ctx)).decision).toBe("fail");
   });
 
+  test.each([
+    undefined, { source: 10_000 }, { dest: 5_000 },
+    { source: 5_720, dest: 5_000 },
+    { source: -1, dest: 5_000 }, { source: 10_000.5, dest: 5_000 },
+    { source: 9e15, dest: 5_000 },
+  ])("authenticated HTLC refuses missing, malformed or equality-boundary expiry %j", async (htlcExpiry) => {
+    const ev = htlc();
+    const ctx = paymentAuthenticatedContext();
+    ctx.rail = { railId: "polygon-amoy-usdc", railType: "cross-chain-htlc",
+      asset: "USDC", handler: "pay-cross-chain-htlc", sourceFinalitySec: 120, safetyWindowSec: 600 };
+    ctx.htlcExpiry = htlcExpiry === undefined ? undefined : { unit: "unix-seconds", ...htlcExpiry } as never;
+    ctx.result = { ok: true, txRefs: ev.paymentTxRefs };
+    // Bind the changed scope; crypto is injected to isolate the HTLC guard.
+    const { contentHash } = await import("../../src/canonical/index.js");
+    ctx.attestationRef = { ...ctx.attestationRef, contentHash: contentHash(ev) };
+    const result = await verifySettlementEvidence(ev, ctx, {
+      resolvePublicKey: async () => new Uint8Array(32), verify: () => true,
+    });
+    expect(result.decision).not.toBe("pass");
+    expect(result.reasons.join(" ")).toMatch(/HTLC|expiry/);
+  });
+  test("authenticated HTLC accepts a safe Unix-second margin and refuses ambiguous units", async () => {
+    const ev = htlc();
+    const { contentHash } = await import("../../src/canonical/index.js");
+    const ctx = paymentAuthenticatedContext();
+    ctx.rail = { railId: "polygon-amoy-usdc", railType: "cross-chain-htlc", asset: "USDC",
+      handler: "pay-cross-chain-htlc", sourceFinalitySec: 120, safetyWindowSec: 600 };
+    ctx.result = { ok: true, txRefs: ev.paymentTxRefs };
+    ctx.attestationRef = { ...ctx.attestationRef, contentHash: contentHash(ev) };
+    ctx.htlcExpiry = { source: 10_000, dest: 5_000, unit: "unix-seconds" };
+    const deps = { resolvePublicKey: async () => new Uint8Array(32), verify: () => true };
+    expect(await verifySettlementEvidence(ev, ctx, deps)).toEqual({ decision: "pass", reasons: [] });
+    for (const unit of [undefined, "unix-ms"]) {
+      ctx.htlcExpiry = { source: 10_000, dest: 5_000, unit } as never;
+      const verdict = await verifySettlementEvidence(ev, ctx, deps);
+      expect(verdict.decision).toBe("fail");
+      expect(verdict.reasons.join(" ")).toContain("integer Unix seconds");
+    }
+  });
+  test("x402 rejects the wrong AssetSpec and NetworkSpec (RD-5)", async () => {
+    const ev = payment();
+    ev.phase = "pay-x402";
+    ev.paymentTxRefs = [{ kind: "x402-event", httpResource: "https://example.test",
+      paymentReceiptHash: "a".repeat(64), settlementTxHash: "b".repeat(64), chainId: 80002, logIndex: 0, protocolVersion: "2" }];
+    const rail = { railType: "x402", assetSpec: { kind: "erc20", chainId: 80002 },
+      networkSpec: { kind: "x402-resource" } };
+    expect((await verify(ev, { rail })).decision).toBe("pass");
+    for (const bad of [
+      { ...rail, assetSpec: { kind: "spl" } },
+      { ...rail, networkSpec: { kind: "solana" } },
+    ]) {
+      const result = await verify(ev, { rail: bad });
+      expect(result.decision).toBe("fail");
+      expect(result.reasons.join(" ")).toContain("RD-5");
+    }
+  });
+  test("cross-chain network must retain the matching mechanism (RD-5)", async () => {
+    const ev = htlc();
+    for (const mechanism of [undefined, "liquidity-tank", "substrate-native"]) {
+      const result = await verify(ev, { rail: { railType: "cross-chain-htlc",
+        sourceFinalitySec: 120, safetyWindowSec: 600,
+        networkSpec: { kind: "cross-chain", ...(mechanism ? { mechanism } : {}) } as never } });
+      expect(result.decision).toBe("fail");
+      expect(result.reasons.join(" ")).toContain("RD-5");
+    }
+    expect((await verify(ev, { rail: { railType: "cross-chain-htlc",
+      sourceFinalitySec: 120, safetyWindowSec: 600,
+      networkSpec: { kind: "cross-chain", mechanism: "htlc" } } })).decision).toBe("pass");
+  });
+
   // Phase-result envelope coherence.
   test("okTrueWithErrorClass → fail", async () => {
     const ctx: EvidenceContext = { result: { ok: true, errorClass: "counterparty" } };

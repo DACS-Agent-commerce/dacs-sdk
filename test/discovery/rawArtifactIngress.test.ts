@@ -38,7 +38,7 @@ function repository(bytes: Uint8Array, parsed?: Record<string, unknown>) {
   });
   return { repo, verify, adapter };
 }
-const envelope = (raw: string) => Buffer.from(`{"success":true,"data":${raw}}`);
+const envelope = (raw: string) => Buffer.from(`{"success":true,"storageAddress":"${nativeAddress}","data":${raw}}`);
 afterEach(() => vi.unstubAllGlobals());
 
 describe("CF-5 through Demos transport and scanning repository", () => {
@@ -173,7 +173,7 @@ describe("current payment verification ingress and archival inspection", () => {
       verify: (bytes, sig, key) => ed25519Verify(bytes, sig, publicKeyFromRaw(key)),
     })).decision).toBe("pass");
   });
-  test("admitted current payment reaches the injected signature provider (composition only)", async () => {
+  test("archival signature inspection remains explicit while current candidate refuses", async () => {
     const jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
     const evidence = { ...fixture.evidence, jobId };
     const record = admitArtifactJson(Buffer.from(JSON.stringify(evidence)));
@@ -188,7 +188,8 @@ describe("current payment verification ingress and archival inspection", () => {
         contentHash: contentHash(record),
       },
     };
-    expect(await verifySettlementEvidence(record, context, deps)).toEqual({ decision: "pass", reasons: [] });
+    expect(await verifyLegacySettlementEvidence(record, context, deps)).toEqual({ decision: "pass", reasons: [] });
+    expect((await verifySettlementEvidence(record, context, deps)).decision).toBe("error");
     expect(deps.resolvePublicKey).toHaveBeenCalledOnce();
     expect(deps.verify).toHaveBeenCalledOnce();
   });
@@ -218,4 +219,14 @@ test("CF-5 negative zero survives adapter and verified-read snapshots without no
   })).toMatchObject({ status: "verified", record });
   expect(verify).toHaveBeenCalledOnce();
   expect(() => snapshotAdmittedArtifact(JSON.parse(raw))).toThrow(/raw-byte admission/);
+});
+
+
+test.each(["swapped-native-slot", undefined])("public storage rejects mismatched or absent returned native address %s", async (storageAddress) => {
+  const bytes = Buffer.from(JSON.stringify({ success: true, storageAddress, data: original }));
+  const { adapter, verify } = repository(bytes);
+  await expect(adapter.readAnchor(nativeAddress)).rejects.toMatchObject({
+    cause: { message: "storage response address does not match requested anchor" },
+  });
+  expect(verify).not.toHaveBeenCalled();
 });

@@ -346,8 +346,8 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       expect(await reader.read(address, SELLER, () => true)).toEqual({
         status: "verified", nativeAddress: written.anchor.address, record: RECORD,
       });
-      expect(await reader.read(address.normalize("NFC"), SELLER, () => true))
-        .toEqual({ status: "absent" });
+      const malformedRead = await reader.read(address.normalize("NFC"), SELLER, () => true);
+      expect(malformedRead.status).toBe(address.startsWith("dacs1:") ? "absent" : "binding-mismatch");
     }
     expect(backend.writes).toBe(addresses.length);
   });

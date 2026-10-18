@@ -20,7 +20,7 @@ const dependencies = vi.hoisted(() => ({
 
 vi.mock("@kynesyslabs/dacs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@kynesyslabs/dacs")>();
-  dependencies.realVerifySettlementEvidence = actual.verifySettlementEvidence;
+  dependencies.realVerifySettlementEvidence = actual.verifyLegacySettlementEvidence;
   return { ...actual, verifySettlementEvidence: dependencies.verifySettlementEvidence };
 });
 
@@ -174,7 +174,7 @@ describe("fixed-price x402 buyer commerce", () => {
     expect(contentHash(unanchored)).toBe(contentHash(payload));
 
     await expect(authorize(unanchored)).resolves.toBe(false);
-    expect(dependencies.verifySettlementEvidence).toHaveBeenCalledTimes(1);
+    expect(dependencies.verifySettlementEvidence).not.toHaveBeenCalled();
   });
 });
 

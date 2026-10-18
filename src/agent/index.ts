@@ -527,6 +527,7 @@ export {
 } from "./settlementIdentity.js";
 export {
   verifyFinalizedSessionSettlement,
+  verifyLegacyFinalizedSessionSettlement,
   type SessionSettlementDisposition,
   type SessionSettlementIdentityBinding,
   type SessionSettlementNativeSessionBinding,

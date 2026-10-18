@@ -31,7 +31,7 @@ import {
   signedBytes,
 } from "../../src/crypto/index.js";
 import {
-  verifyFinalizedSessionSettlement,
+  verifyLegacyFinalizedSessionSettlement as verifyFinalizedSessionSettlement,
   type FinalizedSessionSettlement,
   type SessionSettlementContext,
   type SessionSettlementIdentityBinding,

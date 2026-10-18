@@ -26,7 +26,7 @@ import {
   type SellerPayloadAttestationRecord,
   type SignedSellerDeliveryEvidence,
 } from "../../src/agent/runFulfilmentCore.js";
-import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
+import { verifyLegacySettlementEvidence as verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import {
   isSellerFulfilmentHandoff,
   sellerFulfilmentCandidateHash,

@@ -1,3 +1,4 @@
+import { artifactBindingHashOf } from "@kynesyslabs/dacs/discovery";
 import {
   ARTIFACT_SEPARATORS,
   FINALITY_COMMITMENT_SEPARATOR,
@@ -292,7 +293,7 @@ async function resolveActorAnchor(
   if (artifact === null || receipt === null) {
     throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-anchor-unavailable");
   }
-  if (contentHash(artifact) !== expectedHash ||
+  if (artifactBindingHashOf(logicalAddress)(artifact) !== expectedHash ||
       receipt.writer !== writer || receipt.logicalAddress !== logicalAddress ||
       receipt.nativeAddress !== resolved.address || receipt.contentHash !== expectedHash ||
       receipt.state !== "finalized" || receipt.observationDisposition !== "established" ||
@@ -1193,7 +1194,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           vet, vet.signature, known === buyerVetAnchor ? order.seller : order.buyer);
       }
       return known === deliverableAnchor &&
-        contentHash(known.artifact) === deliveryEvidence.deliverableContentHash;
+        artifactBindingHashOf(deliveryEvidence.deliverableAnchor.locator)(known.artifact) === deliveryEvidence.deliverableContentHash;
     };
     const dependencies: Dependency[] = [
       dependency({ kind: "listing", listingRef: copy(agreement.listingRef) }, listingAnchor),
@@ -1237,7 +1238,7 @@ export function createDacsFixedPriceBuyerAuditV1(
         { dependency: Dependency; requirement: { contentHash: string }; artifact: unknown }) {
         const known = byNative.get(candidate.anchorReceipt.nativeAddress);
         return known !== undefined && plainObject(artifact) &&
-            requirement.contentHash === contentHash(artifact) &&
+            requirement.contentHash === artifactBindingHashOf(known.receipt.logicalAddress)(artifact) &&
             canonicalize(artifact) === canonicalize(known.artifact) && verifyKnown(known)
           ? "valid" as const : "invalid" as const;
       },

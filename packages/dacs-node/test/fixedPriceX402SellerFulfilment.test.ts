@@ -285,7 +285,7 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
       resolveFulfilmentAgreement: vi.fn(),
       resolveFulfilmentListing: vi.fn(),
     } as never;
-    const prepareDeliverable = vi.fn(async () => ({ answer: 42 }));
+    const prepareDeliverable = vi.fn(async () => ({ answer: 42, signature: "ordinary data", signatures: ["also data"] }));
     const composed = createDacsFixedPriceX402SellerFulfilmentV1({
       context,
       rail: authenticatedRail() as never,
@@ -354,6 +354,18 @@ describe("fixed-price x402 seller fulfilment adapter", () => {
       phaseIndex: 3,
       phase: "deliver-storage-program",
     })).toMatchObject({ status: "verified", value: { artifact: { anchoredValue: { answer: 42 } } } });
+    const logicalAddress = `dacs4:deliverable:${JOB_ID}`;
+    const nativeAddress = names.get(logicalAddress)!;
+    const payload = anchors.get(nativeAddress)!;
+    const fullHash = sha256Hex(canonicalize(payload));
+    expect(fullHash).not.toBe(contentHash(payload));
+    const proof = receipt(logicalAddress, nativeAddress, fullHash);
+    const ref = { anchor: { kind: "storage-program" as const, locator: logicalAddress }, contentHash: fullHash };
+    expect(await composed.fulfilmentDeps.verifyAnchorReceipt({ expectedWriter: { primaryClaim: SELLER }, ref, receipt: proof } as never))
+      .toMatchObject({ disposition: "valid" });
+    anchors.set(nativeAddress, { ...payload, signatures: ["changed"] });
+    expect(await composed.fulfilmentDeps.verifyAnchorReceipt({ expectedWriter: { primaryClaim: SELLER }, ref, receipt: proof } as never))
+      .toMatchObject({ disposition: "invalid" });
     expect(adapter.anchorWriteOnce).toHaveBeenCalledTimes(1);
   });
 });

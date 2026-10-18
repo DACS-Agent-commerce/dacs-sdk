@@ -77,3 +77,32 @@ Tests vendor the byte-exact upstream `raw-json-profile-v0.1.json` corpus from
 that revision. All 59 outcomes and accepted canonical bytes are checked, along
 with API misuse, resource bounds, prototype-named members, view offsets and
 hostile-depth cases.
+
+## Current profile admission
+
+The exact `DACS_STANDARD_PIN` currently identifies an unreleased corrective
+candidate. Its `PROFILE.md` records no admissible coordinated release. Therefore
+`verifySettlementEvidence`, `verifyConstructedSettlementEvidence`,
+`verifyFinalizedSessionSettlement` (including recovery), and
+`publishSellerSessionSettlement` refuse current settlement authority. Valid
+signatures, raw-byte admission, a canonical job ID, and caller-provided profile
+objects cannot supply the missing release authority. Publication refuses before
+permit inspection, signing, or anchoring.
+
+Historical inspection must explicitly select `verifyLegacySettlementEvidence`
+or `verifyLegacyFinalizedSessionSettlement`. Historical publication, when
+explicitly intended, uses `publishLegacySellerSessionSettlement`. These retain
+the existing signature, anchor, native-proof and recovery checks; their results
+do not establish current-profile admission. Re-enabling current authority will
+require a new immutable Standard pin that records an admissible coordinated
+release and verifier-owned admission bound to the exact session, authenticated
+participant identities and complete module tuple.
+
+Current payment verification additionally requires the authenticated pinned
+`assetSpec` and `networkSpec` decision fields; omitting either cannot grant
+authority.
+
+Authenticated HTLC inspection requires `htlcExpiry` with `source` and `dest`
+as non-negative safe integer Unix seconds and `unit: "unix-seconds"`. Pinned
+`sourceFinalitySec` and `safetyWindowSec` use integer seconds. Equality at the
+required margin fails; missing, partial or ambiguous-unit observations fail.

@@ -1,3 +1,4 @@
+import { artifactBindingHashOf } from "@kynesyslabs/dacs/discovery";
 import {
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
@@ -259,7 +260,7 @@ async function resolvePublicAnchor(
       return Object.freeze({ status: "indeterminate" as const,
         reason: "seller-anchor-native-readback-unavailable" });
     }
-    const hash = contentHash(raw);
+    const hash = artifactBindingHashOf(logicalAddress)(raw);
     if (expectedHash !== undefined && hash !== expectedHash) {
       return Object.freeze({ status: "indeterminate" as const,
         reason: "seller-anchor-content-conflict" });
@@ -293,7 +294,7 @@ async function publishPublicAnchor(
   raw: Readonly<Record<string, unknown>>,
   expectedHash: string,
 ): Promise<PublicAnchorResolution> {
-  if (contentHash(raw) !== expectedHash) {
+  if (artifactBindingHashOf(logicalAddress)(raw) !== expectedHash) {
     return Object.freeze({ status: "indeterminate" as const,
       reason: "seller-anchor-input-hash-invalid" });
   }
@@ -706,7 +707,7 @@ export function createDacsFixedPriceSellerFulfilmentV1(
         input.jobId,
         input.logicalAddress,
         input.artifact.anchoredValue,
-        contentHash(input.artifact.anchoredValue),
+        artifactBindingHashOf(input.logicalAddress)(input.artifact.anchoredValue),
       );
       return published.status === "present"
         ? { status: "accepted" as const, reconciliationId: published.receipt.nativeAddress }
@@ -763,7 +764,7 @@ export function createDacsFixedPriceSellerFulfilmentV1(
       }
       try {
         const raw = await context.demos.adapter.readAnchor(receipt.nativeAddress);
-        return raw !== null && contentHash(raw) === ref.contentHash &&
+        return raw !== null && artifactBindingHashOf(ref.anchor.locator)(raw) === ref.contentHash &&
             await context.demos.adapter.verifyDemosAnchorReceipt(receipt) === true
           ? { disposition: "valid" as const }
           : { disposition: "invalid" as const, reason: "anchor receipt proof invalid" };
@@ -862,7 +863,7 @@ export function createDacsFixedPriceSellerFulfilmentV1(
       if (!plainObject(input.artifact.anchoredValue)) {
         return { status: "absent" as const, reason: "delivery-artifact-unsupported" };
       }
-      const expectedHash = contentHash(input.artifact.anchoredValue);
+      const expectedHash = artifactBindingHashOf(input.logicalAddress)(input.artifact.anchoredValue);
       const resolved = await resolvePublicAnchor(context, input.logicalAddress, expectedHash);
       if (resolved.status === "absent") {
         return { status: "absent" as const, reason: "delivery-authoritatively-absent" };

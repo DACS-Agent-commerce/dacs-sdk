@@ -1,3 +1,4 @@
+import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../version.js";
 import {
   cloneWithArtifactAdmission,
   snapshotAdmittedArtifact,
@@ -30,8 +31,7 @@ import {
   type SessionSettlementNativeProofRef,
 } from "../agent/sessionSettlement.js";
 import {
-  verifyConstructedSettlementEvidence,
-  verifySettlementEvidence,
+  verifyLegacySettlementEvidence,
   type EvidenceDeps,
 } from "../agent/verifySettlementEvidence.js";
 import {
@@ -872,6 +872,14 @@ export async function publishSellerSessionSettlement(
   requestInput: SellerSessionSettlementPublicationRequest,
   depsInput: SellerSessionSettlementPublicationDeps,
 ): Promise<SellerSessionSettlementPublicationResult> {
+  return failure("error", DACS_CURRENT_PROFILE_ADMISSION_ERROR);
+}
+
+/** Explicit historical-profile publication; does not confer current admission. */
+export async function publishLegacySellerSessionSettlement(
+  requestInput: SellerSessionSettlementPublicationRequest,
+  depsInput: SellerSessionSettlementPublicationDeps,
+): Promise<SellerSessionSettlementPublicationResult> {
   const request = parseRequest(requestInput);
   if (!request) return failure("error", "settlement publication request is not exact canonical data");
   if (!advertisesEd25519EvidenceSigner(depsInput)) {
@@ -1095,9 +1103,9 @@ export async function publishSellerSessionSettlement(
       contentHash: evidenceHash,
     },
   };
-  let signatureCheck: Awaited<ReturnType<typeof verifyConstructedSettlementEvidence>>;
+  let signatureCheck: Awaited<ReturnType<typeof verifyLegacySettlementEvidence>>;
   try {
-    signatureCheck = await verifyConstructedSettlementEvidence(evidence, context, deps.evidence);
+    signatureCheck = await verifyLegacySettlementEvidence(evidence, context, deps.evidence);
   } catch {
     return failure(
       "indeterminate",
@@ -1230,9 +1238,9 @@ export async function publishSellerSessionSettlement(
       readEvidence.signature.signer !== deps.signer.signer) {
     return failure("rejected", "settlement evidence readback differs from the signed publication", effectId);
   }
-  let readCheck: Awaited<ReturnType<typeof verifySettlementEvidence>>;
+  let readCheck: Awaited<ReturnType<typeof verifyLegacySettlementEvidence>>;
   try {
-    readCheck = await verifySettlementEvidence(
+    readCheck = await verifyLegacySettlementEvidence(
       readEvidence,
       { ...context, attestationRef: structuredClone(evidenceRef) },
       deps.evidence,

@@ -1,8 +1,9 @@
+import { verifyFinalizedSessionSettlement as verifyCurrentFinalized } from "../../src/agent/sessionSettlement.js";
 import { readFileSync } from "node:fs";
 import { expect, test, vi } from "vitest";
 
 import {
-  verifyFinalizedSessionSettlement,
+  verifyLegacyFinalizedSessionSettlement as verifyFinalizedSessionSettlement,
   type SessionSettlementContext,
   type FinalizedSessionSettlement,
   type SessionSettlementVerificationProvider,
@@ -14,7 +15,7 @@ import {
   sha256Hex,
 } from "../../src/canonical/index.js";
 import { publicKeyFromRaw, ed25519Verify } from "../../src/crypto/index.js";
-import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
+import { verifySettlementEvidence, verifyConstructedSettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 
 test("finalized settlement requires admitted evidence and retains it for recovery with the public signature", async () => {
   const vector = JSON.parse(readFileSync(new URL(
@@ -119,13 +120,32 @@ test("finalized settlement requires admitted evidence and retains it for recover
   const directContext: Parameters<typeof verifySettlementEvidence>[1] = {
     orchestrator: context.orchestrator,
     agreement: { amount: "1", currency: "DEM" },
-    rail: context.rail,
+    rail: { ...context.rail, assetSpec: { kind: "native-dem" }, networkSpec: { kind: "demos" } },
     attestationRef: settlement.evidenceRef,
     paymentAddress: { railId: context.rail.railId, phaseIndex: 3 },
     result: { ok: true },
   };
   expect((await verifySettlementEvidence(parsed, directContext, provider.evidence)).decision).toBe("error");
   const admittedEvidence = () => admitArtifactJson(bytes) as unknown as FinalizedSessionSettlement["evidence"];
+  for (const mode of ["initial", "recovery"] as const) {
+    for (const profile of [undefined, { standardPin: "wrong" },
+      { standardPin: "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20", participants: [context.payer.primaryClaim, context.payer.primaryClaim] },
+      { release: "candidate", authenticated: true },
+      { session: "another-session", participants: ["did:demos:someone-else"] },
+      { modules: { CORE: "0.1" }, authenticated: true }]) {
+      const deps = { resolvePublicKey: vi.fn(provider.evidence.resolvePublicKey), verify: vi.fn(provider.evidence.verify) };
+      const currentContext = { ...directContext, profile };
+      const verdict = await verifySettlementEvidence(admittedEvidence(), currentContext, deps);
+      expect(verdict.decision).toBe("error");
+      expect(verdict.reasons.join(" ")).toContain("unreleased corrective candidate");
+      expect((await verifyConstructedSettlementEvidence(original, currentContext, deps)).decision).toBe("error");
+      expect(await verifyCurrentFinalized({ ...context, profile }, { ...settlement, evidence: admittedEvidence() }, {
+        ...provider, authenticateContext: vi.fn(() => { throw new Error("must not run"); }), evidence: deps,
+      }, mode)).toMatchObject({ disposition: "error", reason: expect.stringContaining("unreleased corrective candidate") });
+      expect(deps.resolvePublicKey).not.toHaveBeenCalled();
+      expect(deps.verify).not.toHaveBeenCalled();
+    }
+  }
   const clean = await verifyFinalizedSessionSettlement(context, {
     ...settlement, evidence: admittedEvidence(),
   }, provider);

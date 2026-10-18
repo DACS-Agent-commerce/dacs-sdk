@@ -31,11 +31,11 @@ const mocks = vi.hoisted(() => ({
     typeof import("@kynesyslabs/dacs").verifySettlementEvidence,
 }));
 
-// The real SettlementEvidence verifier runs behind a call-through spy so each
+// Explicit archival SettlementEvidence inspection runs behind a call-through spy so each
 // test observes both the exact authenticated context and the real verdict.
 vi.mock("@kynesyslabs/dacs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@kynesyslabs/dacs")>();
-  mocks.realVerifySettlementEvidence = actual.verifySettlementEvidence;
+  mocks.realVerifySettlementEvidence = actual.verifyLegacySettlementEvidence;
   return { ...actual, verifySettlementEvidence: mocks.verifySettlementEvidence };
 });
 
@@ -223,14 +223,14 @@ function deliveryEvidenceInput(deliverable: Readonly<Record<string, unknown>>) {
     phase: "deliver-storage-program" as const,
     outcome: "success" as const,
     observedAt: NOW - 2_000,
-    deliverableContentHash: contentHash(deliverable),
+    deliverableContentHash: sha256Hex(canonicalize(deliverable)),
     deliverableAnchor: { kind: "storage-program", locator: DELIVERABLE_ADDRESS },
   };
 }
 
 async function fixture() {
   const agreement = await signedPayDemAgreement();
-  const deliverable = { result: "native delivery" };
+  const deliverable = { result: "native delivery", signature: "ordinary data", signatures: ["ordinary data"] };
   const deliveryEvidence = signComponent(
     deliveryEvidenceInput(deliverable),
     ARTIFACT_SEPARATORS.SettlementEvidence,
@@ -316,7 +316,7 @@ async function fixture() {
     payload: Readonly<Record<string, unknown>> = deliverable,
     record: Readonly<{ logicalAddress: string; contentHash: string }> = {
       logicalAddress: DELIVERABLE_ADDRESS,
-      contentHash: contentHash(deliverable),
+      contentHash: sha256Hex(canonicalize(deliverable)),
     },
   ) => commerce.buyerReceived.authorizeReceived({
     operation: { order: { jobId: JOB_ID } },
