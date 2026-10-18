@@ -5,7 +5,6 @@ import {
   advanceX402BuyerSettlement,
   assertX402BuyerSettlementIntent,
   createX402BuyerEvmAuthorizationProvider,
-  createX402BuyerRetainedDisclosureRecovery,
   type WalletSpendAuthorityDependenciesV1,
   type WalletSpendAuthorityV1,
   type WalletSpendPermitV1,
@@ -130,7 +129,7 @@ export interface DacsX402BuyerPaymentTrackOptionsV1<TObservation = unknown> exte
   retryDelayMs?: number;
 }
 
-export interface DacsX402WalletSpendRecoveryAuthenticatorOptionsV1 {
+export interface DacsX402WalletSpendRecoveryAuthenticatorOptionsV1 extends ProfileExecutionPolicy {
   /** Integrity-checked x402 store retaining the exact signed bearer. */
   settlementStore: X402BuyerSettlementStore;
   /** Process-specific owner used to fence recovery against paid-request workers. */
@@ -143,7 +142,10 @@ export interface DacsX402WalletSpendRecoveryAuthenticatorOptionsV1 {
   verifySignature?: X402BuyerEvmSignatureVerifier;
   /** Required to authenticate live-unused replay safety; never proves terminal absence. */
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
-  /** Defaults to the SDK's locked-down retained disclosure recovery. */
+  /**
+   * Optional injected local disclosure recovery for simulation. Without it,
+   * authentication uses retained disclosures only and never replays HTTP.
+   */
   recoverDisclosure?: X402BuyerEvmDisclosureRecovery;
 }
 
@@ -273,10 +275,12 @@ function walletSettlementForIntent(
 export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
   options: Readonly<DacsX402WalletSpendRecoveryAuthenticatorOptionsV1>,
 ): WalletSpendAuthorityDependenciesV1["authenticateRecovery"] {
+  const executionMode = captureExecutionMode(options);
+  requireAdmissibleProfile({ executionMode });
   const captured = exactOwnData(options, [
     "settlementStore", "owner", "chainId", "minimumConfirmations",
     "authorizationSearchFromBlock", "client",
-  ], ["verifySignature", "confirmUnused", "recoverDisclosure"]);
+  ], ["executionMode", "verifySignature", "confirmUnused", "recoverDisclosure"]);
   const load = bindStableCapability<X402BuyerSettlementStore["load"]>(
     captured?.settlementStore,
     "load",
@@ -352,8 +356,6 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
     verifySignature ?? undefined;
   const stableConfirmUnused: X402BuyerEvmUnusedConfirmer | undefined =
     confirmUnused ?? undefined;
-  const recoverDisclosure = recoveredDisclosure ??
-    createX402BuyerRetainedDisclosureRecovery({});
 
   return Object.freeze(async (
     reservation: Readonly<WalletSpendReservationV1>,
@@ -449,7 +451,7 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
         ...(stableConfirmUnused === undefined
           ? {}
           : { confirmUnused: stableConfirmUnused }),
-        recoverDisclosure,
+        ...(recoveredDisclosure ? { recoverDisclosure: recoveredDisclosure } : {}),
       });
       const lookup = await provider.lookup(intent, candidate, fence);
       if (lookup.disposition !== "observed") return false;

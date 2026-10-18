@@ -2,6 +2,13 @@
 
 Production Node.js host contracts and adapters for `@kynesyslabs/dacs`.
 
+`createDacsX402WalletSpendRecoveryAuthenticatorV1()` requires explicit trusted
+`executionMode: "simulation"` at the current unreleased Standard pin. Live
+construction refuses before inspecting stores or callbacks. Simulation uses
+injected chain readers and retained settlement disclosures; recovering a missing
+disclosure requires an injected local `recoverDisclosure` callback. The
+authenticator does not create an HTTP replay transport automatically.
+
 The package keeps filesystem, SQLite, HTTP, process-supervision, and deployment
 concerns outside the transport-neutral SDK. It publishes the stable host
 interfaces, byte-exact authenticated HTTP envelope, and the local SQLite
