@@ -709,6 +709,47 @@ describe("fixed-price x402 coordinator", () => {
     expect(await track()).not.toHaveProperty("pausedSince");
   });
 
+  // The buyer audit answers `indeterminate` while Demos has no record for a
+  // receipt (DEMOS-MAPPING: not found is indeterminate), so a forged or stale
+  // receipt never becomes a rejection. The pause bound still ends the purchase:
+  // the audit track stops at operator action and is never run again.
+  it("stops a buyer audit whose anchor receipt stays indeterminate at the pause bound", async () => {
+    let now = 40_000;
+    const calls: string[] = [];
+    const audit = vi.fn(async () => ({
+      status: "indeterminate" as const,
+      reasonCode: "demos-seller-bundle-anchor-indeterminate",
+      retryAt: now,
+    }));
+    const coordinator = createFixedPriceX402BuyerCoordinator({
+      store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => now }),
+      workerId: "buyer-worker",
+      maximumSubstratePauseMs: 1_000,
+      operations: {
+        agreement: finalOperation("agreement", calls),
+        payment: finalOperation("payment", calls),
+        "payment-evidence": finalOperation("payment-evidence", calls),
+        "buyer-received": finalOperation("buyer-received", calls),
+        audit,
+      },
+    });
+    await coordinator.startOrder(order("buyer"));
+    await coordinator.runPending({ limit: 10 });
+    const track = async () => (await coordinator.getOrderStatus(JOB_ID))?.tracks.audit;
+    expect(await track()).toMatchObject({ state: "indeterminate", pausedSince: 40_000 });
+    now = 40_999;
+    await coordinator.runPending({ limit: 10 });
+    expect(await track()).toMatchObject({ state: "indeterminate" });
+
+    now = 41_000;
+    await coordinator.runPending({ limit: 10 });
+    expect(await track()).toMatchObject({ state: "operator-action", reasonCode: "substrate-pause-exceeded" });
+    const runs = audit.mock.calls.length;
+    now = 50_000;
+    expect((await coordinator.runPending({ limit: 10 })).items).toEqual([]);
+    expect(audit).toHaveBeenCalledTimes(runs);
+  });
+
   it("keeps the pause clock when a worker takes over an expired lease", async () => {
     let now = 50_000;
     let call = 0;

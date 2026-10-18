@@ -1264,7 +1264,8 @@ describe("DemosAdapter.anchorAndWait", () => {
     raw.getBlockByNumber.mockResolvedValueOnce({ ...block, validation_data: undefined });
     await unanswered();
     // Answered: a fetched transaction, block or program that contradicts the
-    // receipt, even when another read of the same receipt went unanswered.
+    // receipt, while every other read of it answers. (An unanswered read of
+    // the same receipt keeps the whole verification indeterminate.)
     const transaction = await raw.getTxByHash(receipt.transactionRef.value);
     raw.getTxByHash.mockResolvedValueOnce({ ...transaction, blockNumber: transaction.blockNumber + 1 });
     await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
@@ -1951,6 +1952,39 @@ describe("DemosAdapter.anchorAndWait", () => {
     });
     expect(raw.storagePrograms.sign).toHaveBeenCalledTimes(1);
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  // A node that restarts has only its durable journal: its own write is still
+  // resolved at the exact native address, never through the name index.
+  it("resolves its own write after a restart through the durable journal while the name index shows nothing", async () => {
+    fixtureId += 1;
+    const wallet = `${WALLET.slice(0, -4)}${fixtureId.toString(16).padStart(4, "0")}`;
+    const first = await makeAdapter({ rpc: `https://own-write-first-${fixtureId}.test`, wallet });
+    const written = await first.adapter.anchorWriteOnce(
+      "own-write-after-restart",
+      { value: 1 },
+      { timeoutMs: 1_000, pollMs: 1 },
+    );
+    const restarted = await makeAdapter({ rpc: `https://own-write-restarted-${fixtureId}.test`, wallet });
+    vi.mocked(restarted.adapter.resolveAnchorByName).mockRestore();
+    restarted.raw.storagePrograms.read.mockResolvedValue({
+      success: true,
+      storageAddress: written.address,
+      owner: wallet,
+      programName: "own-write-after-restart",
+      data: { value: 1 },
+    });
+    const search = vi.spyOn(restarted.adapter as unknown as {
+      searchStorageProgramsByName(name: string, exact: boolean): Promise<unknown[]>;
+    }, "searchStorageProgramsByName").mockResolvedValue([]);
+
+    await expect(restarted.adapter.resolveAnchorByName("own-write-after-restart", wallet))
+      .resolves.toEqual({ status: "present", address: written.address });
+    expect(search).not.toHaveBeenCalled();
+    // Another wallet's program has no journal record here: only the index.
+    await expect(restarted.adapter.resolveAnchorByName("own-write-after-restart", `${wallet.slice(0, -4)}ffff`))
+      .resolves.toEqual({ status: "absent" });
+    expect(search).toHaveBeenCalledTimes(1);
   });
 
   it("bounds hung anchorWriteOnce preparation without poisoning the shared queue", async () => {

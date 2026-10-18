@@ -1189,6 +1189,33 @@ describe("role-separated Vet terminal bundle transport", () => {
     });
   });
 
+  // The local Vet production's own authentication decides whether the node
+  // may propose a terminal: unavailable evidence is retried, never proposed.
+  it.each([
+    ["indeterminate", "vet-terminal-production-indeterminate"],
+    ["invalid", "vet-terminal-production-invalid"],
+  ] as const)("registers no local terminal whose Vet production is %s", async (status, reasonCode) => {
+    const buyerDatabase = await open("buyer");
+    const sendMessage = vi.fn();
+    const context = {
+      role: "buyer", authority: BUYER, peerAuthority: SELLER,
+      database: buyerDatabase, sendMessage,
+    } as unknown as DacsLiveRoleOperationContextV1;
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: async () => ({ status, reason: "recursive Vet evidence unavailable" }),
+    });
+
+    await expect(runtime.registerLocalTerminal(terminalInput("fail", "pay-x402")))
+      .rejects.toMatchObject({ reasonCode });
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(buyerDatabase.loadEffectInput(
+      "session",
+      terminalTransportEffectId("buyer", "proposal"),
+    )).toBeUndefined();
+  });
+
   it("accepts native DEM terminal material but rejects a substituted rail pipeline", async () => {
     const buyerDatabase = await open("buyer", "pay-dem");
     const context = {

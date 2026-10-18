@@ -1636,6 +1636,22 @@ describe("buyer two-copy completion adapter", () => {
       await expect(harness.authorize()).resolves.toBe("indeterminate");
       expect(verdict).toMatchObject({ disposition: expect.stringMatching(/^(?:indeterminate|error)$/) });
     });
+
+    it(`keeps ${paymentProfile} retryable when the unanswered read is a bundle anchor verification`, async () => {
+      // The anchor verdict alone marks the read unanswered: the verifier then
+      // fails with an error that names no answer from Demos.
+      const harness = await completionHarness(paymentProfile);
+      let verdict: unknown;
+      mocks.verifyCompleted.mockImplementationOnce(async (input: CompletionInput, deps: CompletionDeps) => {
+        verdict = await deps.verifyBundleAnchor(structuredClone(input.copies.seller));
+        throw new DacsError("completed buyer bundle signature verification failed: forged");
+      });
+      harness.adapter.verifyDemosAnchorReceipt.mockRejectedValue(
+        new IndeterminateSubstrateError("Demos anchor receipt observation unavailable"));
+      await expect(harness.authorize()).resolves.toBe("indeterminate");
+      expect(verdict).toMatchObject({ disposition: "error",
+        reason: "demos-seller-bundle-anchor-error" });
+    });
   }
 
   // One copy's Demos read never settles: the buyer copy's name lookup, or the

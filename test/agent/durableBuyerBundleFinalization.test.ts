@@ -1466,6 +1466,26 @@ describe("durable buyer bundle finalization", () => {
     expect(f.state.anchored).toBeUndefined();
   });
 
+  // A record the store loaded but whose shape is broken is corrupt retained
+  // state too: a SubstrateError here would retry it forever.
+  test("classifies a loaded retained buyer record with a broken shape as permanent", async () => {
+    const f = await fixture();
+    const real = await f.store.load(JOB_ID);
+    expect(real.status).toBe("ok");
+    const broken = { ...structuredClone(real), record: {
+      ...structuredClone((real as unknown as { record: Record<string, unknown> }).record), phase: 7 } };
+    const store = { ...f.store, load: async () => structuredClone(broken) };
+    const error = await advanceCompletedBuyerBundleDurable(
+      f.input,
+      f.provider,
+      { ...f.durability, store } as never,
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).not.toBeInstanceOf(SubstrateError);
+    expect((error as Error).message).toMatch(/^buyer bundle state is corrupt: phase/);
+    expect(f.state.anchored).toBeUndefined();
+  });
+
   test.each(["rejected", "indeterminate"] as const)(
     "surfaces a %s settlement verdict before any retained state is trusted",
     async (disposition) => {
