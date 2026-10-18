@@ -8,7 +8,18 @@ revision pinned by the fixed-price coordinator.
 independent seller lifecycle. It does not start a server or select a framework.
 Applications provide the framework adapter and host the route themselves.
 
-The callback sequence is deliberately:
+At the current unreleased Standard pin, fresh paywall effects require SDK-owned
+release admission. `handle({ jobId, phaseIndex, request, reconcileOnly: true })`
+can inspect an existing settlement and reconcile its exact retained authorization. This mode
+does not call the facilitator, authorize or fulfil delivery, claim an intent,
+or persist an outcome. A verified observation returns
+`disposition: "settlement-observed"`, `settled: true`, and
+`reason: "x402-read-only-settlement-observed"`. Its HTTP 503 response retains
+the protocol settlement header without releasing application content. The
+caller must retain the payment observation and resume delivery only through an
+admitted effect path; the response is not permission to submit another payment.
+
+The admitted callback sequence is deliberately:
 
 1. verify the x402 v2 authorization;
 2. require exact configured network, asset, amount, and payee terms;

@@ -119,7 +119,11 @@ identifiers; historical Unicode spellings are not repaired into current jobs.
 The AP2, SPL, durable x402 buyer and x402 paywall coordinators expose
 `reconcileOnly: true` to inspect retained state while disabling submission,
 signing and rebroadcast. A missing retained transaction does not authorize a
-new payment. DEM reconciliation remains the explicit read-only
+new payment. Seller paywall reconciliation also skips payment authorization,
+fulfilment and settlement-store writes. A verified retained or reconciled receipt
+returns `settlement-observed` / `settled: true` with HTTP 503 and the protocol
+receipt, preserving the distinction between payment observation and delivery.
+DEM reconciliation remains the explicit read-only
 `PayDemSettlementReconcile` seam. EVM finality and x402 authorization readers
 remain available separately. Pending seller payment notices and x402 response
 disclosure recovery may require operator action even for a completed payment.

@@ -13,8 +13,12 @@ commerce assembly, `Agent.runSession`, `runSessionCore`, and direct SDK payment
 rails refuse fresh effects until a coordinated release is admitted. Existing
 payment records remain available for read-only chain reconciliation. AP2, SPL
 and durable x402 coordinators accept `reconcileOnly: true`; that mode cannot
-sign, broadcast or submit a payment. Seller payment notices and x402 disclosure
-recovery can remain blocked even after payment: operators must reconcile the
+sign, broadcast or submit a payment. The seller x402 paywall observes retained
+settlement without authorizing or fulfilling delivery or updating its store.
+A verified observation returns `disposition: "settlement-observed"` and
+`settled: true` with a 503 response and the settlement receipt; it grants no
+permission to retry payment or treat delivery as complete. Seller payment notices
+and x402 disclosure recovery can remain blocked even after payment: operators must reconcile the
 retained transaction and arrange notice through their operational process. Explicit legacy settlement APIs inspect historical data;
 the legacy publisher refuses current JID-1 jobs and cannot grant current authority.
 
