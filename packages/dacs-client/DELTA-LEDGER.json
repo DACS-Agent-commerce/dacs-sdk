@@ -1,0 +1,1455 @@
+{
+  "schema": "dacs-client-deltas/v1",
+  "baseline": "ecb2cd7",
+  "changes": [
+    {
+      "delta": "D10",
+      "subject": "delta(client): D10 delete simulated engine profiles and update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "710e693fa545346f84d660b0e80a9361fc498d3d",
+          "after": "64211c14b3b304d4ee8d87f10d2eb4f41c2f2036"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+          "before": "cd0d30f319e0b57a85c3f79a1b666d9810127222",
+          "after": "2734ccf76ea749874b2c6c86e3f91a55cc85ef6e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/devnet-purchase-consumer.mjs",
+          "before": "76ce65b56ede1ace66c6c90bc9efa39a57b97dd5",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+          "before": "61b1a57e61682cb64863011377213451324d89f1",
+          "after": "75d43364532e59aad0572b4310ea3b90ee250746"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "fc0d6a43dda894138431aa3fe276c67b105986d0",
+          "after": "6ad9d403b6a4baab668893392e147cc11ee8302f"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "ee71c89fcfa2ef7fa44716084a810e546343452c",
+          "after": "9a119649257fc8776d33cec0940769e37a77b509"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-loopback-fixture.test.mjs",
+          "before": "d47c5a17f6967ad61f38198ca5a0adfc93b2c7fe",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/devnet-purchase.browser.test.mjs",
+          "before": "58020425d59c29460f24aa10ddbb7f8e90c04dd4",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/devnet-purchase.test.mjs",
+          "before": "16db47c4f868ed28caddbff743104deaddec3ec8",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/devnet-purchase-harness.mjs",
+          "before": "38d878b20b2292eee08c5df2bdbbbdad1aaeab68",
+          "after": null
+        }
+      ]
+    },
+    {
+      "delta": "D9",
+      "subject": "delta(client): D9 make buyer chain readback unconditional and update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-consumer.mjs",
+          "before": "e567fab4f2f4a0e02a20148973652cfbf56440e0",
+          "after": "ebe07a486227e7566e1a0a70d012ffe21b4b6132"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs",
+          "before": "175115f57e3411bc995bcea6b03c42dc490efd26",
+          "after": "d12eedbdcc13b61b485bf333562a1e4108a082db"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "6ad9d403b6a4baab668893392e147cc11ee8302f",
+          "after": "74fd004f53bceb723f6179ff06993a655f02ce75"
+        },
+        {
+          "path": "packages/dacs-client/src/devnet-demo/commitment-consumer.mjs",
+          "before": "75e47e7fca6a2e690ef1d95c57bbe3a76efaf0ea",
+          "after": "26b2bb1cb390f92379e0a7e6d47e588b5169a315"
+        },
+        {
+          "path": "packages/dacs-client/src/devnet-demo/native-delivery.mjs",
+          "before": "b72bbdc0b78baa09e9aad89e485d77407748c34d",
+          "after": "44e46bf0721380ddd15a7e6551430835f64cfd89"
+        }
+      ]
+    },
+    {
+      "delta": "D1",
+      "subject": "delta(client): D1 cut plugin imports with typed seams and update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/client-errors.mjs",
+          "before": null,
+          "after": "8a79e360f5b27cd25eb00140d5ab3481dbd62b8c"
+        },
+        {
+          "path": "packages/dacs-client/src/config.mjs",
+          "before": "db28a547e04082b630901958d65d43c857b3f0f1",
+          "after": "9cd6491ab5be7d26d16e4c9732de638452e3e29a"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/agreement-context-consumer.mjs",
+          "before": "385dd137a39f321f88771ef823eb193ff1a36e39",
+          "after": "baa5c9a710b178eb175a4e5c438690b2c30cda54"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/artifact-reference.mjs",
+          "before": null,
+          "after": "952ac02702744b259d0fc493a96e82acb134e504"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/buyer-chain-readback.mjs",
+          "before": "8e85b998df274a01a6ef96dcbbc94b3a7ea9d6fe",
+          "after": "f4b27980d1c9dd1f0152c91b1313ff85e0696ca3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "64d8599063e3cbdd887c2b15921b072ecdbb8efc",
+          "after": "f9b1cc2e87c4d9fa94d517ad7687623272634aef"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/commit-on-signature.mjs",
+          "before": "dd1189037c9492e0bd1d707fc23300d03b230b49",
+          "after": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/completion-readiness.mjs",
+          "before": "788216388a3734d674040477bf85c04dd6d5a12c",
+          "after": "5b40aa50dfc6d0eb4c5bac6054d7a97f945d3c70"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-deadline-watch.mjs",
+          "before": "1687599afbf6d9d3526d3c61191b6010aecba1ff",
+          "after": "36d4ac4177132e7de0708a4f4e90c418d3858a9d"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-evidence.mjs",
+          "before": "bb87e2f834a1e060c330dd05bde1f9b7d673268e",
+          "after": "e5bd883b4b7fc16842bc6425c8952139c6e36a16"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+          "before": "dcd6ab8ad8680082e86505e0e9baee543c1d222e",
+          "after": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "64211c14b3b304d4ee8d87f10d2eb4f41c2f2036",
+          "after": "be079bd0703ad02671da9fac600af3ad7d397f71"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+          "before": "2734ccf76ea749874b2c6c86e3f91a55cc85ef6e",
+          "after": "5bd9c301a57bcb5528f40d7cbe4bf99da4967c11"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/listing.mjs",
+          "before": "1a5d0465a429cdcc1acd6af4135f2f24ea0d5e99",
+          "after": "7fb53138139c1e46b96f39741cacef6ed19055f8"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+          "before": "75d43364532e59aad0572b4310ea3b90ee250746",
+          "after": "ab673328200524ca2813c9947c9582c6a83af2f8"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "74fd004f53bceb723f6179ff06993a655f02ce75",
+          "after": "a6a86b34dd6a3a2a40af418911d77b216fc62391"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "315f190cb4c46c2024131720444677b16021ac8d",
+          "after": "9202d4b00203fec8b538262bd85fbef7e15714f6"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent.mjs",
+          "before": "f4925b36abd458a8087ef5c7b3e9641b94980290",
+          "after": "26f509d43b267f65d7788acc8b44ab45a8a5c10d"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-durable-state.mjs",
+          "before": "b1eea6d6e411e501cc7241e0c70afc7990a4f351",
+          "after": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-session-lifecycle.mjs",
+          "before": "e7c646cf50bc586f7085a04a004dfaa7dca583b0",
+          "after": "088ace19b1f6e4f5007db661be6d8ebae4a9bb3f"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-session-limits.mjs",
+          "before": null,
+          "after": "6ca54be7de1d2eeb0fa4a16c2a3a48be0cda2a99"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "eec0a312ab91f18ed064f14d3393a716600927d1",
+          "after": "a4a3da3c29388fa03bb12d184b506a8e4824269e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/verification.mjs",
+          "before": "37989fb90dfe91866b99a861d7e7b61bb8e4a6f7",
+          "after": "de51f5bc8faf3b14b707783e03bc8e303fb44ca5"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal/seller-session-delegation.mjs",
+          "before": "717d8986a2043f57409379655e1602dd916af484",
+          "after": "ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-limits.mjs",
+          "before": null,
+          "after": "e57dba177ef9a6ae96f696d2f6b1aa4fc9ceabec"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "9a119649257fc8776d33cec0940769e37a77b509",
+          "after": "0076afcb497dd0600a55069056c5b40712c56613"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/buyer-access-not-wired.mjs",
+          "before": null,
+          "after": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": null,
+          "after": "944247d4ce8b2622389c79b71de1a21d6b83e239"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/seller-integration-not-wired.mjs",
+          "before": null,
+          "after": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs",
+          "before": null,
+          "after": "24d09b80ffce1129e878685ef01a21b798de3d20"
+        },
+        {
+          "path": "packages/dacs-client/src/signatures.mjs",
+          "before": null,
+          "after": "6396455c3d3c436bc078c433d520245e7d99ae4a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "3e0971603c4011d4135a3d166ac84e2e14b0cdda",
+          "after": "218571c937066a1d0b01908d2fe1eb86d40144af"
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-native-readback-current-coverage.test.mjs",
+          "before": "de68f457af8894762d55c7672889a4c4faaf9d8e",
+          "after": "91099c01b8bb92f1d4fbb4e11a8aba263b97af60"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-seller-recovery.test.mjs",
+          "before": "062bd123a7081d36c48aee6b958299a7b9ba2599",
+          "after": "fadbd6ae9cacbb18ade3c3aa4c36772d38b76655"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-storage-anchor-wallet.test.mjs",
+          "before": "e1337bbde6b2eb9113638a83aaa14e1a9f984e44",
+          "after": "02b4abc02f8c88e54f5cbb894dcb266e1b7a5b87"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal/seller-session-limits.mjs",
+          "before": "6ca54be7de1d2eeb0fa4a16c2a3a48be0cda2a99",
+          "after": null
+        }
+      ]
+    },
+    {
+      "delta": "D15",
+      "subject": "delta(client): D15 fence retained purchase pointers and port authenticated readback corrections; update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/buyer-chain-readback.mjs",
+          "before": "f4b27980d1c9dd1f0152c91b1313ff85e0696ca3",
+          "after": "757f83e597ca437007c0e6f1d2dcd2cf18fd4445"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-consumer.mjs",
+          "before": "ebe07a486227e7566e1a0a70d012ffe21b4b6132",
+          "after": "3797e0c588d7852f83dffa28c55fbb4279cc2b7e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "be079bd0703ad02671da9fac600af3ad7d397f71",
+          "after": "4c3c552585bc6ab18d38f7b044c329e44742f8f4"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+          "before": "5bd9c301a57bcb5528f40d7cbe4bf99da4967c11",
+          "after": "871b585f9589e19df6a9fa26727480b719a31335"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs",
+          "before": "d12eedbdcc13b61b485bf333562a1e4108a082db",
+          "after": "0389b037020b28517f853cba8184423190c4d7f3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "a6a86b34dd6a3a2a40af418911d77b216fc62391",
+          "after": "dee6494e662c150c5786e5585117f38ad7593014"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/wallet-transactions.mjs",
+          "before": "948107e13dba08f162dd3f1b27968b2eae96d799",
+          "after": "85118d1b56e0695da13499e8878abe27af8254bb"
+        },
+        {
+          "path": "packages/dacs-client/src/devnet-demo/commitment-consumer.mjs",
+          "before": "26b2bb1cb390f92379e0a7e6d47e588b5169a315",
+          "after": "29942ade484cd34d8a18aff1f92ff5b76e40b6bd"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "0076afcb497dd0600a55069056c5b40712c56613",
+          "after": "c808ea5c966981bd8d7d7fbbf00cb523d06cb645"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-anchor-node-junk.test.mjs",
+          "before": null,
+          "after": "9368ebf33d2f15145eddd5f95c0918fce12b697e"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-indeterminate.test.mjs",
+          "before": null,
+          "after": "3ac35e0900b2ac7e618f66d0fad8c7e25726e6bb"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback-final-hold.test.mjs",
+          "before": "f830f6094f68834ff4c6e0ee918f50db4f9bf0f9",
+          "after": "e76e935aab3bd58d04af502634208f065420b965"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback-unit.test.mjs",
+          "before": "fae599152f506485d5ea1129a6ecc0de167bf615",
+          "after": "983eb518d9cbcd064522daa4758ad9e7ce974e86"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback-unmarked-invalid.test.mjs",
+          "before": null,
+          "after": "4528e91e7725a976d9dee9701e80c6bf5b16e814"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback.test.mjs",
+          "before": "4f015f94b8977e35a9e50fd720eb8701bcc18f92",
+          "after": "e9e7769e3834fbb39e2349287936d9ee6021805e"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-consumer-proof-indeterminate.test.mjs",
+          "before": null,
+          "after": "3d54262dcc2727a26fed0b0b4f01020b2d89dbb6"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-contradiction-classifier.test.mjs",
+          "before": null,
+          "after": "b297093d523f71e8fe718f31fc639885e7e06c75"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-purchase-chain-readback.test.mjs",
+          "before": null,
+          "after": "57f58afd19788166a39331f72212dc2705f64d78"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs",
+          "before": null,
+          "after": "9618563920d4554986d5a7968391c4d50f1ea5d6"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-purchase-cos.test.mjs",
+          "before": null,
+          "after": "b153fcf0f5cd4f713f736ab0d61a21d56529c593"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-purchase.test.mjs",
+          "before": null,
+          "after": "94d950c2cf16a8c3aa5d1604b40cb9f077538379"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-reader.test.mjs",
+          "before": null,
+          "after": "bcb17ea9f5da0f21ddde1b151fea05c62ef445a0"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-demos-sr2-wallet.test.mjs",
+          "before": "8f890c81674a954ed191c04b0f2acb671aaf6534",
+          "after": "d90a8671c90f4a47ab8afaab9387fac563db03ff"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-demos-sr2.test.mjs",
+          "before": "85b44f260b837f087f5d84ef64d5f96f4ef5b56d",
+          "after": "9442be3991db0f76526321a3a8eb7b79ba8be15e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk-purchase.mjs",
+          "before": null,
+          "after": "60397a584f4622283a75a15314823ee15aef1f41"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk.mjs",
+          "before": null,
+          "after": "fcb9ae51383e9dc6d34971766d122f43ef608329"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/devnet-live-composition-app.mjs",
+          "before": "29d2575d86b44eb7d7584b9cfa01bcf015ebe4e9",
+          "after": "77d601dbc4ed3c41f5def9397d2960e41f9dbff6"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/devnet-live-composition-transport.mjs",
+          "before": "9da21d4b10e0a3c322723fc06d160bd802a13768",
+          "after": "66061142400a621a8520bea29aa2938615439a2e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": null,
+          "after": "4fd59007caab514e62aaf8b58505c1ab72af7d21"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+          "before": null,
+          "after": "6e9b5e8a34479e881392588612cc264be7e1e87b"
+        },
+        {
+          "path": "packages/dacs-client/test/ops-health.test.mjs",
+          "before": "9955f2e124dd13c281912b982cc5393e47a8edf9",
+          "after": "b13bd2413c7f7ad9a55acdff1000b59ecb18adb0"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-integrity.test.mjs",
+          "before": null,
+          "after": "14bcb90572c7ebbf06c6f251cc06751d76ee2565"
+        }
+      ]
+    },
+    {
+      "delta": "D15",
+      "subject": "delta(client): D15 assert current-pointer settlement still records competing lanes; update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/commitment-contradiction-classifier.test.mjs",
+          "before": "b297093d523f71e8fe718f31fc639885e7e06c75",
+          "after": "ad338568556159c3deb1ccb255bb12d46dbfcd8a"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-integrity.test.mjs",
+          "before": "14bcb90572c7ebbf06c6f251cc06751d76ee2565",
+          "after": "80fe7f93a5306cbe4392ac1529b1f9789b050504"
+        }
+      ]
+    },
+    {
+      "delta": "D10",
+      "subject": "delta(client): D10 delete remaining fixture-only helper paths and update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/delivery-readback.mjs",
+          "before": "24dd8e6f91ce6e0ee914b6fd74f3b9f22fe19d40",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "4c3c552585bc6ab18d38f7b044c329e44742f8f4",
+          "after": "3a9808ef75b5a24669070e9f96938a7f947fffc1"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+          "before": "871b585f9589e19df6a9fa26727480b719a31335",
+          "after": "d9150d9df2a260fecf1a8bb2ec2a196865f9c0c2"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+          "before": "ab673328200524ca2813c9947c9582c6a83af2f8",
+          "after": "dbf70a054cd27824d9779c9c0f46f092f11e0de7"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs",
+          "before": "0389b037020b28517f853cba8184423190c4d7f3",
+          "after": "3399de483d96035c4a54d2c34a46a890f6b9a9f0"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "9202d4b00203fec8b538262bd85fbef7e15714f6",
+          "after": "1b5973180eb9d193ce5ada33ab9ecc7a3259bdbb"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-sr2-agreement-consumer.mjs",
+          "before": "4f89b27f6ca5e92b3d23c60b66c6c856b0aa3daa",
+          "after": "e8f4366742e98a368802d0f9defdfcd2b0221a58"
+        }
+      ]
+    },
+    {
+      "delta": "D10",
+      "subject": "delta(client): D10 correct native stage descriptions and remove the deleted continuation reference; update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "dee6494e662c150c5786e5585117f38ad7593014",
+          "after": "4e5305a6da6652770c05d9412c839c21755b0af2"
+        },
+        {
+          "path": "packages/dacs-client/test/native-stage-help.test.mjs",
+          "before": null,
+          "after": "5d19a3ef93b185e790e3afea3e90282fe6d50f03"
+        }
+      ]
+    },
+    {
+      "delta": "D15",
+      "subject": "delta(client): D15 preserve authenticated decisions and native resolution; lift the hold with bound prerequisites and update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/buyer-chain-readback.mjs",
+          "before": "757f83e597ca437007c0e6f1d2dcd2cf18fd4445",
+          "after": "342d7f6fe4a43fe2357551d66872de26bb33e094"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-consumer.mjs",
+          "before": "3797e0c588d7852f83dffa28c55fbb4279cc2b7e",
+          "after": "9f6ff2caaab27df481d04fa85f0e4b2352bd6351"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+          "before": "dbf70a054cd27824d9779c9c0f46f092f11e0de7",
+          "after": "9a0967034f9bad78b2c03836343926dce0a537f6"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs",
+          "before": "3399de483d96035c4a54d2c34a46a890f6b9a9f0",
+          "after": "146487868b579d82d7af39bbc6daa4988e491f6d"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "4e5305a6da6652770c05d9412c839c21755b0af2",
+          "after": "28e2d56a3590faea3e02c37426f8f8825449536f"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "27a950aaff582202a276f5358da0a7a280ba32ed",
+          "after": "f8052fd14d1ac7e98f8a34fbf6e5a95c47d41901"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-session-lifecycle.mjs",
+          "before": "088ace19b1f6e4f5007db661be6d8ebae4a9bb3f",
+          "after": "86fd5777a41c76183f2b3383898400469bdc60b3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-sr2-agreement-consumer.mjs",
+          "before": "e8f4366742e98a368802d0f9defdfcd2b0221a58",
+          "after": "882886f528d3dfe7c301230e6edb3f6a75201ed7"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "c808ea5c966981bd8d7d7fbbf00cb523d06cb645",
+          "after": "79de3d54bc07c27f51c1758f81c61719c0d77595"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-review-races.test.mjs",
+          "before": null,
+          "after": "48b8e059fc05a3495be61151feda3793d08de7f7"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": null,
+          "after": "9f7724cc996a3baee86ca75c90f4927d7d57f14c"
+        }
+      ]
+    },
+    {
+      "delta": "D10",
+      "subject": "delta(client): D10 describe retained source observations and native outcomes; update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "28e2d56a3590faea3e02c37426f8f8825449536f",
+          "after": "4b0e2376c38d75f84cec11a9d26b405be1867829"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "1b5973180eb9d193ce5ada33ab9ecc7a3259bdbb",
+          "after": "fc1c619bf184092c42d32f0f90d2f73657d41031"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-sr2-agreement-consumer.mjs",
+          "before": "882886f528d3dfe7c301230e6edb3f6a75201ed7",
+          "after": "14a0693cb2484eb39c9db122914b46ef31503757"
+        },
+        {
+          "path": "packages/dacs-client/test/native-stage-help.test.mjs",
+          "before": "5d19a3ef93b185e790e3afea3e90282fe6d50f03",
+          "after": "4518fa210c8fbca046220b8f245a468e777805ed"
+        }
+      ]
+    },
+    {
+      "delta": "D15",
+      "subject": "delta(client): D15 keep fresh transfer observations indeterminate and lift the purchase hold; update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs",
+          "before": "146487868b579d82d7af39bbc6daa4988e491f6d",
+          "after": "7083a9147813ea400ad40e17491ceb9d2f9de3c2"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "9f7724cc996a3baee86ca75c90f4927d7d57f14c",
+          "after": "d62b497dbafd55a0f2c782b9c9152efce10ea876"
+        }
+      ]
+    },
+    {
+      "delta": "D10",
+      "subject": "delta(client): D10 describe retained wallet and browser paths and hand off the native history label; update freeze pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "4b0e2376c38d75f84cec11a9d26b405be1867829",
+          "after": "499b5a04ab925d36d4e3a0f15402bf0b06c9aed7"
+        },
+        {
+          "path": "packages/dacs-client/test/native-stage-help.test.mjs",
+          "before": "4518fa210c8fbca046220b8f245a468e777805ed",
+          "after": "fd8943b54a6e03026a28eafeaa992de1d66d2fdc"
+        }
+      ]
+    },
+    {
+      "delta": "D15",
+      "subject": "delta(client): D15 redact publication text and refresh provenance",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/buyer-chain-readback.mjs",
+          "before": "342d7f6fe4a43fe2357551d66872de26bb33e094",
+          "after": "3927e6451dbc6f727537bd467a3616c7e28c18ad"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-consumer.mjs",
+          "before": "9f6ff2caaab27df481d04fa85f0e4b2352bd6351",
+          "after": "bc94796472c3c44d3f640a5ef1c2dfd0086e535c"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "3a9808ef75b5a24669070e9f96938a7f947fffc1",
+          "after": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+          "before": "d9150d9df2a260fecf1a8bb2ec2a196865f9c0c2",
+          "after": "aae9cc8e17848ff796c10b1c2289b7da798eefa0"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "499b5a04ab925d36d4e3a0f15402bf0b06c9aed7",
+          "after": "38ff24a8fc39a1629f361cdd1b6e7dafae854746"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f8052fd14d1ac7e98f8a34fbf6e5a95c47d41901",
+          "after": "65024b4ac2a5888d66fb386c992be9d140e167f2"
+        },
+        {
+          "path": "packages/dacs-client/src/devnet-demo/commitment-consumer.mjs",
+          "before": "29942ade484cd34d8a18aff1f92ff5b76e40b6bd",
+          "after": "7bb3b241b531f8bab3843663648c476f81b0add1"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal-intent/intent.mjs",
+          "before": "2e68c0f057c4910a3636b352e476bd35e2f615ef",
+          "after": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "6f0359c3e1b8ef4af0149173a3455e290993cccd",
+          "after": "b7183e63a75b68cda34c2b30a4d532963794b13f"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-anchor-node-junk.test.mjs",
+          "before": "9368ebf33d2f15145eddd5f95c0918fce12b697e",
+          "after": "165224e85e4eb50e9b8de3c7f8f21998f96d53a5"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-durable-vet.test.mjs",
+          "before": "c58c7ea4123d189f5251e92e982672e59a21fdb7",
+          "after": "b0a38b796a121d15243b049904e66ac511cf2a37"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-integration.browser.test.mjs",
+          "before": "b755f2ded2b0a851575686eeb15f5cc53568f6a2",
+          "after": "b7452f47ac9b6288476d3276e351e63e2894e1a6"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-integration.test.mjs",
+          "before": "c92c9ce04270534a9d0720f4e10448e28f225954",
+          "after": "ae9502b5dc105e5017d2290936b890a8da99d602"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-interactions.test.mjs",
+          "before": "547c07ea2caa4e4bdc3dede4055c1665029b1ce7",
+          "after": "e8ac917d67218d5bfbc2c4a56bb3cdddf200e0a5"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-legacy-ops-health.test.mjs",
+          "before": "5f86c629f600ea557a85d53155b88e470cc304ab",
+          "after": "ecd5a865c34ebf6701d4db6859d077efaf84f1c8"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-replay-resend.test.mjs",
+          "before": "9bf99e3c682dc224305fbc658d175ea947eaf8f7",
+          "after": "9442b85b89f5c3fc25737d144cd6e004812cfe18"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-single-vet.test.mjs",
+          "before": "06a8b5abdfde6b7daa3b8eb629d0bdac37f32842",
+          "after": "6a1f4ed05facd9b0a9c9542bf50a5bf8c121cca9"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-plan-route-single-vet.test.mjs",
+          "before": "540673f4c4092f72513163c788be81db452a42df",
+          "after": "0b1a54b31bfb6857b0ae139bf0bf817a38821e9e"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-plan-speed-composition.test.mjs",
+          "before": "09ec44819996d84e8385f8231cf28fc266536e91",
+          "after": "8260ad26219dc1a1258120b37b06ceb986cf6be8"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-indeterminate.test.mjs",
+          "before": "3ac35e0900b2ac7e618f66d0fad8c7e25726e6bb",
+          "after": "5e2e079c0c7bcb73c0711d0c825f54e6dc72dd6d"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback-commit-on-signature.test.mjs",
+          "before": "eecd87b525679274194b5a3134faa6b0be86b100",
+          "after": "a6fd4b3caa8c0ab69e662c39426dfcdece59b638"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback-final-hold.test.mjs",
+          "before": "e76e935aab3bd58d04af502634208f065420b965",
+          "after": "f99ba15d85fe52bff0aa6f40aba71870da299c1d"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback-proof.test.mjs",
+          "before": "a787e3a4f56a18e802e43bc66b5e20d226e9e6ba",
+          "after": "fac9a852c54dea9450a367b82646d4065da469a1"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback-unit.test.mjs",
+          "before": "983eb518d9cbcd064522daa4758ad9e7ce974e86",
+          "after": "e2adf9a20edc66da14fb83f279837402f8a7cd9f"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback-unmarked-invalid.test.mjs",
+          "before": "4528e91e7725a976d9dee9701e80c6bf5b16e814",
+          "after": "558e4f7388d1455f8ed7674ffaeec0f7bcebca5c"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-readback.test.mjs",
+          "before": "e9e7769e3834fbb39e2349287936d9ee6021805e",
+          "after": "e7054a6458185949ec040218cd081aabe41db872"
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-cli-recovery-coverage-operator-buyer.test.mjs",
+          "before": "3b07a098e7edf4199ba74e0dbb80250be501b4a0",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-cli-recovery-coverage-seller-commitment.test.mjs",
+          "before": "b9c12758e0bf33cbd59d861e10fd4032f818af34",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-commit-phase-coverage-adoption.test.mjs",
+          "before": "6c6d46a6c9902c92f56d97801f9f10a3ca8d1f72",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-commit-retry-coverage-interactions.test.mjs",
+          "before": "1db8d701cde88afed6f808335b352757aee8285e",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-native-delivery-coverage.test.mjs",
+          "before": "d7920de5a8e65ebc45df7829850de27e54196850",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-native-payment-coverage.test.mjs",
+          "before": "5e16292b07c1b577336460c984395fd1dc5d8351",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-native-readback-current-coverage.test.mjs",
+          "before": "91099c01b8bb92f1d4fbb4e11a8aba263b97af60",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-node2-current-coverage-block-zero.test.mjs",
+          "before": "ef3e816b5374941714ea251140caeb04c4c82967",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-node2-current-coverage-consumers.test.mjs",
+          "before": "436e5f43ae8a93ab9a53367d3e354097b05e66fa",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-node2-current-coverage-layout.test.mjs",
+          "before": "4a8aa0c7f71b2c9685a3782953f3e5951957d558",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-node2-current-coverage-lifecycle.test.mjs",
+          "before": "278750ebabd583cce8a775bd3ec6b5c492e61496",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/cl\u0061ude-sr2-binding-coverage-interactions.test.mjs",
+          "before": "231725b61d856baeba0b6401e4e49902b9f9953e",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/closed-access-boundaries.test.mjs",
+          "before": "6b195a0b96924aba3c8990b955b0eb758dceb5f0",
+          "after": "4a45912824137080eb3439104737bc662c55a5be"
+        },
+        {
+          "path": "packages/dacs-client/test/closed-access-receipt-verify.test.mjs",
+          "before": "1d80f2210581e9ac5756bcb7894261472af191ff",
+          "after": "bf8840ea3aec8ea7d23bfd9696c53735a977911c"
+        },
+        {
+          "path": "packages/dacs-client/test/closed-access-resend-notice.test.mjs",
+          "before": "dbefd006887c6d7cea2f82b23deec7ab685f5148",
+          "after": "5e7fa8615a9e4b04e8a8b508fb75233d7c459352"
+        },
+        {
+          "path": "packages/dacs-client/test/closed-access-retained-resend.test.mjs",
+          "before": "c1f6eecb43e78faba31077002ee7dd250a1e1e5a",
+          "after": "2f3a9862e7d15339b2cbb3c2a13d3ad9e7998eb5"
+        },
+        {
+          "path": "packages/dacs-client/test/closed-access-rpc-auth.test.mjs",
+          "before": "b748b7f02755b1fa883f3a540904bc3df1c9ffe2",
+          "after": "d79d1120647b80c3bf55a4710d953b84cafa9076"
+        },
+        {
+          "path": "packages/dacs-client/test/closure-identity-sdk.test.mjs",
+          "before": "f2eef79f40df45d9d7397ffb247dbd4ea0278658",
+          "after": "3959113db6977399b99cde4b1b1a41c810525006"
+        },
+        {
+          "path": "packages/dacs-client/test/commit-on-signature-authorization.test.mjs",
+          "before": "0638269d0bdc71b3a582b704c575302f44b05372",
+          "after": "20d1c4874f7355f799b99635688d027f13ca400c"
+        },
+        {
+          "path": "packages/dacs-client/test/commit-on-signature-native.test.mjs",
+          "before": "c4406cd01d6c92a78abde8b2cb0cdf3adfeb9e51",
+          "after": "a4024302e97d79d662eae43bd0a81573f8224a91"
+        },
+        {
+          "path": "packages/dacs-client/test/commit-on-signature-recovery.test.mjs",
+          "before": "e176944becef63a8c342c7ef186a3f57791c7d6f",
+          "after": "d3fe0fef1685f502c360396cf042aa168ca5eee1"
+        },
+        {
+          "path": "packages/dacs-client/test/commit-on-signature.test.mjs",
+          "before": "fe583adc88a4d0a262a75d13894d45a56c1cd0d0",
+          "after": "b8a44082e3670bd86db9e165293bb67cfe0dfcb4"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-consumer-proof-indeterminate.test.mjs",
+          "before": "3d54262dcc2727a26fed0b0b4f01020b2d89dbb6",
+          "after": "f4a52f887f66d0057e7b3e53bd6301fcb98c5352"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-contradiction-classifier.test.mjs",
+          "before": "ad338568556159c3deb1ccb255bb12d46dbfcd8a",
+          "after": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-purchase-chain-readback.test.mjs",
+          "before": "57f58afd19788166a39331f72212dc2705f64d78",
+          "after": "d56b0160f8166ce49a06b07400efccab318aecdb"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs",
+          "before": "9618563920d4554986d5a7968391c4d50f1ea5d6",
+          "after": "304d76244f718222ca561f73c0c10824a2d06efc"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-purchase-cos.test.mjs",
+          "before": "b153fcf0f5cd4f713f736ab0d61a21d56529c593",
+          "after": "8891faf4aac4a7f3deff796466833dbf04962023"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-purchase.test.mjs",
+          "before": "94d950c2cf16a8c3aa5d1604b40cb9f077538379",
+          "after": "13b415baaada4ffb50a8d28c885b429204f1fba7"
+        },
+        {
+          "path": "packages/dacs-client/test/commitment-node-junk-reader.test.mjs",
+          "before": "bcb17ea9f5da0f21ddde1b151fea05c62ef445a0",
+          "after": "e83b763550bfb44688f082804e7bd6b3e127f26a"
+        },
+        {
+          "path": "packages/dacs-client/test/completion-readiness.test.mjs",
+          "before": "8bee0daa1249ea0723e0d993e9b83773faf97d0d",
+          "after": "7c7da91c6deedcdf4afc14314a73110240fee3d1"
+        },
+        {
+          "path": "packages/dacs-client/test/config-equivalence.test.mjs",
+          "before": "790ebd81ac79b6522b9f61e96d8b320e8ff8c1de",
+          "after": "4a210e595ccf64840c482281adddc08419d88167"
+        },
+        {
+          "path": "packages/dacs-client/test/current-delivery-readback.test.mjs",
+          "before": "eddce99f0f8c73346942a6abc49549827c749e57",
+          "after": "88a16f2b3d361cdd85831b3bdeae3b9c6448b844"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-demos-sr2-wallet.test.mjs",
+          "before": "d90a8671c90f4a47ab8afaab9387fac563db03ff",
+          "after": "2937af523b7d565cadd8902b553151d3f67598a9"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-demos-sr2.test.mjs",
+          "before": "9442be3991db0f76526321a3a8eb7b79ba8be15e",
+          "after": "a873dd4dadf009def8d24aeb549d9ea9cc7aada7"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-offline-agreement-runtime.test.mjs",
+          "before": "0a305eec72b615209d0d57ae0fda7b1b25643376",
+          "after": "de3ddc481243b4611942312d32bafd41feb25898"
+        },
+        {
+          "path": "packages/dacs-client/test/dacs-seller-transport.test.mjs",
+          "before": "5b933e85809e0f5ad3f5943857e19b717e9ca5cf",
+          "after": "9a65731deee638b944283dae0b6379a87d682573"
+        },
+        {
+          "path": "packages/dacs-client/test/devnet-buyer-access-prefixed.test.mjs",
+          "before": "1579e1fbc067220cad207d57557d39d505f48105",
+          "after": "23bfb2cd91a8502cf1a02cb7bf16a90343ac6fdf"
+        },
+        {
+          "path": "packages/dacs-client/test/devnet-operator-seller-tls.test.mjs",
+          "before": "980ecadf30bf4e27d129c3dac659c7f76a33c202",
+          "after": "1f5dce6ce65d541b20de3622cb646fdb645cb064"
+        },
+        {
+          "path": "packages/dacs-client/test/embedded-wallet-flow.test.mjs",
+          "before": "1aac4b131a44e280f0be44c8a0c853b137659c27",
+          "after": "7b0c1438cb608366584774add49d9e8806758304"
+        },
+        {
+          "path": "packages/dacs-client/test/embedded-wallet-transaction.test.mjs",
+          "before": "1ca5036d92e6e90ac207f5b9e8ae4af8537da762",
+          "after": "ce227ccbced6b39504c1e51890faf38eae3af999"
+        },
+        {
+          "path": "packages/dacs-client/test/fixtures/publication-base-digests.json",
+          "before": "edb21fd5f8d02d7cdb0305a4adcb7557746fb796",
+          "after": "55d655b69b4f8474a4764163f3020881e9270d50"
+        },
+        {
+          "path": "packages/dacs-client/test/funding-help.test.mjs",
+          "before": "749344c340b89f141cb441b76e182134a43204e7",
+          "after": "7f0243bfdc78cf6b4c5ea9d6430a8bd3a1956774"
+        },
+        {
+          "path": "packages/dacs-client/test/github-signals-integration.test.mjs",
+          "before": "cd7f261c59553789e7d9955a18246b58cf75637c",
+          "after": "00c86be32e848ec683826242e72644d62fae55ed"
+        },
+        {
+          "path": "packages/dacs-client/test/github-signals.test.mjs",
+          "before": "82127e972f3c837741a277f278d6cc67e4b996ac",
+          "after": "8e26c17fda4b5e0aceaa41285c36822224a9df98"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/agreement-context-integration.mjs",
+          "before": "2f42b9f1e01128731de1454d995105dea0459190",
+          "after": "3bbc74d4d3f72101e8b3d3b2ff27449ba4105add"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/cl\u0061ude-commit-phase-coverage-world.mjs",
+          "before": "95c701a497fad025e124f6f671ffee9fd9609973",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/cl\u0061ude-commit-retry-coverage-world.mjs",
+          "before": "ce0def61b6c72ba097c9fc9b2adeaa9223fb201e",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/cl\u0061ude-native-delivery-coverage-reader.mjs",
+          "before": "1c72fcb289c3e50dc7309e449ed192c0d0032490",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/cl\u0061ude-native-payment-coverage-flow.mjs",
+          "before": "5c9ff5ad7ee45c4df33f99b7c49590381cbe169a",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/cl\u0061ude-native-readback-current-fixture.mjs",
+          "before": "b1a107cce0657e1e3b69fac8ff627f0e13568372",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/cl\u0061ude-node2-current-coverage-fixture.mjs",
+          "before": "2753607812cba4d23801227a348807239e7dcca9",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/cl\u0061ude-sr2-binding-coverage-fixture.mjs",
+          "before": "8d1272740473637055f5822187907f777ca9481b",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk-purchase.mjs",
+          "before": "60397a584f4622283a75a15314823ee15aef1f41",
+          "after": "7b01073b114cfa4def9f44dbe1f6b795eab207dd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk.mjs",
+          "before": "fcb9ae51383e9dc6d34971766d122f43ef608329",
+          "after": "d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/devnet-agreement-transport-harness.mjs",
+          "before": "914e4bc7544d69a2c3db3a539a3591a6409edc8a",
+          "after": "6cff2a02b82b9cfe75cc2db2e8d5edd27297cf55"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/devnet-agreement-transport-repeat.mjs",
+          "before": "ccae92ecda1e6b7b506f5d930e4acab475cc90f7",
+          "after": "c29b6ee11eaa68adf6ab3039731fbdb1f2ff6779"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/devnet-native-transport-harness.mjs",
+          "before": "e04c9355a4379a28833669eb67156482a8a70688",
+          "after": "5cce84939836c0283c8a7addedd9f9f09260b11a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/devnet-operator-node2-fallback-stub.mjs",
+          "before": "d41d8bc6311c05179ab4f78091f72058ab705e59",
+          "after": "4c0115a793a76fe30be8bb277ccd2287c0cdad9c"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/embedded-wallet-flow-fixtures.mjs",
+          "before": "1640e6b96a170b2393ec8c6583ae216af34c22cf",
+          "after": "6d56789eff25bb9549a5d74a446981a2245a4d5a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/embedded-wallet-transaction-chain.mjs",
+          "before": "03995668969f37380fb077291d8e1db64af2a72a",
+          "after": "ca236433328acbe239d3662741ce36829723572e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/node2-sr2-binding-consumer.mjs",
+          "before": "6c03ed956d74159bc1f3c22b6385ed5fe2c150db",
+          "after": "dae379c3ddcb714434239f5e7d458c7293a9e91e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs",
+          "before": null,
+          "after": "37ab6d1fe442415929f81c40d6a56651b6dd530e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs",
+          "before": null,
+          "after": "8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-native-delivery-coverage-reader.mjs",
+          "before": null,
+          "after": "1c72fcb289c3e50dc7309e449ed192c0d0032490"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-native-payment-coverage-flow.mjs",
+          "before": null,
+          "after": "835e70d78caa965f3d11db024d2e9f46610d42e2"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-native-readback-current-fixture.mjs",
+          "before": null,
+          "after": "6e3ab127911d1ce4289de29b05f473c4311bc859"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-node2-current-coverage-fixture.mjs",
+          "before": null,
+          "after": "75e36cabfd778e000c40cf637d57c53bd220bcb1"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-sr2-binding-coverage-fixture.mjs",
+          "before": null,
+          "after": "794e129e237bd73568f7a7da44058b8f5d4a0dcf"
+        },
+        {
+          "path": "packages/dacs-client/test/identities.test.mjs",
+          "before": "9b65fb0905d5f4f4855ee7ec51ef5ceb29c9fc8e",
+          "after": "481158e78b871012a1bf00ba8303e168b61562c2"
+        },
+        {
+          "path": "packages/dacs-client/test/mcp-seller-content-integration.test.mjs",
+          "before": "622c021a01b5db2fd76ff2f1e49ebc8ae6ef84f8",
+          "after": "6864f583776866930efd4f4b6f61594bdbce22f9"
+        },
+        {
+          "path": "packages/dacs-client/test/mcp-seller-content.test.mjs",
+          "before": "136c5f64586fb618bc4a2a3890dddf8d6f524590",
+          "after": "7186af1b00de543bd9db977eb43c5954bb0de893"
+        },
+        {
+          "path": "packages/dacs-client/test/mcp-seller-diagnostics-errors.test.mjs",
+          "before": "28549f01ee6bb3aab45f83d7d50f7a739e7d1146",
+          "after": "0b0d5f0bbae55afd9cefbb37b9e8187ef328d71e"
+        },
+        {
+          "path": "packages/dacs-client/test/mcp-seller-diagnostics-settlement.test.mjs",
+          "before": "aa5d4adb61a06a76b3c7986a189b5844ad3182d8",
+          "after": "aede5d12f06253cff8b55874972502ec990f3d5d"
+        },
+        {
+          "path": "packages/dacs-client/test/mcp-seller-diagnostics.test.mjs",
+          "before": "afb827af07b565ed155ff42a4c7a870ede28673d",
+          "after": "b948a7d1a53f2be859223eb773008df29298ce0c"
+        },
+        {
+          "path": "packages/dacs-client/test/native-agreement-readback-cache.test.mjs",
+          "before": "83c08bf09eef84b0da9f7e49872ca329fb73d12f",
+          "after": "f8bc67391ae08b4b52b0e903cba08da52285a4d1"
+        },
+        {
+          "path": "packages/dacs-client/test/native-payment-cancel-equivalent.test.mjs",
+          "before": "279bbb08f808de5158f753488b0c205e2d60e490",
+          "after": "7ca9619279addee3ae172dbde6c33537e8c3419f"
+        },
+        {
+          "path": "packages/dacs-client/test/native-payment-cancel-failed-lane.test.mjs",
+          "before": "8873705a1cc4c121a961131e4fe3e560ad40a277",
+          "after": "6ea6e31233b6bc5eff72f25430ecd4344a05ba60"
+        },
+        {
+          "path": "packages/dacs-client/test/node2-native-transfer-readback-prefixed.test.mjs",
+          "before": "3769f2b5b490d3a33d225f8a7650d924ff560990",
+          "after": "3d349d684805b944bf99562924db227123c17238"
+        },
+        {
+          "path": "packages/dacs-client/test/offline-tester.test.mjs",
+          "before": "39bc1f8781557e6a26798ff3ce402725e6b070e1",
+          "after": "082153dc66ddf530f555fafc1888654066bf59fe"
+        },
+        {
+          "path": "packages/dacs-client/test/ops-health-lost-attempt.test.mjs",
+          "before": "2e475295724a493b66a4831829faefb11f3cdfaa",
+          "after": "cda9d38fffac1c08657200ccf2dab1aa3d341b7b"
+        },
+        {
+          "path": "packages/dacs-client/test/ops-health.test.mjs",
+          "before": "b13bd2413c7f7ad9a55acdff1000b59ecb18adb0",
+          "after": "8d3f3c8cdb0dfd786e34db8f7652d06c589c7e6c"
+        },
+        {
+          "path": "packages/dacs-client/test/overnight-core-seller.test.mjs",
+          "before": "e689cc787fa440d200ce8c36fac7f782e6b65a3c",
+          "after": "29f335f36d7bb40a05337c8d13931146f0c174d6"
+        },
+        {
+          "path": "packages/dacs-client/test/portal-auto-advance-hooks.test.mjs",
+          "before": "ed585e28be5532a9180a6a8d698cb539d5514c17",
+          "after": "eaf08c7693f2c5ee3173310dc7750801eaddcbcd"
+        },
+        {
+          "path": "packages/dacs-client/test/portal-auto-assets.test.mjs",
+          "before": "112e740ec28faf2ef421392012e5f8dc9970fce1",
+          "after": "b10e39e464ac68ac890b2ef23a942ec960d691a9"
+        },
+        {
+          "path": "packages/dacs-client/test/portal-delivery-evidence-label.test.mjs",
+          "before": "d6649ed17936d725fdd2c5256c7be2b098e1d478",
+          "after": "5ab19a93ca73f82d8d9493498a2c4cb617957c96"
+        },
+        {
+          "path": "packages/dacs-client/test/protocol-revision-races.test.mjs",
+          "before": "27d181469a68b4451adb9da8bbe290184c4de379",
+          "after": "3a16ee07c11d7896c756364e0da2a002fe15e4ae"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-model-view.test.mjs",
+          "before": "9feb408e2d7d4d028cca412ce862585d649bf8bc",
+          "after": "133e2ca73c4085eec0a04bbc365de619c3dbcd7c"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase.test.mjs",
+          "before": "9306f1f422412185b592aacb12e20faba0f5585f",
+          "after": "3bfc4818889c9e3b682c92542f8f7b543c514e2f"
+        },
+        {
+          "path": "packages/dacs-client/test/purchased-report.test.mjs",
+          "before": "38af65ab5e2a8c6daa87d4bcd5a1d0775e3881c6",
+          "after": "c611c8f74749302c3a6dfa62973f84817a1c8379"
+        },
+        {
+          "path": "packages/dacs-client/test/review-cli-recovery-coverage-operator-buyer.test.mjs",
+          "before": null,
+          "after": "3b07a098e7edf4199ba74e0dbb80250be501b4a0"
+        },
+        {
+          "path": "packages/dacs-client/test/review-cli-recovery-coverage-seller-commitment.test.mjs",
+          "before": null,
+          "after": "4a1c74beea4a7c4beacdab4e3870c5d570d02335"
+        },
+        {
+          "path": "packages/dacs-client/test/review-commit-phase-coverage-adoption.test.mjs",
+          "before": null,
+          "after": "9e35cfff0efbd2d92e94803326d3b18d1b60c415"
+        },
+        {
+          "path": "packages/dacs-client/test/review-commit-retry-coverage-interactions.test.mjs",
+          "before": null,
+          "after": "d4742c463a8f708bdea186919d963c58599f4d45"
+        },
+        {
+          "path": "packages/dacs-client/test/review-native-delivery-coverage.test.mjs",
+          "before": null,
+          "after": "17a2711510acb07160b72b6a94b76dd7d0d8c876"
+        },
+        {
+          "path": "packages/dacs-client/test/review-native-payment-coverage.test.mjs",
+          "before": null,
+          "after": "59d7dc787d1a1c7a3467aeeea1038a443879fad0"
+        },
+        {
+          "path": "packages/dacs-client/test/review-native-readback-current-coverage.test.mjs",
+          "before": null,
+          "after": "3400babde0aead0fd782be6ae416a2b98e8cdb17"
+        },
+        {
+          "path": "packages/dacs-client/test/review-node2-current-coverage-block-zero.test.mjs",
+          "before": null,
+          "after": "87cd444e711e822bf01ae1a1ecb52db8ee813e76"
+        },
+        {
+          "path": "packages/dacs-client/test/review-node2-current-coverage-consumers.test.mjs",
+          "before": null,
+          "after": "eda77c8352c0aeea96c5c59c57b45abb3c168703"
+        },
+        {
+          "path": "packages/dacs-client/test/review-node2-current-coverage-layout.test.mjs",
+          "before": null,
+          "after": "4b47c6ac83edadc85cbd0f20357a1e8243fb5684"
+        },
+        {
+          "path": "packages/dacs-client/test/review-node2-current-coverage-lifecycle.test.mjs",
+          "before": null,
+          "after": "771bdc91bb3d5eb1edf0896e76d87a900a3049cc"
+        },
+        {
+          "path": "packages/dacs-client/test/review-sr2-binding-coverage-interactions.test.mjs",
+          "before": null,
+          "after": "be3f15eddc486b8a4ee6e025776eafc45890e787"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-durable-state-locks.test.mjs",
+          "before": "31471802ca510bc692ffc767eef507e6e5e4dee1",
+          "after": "7ea6ed6c1bc0edb03eac34806ca5d8b9cc52e919"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-http-failure-cause.test.mjs",
+          "before": "4878e3bcd8158e17e832161bdc438942a3b3b49e",
+          "after": "a9c5aef97f8154da66d37b6b464e1b68b7a1dade"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-identities.test.mjs",
+          "before": "7e70856a351e0e129770b2e3ef4f435487de4c98",
+          "after": "3c327c21a6c463ab12c3ff7144f14b8280b83572"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-payment-recovery-repair-prefixed.test.mjs",
+          "before": "82530e0672b577dfe3fbd082aa27e8a526a16a41",
+          "after": "c1599b3f0d78e3ad7225347b331d129aff6a6dc3"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs",
+          "before": "0f1daa6f554b9c8b50b75110de18e3c9ecbd6c4d",
+          "after": "61af4bb4eae46cf9f65c77ee6c488599f82074ab"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-session-key-retirement.test.mjs",
+          "before": "1db984954c1bcd6ecb83293337feaa55977f69db",
+          "after": "a212a34ad9c75964b21cfc5ad16d76810fa38201"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-uncertain-payment-recovery-prefixed.test.mjs",
+          "before": "4563e109dcf18e4fdfe1d17f3aa921978d15a9e6",
+          "after": "1ca8e17dea986f477b092d579b257073604a3471"
+        },
+        {
+          "path": "packages/dacs-client/test/server-hosting.test.mjs",
+          "before": null,
+          "after": "b8b42926f9c6930972f2f5e45e48f6afce890eb6"
+        },
+        {
+          "path": "packages/dacs-client/test/showcase-live-operator.test.mjs",
+          "before": "607cb973cae4380cfb17f744c35f9782ce69c310",
+          "after": "9cadab583d3bdbc949e65c5826f62c955172349d"
+        },
+        {
+          "path": "packages/dacs-client/test/showcase-progress.test.mjs",
+          "before": "befa34677d0de5d12a82b6f966c83fd64f326e95",
+          "after": "35cea9e295296320b0d7b5c4f25db2e9ef5bf83e"
+        },
+        {
+          "path": "packages/dacs-client/test/showcase-publication-view.test.mjs",
+          "before": "29a4fa63da9f59a0b33cfd4603aeb846e269cf3a",
+          "after": "5d2107d7f65e019b6544e78fc693e83b6241ff80"
+        },
+        {
+          "path": "packages/dacs-client/test/showcase-report-commit-on-signature.test.mjs",
+          "before": "3fc9d0350aaa245c4b60e1acca45780747186541",
+          "after": "e90b0774ec7445c3139582d781d6f1e203cf50da"
+        },
+        {
+          "path": "packages/dacs-client/test/showcase-report-main-switches.test.mjs",
+          "before": "9f5aeaaf341577b21020729e0853d25cf2261984",
+          "after": "2909ef6bc824912cc9b7407e84310c08cda9aec0"
+        },
+        {
+          "path": "packages/dacs-client/test/showcase-report-seller-identities.test.mjs",
+          "before": "200336f29b2d6f5252acf5a56aa923aec2e24896",
+          "after": "c98aed962d208536da8a5c7f4f7c5e445f6ebde5"
+        },
+        {
+          "path": "packages/dacs-client/test/showcase-report-settlement.test.mjs",
+          "before": "f0d6b07e0f5500da5d94c1babc2e376279040d0d",
+          "after": "789589876aa24628127b3dac244674fa5f1247d7"
+        },
+        {
+          "path": "packages/dacs-client/test/start-intent-create-fence.test.mjs",
+          "before": "ee11a70a269c8dafc358ef86ba37c78bbfb70dbe",
+          "after": "826a4d8f62ffa5c7d7e0587911dd0ae6b942a364"
+        },
+        {
+          "path": "packages/dacs-client/test/start-intent-operator-auth.test.mjs",
+          "before": "b44e87cdc48c811cd3ae0c39715170ab554aa410",
+          "after": "8355ae8a0273c7396ed57ccf35a9ff289735f71e"
+        },
+        {
+          "path": "packages/dacs-client/test/ui-status.test.mjs",
+          "before": "2249d8dfd00fb5e2c2da78f76e062c26fb7c0772",
+          "after": "eebbba6c3aac998a9321d4d39bfc061897787583"
+        },
+        {
+          "path": "packages/dacs-client/test/v\u0070s-hosting.test.mjs",
+          "before": "6d3c191b36c53206ceb193c6d24b730aa70feb88",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/wallet-extension-probe-routes.test.mjs",
+          "before": "a333f59054052b1f59685dec8467b4661d6ab32a",
+          "after": "91b20906b7c9a998cb7407aa8875053e0592a144"
+        },
+        {
+          "path": "packages/dacs-client/test/wallet-extension-probe.test.mjs",
+          "before": "f8ed73bb4c74a4af8797fc6e4fff34a13ee92284",
+          "after": "027c7e0e586105b5481c9ee502276761c44fa441"
+        },
+        {
+          "path": "packages/dacs-client/test/wallet-write-batch.test.mjs",
+          "before": "1a84dc34bc4d37fe50aa640ca5ecf7692bea529e",
+          "after": "595f482da255f373328c30ee634af20c4911f7f4"
+        }
+      ]
+    },
+    {
+      "delta": "D15",
+      "subject": "delta(client): D15 use neutral fixture roles and review labels",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/agreement-context-write-effect.test.mjs",
+          "before": "4855d60c25e6cb00d39f51a54e3a9d22f4e80ab9",
+          "after": "6dfb653a365d8910cd47f745880964ffd7c3b350"
+        },
+        {
+          "path": "packages/dacs-client/test/identities.test.mjs",
+          "before": "481158e78b871012a1bf00ba8303e168b61562c2",
+          "after": "08d742ef7fdf29ae97679557b92955f24a420918"
+        },
+        {
+          "path": "packages/dacs-client/test/identity-actions.test.mjs",
+          "before": "0b1edc65471375ca30eaf6dd2b47add79a42e743",
+          "after": "fd197db0ad13e9754e8094315232f5a0c6717990"
+        },
+        {
+          "path": "packages/dacs-client/test/mcp-seller-diagnostics.test.mjs",
+          "before": "b948a7d1a53f2be859223eb773008df29298ce0c",
+          "after": "541702b3ad6d252938557ac21bb7f990a4573d69"
+        },
+        {
+          "path": "packages/dacs-client/test/ops-health-lost-attempt.test.mjs",
+          "before": "cda9d38fffac1c08657200ccf2dab1aa3d341b7b",
+          "after": "3c6377eb0b648d72493db93a3256a90a0f895b96"
+        },
+        {
+          "path": "packages/dacs-client/test/ops-health.test.mjs",
+          "before": "8d3f3c8cdb0dfd786e34db8f7652d06c589c7e6c",
+          "after": "b88578207a349f2186509bc8a70ce1a22310d650"
+        },
+        {
+          "path": "packages/dacs-client/test/protocol-revision-races.test.mjs",
+          "before": "3a16ee07c11d7896c756364e0da2a002fe15e4ae",
+          "after": "9563926720abb31a483bd86da057952c8d34d375"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-receipt.test.mjs",
+          "before": "f6fb22a52fe773702340db77c1e28d00d8246f9f",
+          "after": "918fcc4bf385fb93ce601ff217c5be6b9a69e7ec"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase.test.mjs",
+          "before": "3bfc4818889c9e3b682c92542f8f7b543c514e2f",
+          "after": "4e202c7cd7505a88d76638b53d2b745142a8b153"
+        },
+        {
+          "path": "packages/dacs-client/test/unit.test.mjs",
+          "before": "b28f1e2c135834ef4484758e7ecbe3c5ae42b6de",
+          "after": "a032de79e0a399ba4889a4108d6c7abb5b1c5f46"
+        }
+      ]
+    },
+    {
+      "delta": "D15",
+      "subject": "delta(client): D15 preserve policy checks across publication redactions",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/server-hosting.test.mjs",
+          "before": "b8b42926f9c6930972f2f5e45e48f6afce890eb6",
+          "after": "14455535f7617f046e9dfc6e23f56ac9d45c5c17"
+        }
+      ]
+    }
+  ]
+}
