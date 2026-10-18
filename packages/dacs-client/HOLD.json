@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "381da27323bb43d687e5d07ae89cd09d46b2137e"
+        "blob": "54240ac17fa67bec2c5e62d5acc94cef5fd4ffe9"
       },
       "DELTA-LEDGER.json": {
-        "blob": "de14e4cc49274fa98c34ff5376fb57958693aacd"
+        "blob": "67dfed2888cbcf18e2fd3b3747a066093f9bb294"
       },
       "DELTA-MAP.md": {
-        "blob": "3fb7f33d7e062cbe1632da24578d3356fc6acc92"
+        "blob": "17120a11bf709c81aee28ad8f5fa45c20b1dc493"
       },
       "DELTA-NOTES.md": {
         "blob": "a9cd813874580b521d4c600e14fe6be867fa9a0f"
@@ -451,10 +451,10 @@
         "blob": "f433ac11f747c6e2dae00e5113c3b8cea60dafa6"
       },
       "scripts/check-hold.mjs": {
-        "blob": "dbc36cf1de2510a490ef7b6bf324cbe9185a2f69"
+        "blob": "26022b77d821ddbc8f8ec16055cd169b19191b81"
       },
       "scripts/check-hold.test.mjs": {
-        "blob": "26b58937a9afcc8e9528263c87e8ceee5258bc78"
+        "blob": "41d668efd567f63b0503d59fbbd44b0034decc1d"
       },
       "scripts/check-imports.mjs": {
         "blob": "c48030a9ee189aa510d524fa136536449e0234aa"
@@ -559,7 +559,7 @@
         "blob": "a97ba79759d398277adb6a316c74112aa8d2a240"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "876fcfbc95090cee017e825e2bb7d900d0a56b8d"
+        "blob": "479bd5b726f9e0752ca1618212e174330b800af0"
       },
       "src/dacs/purchase-protocol.mjs": {
         "blob": "2b97f69a1c3642c5374f0e6e5eaa339771c5482a"
@@ -1375,7 +1375,7 @@
         "blob": "c611c8f74749302c3a6dfa62973f84817a1c8379"
       },
       "test/readback-review-decisions.test.mjs": {
-        "blob": "d62b497dbafd55a0f2c782b9c9152efce10ea876"
+        "blob": "a3260b7e24020f9a6a3b6e8ba637d59d17ebae06"
       },
       "test/review-cli-recovery-coverage-operator-buyer.test.mjs": {
         "blob": "3b07a098e7edf4199ba74e0dbb80250be501b4a0"
@@ -1531,7 +1531,7 @@
         "blob": "d3f0b6c95036be12c1303de8eb03a209dfd12de5"
       },
       "test/sweep-contracts.test.mjs": {
-        "blob": "7a0ffedc3ef6ec1e9ebd4edcdc99cd5653aab30e"
+        "blob": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"
       },
       "test/switch-registry.test.mjs": {
         "blob": "24fe16ee6f204222fcd09e908bdfec0b653f25cb"
@@ -1559,7 +1559,7 @@
       }
     },
     "outside": {
-      "pinnedAt": "5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1",
+      "pinnedAt": "6922053601422718bf03af51577423e91efd1d07",
       "what": "Every tracked file outside packages/dacs-client/ at the frozen work head, with its Git blob. The gate lists tracked files (tracked ignored output included) and unignored untracked files, and fails on any added, removed or changed outside file, whatever it contains. Untracked files Git ignores are unseen: they belong to no commit, so they cannot reach review or a merge. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD.",
       "files": {
         ".cursor/environment.json": {

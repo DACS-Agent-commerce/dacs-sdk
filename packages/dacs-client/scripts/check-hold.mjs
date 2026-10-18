@@ -20,7 +20,7 @@
 // changed outside file in any of those states, whatever it contains. A caller
 // that computes, escapes or encodes the path is still an added or changed file.
 // As an extra tripwire only, also report a literal dacs-client in an outside path or file; the root
-// lockfile's workspace registration is its one exception. The tripwire is not
+// lockfile's workspace registration and the reviewed CI gate are its exceptions. The tripwire is not
 // what makes the outside rule hold. Git errors, unreadable files and symlinks
 // fail closed. Any other repository change (lockfile, another workspace, a
 // rebase, a delta commit) fails until a reviewed re-pin of the control pair.
@@ -49,8 +49,8 @@ const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
 
 export const PINNED = Object.freeze({
-  holdSha256: "a2a8601934d771a6bc8eb11e9b42751a90ef3530a6a390bfde434a90da842287",
-  holdBytesSha256: "cf3f651c017ea1f1df21701151f9b4693d70be2405b007fc961bc0c934c99f73",
+  holdSha256: "43cbf44833056b8fb0ee2da00f6c3cad60bac65deeac75639f51b6749bb9d27d",
+  holdBytesSha256: "d2073bdd8288a12bc7bd2869b8c9647647a65af874506e86aaf8c7efb205d7b1",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -296,7 +296,7 @@ function finish(failures, summary) {
     process.exitCode = 1;
     return;
   }
-  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); exports: {}; outside inventory frozen (${summary.outside} files, exact blobs at ${summary.pinnedAt.slice(0, 12)}); HEAD blobs verified against pins; index and working files match HEAD (paths, blobs and regular-file modes); literal-name tripwire clear (lockfile registration excepted); no behavioural imports`);
+  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); exports: {}; outside inventory frozen (${summary.outside} files, exact blobs at ${summary.pinnedAt.slice(0, 12)}); HEAD blobs verified against pins; index and working files match HEAD (paths, blobs and regular-file modes); literal-name tripwire clear (lockfile registration and CI gate excepted); no behavioural imports`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

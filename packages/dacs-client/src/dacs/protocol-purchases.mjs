@@ -274,7 +274,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   const sourceTerms = (op) => Boolean(sourceCapability && canonicalize(op.terms.protocol.transportBinding) === canonicalize(sourceCapability.transportBinding));
   const walletBridge = walletConfig && !walletConfig.bridgeFor ? createDemosSr2WalletBridge({ ...walletConfig, fetchImpl, now }) : null;
   const walletAvailable = Boolean((walletBridge || typeof walletConfig?.bridgeFor === 'function') && typeof dacsProtocol.sellerEndpoint === 'function');
-  const available = false; // Coordinated profile admission remains held.
+  const available = Boolean(walletAvailable && sourceCapability);
   const supportsMode = (mode) => mode === OFFLINE_AGREEMENT_MODE && available;
   // Optional operator configuration only (agreement-context-consumer.mjs).
   const agreementContext = agreementContextConfig(dacsProtocol?.agreementContext);
@@ -683,6 +683,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
 
   // ---- DACS-3 exchange, anchor, commitment readback ----
   async function submitAgreement(operation, { agreementSignature, anchorSignature } = {}) {
+    assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     if (isOfflineWalletAgreement(operation)) {
       if (!walletAvailable) throw unavailable();
@@ -1102,6 +1103,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   async function recheck(operation, coords) {
+    assertPurchaseActionsAdmitted();
     try{assertBuyerAccess(operation.terms.buyer.wallet, operation);}
     catch(error){
       if(error.code==='buyer_access_closed'&&!error.details?.buyerAccessMissing&&sourceCapability){
@@ -1144,6 +1146,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
 
   return {
     available,
+    actionsAdmitted: false,
     // Chain readback: the buyer's own chain reader, for the
     // operator's buyer driver; the operator-action hold, for its key sweep.
     ...(chainReadback ? { chainReadback } : {}),

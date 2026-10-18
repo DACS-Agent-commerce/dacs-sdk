@@ -87,6 +87,27 @@
           "after": "7a0ffedc3ef6ec1e9ebd4edcdc99cd5653aab30e"
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 pin reviewed controls and preserve held readback tests",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "876fcfbc95090cee017e825e2bb7d900d0a56b8d",
+          "after": "479bd5b726f9e0752ca1618212e174330b800af0"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "d62b497dbafd55a0f2c782b9c9152efce10ea876",
+          "after": "a3260b7e24020f9a6a3b6e8ba637d59d17ebae06"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "7a0ffedc3ef6ec1e9ebd4edcdc99cd5653aab30e",
+          "after": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"
+        }
+      ]
     }
   ]
 }

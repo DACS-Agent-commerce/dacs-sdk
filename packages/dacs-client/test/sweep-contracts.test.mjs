@@ -51,9 +51,11 @@ const refused=e=>e.code==='profile_not_admitted';
 for(const authority of [undefined,{}, {standardRevision:'old'}, {standardRevision:DACS_STANDARD_PIN}, [{standardRevision:DACS_STANDARD_PIN},{standardRevision:DACS_STANDARD_PIN}]])test('profile candidate refuses caller-supplied/missing/mismatched/duplicate authority before effects '+JSON.stringify(authority),async()=>{
  let effects=0;const effect=()=>{effects++;throw Error('effect');};
  const buyer=createProtocolPurchases({db:{},ops:{},coordinates:{},dacsProtocol:{profileAuthority:authority},fetchImpl:effect});
- assert.equal(buyer.available,false);
+ assert.equal(buyer.available,false);assert.equal(buyer.actionsAdmitted,false);
  for(const method of ['prepareTerms','identityRequest','signRequest','withNativePaymentLane','readNativePaymentLane'])assert.throws(()=>buyer[method]({},effect),refused);
  await assert.rejects(buyer.planRequest({}),refused);
+ await assert.rejects(buyer.submitAgreement({}),refused);
+ await assert.rejects(buyer.recheck({}),refused);
  assert.throws(()=>planAgreement({}),refused);assert.throws(()=>planAgreementFromInput({}),refused);
  await assert.rejects(exchangeAgreement({seller:{propose:effect},anchorAdapter:{write:effect}}),refused);
  await assert.rejects(createSellerAgent({signer:{sign:effect},profileAuthority:authority}),refused);

@@ -339,10 +339,10 @@ test("the outside inventory is the tracked tree outside the package at its pinne
   assert.deepEqual(Object.fromEntries(Object.entries(files).map(([path, pin]) => [path, pin.blob])), expected);
 });
 
-test("the root lockfile is pinned like every outside file and is the tripwire's only exception", () => {
+test("the root lockfile and CI gate are the only reviewed tripwire exceptions", () => {
   const { repo, dir } = scratch();
   const frozen = readJson(join(dir, "HOLD.json")).step1Freeze;
-  assert.deepEqual(Object.keys(frozen.literalNameTripwire.exceptions), ["package-lock.json"]);
+  assert.deepEqual(Object.keys(frozen.literalNameTripwire.exceptions).sort(), [".github/workflows/ci.yml", "package-lock.json"]);
   assert.match(frozen.outside.files["package-lock.json"].blob, /^[0-9a-f]{40}$/);
   appendFileSync(join(repo, "package-lock.json"), "\n"); refused(gate(dir), outsideFailure("package-lock.json", "changed"));
 });

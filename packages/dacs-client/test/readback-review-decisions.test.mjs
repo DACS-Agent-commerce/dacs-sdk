@@ -13,6 +13,9 @@ const state=globalThis[Symbol.for('d15.review.readers')]={};
 const moduleAt=name=>new URL('../src/'+name,import.meta.url).href;
 const fake=source=>({url:'data:text/javascript,'+encodeURIComponent(source),shortCircuit:true});
 registerHooks({resolve(specifier,context,next){
+ // Exercise retained-state reducers behind the unconditional production action
+ // hold. The separate sweep-contracts tests pin that real hold and zero effects.
+ if(specifier.endsWith('/action-admission.mjs'))return fake('export const assertPurchaseActionsAdmitted=()=>{};');
   if(specifier.endsWith('/seams/purchase-store-not-wired.mjs'))return {url:new URL('./helpers/purchase-integrity-database.mjs',import.meta.url).href,shortCircuit:true};
   if(specifier.endsWith('/seams/buyer-access-not-wired.mjs'))return fake('export const operatorBuyerAccessConfig=()=>({assertWallet(){}});');
   if(specifier.endsWith('/demos-sr2-adapter.mjs') && !context.parentURL?.endsWith('readback-review-decisions.test.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/demos-sr2-adapter.mjs')+'?actual')}; export const createDemosSr2Adapter=()=>globalThis[Symbol.for('d15.review.readers')].adapter;`);
