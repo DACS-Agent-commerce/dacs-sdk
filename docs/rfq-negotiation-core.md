@@ -142,6 +142,11 @@ clock fault on a send call is `indeterminate` too, until the agreement is
 finalized. A send call on the member's own overdue turn records the timeout
 before the channel signer is called. A proposal the seller receives after its
 deadline records the timeout before the seller signs anything. The seller
+reads its trusted clock again once its agreement signer and verifier have
+settled: if its deadline has passed by then, it records the timeout instead
+of finalizing and publishes no contribution, and if the clock fails it
+answers `indeterminate` and stores nothing, so the same proposal may be
+received again. The seller
 also never countersigns a plan the buyer dated after the seller's deadline,
 but that date is the buyer's clock: `receive()` answers `rejected` with "buyer
 dated the RFQ agreement plan after the seller's deadline", calls no verifier
@@ -505,7 +510,12 @@ conversation history, decrypts the stored frame, and compares the complete
 canonical packet and route. It returns `absent` only when one unpaginated
 history response is exhaustive. Timestamp-paginated history can prove presence
 but cannot safely prove absence, so it remains `indeterminate` and never
-authorizes a resend. `resumeInbound()` similarly replays history through the
+authorizes a resend. History is per peer pair across all jobs and the node
+never deletes a row, so once two agents have exchanged more than one page
+(`historyPageSize`, 100 rows by default) in their lifetime, absence can never
+be proven between them again: a send that never reached the node, such as
+one refused during a demosdk reconnect, is then never resent, and the job
+ends in the RFQ-4 timeout. `resumeInbound()` similarly replays history through the
 normal lifecycle verifier; duplicate packets are harmless. Peer and codec
 operations are bounded (20 seconds by default); a send timeout is
 `indeterminate`, because the server may accept the packet after the local wait
@@ -638,7 +648,9 @@ The limits of this evidence:
   the reviewed source. Run these checks in the consuming host at startup,
   not only in this repository's tests; the transport performs neither.
   Against a node that fails them, the absence-then-resend evidence above
-  does not hold.
+  does not hold. On 2026-10-18 the public testnet node `node2.demos.sh`
+  reported commit `61b8e75…` with `dirty: true`, so it fails this check,
+  and that evidence is unconfirmed there.
   The duplicate handling above keys on the node's exact "Duplicate message"
   text.
 
@@ -748,6 +760,17 @@ its share of the 100-event and 16 MiB budget until it settles or times out.
 Run `resumeInbound()` for each peer after any `start()`, not only at process
 start. Live events that overflowed the lane, timed out in the consumer, or were
 retired by `stop()` stay in Demos history and come back only that way.
+
+The node can also lose a live push without an error on either side. Node
+`61b8e75` stores the row as `delivered` when the recipient is registered
+(`L2PSMessagingService.ts:132`), pushes the frame through a helper that
+swallows socket errors (`L2PSMessagingServer.ts:471-477`), and redelivers
+only `queued` rows (`L2PSMessagingService.ts:285`). A frame lost that way
+reaches neither the consumer nor `onError`; it is only in history. In a
+long-running process, therefore, also call `resumeInbound()` for each peer
+on a regular cadence, whenever demosdk reports the peer connected again,
+and immediately before a waiting member calls `sendAbort()` to record an
+RFQ-4 timeout, so a reply already stored on the node is received first.
 
 History is kept per peer pair, not per job, and Demos keeps every row. Recovery
 therefore sorts the packets it finds by job and channel and delivers each job's
