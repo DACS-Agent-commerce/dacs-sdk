@@ -62,6 +62,10 @@ import {
   sameCanonicalClaimIdentity,
 } from "@kynesyslabs/dacs/identity";
 
+import {
+  captureDacsHistoricalListingAdmissionV1,
+  type DacsHistoricalListingAdmissionV1,
+} from "./historicalListingAdmission.js";
 import type { DacsSellerAgreementTransportRuntimeOptionsV1 } from
   "./agreementTransportRuntime.js";
 import type {
@@ -174,6 +178,7 @@ export interface DacsFixedPriceX402SellerAdmissionRecordV1 {
   jobId: string;
   localBindingHash: string;
   admittedAt: number;
+  listingAdmission?: Readonly<DacsHistoricalListingAdmissionV1>;
   application: Readonly<DacsFixedPriceX402ApplicationV1>;
   protocol: Readonly<FixedPriceX402OrderInput["protocol"]>;
 }
@@ -375,12 +380,18 @@ function admissionId(jobId: string): string {
 function captureAdmission(value: unknown): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
   if (!plainObject(value) || !exactKeys(value, [
     "admissionVersion", "jobId", "localBindingHash", "admittedAt", "application",
-    "protocol",
+    "protocol", ...(value.listingAdmission === undefined ? [] : ["listingAdmission"]),
   ]) || value.admissionVersion !== ADMISSION_VERSION ||
       typeof value.jobId !== "string" || typeof value.localBindingHash !== "string" ||
       !HASH_RE.test(value.localBindingHash) || !Number.isSafeInteger(value.admittedAt) ||
       Number(value.admittedAt) < 0 || !plainObject(value.protocol)) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-corrupt");
+  }
+  if (value.listingAdmission !== undefined &&
+      (!plainObject(value.listingAdmission) || Object.keys(value.listingAdmission).length !== 2 ||
+       value.listingAdmission.revocation !== "absent" ||
+       typeof value.listingAdmission.receivedJsonBase64 !== "string")) {
+    throw new DacsFixedPriceX402ProfileError("historical-listing-admission-corrupt");
   }
   const application = captureDacsFixedPriceX402ApplicationV1(value.application);
   let protocol: FixedPriceX402OrderInput["protocol"];
@@ -394,6 +405,12 @@ function captureAdmission(value: unknown): Readonly<DacsFixedPriceX402SellerAdmi
     jobId: value.jobId,
     localBindingHash: value.localBindingHash,
     admittedAt: Number(value.admittedAt),
+    ...(value.listingAdmission === undefined ? {} : {
+      listingAdmission: {
+        receivedJsonBase64: value.listingAdmission.receivedJsonBase64 as string,
+        revocation: "absent",
+      },
+    }),
     application,
     protocol,
   }));
@@ -404,6 +421,7 @@ function retainAdmission(
   order: Readonly<FixedPriceX402OrderInput>,
   application: Readonly<DacsFixedPriceX402ApplicationV1>,
   admittedAt: number,
+  listingAdmission: Readonly<DacsHistoricalListingAdmissionV1>,
 ): Readonly<DacsFixedPriceX402SellerAdmissionRecordV1> {
   const id = admissionId(order.jobId);
   const record: DacsFixedPriceX402SellerAdmissionRecordV1 = {
@@ -411,6 +429,7 @@ function retainAdmission(
     jobId: order.jobId,
     localBindingHash: fixedPriceX402OrderLocalBindingHash(order),
     admittedAt,
+    listingAdmission,
     application,
     protocol: order.protocol,
   };
@@ -420,7 +439,8 @@ function retainAdmission(
     if (captured.jobId !== record.jobId ||
         captured.localBindingHash !== record.localBindingHash ||
         canonicalize(captured.application) !== canonicalize(record.application) ||
-        canonicalize(captured.protocol) !== canonicalize(record.protocol)) {
+        canonicalize(captured.protocol) !== canonicalize(record.protocol) ||
+        canonicalize(captured.listingAdmission ?? null) !== canonicalize(record.listingAdmission)) {
       throw new DacsFixedPriceX402ProfileError("fixed-price-seller-admission-conflict");
     }
     return captured;
@@ -524,6 +544,10 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
             canonicalize(payload.order.protocol)) {
         throw new DacsFixedPriceX402ProfileError("fixed-price-session-listing-not-admitted");
       }
+      const listingAdmission = captureDacsHistoricalListingAdmissionV1(
+        application.listing,
+        resolved.admission.validation,
+      );
       const order = createDacsFixedPriceX402RoleOrderV1({
         role: "seller",
         jobId: payload.order.jobId,
@@ -544,6 +568,7 @@ export function createDacsFixedPriceX402SellerSessionPolicyV1(
         order,
         application,
         admittedAt,
+        listingAdmission,
       );
       return Object.freeze({ order, application });
     };

@@ -6,6 +6,7 @@ import {
   isAuthenticatedRailDefinition,
   validateListingArtifact,
   type AuthenticatedRailDefinition,
+  type ListingValidationResult,
 } from "@kynesyslabs/dacs";
 import {
   isListing,
@@ -101,6 +102,7 @@ export interface DacsPayDemExistingListingResolutionOptionsV1 extends ProfileExe
 }
 
 export interface DacsX402ExistingListingAdmissionV1 {
+  validation?: ListingValidationResult;
   listingRef: string;
   logicalAddress: string;
   listingContentHash: string;
@@ -623,6 +625,7 @@ async function resolveDacsExistingListingV1(
       logicalAddress,
       listingContentHash,
       listing: validation.listing!,
+      validation,
       rail: options.rail,
       facts,
     }),

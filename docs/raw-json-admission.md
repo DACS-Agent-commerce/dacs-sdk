@@ -91,7 +91,12 @@ Seller historical admission requires the original result object returned by
 it to the exact result snapshot before consuming the resolver response. A restored
 checkpoint must re-admit retained original bytes with trusted validation dependencies
 for the historical admission time. Copying result fields or rendering parsed JSON
-as base64 does not retain provenance.
+as base64 does not retain provenance. The host's native DEM and x402 seller
+checkpoints retain the original admitted bytes alongside the historical admission
+time. Restored authorities rerun the ordered reader using cryptographic checks,
+the authenticated rail, and the actor-local record of historical revocation
+absence, then return its original result object. Older checkpoints lacking those
+bytes require fresh admission before they can authorize payment intake.
 
 Tests vendor the byte-exact upstream `raw-json-profile-v0.1.json` corpus from
 that revision. All 59 outcomes and accepted canonical bytes are checked, along

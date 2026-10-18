@@ -150,12 +150,15 @@ describe("Listing CF-5 ingress before verification or effects", () => {
       received!.fill(0);
       return result;
     };
+    let verifierBytes: Uint8Array | undefined;
     session.verifyListing = vi.fn((_raw, _seller, received) => {
-      expect(Buffer.from(received!).equals(bytes)).toBe(true);
+      verifierBytes = received;
       return false;
     });
     await expect(runSessionCore("listing", terms, session)).rejects.toThrow(/failed signature verification/);
     expect(session.verifyListing).toHaveBeenCalledOnce();
+    expect(verifierBytes).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(verifierBytes!).equals(bytes)).toBe(true);
     expect(session.sign).not.toHaveBeenCalled();
     expect(session.settle).not.toHaveBeenCalled();
   });
