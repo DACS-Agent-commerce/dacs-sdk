@@ -152,17 +152,18 @@ function signComponent<T extends Record<string, unknown>>(
 function identity(
   claim: typeof BUYER | typeof SELLER,
   evm: string,
+  chainId = 84_532,
 ): IdentityBundle {
   const signature = Buffer.alloc(64, claim === BUYER ? 7 : 8).toString("base64url");
   return {
     bundleVersion: "1",
     presentedBy: claim,
     presentedAt: NOW - 20_000,
-    claims: [{ ref: claim }, { ref: `cci-xm:evm:84532:${evm}` }],
+    claims: [{ ref: claim }, { ref: `cci-xm:evm:${chainId}:${evm}` }],
     presentation: {
       kind: "per-claim",
       signatures: [{ ref: claim, signature },
-        { ref: `cci-xm:evm:84532:${evm}`, signature }],
+        { ref: `cci-xm:evm:${chainId}:${evm}`, signature }],
     },
   };
 }
@@ -203,7 +204,7 @@ function receipt(
   };
 }
 
-function protocol() {
+function protocol(chainId = 84_532) {
   return {
     commerceProfile: FIXED_PRICE_X402_COMMERCE_PROFILE,
     standardRevision: FIXED_PRICE_X402_STANDARD_REVISION,
@@ -219,7 +220,7 @@ function protocol() {
       railVersion: 2,
       railType: "x402" as const,
       phaseHandler: "pay-x402" as const,
-      network: "eip155:84532" as const,
+      network: `eip155:${chainId}` as const,
       availability: "live" as const,
     },
   };
@@ -247,9 +248,9 @@ function payDemProtocol() {
   };
 }
 
-async function fixture() {
-  const buyerIdentity = identity(BUYER, BUYER_EVM);
-  const sellerIdentity = identity(SELLER, SELLER_EVM);
+async function fixture(chainId = 84_532) {
+  const buyerIdentity = identity(BUYER, BUYER_EVM, chainId);
+  const sellerIdentity = identity(SELLER, SELLER_EVM, chainId);
   const listingUnsigned = {
     dacsVersion: "1" as const,
     listingVersion: 1,
@@ -278,7 +279,7 @@ async function fixture() {
       railId: "x402:test",
       railVersion: 2,
       parameters: {
-        network: "eip155:84532",
+        network: `eip155:${chainId}`,
         payTo: SELLER_EVM,
         asset: ASSET,
         httpResource: RESOURCE,
@@ -363,7 +364,7 @@ async function fixture() {
     httpResource: `${RESOURCE}/${JOB_ID}`,
     paymentReceiptHash: "c".repeat(64),
     settlementTxHash: "d".repeat(64),
-    chainId: 84_532,
+    chainId,
     logIndex: 0,
     protocolVersion: "2",
   };
@@ -475,7 +476,7 @@ async function fixture() {
     railVersion: 2,
     railId: "x402:test",
     railType: "x402",
-    asset: { kind: "erc20", chainId: 84_532, contract: ASSET,
+    asset: { kind: "erc20", chainId, contract: ASSET,
       symbol: "USDC", decimals: 6 },
     network: { kind: "x402-resource", resourceBaseUrl: RESOURCE },
     phaseHandler: "pay-x402",
@@ -653,8 +654,9 @@ async function payDemFixture() {
 
 async function x402AuditHarness(
   railParameters: Readonly<Record<string, unknown>> = {},
+  chainId = 84_532,
 ) {
-  const f = await fixture();
+  const f = await fixture(chainId);
   const parameters: Record<string, unknown> = { ...f.rail.parameters, ...railParameters };
   for (const [key, value] of Object.entries(railParameters)) {
     if (value === undefined) delete parameters[key];
@@ -674,7 +676,7 @@ async function x402AuditHarness(
     jobId: JOB_ID,
     buyer: BUYER,
     seller: SELLER,
-    protocol: protocol(),
+    protocol: protocol(chainId),
   });
   await database.createLiveCoordinatorStore("buyer").create({
     role: "buyer",
@@ -719,7 +721,7 @@ async function x402AuditHarness(
   });
   const observation = {
     status: "finalized" as const,
-    chainId: 84_532,
+    chainId,
     txHash: `0x${f.event.settlementTxHash}`,
     logIndex: 0,
     payer: BUYER_EVM,
@@ -763,6 +765,7 @@ async function x402AuditHarness(
     evmRpcUrl: "https://rpc.example",
     authorizationSearchFromBlock: 1,
     recipeRegistryVersion: 1,
+    finalityTag: "latest",
   });
   const authenticated = {
     envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
@@ -976,6 +979,47 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       request: requestWithFinality(f, 2),
     })).rejects.toMatchObject({ reasonCode: "buyer-audit-evidence-invalid" });
   });
+
+  it.each([137, 43_114, 56].flatMap((chainId) =>
+    [undefined, 1].map((echo) => ({ chainId, echo }))))(
+    "refuses a one-confirmation non-L2 audit without a rail depth: %j",
+    async ({ chainId, echo }) => {
+      const { audit, authenticated, f, observation, pair } = await x402AuditHarness({
+        finalityBlocks: undefined,
+      }, chainId);
+      mocks.observeX402Transfer.mockResolvedValue({
+        ...observation,
+        confirmations: 1,
+        includedAt: observation.finalityObservedAt,
+      });
+      let disposition: string;
+      try {
+        const preliminary = await audit.bundleTransport.resolveVerification({
+          authenticated,
+          request: requestWithFinality(f, echo),
+        });
+        const exactRequest = prepareCompletedSellerBundleCounterSignatureRequest({
+          ...preliminary.input,
+          seller: { ...preliminary.input.seller,
+            signer: async (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)) },
+        });
+        mocks.bundleRequest.mockResolvedValue(exactRequest);
+        const material = await audit.audit.resolveMaterial({
+          operation: { order: pair.buyer },
+          retained: { application: f.application },
+        } as never);
+        disposition = (await verifyFinalizedSessionSettlement(
+          material.input.settlementContext,
+          material.input.settlement,
+          material.durability.settlementVerification,
+        )).disposition;
+      } catch (error) {
+        expect(error).toMatchObject({ reasonCode: "buyer-audit-finality-invalid" });
+        disposition = "policy-rejected";
+      }
+      expect(disposition).toBe("policy-rejected");
+    },
+  );
 
   it.each([
     { finalityBlocks: 0 },

@@ -22,6 +22,15 @@ const QUANTITY_RE = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/;
 const INTEGER_RE = /^(0|[1-9][0-9]*)$/;
 const AUTHORIZATION_STATE_SELECTOR = "0xe94a0102";
 const DEFAULT_LOG_PAGE_SIZE = 2_000;
+// Reviewed chain definitions in viem 2.55.19, chains/definitions/{base,
+// baseSepolia,optimism,optimismSepolia,arbitrum,arbitrumSepolia}.ts.
+// This local registry is deliberately closed: additional chains need an
+// explicit authenticated rail depth until their L2 membership is reviewed.
+const X402_L2_CHAIN_IDS_V1: ReadonlySet<number> = new Set([
+  8453, 84532, // Base and Base Sepolia
+  10, 11155420, // OP Mainnet and OP Sepolia
+  42161, 421614, // Arbitrum One and Arbitrum Sepolia
+]);
 
 type ObserveX402Transfer = SellerPaymentIntakeDeps["observeX402Transfer"];
 type VerifyReceiptExtensions = SellerPaymentIntakeDeps["verifyX402ReceiptExtensions"];
@@ -246,22 +255,9 @@ function authorizationFromIntent(intent: Readonly<X402PaywallSettlementIntent>):
 }
 
 /**
- * Authenticate seller-side x402 settlement directly from canonical EVM data.
- * The observer never treats a facilitator response or transaction hash alone
- * as finality: it requires the exact AuthorizationUsed and ERC-20 Transfer in
- * one successful canonical receipt beneath the configured finality head.
- */
-/**
- * The one settlement chain an authenticated x402 rail admits is its own EVM
- * chain, classified as an L2 for the DACS-4 default depth of 1.
- *
- * DACS-4 §9.5.2 step 6 defines defaults only for L2s and Ethereum mainnet, and
- * this classifier does not consult an L2 registry: any non-mainnet chain of the
- * rail (including a non-L2 such as Polygon, Avalanche or BSC) gets depth 1 when
- * the rail sets no `finalityBlocks`. Chain 1 never reaches it (the resolver
- * applies 12 first). The observer counts below its finality tag (`finalized`
- * by default), but a deployment on a non-L2 chain should still set
- * `finalityBlocks` explicitly.
+ * Admit the authenticated rail's exact chain as an L2 only when it appears
+ * in the versioned local registry. Other EVM chains require an explicit rail
+ * depth; rail equality alone does not establish L2 membership.
  */
 export function classifyDacsAuthenticatedX402ChainV1(
   rail: Readonly<AuthenticatedRailDefinition>,
@@ -269,7 +265,8 @@ export function classifyDacsAuthenticatedX402ChainV1(
   const chainId = rail.asset.kind === "erc20" ? rail.asset.chainId : undefined;
   return ({ chainId: candidateChain, rail: candidateRail }) => {
     try {
-      return chainId !== undefined && candidateChain === chainId &&
+      return chainId !== undefined && X402_L2_CHAIN_IDS_V1.has(chainId) &&
+          candidateChain === chainId &&
           canonicalize(candidateRail) === canonicalize(rail)
         ? { disposition: "l2" as const }
         : { disposition: "unsupported" as const,
@@ -284,7 +281,8 @@ export function classifyDacsAuthenticatedX402ChainV1(
 /**
  * The pay-x402 block depth of an authenticated rail, by the same resolver the
  * SDK's seller payment intake uses. `finalityBlocks` is optional in the rail
- * parameters (DACS-4 phase card); an absent value is not an error.
+ * parameters (DACS-4 phase card); defaults exist only for Ethereum mainnet
+ * and registered L2 chains.
  */
 export function resolveDacsX402FinalityBlocksV1(
   rail: Readonly<AuthenticatedRailDefinition>,
@@ -308,6 +306,11 @@ export function hasInvalidDacsX402FinalityParameterV1(
     (!Number.isSafeInteger(configured) || Number(configured) <= 0);
 }
 
+/**
+ * Authenticate x402 settlement from the exact AuthorizationUsed and ERC-20
+ * Transfer in a successful canonical receipt beneath the configured head and
+ * at the shared authenticated rail depth.
+ */
 export function createDacsX402SellerEvmObserverV1(
   options: Readonly<DacsX402SellerEvmObserverOptionsV1>,
 ): Readonly<DacsX402SellerEvmObserverV1> {
@@ -338,12 +341,9 @@ export function createDacsX402SellerEvmObserverV1(
   const chainId = railAsset.chainId;
   const network = `eip155:${chainId}` as const;
   const asset = railAsset.contract.toLowerCase();
-  // The DACS-4 default when the parameter is absent: 12 on Ethereum mainnet,
-  // else 1 (the intake applies the same policy through its resolver).
-  const minimumConfirmations = record(rail.parameters) &&
-      Number.isSafeInteger(rail.parameters.finalityBlocks) &&
-      Number(rail.parameters.finalityBlocks) > 0
-    ? Number(rail.parameters.finalityBlocks) : chainId === 1 ? 12 : 1;
+  // Share the buyer/intake policy, including refusal of unregistered defaults
+  // and malformed explicit depths. No chain observation can override it.
+  const finalityPolicy = resolveDacsX402FinalityBlocksV1(rail);
   const finalityTag = options.finalityTag ?? "finalized";
   let requestId = 0;
 
@@ -390,6 +390,11 @@ export function createDacsX402SellerEvmObserverV1(
       return { status: "failed", reason: "settlement-transaction-binding-invalid" };
     }
     try {
+      const finality = await finalityPolicy;
+      if (finality.disposition !== "resolved") {
+        return { status: "unavailable", reason: finality.reason };
+      }
+      const minimumConfirmations = finality.finalityBlocks;
       const [transaction, finalityHead] = await Promise.all([
         receipt(txHash.toLowerCase()),
         head(),
@@ -525,6 +530,10 @@ export function createDacsX402SellerEvmObserverV1(
           requirements.payTo.toLowerCase() !== authorization.to ||
           requirements.amount !== authorization.value) {
         return { status: "indeterminate", reason: "settlement-intent-invalid" };
+      }
+      const finality = await finalityPolicy;
+      if (finality.disposition !== "resolved") {
+        return { status: "indeterminate", reason: finality.reason };
       }
       const finalityHead = await head();
       const logs = await authorizationLogs(

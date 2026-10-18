@@ -557,6 +557,27 @@ describe("fixed-price x402 buyer authenticated finality policy", () => {
       });
   });
 
+  it.each([137, 43_114, 56].flatMap((chainId) =>
+    [undefined, 1].map((echo) => ({ chainId, echo }))))(
+    "refuses non-L2 evidence without an explicit rail depth: %j",
+    async ({ chainId, echo }) => {
+      const f = paymentEvidenceFixture({ chainId,
+        parameters: { authorization: "eip-3009" } });
+      const event = { ...CAPTURED_EVENT, chainId };
+      f.state.settlement.outcome.settlement.signedEvent = event;
+      const evidence = signEvidence(x402EvidenceInput({
+        paymentTxRefs: [event],
+        settlementFinality: { model: "block-depth",
+          ...(echo === undefined ? {} : { finalityBlocks: echo }),
+          finalityObservedAt: OBSERVED_AT },
+      }), EVIDENCE_SELLER);
+      await expect(f.verify({ evidence, evidenceHash: contentHash(evidence) }))
+        .resolves.toEqual({ disposition: "invalid",
+          reason: "payment evidence finality policy invalid" });
+      expect(dependencies.verifySettlementEvidence).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ["an explicit depth", 84_532, { finalityBlocks: 5 }, { disposition: "resolved", finalityBlocks: 5 }],
     ["the rail's own L2", 84_532, {}, { disposition: "resolved", finalityBlocks: 1 }],

@@ -24,6 +24,16 @@ mocked offline tests are development evidence only. The sequence below describes
 the implementation exercised beneath that boundary. It still requires canonical
 CORE JID-1 identifiers before deriving DACS-4 SB-3 nonces.
 
+The host's x402 finality policy uses an explicit positive
+`rail.parameters.finalityBlocks` when supplied. Without that parameter it uses
+12 on Ethereum mainnet and 1 only on the versioned local L2 registry: Base
+(8453), Base Sepolia (84532), OP Mainnet (10), OP Sepolia (11155420), Arbitrum One
+(42161) and Arbitrum Sepolia (421614), reviewed against viem 2.55.19's chain
+definitions. Other chains, including Polygon, Avalanche and BSC, require an
+explicit authenticated depth. Buyer audit, payment evidence, seller intake and
+the EVM observer share this policy; a `latest` head or an omitted evidence depth
+echo cannot supply a missing chain policy.
+
 The callback sequence is deliberately:
 
 1. verify the x402 v2 authorization;

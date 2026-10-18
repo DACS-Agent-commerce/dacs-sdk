@@ -20,6 +20,7 @@ import {
 import {
   classifyDacsAuthenticatedX402ChainV1,
   createDacsX402SellerEvmObserverV1,
+  resolveDacsX402FinalityBlocksV1,
 } from "../src/x402SellerEvm.js";
 
 const ASSET = `0x${"44".repeat(20)}`;
@@ -133,10 +134,10 @@ function rpcFetch(options: Readonly<{
   return fetchImpl;
 }
 
-function intent(validBefore = "1800000200") {
+function intent(validBefore = "1800000200", chainId = 84_532) {
   const requirements = {
     scheme: "exact",
-    network: "eip155:84532",
+    network: `eip155:${chainId}`,
     amount: AMOUNT,
     asset: ASSET,
     payTo: PAYEE,
@@ -333,7 +334,7 @@ describe("seller x402 canonical EVM observation", () => {
 });
 
 // DACS-4 §9.5.2 step 6: without rail.parameters.finalityBlocks the observer
-// waits 12 confirmations on Ethereum mainnet and 1 elsewhere, and dates
+// waits 12 confirmations on Ethereum mainnet and 1 on supported L2s, and dates
 // finality at the block that reached that depth.
 describe("seller x402 observer default depth without finalityBlocks", () => {
   const TX_BLOCK = 0x60;
@@ -372,7 +373,8 @@ describe("seller x402 observer default depth without finalityBlocks", () => {
         };
       } else if (request.method === "eth_getBlockByNumber") {
         const tag = request.params[0] as string;
-        const n = tag === "finalized" ? finalizedHead : Number.parseInt(tag, 16);
+        const n = ["finalized", "safe", "latest"].includes(tag)
+          ? finalizedHead : Number.parseInt(tag, 16);
         result = {
           number: `0x${n.toString(16)}`,
           hash: blockHash(n),
@@ -414,11 +416,85 @@ describe("seller x402 observer default depth without finalityBlocks", () => {
     });
   });
 
-  it("accepts one confirmation on another chain", async () => {
-    await expect(observe(84532, TX_BLOCK)).resolves.toMatchObject({
-      status: "finalized",
-      confirmations: 1,
-      finalityObservedAt: blockTimestamp(TX_BLOCK) * 1000,
+  it.each([8453, 84532, 10, 11155420, 42161, 421614])(
+    "accepts one confirmation on supported L2 %i", async (chainId) => {
+      await expect(observe(chainId, TX_BLOCK)).resolves.toMatchObject({
+        status: "finalized",
+        confirmations: 1,
+        finalityObservedAt: blockTimestamp(TX_BLOCK) * 1000,
+      });
+    },
+  );
+
+  it.each([137, 43_114, 56, 999_999])(
+    "requires an explicit depth on unregistered chain %i, even at latest",
+    async (chainId) => {
+      const candidate = railWithoutDepth(chainId);
+      const fetchImpl = chainAt(chainId, TX_BLOCK);
+      expect(classifyDacsAuthenticatedX402ChainV1(candidate as never)({
+        chainId, rail: candidate as never,
+      })).toEqual({ disposition: "unsupported", reason: "settlement-chain-unregistered" });
+      await expect(resolveDacsX402FinalityBlocksV1(candidate as never)).resolves.toEqual({
+        disposition: "rejected", reason: "x402-chain-settlement-chain-unregistered",
+      });
+      const observer = createDacsX402SellerEvmObserverV1({
+        rail: candidate as never,
+        rpcUrl: "https://rpc.example",
+        authorizationSearchFromBlock: 0,
+        finalityTag: "latest",
+        fetchImpl: fetchImpl as never,
+      });
+      await expect(observer.observeX402Transfer({ chainId, txHash: TX })).resolves.toEqual({
+        status: "unavailable", reason: "x402-chain-settlement-chain-unregistered",
+      });
+      await expect(observer.reconcileSettlement(intent(undefined, chainId))).resolves.toEqual({
+        status: "indeterminate", reason: "x402-chain-settlement-chain-unregistered",
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([0, -1, 1.5, "2"])("refuses invalid explicit depth %j before observation", async (
+    finalityBlocks,
+  ) => {
+    const candidate = Object.freeze({ ...rail(),
+      parameters: { authorization: "eip-3009", finalityBlocks } });
+    dependencies.provenance.set(candidate, Object.freeze({ registryVersion: 1 }));
+    const fetchImpl = rpcFetch();
+    const observer = createDacsX402SellerEvmObserverV1({
+      rail: candidate as never,
+      rpcUrl: "https://rpc.example",
+      authorizationSearchFromBlock: 0,
+      fetchImpl: fetchImpl as never,
     });
+    await expect(observer.observeX402Transfer({ chainId: 84_532, txHash: TX }))
+      .resolves.toEqual({ status: "unavailable", reason: "x402-finality-policy-invalid" });
+    await expect(observer.reconcileSettlement(intent())).resolves.toEqual({
+      status: "indeterminate", reason: "x402-finality-policy-invalid",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([137, 43_114, 56])("honors an explicit depth on non-L2 chain %i", async (chainId) => {
+    const candidate = Object.freeze({ ...railWithoutDepth(chainId),
+      parameters: { authorization: "eip-3009", finalityBlocks: 3 } });
+    dependencies.provenance.set(candidate, Object.freeze({ registryVersion: 1 }));
+    await expect(resolveDacsX402FinalityBlocksV1(candidate as never)).resolves.toEqual({
+      disposition: "resolved", finalityBlocks: 3,
+    });
+    for (const confirmations of [1, 2, 3]) {
+      const observer = createDacsX402SellerEvmObserverV1({
+        rail: candidate as never,
+        rpcUrl: "https://rpc.example",
+        authorizationSearchFromBlock: 0,
+        finalityTag: "latest",
+        fetchImpl: chainAt(chainId, TX_BLOCK + confirmations - 1) as never,
+      });
+      await expect(observer.observeX402Transfer({ chainId, txHash: TX }))
+        .resolves.toMatchObject(confirmations < 3
+          ? { status: "pending", reason: "settlement-confirmations-pending" }
+          : { status: "finalized", confirmations: 3,
+            finalityObservedAt: blockTimestamp(TX_BLOCK + 2) * 1000 });
+    }
   });
 });
