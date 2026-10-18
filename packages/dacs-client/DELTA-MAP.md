@@ -182,6 +182,9 @@ Policy publication cleanup: historical finding/workstream citations use behavior
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:334`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:484`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:551`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:662`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:686`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1106`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1149`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1303`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1309` | 479bd5b726f9e0752ca1618212e174330b800af0 |
 | | `packages/dacs-client/test/readback-review-decisions.test.mjs:16` | a3260b7e24020f9a6a3b6e8ba637d59d17ebae06 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | b8e24392ce178fa7414fb3f244f0606b7c82c9b6 |
+| D16 | delta(client): D16 preserve the configured RPC byte budget | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` | 68daec2ca954a288273d8b206a32e2711810bce1 |
+| | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` | 3bdef904346054123fcb62d863f87b1659716d27 |
 
 ## Complete commit and file inventory
 
@@ -234,12 +237,23 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/HOLD.json:1` |
 | 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/evidence/PUBLICATION.md:1` |
 | 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
-| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fd17519cb11c569b4fa6b45de6e61869c093c4ef | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fd17519cb11c569b4fa6b45de6e61869c093c4ef | `packages/dacs-client/DELTA-MAP.md:1` |
+| fd17519cb11c569b4fa6b45de6e61869c093c4ef | `packages/dacs-client/HOLD.json:1` |
+| fd17519cb11c569b4fa6b45de6e61869c093c4ef | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fd17519cb11c569b4fa6b45de6e61869c093c4ef | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
+| fd17519cb11c569b4fa6b45de6e61869c093c4ef | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `docs/raw-json-admission.md:1` |
+| 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `src/canonical/rawJson.ts:8`, `src/canonical/rawJson.ts:13` |
+| 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `test/canonical/rawJson.test.ts:1` |
+| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/package.json:1` |
+| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` |
+| delta(client): D16 preserve the configured RPC byte budget | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` |
 
 ## Original moved files
 
@@ -290,7 +304,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/public/portal/seller-session-limits.mjs` | `http-mcp/public/portal/seller-session-limits.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/purchases.mjs` | `http-mcp/src/purchases.mjs` | 79de3d54bc07c27f51c1758f81c61719c0d77595 | unchanged | 79de3d54bc07c27f51c1758f81c61719c0d77595 |
 | `packages/dacs-client/src/switch-files.mjs` | `http-mcp/src/switch-files.mjs` | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 | unchanged | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 |
-| `packages/dacs-client/src/util/http.mjs` | `http-mcp/src/util/http.mjs` | 569c5316ef89406fbf3a2d60b8b5efac9005ccf3 | changed by D16 | db9048fb979d382f257fc806a2883b02292b52e7 |
+| `packages/dacs-client/src/util/http.mjs` | `http-mcp/src/util/http.mjs` | 569c5316ef89406fbf3a2d60b8b5efac9005ccf3 | changed by D16 | 68daec2ca954a288273d8b206a32e2711810bce1 |
 | `packages/dacs-client/src/util/ids.mjs` | `http-mcp/src/util/ids.mjs` | 6cb275e260df92ea17a4dd7c2417206a7ed7cc2a | unchanged | 6cb275e260df92ea17a4dd7c2417206a7ed7cc2a |
 | `packages/dacs-client/src/util/immutable-readbacks.mjs` | `http-mcp/src/util/immutable-readbacks.mjs` | 8497f6a237a1c72ad3330cdebf529275700be15b | unchanged | 8497f6a237a1c72ad3330cdebf529275700be15b |
 | `packages/dacs-client/src/util/purchase-readback-cache.mjs` | `http-mcp/src/util/purchase-readback-cache.mjs` | 835ca8f3785c926a975872f7d40a0df9dde55ab6 | unchanged | 835ca8f3785c926a975872f7d40a0df9dde55ab6 |

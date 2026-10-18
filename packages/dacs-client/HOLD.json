@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "da0dcbee4080000ae5eeb42ca98f1cebb65e64c9"
+        "blob": "609d80c1e0b6493b0d12c54c0eaeb302df945e47"
       },
       "DELTA-LEDGER.json": {
-        "blob": "67dfed2888cbcf18e2fd3b3747a066093f9bb294"
+        "blob": "b52b71c240f38107c245f525a75721a3cb54dad3"
       },
       "DELTA-MAP.md": {
-        "blob": "b0b9fc0cd56a40e641bf16d8fb6d723e339315d6"
+        "blob": "57960b90ab592b29795f1119852f973ebb5afcb7"
       },
       "DELTA-NOTES.md": {
         "blob": "a9cd813874580b521d4c600e14fe6be867fa9a0f"
@@ -448,11 +448,11 @@
         "blob": "9d0eefb61c4ec261faf2198931e7b59258a35ac5"
       },
       "package.json": {
-        "blob": "f433ac11f747c6e2dae00e5113c3b8cea60dafa6"
+        "blob": "41fa280e0996e5356fff919a220f877c98282606"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "7d4af531511130cc51bb1ec2e42ce35d78c4d339"
+        "blob": "cb251a8738e595446c892ceaa608cbf06c41a056"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "40b2ef1d14e28a43091675be4238124ce1ad5108"
@@ -650,7 +650,7 @@
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
       },
       "src/util/http.mjs": {
-        "blob": "db9048fb979d382f257fc806a2883b02292b52e7"
+        "blob": "68daec2ca954a288273d8b206a32e2711810bce1"
       },
       "src/util/ids.mjs": {
         "blob": "6cb275e260df92ea17a4dd7c2417206a7ed7cc2a"
@@ -1557,10 +1557,13 @@
       },
       "test/wallet-write-batch.test.mjs": {
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
+      },
+      "test/rpc-byte-budget.test.mjs": {
+        "blob": "3bdef904346054123fcb62d863f87b1659716d27"
       }
     },
     "outside": {
-      "pinnedAt": "22ae458392f24ba925a4f70d491ea1d4305c8e4b",
+      "pinnedAt": "3448a7cc6edba4aaf938400b132952b6ddc7b02e",
       "what": "Every tracked file outside packages/dacs-client/ at the frozen work head, with its Git blob. The gate lists tracked files (tracked ignored output included) and unignored untracked files, and fails on any added, removed or changed outside file, whatever it contains. Untracked files Git ignores are unseen: they belong to no commit, so they cannot reach review or a merge. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD.",
       "files": {
         ".cursor/environment.json": {
@@ -1660,7 +1663,7 @@
           "blob": "71fbf68a6d143f8cded264f124dc7e96b98b1a88"
         },
         "docs/raw-json-admission.md": {
-          "blob": "08786ace32bad45a1e4639262c962ddb2e22a99a"
+          "blob": "3068f067984eab89b7384890bef3f1516c9a99ca"
         },
         "docs/rfq-negotiation-core.md": {
           "blob": "dbf550a79e07f3083f3311c0de8e35f0b9fa2311"
@@ -2524,7 +2527,7 @@
           "blob": "7cdc48d1b25f0bbf75fe8b62491f98353ba6ef2d"
         },
         "src/canonical/rawJson.ts": {
-          "blob": "5d6b37009e0a41a098a841231f9b8b46071130fc"
+          "blob": "353a678dcd20de9dfee50d9628b3bb4aca806427"
         },
         "src/canonical/snapshot.ts": {
           "blob": "1622b03c229a30375c870d618d2bbf0b21577c5d"
@@ -3016,7 +3019,7 @@
           "blob": "7742beccf0064673486d2e5ae7999abdc8f8e427"
         },
         "test/canonical/rawJson.test.ts": {
-          "blob": "d1b2de6e2cea752634769d4677d8dea447c770cc"
+          "blob": "c73aec618f8c754bb11de6aaabf2b18075d954c5"
         },
         "test/canonical/snapshot.test.ts": {
           "blob": "ee759fa5b8aff97b32128cd5623dd8ec50b2a393"

@@ -75,7 +75,7 @@
     ]
   },
   {
-    "sha": null,
+    "sha": "fd17519cb11c569b4fa6b45de6e61869c093c4ef",
     "subject": "delta(client): D16 reconcile publication inventory and freeze records",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -84,6 +84,29 @@
       "packages/dacs-client/scripts/check-hold.mjs",
       "packages/dacs-client/scripts/check-hold.test.mjs",
       "packages/dacs-client/scripts/delta-provenance.test.mjs"
+    ]
+  },
+  {
+    "sha": "3448a7cc6edba4aaf938400b132952b6ddc7b02e",
+    "subject": "canonical: allow explicit raw JSON budgets up to 4 MiB",
+    "files": [
+      "docs/raw-json-admission.md",
+      "src/canonical/rawJson.ts",
+      "test/canonical/rawJson.test.ts"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 preserve the configured RPC byte budget",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/util/http.mjs",
+      "packages/dacs-client/test/rpc-byte-budget.test.mjs"
     ]
   }
 ]

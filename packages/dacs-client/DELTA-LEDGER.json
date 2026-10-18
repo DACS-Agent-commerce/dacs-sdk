@@ -108,6 +108,22 @@
           "after": "b8e24392ce178fa7414fb3f244f0606b7c82c9b6"
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 preserve the configured RPC byte budget",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "db9048fb979d382f257fc806a2883b02292b52e7",
+          "after": "68daec2ca954a288273d8b206a32e2711810bce1"
+        },
+        {
+          "path": "packages/dacs-client/test/rpc-byte-budget.test.mjs",
+          "before": null,
+          "after": "3bdef904346054123fcb62d863f87b1659716d27"
+        }
+      ]
     }
   ]
 }

@@ -74,7 +74,9 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
   }
   const bytes = await readCapped(response, maxBytes);
   try {
-    return admitRawJson(bytes, { maxBytes: Math.min(maxBytes, 2 * 1024 * 1024) });
+    // RPC block reads permit 4 MiB; retain exact-byte CF-5 admission up to
+    // that SDK resource ceiling while preserving smaller ingress budgets.
+    return admitRawJson(bytes, { maxBytes: Math.min(maxBytes, 4 * 1024 * 1024) });
   } catch (cause) {
     if (cause instanceof RawJsonAdmissionError) {
       const error = new OutboundError('invalid', cause.message);
