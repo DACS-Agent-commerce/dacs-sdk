@@ -19,7 +19,7 @@ export async function anchorFixture({writer,signRpc=null}={}){
   './operator-approval.mjs':{OPERATOR_CLOSING:'operator_closing'},
   '@kynesyslabs/dacs':{...core,isFinalityCommitmentRecord:()=>true},
   '../dacs/demos-sr2-adapter.mjs':{createDemosSr2Adapter:()=>controls.reader,createInMemoryDemosSr2Journal:()=>({}),demosSr2TxRef:noop},
-  '../dacs/wallet-transactions.mjs':{deriveStorageAddress:()=> 'stor-local',buildStorageProgramCreatePayload:input=>({content:{from:owner,nonce:input.nonce,data:['storageProgram',{metadata:{}}]}})},
+  '../dacs/wallet-transactions.mjs':{deriveStorageAddress:()=> 'stor-local',buildStorageProgramCreatePayload:input=>({content:{type:'storageProgram',from:owner,nonce:input.nonce,data:['storageProgram',{data:input.signedListing,metadata:{logicalAddress:input.logicalAddress}}]}})},
   '../wallet/demos-signature.mjs':{addressForClaim:()=>owner,verifyDemosSignature:()=>false},
   '../wallet/devnet-native-transport.mjs':{DEVNET_AGREEMENT_PROFILE:'local',DEVNET_DEMO_ARTIFACT_KIND:'local',DEVNET_DEMO_ARTIFACT_POLICY:'local',DEVNET_DEMO_ARTIFACT_TYPES:[],isDevnetDemoTransport:()=>true}
  };

@@ -47,6 +47,76 @@ test('a definitive signed broadcast rejection releases its matching wallet journ
  await w.publish(w.open(),JOBS[0]);await w.publish(w.open(),JOBS[1]);
  assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,1]);
 });
+
+const retainedReads={
+ read:(anchor,input)=>anchor.read(input),
+ readRetained:(anchor,input)=>anchor.readRetained(input),
+ publish:(anchor,input)=>anchor.publish(input),
+};
+async function signedFailureWorld(code='broadcast_rejected'){
+ const w=await anchorFixture({signRpc:async()=> 'rpc-auth'}),resends=[];
+ w.source.binding=async()=>({disposition:'pending'});
+ w.source.recoverStorageWrite=async({signedTransaction})=>resends.push(structuredClone(signedTransaction));
+ w.controls.request=async request=>{
+  const hash=(request.jobId===JOBS[0]?'c':'d').repeat(64),signedTransaction={...request.transaction,hash};
+  await w.journal.put(`demo/wallet/${request.jobId}`,{stage:'broadcast-started',hash,signedTransaction});
+  await w.sourceJournal.put(`source/${request.jobId}`,{stage:'signed',hash,signedTransaction});
+  return {success:false,error:{code}};
+ };
+ await w.publish(w.open(),JOBS[0]);
+ const [key,row]=[...w.journal.rows].find(([key])=>key.startsWith('demo/artifact/'));
+ return {...w,key,input:row.input,resends};
+}
+for(const [method,read] of Object.entries(retainedReads))test(`a rejected signed CREATE stays rejected through ${method}, retries and reopened anchors`,async()=>{
+ const w=await signedFailureWorld();
+ for(let i=0;i<3;i++){
+  const result=await read(w.open(),w.input);
+  assert.equal(result.status,'rejected');assert.match(result.reason,/broadcast_rejected/);assert.equal(result.noResend,true);
+  assert.equal((await w.journal.get(w.key)).stage,'rejected');
+ }
+ assert.equal(w.captured.length,1);assert.equal(w.resends.length,0);
+ await w.publish(w.open(),JOBS[1]);
+ assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,1]);
+ assert.notEqual(w.captured[0].logicalAddress,w.captured[1].logicalAddress);
+});
+test('a rejection already promoted by an older retained read still releases both nonce journals',async()=>{
+ const w=await signedFailureWorld(),row=await w.journal.get(w.key);
+ await w.journal.put(w.key,{...row,stage:'issued',hash:'c'.repeat(64)});
+ for(const read of Object.values(retainedReads))assert.equal((await read(w.open(),w.input)).status,'rejected');
+ await w.publish(w.open(),JOBS[1]);
+ assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,1]);assert.equal(w.resends.length,0);
+});
+for(const [method,read] of Object.entries(retainedReads))test(`an ambiguous signed CREATE remains fenced after ${method} and restart`,async()=>{
+ const w=await signedFailureWorld('internal_error');
+ assert.equal((await read(w.open(),w.input)).status,'indeterminate');
+ await assert.rejects(w.publish(w.open(),JOBS[1]),/retained seller source transaction requires readback/);
+ assert.equal(w.captured.length,1);assert.equal(w.resends.length,1);
+ assert.deepEqual(w.resends[0],(await w.sourceJournal.get(`source/${JOBS[0]}`)).signedTransaction);
+});
+for(const method of ['read','readRetained'])test(`${method} waits for an in-flight publisher's definitive outcome`,async()=>{
+ const w=await anchorFixture({signRpc:async()=> 'rpc-auth'});
+ let requested,finish,bindingCalls=0,resends=0;
+ const inWallet=new Promise(resolve=>requested=resolve),answer=new Promise(resolve=>finish=resolve);
+ w.source.binding=async()=>{bindingCalls++;return {disposition:'pending'};};
+ w.source.recoverStorageWrite=async()=>{resends++;};
+ w.controls.request=async request=>{
+  const hash='c'.repeat(64),signedTransaction={...request.transaction,hash};
+  await w.journal.put('demo/wallet/rejected',{stage:'broadcast-started',hash,signedTransaction});
+  await w.sourceJournal.put('source/rejected',{stage:'signed',hash,signedTransaction});
+  requested();await answer;
+  return {success:false,error:{code:'broadcast_rejected'}};
+ };
+ const publication=w.publish(w.open(),JOBS[0]);await inWallet;
+ const [key,row]=[...w.journal.rows].find(([key])=>key.startsWith('demo/artifact/'));
+ const observation=retainedReads[method](w.open(),row.input);
+ // Let the read reach the journal while the wallet answer is still pending.
+ await new Promise(resolve=>setImmediate(resolve));
+ const callsWhilePending=bindingCalls;finish();
+ await publication;const result=await observation;
+ assert.equal(callsWhilePending,0);assert.equal(result.status,'rejected');assert.equal(resends,0);
+ assert.equal((await w.journal.get(key)).stage,'rejected');
+ await w.publish(w.open(),JOBS[1]);assert.equal(w.captured.length,2);
+});
 test('a source writer arriving between reservation scan and intent cannot enter the shared wallet lane',async()=>{
  const w=await anchorFixture(),put=w.journal.put;let other,entered=false;
  w.journal.put=async(key,value)=>{

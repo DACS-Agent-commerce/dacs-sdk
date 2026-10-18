@@ -40,7 +40,7 @@
     {
       "path": "packages/dacs-seller/src/devnet-demo/artifact-anchor.mjs",
       "originalSha256": "b9aadf636868c2c01bdff93a42bb1c74708fe5dc1970978fabb02e3f3823a6ec",
-      "sha256": "2f6797d2081760b0b69292a151e0412fc54dbfa30bf6fb205a3f8575aaa502eb",
+      "sha256": "5f843046b7b4dbe651efe88bacb16501de353d300c41622c42ce0536d7d0567f",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -88,13 +88,13 @@
     {
       "path": "packages/dacs-seller/test/devnet-storage-write-recovery.test.mjs",
       "originalSha256": "11da500ee430169313194e301163ac6b3387e6536835bbe8f15d38820c6db725",
-      "sha256": "339cc1b18a9c965f96d0e53e4c848a3fc3e32eb12ba2701004bdf8d537d0d0bd",
+      "sha256": "a878ee5f986f74beb6f829b26f5438f3df2305e980fd89b03c48de26ad797d14",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/helpers/anchor-isolated-fixture.mjs",
       "originalSha256": null,
-      "sha256": "f1fbcb0b868ee65d175edd030e813ddb012948c6cd02d1b251f5bc3cc2970bd1",
+      "sha256": "828dbdec7e34e1526da669bb64b724680e77612b3347de1c0b687138a94f9044",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {

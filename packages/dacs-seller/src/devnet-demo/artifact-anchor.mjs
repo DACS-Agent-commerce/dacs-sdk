@@ -36,7 +36,9 @@ import {
 const clone=(v)=>JSON.parse(canonicalize(v));
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
 const exactHash=(v)=>sha256Hex(canonicalize(v));
-const heldByAnotherPublisher=(error)=>error?.code==='journal-fenced' && /another holder owns this key/.test(error.message);
+// The durable wallet outcome is independent of readback stage. Older readers
+// could promote a rejected row to 'issued' while keeping this error marker.
+const broadcastRejected=(row)=>row?.error==='broadcast_rejected';
 const HASH=/^[0-9a-f]{64}$/;
 // A retained 'closing' intent was never signed (see publish): it reads as
 // absent, so callers publish it again, which asks the operator again.
@@ -108,7 +110,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   const keyFor=(logicalAddress)=>`demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
 
   function liveNonceRows(rows,outcomes=rows) {
-    const rejected=outcomes.map(([,row])=>row).filter(row=>row?.stage==='rejected'&&row.error==='broadcast_rejected'&&row.transaction?.content?.from===owner);
+    const rejected=outcomes.map(([,row])=>row).filter(row=>broadcastRejected(row)&&row.transaction?.content?.from===owner);
     return rows.filter(([,row])=>!rejected.some(done=>canonicalize(done.transaction.content)===canonicalize((row?.signedTransaction??row?.transaction)?.content??null)))
       .filter(([,row])=>!(!row?.hash&&!row?.signedTransaction&&(['closing','unsigned','rejected'].includes(row?.stage)||(row?.stage==='denied'&&row.error==='user_rejected'))));
   }
@@ -180,6 +182,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     return records.every((entry)=>canonicalize(entry.signedTransaction)===canonicalize(first)) ? structuredClone(first) : null;
   }
   async function observe(input,retained,writeProof,{fresh=false}={}) {
+    if(broadcastRejected(retained)) return {status:'rejected',reason:'broadcast_rejected: the original demo CREATE was definitively rejected',noResend:true};
     let hash=retained.hash;
     if(!hash) {
       const candidates=(await sourceCapability.journal.entries()).map(([,value])=>value).filter((value)=>value?.signedTransaction?.content?.data?.[1]?.metadata?.logicalAddress===input.logicalAddress
@@ -187,10 +190,9 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       const hashes=new Set(candidates.map((candidate)=>candidate.hash).filter((candidate)=>typeof candidate==='string'&&candidate.length>0));
       if(hashes.size!==1) return {status:'indeterminate',reason:'the original demo CREATE hash is not uniquely retained',noResend:true};
       hash=[...hashes][0];
-      // An unlocked read can race the publisher that still holds this key
-      // while its wallet awaits inclusion; that publisher records the hash.
-      try { await journal.put(keyFor(input.logicalAddress),{...retained,stage:'issued',hash}); }
-      catch(error) { if(heldByAnotherPublisher(error)) return {status:'indeterminate',reason:'the original demo CREATE is still being issued by its publisher',noResend:true}; throw error; }
+      // Every caller holds the artifact lock from intent lookup through save,
+      // so an observation cannot overwrite a newer wallet outcome.
+      await journal.put(keyFor(input.logicalAddress),{...retained,stage:'issued',hash});
     }
     const projection=await publicProjection(hash);
     if(!projection) return {status:'indeterminate',reason:'the original public signed CREATE projection is unavailable',noResend:true};
@@ -210,10 +212,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       return {status:verdict==='indeterminate'?'indeterminate':'rejected',reason:`native demo receipt is ${verdict}`,noResend:true};
     }
     const complete={...retained,stage:'verified',hash,receipt:clone(record.receipt),signedProjection:projection};
-    // The readback above is authenticated; if a publisher still holds the key,
-    // it persists its own verified record, so this read only skips the cache.
-    try { await journal.put(keyFor(input.logicalAddress),complete); }
-    catch(error) { if(!heldByAnotherPublisher(error)) throw error; }
+    await journal.put(keyFor(input.logicalAddress),complete);
     const result={status:'present',artifact:clone(record.artifact),receipt:clone(record.receipt),signedProjection:projection,demosEvidence:clone(record.demosEvidence),
       ref:{anchor:{kind:'storage-program',locator:input.logicalAddress},contentHash:input.receiptContentHash,signer:claim},txRef:demosSr2TxRef(record.receipt),noResend:true};
     if(cachedKinds.has(input.artifactKind))immutable.put(cacheScope(input,projection,record.receipt),result);
@@ -317,13 +316,15 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   }
   async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false}) {
     if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier)) return {status:'rejected',reason:'demo read scope differs'};
-    const retained=await journal.get(keyFor(logicalAddress));
-    if(!retained) return {status:'absent',reason:'no seller-owned demo CREATE intent'};
-    const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
-    if(retained.inputHash!==exactHash(input)) return {status:'rejected',reason:'retained demo CREATE scope differs'};
-    authorizeRetained(retained);
-    if(retained.stage==='closing') return closingAbsence(logicalAddress,retained);
-    return observe(input,retained,undefined,{fresh});
+    return journal.withWalletLock(keyFor(logicalAddress),async()=>{
+      const retained=await journal.get(keyFor(logicalAddress));
+      if(!retained) return {status:'absent',reason:'no seller-owned demo CREATE intent'};
+      const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
+      if(retained.inputHash!==exactHash(input)) return {status:'rejected',reason:'retained demo CREATE scope differs'};
+      authorizeRetained(retained);
+      if(retained.stage==='closing') return closingAbsence(logicalAddress,retained);
+      return observe(input,retained,undefined,{fresh});
+    });
   }
   // Only a 'closing' row exactly as publish writes it, with no signed
   // transaction for its address retained by the source or this seller's
@@ -343,14 +344,16 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   }
   async function readRetained({logicalAddress,artifactKind,writer=claim,fresh=false}) {
     if(writer!==claim || !kinds.has(artifactKind)) return {status:'rejected',reason:'demo retained read scope differs'};
-    const retained=await journal.get(keyFor(logicalAddress));
-    if(!retained) return {status:'absent',reason:'no seller-owned demo CREATE intent'};
-    if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress) return {status:'rejected',reason:'retained demo CREATE scope differs'};
-    authorizeRetained(retained);
-    // As read: only an exact 'closing' row reads as the proven absence (the
-    // context route resumes a step a shutdown cut only from that proof).
-    if(retained.stage==='closing') return closingAbsence(logicalAddress,retained);
-    return observe(clone(retained.input),retained,undefined,{fresh});
+    return journal.withWalletLock(keyFor(logicalAddress),async()=>{
+      const retained=await journal.get(keyFor(logicalAddress));
+      if(!retained) return {status:'absent',reason:'no seller-owned demo CREATE intent'};
+      if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress) return {status:'rejected',reason:'retained demo CREATE scope differs'};
+      authorizeRetained(retained);
+      // As read: only an exact 'closing' row reads as the proven absence (the
+      // context route resumes a step a shutdown cut only from that proof).
+      if(retained.stage==='closing') return closingAbsence(logicalAddress,retained);
+      return observe(clone(retained.input),retained,undefined,{fresh});
+    });
   }
   // The original public signed CREATE of one of this seller's own verified
   // writes, offered to a buyer only as bytes it authenticates on chain itself.

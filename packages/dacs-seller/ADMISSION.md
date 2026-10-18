@@ -131,3 +131,7 @@ The standalone snapshot supplies no host implementation or deployment
 qualification for this contract. Retained recovery rechecks deployment
 qualification and permits at most one unchanged resend per original transaction;
 an uncertain resend remains held for authenticated readback.
+Definitively rejected CREATEs remain rejected during retained reads and retries,
+including after restart, and are never resent. Their nonce may be used by a
+different artifact. Retained observations share the publication lock so they
+preserve the latest wallet outcome.
