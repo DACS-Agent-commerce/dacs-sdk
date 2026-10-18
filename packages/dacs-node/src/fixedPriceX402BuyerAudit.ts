@@ -1497,7 +1497,13 @@ export function createDacsFixedPriceBuyerAuditV1(
         // are all `indeterminate`, never absence (BB-7, BB-8).
         const bound = await publication.resolveBoundRoleBundle("seller");
         if (bound.disposition !== "present") {
-          return { disposition: "indeterminate" as const, reason: bound.reason };
+          // Every surface answered and none shows the seller's binding yet: a
+          // lagging index, not a substrate pause (ST-7), so the audit waits
+          // without the pause bound and resumes when the index catches up.
+          // This `absent` is the transport's "not yet", not CORE §5.1 absence.
+          return bound.reason === "bundle-binding-undiscovered"
+            ? { disposition: "absent" as const, reason: "seller-binding-pending" }
+            : { disposition: "indeterminate" as const, reason: bound.reason };
         }
         const { anchored } = bound;
         const binding = { binding: bound.binding };

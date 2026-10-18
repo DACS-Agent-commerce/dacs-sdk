@@ -750,6 +750,46 @@ describe("fixed-price x402 coordinator", () => {
     expect(audit).toHaveBeenCalledTimes(runs);
   });
 
+  // ST-11: the buyer audit waits (`pending-retry`) while no discovery surface
+  // shows the seller's binding yet. That lag is not a substrate pause, so it
+  // never reaches the ST-7 bound, and the audit completes once the index does.
+  it("completes a buyer audit that waited for the seller binding index past the pause bound", async () => {
+    let now = 60_000;
+    let indexed = false;
+    const calls: string[] = [];
+    const audit = vi.fn(async () => indexed
+      ? { status: "final" as const, outcome: "success" as const, reference: "audit-ref" }
+      : { status: "pending-retry" as const,
+          reasonCode: "buyer-audit-seller-finalisation-pending", retryAt: now });
+    const coordinator = createFixedPriceX402BuyerCoordinator({
+      store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => now }),
+      workerId: "buyer-worker",
+      maximumSubstratePauseMs: 1_000,
+      operations: {
+        agreement: finalOperation("agreement", calls),
+        payment: finalOperation("payment", calls),
+        "payment-evidence": finalOperation("payment-evidence", calls),
+        "buyer-received": finalOperation("buyer-received", calls),
+        audit,
+      },
+    });
+    await coordinator.startOrder(order("buyer"));
+    await coordinator.runPending({ limit: 10 });
+    const track = async () => (await coordinator.getOrderStatus(JOB_ID))?.tracks.audit;
+    expect(await track()).toMatchObject({ state: "pending-retry" });
+    for (const later of [61_000, 65_000, 60_000 + 3_600_000]) {
+      now = later;
+      await coordinator.runPending({ limit: 10 });
+      expect(await track()).toMatchObject({ state: "pending-retry",
+        reasonCode: "buyer-audit-seller-finalisation-pending" });
+      expect(await track()).not.toHaveProperty("pausedSince");
+    }
+    indexed = true;
+    now += 1;
+    await coordinator.runPending({ limit: 10 });
+    expect(await track()).toMatchObject({ state: "final", outcome: "success" });
+  });
+
   it("keeps the pause clock when a worker takes over an expired lease", async () => {
     let now = 50_000;
     let call = 0;

@@ -2038,10 +2038,36 @@ describe("buyer audit classification of seller Demos reads", () => {
         const finalization = await harness.audit.bundleTransport.resolveSellerFinalization({
           identity: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
         } as never);
-        expect(finalization).toEqual({ disposition: "indeterminate", reason });
+        // Every surface answering without a binding is a lagging index, which
+        // waits outside the ST-7 pause bound; everything else is indeterminate.
+        expect(finalization).toEqual(reason === "bundle-binding-undiscovered"
+          ? { disposition: "absent", reason: "seller-binding-pending" }
+          : { disposition: "indeterminate", reason });
       },
     );
   }
+
+  // ST-11: a name index that lags for longer than the ST-7 pause bound never
+  // ends the audit; the buyer waits and finds the seller's copy once it shows.
+  it("waits for a lagging seller binding index and resolves the copy once it catches up", async () => {
+    const harness = await completionHarness("x402");
+    const resolve = harness.adapter.resolveAnchorByName.getMockImplementation()!;
+    let indexed = false;
+    harness.adapter.resolveAnchorByName.mockImplementation(async (name: string) =>
+      name === `dacs5:bundle-binding:${JOB_ID}:seller` && !indexed
+        ? { status: "absent" } as never : resolve(name));
+    const finalize = () => harness.audit.bundleTransport.resolveSellerFinalization({
+      identity: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
+    } as never);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(finalize()).resolves.toEqual({
+        disposition: "absent", reason: "seller-binding-pending" });
+    }
+    indexed = true;
+    await expect(finalize()).resolves.toMatchObject({ disposition: "present",
+      value: { nativeAddress: harness.copies.seller.nativeAddress,
+        binding: harness.copies.seller.binding } });
+  });
 
   // The seller copy's storage-program name is never a consumer resolution key.
   it.each([
