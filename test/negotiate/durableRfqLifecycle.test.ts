@@ -2112,9 +2112,14 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     expect((await record(sellerClient)).agreement?.finalized).toBeDefined();
   });
 
+  // The buyer's plan in slowSeller() is dated NOW + 1,000, so the seller's
+  // contribution is due by NOW + 11,000.
+  const CONTRIBUTION_DEADLINE = NOW + 11_000;
+
   /**
-   * The seller accepts at NOW, so its window runs to DEADLINE; the buyer
-   * proposes at NOW + 1,000. The seller's agreement signer and verifier are
+   * The seller accepts at NOW, so the buyer's proposal is due by DEADLINE;
+   * the buyer dates its plan `planAt`, and the seller's contribution is due
+   * `timeoutMs` after that. The seller's agreement signer and verifier are
    * the caller's, so a test can make them slow.
    */
   async function slowSeller(seller: {
@@ -2122,7 +2127,7 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     verify?: (
       input: Parameters<typeof verifyAgreement>[0],
     ) => Promise<ReturnType<typeof verifyAgreement>>;
-  }) {
+  }, planAt = NOW + 1_000) {
     const { clock, nowMs } = scriptedClock();
     const network = createInMemoryRfqLifecycleNetwork<string>();
     const reservation = durableReservation();
@@ -2139,35 +2144,39 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
       verifyAgreementContribution: seller.verify ?? verifyAgreement,
       nowMs,
     });
+    // A plan is never dated before the session started.
+    clock.now = Math.min(NOW, planAt);
     await buyerClient.open(openInput());
     await sellerClient.open(openInput());
+    clock.now = NOW;
     await buyerClient.sendOffer(JOB_ID, OFFER);
     await deliver(network, SELLER, sellerClient);
     await sellerClient.sendAccept(JOB_ID);
     await deliver(network, BUYER, buyerClient);
-    clock.now = NOW + 1_000;
+    clock.now = planAt;
     await expect(buyerClient.startAgreement(JOB_ID)).resolves.toMatchObject({ status: "ready" });
     const proposal = network.take(SELLER);
     if (proposal?.kind !== "agreement-proposal") throw new Error("no proposal");
+    expect(proposal.plan.draft.generatedAt).toBe(planAt);
     return { clock, network, buyerClient, sellerClient, proposal };
   }
 
-  test("a seller signer that settles after the deadline records the timeout instead of finalizing", async () => {
+  test("a seller signer that settles after the contribution deadline records the timeout instead of finalizing", async () => {
     let slow = true;
     const { clock, network, sellerClient, proposal } = await slowSeller({
       sign: async (bytes) => {
         await new Promise((resolve) => setTimeout(resolve, 1));
-        if (slow) clock.now = DEADLINE + 1;
+        if (slow) clock.now = CONTRIBUTION_DEADLINE + 1;
         return ed25519Sign(null, bytes, sellerKeys.privateKey);
       },
     });
-    // The proposal arrives exactly at the deadline, inside the window.
+    // The proposal arrives exactly at its deadline, inside the window.
     clock.now = DEADLINE;
     await expect(sellerClient.receive(proposal)).resolves.toMatchObject({
       status: "rejected", reason: AGREEMENT_TIMEOUT,
     });
     const failed = await record(sellerClient);
-    expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: DEADLINE + 1 });
+    expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: CONTRIBUTION_DEADLINE + 1 });
     expect(failed.agreement).toBeUndefined();
     expect(failed.inboxPacketIds).not.toContain(proposal.packetId);
     expect(network.pending(BUYER)).toBe(0);
@@ -2180,11 +2189,11 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     expect(network.pending(BUYER)).toBe(0);
   });
 
-  test("a seller verifier that settles after the deadline records the timeout instead of finalizing", async () => {
+  test("a seller verifier that settles after the contribution deadline records the timeout instead of finalizing", async () => {
     let slow = false;
     const verify = vi.fn(async (input: Parameters<typeof verifyAgreement>[0]) => {
       await new Promise((resolve) => setTimeout(resolve, 1));
-      if (slow) clock.now = DEADLINE + 1;
+      if (slow) clock.now = CONTRIBUTION_DEADLINE + 1;
       return verifyAgreement(input);
     });
     const { clock, network, sellerClient, proposal } = await slowSeller({ verify });
@@ -2195,7 +2204,53 @@ describe("durable RFQ agreement deadline uses one trusted clock reading", () => 
     });
     expect(verify).toHaveBeenCalled();
     const failed = await record(sellerClient);
-    expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: DEADLINE + 1 });
+    expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: CONTRIBUTION_DEADLINE + 1 });
+    expect(failed.agreement).toBeUndefined();
+    expect(network.pending(BUYER)).toBe(0);
+  });
+
+  test.each([
+    ["just after the proposal deadline", DEADLINE + 1],
+    ["exactly at the contribution deadline", CONTRIBUTION_DEADLINE],
+  ])("a seller signer that settles %s, inside the contribution window, finalizes on both members", async (_, settledAt) => {
+    const { clock, network, buyerClient, sellerClient, proposal } = await slowSeller({
+      sign: async (bytes) => {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        clock.now = settledAt;
+        return ed25519Sign(null, bytes, sellerKeys.privateKey);
+      },
+    });
+    clock.now = DEADLINE;
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({ status: "ready" });
+    const finalized = await record(sellerClient);
+    expect(finalized.failure).toBeUndefined();
+    expect(finalized.agreement?.finalized).toBeDefined();
+    expect(finalized.outbox.at(-1)).toMatchObject({
+      packet: { kind: "agreement-contribution" }, updatedAt: settledAt,
+    });
+    // The buyer is still inside the same window and finalizes the same agreement.
+    await deliver(network, BUYER, buyerClient);
+    const buyer = await record(buyerClient);
+    expect(buyer.failure).toBeUndefined();
+    expect(buyer.agreement?.finalized).toEqual(finalized.agreement?.finalized);
+  });
+
+  test("a plan dated before the seller's acceptance makes the contribution due before the seller's own window ends", async () => {
+    // A buyer clock 2,000 ms behind dates the plan NOW - 2,000, so the
+    // contribution is due by NOW + 8,000, before the proposal deadline.
+    const { clock, network, sellerClient, proposal } = await slowSeller({
+      sign: async (bytes) => {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        clock.now = NOW + 8_001;
+        return ed25519Sign(null, bytes, sellerKeys.privateKey);
+      },
+    }, NOW - 2_000);
+    clock.now = NOW + 5_000;
+    await expect(sellerClient.receive(proposal)).resolves.toMatchObject({
+      status: "rejected", reason: AGREEMENT_TIMEOUT,
+    });
+    const failed = await record(sellerClient);
+    expect(failed.failure).toMatchObject({ class: "timeout", recordedAt: NOW + 8_001 });
     expect(failed.agreement).toBeUndefined();
     expect(network.pending(BUYER)).toBe(0);
   });

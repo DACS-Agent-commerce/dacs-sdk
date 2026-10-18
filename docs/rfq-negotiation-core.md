@@ -141,13 +141,16 @@ records its timeout even if the verifier never settles. After acceptance, a
 clock fault on a send call is `indeterminate` too, until the agreement is
 finalized. A send call on the member's own overdue turn records the timeout
 before the channel signer is called. A proposal the seller receives after its
-deadline records the timeout before the seller signs anything. The seller
-reads its trusted clock again once its agreement signer and verifier have
-settled: if its deadline has passed by then, it records the timeout instead
-of finalizing and publishes no contribution, and if the clock fails it
-answers `indeterminate` and stores nothing, so the same proposal may be
-received again. The seller
-also never countersigns a plan the buyer dated after the seller's deadline,
+deadline (`timeoutMs` after its own acceptance) records the timeout before the
+seller signs anything. The seller reads its trusted clock again once its
+agreement signer and verifier have settled, and compares it with its
+contribution's deadline: `timeoutMs` after the plan's `generatedAt`, which the
+buyer's contribution has just been verified to sign, and the same deadline
+the buyer waits on. If that has passed, it records the timeout instead of
+finalizing and publishes no contribution; until then it finalizes, even after
+the proposal's deadline. If the clock fails it answers `indeterminate` and
+stores nothing, so the same proposal may be received again. The seller also
+never countersigns a plan the buyer dated after the seller's deadline,
 but that date is the buyer's clock: `receive()` answers `rejected` with "buyer
 dated the RFQ agreement plan after the seller's deadline", calls no verifier
 and stores nothing. Only the seller's own trusted clock records the timeout,

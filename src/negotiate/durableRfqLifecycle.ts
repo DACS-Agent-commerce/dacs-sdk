@@ -293,8 +293,9 @@ export interface DurableRfqLifecycleClient<TSignature = unknown> {
    * the packet: it is malformed or misrouted; its job does not exist, has
    * failed, or is stored corrupt or in an unsupported version; its RFQ turn
    * or agreement step timed out (for a seller, also when its agreement signer
-   * or verifier settles after the deadline, which is checked again before
-   * finalizing); or the turn, plan or counterparty contribution is refused.
+   * or verifier settles after its contribution deadline, `timeoutMs` after
+   * the verified plan's generatedAt, which is checked before finalizing); or
+   * the turn, plan or counterparty contribution is refused.
    * It gives "indeterminate" instead, stores nothing, and the same packet may
    * be received again, when the store load fails; the clock, a verifier or
    * the agreement signer fails, cannot decide or answers malformed; the stored
@@ -1756,7 +1757,12 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
    * too (RFQ-4 and §8.3.4 applied to DACS-3 §8.4.2 steps 4-5): the buyer's
    * proposal is due `timeoutMs` after acceptance, and the seller's
    * contribution `timeoutMs` after the buyer generated that proposal's plan.
-   * Undefined once the agreement is finalized or before acceptance.
+   * This is the deadline of the step the stored record waits on: the
+   * proposal's until an agreement is stored, then the contribution's. The
+   * seller stores no agreement before it finalizes, so for its own
+   * contribution it uses contributionDeadline() instead. Undefined once the
+   * agreement is finalized, before acceptance, or when the deadline is past
+   * every unix-ms value (no reading can pass it).
    */
   function agreementDeadline(
     record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
@@ -1780,14 +1786,29 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
   }
 
   /**
-   * One trusted clock read for the agreement step this member waits on.
-   * Once that step is overdue, the timeout is recorded as channel failure:
-   * the session stays accepted and nothing is signed or published. A clock
-   * fault decides nothing, so it is indeterminate. Otherwise the caller
-   * gets the reading, to use for anything it then signs.
+   * The seller's contribution is due `timeoutMs` after the buyer generated
+   * the plan, the same deadline the buyer waits on. The plan date is the
+   * buyer's input, so use this only once the buyer's contribution over that
+   * plan has verified. Undefined when past every unix-ms value.
+   */
+  function contributionDeadline(
+    record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+    plan: Readonly<FixedPriceAgreementSigningPlan>,
+  ): number | undefined {
+    const deadline = plan.draft.generatedAt + record.session.timeoutMs;
+    return Number.isSafeInteger(deadline) ? deadline : undefined;
+  }
+
+  /**
+   * One trusted clock read for the agreement step the caller decides, whose
+   * deadline it passes. Once that step is overdue, the timeout is recorded
+   * as channel failure: the session stays accepted and nothing is signed or
+   * published. A clock fault decides nothing, so it is indeterminate.
+   * Otherwise the caller gets the reading, to use for anything it then signs.
    */
   async function agreementClock(
     record: Readonly<DurableRfqLifecycleRecord<TSignature>>,
+    deadline: number | undefined,
   ): Promise<
     | { now: number }
     | { timedOut: DurableRfqLifecycleResult<TSignature> }
@@ -1805,7 +1826,6 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
         },
       };
     }
-    const deadline = agreementDeadline(record);
     return deadline !== undefined && now > deadline
       ? { timedOut: await recordTimeout(record, undefined, now) }
       : { now };
@@ -1883,10 +1903,11 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       };
     }
     if (record.session.status !== "open") {
-      const checked = await agreementClock(record);
+      const deadline = agreementDeadline(record);
+      const checked = await agreementClock(record, deadline);
       if ("timedOut" in checked) return checked.timedOut;
       // While the agreement step is pending, a clock fault decides nothing.
-      if ("clockFault" in checked && agreementDeadline(record) !== undefined) {
+      if ("clockFault" in checked && deadline !== undefined) {
         return checked.clockFault;
       }
       return { status: "rejected", reason: "RFQ session is already terminal", record };
@@ -2126,10 +2147,13 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
     );
     if ("failed" in finalizing) return finalizing.failed;
     const { finalized } = finalizing;
-    // Our signer and the verifier may have run past the deadline, so read
-    // the trusted clock again: we never finalize after it (RFQ-4), and a
-    // clock fault stores nothing, so the same proposal may be received again.
-    const checked = await agreementClock(record);
+    // Our signer and the verifier may have run past our deadline, so read the
+    // trusted clock again. Our contribution is due `timeoutMs` after the
+    // buyer dated the plan, the date its now-verified contribution signs and
+    // the deadline the buyer waits on: we never finalize after it (RFQ-4),
+    // nor give up before it. A clock fault stores nothing, so the same
+    // proposal may be received again.
+    const checked = await agreementClock(record, contributionDeadline(record, expectedPlan));
     if ("timedOut" in checked) return checked.timedOut;
     if ("clockFault" in checked) return checked.clockFault;
     const { now } = checked;
@@ -2493,14 +2517,14 @@ export function createDurableRfqLifecycleClient<TSignature = unknown>(
       if (prior !== undefined) {
         // An overdue agreement records its timeout before the verifier runs,
         // so a verifier that never settles cannot hold the job open.
-        const overdue = await agreementClock(record);
+        const overdue = await agreementClock(record, agreementDeadline(record));
         if ("timedOut" in overdue) return overdue.timedOut;
         if ("clockFault" in overdue) return overdue.clockFault;
         stored = await verifyContribution(prior.plan, prior.contributions[0]!);
       }
       // The clock is read again after every await before signing: that one
       // reading decides the deadline and dates the plan.
-      const checked = await agreementClock(record);
+      const checked = await agreementClock(record, agreementDeadline(record));
       if ("timedOut" in checked) return checked.timedOut;
       if ("clockFault" in checked) return checked.clockFault;
       const { now } = checked;
