@@ -388,9 +388,11 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
       .resolves.toEqual({ disposition: "indeterminate", reason: "bundle-binding-equivocation" });
   });
 
-  it.each(["present", "equivocation", "budget-exhausted", "candidates-unfetched"] as const)(
-    "preserves %s through the wrapper and completion beside unauthenticated malformed discovery",
-    async (reason) => {
+  it.each((["present", "equivocation", "budget-exhausted", "candidates-unfetched"] as const)
+    .flatMap((reason) => (["unsigned", "other address", "other role", "other signer", "unrelated"] as const)
+      .map((noise) => [reason, noise] as const)))(
+    "preserves %s through the wrapper and completion beside malformed discovery (%s)",
+    async (reason, noise) => {
       let malformed = false;
       const buyerCopy = bundle("buyer");
       const sellerCopy = bundle("seller");
@@ -398,6 +400,26 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
       const sellerNative = "stor-" + "2".repeat(40);
       const buyerBinding = binding("buyer", buyerNative, buyerCopy);
       const sellerBinding = binding("seller", sellerNative, sellerCopy);
+      const outsiderSeed = Uint8Array.from(Buffer.alloc(32, 53));
+      const outsider = `did:demos:agent:${Buffer.from(rawPublicKey(publicKeyFromSeed(outsiderSeed))).toString("hex")}`;
+      const foreignSigner = noise === "other signer" || noise === "unrelated";
+      const { signature: _signature, ...unsigned } = buyerBinding;
+      const payload = { ...unsigned, jobId: "malformed",
+        ...(noise === "other address" || noise === "unrelated"
+          ? { logicalAddress: bundleAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7E", "buyer") } : {}),
+        ...(noise === "other role" ? { role: "seller" } : {}),
+        ...(foreignSigner ? { signer: outsider } : {}),
+      };
+      const signedNoise = { ...payload, signature: {
+        algorithm: "ed25519", signer: payload.signer,
+        value: Buffer.from(ed25519Sign(
+          signedBytes(BUNDLE_BINDING_SEPARATOR, contentHash(payload)),
+          foreignSigner ? privateKeyFromSeed(outsiderSeed) : seed(BUYER),
+        )).toString("base64url"),
+      } };
+      const noisyRows = noise === "unsigned"
+        ? [{ jobId: "malformed" }, { ...buyerBinding, jobId: "malformed" }]
+        : [signedNoise];
       const additional = reason === "equivocation" || reason === "candidates-unfetched"
         ? [{ address: "stor-" + "3".repeat(40), copy: bundle("buyer", "divergent") }]
         : reason === "budget-exhausted" ? Array.from({ length: 8 }, (_, i) => ({
@@ -406,8 +428,7 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
       const candidates = [buyerBinding, sellerBinding,
         ...additional.map(({ address, copy }) => binding("buyer", address, copy))];
       const h = harness("seller", [{ kind: "catalog", discover: async () =>
-        malformed ? [...candidates, { jobId: "malformed" },
-          { ...buyerBinding, jobId: "malformed" }] : candidates }]);
+        malformed ? [...candidates, ...noisyRows] : candidates }]);
       h.seedProgram(buyerNative, buyerCopy, BUYER);
       h.seedProgram(sellerNative, sellerCopy, SELLER);
       if (reason !== "candidates-unfetched") {
@@ -454,8 +475,8 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
       });
       for (const noisy of [false, true]) {
         malformed = noisy;
-        // Neither an unsigned partial row nor a full row with an invalid
-        // signature may alter the authenticated candidate set's outcome.
+        // Unsigned noise and authentic rows outside the requested scope
+        // cannot alter resolution or the post-settlement completion gate.
         await expect(resolve()).resolves.toEqual(expectedResolution);
         if (reason === "present") {
           await expect(verify()).resolves.toMatchObject({ state: "audit-complete" });

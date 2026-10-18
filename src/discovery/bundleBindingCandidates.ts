@@ -7,9 +7,11 @@
  * binding a counterparty carried, a substrate-side binding program). This
  * module applies, in order:
  *
- * - BB-5 checks 1-5 and BB-4: shape, supported version, signature, requested
- *   `(jobId, role)` and the logical address derived from the binding's own
- *   signed `jobId` and `role`. Failing bindings are discarded.
+ * - BB-5 checks 1-5 and BB-4: check the wire shape and supported version,
+ *   select the requested logical address, role and trusted role holder (when
+ *   supplied), authenticate, then check the signed `jobId` and logical address
+ *   derived from the binding's own signed `jobId` and `role`. Failing bindings
+ *   are discarded.
  * - BB-6: candidates grouped by authenticated `signer`, pruned before any fetch
  *   to the role holder when a co-signed role map supplies one; each signer's
  *   distinct native addresses fetched in ascending `(bundleContentHash,
@@ -27,7 +29,7 @@
 
 import type { BundleBinding } from "../artifacts/types.js";
 import { hasBundleBindingEnvelope, isBundleBinding } from "../artifacts/validators.js";
-import { canonicalize } from "../canonical/index.js";
+import { bundleAddress, canonicalize } from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import type { BundleCopyRole, CopyValidity } from "../agent/bundleCopyValidity.js";
@@ -44,7 +46,8 @@ export interface ResolveBundleBindingCandidatesInput {
   /**
    * BB-6 pre-fetch prune: the primary claim holding `role` in an
    * already-fetched copy of this job that carries every §10.4.1 required
-   * signature. When given, only that signer's bindings are fetched.
+   * signature. When given, only that signer's bindings are authenticated or
+   * fetched.
    */
   roleHolder?: string;
   /**
@@ -161,8 +164,10 @@ export async function resolveBundleBindingCandidates(
   input: Readonly<ResolveBundleBindingCandidatesInput>,
 ): Promise<BundleBindingCandidateResolution> {
   requireCanonicalJobId(input.jobId, "BundleBinding requested jobId");
-  // Authenticate a captured wire envelope before interpreting its signed
-  // jobId. Unsigned catalog noise is inert, including malformed job ids.
+  const logicalAddress = bundleAddress(input.jobId, input.role);
+  // Select this request's scope before authenticating a captured envelope or
+  // interpreting its signed jobId. Neither unrelated signed records nor
+  // unsigned catalog noise can supply a validation answer for this request.
   const unique = new Map<string, BundleBinding>();
   for (const raw of input.candidates) {
     let candidate: unknown;
@@ -172,6 +177,8 @@ export async function resolveBundleBindingCandidates(
       continue;
     }
     if (!hasBundleBindingEnvelope(candidate)) continue;
+    if (candidate.logicalAddress !== logicalAddress || candidate.role !== input.role ||
+        (input.roleHolder !== undefined && candidate.signer !== input.roleHolder)) continue;
     let signed = false;
     try {
       // The hook sees the actual signed payload, including an unchecked
@@ -186,10 +193,7 @@ export async function resolveBundleBindingCandidates(
         candidate.role !== input.role) continue;
     unique.set(canonicalize(candidate), candidate);
   }
-  let bindings = [...unique.values()];
-  if (input.roleHolder !== undefined) {
-    bindings = bindings.filter((binding) => binding.signer === input.roleHolder);
-  }
+  const bindings = [...unique.values()];
   if (bindings.length === 0) {
     return { disposition: "indeterminate", reason: "bundle-binding-undiscovered" };
   }

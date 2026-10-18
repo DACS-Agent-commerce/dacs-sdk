@@ -220,6 +220,42 @@ describe("resolveBundleBindingCandidates (DACS-5 BB-5..BB-7)", () => {
     },
   );
 
+  it.each([
+    ["another logical address without a trusted holder", { logicalAddress: bundleAddress(JOB_ID, "buyer") }, undefined],
+    ["another role at the requested logical address", { role: "buyer" }, undefined],
+    ["another signer at the requested role and address", { signer: OUTSIDER }, SELLER],
+    ["an unrelated signer and logical address", {
+      signer: OUTSIDER, logicalAddress: bundleAddress(JOB_ID, "buyer"),
+    }, SELLER],
+  ] as const)("excludes %s before authenticating or interpreting its signed job id", async (_label, overrides, roleHolder) => {
+    const one = copy("one");
+    const address = "stor-" + "1".repeat(40);
+    const valid = binding(address, one);
+    const unrelated = ["malformed", "", null, 42].map((jobId) => ({
+      ...valid, ...overrides, jobId,
+      signature: { ...valid.signature, signer: "signer" in overrides ? overrides.signer : SELLER },
+    }));
+    const verified: unknown[] = [];
+    const extra = { roleHolder, verifyBindingSignature: (entry: unknown) => {
+      verified.push(entry);
+      return true;
+    } };
+    const { value, fetched } = input([...unrelated, valid], { [address]: one }, extra);
+    await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({
+      disposition: "present", binding: valid, copy: one,
+    });
+    expect(verified).toEqual([valid]);
+    expect(fetched).toEqual([address]);
+
+    verified.length = 0;
+    const excluded = input(unrelated, {}, extra);
+    await expect(resolveBundleBindingCandidates(excluded.value)).resolves.toEqual({
+      disposition: "indeterminate", reason: "bundle-binding-undiscovered",
+    });
+    expect(verified).toEqual([]);
+    expect(excluded.fetched).toEqual([]);
+  });
+
   it.each(["incomplete", "missing signature", "bad signature", "throwing verifier"])(
     "discards an unauthenticated malformed job id beside a valid binding (%s)", async (failure) => {
       const one = copy("one");
