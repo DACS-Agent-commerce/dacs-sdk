@@ -61,9 +61,13 @@ export interface DacsDemosBundlePublicationV1 {
   /**
    * A role's copy through its discovered signed BundleBindings (DACS-5
    * BB-5..BB-7) and an exact native read. Non-discovery is `indeterminate`,
-   * never absence (BB-8).
+   * never absence (BB-8). `carried` are signed bindings already held for the
+   * role, such as the one its copy carries (BB-2); they join the candidates.
    */
-  resolveBoundRoleBundle(role: DacsBundleRoleV1): Promise<Readonly<
+  resolveBoundRoleBundle(
+    role: DacsBundleRoleV1,
+    carried?: readonly unknown[],
+  ): Promise<Readonly<
     | { disposition: "present"; binding: Readonly<BundleBinding>;
         anchored: Readonly<DacsDemosAnchoredBundleV1> }
     | { disposition: "indeterminate"; reason: string }
@@ -81,6 +85,7 @@ export interface DacsDemosBundlePublicationV1 {
   resolveBundleBinding(
     logicalAddress: string,
     signer: string,
+    carried?: Readonly<BundleBinding>,
   ): Promise<Readonly<
     | { disposition: "present"; binding: Readonly<BundleBinding> }
     | { disposition: "absent" }
@@ -345,9 +350,9 @@ export function createDacsDemosBundlePublicationV1(
   };
 
   const resolveBoundRoleBundle: DacsDemosBundlePublicationV1["resolveBoundRoleBundle"] =
-    async (role) => {
+    async (role, carried = []) => {
       const signer = authority(input, role);
-      const candidates: unknown[] = [...ownBindings];
+      const candidates: unknown[] = [...ownBindings, ...carried];
       const surfaces = [() => demosBindingProgram(role), ...discovery.map((surface) =>
         () => surface.discover({ jobId: input.jobId, role, signer }))];
       for (const discover of surfaces) {
@@ -391,12 +396,13 @@ export function createDacsDemosBundlePublicationV1(
     };
 
   const resolveBundleBinding: DacsDemosBundlePublicationV1["resolveBundleBinding"] =
-    async (logicalAddress, signer) => {
+    async (logicalAddress, signer, carried) => {
       const role = roleFor(input, logicalAddress, signer);
       if (role === null) return { disposition: "absent" };
       let resolved: Awaited<ReturnType<typeof resolveBoundRoleBundle>>;
       try {
-        resolved = await resolveBoundRoleBundle(role);
+        resolved = await resolveBoundRoleBundle(role,
+          carried === undefined ? [] : [copy(carried)]);
       } catch {
         return { disposition: "indeterminate",
           reason: "bundle-binding-resolution-unavailable" };

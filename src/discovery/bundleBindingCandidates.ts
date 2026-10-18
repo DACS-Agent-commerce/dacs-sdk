@@ -81,6 +81,25 @@ export type BundleBindingCandidateResolution =
         | "bundle-binding-equivocation";
     };
 
+const UNRESOLVED_CANDIDATE_SET_REASONS: ReadonlySet<string> = new Set([
+  "bundle-binding-candidates-unfetched",
+  "bundle-binding-budget-exhausted",
+  "bundle-binding-candidates-rejected",
+  "bundle-binding-equivocation",
+]);
+
+/**
+ * True for a BB-6/BB-7 `indeterminate` about the side's candidate set itself:
+ * bindings were discovered but did not resolve to one authorized copy
+ * (equivocation, an exhausted budget, an unfetched or rejected candidate).
+ * That keeps the side's read disposition indeterminate, so it holds a
+ * completion back. Non-discovery (`bundle-binding-undiscovered`) and an
+ * unanswered surface are not: they are no evidence either way (BB-8).
+ */
+export function isUnresolvedBundleBindingCandidateSet(reason: unknown): boolean {
+  return typeof reason === "string" && UNRESOLVED_CANDIDATE_SET_REASONS.has(reason);
+}
+
 interface Authorized {
   binding: BundleBinding;
   copy: Record<string, unknown>;

@@ -807,6 +807,29 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     for (const [label, overrides] of undiscovered) {
       expect(await outcome(overrides), label).toBe("audit-complete");
     }
+    // BB-6, BB-7: the resolver judges the carried binding together with the
+    // candidates it discovered. A candidate set that does not resolve to one
+    // copy (an equally signed second copy, say) keeps the side indeterminate.
+    const carried: unknown[] = [];
+    expect(await outcome({ resolveBundleBinding: (...args: unknown[]) => {
+      carried.push(args[3]);
+      return { disposition: "present" as const, binding: args[3] };
+    } })).toBe("audit-complete");
+    expect(carried).toHaveLength(2);
+    expect(carried).toEqual(expect.arrayContaining([buyerBinding, sellerBinding]));
+    for (const reason of ["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
+      "bundle-binding-candidates-unfetched", "bundle-binding-candidates-rejected"]) {
+      const error = await outcome({ resolveBundleBinding: () => ({ disposition: "indeterminate" as const, reason }) });
+      expect(error, reason).toBeInstanceOf(IndeterminateSubstrateError);
+      expect(String(error), reason).toMatch(new RegExp(`candidate set is unresolved: ${reason}`));
+    }
+    // The verifier's answer against the carried binding still comes first.
+    const forged = await outcome({
+      resolveBundleBinding: () => ({ disposition: "indeterminate" as const, reason: "bundle-binding-equivocation" }),
+      verifyBundleBinding: () => ({ disposition: "invalid", reason: "forged" }),
+    });
+    expect(forged).toBeInstanceOf(DacsError);
+    expect(forged).not.toBeInstanceOf(IndeterminateSubstrateError);
     // A lookup answer about the session still is one.
     expect(String(await outcome({ resolveBundleBinding: () => {
       throw new DacsError("binding catalog answered for another session"); } })))

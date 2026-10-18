@@ -3120,6 +3120,30 @@ describe("read-only authentication of retained finalized seller bundles", () => 
     ).rejects.toThrow(/lacks.*BundleBinding/);
   });
 
+  // BB-6, BB-7: the retained binding joins the provider's candidates; a set
+  // that does not resolve to one copy keeps the seller side indeterminate,
+  // while non-discovery stays no evidence either way (BB-8).
+  test("keeps a retained write-input closure indeterminate while its BB-6 candidate set is unresolved", async () => {
+    const write = await finalizedForReadVerification("write-input");
+    const lookups: unknown[][] = [];
+    const answering = (lookup: unknown) => ({ ...write.provider,
+      resolveBundleBinding: vi.fn(async (...args: unknown[]) => {
+        lookups.push(args);
+        return structuredClone(lookup);
+      }) }) as typeof write.provider;
+    await expect(verifyFinalizedSellerBundleReadOnly(write.input, write.result,
+      answering({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" })))
+      .resolves.toEqual(write.result);
+    expect(lookups.at(-1)?.[2]).toEqual(write.result.binding);
+    for (const reason of ["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
+      "bundle-binding-candidates-unfetched", "bundle-binding-candidates-rejected"]) {
+      const error = await verifyFinalizedSellerBundleReadOnly(write.input, write.result,
+        answering({ disposition: "indeterminate", reason })).catch((caught: unknown) => caught);
+      expect(error, reason).toBeInstanceOf(IndeterminateSubstrateError);
+      expect(String(error), reason).toMatch(/candidate set is unresolved/);
+    }
+  });
+
   test.each(["logical", "native"] as const)(
     "rejects a retained %s address mismatch",
     async (kind) => {

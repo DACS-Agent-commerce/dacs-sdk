@@ -46,6 +46,7 @@ import {
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { ed25519Sign, signedBytes } from "../crypto/index.js";
 import { DacsError, SubstrateError, IndeterminateSubstrateError } from "../errors.js";
+import { isUnresolvedBundleBindingCandidateSet } from "../discovery/bundleBindingCandidates.js";
 import { identityBundleHash } from "../identity/bundle.js";
 import {
   assertNoRawSessionSeed,
@@ -411,10 +412,15 @@ export interface SellerBundleFinalizationProvider {
   ) =>
     | Promise<SellerBundleVerificationDisposition>
     | SellerBundleVerificationDisposition;
-  /** BB-4..BB-8 resolved candidate disposition, after authorization/multiplicity handling. */
+  /**
+   * BB-4..BB-8 resolved candidate disposition, after authorization/multiplicity
+   * handling. `carried`, when given, is a signed binding already held for this
+   * copy (BB-2); the provider adds it to the candidates it discovered.
+   */
   resolveBundleBinding?: (
     logicalAddress: string,
     signer: string,
+    carried?: Readonly<BundleBinding>,
   ) => Promise<SellerBundleBindingLookup> | SellerBundleBindingLookup;
   publishBundleBinding?: (
     binding: Readonly<BundleBinding>,
@@ -4030,7 +4036,9 @@ export async function verifyFinalizedSellerBundleReadOnly(
     await locallyVerifyBindingSignature(result.binding, retainedProvider);
     let bindingLookup: SellerBundleBindingLookup;
     try {
-      bindingLookup = await retainedProvider.resolveBundleBinding(logicalAddress, session.seller.primaryClaim);
+      // The retained binding joins the provider's BB-6 candidates (BB-2).
+      bindingLookup = await retainedProvider.resolveBundleBinding(logicalAddress,
+        session.seller.primaryClaim, snapshot(result.binding, "retained BundleBinding"));
     } catch (error) {
       // A permanent provider answer passes through; an unanswered lookup is
       // no evidence either way (BB-8).
@@ -4056,6 +4064,14 @@ export async function verifyFinalizedSellerBundleReadOnly(
       !exact(bindingLookup.binding, result.binding)
     )) {
       throw new DacsError("retained BundleBinding is not independently readable and exact");
+    }
+    // BB-6, BB-7: candidates that did not resolve to one copy (for example an
+    // equally signed second copy) keep the seller side indeterminate.
+    if (bindingLookup.disposition === "indeterminate" &&
+        isUnresolvedBundleBindingCandidateSet(bindingLookup.reason)) {
+      throw new IndeterminateSubstrateError(
+        `retained BundleBinding candidate set is unresolved: ${bindingLookup.reason}`,
+      );
     }
   }
 

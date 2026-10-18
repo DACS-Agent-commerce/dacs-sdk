@@ -16,6 +16,7 @@ import { bundleAddress, canonicalize, contentHash } from "../canonical/index.js"
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../errors.js";
+import { isUnresolvedBundleBindingCandidateSet } from "../discovery/bundleBindingCandidates.js";
 import {
   isCanonicalClaimReference,
   sameCanonicalClaimIdentity,
@@ -169,12 +170,17 @@ export interface CompletedTwoSidedSessionDeps {
   /**
    * Required for each write-input copy. The adapter must apply BB-4..BB-8,
    * including candidate authorization, multiplicity, fetch bounds, and
-   * suppression diligence, before returning one resolved binding.
+   * suppression diligence, before returning one resolved binding. `carried`
+   * is the signed binding the copy carries (BB-2); the adapter adds it to the
+   * candidates it discovered, so BB-6 judges them together. A BB-6
+   * `indeterminate` about that candidate set (equivocation, an exhausted
+   * budget, an unfetched or rejected candidate) holds completion back.
    */
   resolveBundleBinding?: (
     logicalAddress: string,
     signer: string,
     role: CompletedTwoSidedSessionRole,
+    carried?: Readonly<BundleBinding>,
   ) =>
     | Promise<
       | { disposition: "present"; binding: unknown }
@@ -591,8 +597,10 @@ function captureDeps(value: unknown): CapturedAuditCompletionDeps {
           logicalAddress: string,
           signer: string,
           role: CompletedTwoSidedSessionRole,
+          carried?: Readonly<BundleBinding>,
         ) => snapshotCanonicalJsonRead(
-          await resolveBundleBinding(logicalAddress, signer, role),
+          await resolveBundleBinding(logicalAddress, signer, role,
+            carried === undefined ? undefined : clone(carried)),
           `${role} BundleBinding resolution`,
         ) }
       : {}),
@@ -716,6 +724,7 @@ async function requireBinding(
       binding.logicalAddress,
       binding.signer,
       copy.role,
+      clone(binding),
     ), `${copy.role} BundleBinding resolution`);
   } catch (error) {
     if (!(error instanceof IndeterminateSubstrateError)) throw error;
@@ -745,6 +754,16 @@ async function requireBinding(
     await unanswered(() => verifyBundleBinding(clone(binding)), `${copy.role} BundleBinding verifier`),
     `${copy.role} BundleBinding verifier`,
   ), `completed ${copy.role} BundleBinding verification`);
+  // BB-6, BB-7: the carried binding verifies on its own, but the candidate set
+  // it belongs to did not resolve to one copy (for example an equally signed
+  // second copy): the side's read disposition stays indeterminate. Checked
+  // after the verifier, so its answer against the carried binding comes first.
+  if (lookup.disposition === "indeterminate" &&
+      isUnresolvedBundleBindingCandidateSet(lookup.reason)) {
+    throw new IndeterminateSubstrateError(
+      `${copy.role} BundleBinding candidate set is unresolved: ${String(lookup.reason)}`,
+    );
+  }
 }
 
 async function verifyCopy(

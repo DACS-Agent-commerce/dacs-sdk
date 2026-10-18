@@ -1759,10 +1759,12 @@ export function createDacsFixedPriceBuyerAuditV1(
               ? { disposition: "valid" as const, mapping: "write-input" as const }
               : { disposition, reason: `demos-${candidate.role}-bundle-anchor-${disposition}` };
           },
-          // Discovery only: the gate reads the binding each copy carries, and
-          // a lookup that does not show it gates nothing (ST-11, BB-8).
-          resolveBundleBinding: (logicalAddress, signer) =>
-            tracked(publication.resolveBundleBinding(logicalAddress, signer)),
+          // The gate reads the binding each copy carries, and a lookup that
+          // does not show it gates nothing (ST-11, BB-8). The carried binding
+          // joins the discovered candidates, so BB-6 equivocation between it
+          // and another authorized copy keeps the side indeterminate.
+          resolveBundleBinding: (logicalAddress, signer, _role, carried) =>
+            tracked(publication.resolveBundleBinding(logicalAddress, signer, carried)),
           async verifyBundleBinding(binding) {
             const disposition = await tracked(publication.verifyBundleBinding(binding));
             if (disposition === "indeterminate" || disposition === "error") unavailable = true;

@@ -343,6 +343,28 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
     });
   });
 
+  it("adds a carried binding to the BB-6 candidates and keeps an equivocating side indeterminate", async () => {
+    const { copy, signed } = await submitted();
+    // No surface shows the seller's binding: only the one the copy carries.
+    const consumer = harness("buyer");
+    consumer.seedProgram(signed.nativeAddress, copy, SELLER);
+    await expect(consumer.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER))
+      .resolves.toEqual({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" });
+    await expect(consumer.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER, signed))
+      .resolves.toEqual({ disposition: "present", binding: signed });
+
+    // A second, equally co-signed seller copy that a catalog shows.
+    const other = bundle("seller", "other");
+    const otherNative = "stor-" + "f".repeat(40);
+    const catalog: DacsBundleBindingDiscoverySurfaceV1 = {
+      kind: "catalog", discover: async () => [binding("seller", otherNative, other)] };
+    const equivocating = harness("buyer", [catalog]);
+    equivocating.seedProgram(signed.nativeAddress, copy, SELLER);
+    equivocating.seedProgram(otherNative, other, SELLER);
+    await expect(equivocating.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER, signed))
+      .resolves.toEqual({ disposition: "indeterminate", reason: "bundle-binding-equivocation" });
+  });
+
   it("verifies a binding whose native address holds nothing readable yet as indeterminate", async () => {
     const { signed } = await submitted();
     // A consumer whose node has not caught up: no program at the address yet.

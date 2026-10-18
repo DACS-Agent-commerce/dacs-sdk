@@ -1,6 +1,7 @@
 import {
   bundleAddress,
   DacsError,
+  type BundleBinding,
   type SellerBundleFinalizationReadProvider,
 } from "@kynesyslabs/dacs";
 
@@ -41,7 +42,8 @@ export function createClassifiedDemosSellerBundleReads(
         ? { disposition: "present" as const, anchored: bound.anchored }
         : { disposition: "indeterminate" as const, reason: bound.reason };
     },
-    resolveBundleBinding: (logicalAddress: string, signer: string) =>
-      publication.resolveBundleBinding(logicalAddress, signer),
+    resolveBundleBinding: (logicalAddress: string, signer: string,
+      carried?: Readonly<BundleBinding>) =>
+      publication.resolveBundleBinding(logicalAddress, signer, carried),
   };
 }
