@@ -96,9 +96,10 @@ it.each([false, true])("keeps native DEM chain reconciliation available without 
   } })) as never;
   const track = createDacsPayDemBuyerPaymentTrackV1(f.options as never);
   await expect(track(f.operation as never)).resolves.toMatchObject(settled
-    ? { status: "final", outcome: "success" }
+    ? { status: "indeterminate", reasonCode: "pay-dem-payment-notice-pending" }
     : { status: "indeterminate", reasonCode: "existing-payment-still-pending" });
   expect(f.options.reconcile).toHaveBeenCalledOnce();
+  if (settled) expect(f.options.walletSpendAuthority.reconcile).toHaveBeenCalledOnce();
   for (const [key, spy] of Object.entries(f.effects)) {
     if (key !== "reconcile") expect(spy).not.toHaveBeenCalled();
   }

@@ -1072,8 +1072,15 @@ describe("DACS Node SQLite durability foundation", () => {
       SELECT ?, MAX(applied_at) FROM dacs_migrations
     `).run(DACS_NODE_SQLITE_SCHEMA_VERSION + 1);
     extraRaw.close();
-    await expect(openDacsNodeSqliteDatabase(options(historyExtra)))
-      .rejects.toMatchObject({ reasonCode: "database-migration-history-invalid" });
+    const extraAdmission = await openDacsNodeSqliteDatabase(options(historyExtra)).then(
+      (database) => { database.close(); return { rejected: false }; },
+      (error: unknown) => ({ rejected: true, error }),
+    );
+    expect(extraAdmission.rejected, "C1 rejects ninth migration row").toBe(true);
+    expect(extraAdmission).toMatchObject({
+      rejected: true,
+      error: { reasonCode: "database-migration-history-invalid" },
+    });
     expect(inspectExistingDacsNodeSqliteDatabaseV1(options(historyExtra))).toEqual({
       status: "fail",
       reasonCode: "database-migration-history-invalid",

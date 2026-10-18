@@ -173,7 +173,7 @@ describe("fixed-price x402 buyer commerce", () => {
     const unanchored = { ...payload, signature: "not-anchored" };
     expect(contentHash(unanchored)).toBe(contentHash(payload));
 
-    await expect(authorize(unanchored)).resolves.toBe(false);
+    await expect(authorize(unanchored), "C6 compares anchored deliverable bytes").resolves.toBe(false);
     expect(dependencies.verifySettlementEvidence).not.toHaveBeenCalled();
   });
 });
@@ -366,7 +366,7 @@ describe("fixed-price x402 buyer payment-evidence verification", () => {
     await expect(f.verify({
       evidence: smaller,
       evidenceHash: contentHash(smaller),
-    })).resolves.toEqual({
+    }), "PC6 rejects smaller evidence finality echo").resolves.toEqual({
       disposition: "invalid",
       reason: "payment evidence settlement binding invalid",
     });
@@ -466,7 +466,8 @@ describe("fixed-price x402 buyer payment-evidence verification", () => {
   it("rejects a request whose evidence hash is not the signed-scope hash", async () => {
     const f = paymentEvidenceFixture();
 
-    await expect(f.verify({ evidenceHash: "e".repeat(64) })).resolves.toEqual({
+    await expect(f.verify({ evidenceHash: "e".repeat(64) }),
+      "C6 binds requested evidence hash").resolves.toEqual({
       disposition: "invalid",
       reason: "payment evidence cryptographic verification failed",
     });

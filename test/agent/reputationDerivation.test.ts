@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import {
   deriveReputation,
+  deriveLegacyReputation,
   deriveReputationWithValidation,
   type ReputationWindow,
 } from "../../src/agent/reputationDerivation.js";
@@ -1144,6 +1145,54 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
 
 
 describe("current reputation JID admission order", () => {
+  test("preserves explicit archival validators that use candidate identity", () => {
+    const original = bundle("archival-job", "completed", 1500);
+    expect(deriveLegacyReputation(PARTY, [original], WINDOW, {
+      ...TRUSTED_WITH_ABSENCE,
+      isValid: (candidate) => candidate === original,
+    }).bundleCount).toBe(1);
+  });
+
+  test("rejects accessors and proxies without invoking caller code or validators", async () => {
+    const touched = vi.fn(() => { throw new Error("getter or proxy ran"); });
+    const getter = Object.defineProperty({}, "jobId", { enumerable: true, get: touched });
+    const proxy = new Proxy(bundle(RATED_JOB, "completed", 1500), {
+      get: touched, ownKeys: touched, getOwnPropertyDescriptor: touched,
+      getPrototypeOf: touched,
+    });
+    const nestedGetter = bundle(RATED_JOB, "completed", 1500);
+    Object.defineProperty(nestedGetter.parties[0]!, "primaryClaim", { get: touched });
+    const candidates = [getter, proxy, nestedGetter] as AttestationBundle[];
+    const isValid = vi.fn(() => false);
+    const validate = vi.fn(async () => false);
+    expect(deriveReputation(PARTY, candidates, WINDOW, {
+      isValid, trustBundlePartyRoles: true,
+    }).bundleCount).toBe(0);
+    expect((await deriveReputationWithValidation(PARTY, candidates, WINDOW, {
+      validate, trustBundlePartyRoles: true,
+    })).bundleCount).toBe(0);
+    expect(touched).not.toHaveBeenCalled();
+    expect(isValid).not.toHaveBeenCalled();
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  test("scores the same stable copy validated synchronously", () => {
+    const original = bundle(RATED_JOB, "completed", 1500);
+    const result = deriveReputation(PARTY, [original], WINDOW, {
+      ...TRUSTED_WITH_ABSENCE,
+      isValid(candidate) {
+        expect(candidate).not.toBe(original);
+        expect(Object.isFrozen(candidate.parties[0])).toBe(true);
+        original.jobId = "malformed";
+        original.finalisedAt = 0;
+        original.parties[0]!.primaryClaim = CP;
+        return true;
+      },
+    });
+    expect(result.bundleCount).toBe(1);
+    expect(result.metrics.completionRate).toBe(1);
+  });
+
   test("malformed job IDs cannot reach validators, role, absence or rating callbacks", async () => {
     const invalid = bundle("job-abc", "completed", 1500);
     const isValid = vi.fn(() => true);

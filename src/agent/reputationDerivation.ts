@@ -280,13 +280,30 @@ function deriveReputationCore(
         "are not an independent session-role binding",
     );
   }
+  // Capture inert candidates before reading even jobId: caller accessors and
+  // proxies must never execute before validation. Score the same frozen copy
+  // that the validator saw, even if it mutates the caller's original object.
+  let capturedBundles = bundles;
+  if (addressOf === bundleAddress) {
+    capturedBundles = [];
+    for (const bundle of bundles) {
+      try {
+        capturedBundles.push(deepFreeze(snapshotCanonicalJsonRead(
+          bundle,
+          "untrusted reputation bundle",
+        )) as AnyAttestationBundle);
+      } catch {
+        // Non-data candidates cannot be authenticated or scored safely.
+      }
+    }
+  }
   // Validate before reading party/window fields. With `trustBundles`, the caller
   // explicitly attests that this happened upstream; otherwise the synchronous
   // predicate is enforced as an actual boolean at runtime.
   const candidates = validatedCandidates(
     addressOf === bundleAddress
-      ? bundles.filter((bundle) => isCurrentJobId(bundle?.jobId))
-      : bundles,
+      ? capturedBundles.filter((bundle) => isCurrentJobId(bundle?.jobId))
+      : capturedBundles,
     deps,
   );
 

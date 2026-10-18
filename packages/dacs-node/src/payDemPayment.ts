@@ -933,13 +933,9 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               reservation,
               walletSettlement(payment, captured.result.settlement),
             );
-            // A finalized existing payment remains reconcilable even while new
-            // protocol messages and signatures are unavailable at this pin.
-            try {
-              requireDacsCurrentProfileForNewEffectsV1();
-            } catch {
-              return captured;
-            }
+            // Reconcile the settled wallet even while admission is unavailable,
+            // but keep the payment retryable until its seller notice is retained.
+            requireDacsCurrentProfileForNewEffectsV1();
             await options.publishNotice({
               notice: createDacsPayDemPaymentNoticeV1(
                 payment,

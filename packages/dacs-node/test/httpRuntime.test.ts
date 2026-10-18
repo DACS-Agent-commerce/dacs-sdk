@@ -257,7 +257,7 @@ describe("authenticated HTTP listener and durable client", () => {
       status: "created",
       envelopeId: first.envelopeId,
     });
-    await expect(client.queue(replay)).resolves.toEqual({
+    await expect(client.queue(replay), "C4 reports retained envelope identity").resolves.toEqual({
       status: "existing",
       envelopeId: first.envelopeId,
     });
@@ -280,8 +280,14 @@ describe("authenticated HTTP listener and durable client", () => {
     });
     const signed = await proposal(await outbox.readTime(), 34);
 
-    await expect(client.queue(signed)).rejects.toMatchObject({
-      reasonCode: "outbox-envelope-conflict",
+    const recordlessQueue = await client.queue(signed).then(
+      () => ({ rejected: false }),
+      (error: unknown) => ({ rejected: true, error }),
+    );
+    expect(recordlessQueue.rejected, "C4 refuses missing retained record").toBe(true);
+    expect(recordlessQueue).toMatchObject({
+      rejected: true,
+      error: { reasonCode: "outbox-envelope-conflict" },
     });
     await expect(client.queue(signed)).rejects.toMatchObject({
       reasonCode: "outbox-envelope-conflict",

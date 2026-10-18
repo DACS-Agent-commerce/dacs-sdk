@@ -51,7 +51,9 @@ if (process.argv.length !== 2) {
 const SUITES = Object.freeze({
   sqlite: ["test/sqlite.test.ts", "DACS Node SQLite durability foundation"],
   http: ["test/httpRuntime.test.ts", "authenticated HTTP listener and durable client"],
-  service: ["test/service.test.ts", "authority-separated live role services"],
+  // Exercise service/outbox semantics without requiring local network access.
+  // The listener integration remains covered separately by service.test.ts.
+  service: ["test/serviceOutboxReadiness.test.ts", "authority-separated live role services"],
   x402Received: [
     "test/fixedPriceX402BuyerCommerce.test.ts",
     "fixed-price x402 buyer commerce",
@@ -121,7 +123,7 @@ const MUTANTS = Object.freeze([
     replacements: [["LIMIT 9\n", "LIMIT 8\n"]],
     witnesses: [T.historyAdmission],
     controls: [],
-    expectedFailure: /instead of rejecting/,
+    expectedFailure: /C1 rejects ninth migration row/,
   },
   {
     id: "http-queue-returns-submitted-identity",
@@ -133,7 +135,7 @@ const MUTANTS = Object.freeze([
     ]],
     witnesses: [T.retainedReplay],
     controls: [T.recordlessStore],
-    expectedFailure: /to deeply equal/,
+    expectedFailure: /C4 reports retained envelope identity/,
   },
   {
     id: "http-queue-invents-identity-without-record",
@@ -151,7 +153,7 @@ const MUTANTS = Object.freeze([
     ],
     witnesses: [T.recordlessStore],
     controls: [T.retainedReplay],
-    expectedFailure: /instead of rejecting/,
+    expectedFailure: /C4 refuses missing retained record/,
   },
   {
     id: "service-returns-signed-not-retained",
@@ -163,7 +165,7 @@ const MUTANTS = Object.freeze([
     ]],
     witnesses: [T.serviceCollapse],
     controls: [T.serviceMissing],
-    expectedFailure: /to deeply equal/,
+    expectedFailure: /C5 returns retained envelope/,
   },
   {
     id: "service-substitutes-missing-retained-envelope",
@@ -175,19 +177,25 @@ const MUTANTS = Object.freeze([
     ]],
     witnesses: [T.serviceMissing],
     controls: [T.serviceCollapse],
-    expectedFailure: /instead of rejecting/,
+    expectedFailure: /C5 refuses missing retained envelope/,
   },
   {
     id: "x402-received-ignores-anchored-bytes",
     contract: "C6 x402 buyerReceived compares the exact anchored deliverable bytes",
     target: "src/fixedPriceX402BuyerCommerce.ts",
+    // Complete payload hashing now rejects this mismatch before the final byte
+    // comparison. Losing exact-byte binding means bypassing both guards.
     replacements: [[
+      "artifactBindingHashOf(deliverableLogicalAddress)(payload as Record<string, unknown>) !==\n" +
+        "              evidenceRaw.deliverableContentHash)",
+      "false)",
+    ], [
       ": canonicalize(delivered.artifact) === canonicalize(payload);",
       ": true;",
     ]],
     witnesses: [T.x402SignedScope],
     controls: [T.x402Accept],
-    expectedFailure: /expected true to be false/,
+    expectedFailure: /C6 compares anchored deliverable bytes/,
   },
   {
     id: "paydem-received-binds-deliverable-not-evidence",
@@ -200,7 +208,7 @@ const MUTANTS = Object.freeze([
     ]],
     witnesses: [T.payDemReceivedAccept],
     controls: [T.payDemEvidenceAccept],
-    expectedFailure: /expected false to be true/,
+    expectedFailure: /C6 binds delivery evidence anchor/,
   },
   {
     id: "x402-evidence-ignores-request-hash",
@@ -212,7 +220,7 @@ const MUTANTS = Object.freeze([
     ]],
     witnesses: [T.x402EvidenceHash],
     controls: [T.x402EvidenceAccept],
-    expectedFailure: /to deeply equal/,
+    expectedFailure: /C6 binds requested evidence hash/,
   },
   {
     id: "x402-evidence-ignores-finality-echo",
@@ -224,7 +232,7 @@ const MUTANTS = Object.freeze([
     ]],
     witnesses: [T.x402FinalitySmaller],
     controls: [T.x402EvidenceAccept, T.x402FinalityOmitted],
-    expectedFailure: /to deeply equal/,
+    expectedFailure: /PC6 rejects smaller evidence finality echo/,
   },
   {
     id: "x402-audit-ignores-finality-echo",
@@ -240,7 +248,7 @@ const MUTANTS = Object.freeze([
     ]],
     witnesses: [T.x402AuditFinality],
     controls: [T.x402AuditAccept],
-    expectedFailure: /instead of rejecting/,
+    expectedFailure: /PC6 audit rejects mismatched finality echo/,
   },
   {
     id: "paydem-evidence-claims-resolved-address",
@@ -249,7 +257,7 @@ const MUTANTS = Object.freeze([
     replacements: [["resolved: false,", "resolved: true,"]],
     witnesses: [T.payDemEvidenceAccept],
     controls: [T.payDemReceivedAccept],
-    expectedFailure: /to deeply equal/,
+    expectedFailure: /C6 binds unresolved payment address/,
   },
 ]);
 
@@ -400,7 +408,10 @@ function locate(report, expected) {
     status: matches[0].status,
     ...(failure === undefined ? {} : {
       failure,
-      assertionError: /AssertionError/.test(failure),
+      // Vitest's promise matcher rewrites an assertion's stack as Error rather
+      // than AssertionError. Accept that wrapper only for our explicit contract
+      // messages followed by the assertion's expected-value diagnostic.
+      assertionError: /^(?:AssertionError:|Error: (?:C[1456]|PC6) [^\n]+: expected\b)/.test(failure),
     }),
     ...(suiteError === undefined ? {} : { suiteError }),
   };
@@ -470,9 +481,13 @@ async function mutant(host, scratch, definition) {
   }
   const witnesses = definition.witnesses.map((item) => locate(report, item));
   const controls = definition.controls.map((item) => locate(report, item));
+  // Match explicit contract messages attached to the intended assertions.
+  // Vitest's default prose and resolved-value formatting change across versions
+  // and may put the assertion text beyond the bounded failure excerpt.
   // The witness must fail on its mutant-specific assertion text, never on a
   // thrown runtime/import error that merely happens to fail the same test.
-  const intended = (item) => item.status === "failed" && item.suiteError === undefined &&
+  const intended = (item) => item.status === "failed" && item.assertionError === true &&
+    item.suiteError === undefined &&
     definition.expectedFailure.test(item.failure ?? "") &&
     !/^\s*(?:TypeError|ReferenceError|SyntaxError|RangeError)\b/.test(item.failure ?? "");
   let status;

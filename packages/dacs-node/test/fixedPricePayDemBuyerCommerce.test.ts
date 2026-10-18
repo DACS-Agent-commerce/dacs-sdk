@@ -367,7 +367,7 @@ describe("fixed-price native DEM buyer-received authorization", () => {
   it("authorizes the payload bound by the seller's receipt-verified delivery evidence", async () => {
     const f = await fixture();
 
-    await expect(f.authorize()).resolves.toBe(true);
+    await expect(f.authorize(), "C6 binds delivery evidence anchor").resolves.toBe(true);
     expect(mocks.verifySettlementEvidence).toHaveBeenCalledWith(f.deliveryEvidence, {
       orchestrator: SELLER,
       agreement: { amount: "1", currency: "DEM" },
@@ -484,7 +484,7 @@ describe("fixed-price native DEM buyer payment-evidence verification", () => {
   it("accepts seller evidence bound to the observed transfer and unresolved PC-2 address", async () => {
     const f = await fixture();
 
-    await expect(f.verify()).resolves.toEqual({ disposition: "valid" });
+    await expect(f.verify(), "C6 binds unresolved payment address").resolves.toEqual({ disposition: "valid" });
     expect(f.observeDemosTransfer).toHaveBeenCalledWith(TX_HASH);
     expect(mocks.verifySettlementEvidence).toHaveBeenCalledWith(f.paymentEvidence, {
       orchestrator: SELLER,

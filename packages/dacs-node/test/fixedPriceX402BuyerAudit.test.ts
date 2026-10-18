@@ -891,10 +891,15 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     const observationCalls = mocks.observeX402Transfer.mock.calls.length;
 
     for (const finalityBlocks of [undefined, 1, 3]) {
-      await expect(audit.bundleTransport.resolveVerification({
+      const verification = await Promise.resolve(audit.bundleTransport.resolveVerification({
         authenticated,
         request: requestWithFinality(f, finalityBlocks),
-      })).rejects.toMatchObject({ reasonCode: "buyer-audit-evidence-invalid" });
+      })).then(() => ({ rejected: false }), (error: unknown) => ({ rejected: true, error }));
+      expect(verification.rejected, "PC6 audit rejects mismatched finality echo").toBe(true);
+      expect(verification).toMatchObject({
+        rejected: true,
+        error: { reasonCode: "buyer-audit-evidence-invalid" },
+      });
     }
     expect(mocks.observeX402Transfer).toHaveBeenCalledTimes(observationCalls);
   });
