@@ -244,14 +244,17 @@ export function createDacsDemosBundlePublicationV1(
         await context.demos.adapter.verifyDemosAnchorReceipt(receipt) !== true) {
       throw new DacsDemosBundlePublicationError("bundle-receipt-invalid");
     }
-    return Object.freeze({
-      bundle,
-      nativeAddress,
-      anchorReceipt: copy(receipt),
-      ...(receipt.transactionRef.kind === "demos"
-        ? { anchorTx: receipt.transactionRef.value } : {}),
-    });
+    return Object.freeze({ bundle, nativeAddress, anchorReceipt: copy(receipt) });
   };
+
+  // A binding's optional `anchorTx` is the canonical pointer to the anchoring
+  // transaction: the authenticated receipt's transaction reference (DACS-5
+  // BB-1). Every Demos receipt is a `demos-storage-program` reference.
+  const anchorTxMatches = (
+    binding: Readonly<BundleBinding>,
+    anchored: Readonly<DacsDemosAnchoredBundleV1>,
+  ): boolean => binding.anchorTx === undefined ||
+    binding.anchorTx === anchored.anchorReceipt.transactionRef.value;
 
   const resolveRoleBundle: DacsDemosBundlePublicationV1["resolveRoleBundle"] =
     async (role) => {
@@ -317,7 +320,7 @@ export function createDacsDemosBundlePublicationV1(
         return anchored.bundle.jobId === binding.jobId &&
             anchored.anchorReceipt.contentHash === binding.bundleContentHash &&
             attestationBundleHash(anchored.bundle) === binding.bundleContentHash &&
-            (binding.anchorTx === undefined || anchored.anchorTx === binding.anchorTx)
+            anchorTxMatches(binding, anchored)
           ? "valid" : "invalid";
       } catch (error) {
         // An invalid anchored bundle or receipt can never authenticate a binding.
@@ -381,8 +384,7 @@ export function createDacsDemosBundlePublicationV1(
       });
       if (resolved.disposition !== "present") return resolved;
       const anchored = fetched.get(resolved.binding.nativeAddress)!;
-      if (resolved.binding.anchorTx !== undefined &&
-          resolved.binding.anchorTx !== anchored.anchorTx) {
+      if (!anchorTxMatches(resolved.binding, anchored)) {
         return { disposition: "indeterminate", reason: "bundle-binding-candidates-rejected" };
       }
       return { disposition: "present", binding: resolved.binding, anchored };

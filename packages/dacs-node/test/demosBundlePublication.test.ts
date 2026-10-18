@@ -128,7 +128,8 @@ function harness(role: Role, discovery: DacsBundleBindingDiscoverySurfaceV1[] = 
       logicalAddress: input.logicalAddress,
       nativeAddress: input.nativeAddress,
       contentHash: input.contentHash,
-      transactionRef: { kind: "demos", value: `tx-${input.nativeAddress}` },
+      // The only kind DemosAdapter builds or decodes (demosWriteEvidence.ts).
+      transactionRef: { kind: "demos-storage-program", value: `tx-${input.nativeAddress}` },
       writer: writers.get(input.nativeAddress) ?? input.writer,
       state: "finalized",
       observationDisposition: "established",
@@ -302,22 +303,52 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
         reason: "bundle-binding-candidates-unfetched" });
   });
 
-  it("refuses a binding whose anchorTx is not the copy's anchor transaction", async () => {
-    const { copy, signed } = await submitted();
-    const unsigned = { ...signed, anchorTx: "tx-other" } as Record<string, unknown>;
+  // The seller's signed binding re-signed with an `anchorTx`.
+  function withAnchorTx(signed: BundleBinding, anchorTx: string): BundleBinding {
+    const unsigned = { ...signed, anchorTx } as Record<string, unknown>;
     delete unsigned.signature;
-    const forged = {
+    return {
       ...unsigned,
       signature: { ...signed.signature, value: Buffer.from(ed25519Sign(
         signedBytes(BUNDLE_BINDING_SEPARATOR, contentHash(unsigned)), seed(SELLER),
       )).toString("base64url") },
     } as unknown as BundleBinding;
+  }
+
+  it("refuses a binding whose anchorTx is not the copy's anchor transaction", async () => {
+    const { copy, signed } = await submitted();
+    const forged = withAnchorTx(signed, "tx-other");
     const catalog: DacsBundleBindingDiscoverySurfaceV1 = {
       kind: "catalog", discover: async () => [forged] };
     const consumer = harness("buyer", [catalog]);
     consumer.seedProgram(signed.nativeAddress, copy, SELLER);
     await expect(consumer.publication.resolveBoundRoleBundle("seller")).resolves.toEqual({
       disposition: "indeterminate", reason: "bundle-binding-candidates-rejected" });
+    await expect(consumer.publication.verifyBundleBinding(forged)).resolves.toBe("invalid");
+  });
+
+  it("accepts a binding whose anchorTx is the receipt's demos-storage-program transaction", async () => {
+    const { copy, signed } = await submitted();
+    const carried = withAnchorTx(signed, `tx-${signed.nativeAddress}`);
+    const catalog: DacsBundleBindingDiscoverySurfaceV1 = {
+      kind: "catalog", discover: async () => [carried] };
+    const consumer = harness("buyer", [catalog]);
+    consumer.seedProgram(signed.nativeAddress, copy, SELLER);
+    await expect(consumer.publication.verifyBundleBinding(carried)).resolves.toBe("valid");
+    await expect(consumer.publication.resolveBoundRoleBundle("seller")).resolves.toMatchObject({
+      disposition: "present", binding: carried,
+      anchored: { nativeAddress: signed.nativeAddress,
+        anchorReceipt: { transactionRef: { kind: "demos-storage-program",
+          value: `tx-${signed.nativeAddress}` } } },
+    });
+  });
+
+  it("verifies a binding whose native address holds nothing readable yet as indeterminate", async () => {
+    const { signed } = await submitted();
+    // A consumer whose node has not caught up: no program at the address yet.
+    const consumer = harness("buyer");
+    await expect(consumer.publication.verifyBundleBinding(signed)).resolves.toBe("indeterminate");
+    expect(consumer.adapter.readAnchor).toHaveBeenCalledWith(signed.nativeAddress);
   });
 
   it("reports its own undiscovered binding as absent so it publishes it, and a counterparty's as indeterminate", async () => {
