@@ -16,8 +16,6 @@ import {
 
 import { canonicalize } from "../../src/canonical/index.js";
 import { authenticatedIdentityBundleSemantics } from "../../src/identity/domainClaimVerification.js";
-import { aggregatePresenceAwareCompositeVerification } from "../../src/agent/compositeVerification.js";
-import { deriveIdentityTier } from "../../src/identity/tier.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
 import { serializeDomainClaimArtifact, type DomainClaimProducerInput } from "../../src/identity/index.js";
 
@@ -217,17 +215,10 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
         // Authenticate original corpus bytes/signature before using the semantic view.
         expect(authenticate(vector.artifact)(vector.artifact.unsigned).status).toBe("authenticated");
         const original = vector.artifact.unsigned as unknown as IdentityBundle;
-        const semantic = authenticatedIdentityBundleSemantics(original);
-        const single = { ...semantic, claims: semantic.claims.slice(0, 1) };
-        expect(deriveIdentityTier(semantic, () => false) !== deriveIdentityTier(single, () => false))
-          .toBe(vector.want.tierGain);
-        const requirement = { requirementVersion: "1" as const, required: [],
-          oneOf: [[{ scheme: "domain", verificationRequired: false }]] };
-        const decide = (bundle: IdentityBundle) => aggregatePresenceAwareCompositeVerification({
-          bundle, requirement, evaluatedAt: vector.evaluatedAt, verified: [],
-        });
-        expect(decide(original)).toBe("pass");
-        expect(decide(original) !== decide(single)).toBe(vector.want.oneOfGain);
+        // Tier proof callbacks and oneOf/primary decisions have independent
+        // passing/refusal controls in tier.test.ts and partyVet.test.ts.
+        expect(authenticatedIdentityBundleSemantics(original).claims.map((claim) => claim.ref))
+          .toEqual(vector.want.semanticClaims);
       }
       if (vector.want?.metadataEqualsAuthority) {
         expect(verdict.data?.demosGcrDomain).toEqual(vector.authoritativeGcr);
