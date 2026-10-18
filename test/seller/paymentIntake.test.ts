@@ -260,7 +260,7 @@ function makeContext(
       },
     ],
   };
-  const agreementHash = contentHash(agreement);
+  const agreementHash = contentHash(agreement, "signatures");
   const committed: Extract<CommittedAgreementResolution, { disposition: "verified" }> = {
     disposition: "verified",
     agreement,
@@ -381,7 +381,7 @@ function makeContext(
 }
 
 function refreshCommitment(ctx: Context): void {
-  const agreementHash = contentHash(ctx.agreement);
+  const agreementHash = contentHash(ctx.agreement, "signatures");
   ctx.committed.agreementHash = agreementHash;
   ctx.committed.commitment.agreementHash = agreementHash;
 }

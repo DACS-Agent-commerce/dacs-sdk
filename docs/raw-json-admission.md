@@ -72,19 +72,30 @@ an already parsed object as evidence of original CF-5 admission. Integration
 must retain exact bytes or enforce authenticated byte-admission provenance at
 each actual ingress. The SDK-wide Standard pin remains unchanged.
 
+The generic `stripSignature`, `canonicalSignedScope` and `contentHash` helpers
+omit only the singular `signature` member by default. For a normative Agreement,
+select its plural field explicitly, for example `contentHash(agreement, "signatures")`.
+All other top-level members remain in the hash, including an unknown `signatures`
+extension on a Listing or RailDefinition. Bundle callers should use
+`attestationBundleHash`, which also omits the defined `anchoredByRole` field.
+
 On Demos, `DemosAdapter.readAnchor` returns a storage program's `data` already
 parsed by `@kynesyslabs/demosdk`. The SDK writes Listings with the `json`
 encoding, and the node stores that member as `jsonb` and serves it through
-`JSON.stringify` (`kynesyslabs/node@ac8f45f0`), so the publisher's exact bytes
-are gone before any reader receives them. These parsed Listing reads carry no CF-5 provenance and cannot admit a new
+`JSON.stringify` in source revision
+`kynesyslabs/node@ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`. That source reference
+does not pin the deployed build. The publisher's exact bytes are gone before
+any reader receives them. These parsed Listing reads carry no CF-5 provenance and cannot admit a new
 normative session. `validateListingArtifact` requires a `Uint8Array` or `Buffer`
 of the original artifact JSON, and refuses parsed objects before verification.
 The public `verifyReadableListingArtifact` and `authenticateReadableListingArtifact`
 helpers, session and discovery boundaries also refuse parsed-only normative Listings
 before hashing them. A substrate may implement `readAnchorBytes` to supply exact
 original bytes; it must not reconstruct them from JSONB or an already parsed
-response. Demos does not currently provide that capability. Retaining those bytes
-requires a compatible storage/transport format.
+response. This adapter does not currently provide that capability for its JSON-encoded Listings.
+The cited node source also supports binary storage with base64 data; a compatible
+binary publisher and reader could retain exact bytes. The running node revision
+and build digest must be established separately before enabling any future live profile.
 
 Seller historical admission requires the original result object returned by
 `validateListingArtifact`. The SDK retains non-serializable provenance and binds

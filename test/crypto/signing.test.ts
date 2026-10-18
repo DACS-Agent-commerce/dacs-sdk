@@ -32,6 +32,23 @@ const seed = Uint8Array.from(Buffer.from(GOLDEN.seed, "hex"));
 const pub = rawPublicKey(publicKeyFromSeed(seed));
 
 describe("signing (§B.7)", () => {
+  it("authenticates an unknown signatures extension for a single-signature artifact", () => {
+    const doc = { ...GOLDEN.doc, signatures: [{ note: "signed extension" }] };
+    const sig = signArtifact(GOLDEN.separator, doc, seed);
+    expect(verifyArtifact(GOLDEN.separator, doc, sig, pub)).toBe(true);
+    expect(verifyArtifact(GOLDEN.separator, { ...doc, signatures: [] }, sig, pub)).toBe(false);
+    expect(verifyArtifact(GOLDEN.separator, GOLDEN.doc, sig, pub)).toBe(false);
+    const original = signArtifact(GOLDEN.separator, GOLDEN.doc, seed);
+    expect(verifyArtifact(GOLDEN.separator, doc, original, pub)).toBe(false);
+  });
+
+  it("uses the plural signature field only for an Agreement contract", () => {
+    const doc = { value: "agreement", signature: "signed extension" };
+    const sig = signArtifact("dacs-agreement:v1:", doc, seed);
+    expect(verifyArtifact("dacs-agreement:v1:", { ...doc, signatures: [] }, sig, pub)).toBe(true);
+    expect(verifyArtifact("dacs-agreement:v1:", { ...doc, signature: "changed" }, sig, pub)).toBe(false);
+  });
+
   it("derives the golden public key from the seed", () => {
     expect(Buffer.from(pub).toString("hex")).toBe(GOLDEN.publicKeyHex);
   });

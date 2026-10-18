@@ -478,7 +478,7 @@ async function authenticateState(
     railId: rail.railId,
     railRegistryVersion: provenance.registryVersion,
     agreementRef: fixedPriceAgreementLogicalAddress(order.jobId),
-    agreementHash: contentHash(agreement as unknown as Record<string, unknown>),
+    agreementHash: contentHash(agreement as unknown as Record<string, unknown>, "signatures"),
     listingRef,
     commitmentRef: result.commitment.logicalAddress,
     commitmentContentHash: contentHash(

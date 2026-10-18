@@ -229,7 +229,7 @@ function fixture(receiptStore: SellerReceiptStore) {
       { party: SELLER, algorithm: "ed25519", value: AGREEMENT_SIGNATURE },
     ],
   };
-  const agreementHash = contentHash(agreement);
+  const agreementHash = contentHash(agreement, "signatures");
   return {
     agreementHash,
     intakeDeps: {

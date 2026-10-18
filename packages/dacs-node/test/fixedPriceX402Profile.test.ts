@@ -796,7 +796,7 @@ describe("fixed-price x402 generated profile policy", () => {
         value: Buffer.alloc(64, 2).toString("base64url"),
       }],
     };
-    const agreementHash = contentHash(artifact as unknown as Record<string, unknown>);
+    const agreementHash = contentHash(artifact as unknown as Record<string, unknown>, "signatures");
     const envelopeHash = sha256Hex(canonicalize(artifact));
     const logicalAddress = fixedPriceAgreementLogicalAddress(JOB_ID);
     value.loseNextResponse();
@@ -879,7 +879,7 @@ describe("fixed-price x402 generated profile policy", () => {
       [buyerContribution, sellerContribution],
       agreementPolicy.verifyContribution,
     );
-    const agreementHash = contentHash(agreement as unknown as Record<string, unknown>);
+    const agreementHash = contentHash(agreement as unknown as Record<string, unknown>, "signatures");
     const logicalAddress = fixedPriceAgreementLogicalAddress(JOB_ID);
     await expect(agreementPolicy.anchor.anchorAgreement({
       logicalAddress,
@@ -1379,7 +1379,7 @@ describe("fixed-price x402 generated profile policy", () => {
     } as never)).resolves.toMatchObject({ disposition: "rejected" });
     await expect(sellerAuthority.resolveCommittedAgreement(JOB_ID)).resolves.toMatchObject({
       disposition: "verified",
-      agreementHash: contentHash(committed.agreement as unknown as Record<string, unknown>),
+      agreementHash: contentHash(committed.agreement as unknown as Record<string, unknown>, "signatures"),
       railRegistryVersion: 1,
     });
     await expect(sellerAuthority.resolveListingAtCommit(

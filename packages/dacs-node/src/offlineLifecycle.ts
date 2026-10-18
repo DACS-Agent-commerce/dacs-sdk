@@ -985,7 +985,7 @@ async function negotiateAndCommit(
     "dacs-3-agreement",
     "PayeeBoundAgreementDocument",
     asRecord(agreement),
-    { signer: buyer.claim },
+    { signer: buyer.claim, hash: contentHash(asRecord(agreement), "signatures") },
   );
 
   let retained: AnchoredFinalityCommitment | undefined;
@@ -1138,7 +1138,7 @@ function signSimulationProviderFixture(
     availability: "mocked",
     provider: "self-signed-fixture-not-sr3",
     jobId: context.jobId,
-    agreementHash: contentHash(asRecord(agreement)),
+    agreementHash: contentHash(asRecord(agreement), "signatures"),
     mandateId: `simulation-mandate:${context.jobId}`,
     status: "simulated-captured",
     amount: "1",

@@ -2333,7 +2333,7 @@ export async function verifySellerPaymentIntake(
   const agreementArtifact = committed.agreement;
   const agreement = parseAgreement(committed.agreement);
   if (!agreement) return reject("unsupported-or-malformed-agreement");
-  const computedAgreementHash = contentHash(committed.agreement);
+  const computedAgreementHash = contentHash(committed.agreement, "signatures");
   if (
     agreement.jobId !== request.jobId ||
     committed.agreementHash !== computedAgreementHash ||

@@ -816,7 +816,7 @@ function captureAgreementPublication(
       !HASH_RE.test(value.agreementHash) || !isAgreementArtifact(value.artifact) ||
       value.artifact.jobId !== value.jobId ||
       fixedPriceAgreementLogicalAddress(value.jobId) !== value.logicalAddress ||
-      contentHash(value.artifact as unknown as Record<string, unknown>) !==
+      contentHash(value.artifact as unknown as Record<string, unknown>, "signatures") !==
         value.agreementHash) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-publication-corrupt");
   }
@@ -895,7 +895,7 @@ function createAgreementAnchorProvider(
         if (!isAgreementArtifact(input.artifact) ||
             input.artifact.jobId.length === 0 ||
             fixedPriceAgreementLogicalAddress(input.artifact.jobId) !== input.logicalAddress ||
-            contentHash(input.artifact as unknown as Record<string, unknown>) !==
+            contentHash(input.artifact as unknown as Record<string, unknown>, "signatures") !==
               input.agreementHash) {
           return { disposition: "rejected" as const,
             reason: "agreement publication is malformed" };
@@ -988,7 +988,7 @@ function createAgreementAnchorProvider(
         const readback = await context.demos.adapter.readAnchor(receipt.nativeAddress);
         if (readback === null || !isAgreementArtifact(readback) ||
             canonicalize(readback) !== canonicalize(record.artifact) ||
-            contentHash(readback) !== record.agreementHash) {
+            contentHash(readback, "signatures") !== record.agreementHash) {
           return { disposition: "indeterminate" as const,
             reason: "agreement native readback is unavailable" };
         }
@@ -1083,7 +1083,7 @@ export function createDacsFixedPriceX402BuyerAgreementPolicyV1(
         operation.order.localBindingHash === retained.localBindingHash &&
         result.agreement.jobId === retained.jobId &&
         result.agreementHash === contentHash(
-          result.agreement as unknown as Record<string, unknown>,
+          result.agreement as unknown as Record<string, unknown>, "signatures",
         ) &&
         result.agreementRef.anchor.kind === "storage-program" &&
         result.agreementRef.anchor.locator === fixedPriceAgreementLogicalAddress(retained.jobId) &&
@@ -1486,7 +1486,7 @@ function paymentPreparation(
       payout[0]!.payeeAddress.toLowerCase() !==
         selected.payeeAddress.toLowerCase() ||
       agreement.agreementHash !== contentHash(
-        artifact as unknown as Record<string, unknown>,
+        artifact as unknown as Record<string, unknown>, "signatures",
       ) || commitment.agreementHash !== agreement.agreementHash ||
       commitment.commitment.record.agreementHash !== agreement.agreementHash ||
       canonicalize(commitment.commitment.record.listingRef) !==
@@ -2016,7 +2016,7 @@ function captureCommitmentResult(
   if (value.agreement.jobId !== value.jobId || commitment.recordKind !== "finality" ||
       commitment.record.jobId !== value.jobId ||
       commitment.agreementHash !== contentHash(
-        value.agreement as unknown as Record<string, unknown>,
+        value.agreement as unknown as Record<string, unknown>, "signatures",
       ) || commitment.anchorReceipt.logicalAddress !== commitment.logicalAddress ||
       commitment.anchorReceipt.nativeAddress !== commitment.nativeAddress) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-commitment-result-corrupt");
@@ -2165,7 +2165,7 @@ export function createDacsFixedPriceX402SellerAgreementPolicyV1(
           agreementVerifier(context.peerAuthority, context.authority),
         );
         if (agreement.jobId !== retained.jobId ||
-            contentHash(agreement as unknown as Record<string, unknown>) !==
+            contentHash(agreement as unknown as Record<string, unknown>, "signatures") !==
               result.transportIdentity.agreementHash) return false;
         const buyer = agreement.parties.find((party) => party.role === "buyer");
         const seller = agreement.parties.find((party) => party.role === "seller");

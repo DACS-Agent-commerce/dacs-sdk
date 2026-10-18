@@ -357,7 +357,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
   const sellerVetRef = structuredClone(
     (agreement.parties as Array<{ vetRecordRef: AttestationRef }>)[1]!.vetRecordRef,
   );
-  const agreementHash = contentHash(agreement);
+  const agreementHash = contentHash(agreement, "signatures");
   const commitmentRef = `dacs3:commit:${JOB_ID}`;
   const commitmentContentHash = "cd".repeat(32);
   const committed: Extract<CommittedAgreementResolution, { disposition: "verified" }> = {

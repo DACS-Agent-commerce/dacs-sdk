@@ -311,7 +311,7 @@ async function fixture() {
   const { listing, agreement, evidence } = artifacts();
   const agreementRef: AttestationRef = {
     anchor: { kind: "storage-program", locator: "agreement-j1" },
-    contentHash: contentHash(agreement),
+    contentHash: contentHash(agreement, "signatures"),
   };
   const evidenceRef: AttestationRef = {
     anchor: { kind: "storage-program", locator: "settlement-j1" },

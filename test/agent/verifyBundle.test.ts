@@ -246,7 +246,7 @@ async function buildFixture(party: string, sign: Signer): Promise<Fixture> {
     },
     agreementRef: {
       anchor: { kind: "storage-program", locator: "agreement-j1" },
-      contentHash: contentHash(agreement),
+      contentHash: contentHash(agreement, "signatures"),
     },
     parties: [
       { role: "buyer", bundleHash: h("c"), primaryClaim: party },
@@ -350,7 +350,7 @@ async function convertToAlternativePaymentFixture(fx: Fixture): Promise<void> {
   (fx.bundle.listingRef as Record<string, unknown>).contentHash =
     contentHash(fx.listing);
   (fx.bundle.agreementRef as Record<string, unknown>).contentHash =
-    contentHash(fx.agreement);
+    contentHash(fx.agreement, "signatures");
   await resignFixture(fx, [
     { party: buyerDid, sign: signBuyer },
     { party: sellerDid, sign: signSeller },
@@ -556,7 +556,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
       { party: sellerDid, sign: signSeller },
     ]);
     (fx.bundle.agreementRef as { contentHash: string }).contentHash =
-      contentHash(fx.agreement);
+      contentHash(fx.agreement, "signatures");
     await resignFixture(fx, [
       { party: qualifiedSignature, sign: signBuyer },
       { party: sellerDid, sign: signSeller },
@@ -631,7 +631,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     (fx.agreement.parties as Array<{ primaryClaim: string }>)[0]!.primaryClaim =
       uppercaseBuyer;
     (fx.bundle.agreementRef as { contentHash: string }).contentHash =
-      contentHash(fx.agreement);
+      contentHash(fx.agreement, "signatures");
     await resignFixture(fx, [
       { party: uppercaseBuyer, sign: signBuyer },
       { party: sellerDid, sign: signSeller },
@@ -831,7 +831,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     (fx.bundle.listingRef as { contentHash: string }).contentHash = legacyHash;
     await resignAgreement(fx);
     (fx.bundle.agreementRef as { contentHash: string }).contentHash =
-      contentHash(fx.agreement);
+      contentHash(fx.agreement, "signatures");
     await resignFixture(fx, [
       { party: buyerDid, sign: signBuyer },
       { party: sellerDid, sign: signSeller },
@@ -870,7 +870,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     (fx.bundle.listingRef as Record<string, unknown>).contentHash =
       contentHash(fx.listing);
     (fx.bundle.agreementRef as Record<string, unknown>).contentHash =
-      contentHash(fx.agreement);
+      contentHash(fx.agreement, "signatures");
     await resignFixture(fx, [
       { party: buyerDid, sign: signBuyer },
       { party: sellerDid, sign: signSeller },
@@ -921,7 +921,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
       agreementRef: {
         kind: "dacs-3-agreement",
         id: "agreement-transitional",
-        contentHash: contentHash(agreement),
+        contentHash: contentHash(agreement, "signatures"),
       },
       parties: [
         { role: "buyer", bundleHash: h("c"), primaryClaim: buyerDid },
@@ -981,7 +981,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
 
     delete agreement.dacsSdkListingPin;
     (body.agreementRef as { contentHash: string }).contentHash =
-      contentHash(agreement);
+      contentHash(agreement, "signatures");
     bundle = await resign();
     const unpinned = await verifyGraph();
     expect(unpinned.ok).toBe(false);
@@ -1404,7 +1404,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
         fx.bundle.agreementRef as {
           contentHash: string;
         }
-      ).contentHash = contentHash(fx.agreement);
+      ).contentHash = contentHash(fx.agreement, "signatures");
       await resignFixture(fx, [
         { party: buyerDid, sign: signBuyer },
         { party: sellerDid, sign: signSeller },
@@ -1514,7 +1514,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     fx.listing.signature = await componentSignature(listingScope, ARTIFACT_SEPARATORS.Listing, sellerDid, signSeller);
     (fx.agreement.listingRef as { contentHash: string }).contentHash = contentHash(fx.listing);
     await resignAgreement(fx, [{ party: buyerDid, sign: signBuyer }, { party: sellerDid, sign: signSeller }]);
-    (fx.bundle.agreementRef as { contentHash: string }).contentHash = contentHash(fx.agreement);
+    (fx.bundle.agreementRef as { contentHash: string }).contentHash = contentHash(fx.agreement, "signatures");
     (fx.bundle.listingRef as { contentHash: string }).contentHash = contentHash(fx.listing);
     await resignFixture(fx, [{ party: buyerDid, sign: signBuyer }, { party: sellerDid, sign: signSeller }]);
     const positive = await verifyBundleCore("ref", depsFor(fx));

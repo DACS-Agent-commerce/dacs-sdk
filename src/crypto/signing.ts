@@ -117,6 +117,22 @@ export function signedBytes(separator: string, artifactHash: string): Uint8Array
   ]);
 }
 
+/** Contract-selected omission, independent of attacker-supplied member names. */
+function signatureFieldForSeparator(separator: DomainSeparator): "signature" | "signatures" {
+  switch (separator) {
+    case "dacs-agreement:v1:":
+    case "dacs-payee-bound-agreement:v1:":
+    case "dacs-identity-bound-agreement:v1:":
+    case "dacs-identity-bound-payee-agreement:v1:":
+    case "dacs-bundle:v1:":
+    case "dacs-fault-bundle:v1:":
+    case "dacs-evidence-bound-fault-bundle:v1:":
+      return "signatures";
+    default:
+      return "signature";
+  }
+}
+
 /**
  * Sign a document under a registered SINGLE-HASH domain separator. The artifact
  * hash is the content hash of the document's signed scope (signature field
@@ -143,7 +159,10 @@ export function signArtifact(
     );
   }
   const key = signer instanceof Uint8Array ? privateKeyFromSeed(signer) : signer;
-  return ed25519Sign(signedBytes(separator, contentHash(doc)), key);
+  return ed25519Sign(
+    signedBytes(separator, contentHash(doc, signatureFieldForSeparator(separator))),
+    key,
+  );
 }
 
 /**
@@ -163,7 +182,11 @@ export function verifyArtifact(
   if (isCompositeSeparator(separator)) return false;
   const key = publicKey instanceof Uint8Array ? publicKeyFromRaw(publicKey) : publicKey;
   try {
-    return ed25519Verify(signedBytes(separator, contentHash(doc)), signature, key);
+    return ed25519Verify(
+      signedBytes(separator, contentHash(doc, signatureFieldForSeparator(separator))),
+      signature,
+      key,
+    );
   } catch {
     return false;
   }

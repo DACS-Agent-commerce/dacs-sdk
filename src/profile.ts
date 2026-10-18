@@ -22,17 +22,12 @@ export function captureExecutionMode(policy: ProfileExecutionPolicy): "live" | "
   if (policy === null || typeof policy !== "object" || nodeTypes.isProxy(policy)) {
     throw new DacsError("profile execution policy must be stable data");
   }
-  let owner: object | null = policy;
-  while (owner !== null) {
-    if (nodeTypes.isProxy(owner)) throw new DacsError("profile execution policy must be stable data");
-    const descriptor = Object.getOwnPropertyDescriptor(owner, "executionMode");
-    if (descriptor) {
-      if (!("value" in descriptor)) throw new DacsError("profile execution mode must be stable data");
-      if (descriptor.value === undefined || descriptor.value === "live") return "live";
-      if (descriptor.value === "simulation") return "simulation";
-      throw new DacsError("profile execution mode must be live or simulation");
-    }
-    owner = Object.getPrototypeOf(owner);
+  const descriptor = Object.getOwnPropertyDescriptor(policy, "executionMode");
+  if (descriptor) {
+    if (!("value" in descriptor)) throw new DacsError("profile execution mode must be stable data");
+    if (descriptor.value === undefined || descriptor.value === "live") return "live";
+    if (descriptor.value === "simulation") return "simulation";
+    throw new DacsError("profile execution mode must be live or simulation");
   }
   return "live";
 }

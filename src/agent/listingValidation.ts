@@ -199,6 +199,23 @@ export function getListingReaderProvenance(result: unknown): ListingValidationRe
   return retained ? structuredClone(retained) : null;
 }
 
+/** Own internal result fields without charging its wrapper to artifact depth. */
+export function snapshotListingValidationResult(value: unknown): ListingValidationResult {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || nodeTypes.isProxy(value)) {
+    throw new TypeError("malformed Listing validation result");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const shallowDescriptors = Object.fromEntries(Reflect.ownKeys(descriptors).map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    return [key, "value" in descriptor ? { ...descriptor, value: null } : descriptor];
+  }));
+  // Check the wrapper before reading values; actual artifacts keep their budget.
+  snapshotCanonicalJsonRead(Object.create(Object.getPrototypeOf(value), shallowDescriptors), "Listing validation result");
+  return Object.fromEntries(Object.entries(descriptors).map(([key, descriptor]) => [
+    key, snapshotCanonicalJsonRead(descriptor.value, "Listing validation result field"),
+  ])) as unknown as ListingValidationResult;
+}
+
 /** Compare each field separately so a maximum-depth Listing stays in profile. */
 export function sameListingReaderResult(left: ListingValidationResult, right: ListingValidationResult): boolean {
   try {

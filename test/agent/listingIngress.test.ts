@@ -65,6 +65,75 @@ const terms = { price: { amount: "1", asset: "USDC", decimals: 6, rail: "pay-x40
   deliveryPhase: "deliver-attested-payload", deliveryFormat: "application/json" };
 
 describe("Listing CF-5 ingress before verification or effects", () => {
+  it("admits a signed unknown signatures extension through the ordered Listing gate", async () => {
+    const listing = { ...listingFixture(), signatures: [{ note: "authenticated extension" }] };
+    listing.signature.value = Buffer.from(ed25519Sign(
+      signedBytes("dacs-listing:v1:", contentHash(listing as unknown as Record<string, unknown>)),
+      privateKeyFromSeed(seed),
+    )).toString("base64url");
+    const deps = validationDeps();
+    const bytes = Buffer.from(JSON.stringify(listing));
+    expect(await validateListingArtifact(bytes, deps)).toMatchObject({ disposition: "verified", step: 9 });
+    expect(await discoverListings(["listing"], async () => bytes, {
+      executionMode: "simulation", verify: (payload, signature) => ed25519Verify(payload, signature, publicKey),
+      resolvePublicKey: () => rawPublicKey(publicKey), nowMs: deps.nowMs,
+      validateListing: (raw, received) => validateListingArtifact(received ?? raw, deps),
+    })).toHaveLength(1);
+    for (const signatures of [[], [{ note: "tampered" }]]) {
+      expect(await validateListingArtifact(Buffer.from(JSON.stringify({ ...listing, signatures })), deps))
+        .toMatchObject({ disposition: "rejected", step: 4 });
+    }
+  });
+
+  it("rejects live validation-result descriptors without invoking them", async () => {
+    const bytes = Buffer.from(JSON.stringify(listingFixture()));
+    const result = await validateListingArtifact(bytes, validationDeps());
+    const getter = vi.fn(() => result.listing);
+    const live = Object.defineProperty({ ...result }, "listing", { get: getter, enumerable: true });
+    expect(await discoverListings(["listing"], async () => bytes, {
+      executionMode: "simulation", trustListings: true,
+      nowMs: validationDeps().nowMs, validateListing: () => live,
+    })).toEqual([]);
+    const session = sessionDeps(bytes);
+    session.validateListing = async () => live;
+    await expect(runSessionCore("listing", terms, session)).rejects.toThrow(/validator threw/);
+    expect(getter).not.toHaveBeenCalled();
+    expect(session.sign).not.toHaveBeenCalled();
+  });
+
+  it.each([128, 129])("preserves the artifact depth budget at reader/discovery/session boundaries: %s", async (depth) => {
+    let tail: unknown = 0;
+    for (let index = 1; index < depth; index += 1) tail = { v: tail };
+    const listing = { ...listingFixture(), extensionDepth: tail };
+    if (depth === 128) {
+      listing.signature.value = Buffer.from(ed25519Sign(
+        signedBytes("dacs-listing:v1:", contentHash(listing as unknown as Record<string, unknown>)),
+        privateKeyFromSeed(seed),
+      )).toString("base64url");
+    }
+    const bytes = Buffer.from(JSON.stringify(listing));
+    const deps = validationDeps();
+    const result = await validateListingArtifact(bytes, deps);
+    expect(result.disposition).toBe(depth === 128 ? "verified" : "rejected");
+    expect(await discoverListings(["listing"], async () => bytes, {
+      executionMode: "simulation", trustListings: true, nowMs: deps.nowMs,
+      validateListing: () => result,
+    })).toHaveLength(depth === 128 ? 1 : 0);
+    const session = sessionDeps(bytes);
+    session.validateListing = vi.fn(async () => result);
+    session.verifyListing = vi.fn(() => false);
+    if (depth === 128) {
+      await expect(runSessionCore("listing", terms, session)).rejects.toThrow(/failed signature verification/);
+      expect(session.validateListing).toHaveBeenCalledOnce();
+      expect(session.verifyListing).toHaveBeenCalledOnce();
+    } else {
+      await expect(runSessionCore("listing", terms, session)).rejects.toMatchObject({ code: "JSON-NESTING-TOO-DEEP" });
+      expect(session.validateListing).not.toHaveBeenCalled();
+    }
+    expect(session.sign).not.toHaveBeenCalled();
+    expect(session.settle).not.toHaveBeenCalled();
+  });
+
   it.each([verifyReadableListingArtifact, authenticateReadableListingArtifact])(
     "requires original bytes at public authentication before any verifier callback", async (authenticate) => {
       const listing = listingFixture();

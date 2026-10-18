@@ -104,9 +104,13 @@ function residualPadBitAlias(value: string): string {
   throw new Error("fixture signature has no residual-pad-bit alias");
 }
 
-const ref = (name: string, value: Record<string, unknown>): AttestationRef => ({
+const ref = (
+  name: string,
+  value: Record<string, unknown>,
+  signatureField: "signature" | "signatures" = "signature",
+): AttestationRef => ({
   anchor: { kind: "storage-program", locator: `dacs-test:${name}` },
-  contentHash: contentHash(value),
+  contentHash: contentHash(value, signatureField),
 });
 
 function receipt(
@@ -461,7 +465,7 @@ function fixture(
         : []),
     ],
   };
-  const agreementRef = ref("agreement", agreementArtifact);
+  const agreementRef = ref("agreement", agreementArtifact, "signatures");
   const commitmentArtifact = {
     finalityCommitmentVersion: "1" as const,
     jobId: JOB_ID,

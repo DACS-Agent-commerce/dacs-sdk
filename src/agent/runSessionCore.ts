@@ -51,6 +51,7 @@ import type {
 import { attestationBundleHash } from "./twoSidedBundle.js";
 import {
   isVerifiedListingAdmission,
+  snapshotListingValidationResult,
   type ListingValidationResult,
 } from "./listingValidation.js";
 import {
@@ -2890,12 +2891,11 @@ export async function runSessionCore(
     }
     let validation: ListingValidationResult;
     try {
-      const rawValidation = snapshotCanonicalJsonRead(
+      const rawValidation = snapshotListingValidationResult(
         await deps.validateListing(
           snapshotCanonicalJson(storedRecord, "Listing validator input"),
           receivedListingBytes && copyRawJsonBytes(receivedListingBytes),
         ),
-        "Listing validation result",
       );
       if (
         rawValidation === null ||
@@ -3180,9 +3180,6 @@ export async function runSessionCore(
     value: Record<string, unknown>,
     expectedSigner: string,
   ): Match => {
-    if (Object.prototype.hasOwnProperty.call(value, "signatures")) {
-      return { ok: false, reason: "ambiguous singular/plural signature fields" };
-    }
     if (isComponentSignature(value.signature)) {
       return value.signature.signer === expectedSigner
         ? { ok: true }
@@ -3675,7 +3672,7 @@ export async function runSessionCore(
     }
     if (resumedBundle.status === "present") {
       const match = matchSessionBundle(
-        stripSignature(resumedBundle.value) as Record<string, unknown>,
+        stripSignature(resumedBundle.value, "signatures") as Record<string, unknown>,
       );
       if (!match.ok) {
         throw new CounterpartyError(

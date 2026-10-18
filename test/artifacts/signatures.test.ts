@@ -782,16 +782,16 @@ describe("ComponentSignature foundation", () => {
     };
     expect(contentHash(rootSignatureChanged)).toBe(originalHash);
     const withPluralSignature = { ...signed, signatures: [{ value: "AQ" }] };
-    expect(contentHash(withPluralSignature)).toBe(originalHash);
+    expect(contentHash(withPluralSignature)).not.toBe(originalHash);
     await expect(
       verifyComponentSignature(
         withPluralSignature,
         "dacs-listing:v1:",
         deps(),
       ),
-    ).resolves.toEqual({
-      status: "malformed",
-      reason: "ambiguous-signature-fields",
+    ).resolves.toMatchObject({
+      status: "invalid",
+      reason: "cryptographic-verification-failed",
     });
   });
 
@@ -903,23 +903,20 @@ describe("ComponentSignature foundation", () => {
     ).rejects.toThrow(/not stable canonical JSON/);
   });
 
-  it("rejects ambiguous singular and plural signature fields", async () => {
+  it("signs an unknown signatures extension and rejects its alteration or removal", async () => {
     const signed = await signComponentArtifact(
-      listing,
-      "dacs-listing:v1:",
-      { algorithm: "ed25519", signer: seller, sign },
+      { ...listing, signatures: [{ note: "authenticated extension" }] },
+      "dacs-listing:v1:", { algorithm: "ed25519", signer: seller, sign },
     );
-
-    await expect(
-      verifyComponentSignature(
-        { ...signed, signatures: [] },
-        "dacs-listing:v1:",
-        deps(),
-      ),
-    ).resolves.toEqual({
-      status: "malformed",
-      reason: "ambiguous-signature-fields",
-    });
+    await expect(verifyComponentSignature(signed, "dacs-listing:v1:", deps()))
+      .resolves.toMatchObject({ status: "valid" });
+    for (const signatures of [[], [{ note: "changed" }]]) {
+      await expect(verifyComponentSignature({ ...signed, signatures }, "dacs-listing:v1:", deps()))
+        .resolves.toMatchObject({ status: "invalid" });
+    }
+    const { signatures: _extension, ...removed } = signed;
+    await expect(verifyComponentSignature(removed, "dacs-listing:v1:", deps()))
+      .resolves.toMatchObject({ status: "invalid" });
   });
 
   it("runtime-rejects unregistered separators for JS callers", async () => {

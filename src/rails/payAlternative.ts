@@ -1801,7 +1801,7 @@ export async function verifyPriorPaymentReplacement(
   }
   try {
     if (
-      contentHash(priorAgreement as unknown as Record<string, unknown>) !==
+      contentHash(priorAgreement as unknown as Record<string, unknown>, "signatures") !==
         disposition.priorAgreementRef.contentHash
     ) {
       return decision("fail", "prior-disposition-binding");
@@ -2045,7 +2045,7 @@ export async function verifyAlternativePaymentAudit(
     }
     const expectedAgreementRef = {
       contentHash: contentHash(
-        projection.agreement as unknown as Record<string, unknown>,
+        projection.agreement as unknown as Record<string, unknown>, "signatures",
       ),
     };
     if (

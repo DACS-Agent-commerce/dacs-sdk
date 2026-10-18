@@ -932,10 +932,22 @@ describe("registry resolution (T12/T13)", () => {
     });
   });
 
+  test("retains a signed signatures extension through rail registry resolution", async () => {
+    const extension = [{ note: "authenticated optional data" }];
+    const entry = await signedRail({ ...x402Definition(), signatures: extension } as UnsignedRailDefinition);
+    const resolved = await resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", depsFor({ entries: [entry] }),
+    );
+    expect((resolved as unknown as { signatures: unknown }).signatures).toEqual(extension);
+    const changed = { ...entry, signatures: [{ note: "tampered" }] };
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", depsFor({ entries: [changed] }),
+    )).rejects.toThrow(/signature/);
+  });
+
   test("rejects validly signed malformed normative rail fields", async () => {
     const base = x402Definition();
     const malformed: object[] = [
-      { ...base, unexpected: true },
       { ...base, railVersion: 0 },
       { ...base, railVersion: 1.5 },
       { ...base, railId: " x402:default" },

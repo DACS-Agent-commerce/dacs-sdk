@@ -152,7 +152,7 @@ function agreement(jobLabel: string, amount = "5", currency = "DEM"): AgreementA
 
 function agreementRef(value: AgreementArtifact): AttestationRef {
   return ref(
-    contentHash(stripSignature(value as unknown as Record<string, unknown>)),
+    contentHash(value as unknown as Record<string, unknown>, "signatures"),
     `agreement-${value.jobId}`,
   );
 }
@@ -194,10 +194,10 @@ function bundle(
 
 function bundleHash(value: AnyAttestationBundle): string {
   const scope = {
-    ...stripSignature(value as unknown as Record<string, unknown>),
+    ...stripSignature(value as unknown as Record<string, unknown>, "signatures"),
   };
   delete scope.anchoredByRole;
-  return contentHash(scope);
+  return contentHash(scope, "signatures");
 }
 
 function input(

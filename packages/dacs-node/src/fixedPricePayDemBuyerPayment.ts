@@ -167,7 +167,7 @@ export function createDacsFixedPricePayDemBuyerPaymentV1(
             artifact.jobId !== operation.order.jobId ||
             artifact.terms.price.currency !== "DEM" ||
             agreement.agreementHash !== contentHash(
-              artifact as unknown as Record<string, unknown>,
+              artifact as unknown as Record<string, unknown>, "signatures",
             ) || commitment.agreementHash !== agreement.agreementHash ||
             context.database.readTime() > artifact.terms.deadline ||
             plan.listingRef !== application.listingRef ||

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CORRECTIVE_PROFILE, requireAdmissibleProfile } from "../../src/profile.js";
+import { CORRECTIVE_PROFILE, captureExecutionMode, requireAdmissibleProfile } from "../../src/profile.js";
 import { DACS_STANDARD_PIN } from "../../src/version.js";
 import { buildAgent, createAgent, createUnsafeManualAgent } from "../../src/agent/Agent.js";
 import { validateListingArtifact } from "../../src/agent/listingValidation.js";
@@ -10,6 +10,32 @@ import { verifySellerPaymentIntake } from "../../src/seller/paymentIntake.js";
 import { createFixedPricePayDemSellerCoordinator, createInMemoryFixedPricePayDemCoordinatorStore } from "../../src/commerce/index.js";
 
 describe("unreleased corrective profile admission", () => {
+  it("defaults inherited policy data to live without invoking inherited accessors", () => {
+    expect(captureExecutionMode(Object.create({ executionMode: "simulation" }))).toBe("live");
+    const getter = vi.fn(() => "simulation");
+    expect(captureExecutionMode(Object.create(Object.defineProperty({}, "executionMode", { get: getter })))).toBe("live");
+    expect(getter).not.toHaveBeenCalled();
+    expect(captureExecutionMode({ executionMode: "simulation" })).toBe("simulation");
+  });
+
+  it("refuses connected factories under Object.prototype policy pollution before inspecting config", async () => {
+    const touched = vi.fn();
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, "executionMode");
+    try {
+      Object.defineProperty(Object.prototype, "executionMode", { value: "simulation", configurable: true });
+      expect(captureExecutionMode({})).toBe("live");
+      expect(() => requireAdmissibleProfile({})).toThrow(/unreleased/);
+      for (const factory of [createAgent, createUnsafeManualAgent]) {
+        await expect(factory({ get demosRpc() { touched(); return "https://node.example"; } } as never))
+          .rejects.toThrow(/unreleased/);
+      }
+      expect(touched).not.toHaveBeenCalled();
+    } finally {
+      if (previous) Object.defineProperty(Object.prototype, "executionMode", previous);
+      else Reflect.deleteProperty(Object.prototype, "executionMode");
+    }
+  });
+
   it.each(["live", "simulation"] as const)("refuses a %s label on a connected Demos factory before any node call", async (executionMode) => {
     for (const factory of [createAgent, createUnsafeManualAgent]) {
       await expect(factory({ demosRpc: "https://node.example", executionMode })).rejects.toThrow(/unreleased/);

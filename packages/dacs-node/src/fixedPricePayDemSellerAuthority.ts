@@ -356,7 +356,7 @@ async function authenticateState(
       "pay-dem-authority-deliverable-unconfigured",
     );
   }
-  const agreementHash = contentHash(agreement as unknown as Record<string, unknown>);
+  const agreementHash = contentHash(agreement as unknown as Record<string, unknown>, "signatures");
   const commitmentContentHash = contentHash(
     result.commitment.record as unknown as Record<string, unknown>,
   );

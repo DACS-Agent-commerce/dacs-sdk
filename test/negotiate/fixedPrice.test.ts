@@ -654,7 +654,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     expect(isAgreementDocument(signed)).toBe(true);
     const bytes = signedBytes(
       ARTIFACT_SEPARATORS.AgreementDocument,
-      contentHash(signed as unknown as Record<string, unknown>),
+      contentHash(signed as unknown as Record<string, unknown>, "signatures"),
     );
     for (const [signature, seed] of [
       [signed.signatures[0]!, BUYER_SEED],
@@ -706,7 +706,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       sellerSigner,
     );
     expect(sellerCalls).toBe(1);
-    expect(contentHash(signed as unknown as Record<string, unknown>)).toBe(
+    expect(contentHash(signed as unknown as Record<string, unknown>, "signatures")).toBe(
       contentHash(expectedDraft as unknown as Record<string, unknown>),
     );
     expect(signed.jobId).toBe(expectedDraft.jobId);
@@ -1052,7 +1052,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       }),
     ).toBe(true);
     expect(() =>
-      contentHash(signed as unknown as Record<string, unknown>)
+      contentHash(signed as unknown as Record<string, unknown>, "signatures")
     ).not.toThrow();
 
     let invoked = 0;

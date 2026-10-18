@@ -3,6 +3,14 @@ import { describe, expect, test } from "vitest";
 import { contentHash, stripSignature } from "../../src/canonical/index.js";
 
 describe("signed-scope hashing", () => {
+  test("omits only the signature field selected by the artifact contract", () => {
+    const doc = { value: "bound", signature: "one", signatures: [{ note: "extension" }] };
+    expect(contentHash(doc)).not.toBe(contentHash({ value: "bound" }));
+    expect(stripSignature(doc)).toEqual({ value: "bound", signatures: doc.signatures });
+    expect(stripSignature(doc, "signatures")).toEqual({ value: "bound", signature: "one" });
+    expect(contentHash(doc, "signatures")).toBe(contentHash({ value: "bound", signature: "one" }, "signatures"));
+  });
+
   test("preserves an own __proto__ field as signed data without changing the prototype", () => {
     const record = JSON.parse(
       '{"value":"bound","__proto__":{"value":"unsigned"},"signature":"00"}',

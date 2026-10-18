@@ -380,20 +380,18 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
     ).resolves.toBeNull(); // mutation breaks the original signature.
   });
 
-  it("refuses a top-level signatures member that the signed hash would omit", async () => {
+  it("binds a top-level signatures extension to the Listing signature", async () => {
     const listing = fixture();
     const amended = {
       ...listing,
       signatures: [{ appended: true }],
     } as unknown as Record<string, unknown>;
-    // CORE §B.7 SIG-5: the generic scope omits `signature` and `signatures`,
-    // so the original single signature would still match the amended Listing.
-    expect(contentHash(amended)).toBe(
+    expect(contentHash(amended)).not.toBe(
       VECTOR.fixtures["listing-with-inert-extension"].artifactHash,
     );
-    expect(isListingEnvelope(amended)).toBe(false);
-    expect(isListing(amended)).toBe(false);
-    expect(readListingArtifact(amended)).toBeNull();
+    expect(isListingEnvelope(amended)).toBe(true);
+    expect(isListing(amended)).toBe(true);
+    expect(readListingArtifact(amended)).toMatchObject({ compatibility: "normative" });
     await expect(
       verifyReadableListingArtifact(amended, {
         verify,
@@ -409,7 +407,7 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
 
     const { signature: _signature, ...draft } = listing;
     expect(isListingDraft(draft)).toBe(true);
-    expect(isListingDraft({ ...draft, signatures: [] })).toBe(false);
+    expect(isListingDraft({ ...draft, signatures: [] })).toBe(true);
     // A signed Listing is not a draft, and a draft names a supported version.
     expect(isListingDraft(listing)).toBe(false);
     expect(isListingDraft({ ...draft, dacsVersion: "2" })).toBe(false);

@@ -477,7 +477,7 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
     expect(isAgreementDocument(signed)).toBe(true);
     const bytes = signedBytes(
       ARTIFACT_SEPARATORS.AgreementDocument,
-      contentHash(signed as unknown as Record<string, unknown>),
+      contentHash(signed as unknown as Record<string, unknown>, "signatures"),
     );
     expect(
       ed25519Verify(

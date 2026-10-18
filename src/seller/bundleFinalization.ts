@@ -2772,7 +2772,7 @@ async function verifyDependencies(
       try {
         resolvedHash = requirement.encoding === "jcs"
           ? sha256Hex(canonicalize(artifact))
-          : contentHash(artifact);
+          : contentHash(artifact, requirement.kinds.includes("agreement") ? "signatures" : "signature");
       } catch (error) {
         throw new DacsError(`dependency ${id} cannot be canonically hashed`, { cause: error });
       }

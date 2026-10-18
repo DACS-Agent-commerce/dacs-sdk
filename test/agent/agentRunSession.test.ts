@@ -1188,7 +1188,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     };
     const agreementPayload = signedBytes(
       ARTIFACT_SEPARATORS.AgreementDocument,
-      contentHash(agreementScope),
+      contentHash(agreementScope, "signatures"),
     );
     const agreement = {
       ...agreementScope,
@@ -1319,7 +1319,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       },
       agreementRef: {
         anchor: { kind: "storage-program" as const, locator: "stor:agreement" },
-        contentHash: contentHash(stripSignature(agreement)),
+        contentHash: contentHash(agreement, "signatures"),
       },
       parties: [
         { role: "buyer", bundleHash: "a".repeat(64), primaryClaim: normativeBuyerDid },

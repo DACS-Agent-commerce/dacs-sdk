@@ -24,6 +24,7 @@ import { readableListingClaimReferencesAreCanonical } from "./listingClaimRefere
 import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
 import {
   isVerifiedListingAdmission,
+  snapshotListingValidationResult,
   type ListingValidationResult,
 } from "./listingValidation.js";
 
@@ -389,12 +390,11 @@ export async function discoverListings(
       }
       let validation: ListingValidationResult;
       try {
-        const capturedValidation = snapshotCanonicalJsonRead(
+        const capturedValidation = snapshotListingValidationResult(
           await capturedDeps.validateListing(
             snapshotCanonicalJson(snapshot, "Listing validator input"),
             receivedBytes && copyRawJsonBytes(receivedBytes),
           ),
-          "Listing validation result",
         );
         if (
           capturedValidation === null ||

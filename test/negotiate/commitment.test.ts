@@ -580,7 +580,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       verifySignature,
     );
     expect(result.record.agreementHash).toBe(
-      contentHash(fixture.agreement as unknown as Record<string, unknown>),
+      contentHash(fixture.agreement as unknown as Record<string, unknown>, "signatures"),
     );
 
     const wrongTuple = structuredClone(fixture.agreement);
@@ -725,7 +725,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       dacsVersion: "1",
       jobId: JOB_ID,
       agreementHash: contentHash(
-        fixture.agreement as unknown as Record<string, unknown>,
+        fixture.agreement as unknown as Record<string, unknown>, "signatures",
       ),
       listingRef: fixture.agreement.listingRef,
       parties: [BUYER, SELLER],
@@ -787,7 +787,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       dacsVersion: "1",
       jobId: agreement.jobId,
       agreementHash: contentHash(
-        agreement as unknown as Record<string, unknown>,
+        agreement as unknown as Record<string, unknown>, "signatures",
       ),
       listingRef: { ...agreement.listingRef },
       parties: [BUYER, SELLER],
@@ -1027,9 +1027,13 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
       }).minorFinalityMetadata,
     ).toEqual({ quorum: "2/3" });
 
+    const appended = { ...additive, signatures: [] };
+    expect(isReadableFinalityCommitmentRecord(appended)).toBe(true);
+    expect(contentHash(appended as unknown as Record<string, unknown>))
+      .not.toBe(contentHash(additive as unknown as Record<string, unknown>));
+
     for (const ambiguous of [
       { ...additive, dacsVersion: "1" },
-      { ...additive, signatures: [] },
       { ...additive, finalityCommitmentVersion: "2" },
     ]) {
       expect(isReadableFinalityCommitmentRecord(ambiguous)).toBe(false);
@@ -1218,7 +1222,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
     const fixture = await agreementFixture();
     const input = commitmentInput(fixture);
     const expectedAgreementHash = contentHash(
-      input.agreement as unknown as Record<string, unknown>,
+      input.agreement as unknown as Record<string, unknown>, "signatures",
     );
     const selectedProvider = provider();
     let mutated = false;

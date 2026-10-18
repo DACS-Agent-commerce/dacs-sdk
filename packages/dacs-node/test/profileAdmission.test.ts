@@ -4,6 +4,30 @@ import { createDacsLiveRoleRuntimeV1 } from "../src/roleRuntime.js";
 import { createDacsPurchaseQueueExecutorV1 } from "../src/purchaseQueue.js";
 
 describe("host corrective profile admission", () => {
+  it("refuses all live guards under inherited simulation policy before dependencies", async () => {
+    const touched = vi.fn();
+    const options = Object.create({ executionMode: "simulation" });
+    Object.defineProperty(options, "config", { get: touched });
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, "executionMode");
+    try {
+      Object.defineProperty(Object.prototype, "executionMode", { value: "simulation", configurable: true });
+      await expect(createDacsLiveRoleRuntimeV1(options)).rejects.toThrow(/unreleased/);
+      const serviceOptions = {
+        config: {}, database: {}, workerId: "profile-test", peerAuthority: "peer",
+        peerEndpoint: "https://peer.example", resolveIdentity: touched,
+        validatePayload: touched, signTransportEnvelope: touched, handleMessage: touched,
+        createOperations: touched,
+      };
+      expect(() => createDacsLiveRoleServiceV1(serviceOptions as never)).toThrow(/unreleased/);
+      expect(() => createDacsLiveRoleServiceV1(options)).toThrow(/closed data objects/);
+      expect(() => createDacsPurchaseQueueExecutorV1(options)).toThrow(/unreleased/);
+      expect(touched).not.toHaveBeenCalled();
+    } finally {
+      if (previous) Object.defineProperty(Object.prototype, "executionMode", previous);
+      else Reflect.deleteProperty(Object.prototype, "executionMode");
+    }
+  });
+
   it("refuses role runtime before opening secrets or adapter authority", async () => {
     const touched = vi.fn();
     await expect(createDacsLiveRoleRuntimeV1({ get config() { touched(); return {}; } } as never))
