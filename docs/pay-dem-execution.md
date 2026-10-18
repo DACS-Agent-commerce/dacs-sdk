@@ -34,6 +34,17 @@ include `networkFeeOs`, a canonical non-negative integer OS string. Session
 checkpoints retain this fee across restart; the evidence's payment amount
 continues to describe the agreed transfer amount.
 
+Session recovery also reauthenticates every saved native-payment success through
+`resumeSettlement`, including older inclusion-only checkpoints and previously
+anchored success evidence. Wire that seam to the durable `payDemSettle` recovery
+path and retain the original signed-transfer journal. A bound failed record
+replaces an old successful rail checkpoint with permanent failure for the same
+transaction. Already signed success evidence that contradicts execution is
+refused; the SDK does not rewrite it or complete the session. Absent,
+indeterminate or conflicting observations withhold success and never authorize
+a replacement debit. The original fee metadata is retained after a successful
+audit, and every subsequent restart authenticates execution again.
+
 ## Custom native clients
 
 Custom `PayDemRail` implementations return `PayDemRailResult`. A successful

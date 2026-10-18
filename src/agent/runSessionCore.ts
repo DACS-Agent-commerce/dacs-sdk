@@ -284,7 +284,8 @@ export interface SessionDeps {
   expectedSettlementPayee?: string;
   /**
    * Restart-safe recovery for a previously claimed settlement whose SessionStore
-   * still carries only `settle:intent`.
+   * still carries only `settle:intent`, or for reauthenticating saved native
+   * success checkpoints and anchored success evidence on every restart.
    *
    * This MUST use the original `(rail, jobId, phaseIndex)` idempotency binding,
    * return the prior definitive result when payment landed, and throw while state
@@ -299,6 +300,11 @@ export interface SessionDeps {
    * wrapper is the intended implementation with a durable atomic SettlementLog.
    * Callers may then wire the same wrapper as both `settle` and
    * `resumeSettlement`.
+   *
+   * For a saved native success this is a read-only audit of the original
+   * transfer's execution, including its retained signed nonce. Return executed
+   * success or a bound permanent failure for that hash; throw on absence or
+   * indeterminate observations. Neither outcome authorizes another broadcast.
    *
    * `runSessionCore` deliberately does not call the ordinary `settle` seam under
    * an unresolved SessionStore intent because it cannot assume every implementation
@@ -2199,6 +2205,26 @@ function sameSettlementOutcome(
   );
 }
 
+/** A saved native success is a claim to audit, including pre-execution-gate receipts. */
+function isNativeSettlement(binding: Pick<SettlementBinding, "phase" | "asset">): boolean {
+  return binding.phase === "pay-dem" && binding.asset === "DEM";
+}
+
+function canReauthenticateNativeSuccess(
+  prior: DurableSettlementOutcome,
+  next: DurableSettlementOutcome,
+): boolean {
+  return prior.ok && isNativeSettlement(prior) &&
+    sameSettlementBinding(prior, next) &&
+    prior.txHash === next.txHash && prior.chainId === next.chainId &&
+    prior.payer === next.payer && prior.payee === next.payee &&
+    (prior.blockNumber === undefined || prior.blockNumber === next.blockNumber) &&
+    (prior.txRefKind === undefined || prior.txRefKind === next.txRefKind) &&
+    (prior.networkFeeOs === undefined || next.networkFeeOs === undefined ||
+      prior.networkFeeOs === next.networkFeeOs) &&
+    (next.ok || next.errorClass === "permanent");
+}
+
 function sameAuthenticatedEvidenceOutcome(
   left: AuthenticatedEvidenceSettlementOutcome,
   right: AuthenticatedEvidenceSettlementOutcome,
@@ -2593,9 +2619,11 @@ function isValidSettlementOutcomeProgression(
         ? next.outcome.ok && sameKnownTransaction
         : next.outcome.ok;
     }
-    // Rail-authenticated migration may promote an old non-definitive failure to
-    // success, but can never demote an already-successful durable receipt.
-    return !prior.outcome.ok || next.outcome.ok;
+    // Old native successes predate execution authentication. Only a bound
+    // terminal failure for that same transaction may invalidate that claim.
+    return !prior.outcome.ok || next.outcome.ok ||
+      (sameKnownTransaction && isNativeSettlement(next.outcome) &&
+        next.outcome.errorClass === "permanent");
   }
 
   if (prior.status === "current-rail") {
@@ -2614,6 +2642,7 @@ function isValidSettlementOutcomeProgression(
     }
     return (
       sameSettlementOutcome(prior.outcome, next.outcome) ||
+      (!next.outcome.ok && canReauthenticateNativeSuccess(prior.outcome, next.outcome)) ||
       (sameSettlementBinding(prior.outcome, next.outcome) &&
         prior.outcome.ok === false &&
         prior.outcome.errorClass !== "permanent" &&
@@ -4144,7 +4173,8 @@ export async function runSessionCore(
           prior.outcome.chainId === outcome.chainId) ||
           (outcome.supersedesTxHash === prior.outcome.txHash &&
             outcome.supersedesChainId === prior.outcome.chainId));
-      if (!canResolveAmbiguous) {
+      if (!canResolveAmbiguous &&
+          !(!outcome.ok && canReauthenticateNativeSuccess(prior.outcome, outcome))) {
         throw new CounterpartyError(
           `could not record settlement outcome for ${jobId}: existing outcome conflicts with ${outcome.txHash}`,
         );
@@ -4197,6 +4227,7 @@ export async function runSessionCore(
   const recoverRailOutcome = async (
     label: string,
     prior?: LegacyDurableSettlementOutcome | DurableSettlementOutcome,
+    persist = true,
   ): Promise<DurableSettlementOutcome> => {
     if (!deps.resumeSettlement) {
       throw new CounterpartyError(
@@ -4263,11 +4294,30 @@ export async function runSessionCore(
           `settlement recovery returned ${outcome.chainId}:${outcome.txHash}, which does not authenticate the prior ${prior.chainId}:${prior.txHash}`,
         );
       }
-      if (prior.ok && !outcome.ok) {
+      if (prior.ok && isNativeSettlement(expectedSettlementBinding)) {
+        if (("outcomeSource" in prior && !canReauthenticateNativeSuccess(prior, outcome)) ||
+            (!outcome.ok && outcome.errorClass !== "permanent")) {
+          throw new CounterpartyError(
+            "native settlement execution remains indeterminate or conflicts with the saved success",
+          );
+        }
+      } else if (prior.ok && !outcome.ok) {
         throw new CounterpartyError(
           "settlement recovery contradicted a previously successful durable outcome",
         );
       }
+    }
+    // Existing signed evidence is immutable. Audit it without writing a second
+    // outcome underneath it; the caller refuses any contradiction.
+    if (!persist) return outcome;
+    if (prior && "outcomeSource" in prior && prior.ok && outcome.ok &&
+        canReauthenticateNativeSuccess(prior, outcome)) {
+      // Keep the exact checkpoint's fee/finality metadata after authenticating
+      // execution. Observation time or optional fee echoes need not be rebuilt.
+      await bindSettlementTransaction(prior);
+      // A slower audit cannot reuse a claim another worker has invalidated.
+      await completeSettlement(prior, "settled");
+      return prior;
     }
     // A transaction without successful execution or a bound terminal failure
     // remains ambiguous. Bind it for anti-replay and retain unresolved intent
@@ -4320,6 +4370,9 @@ export async function runSessionCore(
       throw new CounterpartyError(
         `settlement for ${jobId} is not bound to the requested rail, Agreement, terms, phase, and destination`,
       );
+    }
+    if (outcome.ok && isNativeSettlement(outcome)) {
+      return recoverRailOutcome("saved native success requires execution reconciliation", outcome);
     }
     if (!outcome.ok && outcome.txHash.length > 0 && outcome.errorClass !== "permanent") {
       return recoverRailOutcome(
@@ -4478,6 +4531,37 @@ export async function runSessionCore(
       evidenceValue,
     ) as unknown as SessionSettlementEvidence;
     settledOk = unsignedEvidence.outcome === "success";
+
+    if (settledOk && isNativeSettlement(expectedSettlementBinding)) {
+      const tx = unsignedEvidence.paymentTxRefs?.[0];
+      if (!tx) throw new CounterpartyError("saved native success evidence has no transaction reference");
+      const identity = settlementIdentityFromTxRef(tx);
+      let prior: LegacyDurableSettlementOutcome | DurableSettlementOutcome = {
+        txHash: identity.txHash, chainId: identity.chainId, ok: true,
+      };
+      if (store) {
+        const loaded = await store.load(jobId);
+        assertSessionAgreementBinding(loaded, jobId, agreementHash, "native evidence reconciliation load");
+        const recorded = readSettleOutcome(loaded);
+        if (recorded.status === "invalid") throw new CounterpartyError(recorded.reason);
+        if (recorded.status !== "absent") {
+          if (recorded.outcome.txHash !== identity.txHash ||
+              recorded.outcome.chainId !== identity.chainId || !recorded.outcome.ok ||
+              (recorded.status !== "legacy-unbound" &&
+                !sameSettlementBinding(recorded.outcome, expectedSettlementBinding))) {
+            throw new CounterpartyError("saved native success evidence conflicts with the durable outcome");
+          }
+          if (recorded.status === "current-rail") prior = recorded.outcome;
+        }
+      }
+      const authenticated = await recoverRailOutcome(
+        "saved native success evidence requires execution reconciliation", prior, false,
+      );
+      if (!authenticated.ok || authenticated.blockNumber !== identity.blockNumber ||
+          authenticated.txRefKind !== identity.kind) {
+        throw new CounterpartyError("saved native success evidence contradicts chain execution");
+      }
+    }
 
     if (store) {
       const signature = evidenceValue.signature;
