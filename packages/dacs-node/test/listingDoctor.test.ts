@@ -417,7 +417,7 @@ describe("existing x402 Listing doctor", () => {
     });
   });
 
-  it("keeps unavailable anchor reads and receipt recovery blocked and admits a retry", async () => {
+  it("keeps thrown anchor-read and receipt-recovery failures blocked and admits a retry", async () => {
     const value = await publishedFixture();
     value.options.readAnchor.mockRejectedValueOnce(new Error("Demos read is indeterminate"));
     await expect(resolveDacsX402ExistingListingV1(value.options as never)).resolves.toEqual({

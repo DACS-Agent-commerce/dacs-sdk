@@ -246,3 +246,5 @@ export {
   type VerifiedSelectionRule,
   type SealedRuleEvaluationInput,
 } from "./sealedEnvelope.js";
+
+export { requireJid1LiveProfile } from "./liveProfile.js";

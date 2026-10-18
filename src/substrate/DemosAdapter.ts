@@ -1520,8 +1520,8 @@ export class DemosAdapter implements SubstrateAdapter {
    * Older public nodes omit `createdByTx`/`lastModifiedByTx` from otherwise
    * complete Storage Program reads. Recover every writer's latest mutation
    * and the owner's one create from stable, exhaustively paged native-address
-   * history. Malformed rows, a moving head, unsupported latest operations or a
-   * post-scan native change fail closed.
+   * history. Both complete scans and native readback must share a canonical
+   * block snapshot. Transaction timestamps do not define execution order.
    */
   private async resolveDemosProvenanceFromHistory(
     nativeAddress: string,
@@ -1531,53 +1531,51 @@ export class DemosAdapter implements SubstrateAdapter {
     if (owner === undefined) {
       throw new SubstrateError("Demos receipt native owner is invalid");
     }
-    const rows: unknown[] = [];
-    let firstHash: string | undefined;
-    for (let page = 0; page < RECEIPT_HISTORY_MAX_PAGES; page += 1) {
-      const start = page * RECEIPT_HISTORY_PAGE_SIZE;
-      const raw = await this.#demos.getTransactionHistory(
-        nativeAddress,
-        "storageProgram",
-        { start, limit: RECEIPT_HISTORY_PAGE_SIZE },
-      ) as unknown;
-      if (!Array.isArray(raw) || raw.length > RECEIPT_HISTORY_PAGE_SIZE) {
-        throw new SubstrateError("Demos receipt history page is malformed");
+    const snapshot = async (): Promise<string> => {
+      const height = demosNonNegativeInteger(await this.#demos.getLastBlockNumber());
+      if (height === undefined) {
+        throw new SubstrateError("Demos receipt history snapshot is unavailable");
       }
-      if (page === 0 && raw.length > 0) {
-        const head = raw[0];
-        if (!isRecord(head) || typeof head.hash !== "string" || head.hash.length === 0) {
-          throw new SubstrateError("Demos receipt history head is malformed");
-        }
-        firstHash = head.hash;
+      const block = demosNodeRecord(await this.#demos.getBlockByNumber(height));
+      if (!block || block.status !== "confirmed" || block.number !== height ||
+          typeof block.hash !== "string" || block.hash.length === 0 ||
+          block.validation_data === undefined) {
+        throw new SubstrateError("Demos receipt history snapshot is not canonical");
       }
-      rows.push(...raw);
-      if (raw.length < RECEIPT_HISTORY_PAGE_SIZE) {
-        const lookahead = await this.#demos.getTransactionHistory(
-          nativeAddress,
-          "storageProgram",
-          { start: start + raw.length, limit: 1 },
+      return `${height}:${block.hash}`;
+    };
+    const initialSnapshot = await snapshot();
+    const snapshotHeight = Number(initialSnapshot.split(":", 1)[0]);
+    const scan = async (): Promise<unknown[]> => {
+      const rows: unknown[] = [];
+      for (let page = 0; page < RECEIPT_HISTORY_MAX_PAGES; page += 1) {
+        const start = page * RECEIPT_HISTORY_PAGE_SIZE;
+        const raw = await this.#demos.getTransactionHistory(
+          nativeAddress, "storageProgram", { start, limit: RECEIPT_HISTORY_PAGE_SIZE },
         ) as unknown;
-        if (!Array.isArray(lookahead) || lookahead.length !== 0) {
-          throw new SubstrateError("Demos receipt history page is incomplete");
+        if (!Array.isArray(raw) || raw.length > RECEIPT_HISTORY_PAGE_SIZE) {
+          throw new SubstrateError("Demos receipt history page is malformed");
         }
-        break;
+        rows.push(...raw);
+        if (raw.length < RECEIPT_HISTORY_PAGE_SIZE) {
+          const lookahead = await this.#demos.getTransactionHistory(
+            nativeAddress, "storageProgram", { start: start + raw.length, limit: 1 },
+          ) as unknown;
+          if (!Array.isArray(lookahead) || lookahead.length !== 0) {
+            throw new SubstrateError("Demos receipt history page is incomplete");
+          }
+          return rows;
+        }
       }
-      if (page === RECEIPT_HISTORY_MAX_PAGES - 1) {
-        throw new SubstrateError("Demos receipt history exceeds the verification cap");
-      }
-    }
-    if (firstHash === undefined) {
+      throw new SubstrateError("Demos receipt history exceeds the verification cap");
+    };
+    const rows = await scan();
+    if (rows.length === 0) {
       throw new SubstrateError("Demos receipt native provenance is unavailable");
     }
-    const headCheck = await this.#demos.getTransactionHistory(
-      nativeAddress,
-      "storageProgram",
-      { start: 0, limit: 1 },
-    ) as unknown;
-    if (!Array.isArray(headCheck) || headCheck.length !== 1 ||
-        !isRecord(headCheck[0]) || headCheck[0].hash !== firstHash) {
-      throw new SubstrateError("Demos receipt history changed during verification");
-    }
+    // Capture complete rows before further IO; comparing only the first hash
+    // misses a later block whose signed timestamp sorts behind the old head.
+    const scannedHistory = canonicalize(rows);
 
     const mutations: Array<Readonly<{
       hash: string;
@@ -1617,7 +1615,7 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       const blockNumber = demosNonNegativeInteger(raw.blockNumber);
       const nonce = demosNonNegativeInteger(raw.content.nonce);
-      if (blockNumber === undefined || nonce === undefined) {
+      if (blockNumber === undefined || blockNumber > snapshotHeight || nonce === undefined) {
         throw new SubstrateError("Demos receipt history mutation lacks ordering evidence");
       }
       if (seen.has(raw.hash) ||
@@ -1686,11 +1684,8 @@ export class DemosAdapter implements SubstrateAdapter {
         !sameOptionalJsonObject(fresh.metadata ?? undefined, observedMetadata)) {
       throw new SubstrateError("Demos receipt native value changed during verification");
     }
-    const finalHead = await this.#demos.getTransactionHistory(
-      nativeAddress, "storageProgram", { start: 0, limit: 1 },
-    ) as unknown;
-    if (!Array.isArray(finalHead) || finalHead.length !== 1 ||
-        !isRecord(finalHead[0]) || finalHead[0].hash !== firstHash) {
+    if (canonicalize(await scan()) !== scannedHistory ||
+        await snapshot() !== initialSnapshot) {
       throw new SubstrateError("Demos receipt history changed during verification");
     }
     const creates = mutations.filter((mutation) =>

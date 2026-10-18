@@ -244,6 +244,7 @@ async function makeAdapter(options?: {
           }),
     };
   });
+  raw.getLastBlockNumber = vi.fn(async () => 42);
   raw.getBlockByNumber = vi.fn(async (blockNumber: number) => ({
     number: blockNumber,
     hash: `block-${blockNumber}`,
@@ -1848,6 +1849,75 @@ describe("DemosAdapter.anchorAndWait", () => {
       await expect(verify()).rejects.toMatchObject({
         name: "SubstrateError", message: "Demos receipt history changed during verification",
       });
+    }
+  });
+
+  it.each(["readback", "pagination"])("refuses a behind-head write arriving during %s", async (arrival) => {
+    const { adapter, raw, created, updated, receipt } =
+      await createThenIdenticalUpdate("proof-history-behind-head");
+    const read = raw.storagePrograms.read.getMockImplementation();
+    const txCreate = await raw.getTxByHash(created.txRef);
+    const txUpdate = await raw.getTxByHash(updated.txRef);
+    // The later block's signed timestamp is older; node history sorts by that
+    // timestamp, so its first row does not change when this write arrives.
+    const delegated = { ...txUpdate, hash: "tx-behind-head-delegated", blockNumber: 43,
+      content: { ...txUpdate.content, timestamp: 1, from: `0x${"cd".repeat(32)}`, nonce: 0 } };
+    for (const verify of [
+      () => adapter.verifyDemosWriteEvidence(updated.demosEvidence!),
+      () => adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)),
+    ]) {
+      serveStorageHistory(raw, [txUpdate, txCreate]);
+      // Keep the reported tip stable to also model delayed history indexing.
+      raw.getLastBlockNumber.mockResolvedValue(43);
+      const history = raw.getTransactionHistory.getMockImplementation();
+      raw.getTransactionHistory.mockImplementation(async (address: string, type: string, options: any) => {
+        const rows = await history(address, type, options);
+        if (arrival === "pagination" && options.start > 0) {
+          serveStorageHistory(raw, [txUpdate, delegated, txCreate]);
+        }
+        return rows;
+      });
+      let reads = 0;
+      raw.storagePrograms.read = vi.fn(async (address: string) => {
+        const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } = await read(address);
+        if (arrival === "readback" && ++reads === 2) {
+          serveStorageHistory(raw, [txUpdate, delegated, txCreate]);
+        }
+        return rest;
+      });
+      await expect(verify()).rejects.toMatchObject({
+        name: "SubstrateError", message: "Demos receipt history changed during verification",
+      });
+      // A stable retry sees the later canonical mutation and rejects the stale proof.
+      await expect(verify()).resolves.toBe(false);
+    }
+  });
+
+  it.each(["height", "hash", "unavailable"])("refuses a changing or unavailable canonical snapshot (%s)", async (change) => {
+    const { adapter, raw, created, updated, receipt } =
+      await createThenIdenticalUpdate("proof-history-snapshot");
+    const read = raw.storagePrograms.read.getMockImplementation();
+    const txCreate = await raw.getTxByHash(created.txRef);
+    const txUpdate = await raw.getTxByHash(updated.txRef);
+    const block = raw.getBlockByNumber.getMockImplementation();
+    serveStorageHistory(raw, [txUpdate, txCreate]);
+    for (const verify of [
+      () => adapter.verifyDemosWriteEvidence(updated.demosEvidence!),
+      () => adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)),
+    ]) {
+      let reads = 0;
+      raw.getLastBlockNumber.mockResolvedValue(change === "unavailable" ? { result: 500 } : 42);
+      raw.getBlockByNumber.mockImplementation(block);
+      raw.storagePrograms.read = vi.fn(async (address: string) => {
+        const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } = await read(address);
+        if (++reads === 2) {
+          if (change === "height") raw.getLastBlockNumber.mockResolvedValue(43);
+          if (change === "hash") raw.getBlockByNumber.mockImplementation(async (height: number) =>
+            ({ ...await block(height), hash: "changed-canonical-block" }));
+        }
+        return rest;
+      });
+      await expect(verify()).rejects.toBeInstanceOf(SubstrateError);
     }
   });
 

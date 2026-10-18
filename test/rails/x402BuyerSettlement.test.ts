@@ -1757,3 +1757,6 @@ describe("public surface", () => {
     }
   }, 20_000);
 });
+
+// Offline settlement/recovery simulation; separate admission tests use the real gate.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

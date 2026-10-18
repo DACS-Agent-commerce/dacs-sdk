@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { verifyMessage } from "viem";
 import { signedBytes } from "@kynesyslabs/dacs/crypto";
+import { UnsupportedCapabilityError } from "../../../src/errors.js";
 
 import {
   DACS_NODE_LIVE_PROFILE,
@@ -52,7 +53,7 @@ function secret(value: string): Readonly<DacsLoadedSecretV1> {
 }
 
 describe("buyer EVM runtime", () => {
-  it("derives the payer locally, destroys source bytes and scopes every signer", async () => {
+  it("derives the payer locally, destroys source bytes and refuses unreleased live signing", async () => {
     const loaded = secret(`0x${"11".repeat(32)}\n`);
     const runtime = await createDacsX402BuyerEvmRuntimeV1({
       config: config(),
@@ -89,11 +90,14 @@ describe("buyer EVM runtime", () => {
       maxTimeoutSeconds: 120,
       extra: { name: "USD Coin", version: "2", assetTransferMethod: "eip3009" },
     };
-    const client = await runtime.createChallengeClient({
+    const challengeClient = runtime.createChallengeClient({
       authority,
       expectedRequirements,
     });
-    expect(client.address.toLowerCase()).toBe(runtime.payerAddress.toLowerCase());
+    await expect(challengeClient).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(challengeClient).rejects.toThrow(
+      "Live JID-1 actions are unavailable: the pinned Standard has no coordinated corrective release",
+    );
     const bundleHash = "e".repeat(64);
     const identitySignature = await runtime.signIdentityPresentation(bundleHash);
     await expect(verifyMessage({

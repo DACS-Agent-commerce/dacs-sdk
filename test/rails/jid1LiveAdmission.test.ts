@@ -6,6 +6,8 @@ import { createX402Paywall, x402PaywallCore } from "../../src/rails/x402Paywall.
 import { createDacsX402BuyerEvmChallengeClient } from "../../src/rails/x402BuyerDacsEvm.js";
 import { createX402BuyerPaidRequestTransport, prepareX402BuyerSettlement } from "../../src/rails/x402BuyerTransport.js";
 
+import { advanceX402BuyerSettlement } from "../../src/rails/x402BuyerSettlement.js";
+
 const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const MESSAGE = "Live JID-1 actions are unavailable: the pinned Standard has no coordinated corrective release";
 
@@ -45,6 +47,15 @@ describe("unreleased JID-1 live admission", () => {
     const read = vi.fn(() => { throw new Error("buyer dependency was consumed"); });
     const caller = new Proxy({ jobId: JOB_ID }, { get: read });
     await expect(x402SettleCore(caller as never, caller as never)).rejects.toThrow(MESSAGE);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("refuses the durable coordinator before retained state, claims, authorization or transport", async () => {
+    const read = vi.fn(() => { throw new Error("durable dependency was consumed"); });
+    const caller = new Proxy({}, { get: read });
+    const result = advanceX402BuyerSettlement(caller as never);
+    await expect(result).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(result).rejects.toThrow(MESSAGE);
     expect(read).not.toHaveBeenCalled();
   });
 

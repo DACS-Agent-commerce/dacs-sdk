@@ -3,6 +3,7 @@ import { types as nodeTypes } from "node:util";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { MAX_NESTING_DEPTH } from "../canonical/jcs.js";
 import { DacsError } from "../errors.js";
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
 
@@ -1835,6 +1836,7 @@ function captureReconciliation(
 export async function advanceX402BuyerSettlement<TObservation = unknown>(
   input: AdvanceX402BuyerSettlementInput<TObservation>,
 ): Promise<X402BuyerSettlementProgress> {
+  requireJid1LiveProfile();
   const intent = captureIntent(input?.intent);
   const owner = asciiString(input?.owner, "x402 buyer owner");
   const now = typeof input?.now === "function" ? input.now : Date.now;
