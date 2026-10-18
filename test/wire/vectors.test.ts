@@ -1,3 +1,4 @@
+import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 // Replays vectors/dacs-seller-http-v1.json. Each negative must fail with its
 // own named code, not an earlier one. scripts/wire/mutate-wire-checks.mjs runs
 // this file against mutated copies of src/ (DACS_WIRE_IMPL) to show that each
@@ -117,7 +118,18 @@ async function produce(input: Record<string, any>): Promise<void> {
   const subject = (value: Record<string, unknown>): any => (input.subjectView ? changingView(value, input.subjectView, input.subjectView.honestReads) : value);
   if (input.producer === "request-delegated") return delegatedRequestEditedWhileSigning(input, text);
   try {
-    if (input.producer === "request") {
+    if (input.producer === "request-eligibility") {
+      const local = file.localBindings.buyer;
+      const binding = bind(local);
+      const discovery = file.vectors.find((v: Vector) => v.id === "discovery/valid").input;
+      const endpointProof = wire.verifyEndpointProof(b(discovery.document), {
+        listing: discovery.listing, binding, local, now: file.now,
+        readListingEligibility: (scope) => ({ ...(readFixtureListingEligibility(scope) as Record<string, unknown>), ...input.eligibility }),
+      });
+      await wire.signWireRequest({ signer, binding, local, path: input.path, jobId: file.job.jobId, text,
+        seller: file.parties.seller, job: jobFor(input) as WireModule.WireJobContext,
+        endpointProof, publicEndpoint: discovery.listing.publicEndpoint, now: file.now });
+    } else if (input.producer === "request") {
       const local = file.localBindings.buyer;
       await signRequestWithProof({ signer, binding: bind(local), local, path: input.path, jobId: file.job.jobId, text, seller: file.parties.seller, job: jobFor(input) as WireModule.WireJobContext, now: file.now, publicEndpoint: file.vectors.find((v: Vector) => v.id === "discovery/valid").input.listing.publicEndpoint }, b(file.vectors.find((v: Vector) => v.id === "discovery/valid").input.document), wire);
     } else if (input.producer === "response") {
@@ -127,7 +139,7 @@ async function produce(input: Record<string, any>): Promise<void> {
       const local = file.localBindings.buyer;
       const binding = bind(local);
       const discovery = file.vectors.find((v: Vector) => v.id === "discovery/valid").input;
-      const endpointProof = wire.verifyEndpointProof(b(discovery.document), { listing: discovery.listing, binding, local, now: file.now });
+      const endpointProof = wire.verifyEndpointProof(b(discovery.document), { readListingEligibility: readFixtureListingEligibility, listing: discovery.listing, binding, local, now: file.now });
       await wire.signWireEnvelope(subject({ ...input.payload }), { signer, binding, local, ...kept(input, "purchaseProfile"), endpointProof, publicEndpoint: discovery.listing.publicEndpoint, now: file.now } as unknown as WireModule.EnvelopeSigningContext);
     } else if (input.producer === "delegation") {
       const local = file.localBindings.buyer;
@@ -183,7 +195,7 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
       wire.verifyWireResponse(input.request, { header: input.header, status: input.status, body: b(input.body), now: file.now, ...verifier(input, file.localBindings.buyer) });
       return { ok: true };
     case "discovery":
-      wire.verifyEndpointProof(b(input.document), { listing: input.listing, now: file.now, ...verifier(input, file.localBindings.buyer) });
+      wire.verifyEndpointProof(b(input.document), { readListingEligibility: readFixtureListingEligibility, listing: input.listing, now: file.now, ...verifier(input, file.localBindings.buyer) });
       return { ok: true };
     case "binding": {
       const { gate, approvedRecordDigests, view: _view, local = file.localBindings.buyer, ...options } = input;
@@ -251,6 +263,7 @@ describe("dacs-seller-http/v1 vectors", () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const v of vectors) expect(v.expect.ok || typeof v.check === "string").toBe(true);
     for (const required of [
+      "signing/request-listing-x402", "signing/request-listing-metered", "signing/request-listing-input",
       "request/old-domain", "request/profile-missing", "request/profile-wrong-chain", "delegation/expired",
       "delegation/wrong-seller-scope", "discovery/endpoint-mismatch", "request/cf5-body-duplicate-member",
       "request/cf5-body-malformed-utf8", "request/cf5-body-non-nfc", "request/cf5-body-invalid-number",

@@ -86,6 +86,8 @@ export {
   type DiscoveryPayload,
   type EndpointProof,
   type VerifiedListingEndpoint,
+  type VerifiedListingEligibility,
+  type ListingEligibilityReader,
 } from "./discovery.js";
 export {
   WireError,

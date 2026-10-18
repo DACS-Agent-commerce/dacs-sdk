@@ -4673,6 +4673,57 @@
         "ok": false,
         "code": "tp1_local_binding_invalid"
       }
+    },
+    {
+      "id": "signing/request-listing-x402",
+      "kind": "signing",
+      "check": "authenticated Listing eligibility",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "request-eligibility",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "eligibility": {
+          "rail": "pay-x402"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "listing_unsupported"
+      }
+    },
+    {
+      "id": "signing/request-listing-metered",
+      "kind": "signing",
+      "check": "authenticated Listing eligibility",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "request-eligibility",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "eligibility": {
+          "pricingKind": "metered"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "listing_unsupported"
+      }
+    },
+    {
+      "id": "signing/request-listing-input",
+      "kind": "signing",
+      "check": "authenticated Listing eligibility",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "request-eligibility",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "eligibility": {
+          "buyerRequestInput": true
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "listing_unsupported"
+      }
     }
   ]
 }

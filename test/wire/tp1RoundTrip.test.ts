@@ -1,3 +1,4 @@
+import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // TP-1 round trips with keys generated at run time: the buyer signs requests
 // and delegations, the seller verifies them, signs responses and discovery,
@@ -95,8 +96,8 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
       transport: ["dacs-seller-http/v1"], listings: [PIN], capabilities: TP1_CAPABILITIES, ready: true, issuedAt: NOW, expiresAt: NOW + 300_000,
     };
     const bytes = await signDiscoveryDocument(payload, w.seller, w.sellerBinding, RPC_B);
-    expect(verifyEndpointProof(bytes, { listing: { seller: w.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: w.buyerBinding, local: RPC_A, now: NOW }).ready).toBe(true);
-    expect(await code(() => verifyEndpointProof(bytes, { listing: { seller: w.seller.claim, publicEndpoint: `${ENDPOINT}/`, listingPin: PIN }, binding: w.buyerBinding, local: RPC_A, now: NOW }))).toBe("discovery_endpoint_mismatch");
+    expect(verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: w.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: w.buyerBinding, local: RPC_A, now: NOW }).ready).toBe(true);
+    expect(await code(() => verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: w.seller.claim, publicEndpoint: `${ENDPOINT}/`, listingPin: PIN }, binding: w.buyerBinding, local: RPC_A, now: NOW }))).toBe("discovery_endpoint_mismatch");
   });
 
   it("old-domain and missing or wrong-profile messages fail in both directions", async () => {

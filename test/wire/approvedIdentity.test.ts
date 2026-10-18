@@ -1,3 +1,4 @@
+import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // 2026-10-15 approval through the real approval module. No mock or replacement approval.
 // The supplied decision record is used offline; generated keys and .invalid
@@ -82,7 +83,7 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
     verifySellerSessionDelegation(delegation, { buyer: buyer.claim, seller: seller.claim, listingPin: PIN, jobId: JOB, time: NOW, binding: sb, local: B });
     const publicEndpoint = "https://seller.identity.invalid";
     const discovery = await signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: sb.profile, seller: seller.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [PIN], capabilities: TP1_CAPABILITIES, ready: true, issuedAt: NOW, expiresAt: NOW + 60_000 }, seller, sb, B);
-    verifyEndpointProof(discovery, { listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW });
+    verifyEndpointProof(discovery, { readListingEligibility: readFixtureListingEligibility, listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW });
     expect(buyer.calls + seller.calls).toBe(2);
   });
 
@@ -194,7 +195,7 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
       expect(await refusal(() => openWireEnvelope(header({ ...payload, profile }, "dacs-seller-http:v1:request:", buyer), "request", { binding: sb, local: B, purchaseProfile: sb.profile }))).toBe(expected);
       expect(await refusal(() => verifyWireResponse(payload, { header: header(response, "dacs-seller-http:v1:response:", seller), status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: A }))).toBe(expected);
       expect(await refusal(() => verifySellerSessionDelegation({ payload: d, signature: Buffer.from(buyer.sign(Buffer.from(`dacs-seller-http:v1:delegation:${canonicalize(d)}`))).toString("base64url") }, { binding: sb, local: B }))).toBe(expected);
-      expect(await refusal(() => verifyEndpointProof(document, { listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW }))).toBe(expected);
+      expect(await refusal(() => verifyEndpointProof(document, { readListingEligibility: readFixtureListingEligibility, listing: { seller: seller.claim, publicEndpoint, listingPin: PIN }, binding: bb, local: A, now: NOW }))).toBe(expected);
       // Signers sign only the exact tuple.
       const before = buyer.calls + seller.calls;
       expect(await refusal(() => signSellerSessionDelegation(d as never, buyer, bb, A))).toBe(expected);

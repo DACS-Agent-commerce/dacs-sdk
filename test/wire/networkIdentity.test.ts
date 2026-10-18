@@ -1,3 +1,4 @@
+import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Network identity gate with instrumented signers and transports. Missing
 // pins, the fixture identity used as a live pin and non-approved identities
@@ -189,7 +190,7 @@ describe("TP-1 network identity gate", () => {
         effect(() => checkWireRequest(openWireEnvelope(header, "request", { binding: sb, local: sl, purchaseProfile: check.purchaseProfile }), { ...check, binding: sb, local: sl })),
         effect(() => verifySellerSessionDelegation(delegation, { binding: sb, local: sl, buyer: buyer.signer.claim, seller: seller.signer.claim, listingPin: PIN, jobId: JOB, time: NOW })),
         effect(() => verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: bl })),
-        effect(() => verifyEndpointProof(discovery, { listing, binding: bb, local: bl, now: NOW })),
+        effect(() => verifyEndpointProof(discovery, { readListingEligibility: readFixtureListingEligibility, listing, binding: bb, local: bl, now: NOW })),
         effect(() => assertPeerProfile(bb?.profile, bb)),
       ]);
     };
@@ -417,8 +418,8 @@ describe("TP-1 network identity gate", () => {
       ["verifyWireResponse: received answer", (w, c) => verifyWireResponse(w.payload, c(received(w), "body", Buffer.from('{"other":1}'))), "wire_input_invalid"],
       ["discoverySigningBytes: payload", (w, c) => discoverySigningBytes(c(w.discoveryPayload, "profile", mainnet(w))), "discovery_invalid"],
       ["signDiscoveryDocument: payload", (w, c) => signDiscoveryDocument(c(w.discoveryPayload, "profile", mainnet(w)), w.seller.signer, w.sellerBinding, RPC_B), "discovery_invalid"],
-      ["verifyEndpointProof: options", (w, c) => verifyEndpointProof(w.discovery, c({ listing: w.listing, binding: w.buyerBinding, local: RPC_A, now: NOW }, "now", NOW + 3_600_000)), "wire_input_invalid"],
-      ["verifyEndpointProof: Listing", (w, c) => verifyEndpointProof(w.discovery, { listing: c(w.listing, "publicEndpoint", "https://other.identity.invalid"), binding: w.buyerBinding, local: RPC_A, now: NOW }), "wire_input_invalid"],
+      ["verifyEndpointProof: options", (w, c) => verifyEndpointProof(w.discovery, c({ readListingEligibility: readFixtureListingEligibility, listing: w.listing, binding: w.buyerBinding, local: RPC_A, now: NOW }, "now", NOW + 3_600_000)), "wire_input_invalid"],
+      ["verifyEndpointProof: Listing", (w, c) => verifyEndpointProof(w.discovery, { readListingEligibility: readFixtureListingEligibility, listing: c(w.listing, "publicEndpoint", "https://other.identity.invalid"), binding: w.buyerBinding, local: RPC_A, now: NOW }), "wire_input_invalid"],
     ];
     for (const [name, attempt, expected] of rows) {
       it(`${name}: a Proxy or getter whose answer changes after any of 0-16 reads gets one refusal, with no signature`, async () => {

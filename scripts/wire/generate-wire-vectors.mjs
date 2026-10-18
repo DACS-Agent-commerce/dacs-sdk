@@ -284,6 +284,9 @@ const vectors = [
   // bodies with zero signatures. Malformed UTF-8 has no case here: both take
   // the body as a string.
   P("signing/request-valid", null, { producer: "request", body: b64(enc(BODY)) }, ok),
+  P("signing/request-listing-x402", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { rail: "pay-x402" } }, no("listing_unsupported")),
+  P("signing/request-listing-metered", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { pricingKind: "metered" } }, no("listing_unsupported")),
+  P("signing/request-listing-input", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { buyerRequestInput: true } }, no("listing_unsupported")),
   P("signing/request-cf5-duplicate-member", "outgoing request body admission", { producer: "request", body: b64(enc(`{"jobId":"${JOB_ID}","jobId":"${JOB_ID}"}`)) }, no("outgoing_body_rejected", "DUPLICATE-MEMBER")),
   P("signing/request-cf5-non-nfc", "outgoing request body admission", { producer: "request", body: b64(enc(`{"jobId":"${JOB_ID}","note":"cafe\u0301"}`)) }, no("outgoing_body_rejected", "WIRE-NON-NFC-STRING")),
   P("signing/request-cf5-invalid-number", "outgoing request body admission", { producer: "request", body: b64(enc(`{"jobId":"${JOB_ID}","amount":9007199254740993}`)) }, no("outgoing_body_rejected", "NUMBER-OUTSIDE-DACS-MAGNITUDE")),

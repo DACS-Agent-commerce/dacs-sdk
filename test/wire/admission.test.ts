@@ -1,3 +1,4 @@
+import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
@@ -107,7 +108,7 @@ describe("wire Listing pins and producer bounds", () => {
     x.buyer.calls = 0; x.seller.calls = 0;
     await refuses(() => w.openWireEnvelope(requestHeader, "request", x.context), "peer_envelope_invalid");
     await refuses(() => w.verifySellerSessionDelegation(delegated, { binding: x.binding, local: LOCAL }), "peer_delegation_invalid");
-    await refuses(() => w.verifyEndpointProof(discoveryBytes, { listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_invalid");
+    await refuses(() => w.verifyEndpointProof(discoveryBytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_invalid");
     await refuses(() => w.signWireEnvelope({ ...x.request, listingPin: pin }, { ...x.context, signer: x.buyer }), "peer_envelope_invalid");
     await refuses(() => w.signSellerSessionDelegation({ ...x.delegation, listingPin: pin }, x.buyer, x.binding, LOCAL), "peer_delegation_invalid");
     await refuses(() => w.signDiscoveryDocument({ ...x.discovery, listings: [pin] }, x.seller, x.binding, LOCAL), "discovery_invalid");
@@ -118,7 +119,7 @@ describe("wire Listing pins and producer bounds", () => {
     expect(isListingPin(pin)).toBe(true);
     const request = { ...x.request, listingPin: pin };
     const bytes = await w.signDiscoveryDocument({ ...x.discovery, listings: [pin] }, x.seller, x.binding, LOCAL);
-    const endpointProof = w.verifyEndpointProof(bytes, { listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: pin }, binding: x.binding, local: LOCAL, now: NOW });
+    const endpointProof = w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: pin }, binding: x.binding, local: LOCAL, now: NOW });
     const h = await w.signWireEnvelope(request, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now: NOW });
     expect(w.openWireEnvelope(h, "request", x.context).payload.listingPin).toEqual(pin);
     expect(endpointProof.ready).toBe(true);
@@ -138,7 +139,7 @@ describe("endpoint proof purchase gate", () => {
   async function proof(x: ReturnType<typeof world>, patch: Partial<w.DiscoveryPayload> = {}) {
     const payload = { ...x.discovery, ...patch };
     const bytes = await w.signDiscoveryDocument(payload, x.seller, x.binding, LOCAL);
-    return { bytes, proof: w.verifyEndpointProof(bytes, { listing: { seller: x.seller.claim, publicEndpoint: payload.publicEndpoint, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }) };
+    return { bytes, proof: w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: payload.publicEndpoint, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }) };
   }
   it("requires a verified proof, bound to seller, pin, exact endpoint, profile and validity", async () => {
     const x = world(), { proof: p } = await proof(x);
@@ -164,9 +165,9 @@ describe("endpoint proof purchase gate", () => {
   it("preserves the verified Listing endpoint bytes: NFC never matches NFD", async () => {
     const x = world(), nfc = ENDPOINT + "/caf\u00e9", nfd = ENDPOINT + "/cafe\u0301";
     const { bytes } = await proof(x, { publicEndpoint: nfc });
-    await refuses(() => w.verifyEndpointProof(bytes, { listing: { seller: x.seller.claim, publicEndpoint: nfd, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_endpoint_mismatch");
+    await refuses(() => w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: nfd, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_endpoint_mismatch");
     const getter = Object.defineProperty({ seller: x.seller.claim, listingPin: PIN }, "publicEndpoint", { enumerable: true, get() { throw new Error("must not run"); } });
-    await refuses(() => w.verifyEndpointProof(bytes, { listing: getter as never, binding: x.binding, local: LOCAL, now: NOW }), "wire_input_invalid");
+    await refuses(() => w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: getter as never, binding: x.binding, local: LOCAL, now: NOW }), "wire_input_invalid");
   });
   it("refuses uppercase DID claims at each receiver without rewriting signed bytes", async () => {
     const x = world();
@@ -177,9 +178,9 @@ describe("endpoint proof purchase gate", () => {
       await refuses(() => w.verifySellerSessionDelegation(signed(delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer), { binding: x.binding, local: LOCAL }), "peer_delegation_invalid");
     }
     const document = signed({ ...x.discovery, seller: x.seller.claim.replace(/^did:/, "DID:") }, w.DACS_SELLER_HTTP_DOMAINS.discovery, x.seller);
-    await refuses(() => w.verifyEndpointProof(Buffer.from(canonicalize(document)), { listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_invalid");
+    await refuses(() => w.verifyEndpointProof(Buffer.from(canonicalize(document)), { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_invalid");
     const { bytes } = await proof(x);
-    await refuses(() => w.verifyEndpointProof(bytes, { listing: { seller: x.seller.claim.replace(/^did:/, "DID:"), publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "wire_input_invalid");
+    await refuses(() => w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim.replace(/^did:/, "DID:"), publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "wire_input_invalid");
   });
   it("declares canonical lowercase DID-only admission and refuses uppercase wire claims before signing", async () => {
     const x = world();

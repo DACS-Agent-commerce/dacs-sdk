@@ -208,6 +208,24 @@ current. The buyer runs it before preparing or signing anything for a
 purchase; it stops a Listing from aiming buyer traffic at a server its seller
 does not control.
 
+`verifyEndpointProof` also requires `readListingEligibility`, a trusted,
+synchronous buyer integration that authenticates the full Listing and its
+content hash and resolves its selected pipeline, accepted rail and locally
+configured service. It returns `VerifiedListingEligibility` for that exact
+seller, byte-exact endpoint and Listing pin, with its validity window. It must
+refuse revoked, missing or unavailable Listings and preserve source errors.
+Do not construct this decision from discovery capabilities or other
+unverified seller input. Any network reads belong to the authenticated reader
+and require byte/list limits and deadlines before decoding.
+
+The wire checks fixed pricing, `negotiate-fixed-price`, `pay-dem`, Demos
+storage delivery, the bounded synchronous report output and absence of buyer
+request input. The service must be `fixed-text` or an explicitly configured,
+pure, deterministic, synchronous text module. The reader is called at proof
+creation and again immediately before every request signature; retaining an
+endpoint proof does not retain an authoritative eligibility verdict. A reader
+must return a current decision or throw; a Promise is refused.
+
 `capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
 `pay-dem`; `did:demos:agent` claims; delivery through Demos storage at
 `dacs4:deliverable:{jobId}`; `fixed-text` and configured pure, synchronous text
@@ -428,6 +446,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 | `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype) |
 | `discovery_*` | discovery document and endpoint proof |
+| `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
 
 ## Vectors, fixtures and checks
 
@@ -524,7 +543,8 @@ building wire messages. Signed received payloads are never rewritten.
 `signWireRequest` and request-kind `signWireEnvelope` require `endpointProof`
 returned by `verifyEndpointProof`, the selected `publicEndpoint`, and `now`. A copied or caller-built proof is refused.
 The proof must still be ready and unexpired, under the buyer's same binding,
-for the selected seller, Listing pin and byte-exact endpoint. Signing-byte
+for the selected seller, Listing pin and byte-exact endpoint, with a current
+authenticated eligibility decision from the retained reader. Signing-byte
 helpers describe transport bytes; purchase preparation uses the gated signers.
 
 Expired session delegations are accepted only on the declared read routes.

@@ -62,6 +62,7 @@ const sellerLocal = file.localBindings.seller, buyerLocal = file.localBindings.b
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const signer = { claim: "did:demos:agent:" + publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"), calls: 0,
   sign(bytes) { signer.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), privateKey)); } };
+const readListingEligibility = (scope) => ({ seller: scope.seller, publicEndpoint: scope.publicEndpoint, listingPin: scope.listingPin, pricingKind: "fixed", negotiation: "negotiate-fixed-price", rail: "pay-dem", delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: 0, expiresAt: Number.MAX_SAFE_INTEGER });
 const signWith = (binding, local) => code(() => wire.signWireRequest({ signer, binding, local, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: file.parties.seller, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile }, now: file.now }));
 
 // Every verification entry point, on the vectors' correctly signed messages.
@@ -76,7 +77,7 @@ async function verifyAll(sellerBinding, sLocal, buyerBinding, bLocal) {
     checkUnopened: await effect(() => wire.checkWireRequest(decodedRequest, { ...check, binding: sellerBinding, local: sLocal })),
     verifySellerSessionDelegation: await effect(() => wire.verifySellerSessionDelegation(vector["delegation/valid"].delegation, { binding: sellerBinding, local: sLocal, buyer: file.parties.buyer, seller: file.parties.seller, listingPin: file.job.listingPin, jobId: file.job.jobId, time: file.now })),
     verifyWireResponse: await effect(() => wire.verifyWireResponse(vector["response/valid"].request, { header: vector["response/valid"].header, status: 200, body: b(vector["response/valid"].body), now: file.now, binding: buyerBinding, local: bLocal })),
-    verifyEndpointProof: await effect(() => wire.verifyEndpointProof(b(vector["discovery/valid"].document), { listing: vector["discovery/valid"].listing, binding: buyerBinding, local: bLocal, now: file.now })),
+    verifyEndpointProof: await effect(() => wire.verifyEndpointProof(b(vector["discovery/valid"].document), { readListingEligibility, listing: vector["discovery/valid"].listing, binding: buyerBinding, local: bLocal, now: file.now })),
     assertPeerProfile: await effect(() => wire.assertPeerProfile(profile, buyerBinding)),
   };
 }
@@ -142,7 +143,7 @@ const sellerSigner = { claim: "did:demos:agent:" + sellerKeys.publicKey.export({
   sign(bytes) { sellerSigner.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), sellerKeys.privateKey)); } };
 const publicEndpoint = "https://seller.built-package.invalid";
 const discoveryBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [file.job.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
-const endpointProof = wire.verifyEndpointProof(discoveryBytes, { listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now });
+const endpointProof = wire.verifyEndpointProof(discoveryBytes, { readListingEligibility, listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now });
 // Discovery is a separate seller signature from the request/answer pair counted below.
 sellerSigner.calls = 0;
 const approvedRequest = await wire.signWireRequest({ endpointProof, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now });

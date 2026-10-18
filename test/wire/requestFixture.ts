@@ -1,3 +1,4 @@
+import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 // Purchase fixtures obtain a real endpoint proof. No production gate is mocked.
 import type { WireRequestInput, WireSigner } from "../../src/wire/index.js";
 import type * as WireModule from "../../src/wire/index.js";
@@ -20,6 +21,7 @@ export async function signRequestWithProof(input: Omit<WireRequestInput, "endpoi
     capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: input.now, expiresAt: input.now + 60_000,
   }, seller!, input.binding, input.local);
   const endpointProof = wire.verifyEndpointProof(bytes, {
+    readListingEligibility: readFixtureListingEligibility,
     listing: { seller: input.seller, publicEndpoint, listingPin: input.job.listingPin },
     binding: input.binding, local: input.local, now: input.now,
   });
