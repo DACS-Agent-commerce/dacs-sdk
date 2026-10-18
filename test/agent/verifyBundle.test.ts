@@ -7,7 +7,12 @@ import {
 } from "../../src/index.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
-import { admitRawJson, contentHash } from "../../src/canonical/index.js";
+import {
+  admitRawJson,
+  canonicalize,
+  contentHash,
+  sha256Hex,
+} from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -296,6 +301,41 @@ async function resignFixture(fx: Fixture, signers: Array<{ party: string; sign: 
       value: Buffer.from(
         await sign(signedBytes(separator, contentHash(scope))),
       ).toString("base64url"),
+    })),
+  );
+}
+
+const TERMINAL_BUNDLE_KINDS = [
+  "AttestationBundle",
+  "FaultAttestationBundle",
+  "EvidenceBoundFaultAttestationBundle",
+] as const;
+type TerminalBundleKind = (typeof TERMINAL_BUNDLE_KINDS)[number];
+
+function asTerminalBundleKind(bundle: Record<string, unknown>, kind: TerminalBundleKind): void {
+  if (kind === "AttestationBundle") return;
+  delete bundle.bundleVersion;
+  bundle[kind === "FaultAttestationBundle" ? "faultBundleVersion" : "evidenceBoundFaultBundleVersion"] = "1";
+  bundle.faultedParty = "none";
+}
+
+/**
+ * Sign the §10.4.1 scope hashed here, independently of `contentHash`'s
+ * omission set: only `signatures` and `anchoredByRole` leave the scope.
+ */
+async function resignFullScope(fx: Fixture, kind: TerminalBundleKind): Promise<void> {
+  const scope = { ...fx.bundle };
+  delete scope["signatures"];
+  delete scope["anchoredByRole"];
+  const message = signedBytes(ARTIFACT_SEPARATORS[kind], sha256Hex(canonicalize(scope)));
+  fx.bundle.signatures = await Promise.all(
+    [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ].map(async ({ party, sign }) => ({
+      party,
+      algorithm: "ed25519",
+      value: Buffer.from(await sign(message)).toString("base64url"),
     })),
   );
 }
@@ -1332,6 +1372,69 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(result.ok).toBe(false);
     expect(result.signatures.every((entry) => entry.verdict === "invalid")).toBe(true);
   });
+
+  test.each(TERMINAL_BUNDLE_KINDS)(
+    "binds a singular signature extension in the %s signed scope (§10.4.1)",
+    async (kind) => {
+      const fx = await buildFixture(buyerDid, signBuyer);
+      asTerminalBundleKind(fx.bundle, kind);
+      fx.bundle.signature = { algorithm: "ed25519", signer: buyerDid, value: "future-extension" };
+      await resignFullScope(fx, kind);
+      const scope = { ...fx.bundle };
+      delete scope["signatures"];
+      delete scope["anchoredByRole"];
+      // The fixture separates the terminal contract from a singular-field default.
+      expect(contentHash(scope, "signatures")).toBe(sha256Hex(canonicalize(scope)));
+      expect(contentHash(scope)).not.toBe(sha256Hex(canonicalize(scope)));
+      const sebInputs: Array<Record<string, unknown>> = [];
+      const deps = {
+        ...depsFor(fx),
+        ...(kind === "EvidenceBoundFaultAttestationBundle"
+          ? {
+              verifyEvidenceBound: async (bundle: Readonly<Record<string, unknown>>) => {
+                sebInputs.push(structuredClone(bundle) as Record<string, unknown>);
+                return { decision: "verified" as const, reasonCode: "ok" as const, reason: "test SEB authority" };
+              },
+            }
+          : {}),
+      };
+
+      const accepted = await verifyBundleCore("ref", deps);
+      expect(accepted.ok, accepted.reason).toBe(true);
+      expect(accepted.fullyVerified).toBe(true);
+      expect(accepted.signatures.map((entry) => entry.verdict)).toEqual(["valid", "valid"]);
+      expect(accepted.bundle).toMatchObject({ signature: fx.bundle.signature });
+      if (kind === "EvidenceBoundFaultAttestationBundle") {
+        expect(sebInputs).toHaveLength(1);
+        expect(sebInputs[0]!["signature"]).toEqual(fx.bundle.signature);
+      }
+
+      const signed = structuredClone(fx.bundle);
+      const variants: Array<[string, (bundle: Record<string, unknown>) => void]> = [
+        ["changed", (bundle) => {
+          bundle.signature = { algorithm: "ed25519", signer: buyerDid, value: "other-extension" };
+        }],
+        ["removed", (bundle) => { delete bundle.signature; }],
+      ];
+      for (const [label, mutate] of variants) {
+        fx.bundle = structuredClone(signed);
+        mutate(fx.bundle);
+        const refused = await verifyBundleCore("ref", deps);
+        expect(refused.ok, label).toBe(false);
+        expect(refused.signatures.map((entry) => entry.verdict), label).toEqual(["invalid", "invalid"]);
+      }
+
+      // Appending the field after both parties signed the scope without it.
+      fx.bundle = structuredClone(signed);
+      delete fx.bundle.signature;
+      await resignFullScope(fx, kind);
+      expect((await verifyBundleCore("ref", deps)).ok).toBe(true);
+      fx.bundle.signature = { algorithm: "ed25519", signer: buyerDid, value: "appended" };
+      const appended = await verifyBundleCore("ref", deps);
+      expect(appended.ok).toBe(false);
+      expect(appended.signatures.map((entry) => entry.verdict)).toEqual(["invalid", "invalid"]);
+    },
+  );
 
   test("tampered bundle body => signature invalid, not ok", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
