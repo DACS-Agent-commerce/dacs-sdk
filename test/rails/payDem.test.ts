@@ -1,3 +1,4 @@
+import "../helpers/unreleasedRailMechanics.js";
 import { describe, expect, test, vi } from "vitest";
 
 import type { SettleResult } from "../../src/agent/runSessionCore.js";

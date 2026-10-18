@@ -1,3 +1,4 @@
+import "../helpers/unreleasedRailMechanics.js";
 import { describe, expect, test } from "vitest";
 
 import { buildSignedArtifact, verifySignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";

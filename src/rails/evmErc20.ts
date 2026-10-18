@@ -1,3 +1,4 @@
+import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
 import {
@@ -25,6 +26,8 @@ import {
  */
 
 export interface EvmErc20SettleParams {
+  /** Current DACS session; required for release-admitted effects. */
+  jobId?: string;
   /** CAIP-2 network, e.g. "eip155:84532". */
   network: string;
   /** ERC-20 token contract (e.g. USDC on the network). */
@@ -51,6 +54,7 @@ export async function evmErc20SettleCore(
   client: EvmTransferClient,
   effectFence?: Readonly<SettlementEffectFence>,
 ): Promise<SettleResult> {
+  assertDacsRailEffectAdmission(() => params.jobId);
   const network = params.network;
   const tokenAddress = params.tokenAddress;
   const recipientEvm = params.recipientEvm;
@@ -233,10 +237,10 @@ export async function createEvmErc20Rail(
   return {
     address: account.address,
     finalityBlocks,
-    settle: (params, effectFence) => evmErc20SettleCore({
-      ...params,
-      finalityBlocks,
-    }, client, effectFence),
+    settle: async (params, effectFence) => {
+      assertDacsRailEffectAdmission(() => params.jobId);
+      return evmErc20SettleCore({ ...params, finalityBlocks }, client, effectFence);
+    },
   };
 }
 
@@ -268,6 +272,7 @@ export function evmErc20Settle(
     throw new DacsError("evm-erc20 rail must expose its positive finality policy");
   }
   return (req) => {
+    assertDacsRailEffectAdmission(() => req.jobId);
     const { amount, asset, expectedPayee, jobId, phase, rail: railId } = req;
     const phaseIndex = req.phaseIndex ?? 0;
     if (expectedPayee !== recipientEvm) {
@@ -291,6 +296,7 @@ export function evmErc20Settle(
     }) satisfies Readonly<SettlementBinding>;
     const submit = (effectFence?: Readonly<SettlementEffectFence>) =>
       rail.settle({
+        jobId,
         network,
         tokenAddress,
         recipientEvm,

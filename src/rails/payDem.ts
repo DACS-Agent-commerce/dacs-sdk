@@ -1,3 +1,4 @@
+import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
@@ -471,6 +472,7 @@ export async function payDemSettleCore(
   defaultNetworkOrFence: string | Readonly<SettlementEffectFence> = "demos",
   effectFenceOverride?: Readonly<SettlementEffectFence>,
 ): Promise<SettleResult> {
+  assertDacsRailEffectAdmission(() => params.recovery?.jobId);
   // Capture all caller-controlled values and the effect method before the first
   // await. A mutable parameter/client object must not be able to change the
   // transfer destination and then make the returned evidence attest a different
@@ -1490,6 +1492,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   return {
     address: client.address,
     settle: async (params, effectFence) => {
+      assertDacsRailEffectAdmission(() => params.recovery?.jobId);
       const invocationJournal = stableDataProperty(
         params,
         "journalPreparedTransfer",
@@ -1825,6 +1828,7 @@ export function payDemSettle(
     }>
   >();
   return async (req) => {
+    assertDacsRailEffectAdmission(() => req.jobId);
     const {
       amount,
       asset,

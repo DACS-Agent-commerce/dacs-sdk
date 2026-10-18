@@ -391,7 +391,10 @@ async function evaluateSettlementEvidence(
   if (
     assetSpec !== undefined &&
     (!isObj(assetSpec) || !isStr(assetSpec.kind) || assetSpec.kind.length === 0 ||
-      (assetSpec.chainId !== undefined && !isPositiveSafeInteger(assetSpec.chainId)) ||
+      ((["erc20", "native-evm"].includes(assetSpec.kind) || assetSpec.chainId !== undefined) &&
+        !isPositiveSafeInteger(assetSpec.chainId)) ||
+      (["spl", "native-solana"].includes(assetSpec.kind) &&
+        !["mainnet", "devnet", "testnet"].includes(assetSpec.cluster as string)) ||
       (assetSpec.cluster !== undefined &&
         (!isStr(assetSpec.cluster) || assetSpec.cluster.length === 0)))
   ) {
@@ -401,7 +404,10 @@ async function evaluateSettlementEvidence(
   if (
     networkSpec !== undefined &&
     (!isObj(networkSpec) || !isStr(networkSpec.kind) || networkSpec.kind.length === 0 ||
-      (networkSpec.chainId !== undefined && !isPositiveSafeInteger(networkSpec.chainId)) ||
+      ((networkSpec.kind === "evm" || networkSpec.chainId !== undefined) &&
+        !isPositiveSafeInteger(networkSpec.chainId)) ||
+      (networkSpec.kind === "solana" &&
+        !["mainnet", "devnet", "testnet"].includes(networkSpec.cluster as string)) ||
       (networkSpec.cluster !== undefined &&
         (!isStr(networkSpec.cluster) || networkSpec.cluster.length === 0)) ||
       (networkSpec.mechanism !== undefined &&

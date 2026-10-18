@@ -42,7 +42,7 @@ protocol verification remain subsequent operations.
 `admitArtifactJson(exactReceivedBytes)` admits an external JSON object and
 retains runtime provenance for the discovery and authenticated payment APIs.
 Its optional second argument selects an object member from a fully admitted
-transport envelope. `DemosAdapter.readAnchor` uses this at the public storage
+transport envelope. `DemosAdapter.readAnchor` uses this at the raw storage
 transport boundary, with a 1 MiB response bound and a 30-second timeout.
 Custom adapters must retain exact bytes and use the same API before returning
 a record. CF-5-valid negative zero is projected to zero only after raw-token
@@ -106,3 +106,29 @@ Authenticated HTLC inspection requires `htlcExpiry` with `source` and `dest`
 as non-negative safe integer Unix seconds and `unit: "unix-seconds"`. Pinned
 `sourceFinalitySec` and `safetyWindowSec` use integer seconds. Equality at the
 required margin fails; missing, partial or ambiguous-unit observations fail.
+
+
+Direct SDK payment effects also require SDK-owned release admission. This
+includes `Agent.runSession`, `runSessionCore`, native DEM, ERC-20, x402 buyer
+signing and paid requests, x402 facilitator settlement, AP2 provider submission,
+and SPL signing/broadcast. A caller-supplied store, rail, provider or fence
+cannot admit the current release. Fresh `dacsX402AuthorizationNonce` derivation requires release admission;
+`verifyDacsX402AuthorizationNonce` remains read-only. Both accept exact JID-1
+identifiers; historical Unicode spellings are not repaired into current jobs.
+
+The AP2, SPL, durable x402 buyer and x402 paywall coordinators expose
+`reconcileOnly: true` to inspect retained state while disabling submission,
+signing and rebroadcast. A missing retained transaction does not authorize a
+new payment. DEM reconciliation remains the explicit read-only
+`PayDemSettlementReconcile` seam. EVM finality and x402 authorization readers
+remain available separately. Pending seller payment notices and x402 response
+disclosure recovery may require operator action even for a completed payment.
+
+This release gate covers settlement authority and the payment entry points
+above. Generic bound/scanning repository `write`, `read` and `scanPage`, and
+`publishRatingRecordDurably`, remain artifact infrastructure: they enforce their
+existing byte, binding, signature and job-grammar checks but do not authenticate
+a coordinated release. Their outputs cannot grant current settlement authority.
+The enabled infrastructure is covered by `boundArtifactRepository.test.ts`,
+`scanningArtifactRepository.test.ts` and `durableRatingPublication.test.ts`;
+`currentProfileEffects.test.ts` pins refusal at the payment boundaries.

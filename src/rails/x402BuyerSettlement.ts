@@ -1,3 +1,4 @@
+import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -348,6 +349,8 @@ export type X402BuyerSettlementProgress =
     };
 
 export interface AdvanceX402BuyerSettlementInput<TObservation = unknown> {
+  /** Reconcile retained authorization only; never disclose or submit it. */
+  reconcileOnly?: boolean;
   intent: Readonly<X402BuyerSettlementIntent>;
   owner: string;
   store: X402BuyerSettlementStore;
@@ -1851,6 +1854,7 @@ function captureReconciliation(
 export async function advanceX402BuyerSettlement<TObservation = unknown>(
   input: AdvanceX402BuyerSettlementInput<TObservation>,
 ): Promise<X402BuyerSettlementProgress> {
+  if (input?.reconcileOnly !== true) assertDacsRailEffectAdmission(() => input.intent.jobId);
   const intent = captureIntent(input?.intent);
   const owner = asciiString(input?.owner, "x402 buyer owner");
   const now = typeof input?.now === "function" ? input.now : Date.now;
@@ -2079,6 +2083,10 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
   const submitThenReconcile = async (
     fence: Readonly<X402BuyerEffectFence>,
   ): Promise<X402BuyerSettlementProgress> => {
+    if (input.reconcileOnly === true) {
+      return { status: "indeterminate", reason: "x402-read-only-submission-disabled" };
+    }
+    assertDacsRailEffectAdmission(() => intent.jobId);
     let candidate: Readonly<X402BuyerSettlementDisclosure> | undefined;
     try {
       await fence.assertCurrent();

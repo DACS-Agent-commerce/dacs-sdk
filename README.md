@@ -9,9 +9,13 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 > source checkout until the first release is published.
 
 The pinned Standard revision is an unreleased corrective candidate. Current live
-commerce assembly and fresh buyer payment effects refuse until a coordinated
-release is admitted. Existing payment records remain available for read-only
-chain reconciliation. Explicit legacy settlement APIs inspect historical data;
+commerce assembly, `Agent.runSession`, `runSessionCore`, and direct SDK payment
+rails refuse fresh effects until a coordinated release is admitted. Existing
+payment records remain available for read-only chain reconciliation. AP2, SPL
+and durable x402 coordinators accept `reconcileOnly: true`; that mode cannot
+sign, broadcast or submit a payment. Seller payment notices and x402 disclosure
+recovery can remain blocked even after payment: operators must reconcile the
+retained transaction and arrange notice through their operational process. Explicit legacy settlement APIs inspect historical data;
 the legacy publisher refuses current JID-1 jobs and cannot grant current authority.
 
 ## What this is
@@ -734,7 +738,9 @@ re-reads that timestamp group before moving on, so a reordered group loses no
 row. A group that no longer holds every emitted row, or that does not fit in the
 fetcher's 100-row window, requires a restart. A history with more than about 99
 rows that share one timestamp cannot be traversed at all: every restart reaches
-the same group and restarts again, so alert on repeated restarts. Rows added
+the same group and restarts again, so alert on repeated restarts. History
+includes both sender and recipient matches; do not assume every row was created
+by the owner being scanned. Rows added
 after a traversal starts with a timestamp newer than its cursor, at the head or
 behind the cursor, are seen only by a new traversal. These ordering, status,
 row-shape and not-found assumptions were checked against the `kynesyslabs/node`
@@ -935,7 +941,11 @@ keeps `anchoredByRole`, so a role copy published through it scans as
 A deliverable (`dacs4:deliverable:{jobId}`) is an unsigned record: its binding
 hash is the sha256 of the complete canonical anchored record (DACS-4 §9.6.1
 step 4), so a top-level `signature` or `signatures` member is bound like any
-other field. `write` and `read` use the same hash for that address, and every
+other field. This SDK interpretation has no discriminating Standard vector:
+CORE's signature-omitting content-hash definition and DV-1's canonical-payload
+wording need an upstream signature-bearing payload known answer before a
+coordinated release. Payloads containing such members require compatibility
+assessment against older SDK writers. `write` and `read` use the same hash for that address, and every
 other kind binds its signed scope (`contentHash`). `artifactBindingHashOf`
 returns the hash rule for a logical address. That binding hash equals DV-1's
 `deliverableContentHash` only when the anchored record is the cleartext payload
@@ -955,8 +965,10 @@ payment dispositions, payload attestations, deliverables and entitlements,
 verifier returned `true`. It is not a payment or delivery verdict:
 before acting on payment or delivery, run the agreement-bound checks (DACS-4
 SB-1's complete PC-2 tuple, DPA-2's exact-byte digest, DV-1's cleartext hash),
-for example through `verifySettlementEvidence` or the fulfilment validators, or
-make your verifier perform them. The verifier receives the record as read, the
+through the fulfilment validators or your own verifier. The current
+`verifySettlementEvidence` refuses at this pin; explicitly select
+`verifyLegacySettlementEvidence` for historical inspection, whose result does
+not grant current authority. The verifier receives the record as read, the
 binding and the classified anchor (`kind`, `logicalAddress`, `nativeAddress`),
 which is what it needs to check the logical slot.
 A missing or non-function `verifyArtifact` is refused when the repository is

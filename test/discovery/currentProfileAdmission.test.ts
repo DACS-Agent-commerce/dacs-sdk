@@ -43,7 +43,7 @@ describe('exact current job admission', () => {
 });
 
 import { verifySettlementEvidence } from '../../src/agent/verifySettlementEvidence.js';
-it('requires authenticated absolute HTLC expiry instants before an authenticated payment pass', async () => {
+it('current HTLC inspection refuses missing pinned asset/network specs before authority', async () => {
   const signer = 'did:demos:orchestrator';
   const record = admitArtifactJson(Buffer.from(JSON.stringify({
     evidenceVersion: '1', jobId: JOB, phase: 'pay-cross-chain-htlc', outcome: 'success', observedAt: 1,
@@ -64,7 +64,9 @@ it('requires authenticated absolute HTLC expiry instants before an authenticated
     result: { ok: true, txRefs: record.paymentTxRefs as never },
   }, { resolvePublicKey: async () => new Uint8Array(32), verify: () => true });
   // Crypto is injected to isolate context validation; this fixture is not signed.
-  expect(result.decision).not.toBe('pass');
+  expect(result).toEqual({ decision: 'error', reasons: [
+    'current payment verification requires authenticated pinned assetSpec and networkSpec',
+  ] });
 });
 
 

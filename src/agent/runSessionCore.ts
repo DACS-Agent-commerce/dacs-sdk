@@ -1,3 +1,4 @@
+import { assertDacsRailEffectAdmission } from "../rails/currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -2749,6 +2750,7 @@ export async function runSessionCore(
   inputDeps: SessionDeps,
   resumeJobId?: string,
 ): Promise<SessionResult> {
+  assertDacsRailEffectAdmission(resumeJobId === undefined ? undefined : () => resumeJobId);
   // Capture every caller-controlled callback/scalar without invoking accessors.
   // A mutable dependency bag must not be able to switch an authenticator,
   // signer, rail, or durable store while another boundary is being inspected.
@@ -3064,6 +3066,7 @@ export async function runSessionCore(
   // admission. Invalid Listings and unsupported pipelines fail before minting
   // a new id; an expired recovery uses the caller's exact prior id below.
   const jobId = resumeJobId ?? deps.newJobId();
+  assertDacsRailEffectAdmission(() => jobId);
   const buyerBundleHash = identityBundleHash(deps.buyerIdentityBundle);
   let buyerIdentityAuthenticated: unknown;
   try {

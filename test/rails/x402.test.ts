@@ -1,3 +1,4 @@
+import "../helpers/unreleasedRailMechanics.js";
 import { describe, expect, test, vi } from "vitest";
 import { keccak256, stringToHex } from "viem";
 
@@ -25,11 +26,11 @@ const TX_HASH = `0x${"a".repeat(64)}`;
 const TEST_EVM_KEY = keccak256(stringToHex("dacs-sdk:test:x402-rail"));
 
 describe("DACS EIP-3009 session binding", () => {
-  test("reproduces the normative SB-3 live, phase, job and ULID vectors", async () => {
+  test("reproduces SB-3 canonical JID-1 phase and job known answers", async () => {
     const vectors = [
-      ["practice-dacs-0001", 3, "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff"],
-      ["practice-dacs-0001", 4, "0x80fa47321a52f728f5ecbde7a5ceb44dd6086c9902dd8b95980b05909e5ea969"],
-      ["practice-dacs-0002", 3, "0x69256a3bf1c9bd6a5ba1ffc93705d44c5322e03de8f1e3ad6b6d709f4254ce29"],
+      ["01ARZ3NDEKTSV4RRFFQ69G5FAV", 3, "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
+      ["01ARZ3NDEKTSV4RRFFQ69G5FAV", 4, "0xdf7de20db9cfcbb81096d28de2ddfcac894ebc4617b7707251345c930a4a8dea"],
+      ["01ARZ3NDEKTSV4RRFFQ69G5FAW", 3, "0x6f673875aa676a750a2ec907311cab0e7168d2fb470f0c7fca8e8750490d7343"],
       ["01ARZ3NDEKTSV4RRFFQ69G5FAV", 3, "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
     ] as const;
     for (const [jobId, phaseIndex, expected] of vectors) {
@@ -38,8 +39,8 @@ describe("DACS EIP-3009 session binding", () => {
   });
 
   test("classifies matching, mismatching and malformed presented nonces", async () => {
-    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
-    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
+    const input = { jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 3 };
+    const expected = "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2";
     expect(await verifyDacsX402AuthorizationNonce(
       input,
       expected,
@@ -61,8 +62,8 @@ describe("DACS EIP-3009 session binding", () => {
   });
 
   test("the three normative retry cases retain the same derived nonce", async () => {
-    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
-    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
+    const input = { jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 3 };
+    const expected = "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2";
     // used+same-transfer resumes, used+different-transfer refuses, and cancelled
     // refuses at the reconcile layer; none may mint a replacement nonce.
     for (const _state of ["used-same", "used-different", "cancelled"]) {
@@ -74,15 +75,13 @@ describe("DACS EIP-3009 session binding", () => {
     await expect(dacsX402AuthorizationNonce({
       jobId: "cafe\u0301-job",
       phaseIndex: 0,
-    })).resolves.toBe(
-      "0xc4d6eb3c8774ff6078765567559c1ce1953badb01ba1ea8a5252561712294397",
-    );
+    })).rejects.toThrow(/JID-1/);
     await expect(dacsX402AuthorizationNonce({
-      jobId: "practice-dacs-0001",
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       phaseIndex: -1,
     })).rejects.toThrow(/non-negative phaseIndex/);
     await expect(dacsX402AuthorizationNonce({
-      jobId: "practice-dacs-0001",
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       // @ts-expect-error — exercising the canonical integer runtime guard
       phaseIndex: "03",
     })).rejects.toThrow(/non-negative phaseIndex/);

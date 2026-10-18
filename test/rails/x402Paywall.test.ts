@@ -1,3 +1,5 @@
+import "../helpers/unreleasedRailMechanics.js";
+import { assertDacsRailEffectAdmission } from "../../src/rails/currentProfileAdmission.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
@@ -27,7 +29,7 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAY_TO = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX_HASH = `0x${"ab".repeat(32)}`;
-const JOB_ID = "seller-paywall-job";
+const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const PHASE_INDEX = 2;
 const AMOUNT = "250000";
 
@@ -1213,4 +1215,19 @@ describe("createX402Paywall", () => {
     });
     expect(fulfil).toHaveBeenCalledTimes(1);
   });
+});
+
+it("read-only paywall inspection refuses a missing retained settlement before provider processing", async () => {
+  const server = mockServer({ process: { type: "no-payment-required" } });
+  const deps = coreDeps(server);
+  const claim = vi.spyOn(deps.settlementStore, "claim");
+  vi.mocked(assertDacsRailEffectAdmission).mockClear();
+  const result = await x402PaywallCore({ jobId: JOB_ID, phaseIndex: PHASE_INDEX,
+    reconcileOnly: true, request: request() }, deps);
+  expect(result).toMatchObject({ disposition: "indeterminate", settled: false,
+    reason: "x402-read-only-no-retained-settlement" });
+  expect(assertDacsRailEffectAdmission).not.toHaveBeenCalled();
+  expect(claim).not.toHaveBeenCalled();
+  expect(server.processHTTPRequest).not.toHaveBeenCalled();
+  expect(server.processSettlement).not.toHaveBeenCalled();
 });

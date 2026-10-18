@@ -1,3 +1,4 @@
+import "../helpers/unreleasedRailMechanics.js";
 import { describe, expect, test, vi } from "vitest";
 
 import { sha256Hex } from "../../src/canonical/index.js";

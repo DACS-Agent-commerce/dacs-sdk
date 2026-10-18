@@ -59,3 +59,81 @@ test("fixed-slot discovery regexes consume the complete address", async () => {
     expect(classifyAnchor(`${address}\n`)).toBe("unknown");
   }
 });
+
+import { readFileSync } from "node:fs";
+import { isCurrentJobId, requireCurrentJobId } from "../../src/canonical/addressing.js";
+import { lookupBundleCopies } from "../../src/agent/bundleConsistency.js";
+import { finalityCommitmentAddress } from "../../src/negotiate/index.js";
+import { classifyAnchor } from "../../src/discovery/scanner.js";
+import { verifyConstructedSettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
+import { DACS_CURRENT_PROFILE_ADMISSION_ERROR } from "../../src/version.js";
+
+const corpus = JSON.parse(readFileSync(new URL(
+  "../../vendor/DACS-Standard/conformance/vectors/security/job-id-grammar-v0.1.json", import.meta.url,
+), "utf8"));
+
+describe("complete pinned JID-1 corpus", () => {
+  test("loads the complete 47-case oracle", () => {
+    expect(corpus.count).toBe(47);
+    expect(corpus.vectors).toHaveLength(corpus.count);
+    expect(corpus.hash).toBe("59aa84253caf029ff38e18df3529f8a078fa721afa33c2c08f969589b3b1e598");
+  });
+  for (const vector of corpus.vectors) {
+    test(`${vector.operation}: ${vector.name}`, async () => {
+      switch (vector.operation) {
+        case "validate":
+          expect(isCurrentJobId(vector.jobId)).toBe(vector.expected === "pass");
+          break;
+        case "lookup-bundle": {
+          let calls = 0;
+          const lookup = () => lookupBundleCopies(vector.jobId, async () => {
+            calls++;
+            return { disposition: "absent" };
+          });
+          if (vector.expected === "error") {
+            await expect(lookup()).rejects.toThrow(/JID-1/);
+            expect(calls).toBe(0);
+            for (const build of [
+              () => bundleAddress(vector.jobId, vector.role),
+              () => paymentEvidenceAddress(vector.jobId, "rail", 0),
+              () => finalityCommitmentAddress(vector.jobId),
+            ]) expect(build).toThrow(/JID-1|ULID/);
+          } else {
+            await lookup();
+            expect(calls).toBeGreaterThan(0);
+          }
+          break;
+        }
+        case "derive-bundle":
+          expect(bundleAddress(vector.jobId, vector.role)).toBe(vector.want.logicalAddress);
+          break;
+        case "derive-logical": {
+          const address = vector.template.startsWith("dacs3:commit:")
+            ? finalityCommitmentAddress(vector.jobId)
+            : paymentEvidenceAddress(vector.jobId, "evm-erc20:1:USDC", 3);
+          expect(address).toBe(vector.want.logicalAddress);
+          expect(classifyAnchor(address)).not.toBe("unknown");
+          break;
+        }
+        case "compare":
+          if (vector.expected === "error") {
+            expect(() => requireCurrentJobId(vector.otherJobId)).toThrow(/JID-1/);
+          } else {
+            requireCurrentJobId(vector.jobId);
+            requireCurrentJobId(vector.otherJobId);
+            expect(vector.jobId === vector.otherJobId).toBe(vector.want.equal);
+          }
+          break;
+        case "profile-admit": {
+          // The corpus's synthetic positive release is deliberately not production authority.
+          const result = await verifyConstructedSettlementEvidence(
+            { jobId: vector.sessionId }, vector, {} as never,
+          );
+          expect(result).toEqual({ decision: "error", reasons: [DACS_CURRENT_PROFILE_ADMISSION_ERROR] });
+          break;
+        }
+        default: throw new Error(`unhandled pinned operation ${vector.operation}`);
+      }
+    });
+  }
+});

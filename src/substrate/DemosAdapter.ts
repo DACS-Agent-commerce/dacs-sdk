@@ -294,6 +294,8 @@ interface QueuedWrite<T> {
  * can narrow the returned values after importing those types explicitly.
  */
 export interface DemosRawClient {
+  readonly walletConnected: boolean;
+  signMessage(message: string, options: { algorithm: "ed25519" }): Promise<{ data: string }>;
   connect(rpc: string): Promise<boolean>;
   connectWallet(
     masterSeed: string | Uint8Array,
@@ -3908,12 +3910,23 @@ export class DemosAdapter implements SubstrateAdapter {
     return journalResolution ?? this.resolveAnchorByIndex(name, expectedOwner);
   }
 
-  /** Public DACS artifacts use public-read ACLs; retain exact transport bytes. */
+  /** Retain exact transport bytes, with wallet authentication for restricted ACLs. */
   async readAnchor(address: string): Promise<Record<string, unknown> | null> {
     try {
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (this.#demos.walletConnected) {
+        const identity = `ed25519:${this.#demos.getAddress()}`;
+        const timestamp = Date.now().toString();
+        const { data } = await this.#demos.signMessage(
+          sha256Hex(`${identity}:${timestamp}`), { algorithm: "ed25519" },
+        );
+        headers.identity = identity;
+        headers.signature = data;
+        headers.timestamp = timestamp;
+      }
       const response = await fetch(
         `${this.config.rpc.replace(/\/$/, "")}/storage-program/${encodeURIComponent(address)}`,
-        { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(30_000) },
+        { headers, signal: AbortSignal.timeout(30_000) },
       );
       if (response.status === 404) return null;
       if (!response.ok) throw new Error(`storage read HTTP ${response.status}`);

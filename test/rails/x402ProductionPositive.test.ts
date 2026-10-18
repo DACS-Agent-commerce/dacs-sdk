@@ -1,3 +1,4 @@
+import "../helpers/unreleasedRailMechanics.js";
 import { x402Client, x402HTTPClient } from "@x402/fetch";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -52,7 +53,7 @@ vi.mock("node:https", () => ({
   request: vi.fn(() => { throw new Error("unexpected real HTTPS request"); }),
 }));
 
-const JOB_ID = "job-x402-production-positive";
+const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const PHASE_INDEX = 2;
 const CHAIN_ID = 84532;
 const NETWORK = `eip155:${CHAIN_ID}` as const;

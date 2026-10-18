@@ -1,3 +1,4 @@
+import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -424,6 +425,8 @@ export interface AdvanceAp2SettlementInput<TCheckout = unknown, TPayment = unkno
   phaseIndex: number;
   agreementHash: string;
   protocolVersion: string;
+  /** Only inspect a retained provider reference; never submit a payment. */
+  reconcileOnly?: boolean;
   expected: Readonly<{ payee: string; amount: string; currency: string }>;
   checkoutMandate: Readonly<TCheckout>;
   paymentMandate: Readonly<TPayment>;
@@ -556,6 +559,7 @@ function settlementMatchesIntent(
 export async function advanceAp2Settlement<TCheckout, TPayment>(
   input: AdvanceAp2SettlementInput<TCheckout, TPayment>,
 ): Promise<Ap2SettlementProgress> {
+  if (input?.reconcileOnly !== true) assertDacsRailEffectAdmission(() => input.jobId);
   const provider = input.provider;
   const verifier = input.verifier;
   const store = input.store;
@@ -720,6 +724,10 @@ export async function advanceAp2Settlement<TCheckout, TPayment>(
 
   let providerRef = claimed.providerRef;
   if (!providerRef) {
+    if (input.reconcileOnly === true) {
+      return { status: "indeterminate", reason: "ap2-read-only-no-provider-reference" };
+    }
+    assertDacsRailEffectAdmission(() => intent.jobId);
     try {
       await fence.assertCurrent();
     } catch {

@@ -230,3 +230,39 @@ test.each(["swapped-native-slot", undefined])("public storage rejects mismatched
   });
   expect(verify).not.toHaveBeenCalled();
 });
+
+describe("restricted storage raw reads", () => {
+  test("uses demosdk timestamp-bound wallet headers and still rejects duplicate members", async () => {
+    const adapter = new DemosAdapter({ rpc: "https://offline.test" });
+    vi.spyOn(adapter.raw, "walletConnected", "get").mockReturnValue(true);
+    vi.spyOn(adapter.raw, "getAddress").mockReturnValue("buyer-public-address");
+    const sign = vi.spyOn(adapter.raw, "signMessage").mockResolvedValue({ data: "test-auth-signature" } as never);
+    const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      if (headers.get("identity") !== "ed25519:buyer-public-address" ||
+          headers.get("signature") !== "test-auth-signature" || !headers.get("timestamp")) {
+        return new Response(null, { status: 403 });
+      }
+      const { sha256Hex } = await import("../../src/canonical/hash.js");
+      expect(sign).toHaveBeenLastCalledWith(
+        sha256Hex(`${headers.get("identity")}:${headers.get("timestamp")}`),
+        { algorithm: "ed25519" },
+      );
+      return new Response(envelope('{"restricted":true}'));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    expect(await adapter.readAnchor(nativeAddress)).toEqual({ restricted: true });
+    fetcher.mockImplementationOnce(async () => new Response(envelope('{"x":1,"x":2}')));
+    await expect(adapter.readAnchor(nativeAddress)).rejects.toMatchObject({
+      cause: { code: "DUPLICATE-MEMBER" },
+    });
+  });
+
+  test("an anonymous restricted read remains indeterminate", async () => {
+    const adapter = new DemosAdapter({ rpc: "https://offline.test" });
+    const sign = vi.spyOn(adapter.raw, "signMessage");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 403 })));
+    await expect(adapter.readAnchor(nativeAddress)).rejects.toThrow(/read anchor/);
+    expect(sign).not.toHaveBeenCalled();
+  });
+});

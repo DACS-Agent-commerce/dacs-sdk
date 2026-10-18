@@ -1,3 +1,4 @@
+import { assertDacsRailEffectAdmission } from "../rails/currentProfileAdmission.js";
 import { snapshotAdmittedArtifact } from "../canonical/admittedArtifact.js";
 import { types as nodeTypes } from "node:util";
 import type {
@@ -2011,6 +2012,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       if (!hasWallet) {
         throw new Error("runSession requires createAgent({ wallet })");
       }
+      assertDacsRailEffectAdmission();
       if (opts === null || typeof opts !== "object" || nodeTypes.isProxy(opts)) {
         throw new DacsError("Agent.runSession options must be stable data");
       }

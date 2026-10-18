@@ -695,8 +695,8 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
       networkSpec: { kind: "x402-resource" } };
     expect((await verify(ev, { rail })).decision).toBe("pass");
     for (const bad of [
-      { ...rail, assetSpec: { kind: "spl" } },
-      { ...rail, networkSpec: { kind: "solana" } },
+      { ...rail, assetSpec: { kind: "spl", cluster: "devnet" } },
+      { ...rail, networkSpec: { kind: "solana", cluster: "devnet" } },
     ]) {
       const result = await verify(ev, { rail: bad });
       expect(result.decision).toBe("fail");
@@ -859,5 +859,53 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     const ev = delivery();
     ev.paymentAmount = { amount: "5", currency: "USDC" }; // stray, but not finality
     expect((await verify(ev)).decision).toBe("pass");
+  });
+});
+
+describe("RD-5 required identities and liquidity-tank mechanism", () => {
+  const payment = () => structuredClone(read("fixtures/settlement-evidence-payment-success.json").evidence);
+  test.each([
+    [{ kind: "erc20" }, { kind: "evm", chainId: 80002 }, "assetSpec"],
+    [{ kind: "erc20", chainId: 80002 }, { kind: "evm" }, "networkSpec"],
+    [{ kind: "native-evm" }, { kind: "evm" }, "assetSpec"],
+    [{ kind: "spl" }, { kind: "solana", cluster: "devnet" }, "assetSpec"],
+    [{ kind: "spl", cluster: "devnet" }, { kind: "solana" }, "networkSpec"],
+    [{ kind: "spl", cluster: "mainnet-beta" }, { kind: "solana", cluster: "devnet" }, "assetSpec"],
+    [{ kind: "spl", cluster: "devnet" }, { kind: "solana", cluster: "bogus" }, "networkSpec"],
+    [{ kind: "native-solana", cluster: "bogus" }, { kind: "solana", cluster: "devnet" }, "assetSpec"],
+  ])("rejects missing or malformed identities %j / %j", async (assetSpec, networkSpec, field) => {
+    const result = await validateSettlementEvidenceStructure(payment(), { rail: { assetSpec, networkSpec } } as never);
+    expect(result.decision).toBe("error");
+    expect(result.reasons).toContain(`pinned rail ${field} is malformed`);
+  });
+
+  test("rejects disagreement between valid Solana cluster identities", async () => {
+    const result = await validateSettlementEvidenceStructure(payment(), { rail: {
+      assetSpec: { kind: "spl", cluster: "devnet" },
+      networkSpec: { kind: "solana", cluster: "mainnet" },
+    } });
+    expect(result.decision).toBe("invalid");
+    expect(result.reasons).toContain('rail asset cluster "devnet" does not match network cluster "mainnet" (RD-5)');
+  });
+
+  test.each([
+    ["liquidity-tank", "valid", undefined],
+    ["htlc", "invalid", "cross-chain network mechanism contradicts pinned rail type (RD-5)"],
+    ["substrate-native", "invalid", "cross-chain network mechanism contradicts pinned rail type (RD-5)"],
+    [undefined, "invalid", "cross-chain network mechanism contradicts pinned rail type (RD-5)"],
+    ["bogus", "error", "pinned rail networkSpec is malformed"],
+  ])("liquidity-tank mechanism %s gives %s", async (mechanism, decision, reason) => {
+    const ev = payment();
+    ev.phase = "pay-cross-chain-liquidity-tank";
+    ev.paymentTxRefs = [{ kind: "liquidity-tank", bridgeId: "bridge-1", sourceChainId: 8453,
+      destChainId: 80002, lockTxHash: "0xlock", releaseTxHash: "0xrelease" }];
+    ev.settlementFinality = { model: "liquidity-tank", finalityObservedAt: 1 };
+    const result = await validateSettlementEvidenceStructure(ev, { rail: {
+      railType: "cross-chain-liquidity-tank",
+      networkSpec: { kind: "cross-chain", ...(mechanism === undefined ? {} : { mechanism }) },
+    } } as never);
+    expect(result.decision).toBe(decision);
+    if (reason) expect(result.reasons).toContain(reason);
+    else expect(result.reasons).toEqual([]);
   });
 });

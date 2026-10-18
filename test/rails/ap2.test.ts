@@ -1,3 +1,5 @@
+import "../helpers/unreleasedRailMechanics.js";
+import { assertDacsRailEffectAdmission } from "../../src/rails/currentProfileAdmission.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -455,4 +457,31 @@ describe("advanceAp2Settlement", () => {
     expect(submit).toHaveBeenCalledTimes(1);
     expect(readAttestedStatus).not.toHaveBeenCalled();
   });
+});
+
+test("read-only AP2 never creates a payment when no provider reference is retained", async () => {
+  const submit = vi.fn(provider().submit);
+  const readAttestedStatus = vi.fn(provider().readAttestedStatus);
+  vi.mocked(assertDacsRailEffectAdmission).mockClear();
+  const result = await advanceAp2Settlement(input({ reconcileOnly: true,
+    provider: provider({ submit, readAttestedStatus }) }));
+  expect(result).toEqual({ status: "indeterminate", reason: "ap2-read-only-no-provider-reference" });
+  expect(assertDacsRailEffectAdmission).not.toHaveBeenCalled();
+  expect(submit).not.toHaveBeenCalled();
+  expect(readAttestedStatus).not.toHaveBeenCalled();
+});
+
+test("read-only AP2 reconciles a retained provider reference without resubmission", async () => {
+  const submit = vi.fn(provider().submit);
+  const readAttestedStatus = vi.fn(provider().readAttestedStatus)
+    .mockResolvedValueOnce({ disposition: "pending", reason: "awaiting-provider" });
+  const store = createInMemoryAp2BindingStore();
+  const runtime = input({ store, provider: provider({ submit, readAttestedStatus }) });
+  expect(await advanceAp2Settlement(runtime)).toEqual({ status: "waiting", reason: "awaiting-provider" });
+  vi.mocked(assertDacsRailEffectAdmission).mockClear();
+  expect((await advanceAp2Settlement({ ...runtime, reconcileOnly: true,
+    owner: "reader", now: () => 1_200 })).status).toBe("settled");
+  expect(submit).toHaveBeenCalledOnce();
+  expect(readAttestedStatus).toHaveBeenCalledTimes(2);
+  expect(assertDacsRailEffectAdmission).not.toHaveBeenCalled();
 });
