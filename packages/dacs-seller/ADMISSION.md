@@ -46,6 +46,8 @@ six writes per job, 24 writes and 96 DEM per hour, and 4 DEM per write. Unresolv
 writes count beyond the hour until completed. Configuration may lower or raise
 the PR-defined configurable limits; it cannot disable their validation.
 
+Direct context-store reservations and classifications require a canonical body scope job matching the authenticated envelope before hashing, journal access or admission. Retained-effect retries obey the same check. T24–T25 cover malformed, missing and mismatched body jobs, valid controls and restart.
+
 Admission checks start counts after required nonce consumption and before any policy hold or new effect, then
 rechecks them in the transport's reserve transaction. One route serializes all
 new starts across jobs. The seller's process-lifetime state lock is required

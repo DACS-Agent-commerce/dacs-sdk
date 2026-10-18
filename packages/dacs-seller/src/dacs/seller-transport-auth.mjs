@@ -376,6 +376,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // throws a refusal, which rolls back every row of this request.
     reserve(p, body, { journaledOnly = false, admit = null, dryRun = false } = {}) {
       requireJobId(p?.jobId);
+      if (p.path === CONTEXT) {
+        requireJobId(body?.scope?.jobId);
+        if (body.scope.jobId !== p.jobId) fail('peer_job_mismatch', 409);
+      }
       // The admission table is created inside this transaction; it exists only after a commit.
       const creates = p.path === CONTEXT && !admissions;
       const reservation = transaction(() => {

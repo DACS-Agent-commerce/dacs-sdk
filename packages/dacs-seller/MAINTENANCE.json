@@ -28,7 +28,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-transport-auth.mjs",
       "originalSha256": "82c5b7dbdd866cad0d601325d05680db2503ce87d7ff1346d6e06eb9683b645f",
-      "sha256": "cd1b47b23127fa973668ac08aabb559b7edf7b758e8eda9a874a0eef2667ae1b",
+      "sha256": "1d773805764b3dc3a07ffbe5aadbf594e99df460e3bfac7919adfa6ac487c6a2",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -167,7 +167,7 @@
       "path": "packages/dacs-seller/test/d5-challenge-retention.test.mjs",
       "originalSha256": "b4476e0440706f508bd49ba112922a598ddf994a9286d81a7799c4e7749d5a8c",
       "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
-      "sha256": "27762bbbcb7e1f9cd75c68f523d5da81e6b6a3a2a1471a1f3219f550b0145380"
+      "sha256": "11d38c7a3d5daf4ce87d5d5374fceca90847d1013fb02811dd476b87b94f34f1"
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/operator-approval.mjs",

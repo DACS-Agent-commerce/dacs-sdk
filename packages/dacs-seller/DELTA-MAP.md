@@ -190,7 +190,7 @@ The mechanical scan in `scripts/superseded-tests.mjs` compares frozen exports wi
 | `src/dacs/seller-agent.mjs` | `http-mcp/src/dacs/seller-agent.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `4bc4e5060612b2fcc0773cb1133501f6ca073325` | changed by D5 | `e03bf9157f9182e9bc9390eea6705eb1786dff4a` | — |
 | `src/dacs/seller-durable-state.mjs` | `http-mcp/src/dacs/seller-durable-state.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `b1eea6d6e411e501cc7241e0c70afc7990a4f351` | unchanged | `fb210f81159f230d21ffed85fe1aca787ed29aa6` | — |
 | `src/dacs/seller-http.mjs` | `http-mcp/src/dacs/seller-http.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `99adafc3b1a03de973f5d0e3aa86cd6e433e7ac3` | changed by D5 | `5747b1c0dfdd8c3d838ffed11b2ec7734afc1635` | — |
-| `src/dacs/seller-transport-auth.mjs` | `http-mcp/src/dacs/seller-transport-auth.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `d417bf3eef2936bd56875dc7d5344e39cd4785f4` | changed by D5 | `bbf91f6d5cf32360555c89c11e830c82830d0b62` | — |
+| `src/dacs/seller-transport-auth.mjs` | `http-mcp/src/dacs/seller-transport-auth.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `d417bf3eef2936bd56875dc7d5344e39cd4785f4` | changed by D5 | `f3144f9ca5eb4cec43aa6ab47744613e1f0ee58c` | — |
 | `src/devnet-demo/agreement-context.mjs` | `http-mcp/src/devnet-demo/agreement-context.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `08b712f4c779ea6aac8295fec9b1048b249dfc6e` | changed by D5 | `e8769679bb156f7e3c6c33781b101e3edb26c834` | — |
 | `src/devnet-demo/artifact-anchor.mjs` | `http-mcp/src/devnet-demo/artifact-anchor.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `accb50f9365d3e0cf6aaa42b95e1b2063cb7554b` | changed by D5 | `fdd1833b4add49fcc0e3229ccde3e9f2cdcdd893` | — |
 | `src/devnet-demo/deliverable.mjs` | `http-mcp/src/devnet-demo/deliverable.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `fc85372db90d6780070efc1eff696418ba62f4b2` | unchanged | `af8de8f3a3d3e4eff4bfef03d86148f4446ab91d` | — |
@@ -320,7 +320,7 @@ The mechanical scan in `scripts/superseded-tests.mjs` compares frozen exports wi
 | `src/devnet-demo/seller-purchase-source.mjs` | D5 addition; sources above | — | added by D5 | `c297a5a2e2e5ef9fb4ad06d8d8239e0da76be1ee` | `port-sources/pr58-786aa1d/http-mcp/src/devnet-demo/seller-purchase-source.mjs:9-11 → 3-5`<br>`port-sources/pr58-786aa1d/http-mcp/src/devnet-demo/seller-purchase-source.mjs:32-92 → 6-66` |
 | `src/devnet-demo/seller-state-lock.mjs` | D5 addition; sources above | — | added by D5 | `9a41fd53c08ca6cad12a4958fb8421e1a7c29037` | `port-sources/pr58-786aa1d/http-mcp/src/devnet-demo/seller-state-lock.mjs:1-120 → 1-120` |
 | `test/d5-admission.test.mjs` | D5 addition; sources above | — | added by D5 | `6414567b7d909ecf37024e0269fa6413cbf9047a` | D5 original |
-| `test/d5-challenge-retention.test.mjs` | D5 addition; sources above | — | added by D5 | `f6a01f92300d9a25298e617c96e75d93514c42ac` | D5 original |
+| `test/d5-challenge-retention.test.mjs` | D5 addition; sources above | — | added by D5 | `b4460d422670afe99a69f87180564c95306034b5` | D5 original |
 | `test/d5-limits-before-effects.test.mjs` | D5 addition; sources above | — | added by D5 | `14dc27b0b2018628449ad994b9d2c681fb912a14` | D5 original |
 | `test/d5-recovery.test.mjs` | D5 addition; sources above | — | added by D5 | `5f8032b0dc183b93275771e724ad34796fad3c40` | D5 original |
 | `test/d5-vet-decisions.test.mjs` | D5 addition; sources above | — | added by D5 | `a1646f4e3e7fb9cc549f45bc01e7db69a6daaf49` | D5 original |

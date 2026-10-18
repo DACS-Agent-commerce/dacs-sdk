@@ -175,6 +175,60 @@ test('T22 every direct journal and hashing entry refuses malformed IDs without c
   }
 });
 
+function withoutStoreAccess(work) {
+  const prepare = DatabaseSync.prototype.prepare, exec = DatabaseSync.prototype.exec, queries = [];
+  DatabaseSync.prototype.prepare = function(sql) { queries.push(sql); return prepare.call(this, sql); };
+  DatabaseSync.prototype.exec = function(sql) { queries.push(sql); return exec.call(this, sql); };
+  try { work(); } finally { DatabaseSync.prototype.prepare = prepare; DatabaseSync.prototype.exec = exec; }
+  assert.deepEqual(queries, [], 'invalid context bodies must refuse before opening a transaction or reading the journal');
+}
+
+const contextBody = i => ({ scope: { jobId: jid('job-' + i) } });
+const invalidContextBodies = () => [
+  ...[undefined, null, {}, 7, 'job-0', jid('job-0').toLowerCase(), jid('job-0').slice(1), '8' + jid('job-0').slice(1)]
+    .map(jobId => ({ body: { scope: { jobId } }, code: 'peer_job_invalid' })),
+  ...[undefined, null, {}, { scope: null }, { scope: [] }]
+    .map(body => ({ body, code: 'peer_job_invalid' })),
+  { body: contextBody(1), code: 'peer_job_mismatch' },
+];
+
+test('T24 direct context reservation and classification refuse invalid body jobs before journal access', t => {
+  const w = world(t), issued = w.issue(jid('job-0')), before = w.rows();
+  const p = context(w, 0);
+  for (const method of ['reserve', 'classify']) for (const { body, code } of invalidContextBodies()) {
+    withoutStoreAccess(() => assert.throws(() => w.store[method](p, body, {
+      admit: () => assert.fail('invalid body reached admission'),
+    }), { code }));
+    assert.deepEqual(w.rows(), before, 'a body refusal cannot consume its issued challenge');
+    assert.equal(w.count('peer_effects'), 0);
+    assert.equal(w.store.contextAdmission(p.jobId), null);
+  }
+  // Job checks also precede request hashing and all other field access.
+  const poison = { jobId: p.jobId, path: SELLER_CONTEXT_PATH, get buyer() { assert.fail('invalid body reached hashing'); } };
+  assert.throws(() => w.store.reserve(poison, { scope: { jobId: 'job-0' } }), { code: 'peer_job_invalid' });
+  assert.equal(w.store.classify(p, contextBody(0)), 'start');
+  assert.equal(w.store.reserve(p, contextBody(0), { admit: () => w.now() }).disposition, 'perform');
+  assert.equal(w.store.contextAdmission(p.jobId).jobId, p.jobId);
+  assert.equal(w.rows()[0].nonce, issued.sessionNonce);
+});
+
+test('T25 body job checks precede retained context replies and survive restart', t => {
+  const w = world(t), p = context(w, 0), body = contextBody(0);
+  const reservation = w.store.reserve(p, body, { admit: () => w.now() });
+  for (const state of ['pending', 'complete', 'restarted']) {
+    if (state === 'complete') w.store.finish(reservation, 200, '{}');
+    if (state === 'restarted') w.reopen();
+    for (const method of ['reserve', 'classify']) for (const { body: invalid, code } of invalidContextBodies()) {
+      withoutStoreAccess(() => assert.throws(() => w.store[method](p, invalid), { code }));
+      withoutStoreAccess(() => assert.throws(() => w.store[method]({ ...p, nonce: 'fresh-' + state }, invalid), { code }));
+    }
+    assert.equal(w.store.classify(p, body), 'known');
+    assert.equal(w.store.reserve(p, body).disposition, state === 'pending' ? 'uncertain' : 'cached');
+    assert.equal(w.count('peer_effects'), 1);
+    assert.equal(w.store.contextAdmission(p.jobId).jobId, p.jobId);
+  }
+});
+
 test('T23 five/five/two unused challenge issuances exhaust the twelve-per-hour global allowance', t => {
   const w = world(t,{maxRecords:20});
   for (const [actor,count] of [[buyer,5],[other,5],[seller,2]]) for(let i=0;i<count;i++) {
@@ -189,46 +243,46 @@ test('T23 five/five/two unused challenge issuances exhaust the twelve-per-hour g
 test('T10 total context capacity bounds admissions, effects and slots across hours and restart before any mutation', t => {
   const w = world(t, { maxRecords: 5, maxContextRecords: 1 });
   const first = context(w, 0);
-  w.store.finish(w.store.reserve(first, {}, { admit: () => w.now() }), 200, '{}');
+  w.store.finish(w.store.reserve(first, contextBody(0), { admit: () => w.now() }), 200, '{}');
   for (let i = 1; i <= 4; i++) {
     w.advance(HOUR + 1); w.reopen();
     noMutations(() => {
       const options = { admit: () => { assert.fail('capacity must precede admission'); } };
-      assert.throws(() => w.store.classify(context(w, i), {}, options), { code: 'peer_context_capacity' });
-      assert.throws(() => w.store.reserve(context(w, i), {}, options), { code: 'peer_context_capacity' });
+      assert.throws(() => w.store.classify(context(w, i), contextBody(i), options), { code: 'peer_context_capacity' });
+      assert.throws(() => w.store.reserve(context(w, i), contextBody(i), options), { code: 'peer_context_capacity' });
       assert.throws(() => w.issue(jid('job-' + i)), { code: 'peer_context_capacity' });
     });
     for (const table of ['peer_context_admissions', 'peer_effects', 'peer_effect_jobs', 'peer_slots']) assert.equal(w.count(table), 1, table);
     assert.equal(w.count('peer_jobs'), 0);
-    assert.equal(w.store.reserve({ ...first, nonce: 'retry-' + i, expiresAt: w.now() + 60000 }, {}).disposition, 'cached');
+    assert.equal(w.store.reserve({ ...first, nonce: 'retry-' + i, expiresAt: w.now() + 60000 }, contextBody(0)).disposition, 'cached');
   }
 });
 
 test('T11 terminal context cleanup preserves the full hour and expired-request fence, with restart and replay refusal', t => {
   const w = world(t, { maxContextRecords: 1 });
   const old = context(w, 0);
-  w.store.finish(w.store.reserve(old, {}, { admit: () => w.now() }), 409, '{}');
+  w.store.finish(w.store.reserve(old, contextBody(0), { admit: () => w.now() }), 409, '{}');
   w.terminal(jid('job-0')); w.advance(HOUR - 1); w.reopen();
-  noMutations(() => assert.throws(() => w.store.reserve(context(w, 1), {}, { admit: () => w.now() }), { code: 'peer_context_capacity' }));
+  noMutations(() => assert.throws(() => w.store.reserve(context(w, 1), contextBody(1), { admit: () => w.now() }), { code: 'peer_context_capacity' }));
   w.advance(1); w.reopen();
-  assert.equal(w.store.classify(context(w, 1), {}, { admit: () => w.now() }), 'start');
+  assert.equal(w.store.classify(context(w, 1), contextBody(1), { admit: () => w.now() }), 'start');
   assert.equal(w.store.contextAdmission(jid('job-0')).jobId, jid('job-0'), 'dry cleanup is read-only');
-  const next = w.store.reserve(context(w, 1), {}, { admit: () => w.now() });
+  const next = w.store.reserve(context(w, 1), contextBody(1), { admit: () => w.now() });
   assert.equal(next.disposition, 'perform'); assert.equal(w.store.contextAdmission(jid('job-0')), null);
   assert.equal(w.store.contextAnswer(jid('job-0')), null);
   for (const table of ['peer_context_admissions', 'peer_effects', 'peer_effect_jobs', 'peer_slots', 'peer_nonces', 'peer_nonce_retention']) assert.equal(w.count(table), 1, table);
   w.reopen();
-  noMutations(() => assert.throws(() => w.store.reserve({ ...old, nonce: 'old-retry', expiresAt: w.now() + 60000 }, {}, { admit: () => w.now() }), { code: 'context_session_terminal' }));
+  noMutations(() => assert.throws(() => w.store.reserve({ ...old, nonce: 'old-retry', expiresAt: w.now() + 60000 }, contextBody(0), { admit: () => w.now() }), { code: 'context_session_terminal' }));
 });
 
 test('T12 terminal evidence never releases pending or uncertain context effects', t => {
   for (const status of [null, 503]) {
     const w = world(t, { maxRecords: 5, maxContextRecords: 1 });
-    const original = context(w, 0), reservation = w.store.reserve(original, {}, { admit: () => w.now() });
+    const original = context(w, 0), reservation = w.store.reserve(original, contextBody(0), { admit: () => w.now() });
     if (status) w.store.finish(reservation, status, '{}');
     w.terminal(jid('job-0')); w.advance(HOUR + 1); w.reopen();
-    noMutations(() => assert.throws(() => w.store.reserve(context(w, 1), {}, { admit: () => w.now() }), { code: 'peer_context_capacity' }));
-    assert.equal(w.store.reserve({ ...original, nonce: 'retry', expiresAt: w.now() + 60000 }, {}).disposition, 'uncertain');
+    noMutations(() => assert.throws(() => w.store.reserve(context(w, 1), contextBody(1), { admit: () => w.now() }), { code: 'peer_context_capacity' }));
+    assert.equal(w.store.reserve({ ...original, nonce: 'retry', expiresAt: w.now() + 60000 }, contextBody(0)).disposition, 'uncertain');
     assert.equal(w.count('peer_effects'), 1);
   }
 });
@@ -236,11 +290,11 @@ test('T12 terminal evidence never releases pending or uncertain context effects'
 test('T13 terminal cleanup waits for live requests and successful unpaid-start admission', t => {
   const w = world(t, { maxRecords: 5, maxContextRecords: 1 });
   const first = context(w, 0, { expiresAt: w.now() + 2 * HOUR });
-  w.store.finish(w.store.reserve(first, {}, { admit: () => w.now() }), 200, '{}');
+  w.store.finish(w.store.reserve(first, contextBody(0), { admit: () => w.now() }), 200, '{}');
   w.terminal(jid('job-0')); w.advance(HOUR + 1);
-  noMutations(() => assert.throws(() => w.store.reserve(context(w, 1), {}, { admit: () => w.now() }), { code: 'peer_context_capacity' }));
+  noMutations(() => assert.throws(() => w.store.reserve(context(w, 1), contextBody(1), { admit: () => w.now() }), { code: 'peer_context_capacity' }));
   w.advance(HOUR);
-  noMutations(() => assert.throws(() => w.store.reserve(context(w, 1), {}, { admit: () => { throw new Error('unpaid start refused'); } }), /unpaid start refused/));
+  noMutations(() => assert.throws(() => w.store.reserve(context(w, 1), contextBody(1), { admit: () => { throw new Error('unpaid start refused'); } }), /unpaid start refused/));
   assert.equal(w.count('peer_context_admissions'), 1); assert.equal(w.count('peer_effects'), 1);
 });
 
@@ -349,15 +403,15 @@ test('T18 context capacity uses indexed nonce lookups and stops after enough ter
   for (const method of ['classify', 'issue', 'reserve']) {
     calls = [];
     if (method === 'issue') issue('new');
-    else if (method === 'reserve') w.store.reserve(context(w, 'new'), {}, { admit: () => w.now() });
-    else noMutations(() => assert.equal(w.store.classify(context(w, 'new'), {}, { admit: () => w.now() }), 'start'));
+    else if (method === 'reserve') w.store.reserve(context(w, 'new'), contextBody('new'), { admit: () => w.now() });
+    else noMutations(() => assert.equal(w.store.classify(context(w, 'new'), contextBody('new'), { admit: () => w.now() }), 'start'));
     assert.deepEqual(calls, [jid(method === 'issue' ? 'new' : 'job-new')]);
   }
   calls = [];
   const queries = observeQueries(() => {
     assert.throws(() => issue('full'), { code: 'peer_context_capacity' });
-    assert.throws(() => w.store.classify(context(w, 'full'), {}, { admit: () => w.now() }), { code: 'peer_context_capacity' });
-    assert.throws(() => w.store.reserve(context(w, 'full'), {}, { admit: () => w.now() }), { code: 'peer_context_capacity' });
+    assert.throws(() => w.store.classify(context(w, 'full'), contextBody('full'), { admit: () => w.now() }), { code: 'peer_context_capacity' });
+    assert.throws(() => w.store.reserve(context(w, 'full'), contextBody('full'), { admit: () => w.now() }), { code: 'peer_context_capacity' });
   });
   assert.ok(queries.length < 60, 'no per-admission SQL statements');
   const query = queries.find(sql => sql.startsWith('SELECT a.job, a.effect'));
@@ -372,8 +426,8 @@ test('T18 context capacity uses indexed nonce lookups and stops after enough ter
   for (const method of ['classify', 'issue', 'reserve']) {
     calls = [];
     if (method === 'issue') issue('room');
-    else if (method === 'reserve') assert.equal(w.store.reserve(context(w, 'room'), {}, { admit: () => w.now() }).disposition, 'perform');
-    else noMutations(() => assert.equal(w.store.classify(context(w, 'room'), {}, { admit: () => w.now() }), 'start'));
+    else if (method === 'reserve') assert.equal(w.store.reserve(context(w, 'room'), contextBody('room'), { admit: () => w.now() }).disposition, 'perform');
+    else noMutations(() => assert.equal(w.store.classify(context(w, 'room'), contextBody('room'), { admit: () => w.now() }), 'start'));
     assert.equal(calls.filter(job => oldJobs.has(job)).length, 1, 'stop after one reclaimable admission');
     assert.equal(w.count('peer_context_admissions'), 10000, 'planning retains rows; reserve replaces only the necessary row');
   }
@@ -385,14 +439,14 @@ test('T19 terminal state is job-scoped and refuses another buyer after cleanup a
     assert.deepEqual(Object.keys(input), ['jobId'], 'the reader cannot scope state by the requester');
     return terminal.has(input.jobId) ? 'finalised' : null;
   } });
-  const old = context(w, 0); w.store.finish(w.store.reserve(old, {}, { admit: () => w.now() }), 200, '{}');
+  const old = context(w, 0); w.store.finish(w.store.reserve(old, contextBody(0), { admit: () => w.now() }), 200, '{}');
   terminal.add(old.jobId); w.advance(HOUR + 1);
-  assert.throws(() => w.store.classify(context(w, 0, { buyer: other }), {}), { code: 'peer_job_conflict' });
-  w.store.finish(w.store.reserve(context(w, 1), {}, { admit: () => w.now() }), 200, '{}');
+  assert.throws(() => w.store.classify(context(w, 0, { buyer: other }), contextBody(0)), { code: 'peer_job_conflict' });
+  w.store.finish(w.store.reserve(context(w, 1), contextBody(1), { admit: () => w.now() }), 200, '{}');
   assert.equal(w.store.contextAdmission(old.jobId), null); w.reopen();
   noMutations(() => {
-    assert.throws(() => w.store.classify(context(w, 0, { buyer: other }), {}), { code: 'context_session_terminal' });
-    assert.throws(() => w.store.reserve(context(w, 0, { buyer: other }), {}), { code: 'context_session_terminal' });
+    assert.throws(() => w.store.classify(context(w, 0, { buyer: other }), contextBody(0)), { code: 'context_session_terminal' });
+    assert.throws(() => w.store.reserve(context(w, 0, { buyer: other }), contextBody(0)), { code: 'context_session_terminal' });
     assert.throws(() => w.store.issueContextChallenge({ jobId: old.jobId, buyer: other }, {jobId:old.jobId}, { admit: () => w.now() }), { code: 'context_session_terminal' });
   });
 });
