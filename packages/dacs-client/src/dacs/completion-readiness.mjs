@@ -5,7 +5,7 @@ import {
 } from '@kynesyslabs/dacs';
 import { addressForClaim, claimForAddress, verifyDemosSignature } from '../signatures.mjs';
 
-export const COMPLETION_READINESS_STANDARD_PIN = '662be1d4899a2cadf327fe2d5523e93a80334e5f';
+export const COMPLETION_READINESS_STANDARD_PIN = 'd45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20';
 const PROFILES = new Set(['dacs-chatgpt-plugin/fixed-price-pay-dem/v1', 'dacs-chatgpt-plugin/sr2-wallet-agreement/v1', 'dacs-chatgpt-plugin/devnet-pay-dem-purchase/v1']);
 const CURRENT_DELIVERY = new Set(['delivery-ready', 'delivered', 'awaiting-countersignature', 'completed', 'bundle-rejected']);
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -69,7 +69,7 @@ export function evaluateCompletionReadiness(operation, protocolView) {
   const jobValid = isCanonicalJobId(jobId) && buyer !== null && isDemosClaim(seller);
   add('purchase.scope', jobValid ? 'present' : 'mismatch', jobValid ? 'scope.recorded' : 'scope.invalid', jobValid
     ? 'Canonical job and purchase-bound buyer and seller identities are recorded.' : 'Canonical job or purchase-bound buyer/seller identity is missing or malformed.', 'scope');
-  const viewMatches = view != null && view.profile === profile && view.jobId === jobId && view.stage === p.stage
+  const viewMatches = view != null && !view.notSaved && Number.isSafeInteger(p.revision ?? 0) && view.revision === (p.revision ?? 0) && view.profile === profile && view.jobId === jobId && view.stage === p.stage
     && same(view.agreement?.hash, a?.hash) && same(view.commitment, p.commitment ?? null)
     && same(view.paymentEvidence, p.paymentEvidence ?? null)
     && same(view.delivery?.deliverableRef, CURRENT_DELIVERY.has(p.stage) ? p.delivery?.deliverableRef : undefined)

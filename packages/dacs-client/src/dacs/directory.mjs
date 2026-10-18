@@ -1,9 +1,10 @@
 // Community DACS Directory client. Results are discovery hints only; nothing
 // here is treated as chain authority.
 //
-// Provenance: endpoint and summary shapes from Community dacs-directory@074f040
-// (app/api/dacs/listings/route.ts, src/catalog/types.ts ListingSummary) and the
-// bounded-origin client pattern of agent-commerce-demo v2/runtime/directory-client.mjs.
+// Discovery wire contract: https://github.com/DACS-Agent-commerce/Community/tree/
+// 074f040e2165fb581000fb60c53c65530d6e29d6/reference-implementations/dacs-directory
+// app/api/dacs/listings/route.ts and src/catalog/types.ts. Bounded-origin
+// transport is local policy, with no historical demo authority claim.
 import { fetchBoundedJson, OutboundError } from '../util/http.mjs';
 import { SIMULATION_HEADER } from './chain.mjs';
 

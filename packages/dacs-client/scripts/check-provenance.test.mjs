@@ -37,8 +37,23 @@ let scratchCount = 0;
 function scratch() {
   const dir = join(scratchRoot, String(scratchCount += 1));
   mkdirSync(dir, {recursive:true});
-  const archive = execFileSync('git', ['-C', join(PACKAGE_DIR,'../..'), 'archive', 'ecb2cd7', 'packages/dacs-client/PROVENANCE.json', 'packages/dacs-client/src', 'packages/dacs-client/test'], {maxBuffer:1<<28});
-  execFileSync('tar', ['-x', '--strip-components=2', '-C', dir], {input:archive});
+  // A synthetic hash-only copy exercises manifest validation without requiring
+  // the publication's discarded step-1 Git objects. Source tests use the actual
+  // pinned source blobs when the independently supplied source repo exists.
+  const manifest = JSON.parse(readFileSync(join(PACKAGE_DIR, 'PROVENANCE.json')));
+  for (const entry of manifest.files) {
+    const rel = entry.path.slice('packages/dacs-client/'.length);
+    let bytes;
+    if (SOURCE) bytes = blob(STEP1, entry.sourcePath);
+    else {
+      try { bytes = readFileSync(join(PACKAGE_DIR, rel)); }
+      catch { bytes = Buffer.from('// synthetic local-only source fixture\n'); }
+      entry.sha256 = sha256(bytes);
+    }
+    mkdirSync(dirname(join(dir, rel)), {recursive:true});
+    writeFileSync(join(dir, rel), bytes);
+  }
+  writeManifest(dir, manifest);
   return dir;
 }
 
@@ -349,14 +364,15 @@ test("a source repository without the trusted commit fails", () => {
 
 test("the freeze record and generator retain reviewed step-1 policy text", () => {
   const sdk = join(PACKAGE_DIR, "../..");
-  const reviewed = (path) => execFileSync("git", ["--no-replace-objects", "-C", sdk, "show", `1109293ca8b3a57b87fbb9b84363c270fb318e7f:packages/dacs-client/${path}`], { encoding: "utf8" });
+  const reviewed = (path) => execFileSync("git", ["--no-replace-objects", "-C", sdk, "show", `5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/${path}`], { encoding: "utf8" });
   const record = JSON.parse(readFileSync(join(PACKAGE_DIR, "HOLD.json"), "utf8"));
   const step1 = JSON.parse(reviewed("HOLD.json"));
   const hold = record.holds[0], original = step1.holds[0];
   assert.ok(hold.rule.startsWith(publicationPolicy(original.rule)), "the complete reviewed freeze rule must remain a prefix");
   assert.equal(record.step1Freeze.schema, step1.step1Freeze.schema);
   assert.equal(record.step1Freeze.outside.what, step1.step1Freeze.outside.what);
-  assert.deepEqual(record.step1Freeze.literalNameTripwire, step1.step1Freeze.literalNameTripwire);
+  assert.deepEqual(record.step1Freeze.literalNameTripwire.exceptions['package-lock.json'], step1.step1Freeze.literalNameTripwire.exceptions['package-lock.json']);
+  assert.deepEqual(Object.keys(record.step1Freeze.literalNameTripwire.exceptions).sort(), ['.github/workflows/ci.yml','package-lock.json']);
   for (const key of ["schema", "package", "gate"]) assert.equal(record[key], step1[key], key);
   for (const key of ["id", "delta", "sourceRepository", "sourceCommit", "files"]) assert.deepEqual(hold[key], original[key], key);
   for (const key of ["sourceFix", "condition", "probe"]) assert.equal(hold.liftRequires[key], publicationPolicy(original.liftRequires[key]), key);

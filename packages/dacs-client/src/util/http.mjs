@@ -1,3 +1,4 @@
+import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 // Bounded outbound JSON requests: fixed origin, no redirects, hard timeout,
 // post-decompression byte cap, no ambient credentials. Failures are typed so
 // callers can distinguish "unavailable" from "invalid".
@@ -15,11 +16,10 @@ async function readCapped(response, maxBytes) {
     await response.body?.cancel().catch(() => {});
     throw new OutboundError('invalid', 'response exceeds byte limit');
   }
-  if (!response.body) return '';
+  if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
-  const decoder = new TextDecoder('utf-8', { fatal: true });
   let total = 0;
-  let text = '';
+  const chunks = [];
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -29,12 +29,12 @@ async function readCapped(response, maxBytes) {
         await reader.cancel().catch(() => {});
         throw new OutboundError('invalid', 'response exceeds byte limit');
       }
-      text += decoder.decode(value, { stream: true });
+      chunks.push(value);
     }
-    return text + decoder.decode();
+    return Buffer.concat(chunks);
   } catch (error) {
     if (error instanceof OutboundError) throw error;
-    throw new OutboundError('invalid', 'response body is not valid UTF-8');
+    throw new OutboundError('unavailable', 'response body was interrupted');
   }
 }
 
@@ -72,10 +72,15 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
     await response.body?.cancel().catch(() => {});
     throw new OutboundError('invalid', 'upstream did not return JSON');
   }
-  const text = await readCapped(response, maxBytes);
+  const bytes = await readCapped(response, maxBytes);
   try {
-    return JSON.parse(text);
-  } catch {
-    throw new OutboundError('invalid', 'upstream returned malformed JSON');
+    return admitRawJson(bytes, { maxBytes: Math.min(maxBytes, 2 * 1024 * 1024) });
+  } catch (cause) {
+    if (cause instanceof RawJsonAdmissionError) {
+      const error = new OutboundError('invalid', cause.message);
+      error.code = cause.code; error.stage = cause.stage; error.cause = cause;
+      throw error;
+    }
+    throw cause;
   }
 }

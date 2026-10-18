@@ -6,7 +6,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { decodeSignature } from '../signatures.mjs';
 import { assertSellerSessionLifetime } from './seller-session-limits.mjs';
 
@@ -76,7 +76,11 @@ function verifiedHeader(header, kind, principal, { requireDelegation = false, on
   const bytes = Buffer.from(header, 'base64url');
   if (bytes.toString('base64url') !== header) fail('peer_envelope_invalid');
   let envelope;
-  try { envelope = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { fail('peer_envelope_invalid'); }
+  try { envelope = admitRawJson(bytes, { maxBytes: 4096 }); } catch (cause) {
+    const error = new SellerTransportError('peer_envelope_invalid');
+    if (cause instanceof RawJsonAdmissionError) { error.admissionCode = cause.code; error.admissionStage = cause.stage; }
+    throw error;
+  }
   const delegated = kind === 'request' && requireDelegation && Object.hasOwn(envelope ?? {}, 'delegation');
   if (!keys(envelope, ['payload', 'signature', ...(delegated ? ['delegation'] : [])]) || !payloadValid(envelope.payload, kind)) fail('peer_envelope_invalid');
   if (requireDelegation && !delegated) fail('peer_delegation_required');

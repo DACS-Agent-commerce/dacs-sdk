@@ -7,7 +7,7 @@
 // Only an authenticated definite refusal becomes SellerRefusedError in that
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
 import { SellerAgentError } from './seller-agent.mjs';
-import { canonicalize } from '@kynesyslabs/dacs';
+import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 
 const MAX_BODY = 64 * 1024;
@@ -109,7 +109,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (req.headers['content-length'] && Number(req.headers['content-length']) > MAX_BODY) return await send(res, 413, { error: 'body_too_large' }, null, { close: true });
       const rawBody = await readRequest(req, bodyTimeoutMs);
       let body;
-      try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(rawBody)); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
+      try { body = admitRawJson(rawBody, { maxBytes: MAX_BODY }); } catch (error) { return await send(res, 400, { error: 'bad_json', ...(error instanceof RawJsonAdmissionError ? { admissionCode: error.code, admissionStage: error.stage } : {}) }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       if (authentication) {
         request = authentication.readRequest(req.headers[SELLER_TRANSPORT_HEADER]);
@@ -245,13 +245,13 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
           chunks.push(value);
         }
       }
+      const answer = admitRawJson(Buffer.concat(chunks), { maxBytes: SELLER_TRANSPORT_MAX_RESPONSE });
       const answerText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
       if (authentication) authentication.verifyResponse(signed.payload, { header: response.headers.get(SELLER_TRANSPORT_HEADER), status: response.status, text: answerText });
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
-      const answer = JSON.parse(answerText);
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
       if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
       if (!response.ok) throw new Error('seller did not return success');
@@ -260,7 +260,9 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       lastFailureCause = failureCause(error, phase, signal);
-      throw new SellerUnavailableError('seller agent response is unavailable or unauthenticated; the operation outcome may be unknown', lastFailureCause);
+      const unavailable = new SellerUnavailableError('seller agent response is unavailable or unauthenticated; the operation outcome may be unknown', lastFailureCause);
+      if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
+      throw unavailable;
     }
   }
 

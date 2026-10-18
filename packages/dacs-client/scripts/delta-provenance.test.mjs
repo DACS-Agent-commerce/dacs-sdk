@@ -29,3 +29,8 @@ test('a staged moved-file edit with restored working bytes is refused',t=>{
  appendFileSync(file,'\n// staged-only probe\n');execFileSync('git',['-C',dir,'add','--',moved]);writeFileSync(file,bytes);
  const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/index differs from HEAD for moved source\/test/);
 });
+
+test('archived source and pre-publication delta evidence cannot be rewritten',t=>{
+ const dir=scratch(t);appendFileSync(join(dir,'packages/dacs-client/evidence/publication-history.json'),'\n');
+ const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/archived source\/delta evidence digest differs/);
+});

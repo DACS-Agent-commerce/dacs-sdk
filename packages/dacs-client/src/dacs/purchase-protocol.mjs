@@ -1,9 +1,10 @@
+import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
 import { signatureCommitmentAnchor } from './commit-on-signature.mjs';
 // One fixed-price native-DEM DACS purchase between a buyer (this plugin, with
 // the user's own wallet) and a seller agent acting as phase orchestrator.
 //
 // Every protocol artifact is built and checked by the pinned @kynesyslabs/dacs
-// SDK (Standard pin 662be1d4): Agreement derivation, signing plan and the
+// SDK (Standard pin d45c0a2): Agreement derivation, signing plan and the
 // buyer-owned durable exchange (advanceFixedPriceAgreementDurable), the
 // finality-commitment gate (commitFixedPriceAgreement, read/resume only on the
 // buyer side), SettlementEvidence verification (verifySettlementEvidence) and
@@ -41,6 +42,7 @@ import {
   fixedPriceAgreementSignedBytes,
   identityBundleHash,
   isPayeeBoundAgreementDocument,
+  isCanonicalJobId,
   isSettlementEvidence,
   paymentEvidenceAddress,
   publicKeyFromRaw,
@@ -67,7 +69,7 @@ export const SUPPORTED_PIPELINE = Object.freeze(['negotiate-fixed-price', 'commi
 export const DEM_RAIL_DEFINITION = Object.freeze({
   railVersion: DEM_RAIL.railVersion,
   railId: DEM_RAIL.railId,
-  availability: 'live',
+  availability: 'disabled',
   railType: 'demos-native',
   asset: Object.freeze({ kind: 'native-dem', symbol: 'DEM', decimals: DEM_DECIMALS }),
   network: Object.freeze({ kind: 'demos' }),
@@ -88,8 +90,12 @@ export const PROTOCOL_LIMITS = Object.freeze({
 // SDK address of the deliverable and of the delivery evidence. The pinned SDK
 // derives `dacs4:deliverable:{jobId}` in its fulfilment core and
 // `dacs4:evidence:{jobId}` in its session core; neither helper is exported.
-export const deliverableAddress = (jobId) => `dacs4:deliverable:${jobId}`;
-export const deliveryEvidenceAddress = (jobId) => `dacs4:evidence:${jobId}`;
+const jobAddress = (kind, jobId) => {
+  if (!isCanonicalJobId(jobId)) throw new TypeError('canonical JID-1 jobId required');
+  return `dacs4:${kind}:${jobId}`;
+};
+export const deliverableAddress = (jobId) => jobAddress('deliverable', jobId);
+export const deliveryEvidenceAddress = (jobId) => jobAddress('evidence', jobId);
 // Delivery is final once delivered, or at delivery-ready with no delivery
 // evidence pending or held (the profile publishes no delivery evidence).
 // While evidence is pending, the seller may still have to be asked again.
@@ -150,6 +156,7 @@ export function vetNotPerformedRef(jobId, party) {
 
 // The one Agreement derivation both sides perform independently.
 export function agreementInput({ jobId, listing, buyerBundle, generatedAt }) {
+  assertPurchaseActionsAdmitted();
   const sellerBundle = listing.seller.identity;
   return {
     jobId,
@@ -165,6 +172,7 @@ export function agreementInput({ jobId, listing, buyerBundle, generatedAt }) {
 // Buyer: the exact Agreement plan and the two wallet messages it needs (the
 // Agreement signature and the SR-2 write authorization for its anchor).
 export function planAgreement({ jobId, listing, buyerBundle, generatedAt }) {
+  assertPurchaseActionsAdmitted();
   return planAgreementFromInput(agreementInput({ jobId, listing, buyerBundle, generatedAt }));
 }
 
@@ -172,6 +180,7 @@ export function planAgreement({ jobId, listing, buyerBundle, generatedAt }) {
 // operator-configured context provider resolved; agreement-context-consumer.mjs
 // has bound it to the purchase scope. Nothing here alters SDK output.
 export function planAgreementFromInput(input) {
+  assertPurchaseActionsAdmitted();
   const draft = deriveFixedPriceAgreement(input);
   const plan = createFixedPriceAgreementSigningPlan(draft);
   const logicalAddress = fixedPriceAgreementLogicalAddress(input.jobId);
@@ -257,6 +266,7 @@ export function commitmentReader(anchors, orchestrator) {
 // buyer key. A fresh in-memory fenced store per call re-drives every step from
 // authenticated transport/substrate state (idempotent).
 export async function exchangeAgreement({ plan, draft, buyerClaim, buyerBundle, agreementSignature, seller, anchorAdapter, commitOnSignature = false, workerId = 'plugin-buyer' }) {
+  assertPurchaseActionsAdmitted();
   if (!anchorAdapter) throw new TypeError('native Agreement anchor adapter is required');
   const signature = canonicalSignature(agreementSignature);
   const planned = Buffer.from(fixedPriceAgreementSignedBytes(plan));
@@ -426,6 +436,7 @@ export function bundleSession({ agreement, agreementRef, commitmentRef, payment,
 // The exact bytes the SDK bundle builder signs for each party, with the
 // unsigned copies (signatures stripped) the parties anchor.
 export async function bundleSigningPlan(session) {
+  assertPurchaseActionsAdmitted();
   let payload = null;
   const capture = (bytes) => {
     payload ??= Buffer.from(bytes);
@@ -443,6 +454,7 @@ export async function bundleSigningPlan(session) {
 // Both copies carrying both detached signatures, checked by the SDK copy
 // validator (signer set, address role) and the divergence predicate.
 export async function assembleBundleCopies(session, signatures) {
+  assertPurchaseActionsAdmitted();
   const detached = (value) => () => new Uint8Array(Buffer.from(canonicalSignature(value), 'base64url'));
   const copies = await buildTwoSidedBundle({
     ...session,

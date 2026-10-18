@@ -1,3 +1,4 @@
+import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
 import { deliveryDeadlineView, DELIVERY_TIME_SOURCE, verifiedDelivery } from './delivery-deadline-watch.mjs';
@@ -273,7 +274,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   const sourceTerms = (op) => Boolean(sourceCapability && canonicalize(op.terms.protocol.transportBinding) === canonicalize(sourceCapability.transportBinding));
   const walletBridge = walletConfig && !walletConfig.bridgeFor ? createDemosSr2WalletBridge({ ...walletConfig, fetchImpl, now }) : null;
   const walletAvailable = Boolean((walletBridge || typeof walletConfig?.bridgeFor === 'function') && typeof dacsProtocol.sellerEndpoint === 'function');
-  const available = Boolean(walletAvailable && sourceCapability);
+  const available = false; // Coordinated profile admission remains held.
   const supportsMode = (mode) => mode === OFFLINE_AGREEMENT_MODE && available;
   // Optional operator configuration only (agreement-context-consumer.mjs).
   const agreementContext = agreementContextConfig(dacsProtocol?.agreementContext);
@@ -330,6 +331,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   function prepareTerms({ verification, domain, sellerClaim, mode = OFFLINE_AGREEMENT_MODE }) {
+    assertPurchaseActionsAdmitted();
     if (!supportsMode(mode)) throw unavailable();
     if(sourceCapability && (mode!==OFFLINE_AGREEMENT_MODE || domain.mode!=='public-chain-read' || domain.network!==sourceCapability.pins.network || domain.chainIdentity!==sourceCapability.pins.chainIdentity)) throw new OperationError('network_identity_mismatch','the separate source capability admits only newly bound native Agreement terms');
     if (!sourceCapability || domain.mode !== 'public-chain-read' || domain.chainIdentity !== sourceCapability.pins.chainIdentity || domain.network !== sourceCapability.pins.network) throw new OperationError('network_identity_mismatch', 'native purchase requires its source-bound chain domain');
@@ -479,6 +481,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
 
   // ---- DACS-1 identity presentation (wallet signature) ----
   function identityRequest(operation, address) {
+    assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     try {
       return identityRequestOnce(operation, address);
@@ -545,6 +548,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // them like its admitted requests. Each settles when its step ends.
   const planFlightsRunning = () => [...planFlights.values()].map((running) => running.flight);
   async function planRequest(operation, presentationSignature, delegationSignature, intentGeneratedAt) {
+    assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     if (operation.state?.protocol?.planned) return planRequestStep(operation, presentationSignature, delegationSignature, intentGeneratedAt);
@@ -655,6 +659,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   function signRequest(operation) {
+    assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     const p = operation.state.protocol;
     const t = p.planned.draft.terms;
@@ -1292,11 +1297,13 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       }));
     },
     withNativePaymentLane: (operation, work) => {
+    assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
       if (!nativePayment) throw unavailable();
       return nativePayment.withWorkflow(operation, () => nativePayment.withPaymentLane(operation, async () => { await nativePayment.assertReady(operation); return work(); }));
     },
     readNativePaymentLane: (operation, key) => {
+    assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
       if (!nativePayment || !usesNativeAgreementPayment(operation)) throw unavailable();
       return nativePayment.withWorkflow(operation, () => nativePayment.withPaymentLane(operation, async () => {

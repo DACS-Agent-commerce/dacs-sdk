@@ -25,7 +25,7 @@ import { commitmentContradicted, commitmentRecordContradicts } from '../devnet-d
 // Listing, and reconcileSellerEvidenceLane reads the seller wallet journal
 // before a run); neither verifies anything for the buyer. Both move with the
 // seller kit (P6).
-import { canonicalize, commitFixedPriceAgreement, contentHash, DacsError, faultCategory, finalityCommitmentAddress, NotImplementedError, sha256Hex, UnsupportedCapabilityError } from '@kynesyslabs/dacs';
+import { isCanonicalJobId, canonicalize, commitFixedPriceAgreement, contentHash, DacsError, faultCategory, finalityCommitmentAddress, NotImplementedError, sha256Hex, UnsupportedCapabilityError } from '@kynesyslabs/dacs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, demosSr2TxRef, isDemosSr2Contradiction } from './demos-sr2-adapter.mjs';
 import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
 import { commitmentSession, commitmentVerifier, deliverableAddress, deliveryEvidenceAddress, listingPin, plainJson } from './purchase-protocol.mjs';
@@ -146,6 +146,7 @@ export function createBuyerChainReadback({ sourceCapability, now = () => Date.no
   // purchase's own verified commitment for the short TTL. Only a verified
   // result is kept, keyed by every input including the exact projection bytes.
   async function readCommitment({ agreement: rawAgreement, listing: rawListing, seller, signedProjection: offered, fresh = false }) {
+    if (!isCanonicalJobId(rawAgreement?.jobId)) return untrusted('canonical JID-1 jobId required');
     const signedProjection = signedCreateBytes(offered);
     const agreement = plainJson(rawAgreement), listing = plainJson(rawListing), session = commitmentSession(agreement), address = finalityCommitmentAddress(agreement.jobId);
     const writer = writerFor(listing, seller);
@@ -187,6 +188,7 @@ export function createBuyerChainReadback({ sourceCapability, now = () => Date.no
   // seller's pointer contributes only the fulfilment id and payload hash it
   // claims, and both must match the bytes that read back.
   async function readDeliverable({ jobId, agreementHash, listing, seller, deliveryBinding, receiptContentHash, settlementId, signedProjection }) {
+    if (!isCanonicalJobId(jobId)) return untrusted('canonical JID-1 jobId required');
     const writer = writerFor(listing, seller), logicalAddress = deliverableAddress(jobId);
     if (!writer) return untrusted('the Deliverable writer is not the verified Listing seller');
     if (!HASH.test(agreementHash ?? '') || deliveryBinding?.jobId !== jobId || deliveryBinding.agreementHash !== agreementHash || !same(deliveryBinding.listing, listingPin(listing))
@@ -199,6 +201,7 @@ export function createBuyerChainReadback({ sourceCapability, now = () => Date.no
   }
 
   async function readDeliveryEvidence({ agreement, listing, seller, signedProjection }) {
+    if (!isCanonicalJobId(agreement?.jobId)) return untrusted('canonical JID-1 jobId required');
     const writer = writerFor(listing, seller), logicalAddress = deliveryEvidenceAddress(agreement.jobId);
     if (!writer) return untrusted('the delivery evidence writer is not the verified Listing seller');
     const read = await authenticated({ logicalAddress, writer, artifactKind: 'SettlementEvidence', signedProjection });

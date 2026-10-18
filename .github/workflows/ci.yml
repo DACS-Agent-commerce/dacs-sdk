@@ -45,6 +45,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check held client snapshot and native authorization contracts
+        if: matrix.node-version == '22'
+        run: npm test --workspace @kynesyslabs/dacs-client
+
       - name: Build Node host kit
         run: npm run host:build
 

@@ -1,3 +1,4 @@
+import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
 import { operatorBuyerAccessConfig } from '../seams/buyer-access-not-wired.mjs';
 import { addressForClaim } from '../signatures.mjs';
 // Seller agent for one verified fixed-price DEM Listing, acting as phase
@@ -113,6 +114,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // Without it the fixture-substrate Agreement write is read exactly as before.
 // The FinalityCommitmentRecord is anchored on `anchors` in both cases.
 export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null }) {
+  assertPurchaseActionsAdmitted();
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
   if (signatureBuyer !== null && !/^did:demos:agent:[0-9a-f]{64}$/.test(signatureBuyer)) throw new TypeError('signatureBuyer must be an admitted buyer claim or null');
   if (signatureCommitmentReady !== null && typeof signatureCommitmentReady !== 'function') throw new TypeError('signatureCommitmentReady must be a function or null');

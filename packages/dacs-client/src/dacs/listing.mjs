@@ -1,13 +1,8 @@
 // Listing construction (for wallet signing) and Standard validation.
 //
-// Provenance:
-//  - Signing bytes, hashing and the ordered reader come from the vendored
-//    @kynesyslabs/dacs 0.1.0-alpha.0 support build (dacs-sdk 6658691, embedded
-//    Standard pin exposed as DACS_STANDARD_PIN). This is not SDK main and not a
-//    claim of complete Standard v0.4 conformance.
-//  - validateListingArtifact dependency wiring is adapted from
-//    agent-commerce-demo v2/live/sdk-admission.mjs (ab41d3a).
-//  - Identity bundle shape is adapted from agent-commerce-demo lib/workflow.mjs identity().
+// Contracts: DACS-Standard d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20,
+// CORE CF-1 / CF-2 / SIG-1 and DACS-1 Listing reader. Implementation imports
+// resolve to this repository's SDK workspace; no historical demo is authority.
 import {
   canonicalize,
   contentHash,
@@ -33,7 +28,7 @@ export const DEM_DECIMALS = 9;
 export const SDK_PROVENANCE = Object.freeze({
   package: '@kynesyslabs/dacs',
   version: DACS_SDK_VERSION,
-  source: 'vendored support-branch build dacs-sdk@6658691cefed76e2bb576ae959d1ad3bc7eeafec (sha256 79934553…a69a3); not SDK main',
+  source: 'dacs-sdk workspace implementation (package-lock workspace link)',
   standardPin: DACS_STANDARD_PIN,
 });
 
@@ -172,7 +167,7 @@ export async function validateListing(listing, { now, revocationSurfaces, readMa
       trustPhase: 'PA-1',
       trustPolicyAcceptsPA1: true,
       registry: { state: 'not-used', entries: [], definitions: [] },
-      inCodeDefinitions: [{ railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true }],
+      inCodeDefinitions: [{ railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true, availability: 'disabled' }],
     }),
   });
 }
@@ -180,7 +175,7 @@ export async function validateListing(listing, { now, revocationSurfaces, readMa
 // v0.1 transacts only fixed-price native DEM listings. Anything else stays
 // discoverable but is reported as unsupported for purchase.
 export function purchaseSupport(listing) {
-  const reasons = [];
+  const reasons = ['rail availability is not authenticated; purchase actions are held'];
   if (listing?.pricing?.kind !== 'fixed') reasons.push('pricing is not fixed-price');
   if (listing?.pricing?.price?.currency !== 'DEM') reasons.push('price currency is not DEM');
   let amount = null;

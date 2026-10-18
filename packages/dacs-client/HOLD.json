@@ -51,7 +51,7 @@
           ]
         }
       ],
-      "rule": "Step 1 freezes the entire package: no file may be added, removed or changed, and package.json retains exports: {} with no main or bin. Step 1 also freezes every repository file outside the package at its Git blob at the pinned work head (step1Freeze.outside): no outside file may be added, removed or changed, whatever it contains. A literal dacs-client outside the package is also refused, as a tripwire only; the root lockfile's workspace registration is its one exception. HOLD.json and check-hold.mjs are the reviewed control pair, changed together in the same commit for any pin update or hold lift. No delta wires verifyDeal, attachHashAndVerify, verifySettlement, PurchaseStore or WalletActions to a live wallet or chain until D15 closes pointer-retention's race and the listed regressions pass. D1's import cuts alone do not lift the hold. The client package plan carries pointer-retention's fence and the source change's correction into the moved code as reviewed D15 delta commits on the destination head; no supplied source head carries the fence. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD. D11 remains a binding prerequisite after an isolated D15 hold lift: it must provide the transaction contract and pass the destination regressions against its real store before any live wiring.",
+      "rule": "Step 1 freezes the entire package: no file may be added, removed or changed, and package.json retains exports: {} with no main or bin. Step 1 also freezes every repository file outside the package at its Git blob at the pinned work head (step1Freeze.outside): no outside file may be added, removed or changed, whatever it contains. A literal dacs-client outside the package is also refused, as a tripwire only; the root lockfile's workspace registration is its one exception. HOLD.json and check-hold.mjs are the reviewed control pair, changed together in the same commit for any pin update or hold lift. No delta wires verifyDeal, attachHashAndVerify, verifySettlement, PurchaseStore or WalletActions to a live wallet or chain until D15 closes pointer-retention's race and the listed regressions pass. D1's import cuts alone do not lift the hold. The client package plan carries pointer-retention's fence and the source change's correction into the moved code as reviewed D15 delta commits on the destination head; no supplied source head carries the fence. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD. D11 remains a binding prerequisite after an isolated D15 hold lift: it must provide the transaction contract and pass the destination regressions against its real store before any live wiring. Purchase actions additionally remain unconditionally held until a coordinated Standard release and trusted session/participant profile admission are implemented; no caller profile record lifts this hold.",
       "liftRequires": {
         "sourceFix": "A reviewed D15 delta commit in this package, with the listed regressions passing on the reviewed destination head, carrying pointer-retention's fence and the source change's inspected correction as the client package plan requires. A supplied, reviewed source fix copied with provenance is also acceptable; no supplied head carries pointer-retention's fence.",
         "regressions": [
@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "2378fa014bee33608c01e8e4c4816f68b4684480"
+        "blob": "381da27323bb43d687e5d07ae89cd09d46b2137e"
       },
       "DELTA-LEDGER.json": {
-        "blob": "0961d004a0b8619cb92797954989b6980053df7c"
+        "blob": "de14e4cc49274fa98c34ff5376fb57958693aacd"
       },
       "DELTA-MAP.md": {
-        "blob": "4ca824e508eeae0970877b307477013d3824e03f"
+        "blob": "3fb7f33d7e062cbe1632da24578d3356fc6acc92"
       },
       "DELTA-NOTES.md": {
         "blob": "a9cd813874580b521d4c600e14fe6be867fa9a0f"
@@ -383,6 +383,9 @@
       },
       "PROVENANCE.json": {
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
+      },
+      "evidence/PUBLICATION.md": {
+        "blob": "cda95e17da48350d8ff47cfc8b5a507d060b0a0f"
       },
       "evidence/d15-classifier-first.txt": {
         "blob": "e9906dd764da04825224c9832befd49b9efcd411"
@@ -404,6 +407,9 @@
       },
       "evidence/d15-passing.txt": {
         "blob": "0fb9bbe73fd5e1b370424a0320c83678daaeb4a5"
+      },
+      "evidence/publication-history.json": {
+        "blob": "36e2e8ce655522c9dd86b3eb97a28de102c2969c"
       },
       "evidence/review-decisions-after.txt": {
         "blob": "b1756382b42f1ab1d35d1caebd46b9feff2d1f2e"
@@ -442,11 +448,10 @@
         "blob": "9d0eefb61c4ec261faf2198931e7b59258a35ac5"
       },
       "package.json": {
-        "blob": "4be25de43c3abf51585a09fbc503ee48d15ab882"
+        "blob": "f433ac11f747c6e2dae00e5113c3b8cea60dafa6"
       },
       "scripts/check-hold.mjs": {
-        "control": "gate",
-        "blob": "b82f0c871a2a2e1d177743fdd1ce0710285fb9ff"
+        "blob": "dbc36cf1de2510a490ef7b6bf324cbe9185a2f69"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "26b58937a9afcc8e9528263c87e8ceee5258bc78"
@@ -455,19 +460,19 @@
         "blob": "c48030a9ee189aa510d524fa136536449e0234aa"
       },
       "scripts/check-provenance.mjs": {
-        "blob": "a03541e1b5b118e54c0a4fadd04fc7ade76b862d"
+        "blob": "3f790b5ab100a5d8e8ba59017a87b5ace4cbab08"
       },
       "scripts/check-provenance.test.mjs": {
-        "blob": "2c3914e7678063af87e5eb04e25ee05259ab9887"
+        "blob": "2c0540124d5fee538b5e6440af0f4f7d0b79aa38"
       },
       "scripts/copy-verbatim.mjs": {
         "blob": "eed33b7b83034ba0e364c4b8d09de0b5261b133e"
       },
       "scripts/delta-map.mjs": {
-        "blob": "09cbc8bf34efc5a8426d999c7e76bc18d6e7ac23"
+        "blob": "e251f6f6960c5c16efa5bb9680a8c39664fd810b"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "7959568ae195c0eabf91a7c3ec57b7014f9c08a9"
+        "blob": "1df6d66c840a4d7e85fbd76c67a7c889f4084b0c"
       },
       "scripts/import-cut-map.mjs": {
         "blob": "a312b29527b8408bb2ffbda7b3245730a77719c5"
@@ -496,6 +501,9 @@
       "src/config.mjs": {
         "blob": "9cd6491ab5be7d26d16e4c9732de638452e3e29a"
       },
+      "src/dacs/action-admission.mjs": {
+        "blob": "3cd8cd09595fda0c77021cc945d9eefe321b43ad"
+      },
       "src/dacs/agreement-context-consumer.mjs": {
         "blob": "baa5c9a710b178eb175a4e5c438690b2c30cda54"
       },
@@ -503,7 +511,7 @@
         "blob": "952ac02702744b259d0fc493a96e82acb134e504"
       },
       "src/dacs/buyer-chain-readback.mjs": {
-        "blob": "3927e6451dbc6f727537bd467a3616c7e28c18ad"
+        "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
       },
       "src/dacs/chain.mjs": {
         "blob": "f9b1cc2e87c4d9fa94d517ad7687623272634aef"
@@ -512,7 +520,7 @@
         "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
       },
       "src/dacs/completion-readiness.mjs": {
-        "blob": "5b40aa50dfc6d0eb4c5bac6054d7a97f945d3c70"
+        "blob": "56c7e6150b5db9b61730373385d9a5214e4518f1"
       },
       "src/dacs/delivery-deadline-watch.mjs": {
         "blob": "36d4ac4177132e7de0708a4f4e90c418d3858a9d"
@@ -533,10 +541,10 @@
         "blob": "aae9cc8e17848ff796c10b1c2289b7da798eefa0"
       },
       "src/dacs/directory.mjs": {
-        "blob": "7501cb68e65b07831eda5ce1723e870864656c69"
+        "blob": "c91e7f4769c14fa8b8306ef38647c65230cce881"
       },
       "src/dacs/listing.mjs": {
-        "blob": "7fb53138139c1e46b96f39741cacef6ed19055f8"
+        "blob": "7a7ab901f9be0ecc076be8db645be0f61313ce18"
       },
       "src/dacs/native-agreement-payment-consumer.mjs": {
         "blob": "9a0967034f9bad78b2c03836343926dce0a537f6"
@@ -551,19 +559,19 @@
         "blob": "a97ba79759d398277adb6a316c74112aa8d2a240"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "38ff24a8fc39a1629f361cdd1b6e7dafae854746"
+        "blob": "876fcfbc95090cee017e825e2bb7d900d0a56b8d"
       },
       "src/dacs/purchase-protocol.mjs": {
-        "blob": "fc1c619bf184092c42d32f0f90d2f73657d41031"
+        "blob": "2b97f69a1c3642c5374f0e6e5eaa339771c5482a"
       },
       "src/dacs/seller-agent.mjs": {
-        "blob": "26f509d43b267f65d7788acc8b44ab45a8a5c10d"
+        "blob": "64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b"
       },
       "src/dacs/seller-durable-state.mjs": {
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "65024b4ac2a5888d66fb386c992be9d140e167f2"
+        "blob": "afac16899f4f2d95463ce7f3ab6e9aa7e03e0ef1"
       },
       "src/dacs/seller-session-lifecycle.mjs": {
         "blob": "86fd5777a41c76183f2b3383898400469bdc60b3"
@@ -575,7 +583,7 @@
         "blob": "14a0693cb2484eb39c9db122914b46ef31503757"
       },
       "src/dacs/seller-transport-auth.mjs": {
-        "blob": "a4a3da3c29388fa03bb12d184b506a8e4824269e"
+        "blob": "0997b8a6390c44daf9f5075711406d9f2d60dd98"
       },
       "src/dacs/source-demo-seller-transport.mjs": {
         "blob": "208a59efea2ceed0f8b76d96aaf66444ac51cc40"
@@ -607,14 +615,14 @@
       "src/devnet-demo/storage-write-recovery.mjs": {
         "blob": "339752ef02b10b9f2740e833f9b6a1be239ed2b8"
       },
-      "src/public/portal-intent/intent.mjs": {
-        "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
-      },
       "src/public/portal/embedded-wallet/sdk-provider.mjs": {
         "blob": "b7183e63a75b68cda34c2b30a4d532963794b13f"
       },
       "src/public/portal/seller-session-delegation.mjs": {
         "blob": "ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42"
+      },
+      "src/public/portal-intent/intent.mjs": {
+        "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
       },
       "src/purchase-limits.mjs": {
         "blob": "e57dba177ef9a6ae96f696d2f6b1aa4fc9ceabec"
@@ -641,7 +649,7 @@
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
       },
       "src/util/http.mjs": {
-        "blob": "569c5316ef89406fbf3a2d60b8b5efac9005ccf3"
+        "blob": "db9048fb979d382f257fc806a2883b02292b52e7"
       },
       "src/util/ids.mjs": {
         "blob": "6cb275e260df92ea17a4dd7c2417206a7ed7cc2a"
@@ -940,6 +948,9 @@
       "test/fixtures/directory-server.mjs": {
         "blob": "fcab6b36b2b2dc8e0b17f75638149924984bfdc0"
       },
+      "test/fixtures/job-id-grammar-v0.1.json": {
+        "blob": "11037f3adf3dfa9a1bf1a5773008c3c8097dcd0e"
+      },
       "test/fixtures/listings.mjs": {
         "blob": "7b61fcf06227c2a81bf9ac04b9a673ba686fe63d"
       },
@@ -960,6 +971,9 @@
       },
       "test/fixtures/seller-durable-state.main-06958bb.mjs": {
         "blob": "04be06f552a0c5dd0b970ae72dd230e125bc7cb7"
+      },
+      "test/fixtures/sr2-public-creates.json": {
+        "blob": "cf03cf2e98c71d0ffae0ab0ea2cf1002a27cec20"
       },
       "test/fixtures/switch-slice-da459ee.json": {
         "blob": "14c51f43c4a7260c9837bb5fa882559124da3340"
@@ -1234,6 +1248,9 @@
       "test/immutable-readbacks.test.mjs": {
         "blob": "f8dd18c87541eacb81c19031caa1e43d19c14723"
       },
+      "test/ingress-admission.test.mjs": {
+        "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
+      },
       "test/live-directory-check.test.mjs": {
         "blob": "896a37d7d504eaa7871271247c98007caa1c06b6"
       },
@@ -1251,6 +1268,9 @@
       },
       "test/mcp-seller-diagnostics.test.mjs": {
         "blob": "541702b3ad6d252938557ac21bb7f990a4573d69"
+      },
+      "test/native-adapter-auth.test.mjs": {
+        "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"
       },
       "test/native-agreement-payment.test.mjs": {
         "blob": "6ca9fda96702a116649d2772b8e3e4c227de4fdd"
@@ -1510,6 +1530,9 @@
       "test/start-intent-wallet.test.mjs": {
         "blob": "d3f0b6c95036be12c1303de8eb03a209dfd12de5"
       },
+      "test/sweep-contracts.test.mjs": {
+        "blob": "7a0ffedc3ef6ec1e9ebd4edcdc99cd5653aab30e"
+      },
       "test/switch-registry.test.mjs": {
         "blob": "24fe16ee6f204222fcd09e908bdfec0b653f25cb"
       },
@@ -1536,14 +1559,14 @@
       }
     },
     "outside": {
-      "pinnedAt": "676fccfda32b44343267ccdf5a97569ff0761ec5",
+      "pinnedAt": "5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1",
       "what": "Every tracked file outside packages/dacs-client/ at the frozen work head, with its Git blob. The gate lists tracked files (tracked ignored output included) and unignored untracked files, and fails on any added, removed or changed outside file, whatever it contains. Untracked files Git ignores are unseen: they belong to no commit, so they cannot reach review or a merge. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD.",
       "files": {
         ".cursor/environment.json": {
           "blob": "c93573df82bf3634a3e3cb669c536bb85d745799"
         },
         ".github/workflows/ci.yml": {
-          "blob": "c2a91a24b1de07b423675852e615fb3e11f1385e"
+          "blob": "5929ef39b68c4e89f001431472b7428310d82aa0"
         },
         ".github/workflows/package-artifact.yml": {
           "blob": "4bd070e76e75c61182a1a5f48020b87db47d2831"
@@ -2295,7 +2318,7 @@
         "packages/dacs-node/vitest.postgres.config.ts": {
           "blob": "bbe2e566edc2342386417a53d39346414ba73142"
         },
-        "scripts/check-npm-advi\u0073ories.mjs": {
+        "scripts/check-npm-advisories.mjs": {
           "blob": "d95179f139f8b16035f2b4252cc97ed112cb5085"
         },
         "scripts/publish-release-set.mjs": {
@@ -3315,7 +3338,7 @@
         "test/registry/registry.test.ts": {
           "blob": "5300ec0201aaa6d4abe173a2c5db4fe0c525830f"
         },
-        "test/scripts/check-npm-advi\u0073ories.test.ts": {
+        "test/scripts/check-npm-advisories.test.ts": {
           "blob": "04547b0dea1e75c8a69e9139bf315924fa77a839"
         },
         "test/seller/agreementResponder.test.ts": {
@@ -3388,6 +3411,9 @@
       "exceptions": {
         "package-lock.json": {
           "reason": "Existing workspace registration only: four references, required by npm ci. Its bytes are pinned in the outside inventory like every other outside file."
+        },
+        ".github/workflows/ci.yml": {
+          "reason": "Runs only the frozen private client regression gate; no runtime import, export or live adapter is wired. Exact workflow blob remains pinned in the outside inventory."
         }
       }
     },

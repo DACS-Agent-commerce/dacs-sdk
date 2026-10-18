@@ -171,12 +171,10 @@ function main() {
     if (mapped !== null && mapped !== entry.path) failures.push(`${label}: destination is not the mapped source path ${mapped}`);
     if (mapped !== null && !mapped.startsWith(`${prefix}${entry.role}/`)) failures.push(`${label}: role ${entry.role} does not match its directory`);
     const local = join(args.packageDir, entry.path.slice(prefix.length));
-    if (deltaMode) {
-      // Compare the original inventory with the immutable step-1 tree; later
-      // bytes are checked separately against every enumerated delta commit.
-      const original = git(['-C', join(args.packageDir, '../..'), 'cat-file', 'blob', `${BASELINE}:${entry.path}`], {maxBuffer:1<<28});
-      if (sha256(original) !== entry.sha256) failures.push(`${label}: step-1 blob SHA-256 differs from manifest`);
-    }
+    // Publication mode authenticates the original manifest against the pinned
+    // historical evidence and checks all destination changes from the shipped
+    // publication checkpoint. Original source bytes are checked by --source;
+    // no local-only run claims to recover the unavailable original Git tree.
     let bytes = null;
     try {
       if (deltaMode) bytes = null;
@@ -214,7 +212,7 @@ function main() {
   }
   const count = (role) => manifest.files.filter((entry) => entry.role === role).length;
   const files = `${listed.size} files match PROVENANCE.json (src ${count("src")}, test ${count("test")}) and the pinned step-1 copy set`;
-  if (args.source !== null) console.log(`[check-provenance] OK (acceptance check): ${files}; every source commit is the trusted ${STEP1_COMMIT}; source blobs verified${deltaMode ? "; step-1 destination verified; every later change and deletion enumerated; generated delta map matches" : ""}`);
+  if (args.source !== null) console.log(`[check-provenance] OK (acceptance check): ${files}; every source commit is the trusted ${STEP1_COMMIT}; source blobs verified${deltaMode ? "; publication checkpoint verified; every later change and deletion enumerated; generated delta map matches" : ""}`);
   else console.log(`[check-provenance] LOCAL HASH CHECK ONLY, NOT AN ACCEPTANCE CHECK: ${files}; commits bound to ${STEP1_COMMIT}; source blobs not verified (run with --source <frontend repo> for the acceptance gate)`);
 }
 
