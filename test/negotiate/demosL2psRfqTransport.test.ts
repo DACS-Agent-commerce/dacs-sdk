@@ -1065,6 +1065,8 @@ describe("Demos L2PS durable RFQ transport", () => {
     { status: "queued", unexpected: "extra" },
     { l2psStatus: "submitted", error: "server error" },
     { status: "queued", error: "server error" },
+    // Neither the node nor demosdk sends both keys (l2ps_types.d.ts:104-117).
+    { status: "queued", l2psStatus: "submitted" },
   ])("round 5: extra acknowledgement fields %j remain indeterminate", async (fields) => {
     const fixture = await delayedSendFixture({ ack: fields });
     try {
@@ -5058,5 +5060,94 @@ describe("Demos L2PS RFQ membership mapping the transport cannot check", () => {
     });
     expect(sent.hub.messages.filter((message) => message.from === SELLER_PEER)).toHaveLength(0);
     transport.stop();
+  });
+});
+
+describe("Demos L2PS RFQ documented transport checks", () => {
+  /** A buyer transport on the hub of a sent offer, with its codec and mapping overridable. */
+  async function buyerRoute(extra: Partial<DemosL2psRfqTransportOptions>) {
+    const sent = await buyerWithSentOffer();
+    const transport = createDemosL2psRfqTransport<string>({
+      peer: sent.hub.peer(BUYER_PEER),
+      codec: sent.baseCodec,
+      l2psUid: L2PS_UID,
+      peerChannel: "loopback",
+      outboxStore: memorySendOutbox(),
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+      ...extra,
+    });
+    return { ...sent, transport, sendsBefore: sent.hub.sends };
+  }
+
+  test("a seller route that resolves to the local key is refused before anything is sealed or sent", async () => {
+    const seal = vi.fn();
+    const fixture = await buyerRoute({
+      codec: { codecId: "demos-l2ps-aes-256-gcm:v1", seal, open: vi.fn() },
+      // Reciprocal, so only the local-key rule refuses it.
+      peerForClaim: (claim) => (claim === SELLER ? BUYER_PEER : peerForClaim(claim)),
+      claimForPeer: (peer) => (peer === BUYER_PEER ? SELLER : claimForPeer(peer)),
+    });
+    await expect(fixture.transport.publish(fixture.packet)).resolves.toEqual({
+      disposition: "rejected",
+      reason: "Demos L2PS RFQ remote route resolved to the local peer",
+    });
+    expect(seal).not.toHaveBeenCalled();
+    expect(fixture.hub.sends).toBe(fixture.sendsBefore);
+  });
+
+  test("a claimForPeer that throws is transient: indeterminate, and nothing is sent", async () => {
+    let fail = true;
+    const fixture = await buyerRoute({
+      claimForPeer: (peer) => {
+        if (fail) throw new Error("directory unavailable");
+        return claimForPeer(peer);
+      },
+    });
+    await expect(fixture.transport.publish(fixture.packet)).resolves.toMatchObject({
+      disposition: "indeterminate",
+    });
+    expect(fixture.hub.sends).toBe(fixture.sendsBefore);
+    // Once the mapping answers, the same packet is found in history.
+    fail = false;
+    await expect(fixture.transport.reconcile(fixture.packet)).resolves.toEqual({ disposition: "acknowledged" });
+    expect(fixture.hub.sends).toBe(fixture.sendsBefore);
+  });
+
+  test("a history row from the peer under another l2psUid keeps resumeInbound indeterminate", async () => {
+    const fixture = await inboundReceiver();
+    const row = fixture.hub.messages.find((message) => message.from === BUYER_PEER);
+    if (row === undefined) throw new Error("no buyer row");
+    row.l2psUid = `${L2PS_UID}-other`;
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toMatchObject({
+      status: "indeterminate",
+      delivered: 0,
+      reason: "Demos L2PS inbound history crossed subnet identity",
+    });
+    expect(fixture.receive).not.toHaveBeenCalled();
+    // The same row under the configured subnet is delivered.
+    row.l2psUid = L2PS_UID;
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toEqual({
+      status: "complete", delivered: 1, ignored: 0, skipped: [],
+    });
+    fixture.transport.stop();
+  });
+
+  test("a second start() without stop() throws and keeps the first consumer", async () => {
+    const fixture = await inboundReceiver();
+    const second = vi.fn();
+    expect(() => fixture.transport.start(second)).toThrow(
+      "Demos L2PS RFQ transport start is duplicate or malformed",
+    );
+    await expect(fixture.transport.resumeInbound(BUYER)).resolves.toMatchObject({ status: "complete", delivered: 1 });
+    expect(fixture.receive).toHaveBeenCalledTimes(1);
+    expect(second).not.toHaveBeenCalled();
+    fixture.transport.stop();
+    // After stop() a new consumer may start.
+    expect(() => fixture.transport.start(second)).not.toThrow();
+    fixture.transport.stop();
   });
 });
