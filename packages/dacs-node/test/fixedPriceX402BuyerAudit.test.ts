@@ -1998,7 +1998,7 @@ const demosReadCases: Array<[string, string, (h: CompletionHarness) => void]> = 
       h.adapter.readAnchor.mockImplementation(async (address: string) =>
         address === h.copies.seller.nativeAddress ? null : read(address));
     }],
-  ["Demos reads that cannot be answered", "bundle-binding-undiscovered", (h) => {
+  ["Demos reads that cannot be answered", "bundle-binding-unanswered", (h) => {
     h.adapter.resolveAnchorByName.mockRejectedValue(new Error("rpc unavailable"));
   }],
   ["a binding program the name index does not show yet", "bundle-binding-undiscovered", (h) => {

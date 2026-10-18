@@ -172,9 +172,12 @@ export interface CompletedTwoSidedSessionDeps {
    * including candidate authorization, multiplicity, fetch bounds, and
    * suppression diligence, before returning one resolved binding. `carried`
    * is the signed binding the copy carries (BB-2); the adapter adds it to the
-   * candidates it discovered, so BB-6 judges them together. A BB-6
-   * `indeterminate` about that candidate set (equivocation, an exhausted
-   * budget, an unfetched or rejected candidate) holds completion back.
+   * candidates it discovered, so BB-6 judges them together. Report
+   * non-observation as `indeterminate` with a
+   * `BUNDLE_BINDING_NON_OBSERVATION_REASONS` reason (BB-8); it gates nothing.
+   * Every other `indeterminate` reason is a candidate set that did not
+   * resolve (equivocation, an exhausted budget, an unfetched or rejected
+   * candidate) and holds completion back.
    */
   resolveBundleBinding?: (
     logicalAddress: string,
@@ -728,7 +731,7 @@ async function requireBinding(
     ), `${copy.role} BundleBinding resolution`);
   } catch (error) {
     if (!(error instanceof IndeterminateSubstrateError)) throw error;
-    lookup = { disposition: "indeterminate", reason: "unanswered" };
+    lookup = { disposition: "indeterminate", reason: "bundle-binding-unanswered" };
   }
   if (!isRecord(lookup) || !(
     (lookup.disposition === "present" && exactKeys(lookup, ["disposition", "binding"])) ||
@@ -756,8 +759,9 @@ async function requireBinding(
   ), `completed ${copy.role} BundleBinding verification`);
   // BB-6, BB-7: the carried binding verifies on its own, but the candidate set
   // it belongs to did not resolve to one copy (for example an equally signed
-  // second copy): the side's read disposition stays indeterminate. Checked
-  // after the verifier, so its answer against the carried binding comes first.
+  // second copy): the side's read disposition stays indeterminate. Any reason
+  // other than non-observation is such a set. Checked after the verifier, so
+  // its answer against the carried binding comes first.
   if (lookup.disposition === "indeterminate" &&
       isUnresolvedBundleBindingCandidateSet(lookup.reason)) {
     throw new IndeterminateSubstrateError(

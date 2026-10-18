@@ -416,6 +416,10 @@ export interface SellerBundleFinalizationProvider {
    * BB-4..BB-8 resolved candidate disposition, after authorization/multiplicity
    * handling. `carried`, when given, is a signed binding already held for this
    * copy (BB-2); the provider adds it to the candidates it discovered.
+   * Non-observation is `indeterminate` with a
+   * `BUNDLE_BINDING_NON_OBSERVATION_REASONS` reason (BB-8); re-verifying a
+   * retained binding treats every other `indeterminate` reason as a candidate
+   * set that did not resolve, which holds it back.
    */
   resolveBundleBinding?: (
     logicalAddress: string,
@@ -4043,7 +4047,7 @@ export async function verifyFinalizedSellerBundleReadOnly(
       // A permanent provider answer passes through; an unanswered lookup is
       // no evidence either way (BB-8).
       if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
-      bindingLookup = { disposition: "indeterminate", reason: "unanswered" };
+      bindingLookup = { disposition: "indeterminate", reason: "bundle-binding-unanswered" };
     }
     bindingLookup = snapshot(bindingLookup, "retained BundleBinding readback");
     if (!isRecord(bindingLookup) || !(
@@ -4066,7 +4070,8 @@ export async function verifyFinalizedSellerBundleReadOnly(
       throw new DacsError("retained BundleBinding is not independently readable and exact");
     }
     // BB-6, BB-7: candidates that did not resolve to one copy (for example an
-    // equally signed second copy) keep the seller side indeterminate.
+    // equally signed second copy) keep the seller side indeterminate. Any
+    // reason other than non-observation is such a set.
     if (bindingLookup.disposition === "indeterminate" &&
         isUnresolvedBundleBindingCandidateSet(bindingLookup.reason)) {
       throw new IndeterminateSubstrateError(

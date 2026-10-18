@@ -3131,12 +3131,17 @@ describe("read-only authentication of retained finalized seller bundles", () => 
         lookups.push(args);
         return structuredClone(lookup);
       }) }) as typeof write.provider;
-    await expect(verifyFinalizedSellerBundleReadOnly(write.input, write.result,
-      answering({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" })))
-      .resolves.toEqual(write.result);
-    expect(lookups.at(-1)?.[2]).toEqual(write.result.binding);
+    for (const reason of ["bundle-binding-undiscovered", "bundle-binding-unanswered"]) {
+      await expect(verifyFinalizedSellerBundleReadOnly(write.input, write.result,
+        answering({ disposition: "indeterminate", reason })), reason)
+        .resolves.toEqual(write.result);
+      expect(lookups.at(-1)?.[2]).toEqual(write.result.binding);
+    }
+    // Fail-closed: any other reason, such as a resolver's own equivocation
+    // label, is a candidate set that did not resolve.
     for (const reason of ["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
-      "bundle-binding-candidates-unfetched", "bundle-binding-candidates-rejected"]) {
+      "bundle-binding-candidates-unfetched", "bundle-binding-candidates-rejected",
+      "equivocation", "candidate-set-unresolved"]) {
       const error = await verifyFinalizedSellerBundleReadOnly(write.input, write.result,
         answering({ disposition: "indeterminate", reason })).catch((caught: unknown) => caught);
       expect(error, reason).toBeInstanceOf(IndeterminateSubstrateError);
@@ -3266,7 +3271,7 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       const retained = await finalizedForReadVerification("write-input");
       const lookup = disposition === "absence"
         ? { disposition: "absent" as const }
-        : { disposition: "indeterminate" as const, reason: "catalog unavailable" };
+        : { disposition: "indeterminate" as const, reason: "bundle-binding-unanswered" };
       const verifyBundleBinding = vi.fn(retained.provider.verifyBundleBinding!);
       const provider: SellerBundleFinalizationReadProvider = {
         ...retained.provider,
@@ -3432,7 +3437,8 @@ describe("completed two-sided session gate over a real seller closure", () => {
   // ST-11: external index visibility never gates audit-pending -> finalised.
   test.each([
     ["absent", () => ({ disposition: "absent" })],
-    ["indeterminate", () => ({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" })],
+    ["undiscovered", () => ({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" })],
+    ["unanswered", () => ({ disposition: "indeterminate", reason: "bundle-binding-unanswered" })],
   ] as const)("completes while the seller BundleBinding lookup is %s", async (_label, lookup) => {
     const { retained, input, deps } = await composition();
     vi.mocked(retained.provider.resolveBundleBinding!).mockImplementation(lookup as never);

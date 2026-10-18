@@ -465,6 +465,8 @@ describe("BundleBinding discovery surfaces (DACS-1 §6.3.5, §6.3.6)", () => {
     });
   });
 
+  // BB-8: nothing discovered is no evidence either way, but a surface that did
+  // not answer is not every surface answering without a binding.
   it("stays indeterminate when no surface answers, never absent", async () => {
     const down: DacsBundleBindingDiscoverySurfaceV1 = {
       kind: "catalog", discover: vi.fn(async () => { throw new Error("catalog down"); }),
@@ -472,9 +474,16 @@ describe("BundleBinding discovery surfaces (DACS-1 §6.3.5, §6.3.6)", () => {
     const h = harness("buyer", [down]);
     h.seedProgram(sellerNative, sellerCopy, SELLER);
     await expect(h.publication.resolveBoundRoleBundle("seller")).resolves.toEqual({
-      disposition: "indeterminate", reason: "bundle-binding-undiscovered" });
+      disposition: "indeterminate", reason: "bundle-binding-unanswered" });
     await expect(h.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER))
-      .resolves.toEqual({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" });
+      .resolves.toEqual({ disposition: "indeterminate", reason: "bundle-binding-unanswered" });
+    // A binding another source supplies still resolves past the silent surface.
+    await expect(h.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER,
+      sellerBinding)).resolves.toEqual({ disposition: "present", binding: sellerBinding });
+    // Its own role publishes either way: the write is idempotent.
+    const own = harness("seller", [down]);
+    await expect(own.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER))
+      .resolves.toEqual({ disposition: "absent" });
   });
 
   it("refuses invalid discovery surfaces", () => {

@@ -468,8 +468,11 @@ export {
   type ScanOptions,
   type ScanSeen,
   BUNDLE_BINDING_FETCH_BUDGET,
+  BUNDLE_BINDING_NON_OBSERVATION_REASONS,
+  isBundleBindingNonObservation,
   resolveBundleBindingCandidates,
   type BundleBindingCandidateResolution,
+  type BundleBindingNonObservationReason,
   type ResolveBundleBindingCandidatesInput,
 } from "./discovery/index.js";
 

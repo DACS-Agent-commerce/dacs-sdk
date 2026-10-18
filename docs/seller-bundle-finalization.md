@@ -92,7 +92,11 @@ The provider keeps substrate facts explicit:
 - A `resolveBundleBinding` implementation on a write-input substrate is a BB-6
   candidate resolver, not a “first index hit” lookup: it must apply authorized
   signer pruning, bounded multiplicity, precedence, and fail-closed disposition
-  before returning one `present` binding.
+  before returning one `present` binding. It reports non-observation (BB-8) as
+  `indeterminate` with a `BUNDLE_BINDING_NON_OBSERVATION_REASONS` reason
+  (`bundle-binding-undiscovered`, `bundle-binding-unanswered`). The completion
+  gates treat every other `indeterminate` reason as an unresolved BB-6
+  candidate set and hold completion back.
 
 `AuditPendingSellerSessionRecord`, `CompletedSellerSessionArtifacts`, dependency
 sources, and the counter-signature request are operational interfaces. They add

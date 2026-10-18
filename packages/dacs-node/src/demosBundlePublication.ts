@@ -3,6 +3,7 @@ import {
   DacsError,
   attestationBundleHash,
   bundleAddress,
+  isBundleBindingNonObservation,
   resolveBundleBindingCandidates,
   verifyBundleCopy,
   type BundleBinding,
@@ -61,8 +62,10 @@ export interface DacsDemosBundlePublicationV1 {
   /**
    * A role's copy through its discovered signed BundleBindings (DACS-5
    * BB-5..BB-7) and an exact native read. Non-discovery is `indeterminate`,
-   * never absence (BB-8). `carried` are signed bindings already held for the
-   * role, such as the one its copy carries (BB-2); they join the candidates.
+   * never absence (BB-8): `bundle-binding-undiscovered` when every surface
+   * answered, `bundle-binding-unanswered` when one did not. `carried` are
+   * signed bindings already held for the role, such as the one its copy
+   * carries (BB-2); they join the candidates.
    */
   resolveBoundRoleBundle(
     role: DacsBundleRoleV1,
@@ -355,11 +358,13 @@ export function createDacsDemosBundlePublicationV1(
       const candidates: unknown[] = [...ownBindings, ...carried];
       const surfaces = [() => demosBindingProgram(role), ...discovery.map((surface) =>
         () => surface.discover({ jobId: input.jobId, role, signer }))];
+      let unanswered = false;
       for (const discover of surfaces) {
         try {
           candidates.push(...await discover());
         } catch {
           // A surface that did not answer discovers nothing (BB-8).
+          unanswered = true;
         }
       }
       const fetched = new Map<string, Readonly<DacsDemosAnchoredBundleV1>>();
@@ -387,7 +392,13 @@ export function createDacsDemosBundlePublicationV1(
         verifyCopy: (bundle, copyRole) =>
           verifyBundleCopy(bundle as Record<string, unknown>, copyRole, bundleCopyVerifier),
       });
-      if (resolved.disposition !== "present") return resolved;
+      if (resolved.disposition !== "present") {
+        // Nothing discovered while a surface did not answer is no evidence
+        // either way, but it is not every surface answering without one.
+        return unanswered && resolved.reason === "bundle-binding-undiscovered"
+          ? { disposition: "indeterminate", reason: "bundle-binding-unanswered" }
+          : resolved;
+      }
       const anchored = fetched.get(resolved.binding.nativeAddress)!;
       if (!anchorTxMatches(resolved.binding, anchored)) {
         return { disposition: "indeterminate", reason: "bundle-binding-candidates-rejected" };
@@ -404,15 +415,14 @@ export function createDacsDemosBundlePublicationV1(
         resolved = await resolveBoundRoleBundle(role,
           carried === undefined ? [] : [copy(carried)]);
       } catch {
-        return { disposition: "indeterminate",
-          reason: "bundle-binding-resolution-unavailable" };
+        return { disposition: "indeterminate", reason: "bundle-binding-unanswered" };
       }
       if (resolved.disposition === "present") {
         return { disposition: "present", binding: copy(resolved.binding) };
       }
       // This producer publishes its own binding when it finds none; the write
       // is idempotent, so this is no claim that the substrate lacks it.
-      return role === context.role && resolved.reason === "bundle-binding-undiscovered"
+      return role === context.role && isBundleBindingNonObservation(resolved.reason)
         ? { disposition: "absent" } : resolved;
     };
 

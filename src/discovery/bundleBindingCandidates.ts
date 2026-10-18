@@ -81,23 +81,38 @@ export type BundleBindingCandidateResolution =
         | "bundle-binding-equivocation";
     };
 
-const UNRESOLVED_CANDIDATE_SET_REASONS: ReadonlySet<string> = new Set([
-  "bundle-binding-candidates-unfetched",
-  "bundle-binding-budget-exhausted",
-  "bundle-binding-candidates-rejected",
-  "bundle-binding-equivocation",
-]);
+/**
+ * The `indeterminate` reasons that are no evidence either way (BB-8): every
+ * consulted surface answered and none showed a signed binding
+ * (`bundle-binding-undiscovered`), or a surface did not answer
+ * (`bundle-binding-unanswered`). A BundleBinding resolver reports
+ * non-observation with exactly one of these.
+ */
+export const BUNDLE_BINDING_NON_OBSERVATION_REASONS = Object.freeze([
+  "bundle-binding-undiscovered",
+  "bundle-binding-unanswered",
+] as const);
+
+export type BundleBindingNonObservationReason =
+  (typeof BUNDLE_BINDING_NON_OBSERVATION_REASONS)[number];
+
+/** True only for a {@link BUNDLE_BINDING_NON_OBSERVATION_REASONS} reason. */
+export function isBundleBindingNonObservation(
+  reason: unknown,
+): reason is BundleBindingNonObservationReason {
+  return (BUNDLE_BINDING_NON_OBSERVATION_REASONS as readonly unknown[]).includes(reason);
+}
 
 /**
- * True for a BB-6/BB-7 `indeterminate` about the side's candidate set itself:
- * bindings were discovered but did not resolve to one authorized copy
- * (equivocation, an exhausted budget, an unfetched or rejected candidate).
- * That keeps the side's read disposition indeterminate, so it holds a
- * completion back. Non-discovery (`bundle-binding-undiscovered`) and an
- * unanswered surface are not: they are no evidence either way (BB-8).
+ * True for every BB-6/BB-7 `indeterminate` that is not non-observation: the
+ * side's candidate set did not resolve to one authorized copy (equivocation,
+ * an exhausted budget, an unfetched or rejected candidate, or any other reason
+ * a resolver gives). That keeps the side's read disposition indeterminate, so
+ * it holds a completion back. Fail-closed: only the non-observation reasons
+ * are no evidence either way (BB-8).
  */
 export function isUnresolvedBundleBindingCandidateSet(reason: unknown): boolean {
-  return typeof reason === "string" && UNRESOLVED_CANDIDATE_SET_REASONS.has(reason);
+  return !isBundleBindingNonObservation(reason);
 }
 
 interface Authorized {

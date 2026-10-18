@@ -798,8 +798,10 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     // a natively readable, receipt-authenticated pair back from completion.
     const undiscovered: Array<[string, Partial<FixedPriceX402AuditCompletionDeps>]> = [
       ["a binding the name index does not show yet", { resolveBundleBinding: () => ({ disposition: "absent" as const }) }],
-      ["an indeterminate binding lookup", { resolveBundleBinding: () => ({
-        disposition: "indeterminate" as const, reason: "index unavailable" }) }],
+      ["an undiscovered binding lookup", { resolveBundleBinding: () => ({
+        disposition: "indeterminate" as const, reason: "bundle-binding-undiscovered" }) }],
+      ["an unanswered binding lookup", { resolveBundleBinding: () => ({
+        disposition: "indeterminate" as const, reason: "bundle-binding-unanswered" }) }],
       ["a thrown binding lookup", { resolveBundleBinding: fetchFailed }],
       ["a thrown SubstrateError binding lookup", { resolveBundleBinding: () => {
         throw new SubstrateError("Demos receipt native read failed"); } }],
@@ -817,8 +819,11 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     } })).toBe("audit-complete");
     expect(carried).toHaveLength(2);
     expect(carried).toEqual(expect.arrayContaining([buyerBinding, sellerBinding]));
+    // Fail-closed: a resolver that labels the same BB-6 result its own way
+    // (or any reason other than non-observation) holds completion too.
     for (const reason of ["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
-      "bundle-binding-candidates-unfetched", "bundle-binding-candidates-rejected"]) {
+      "bundle-binding-candidates-unfetched", "bundle-binding-candidates-rejected",
+      "equivocation", "candidate-set-unresolved", "index unavailable", "unanswered"]) {
       const error = await outcome({ resolveBundleBinding: () => ({ disposition: "indeterminate" as const, reason }) });
       expect(error, reason).toBeInstanceOf(IndeterminateSubstrateError);
       expect(String(error), reason).toMatch(new RegExp(`candidate set is unresolved: ${reason}`));

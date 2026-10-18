@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   BUNDLE_BINDING_FETCH_BUDGET,
+  BUNDLE_BINDING_NON_OBSERVATION_REASONS,
   DacsError,
   SubstrateError,
   attestationBundleHash,
   bundleAddress,
+  isBundleBindingNonObservation,
   resolveBundleBindingCandidates,
   type BundleBinding,
   type ResolveBundleBindingCandidatesInput,
 } from "../../src/index.js";
+import { isUnresolvedBundleBindingCandidateSet } from "../../src/discovery/index.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const SELLER = "did:demos:agent:" + "a".repeat(64);
@@ -330,5 +333,28 @@ describe("resolveBundleBindingCandidates (DACS-5 BB-5..BB-7)", () => {
     const { value } = input([binding(a, one)], { [a]: one });
     await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({
       disposition: "present", fullySigned: false });
+  });
+});
+
+// BB-7, BB-8: only non-observation is no evidence either way; every other
+// indeterminate reason, whatever a resolver calls it, is an unresolved set.
+describe("BundleBinding non-observation reasons", () => {
+  it("names exactly the two non-observation reasons", () => {
+    expect([...BUNDLE_BINDING_NON_OBSERVATION_REASONS])
+      .toEqual(["bundle-binding-undiscovered", "bundle-binding-unanswered"]);
+    expect(Object.isFrozen(BUNDLE_BINDING_NON_OBSERVATION_REASONS)).toBe(true);
+  });
+
+  it("classifies every other reason as an unresolved candidate set", () => {
+    for (const reason of BUNDLE_BINDING_NON_OBSERVATION_REASONS) {
+      expect(isBundleBindingNonObservation(reason), reason).toBe(true);
+      expect(isUnresolvedBundleBindingCandidateSet(reason), reason).toBe(false);
+    }
+    for (const reason of ["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
+      "bundle-binding-candidates-unfetched", "bundle-binding-candidates-rejected",
+      "equivocation", "candidate-set-unresolved", "unanswered", "", undefined, 7]) {
+      expect(isBundleBindingNonObservation(reason), String(reason)).toBe(false);
+      expect(isUnresolvedBundleBindingCandidateSet(reason), String(reason)).toBe(true);
+    }
   });
 });
