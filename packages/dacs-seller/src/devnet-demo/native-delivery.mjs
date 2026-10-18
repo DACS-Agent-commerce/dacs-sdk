@@ -1,16 +1,19 @@
-import { canonicalize, contentHash } from '@kynesyslabs/dacs';
+import { canonicalize, contentHash, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { createNativeDemDeliveryCapability } from '../dacs/native-dem-delivery-consumer.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 
 const purchasedReaders=new WeakMap(),evidenceReaders=new WeakMap();
+const requireJobId=jobId=>{if(!isCanonicalJobId(jobId))throw new TypeError('jobId must be a canonical uppercase ULID');};
 export const hasDevnetDeliveryEvidenceReader=(capability)=>evidenceReaders.has(capability);
 export async function readDevnetDeliveryEvidence(capability,{jobId,seller}){
+  requireJobId(jobId);
   const reader=evidenceReaders.get(capability);if(!reader)throw new TypeError('native delivery evidence reader is unavailable');
   return reader({jobId,seller});
 }
 
 export function hasDevnetPurchasedReportReader(capability){return purchasedReaders.has(capability);}
 export async function readDevnetPurchasedReport(capability,input){
+  requireJobId(input?.jobId);
   const reader=purchasedReaders.get(capability);
   if(!reader)throw new TypeError('the explicit native purchased-report reader is unavailable');
   return reader(structuredClone(input));
@@ -42,7 +45,7 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
     },
   });
   purchasedReaders.set(capability,async(input)=>{
-    if(input?.jobId!==input?.deliveryBinding?.jobId || input.logicalAddress!==`dacs4:deliverable:${input.jobId}` ||
+    if(!isCanonicalJobId(input?.jobId) || input.jobId!==input?.deliveryBinding?.jobId || input.logicalAddress!==`dacs4:deliverable:${input.jobId}` ||
         input.receiptContentHash!==input.deliveryBinding?.payloadHash || input.deliveryBinding?.agreementHash!==input.agreementHash ||
         canonicalize(input.deliveryBinding?.listing)!==canonicalize(input.listing) || input.deliveryBinding?.fulfilmentId!==input.fulfilmentId ||
         input.seller!==anchor.writer) return {status:'rejected',reason:'native purchased-report reader scope differs'};
@@ -55,6 +58,9 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
         contentHash(value.artifact)!==input.receiptContentHash || value.receipt?.writer!==input.seller) return {status:'rejected',reason:'native purchased-report bytes or seller binding differ'};
     return value;
   });
-  if(deliveryEvidenceEnabled)evidenceReaders.set(capability,({jobId,seller})=>seller===anchor.writer?anchor.readRetained({logicalAddress:`dacs4:evidence:${jobId}`,artifactKind:'SettlementEvidence'}):{status:'rejected',reason:'delivery evidence writer differs'});
+  if(deliveryEvidenceEnabled)evidenceReaders.set(capability,({jobId,seller})=>{
+    requireJobId(jobId);
+    return seller===anchor.writer?anchor.readRetained({logicalAddress:`dacs4:evidence:${jobId}`,artifactKind:'SettlementEvidence'}):{status:'rejected',reason:'delivery evidence writer differs'};
+  });
   return capability;
 }

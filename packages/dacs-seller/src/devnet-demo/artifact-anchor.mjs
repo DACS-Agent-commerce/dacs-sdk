@@ -19,6 +19,7 @@ import {
   isCompositeVerificationRecord,
   isFinalityCommitmentRecord,
   isListing,
+  isCanonicalJobId,
   logicalToStorageProgramName,
   sha256Hex,
 } from '@kynesyslabs/dacs';
@@ -45,6 +46,7 @@ const HASH=/^[0-9a-f]{64}$/;
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
 
 function artifactValid(kind,value,writer,verifier=writer) {
+  if(kind!=='Listing' && !isCanonicalJobId(value?.jobId)) return false;
   if(kind==='Listing') return isListing(value) && value.seller?.identity?.presentedBy===writer;
   if(kind==='CompositeVerificationRecord') {
     if(!isCompositeVerificationRecord(value) || value.signature?.signer!==verifier || value.signature.algorithm!=='ed25519'
@@ -77,6 +79,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   const access=operatorBuyerAccessConfig(buyerAccess);
   const authorizeJob=(artifactKind,jobId)=>{
     if(artifactKind==='Listing') return;
+    if(!isCanonicalJobId(jobId)) fail('invalid','jobId must be a canonical uppercase ULID');
     if(!access) fail('buyer_access_closed','non-Listing demo writes require the operator buyerAccess capability; nothing was read, signed or sent');
     access.assertSellerJob(jobId);
   };
@@ -107,7 +110,11 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   const claim=owner ? `did:demos:agent:${owner.slice(2)}` : null;
   const signRpc=storageWriteRpcSigner(signer,claim);
   if(!owner || wallet.getWriteProfile()?.demoArtifactPublication?.policy!==DEVNET_DEMO_ARTIFACT_POLICY) throw new TypeError('the packaged seller wallet does not carry the demo artifact publication policy');
-  const keyFor=(logicalAddress)=>`demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
+  const keyFor=(logicalAddress)=>{
+    const jobPrefix=/^(?:dacs2:composite:|dacs3:commit:|dacs4:deliverable:|dacs4:evidence:)/.exec(logicalAddress);
+    if(jobPrefix && !isCanonicalJobId(logicalAddress.slice(jobPrefix[0].length).split(':')[0])) fail('invalid','job address must contain a canonical uppercase ULID');
+    return `demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
+  };
 
   function liveNonceRows(rows,outcomes=rows) {
     const rejected=outcomes.map(([,row])=>row).filter(row=>broadcastRejected(row)&&row.transaction?.content?.from===owner);

@@ -89,6 +89,7 @@ const FINALISED_SKEW_MS = 5 * 60 * 1000;
 // The deterministic test report this agent delivers: derived only from the
 // Agreement and the verified payment, so every replay is byte-identical.
 export function buildReport({ agreement, listing, settlementId }) {
+  if (!isCanonicalJobId(agreement?.jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
   const terms = agreementTerms(agreement);
   return {
     reportVersion: '1',
@@ -122,6 +123,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (!signer?.claim || typeof signer.sign !== 'function') throw new Error('a seller signer (claim + sign) is required');
   if (agreementAnchor !== null && (typeof agreementAnchor?.readAgreement !== 'function' || typeof agreementAnchor.source !== 'string')) throw new Error('agreementAnchor must expose source and readAgreement');
   if (listing?.seller?.identity?.presentedBy !== signer.claim) throw new Error('the seller signer does not control this Listing');
+  if ((listing?.offering?.deliverable?.accessModel ?? 'public') !== 'public') throw new Error('unsupported Listing: seller delivery requires public access');
   if (contextRequest !== null && typeof contextRequest !== 'function') throw new Error('contextRequest must be a function');
   const admittedContextRequest = (input) => { try { return contextRequest?.(input) === true; } catch { return false; } };
   const support = protocolSupport(listing);

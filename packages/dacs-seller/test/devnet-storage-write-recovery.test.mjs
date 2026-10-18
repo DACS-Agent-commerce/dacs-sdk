@@ -26,6 +26,12 @@ test('dirty, unidentified, unverified or partially qualified deployments authori
  }
  w.source.verifyDeployment=async()=>false;await assert.rejects(w.publish(w.open(),JOBS[0]),{code:'deployment_unqualified'});assert.equal(w.captured.length,0);
 });
+test('a clean verified deployment at another source commit authorizes no native intent or wallet request',async()=>{
+ const w=await anchorFixture();let verified=0;
+ w.source.pins.deployment.commit='c'.repeat(40);w.source.verifyDeployment=async()=>{verified++;return true};
+ await assert.rejects(w.publish(w.open(),JOBS[0]),{code:'deployment_unqualified'});
+ assert.equal(verified,0);assert.equal(w.captured.length,0);assert.equal(w.journal.rows.size,0);
+});
 test('relay acknowledgement is not transaction inclusion and unknown status does not prove absence',()=>{
  const hash='a'.repeat(64),relay={result:200,response:{message:'Transaction relayed to validators'},require_reply:false,extra:null};
  const result=classifyStorageWriteSubmission(relay,hash);assert.notEqual(result?.disposition,'included');

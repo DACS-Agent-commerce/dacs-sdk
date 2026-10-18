@@ -4,13 +4,13 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "c368a274d4e6a3ebf3686049aaec5382ea41148d8c4156b5906f992712d1d7a7",
+      "sha256": "e4c838af6f0b63d710b9f487712b0e449a5ea1b80672738a1c46758288d390f8",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-context-route.mjs",
       "originalSha256": "ca0377f1d93a5af069547bc6a1a63d2ba53fd84d92357909b3307e74d8f60fba",
-      "sha256": "418dce7fb1ba59c727290999b0fc4d98c584aa0e9bd2ef28d3bdd8a18a011e19",
+      "sha256": "9fa9811aab4b02e76572dc3d97c386ec085048b0cc0997c84503fc02c78de23d",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -28,25 +28,25 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-transport-auth.mjs",
       "originalSha256": "82c5b7dbdd866cad0d601325d05680db2503ce87d7ff1346d6e06eb9683b645f",
-      "sha256": "27a517d672c06506c81a82c0eb7698ce32247e6ec8de97a2faf7713dac8e1a6c",
+      "sha256": "cd1b47b23127fa973668ac08aabb559b7edf7b758e8eda9a874a0eef2667ae1b",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/agreement-context.mjs",
       "originalSha256": "ce56ddcb8659ecc66ade10dbbf21b14a466c11bbd390a42324b4e67d3a7e4d66",
-      "sha256": "a9682327ff4ce32cca0624407d9ab478d11e949bbc68d42027d5c59241714dfb",
+      "sha256": "4f796b03c11158b3d049abb6b135336a540d15e9a3bab33bee6b24f960957fad",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/artifact-anchor.mjs",
       "originalSha256": "b9aadf636868c2c01bdff93a42bb1c74708fe5dc1970978fabb02e3f3823a6ec",
-      "sha256": "5f843046b7b4dbe651efe88bacb16501de353d300c41622c42ce0536d7d0567f",
+      "sha256": "222ed58a9e9c117934c4087b86cbbb5055bd36023bc2459402d2e0fdc5d85df5",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/deployment-qualification.mjs",
       "originalSha256": null,
-      "sha256": "d82386e3e2885f8fb4636809dd5d0269e06aaf02107590fd74d71efd9407d71e",
+      "sha256": "612de9d2f09b947f2cf35a20d0c01d9921591088bd8388f9810707fcb3f657dd",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -64,13 +64,13 @@
     {
       "path": "packages/dacs-seller/test/bilateral-vet.test.mjs",
       "originalSha256": null,
-      "sha256": "5b447a802ca5a8eb891b810ec560840c4f415720f1ca85e91d4345bf09af4334",
+      "sha256": "4e94769b005035757b9091acd82d93ad8bed94e6fcd5fb476d317d74b48d9f7a",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/d5-limits-before-effects.test.mjs",
       "originalSha256": "7f3d8c7c6f62cb90fae6fb2dad6ca8d99b380be8bb0466d23a6b9927dd8415f7",
-      "sha256": "942e452258fb7115a1f593187a3263f75b02f2a7746c7092cf20aecd322230ce",
+      "sha256": "33d001b679e51354fa85553b58430119d4fa70e1763096f2aed0eb16cacdeddb",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -88,13 +88,13 @@
     {
       "path": "packages/dacs-seller/test/devnet-storage-write-recovery.test.mjs",
       "originalSha256": "11da500ee430169313194e301163ac6b3387e6536835bbe8f15d38820c6db725",
-      "sha256": "a878ee5f986f74beb6f829b26f5438f3df2305e980fd89b03c48de26ad797d14",
+      "sha256": "024e4457611b377b8fc439f159bbc9f1c0881b1a48726982860eda5ee8977ccf",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/helpers/anchor-isolated-fixture.mjs",
       "originalSha256": null,
-      "sha256": "828dbdec7e34e1526da669bb64b724680e77612b3347de1c0b687138a94f9044",
+      "sha256": "a30a3ace2c352a9b67b6f44d5b444173a6ebb9a03fcf9b2bf4b8fc912b6456e9",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -112,7 +112,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/d5-isolated-dependencies.mjs",
       "originalSha256": "7fccb503616d2514b23a8a4af98df0a36e1d7498a5d86ef3387addf1543df7f2",
-      "sha256": "cea6c8468fe92f7a2cab2d5c6afa9ecb9373edab6ef7278fd834eb7e404928e9",
+      "sha256": "86a6dd559959120de48742ab52f3706a4236b190d9192b44fceff935daf0c90b",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -136,7 +136,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/seller-agent-isolated-fixture.mjs",
       "originalSha256": null,
-      "sha256": "93046be5ddb20af2874f873a17f1a22c72cb1eb3e20d0602ec76798812713dfc",
+      "sha256": "9901f9cdc9f36bca6300d09c3a43a27e45cfcac2820673449602a5f1031f3b79",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -148,7 +148,7 @@
     {
       "path": "packages/dacs-seller/test/seller-lifecycle-gates.test.mjs",
       "originalSha256": null,
-      "sha256": "70ca5c3c001e48e45a276f145f86fda5010d62754fc196a6d1c2289d925b273a",
+      "sha256": "22839cb489f09c25061957fcaeb97d14b31bdb73488243cb1a14e1710e5fb8fc",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -162,6 +162,42 @@
       "originalSha256": null,
       "sha256": "fd5e58d2d11f88b13a8eac71bb092760bfed894f504186de0b3d238aa82c24ca",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/d5-challenge-retention.test.mjs",
+      "originalSha256": "b4476e0440706f508bd49ba112922a598ddf994a9286d81a7799c4e7749d5a8c",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
+      "sha256": "27762bbbcb7e1f9cd75c68f523d5da81e6b6a3a2a1471a1f3219f550b0145380"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/operator-approval.mjs",
+      "originalSha256": "812eb28edee29d842eda986fdab8926de26621342a2c11fada80e44477a0206c",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
+      "sha256": "12f71da012b13c323a4a6f98341bb4165dd01707718ad7b68cb030cef8331011"
+    },
+    {
+      "path": "packages/dacs-seller/test/d5-admission.test.mjs",
+      "originalSha256": "1ed2fdf056132a6a3b89e1c85fb8bcbc7dc1f9bbb9090e610c7f4297dfa935f8",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
+      "sha256": "0edb2a0c79df23ca86e7471cc5228c19e6f398db3ca73c3883cac00aba11c259"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/deliverable.mjs",
+      "originalSha256": "3eb5ac827a27138746f8d5eecd790d82cdf1ea15a31f7a9216200b16a0a07668",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
+      "sha256": "528a4d536cc8e36224a15a1664a4beda24764d50549f7fe42a181b7a823cf3c2"
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/native-delivery.mjs",
+      "originalSha256": "220ed1c9fc344617745573141ec6d40bf0baf1d187e7038c1350e6a79beee700",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
+      "sha256": "1dcced61c2632532a85dba8852006d67ddcb0c8defd99a3d274bddb065bb4d3e"
+    },
+    {
+      "path": "packages/dacs-seller/test/canonical-job-boundaries.test.mjs",
+      "originalSha256": null,
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
+      "sha256": "463b707094411af34f2197edceebf3519f88f9cf16d015d55460c45ed5ba1c71"
     }
   ]
 }

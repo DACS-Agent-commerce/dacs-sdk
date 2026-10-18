@@ -101,6 +101,97 @@ function present(w,body){
 }
 function nonceCount(w){return w.effects().counts.peer_nonces;}
 
+test('B38 correctly signed malformed job IDs are refused at challenge, context, proposal and payment boundaries without effects',async t=>{
+ const w=await world(t),input=await w.wire(),original=JSON.parse(input.text);
+ const template=JSON.parse(Buffer.from(input.header,'base64url').toString()).payload;
+ const snapshot=()=>{const db=new DatabaseSync(w.path,{readOnly:true});try{return db.prepare('SELECT * FROM peer_context_challenges ORDER BY nonce').all()}finally{db.close()}};
+ for(const jobId of [JOBS[0].toLowerCase(),JOBS[0].replace('0','O'),JOBS[0].slice(1),'8'+JOBS[0].slice(1),'job-0',null,7]){
+  for(const url of [SELLER_CONTEXT_CHALLENGE_PATH,SELLER_CONTEXT_PATH,'/dacs/v1/agreements/proposals','/dacs/v1/payments']){
+   const body=url.startsWith(SELLER_CONTEXT_PATH)?{scope:{...original.scope,jobId},...(url===SELLER_CONTEXT_PATH?{buyerIdentityBundle:original.buyerIdentityBundle}:{})}
+    :url.endsWith('/payments')?{jobId,payerPayingKey:w.buyer.claim,txHash:'a'.repeat(64)}:{transportIdentity:{jobId,buyer:w.buyer.claim,seller:w.seller.claim,agreementHash:template.agreementHash}};
+   if(url===SELLER_CONTEXT_CHALLENGE_PATH)delete body.scope.buyerBundleHash;
+   const text=JSON.stringify(body),payload={...template,path:url,jobId,bodyHash:sha256Hex(text)};
+   // The normal client refuses malformed IDs locally. Sign the exact negative
+   // vector here so the server, rather than the client, must enforce JID-1.
+   const signature=w.buyer.sign(Buffer.from('dacs-chatgpt-plugin:loopback-seller-peer:v1:'+canonicalize(payload))).toString('base64url');
+   const header=Buffer.from(canonicalize({payload,signature})).toString('base64url'),before=w.effects(),challenges=snapshot();
+   const out=await exchange(w.handler,{url,text,header});
+   assert.equal(out.status,401,url+' '+String(jobId)+' '+out.text);assert.equal(JSON.parse(out.text).error,'peer_envelope_invalid');
+   assert.deepEqual(w.effects(),before);assert.deepEqual(snapshot(),challenges);
+  }
+ }
+ assert.equal((await exchange(w.handler,input)).status,200,'the canonical signed control still admits');
+});
+
+test('B39 bundle presentedAt in the past or future never gates admission',async t=>{
+ for(const offset of [-86400000,86400000]){
+  const w=await world(t),input=await w.wire(),body=JSON.parse(input.text);
+  body.buyerIdentityBundle.presentedAt=T+offset;
+  const out=await exchange(w.handler,await signed(w,present(w,body)));
+  assert.equal(out.status,200,out.text);assert.equal(w.effects().writes,1);
+ }
+});
+
+test('B40 direct context routes and clients refuse malformed IDs before store, policy, Vet or readback callbacks',async t=>{
+ const w=await world(t),input=await w.wire(),original=JSON.parse(input.text),request=w.auth.readRequest(input.header);
+ const untouched=new Proxy({},{get(){assert.fail('malformed job reached the transport store')}});
+ for(const jobId of [undefined,null,7,'job-0',JOBS[0].toLowerCase(),JOBS[0].slice(1),'8'+JOBS[0].slice(1)]){
+  const p={...request,jobId},body={...original,scope:{...original.scope,jobId}},before=w.effects();
+  assert.throws(()=>w.route.attemptPresentation(p,body,untouched),{code:'peer_job_invalid'});
+  for(const method of ['challenge','reserve']){
+   await assert.rejects(w.route[method](p,body,untouched),{code:'peer_job_invalid'});
+   await assert.rejects(w.route[method](request,body,untouched),{code:'peer_job_invalid'});
+  }
+  assert.throws(()=>w.route.perform(body),{code:'peer_job_invalid'});
+  assert.throws(()=>w.route.settled({jobId,hold:'unused'}),{code:'peer_job_invalid'});
+  await assert.rejects(w.route.reconcile({body}),{code:'peer_job_invalid'});
+  await assert.rejects(w.route.resume({},p,untouched,{writes:1}),{code:'peer_job_invalid'});
+  const {createSellerContextClient,createSellerContextRecords}=await import('../src/dacs/seller-context-route.mjs');
+  const records=createSellerContextRecords({listing:{seller:{identity:{presentedBy:w.seller.claim}},pin:w.pin,payee:original.scope.payee,price:original.scope.price},store:()=>assert.fail('records opened malformed job')});
+  assert.throws(()=>records.exactRequest({jobId,buyerBundle:body.buyerIdentityBundle,generatedAt:T}),{code:'peer_job_invalid'});
+  assert.throws(()=>records.completedScope({jobId,buyer:w.buyer.claim}),{code:'peer_job_invalid'});
+  assert.throws(()=>w.auth.validate(p,{}),{code:'peer_job_invalid'});
+  await assert.rejects(w.auth.responseHeader(p,200,'{}'),{code:'peer_job_invalid'});
+  await assert.rejects(createSellerContextClient({clientFor:()=>assert.fail('client resolved malformed job')}).resolveBuyer(body),{code:'peer_job_invalid'});
+  const client=createSellerTransportClientAuth({buyerSigner:w.buyer,seller:w.seller.claim,resolveJob:()=>assert.fail('transport resolved malformed job')});
+  await assert.rejects(client.request(SELLER_CONTEXT_PATH,body,JSON.stringify(body)),{code:'peer_job_invalid'});
+  assert.throws(()=>client.verifyResponse(p,{}),{code:'peer_job_invalid'});
+  assert.deepEqual(w.effects(),before);
+ }
+});
+
+test('B41 a canonical cross-job body still consumes its recognized presentation nonce on attempt',async t=>{
+ const w=await world(t),input=await w.wire(),body=JSON.parse(input.text);
+ const payload=JSON.parse(Buffer.from(input.header,'base64url').toString()).payload;
+ body.scope.jobId=JOBS[1];const text=JSON.stringify(body);payload.bodyHash=sha256Hex(text);
+ const signature=w.buyer.sign(Buffer.from('dacs-chatgpt-plugin:loopback-seller-peer:v1:'+canonicalize(payload))).toString('base64url');
+ const header=Buffer.from(canonicalize({payload,signature})).toString('base64url');
+ assert.equal(JSON.parse((await exchange(w.handler,{text,header})).text).error,'context_challenge_mismatch');
+ assert.equal(JSON.parse((await exchange(w.handler,input)).text).error,'context_challenge_consumed');assert.equal(w.effects().writes,0);
+});
+
+test('B42 malformed body jobs in a canonical signed envelope refuse without consuming a challenge or starting work',async t=>{
+ const w=await world(t),input=await w.wire(),original=JSON.parse(input.text);
+ const template=JSON.parse(Buffer.from(input.header,'base64url').toString()).payload;
+ for(const jobId of [undefined,null,7,JOBS[0].toLowerCase(),JOBS[0].slice(1)]){
+  const body={...original,scope:{...original.scope,jobId}},text=JSON.stringify(body),payload={...template,bodyHash:sha256Hex(text)};
+  const signature=w.buyer.sign(Buffer.from('dacs-chatgpt-plugin:loopback-seller-peer:v1:'+canonicalize(payload))).toString('base64url');
+  const header=Buffer.from(canonicalize({payload,signature})).toString('base64url'),before=w.effects();
+  const out=await exchange(w.handler,{text,header});assert.equal(JSON.parse(out.text).error,'peer_job_invalid');assert.deepEqual(w.effects(),before);
+  const db=new DatabaseSync(w.path,{readOnly:true});try{assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce=?').get(body.buyerIdentityBundle.sessionNonce).attempted,0);}finally{db.close();}
+ }
+ assert.equal((await exchange(w.handler,input)).status,200);
+});
+
+test('B43 the context client preserves a signed canonical-job refusal as a definite no-write answer',async t=>{
+ const w=await world(t),body=JSON.parse((await w.wire()).text);
+ const {createSellerContextClient,sellerContextRequestUnknown}=await import('../src/dacs/seller-context-route.mjs');
+ const {SellerRefusedError}=await import('../src/dacs/seller-http.mjs');
+ const client=createSellerContextClient({clientFor:()=>({agreementContext:async()=>{throw new SellerRefusedError('peer_job_invalid','invalid job',409)}})});
+ const answer=await client.resolveBuyer(body,{operation:{state:{protocol:{sellerContextRequest:{generatedAt:body.scope.generatedAt,buyerBundle:body.buyerIdentityBundle}}}}});
+ assert.equal(answer.disposition,'rejected');assert.equal(answer.written,false);assert.equal(sellerContextRequestUnknown(answer.reason),true);
+});
+
 test('B17 retries and unknown-job state reads add no nonce rows; another buyer still starts',async t=>{
  const w=await world(t,{maxRecords:5,maxRequestsPerWindow:1000});const first=await w.wire();await exchange(w.handler,first);
  const before=w.effects();assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,409);

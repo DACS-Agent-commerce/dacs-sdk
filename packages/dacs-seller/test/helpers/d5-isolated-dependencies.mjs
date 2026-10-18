@@ -20,7 +20,7 @@ const sources = {
   '/src/mcp/seller-content.mjs': `export const sellerData=s=>({text:JSON.stringify({sellerData:s})});`,
   '/src/operations.mjs': `export class OperationError extends Error{constructor(code,message){super(message);this.code=code}}`,
   '/src/devnet-demo/buyer-access.mjs': `export const operatorBuyerAccessConfig=value=>value;`,
-  '/src/dacs/native-dem-delivery-consumer.mjs': `export const isProvenUnsignedAbsence=value=>value?.provenUnsigned===true;`,
+  '/src/dacs/native-dem-delivery-consumer.mjs': `export const isProvenUnsignedAbsence=value=>value?.provenUnsigned===true; export const createNativeDemDeliveryCapability=value=>value;`,
 };
 const prefix = new URL('../../', import.meta.url).href;
 registerHooks({

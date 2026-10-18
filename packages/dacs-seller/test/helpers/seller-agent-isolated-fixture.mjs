@@ -83,5 +83,5 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
   const hash=core.sha256Hex(JSON.stringify(content)),signedProjection={content,hash,signature:{type:'ed25519',data:buyer.sign(Buffer.from(hash)).toString('base64url')}};
   return {jobId,agreement,signedProjection};
  };
- return {get agent(){return agent;},reopen:async()=>{agent.close();store=await createSellerDurableState({dir,signer:seller,listingPin:pin});agent=await create();return agent;},get store(){return store;},negotiate,seller,buyer,pin,listing,anchors,agreements,controls,protocol,close:()=>{agent.close();rmSync(dir,{recursive:true,force:true});}};
+ return {get agent(){return agent;},createAgent:create,buildReport:module.namespace.buildReport,reopen:async()=>{agent.close();store=await createSellerDurableState({dir,signer:seller,listingPin:pin});agent=await create();return agent;},get store(){return store;},negotiate,seller,buyer,pin,listing,anchors,agreements,controls,protocol,close:()=>{agent.close();rmSync(dir,{recursive:true,force:true});}};
 }

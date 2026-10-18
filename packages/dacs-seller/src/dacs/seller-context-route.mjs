@@ -2,7 +2,7 @@
 // Admission reserves two writes. Pre-payment writes still require exact
 // seller approval; see ADMISSION.md. This is the kit's only context mode.
 import { randomUUID } from 'node:crypto';
-import { identityBundleHash, isIdentityBundle } from '@kynesyslabs/dacs';
+import { identityBundleHash, isCanonicalJobId, isIdentityBundle } from '@kynesyslabs/dacs';
 import { sellerData } from '../mcp/seller-content.mjs';
 import { addressForClaim } from '../wallet/demos-signature.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from './agreement-context-consumer.mjs';
@@ -33,6 +33,13 @@ const keys = (value, expected) => record(value) && Object.keys(value).length ===
 const same = (left, right) => { try { return canonicalize(left) === canonicalize(right); } catch { return false; } };
 const failureText = (error) => { try { return String(error?.message ?? error); } catch { return 'unreadable error'; } };
 const refuse = (code) => { throw new SellerTransportError(code, 409); };
+function requireJobId(jobId) {
+  if (!isCanonicalJobId(jobId)) refuse('peer_job_invalid');
+}
+function requireContextJob(request, body) {
+  requireJobId(request?.jobId);
+  requireJobId(body?.scope?.jobId);
+}
 
 function bundleAuthentic(bundle) {
   try {
@@ -112,12 +119,15 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
   return Object.freeze({
     // Called once exact bytes authenticate, before protocol/admission checks.
     attemptPresentation: (request,body,store) => {
+      requireContextJob(request, body);
       try { if(store.classify(request,body)!=='start')return; } catch { /* admission cannot preserve an issued nonce */ }
       consume(request,body,store);
     },
     path: SELLER_CONTEXT_PATH,
     challengePath: SELLER_CONTEXT_CHALLENGE_PATH,
     challenge: (request, body, store) => oneAtATime(store, async () => {
+      requireContextJob(request, body);
+      if (request.jobId !== body.scope.jobId) refuse('peer_job_mismatch');
       const problem = scopeProblem(body, true);
       if (problem) refuse(problem);
       try { assertBuyerAccess(request.buyer); } catch (error) { if (error?.code === 'buyer_access_closed') refuse('buyer_access_closed'); throw error; }
@@ -128,6 +138,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     // journal's reservation. Every refusal before a 'perform' reservation is
     // definite; only required anti-replay consumption may have been written.
     reserve: (request, body, store) => oneAtATime(store, async () => {
+      requireContextJob(request, body);
       let kind;
       try { kind = store.classify(request, body); }
       catch (error) { consume(request, body, store); throw error; }
@@ -153,17 +164,25 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       if (reservation.disposition !== 'perform') { await quietly(() => releaseWrites({ jobId: request.jobId, hold })); return reservation; }
       return { ...reservation, contextHold: { jobId: request.jobId, hold } };
     }),
-    perform: (body) => resolveBuyer(structuredClone(body), ...(writable ? [{ writable: () => writable(body.scope.jobId, body.scope.buyer) }] : [])),
+    perform: (body) => {
+      requireJobId(body?.scope?.jobId);
+      return resolveBuyer(structuredClone(body), ...(writable ? [{ writable: () => writable(body.scope.jobId, body.scope.buyer) }] : []));
+    },
     // Whenever the step has ended (a definite or an uncertain answer, or a
     // reconciliation): the reservation's unused part is released. The writes
     // it made keep their own policy rows, and an uncertain step is run again
     // only as resume below allows.
-    settled: (contextHold) => contextHold ? quietly(() => releaseWrites(contextHold)) : Promise.resolve(),
+    settled: (contextHold) => {
+      if (!contextHold) return Promise.resolve();
+      requireJobId(contextHold.jobId);
+      return quietly(() => releaseWrites(contextHold));
+    },
     // An uncertain step is answered from both Vet records read back and
     // verified; nothing is written or run again. Failing that, a step a
     // shutdown cut before anything of it was signed or sent (resumable) may
     // resume; every other uncertain step stays fenced.
     async reconcile({ body }) {
+      requireJobId(body?.scope?.jobId);
       let answer = null;
       try { answer = await recover(structuredClone(body)); } catch { return null; }
       if (answer?.disposition === 'present' || answer?.code === 'party_vet_non_pass') return { disposition: 'present', value: answer };
@@ -180,6 +199,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     // with no refusal, so the buyer keeps its saved request. Not a new start:
     // no admission record and no start limit.
     resume: (reservation, request, store, { writes }) => oneAtATime(store, async () => {
+      requireJobId(request?.jobId);
       if (typeof store?.resume !== 'function') return null;
       try { assertBuyerAccess(request.buyer); } catch { return null; }
       if (knownJob !== null && (await knownJob(request.jobId, request.buyer)) !== true) return null;
@@ -193,7 +213,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
 
 // Codes this plugin's seller route and transport emit; any other code is
 // seller text and goes into the envelope.
-const KNOWN_REFUSALS = new Set(['context_challenge_mismatch', 'context_challenge_consumed', 'context_challenge_expired', 'buyer_bundle_unauthenticated', 'context_scope_invalid', 'context_generated_at', 'buyer_access_closed', 'context_job_unknown',
+const KNOWN_REFUSALS = new Set(['peer_job_invalid', 'context_challenge_mismatch', 'context_challenge_consumed', 'context_challenge_expired', 'buyer_bundle_unauthenticated', 'context_scope_invalid', 'context_generated_at', 'buyer_access_closed', 'context_job_unknown',
   'seller_budget_refused', 'unpaid_start_limit', 'buyer_unpaid_start_limit', 'peer_envelope_invalid', 'peer_signature_invalid', 'peer_signer_wrong',
   'peer_delegation_required', 'peer_delegation_invalid', 'peer_delegation_signature_invalid', 'peer_delegation_mismatch', 'peer_delegation_expired',
   'peer_delegation_deadline', 'peer_delegation_agreement_mismatch', 'peer_audience_wrong', 'peer_expired', 'peer_request_mismatch', 'peer_listing_mismatch',
@@ -204,7 +224,7 @@ const KNOWN_REFUSALS = new Set(['context_challenge_mismatch', 'context_challenge
 // (classify), one job at a time, and the start limits are checked inside the
 // reserve transaction. The buyer may then drop its saved request. A refusal
 // the journal makes (peer_operation_conflict, peer_job_conflict) is not here.
-export const SELLER_CONTEXT_FRESH_REFUSALS = Object.freeze(['context_challenge_mismatch', 'context_challenge_consumed', 'context_challenge_expired', 'buyer_bundle_unauthenticated', 'context_scope_invalid', 'context_generated_at', 'buyer_access_closed',
+export const SELLER_CONTEXT_FRESH_REFUSALS = Object.freeze(['peer_job_invalid', 'context_challenge_mismatch', 'context_challenge_consumed', 'context_challenge_expired', 'buyer_bundle_unauthenticated', 'context_scope_invalid', 'context_generated_at', 'buyer_access_closed',
   'context_job_unknown', 'seller_budget_refused', 'unpaid_start_limit', 'buyer_unpaid_start_limit']);
 const refusedReason = (code) => `seller refused the context request (${code})`;
 // True only for the exact reason the client below gives such a refusal.
@@ -253,6 +273,7 @@ export function createSellerContextClient({ clientFor }) {
   if (typeof clientFor !== 'function') throw new TypeError('the seller context client needs an authenticated seller client per purchase');
   return Object.freeze({
     async resolveBuyer({ scope, buyerIdentityBundle }, { operation } = {}) {
+      requireJobId(scope?.jobId);
       const { account, operation: operationId, ...sellerScope } = scope;
       if (!keys(sellerScope, SELLER_CONTEXT_SCOPE_KEYS)) throw new TypeError('the Agreement-context scope differs from the seller context request');
       const client = clientFor(operation, sellerContextScopeHash(sellerScope));
@@ -302,6 +323,7 @@ export function createSellerContextRecords({ listing, store }) {
     // True only when the job's admission record is this buyer's, for this
     // Listing, and its scope hash is the scope of exactly this bundle and generatedAt.
     exactRequest({ jobId, buyerBundle, generatedAt }) {
+      requireJobId(jobId);
       const found = admitted(jobId, buyerBundle?.presentedBy), scope = found && Number.isSafeInteger(generatedAt) ? scopeOf(jobId, buyerBundle, generatedAt) : null;
       return Boolean(scope) && sellerContextScopeHash(scope) === found.scopeHash;
     },
@@ -309,6 +331,7 @@ export function createSellerContextRecords({ listing, store }) {
     // durable records only: its admission record and that effect's completed,
     // present answer in the journal, whose scope hashes to the admitted one.
     completedScope({ jobId, buyer }) {
+      requireJobId(jobId);
       const found = admitted(jobId, buyer), answer = found ? open().contextAnswer(jobId) : null;
       if (answer?.status !== 200) return null;
       let scope;

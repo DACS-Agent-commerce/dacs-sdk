@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import {compositeVerificationAddress,contentHash} from '@kynesyslabs/dacs';
 import {fixture,JOBS,recordFor} from './helpers/bilateral-vet-fixture.mjs';
 
+test('direct provider starts, recovery, resume and release refuse malformed jobs before any state or verifier call',async()=>{
+ const w=fixture(),{createDevnetDemoAgreementContextProvider}=await import('../src/devnet-demo/agreement-context.mjs');
+ const forbidden=()=>assert.fail('malformed job reached party Vet state');
+ const p=createDevnetDemoAgreementContextProvider({anchor:w.anchor,wallet:{claim:w.seller.claim,signBytes:w.seller.sign},listing:w.listing,
+  store:{...w.store,read:forbidden,update:forbidden,entries:forbidden},counterparty:w.counterparty,log:()=>{}});
+ for(const jobId of [undefined,null,7,'job-0',JOBS[0].toLowerCase(),JOBS[0].slice(1),'8'+JOBS[0].slice(1)]){
+  const input=w.input(jobId);input.scope.jobId=jobId;
+  for(const method of ['resolveBuyer','recoverBuyer','resumableBuyer'])await assert.rejects(p[method](input),{code:'job_invalid'});
+  await assert.rejects(p.resolveSeller({jobId,listingPin:w.listing.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt}),{code:'job_invalid'});
+  assert.throws(()=>p.release({jobId}),{code:'job_invalid'});
+ }
+ assert.equal(w.records.size,0);assert.equal(w.seen.length,0);assert.equal(p.invocations.length,0);assert.equal(p.contexts.size,0);
+});
+
 test('two parties authenticate independent verifier signatures and fresh seller sessions, including restart',async()=>{
  const w=fixture(),p=w.provider(),first=w.input(),second=w.input(JOBS[1]);
  for(const input of [first,second])assert.equal((await p.resolveBuyer(input)).disposition,'present');

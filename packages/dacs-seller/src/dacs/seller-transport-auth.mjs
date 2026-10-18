@@ -31,8 +31,8 @@ const CONTEXT = SELLER_CONTEXT_PATH;
 export const SELLER_CONTEXT_CHALLENGE_PATH = CONTEXT + '/challenge';
 // The plugin's Agreement-context scope without its own account and operation ids.
 export const SELLER_CONTEXT_SCOPE_KEYS = Object.freeze(['source', 'wallet', 'jobId', 'buyer', 'buyerBundleHash', 'seller', 'listingPin', 'rail', 'payee', 'price', 'generatedAt']);
-export const sellerContextChallengeScope = ({ buyerBundleHash, ...scope }) => scope;
-export const sellerContextScopeHash = (scope) => sha256Hex(canonicalize(scope));
+export const sellerContextChallengeScope = (value) => { requireJobId(value?.jobId); const { buyerBundleHash, ...scope } = value; return scope; };
+export const sellerContextScopeHash = (scope) => { requireJobId(scope?.jobId); return sha256Hex(canonicalize(scope)); };
 const READ_ROUTES = new Set([STATE, '/dacs/v1/bundles/buyer-copy']);
 const exact = (a, b) => canonicalize(a) === canonicalize(b);
 const record = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -40,6 +40,9 @@ const keys = (v, expected) => record(v) && Object.keys(v).length === expected.le
 const uint = (v) => Number.isSafeInteger(v) && v >= 0 && !Object.is(v, -0);
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const fail = (code, status = 401) => { throw new SellerTransportError(code, status); };
+function requireJobId(jobId) {
+  if (!isCanonicalJobId(jobId)) fail('peer_job_invalid', 409);
+}
 
 export class SellerTransportError extends Error {
   constructor(code, status = 401) { super(code); this.code = code; this.status = status; }
@@ -146,6 +149,7 @@ function checkSigner(signer) {
 }
 
 function requestIdentity(p) {
+  requireJobId(p?.jobId);
   return { jobId: p.jobId, buyer: p.buyer, seller: p.seller, listingPin: p.listingPin, agreementHash: p.agreementHash };
 }
 
@@ -302,6 +306,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
   }
   return {
     issueContextChallenge(request, scope, { maxPerBuyer = 5, maxGlobal = 12, admit } = {}) {
+      requireJobId(request?.jobId);
+      requireJobId(scope?.jobId);
+      if (request.jobId !== scope.jobId) fail('peer_job_mismatch', 409);
       return transaction(() => {
         const time = now(), hash = sellerContextScopeHash(scope);
         if (!uint(time)) fail('peer_clock_invalid', 503);
@@ -334,6 +341,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // Called after transport authentication, before admission or presentation validation.
     // Consumption commits even when proof verification subsequently refuses.
     attemptContextPresentation(request, body) {
+      requireJobId(request?.jobId);
+      requireJobId(body?.scope?.jobId);
       const problem = transaction(() => {
         const nonce = body.buyerIdentityBundle?.sessionNonce;
         if (typeof nonce !== 'string' || !HASH.test(nonce)) return 'context_challenge_mismatch';
@@ -366,6 +375,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // admission records newer than `since`. It returns the admission time or
     // throws a refusal, which rolls back every row of this request.
     reserve(p, body, { journaledOnly = false, admit = null, dryRun = false } = {}) {
+      requireJobId(p?.jobId);
       // The admission table is created inside this transaction; it exists only after a commit.
       const creates = p.path === CONTEXT && !admissions;
       const reservation = transaction(() => {
@@ -473,12 +483,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // The context step's pre-Agreement admission record for a job, or null:
     // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.
     contextAdmission(jobId) {
+      requireJobId(jobId);
       const row = admissions ? get('SELECT * FROM peer_context_admissions WHERE job = ?', jobId) : null;
       return row ? { jobId: row.job, buyer: row.buyer, seller: row.seller, listingPin: JSON.parse(row.listing_pin), scopeHash: row.scope_hash, effect: row.effect, admittedAt: row.admitted_at } : null;
     },
     // The journaled answer of a job's completed context step, or null:
     // {status, text} of its admission record's effect once that is complete.
     contextAnswer(jobId) {
+      requireJobId(jobId);
       const row = admissions ? get("SELECT e.status, e.response FROM peer_context_admissions a JOIN peer_effects e ON e.effect = a.effect WHERE a.job = ? AND e.state = 'complete'", jobId) : null;
       return row ? { status: row.status, text: row.response } : null;
     },
@@ -508,6 +520,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // reducer has authenticated durable context and fresh native readback. No
     // reservation, slot or transaction is released; no expired intent retries.
     reconcile(reservation, request, status, text) {
+      requireJobId(request?.jobId);
       if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
@@ -527,6 +540,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // retry can take it: a step pending again (running, or crashed mid-run)
     // stays fenced. Its earlier nonces keep their 503 until it completes.
     resume(reservation, request) {
+      requireJobId(request?.jobId);
       return transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (request.path !== CONTEXT || reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
@@ -573,6 +587,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     requireDelegation,
     readRequest: (header) => verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) }),
     validate(request, { method, path, rawBody, body, agreement, onAuthenticatedBody }) {
+      requireJobId(request?.jobId);
       if (request.seller !== sellerSigner.claim) fail('peer_audience_wrong');
       if (request.method !== method || request.path !== path || request.bodyHash !== sha256Hex(rawBody)) fail('peer_request_mismatch');
       onAuthenticatedBody?.();
@@ -603,6 +618,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
       }
     },
     async responseHeader(request, status, text) {
+      requireJobId(request?.jobId);
       const payload = { ...clone(request), kind: 'response', bodyHash: sha256Hex(text), expiresAt: now() + maxLifetimeMs, requestHash: sha256Hex(canonicalize(request)), status };
       return signedHeader(payload, sellerSigner);
     },
@@ -623,6 +639,7 @@ export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, de
   return {
     async request(path, body, text) {
       const jobId = [CONTEXT, SELLER_CONTEXT_CHALLENGE_PATH].includes(path) ? body.scope?.jobId : body.transportIdentity?.jobId ?? body.jobId;
+      requireJobId(jobId);
       const context = clone(await resolveJob(jobId));
       const time = now();
       // An expired delegation still signs requests: the seller admits them
@@ -633,6 +650,7 @@ export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, de
       return { payload, header: await signedHeader(payload, signing, retainedDelegation) };
     },
     verifyResponse(request, { header, status, text }) {
+      requireJobId(request?.jobId);
       const response = verifiedHeader(header, 'response', seller);
       const { kind, bodyHash, expiresAt, requestHash, status: signedStatus, ...identity } = response;
       const { kind: requestKind, bodyHash: requestBodyHash, expiresAt: requestExpiry, ...expected } = request;

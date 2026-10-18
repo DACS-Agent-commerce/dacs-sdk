@@ -3,7 +3,7 @@ import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { addressForClaim } from '../wallet/demos-signature.mjs';
 import {
   canonicalize, compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore,
-  identityBundleHash, partyVetCore, sha256Hex, verifyCompositeVerificationRecord, vetPhaseFailureClass,
+  identityBundleHash, isCanonicalJobId, partyVetCore, sha256Hex, verifyCompositeVerificationRecord, vetPhaseFailureClass,
 } from '@kynesyslabs/dacs';
 import { DEM_RAIL, verifyComponent } from '../dacs/listing.mjs';
 import { listingPin, protocolSupport } from '../dacs/purchase-protocol.mjs';
@@ -12,6 +12,9 @@ import { isProvenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mj
 const clone=(value)=>JSON.parse(canonicalize(value));
 const same=(a,b)=>canonicalize(a)===canonicalize(b);
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
+function requireJobId(jobId) {
+  if (!isCanonicalJobId(jobId)) fail('job_invalid','jobId must be a canonical uppercase ULID');
+}
 const PARTY_VET_STATE='dacs-devnet-demo-party-vet-state/v2';
 const freshOps=()=>({buyer:{checkpoints:{},steps:{},signing:{}},seller:{checkpoints:{},steps:{},signing:{}}});
 // The demo requirement is empty, so a party Vet has no attempts and signs only
@@ -61,7 +64,7 @@ const oneLine=(text)=>String(text).replace(/[\u0000-\u001f\u007f\u2028\u2029\\]/
 // bumps the row's revision, the discipline of the protocol revision CAS (#26):
 // a writer whose binding no longer holds writes nothing.
 function partyVetState(store,writer) {
-  const keyFor=(jobId)=>`party-vet/${sha256Hex(canonicalize([writer,jobId]))}`;
+  const keyFor=(jobId)=>{requireJobId(jobId);return `party-vet/${sha256Hex(canonicalize([writer,jobId]))}`;};
   const mine=(row,jobId)=>{
     if(row.version!==PARTY_VET_STATE||row.writer!==writer||row.jobId!==jobId)fail('indeterminate','the retained party Vet state is not this job\'s');
     return row;
@@ -461,6 +464,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // signature and each anchor intent; synchronous, true or the reason no new
   // write may start.
   async function resolveBuyer({scope,buyerIdentityBundle},{writable=()=>true}={}) {
+    requireJobId(scope?.jobId);
     assertAccess(buyerIdentityBundle.presentedBy);
     if(!counterpartyReady())return {disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
     // Upgrade cleanup: earlier versions retained a second fence row after the
@@ -488,6 +492,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // Vet row. The recovered context is kept in this process under its exact
   // scope, unless the job already has a context with another scope.
   async function recoverBuyer({scope,buyerIdentityBundle}) {
+    requireJobId(scope?.jobId);
     assertAccess(buyerIdentityBundle.presentedBy);
     const retained=await state.read(scope.jobId);
     const sellerIdentity=retained?.presentation?.bundle;
@@ -526,6 +531,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // CREATE: a present record is read back and a cut one is asked again, as
   // in-process.
   async function resumableBuyer({scope,buyerIdentityBundle}) {
+    requireJobId(scope?.jobId);
     assertAccess(buyerIdentityBundle.presentedBy);
     let writes=0,cut=false;
     for(const bundle of [buyerIdentityBundle,listing.seller.identity]){
@@ -538,6 +544,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     return cut?{writes}:null;
   }
   async function recoverSeller({jobId,pin,buyerIdentityBundle,generatedAt}) {
+    requireJobId(jobId);
     if(!retainedScope)return null;
     try{
       const scope=await retainedScope({jobId,buyer:buyerIdentityBundle.presentedBy});
@@ -549,6 +556,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // exactly: this process's, or the one kept in the job's row, or
   // (seller context route only) a completed route step's (recoverSeller).
   async function resolveSeller({jobId,listingPin:pin,buyerIdentityBundle,generatedAt}) {
+    requireJobId(jobId);
     assertAccess(buyerIdentityBundle.presentedBy);
     const matches=(input)=>same(input.verifiedListing.pin,pin)&&same(input.buyer.identityBundle,buyerIdentityBundle)&&input.generatedAt===generatedAt;
     const answer=(found)=>({disposition:'present',value:{input:clone(found.input),vetRequirements:clone(found.vetRequirements)}});
@@ -572,6 +580,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // were it ever asked for again. That is right: an ended purchase is
   // refused before the provider is reached.
   async function drop(jobId) {
+    requireJobId(jobId);
     drops.add(jobId);
     if(running.has(jobId))return false;
     await state.update(jobId,()=>null);
@@ -585,6 +594,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // purchase ended (no generatedAt), its in-memory entries go and its row is
   // deleted.
   function release({jobId,generatedAt=null}) {
+    requireJobId(jobId);
     const job=vets.get(jobId);
     if(job){job.evicted=true;if(!job.running||job.finished)forget(job);}
     for(const [key,entry] of contexts)if(entry.input.jobId===jobId&&entry.input.generatedAt!==generatedAt)contexts.delete(key);
@@ -597,6 +607,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function sweep(ended) {
     let deleted=0;
     for(const jobId of await state.jobs()){
+      requireJobId(jobId);
       if(running.has(jobId)||ended(jobId)!==true)continue;
       if(await drop(jobId))deleted+=1;
     }

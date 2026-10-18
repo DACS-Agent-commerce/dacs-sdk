@@ -96,8 +96,17 @@ export function sellerApprovalSettings(value){
 }
 
 // The logical address an artifact of this kind must use for its job.
-function expectedLogicalAddress(c,artifact){
-  return c.artifactKind==='CompositeVerificationRecord'?compositeVerificationAddress(c.jobId,artifact.evaluatedParty):c.artifactKind==='FinalityCommitmentRecord'?finalityCommitmentAddress(c.jobId):c.artifactKind==='Deliverable'?`dacs4:deliverable:${c.jobId}`:artifact.phase==='pay-dem'?paymentEvidenceAddress(c.jobId,'demos-native:DEM',2):artifact.phase==='deliver-storage-program'?`dacs4:evidence:${c.jobId}`:null;
+function expectedLogicalAddress(c,artifact,policy){
+  if(c.artifactKind==='CompositeVerificationRecord')return compositeVerificationAddress(c.jobId,artifact.evaluatedParty);
+  if(c.artifactKind==='FinalityCommitmentRecord')return finalityCommitmentAddress(c.jobId);
+  if(c.artifactKind==='Deliverable')return `dacs4:deliverable:${c.jobId}`;
+  if(artifact.phase==='pay-dem'){
+    // The host reads this index from protocolSupport(its verified Listing).
+    // Missing phase context cannot authorize an automatic payment-evidence write.
+    const index=typeof policy.paymentPhaseIndex==='function'?policy.paymentPhaseIndex():null;
+    return Number.isSafeInteger(index)&&!Object.is(index,-0)&&index>=0?paymentEvidenceAddress(c.jobId,'demos-native:DEM',index):null;
+  }
+  return artifact.phase==='deliver-storage-program'?`dacs4:evidence:${c.jobId}`:null;
 }
 
 // Returns null when the exact request is within policy, otherwise a short
@@ -137,7 +146,7 @@ async function policyRefusal(request,policy,limits,{confirmedTotal,countedTotal,
   // purchase still refuses, as with the app, before the write is held.
   if(sellerRecords&&purchase===null&&BEFORE_PAYMENT.has(c.artifactKind)){
     if(c.artifactKind==='CompositeVerificationRecord'&&!CLAIM.test(artifact.evaluatedParty??''))return 'evaluated-party';
-    if(c.logicalAddress!==expectedLogicalAddress(c,artifact))return 'logical-address';
+    if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
     const pin=policy.listingPin();
     if([artifact.listingPin,artifact.listing,artifact.listingRef].some(value=>value&&!same(value,pin)))return 'listing';
     return 'seller-record-missing';
@@ -157,7 +166,7 @@ async function policyRefusal(request,policy,limits,{confirmedTotal,countedTotal,
   if(c.artifactKind==='SettlementEvidence'&&artifact.phase==='pay-dem'&&(!exact(artifact.paymentAmount,['amount','currency'])||artifact.paymentAmount.currency!=='DEM'
     ||demOs(artifact.paymentAmount.amount)!==BigInt(purchase.amountOs)))return 'payment-amount';
   if(c.artifactKind==='CompositeVerificationRecord'&&artifact.evaluatedParty!==purchase.buyer&&artifact.evaluatedParty!==policy.seller)return 'evaluated-party';
-  if(c.logicalAddress!==expectedLogicalAddress(c,artifact))return 'logical-address';
+  if(c.logicalAddress!==expectedLogicalAddress(c,artifact,policy))return 'logical-address';
   if(artifact.listingPin&&!same(artifact.listingPin,purchase.listingPin))return 'listing';
   if(artifact.listing&&!same(artifact.listing,purchase.listingPin))return 'listing';
   if(artifact.listingRef&&!same(artifact.listingRef,purchase.listingPin))return 'listing';

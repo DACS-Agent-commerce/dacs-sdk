@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 import {agentFixture} from './helpers/seller-agent-isolated-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 
+for(const accessModel of ['private','restricted','encrypted',{},false])test(`seller refuses non-public delivery access ${JSON.stringify(accessModel)} before publication`,async()=>{
+ const w=await agentFixture();
+ try{
+  w.listing.offering.deliverable={accessModel};
+  await assert.rejects(w.createAgent(),/seller delivery requires public access/);
+ }finally{w.close();}
+});
+
 test('seller payment, early commitment and completion gates refuse before any external capability',async()=>{
  const w=await agentFixture();
  try{
@@ -147,4 +155,9 @@ test('early commitment caller requires independent exact buyer CREATE authorizat
   assert.equal((await w.agent.commitOnSignature(input)).status,'commitment-held');
   await assert.rejects(w.agent.submitPayment({...payment(w),jobId:next}),{code:'not_committed'});
  }finally{w.close();}
+});
+
+test('exported seller fixture report refuses malformed jobs before deriving terms or hashing',async()=>{
+ const w=await agentFixture();
+ try{for(const jobId of [undefined,null,'job-0',JOBS[0].toLowerCase()])assert.throws(()=>w.buildReport({agreement:{jobId}}),{code:'job_invalid'});}finally{w.close();}
 });
