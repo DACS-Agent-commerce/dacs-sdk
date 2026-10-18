@@ -21,7 +21,6 @@ import {
 } from "./verifiedRead.js";
 import { normalizedBindingOwner } from "./owner.js";
 import {
-  isAgreementArtifact,
   isAttestationBundle,
   isEvidenceBoundFaultAttestationBundle,
   isFaultAttestationBundle,
@@ -32,11 +31,24 @@ import { identityBundleHash } from "../identity/bundle.js";
 
 /** Select the artifact contract, never the mere presence of a signature field. */
 function artifactContentHash(artifact: Record<string, unknown>): string {
-  // The Agreement shape guard predates additive singular-signature extensions.
-  // Ignore that extension only while identifying the contract; hash the full
-  // artifact below so it remains authenticated.
-  const { signature: _signatureExtension, ...agreementShape } = artifact;
-  if (isAgreementArtifact(agreementShape)) return contentHash(artifact, "signatures");
+  // DACS-3 §8.5.1 defines the same omission set for all four Agreement
+  // versions, including the identity-bound types not yet executable by this
+  // SDK. Select their hash contract from the exact, exclusive discriminator;
+  // full artifact/signature/authorization validation remains the reader's job.
+  const agreementVersions = [
+    "agreementVersion",
+    "payeeBoundAgreementVersion",
+    "identityBoundAgreementVersion",
+    "identityBoundPayeeAgreementVersion",
+  ].filter((key) => Object.prototype.hasOwnProperty.call(artifact, key));
+  if (agreementVersions.length > 0) {
+    if (agreementVersions.length !== 1 || artifact[agreementVersions[0]!] !== "1") {
+      throw new Error("Agreement requires exactly one supported version discriminator");
+    }
+    // Hash the original record: opposite-named signature extensions and all
+    // other additive fields remain authenticated.
+    return contentHash(artifact, "signatures");
+  }
   if (
     isAttestationBundle(artifact) ||
     isFaultAttestationBundle(artifact) ||

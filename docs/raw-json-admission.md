@@ -85,8 +85,12 @@ three terminal bundle domains: use `identityBundleHash` or `attestationBundleHas
 and the corresponding artifact-specific signing and verification paths.
 
 `createBoundArtifactRepository` uses the same artifact contract on publication
-and binding reads: Agreements and ChannelTranscripts omit `signatures`, terminal
+and binding reads: all four Agreement types (including both identity-bound
+variants) and ChannelTranscripts omit `signatures`, terminal
 bundles use `attestationBundleHash`, and IdentityBundles use `identityBundleHash`.
+Agreement hashing requires exactly one supported version discriminator; artifact
+and signer authorization still require the reader's verifier. Hash support alone
+does not enable execution of identity-bound phases.
 Other records retain the singular-signature default. Opposite-named extensions
 remain in the content hash. Anchor metadata also retains a full-envelope hash,
 including all signature and per-copy fields. These hashes bind the stored

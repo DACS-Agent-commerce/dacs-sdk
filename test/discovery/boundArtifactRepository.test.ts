@@ -42,6 +42,13 @@ function upstreamAgreement(): Record<string, unknown> {
   return upstreamScenario().agreement;
 }
 
+const AGREEMENT_CASES = [
+  { kind: "agreement", hash: "b52c3c0a9fc7f9265d5d0e42e81e8d8da024bfd691e0e13a62b9af713bdce479" },
+  { kind: "payeeBoundAgreement", hash: "edf599f4c56bd488c1a8cc2d08aa744215bb7d8a6ec431d57beee0ec9a242bcf" },
+  { kind: "identityBoundAgreement", hash: "cb2eca6610a1e99530a21606c8a043e83741e2ffc4cf038ece09d283e7d6a4f9" },
+  { kind: "identityBoundPayeeAgreement", hash: "4b49696a61f32face0c9c24d29069633e69fb9db06289fcd7f92f32e69955acc" },
+];
+
 function independentHash(record: Record<string, unknown>, omitted: string[]): string {
   return sha256Hex(canonicalize(Object.fromEntries(
     Object.entries(record).filter(([key]) => !omitted.includes(key)),
@@ -97,11 +104,10 @@ function fakeAdapter(owner: string, backend: FakeBackend): BoundArtifactAdapter 
 }
 
 describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)", () => {
-  test("publishes the upstream Agreement hash in both binding and anchor metadata", async () => {
-    const agreement = upstreamAgreement();
-    expect(isAgreementArtifact(agreement)).toBe(true);
+  test.each(AGREEMENT_CASES)("publishes the upstream $kind hash in binding and anchor metadata", async ({ kind, hash }) => {
+    const agreement = upstreamScenario(kind).agreement;
     const expectedHash = independentHash(agreement, ["signatures"]);
-    expect(expectedHash).toBe("b52c3c0a9fc7f9265d5d0e42e81e8d8da024bfd691e0e13a62b9af713bdce479");
+    expect(expectedHash).toBe(hash);
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
@@ -117,14 +123,14 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     expect(backend.records.get(written.anchor.address)).toEqual(agreement);
   });
 
-  test("reads a pre-existing correctly hashed Agreement binding and invokes its verifier", async () => {
-    const agreement = upstreamAgreement();
+  test.each(AGREEMENT_CASES)("reads a pre-existing correctly hashed $kind binding and invokes its verifier", async ({ kind, hash }) => {
+    const agreement = upstreamScenario(kind).agreement;
     const logicalAddress = `dacs3:${agreement.jobId}:agreement`;
     const backend = createBackend();
     backend.records.set("stor-existing", agreement);
     const bindings = createInMemoryBindingStore([{
       logicalAddress, nativeAddress: "stor-existing", owner: SELLER,
-      contentHash: independentHash(agreement, ["signatures"]),
+      contentHash: hash,
     }]);
     const repository = createBoundArtifactRepository({
       adapter: fakeAdapter("0xreader", backend), index: bindings, publisher: bindings,
@@ -138,12 +144,47 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
   });
 
   test.each([
+    { agreementVersion: "1", identityBoundAgreementVersion: "1" },
+    { identityBoundAgreementVersion: "1", identityBoundPayeeAgreementVersion: "1" },
+    { payeeBoundAgreementVersion: "1", identityBoundPayeeAgreementVersion: "1" },
+    { identityBoundAgreementVersion: "2" },
+    { identityBoundPayeeAgreementVersion: 1 },
+  ])("refuses unsupported or competing Agreement discriminators: %j", async (versions) => {
+    const { agreementVersion: _version, ...scope } = upstreamAgreement();
+    const artifact = { ...scope, ...versions };
+    const backend = createBackend();
+    backend.records.set("stor-existing", artifact);
+    const bindings = createInMemoryBindingStore([{
+      logicalAddress: LOGICAL, nativeAddress: "stor-existing", owner: SELLER,
+      contentHash: independentHash(artifact, ["signatures"]),
+    }]);
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    await expect(repository.write(LOGICAL, artifact)).rejects.toThrow(
+      "exactly one supported version discriminator",
+    );
+    expect(backend.writes).toBe(0);
+    const verify = vi.fn(() => true);
+    expect(await repository.read(LOGICAL, SELLER, verify)).toMatchObject({
+      status: "unverifiable",
+      reason: expect.stringContaining("exactly one supported version discriminator"),
+    });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  test.each([
     { name: "Agreement", record: () => ({ ...upstreamAgreement(), signature: { note: "signed extension" } }), omitted: ["signatures"] },
     { name: "PayeeBoundAgreement", record: () => {
       const agreement = upstreamScenario("payeeBoundAgreement").agreement;
       expect(isAgreementArtifact(agreement)).toBe(true);
       return { ...agreement, signature: { note: "signed extension" } };
     }, omitted: ["signatures"] },
+    ...["identityBoundAgreement", "identityBoundPayeeAgreement"].map((kind) => ({
+      name: kind,
+      record: () => ({ ...upstreamScenario(kind).agreement, signature: { note: "signed extension" } }),
+      omitted: ["signatures"],
+    })),
     { name: "ChannelTranscript", record: () => ({
       transcriptVersion: "1", channelId: "channel-1", members: ["buyer", "seller"],
       messages: [], generatedAt: 1, signatures: [{ party: "buyer", algorithm: "ed25519", value: "AA" }],
