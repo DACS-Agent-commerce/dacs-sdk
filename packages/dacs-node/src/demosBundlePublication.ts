@@ -157,7 +157,9 @@ function roleFor(
       ? "buyer" : null;
 }
 
-function verifyBindingSignature(binding: Readonly<BundleBinding>): boolean {
+function verifyBindingSignature(
+  binding: Readonly<Omit<BundleBinding, "jobId"> & { jobId: unknown }>,
+): boolean {
   const rawKey = canonicalDemosAgentPublicKey(binding.signer);
   if (rawKey === null || binding.signature.algorithm !== "ed25519" ||
       binding.signature.signer !== binding.signer ||

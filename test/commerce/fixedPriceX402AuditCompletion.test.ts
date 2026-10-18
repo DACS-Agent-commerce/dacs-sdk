@@ -1329,13 +1329,38 @@ describe("native DEM admission deadline", () => {
         return () => { clear(); disarm(); };
       });
       const permanent = new DacsError("admission rejected");
-      const outcome = await gate.verify({ ...gate.fx.deps, deadline: { start },
-        authenticateSessionProfile: () => {
+      let admit!: () => void;
+      const admission = new Promise<void>((resolve) => { admit = resolve; });
+      let close!: () => void;
+      const closure = new Promise<void>((resolve) => { close = resolve; });
+      const sellerClosure = verifySellerClosure.getMockImplementation()!;
+      if (result === "success") verifySellerClosure.mockImplementationOnce(async (...args) => {
+        await closure;
+        return sellerClosure(...args);
+      });
+      const pending = gate.verify({ ...gate.fx.deps, deadline: { start },
+        authenticateSessionProfile: async () => {
+          await admission;
           if (result === "permanent error") throw permanent;
-          if (result === "unavailable") return Promise.reject(new Error("lookup unavailable"));
+          if (result === "unavailable") throw new Error("lookup unavailable");
           return result === "invalid" ? { status: "invalid" } : trustedAdmission();
         },
       } as FixedPricePayDemAuditCompletionDeps).catch((error: unknown) => error);
+      await flush();
+      expect(start).toHaveBeenCalledOnce();
+      expect(clock.armed()).toEqual([COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS]);
+      expect(verifySellerClosure).not.toHaveBeenCalled();
+      expect(disarm).not.toHaveBeenCalled();
+      admit();
+      if (result === "success") {
+        await flush();
+        expect(verifySellerClosure).toHaveBeenCalledOnce();
+        expect(start).toHaveBeenCalledOnce();
+        expect(clock.armed()).toEqual([COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS]);
+        expect(disarm).not.toHaveBeenCalled();
+        close();
+      }
+      const outcome = await pending;
       expect(start).toHaveBeenCalledOnce();
       expect(disarm).toHaveBeenCalledOnce();
       expect(clock.armed()).toEqual([]);

@@ -26,7 +26,7 @@
  */
 
 import type { BundleBinding } from "../artifacts/types.js";
-import { isBundleBinding } from "../artifacts/validators.js";
+import { hasBundleBindingEnvelope, isBundleBinding } from "../artifacts/validators.js";
 import { canonicalize } from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
@@ -47,8 +47,13 @@ export interface ResolveBundleBindingCandidatesInput {
    * signature. When given, only that signer's bindings are fetched.
    */
   roleHolder?: string;
-  /** BB-4: the domain-separated signature verifies against the signer's key. */
-  verifyBindingSignature(binding: Readonly<BundleBinding>): Promise<boolean> | boolean;
+  /**
+   * BB-4: verify the exact domain-separated payload against the signer's key.
+   * The wire envelope is checked; jobId semantics are checked after this hook.
+   */
+  verifyBindingSignature(
+    binding: Readonly<Omit<BundleBinding, "jobId"> & { jobId: unknown }>,
+  ): Promise<boolean> | boolean;
   /**
    * BB-5 step 6: the copy at an exact native address. Return null when nothing
    * is readable there yet. Throw a `DacsError` that is not a `SubstrateError`
@@ -137,15 +142,6 @@ function byHashThenAddress(a: BundleBinding, b: BundleBinding): number {
         : a.nativeAddress > b.nativeAddress ? 1 : 0;
 }
 
-function shapeValid(value: unknown): value is BundleBinding {
-  try {
-    return isBundleBinding(value);
-  } catch {
-    // A malformed jobId makes the logical-address derivation throw.
-    return false;
-  }
-}
-
 function roleHolderOf(
   copy: Readonly<Record<string, unknown>>,
   role: BundleCopyRole,
@@ -165,21 +161,30 @@ export async function resolveBundleBindingCandidates(
   input: Readonly<ResolveBundleBindingCandidatesInput>,
 ): Promise<BundleBindingCandidateResolution> {
   requireCanonicalJobId(input.jobId, "BundleBinding requested jobId");
-  // BB-5 checks 1-5 and BB-4, then exact duplicates from several surfaces.
+  // Authenticate a captured wire envelope before interpreting its signed
+  // jobId. Unsigned catalog noise is inert, including malformed job ids.
   const unique = new Map<string, BundleBinding>();
   for (const raw of input.candidates) {
-    if (raw !== null && typeof raw === "object" && "jobId" in raw) {
-      requireCanonicalJobId(raw.jobId, "BundleBinding signed jobId");
+    let candidate: unknown;
+    try {
+      candidate = clone(raw);
+    } catch {
+      continue;
     }
-    if (!shapeValid(raw) || raw.jobId !== input.jobId || raw.role !== input.role) continue;
+    if (!hasBundleBindingEnvelope(candidate)) continue;
     let signed = false;
     try {
-      signed = await input.verifyBindingSignature(clone(raw));
+      // The hook sees the actual signed payload, including an unchecked
+      // jobId, and gets its own copy so it cannot change the retained bytes.
+      signed = await input.verifyBindingSignature(clone(candidate));
     } catch {
       signed = false;
     }
-    if (!signed) continue;
-    unique.set(canonicalize(raw), clone(raw));
+    if (signed !== true) continue;
+    requireCanonicalJobId(candidate.jobId, "BundleBinding signed jobId");
+    if (!isBundleBinding(candidate) || candidate.jobId !== input.jobId ||
+        candidate.role !== input.role) continue;
+    unique.set(canonicalize(candidate), candidate);
   }
   let bindings = [...unique.values()];
   if (input.roleHolder !== undefined) {

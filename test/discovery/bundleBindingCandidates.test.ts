@@ -195,19 +195,69 @@ describe("resolveBundleBindingCandidates (DACS-5 BB-5..BB-7)", () => {
     });
   });
 
-  it("errors on malformed requested and signed job ids before verification or fetch", async () => {
+  it("rejects a malformed requested job id before verification or fetch", async () => {
     let effects = 0;
-    for (const malformedRequest of [true, false]) {
-      const one = copy("one");
-      const candidate = binding("stor-" + "1".repeat(40), one);
-      const { value } = input([malformedRequest ? candidate : { ...candidate, jobId: "legacy-job" }], {}, {
-        ...(malformedRequest ? { jobId: "legacy-job" } : {}),
-        verifyBindingSignature: () => { effects++; return true; },
-        fetchCopy: () => { effects++; return null; },
-      });
-      await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/canonical uppercase ULID/);
-    }
+    const { value } = input([], {}, {
+      jobId: "legacy-job",
+      verifyBindingSignature: () => { effects++; return true; },
+      fetchCopy: () => { effects++; return null; },
+    });
+    await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/requested jobId.*canonical uppercase ULID/);
     expect(effects).toBe(0);
+  });
+
+  it.each(["legacy-job", "", null, 42])(
+    "rejects an authenticated malformed signed job id (%s) before fetch", async (jobId) => {
+      const one = copy("one");
+      const candidate = { ...binding("stor-" + "1".repeat(40), one), jobId };
+      let verified = 0;
+      const { value, fetched } = input([candidate], {}, {
+        verifyBindingSignature: () => { verified++; return true; },
+      });
+      await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/signed jobId.*canonical uppercase ULID/);
+      expect(verified).toBe(1);
+      expect(fetched).toEqual([]);
+    },
+  );
+
+  it.each(["incomplete", "missing signature", "bad signature", "throwing verifier"])(
+    "discards an unauthenticated malformed job id beside a valid binding (%s)", async (failure) => {
+      const one = copy("one");
+      const address = "stor-" + "1".repeat(40);
+      const valid = binding(address, one);
+      const malformed: Record<string, unknown> = failure === "incomplete"
+        ? { jobId: "malformed" }
+        : { ...valid, jobId: "malformed", signature: { ...valid.signature, value: BAD } };
+      if (failure === "missing signature") delete malformed.signature;
+      const { value, fetched } = input([malformed, valid], { [address]: one }, {
+        verifyBindingSignature: (entry) => {
+          if (entry.jobId === "malformed" && failure === "throwing verifier") throw new Error("invalid signature");
+          return entry.signature.value === GOOD;
+        },
+      });
+      await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({
+        disposition: "present", binding: valid, copy: one,
+      });
+      expect(fetched).toEqual([address]);
+    },
+  );
+
+  it("resolves the authenticated snapshot when a candidate changes during signature verification", async () => {
+    const one = copy("one");
+    const address = "stor-" + "1".repeat(40);
+    const candidate = binding(address, one);
+    const expected = structuredClone(candidate);
+    const { value, fetched } = input([candidate], { [address]: one }, {
+      verifyBindingSignature: async (entry) => {
+        candidate.nativeAddress = "stor-" + "2".repeat(40);
+        (entry as BundleBinding).nativeAddress = "stor-" + "3".repeat(40);
+        return true;
+      },
+    });
+    await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({
+      disposition: "present", binding: expected, copy: one,
+    });
+    expect(fetched).toEqual([address]);
   });
 
   it.each(["hash", "verification"])("discards invalid fetched %s content beside a valid candidate", async (failure) => {

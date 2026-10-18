@@ -388,8 +388,8 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
       .resolves.toEqual({ disposition: "indeterminate", reason: "bundle-binding-equivocation" });
   });
 
-  it.each(["equivocation", "budget-exhausted"] as const)(
-    "preserves %s refusal through the wrapper and completion when discovery contains a malformed job ID",
+  it.each(["present", "equivocation", "budget-exhausted", "candidates-unfetched"] as const)(
+    "preserves %s through the wrapper and completion beside unauthenticated malformed discovery",
     async (reason) => {
       let malformed = false;
       const buyerCopy = bundle("buyer");
@@ -398,23 +398,27 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
       const sellerNative = "stor-" + "2".repeat(40);
       const buyerBinding = binding("buyer", buyerNative, buyerCopy);
       const sellerBinding = binding("seller", sellerNative, sellerCopy);
-      const additional = reason === "equivocation"
+      const additional = reason === "equivocation" || reason === "candidates-unfetched"
         ? [{ address: "stor-" + "3".repeat(40), copy: bundle("buyer", "divergent") }]
-        : Array.from({ length: 8 }, (_, i) => ({
+        : reason === "budget-exhausted" ? Array.from({ length: 8 }, (_, i) => ({
             address: `stor-${String(i + 4).padStart(40, "0")}`, copy: buyerCopy,
-          }));
+          })) : [];
       const candidates = [buyerBinding, sellerBinding,
         ...additional.map(({ address, copy }) => binding("buyer", address, copy))];
       const h = harness("seller", [{ kind: "catalog", discover: async () =>
-        malformed ? [...candidates, { jobId: "malformed" }] : candidates }]);
+        malformed ? [...candidates, { jobId: "malformed" },
+          { ...buyerBinding, jobId: "malformed" }] : candidates }]);
       h.seedProgram(buyerNative, buyerCopy, BUYER);
       h.seedProgram(sellerNative, sellerCopy, SELLER);
-      for (const { address, copy } of additional) h.seedProgram(address, copy, BUYER);
+      if (reason !== "candidates-unfetched") {
+        for (const { address, copy } of additional) h.seedProgram(address, copy, BUYER);
+      }
       const resolve = () => h.publication.resolveBundleBinding(
         bundleAddress(JOB_ID, "buyer"), BUYER, buyerBinding);
-      await expect(resolve()).resolves.toEqual({
-        disposition: "indeterminate", reason: `bundle-binding-${reason}`,
-      });
+      const expectedResolution = reason === "present"
+        ? { disposition: "present", binding: buyerBinding }
+        : { disposition: "indeterminate", reason: `bundle-binding-${reason}` };
+      await expect(resolve()).resolves.toEqual(expectedResolution);
       // Fetch exact receipts independently of the unresolved candidate set.
       const buyerReceipt = await h.adapter.resolveDemosAnchorReceipt({
         logicalAddress: buyerBinding.logicalAddress, nativeAddress: buyerNative,
@@ -448,15 +452,36 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
         resolveBundleBinding: (logical, signer, _role, carried) =>
           h.publication.resolveBundleBinding(logical, signer, carried),
       });
-      await expect(verify()).rejects.toBeInstanceOf(IndeterminateSubstrateError);
-      malformed = true;
-      // This unsigned discovery item must never turn the candidate refusal
-      // into the non-observation exception that permits completion.
-      const wrapperError = await resolve().catch((error: unknown) => error);
-      expect(wrapperError).toBeInstanceOf(DacsError);
-      expect(wrapperError).not.toBeInstanceOf(IndeterminateSubstrateError);
-      expect(String(wrapperError)).toMatch(/signed jobId.*canonical uppercase ULID/);
-      await expect(verify()).rejects.toThrow(/signed jobId.*canonical uppercase ULID/);
+      for (const noisy of [false, true]) {
+        malformed = noisy;
+        // Neither an unsigned partial row nor a full row with an invalid
+        // signature may alter the authenticated candidate set's outcome.
+        await expect(resolve()).resolves.toEqual(expectedResolution);
+        if (reason === "present") {
+          await expect(verify()).resolves.toMatchObject({ state: "audit-complete" });
+        } else {
+          await expect(verify()).rejects.toBeInstanceOf(IndeterminateSubstrateError);
+        }
+      }
+    },
+  );
+
+  it.each(["malformed", "", null, 42])(
+    "preserves a permanent error for an authenticated malformed signed job id (%s)", async (jobId) => {
+      const { signed } = await submitted();
+      const unsigned = { ...signed, jobId } as Record<string, unknown>;
+      delete unsigned.signature;
+      const authenticated = { ...unsigned, signature: { ...signed.signature,
+        value: Buffer.from(ed25519Sign(
+          signedBytes(BUNDLE_BINDING_SEPARATOR, contentHash(unsigned)), seed(SELLER),
+        )).toString("base64url") } };
+      const h = harness("buyer", [{ kind: "catalog", discover: async () => [authenticated] }]);
+      const error = await h.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER)
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(DacsError);
+      expect(error).not.toBeInstanceOf(IndeterminateSubstrateError);
+      expect(String(error)).toMatch(/signed jobId.*canonical uppercase ULID/);
+      expect(h.adapter.readAnchor).not.toHaveBeenCalled();
     },
   );
 
