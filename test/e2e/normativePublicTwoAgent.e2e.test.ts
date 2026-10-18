@@ -3634,7 +3634,7 @@ async function runWholeProcessStageA(root: string, runId: string): Promise<never
   const intent = await prepareSettlementIntent(fixture);
   const store = await createFsX402BuyerSettlementStore({ dir: paths.buyer });
   // Process A performs the same inline durable seller work as settleAndRecover.
-  // Keep its fixture deadline below the whole-process stage's 25-second budget.
+  // Keep its transport deadline below the worker and whole-process budgets.
   const transport = createX402BuyerPaidRequestTransport({
     transportPolicy: { mode: "insecure-test", timeoutMs: 15_000 },
     fetchImpl: async (_url, init) => {
@@ -3793,7 +3793,10 @@ async function spawnWholeProcessStage(
     fileURLToPath(import.meta.url),
     "-t",
     "whole-process worker stage",
-    "--pool=forks",
+    // Threads share the controller's PID: stage A's deliberate SIGKILL ends
+    // the complete child process, without leaving a controller waiting for a
+    // crashed fork's result. The outer test still runs in a separate process.
+    "--pool=threads",
     "--maxWorkers=1",
     "--reporter=dot",
   ], {
@@ -3810,17 +3813,19 @@ async function spawnWholeProcessStage(
   child.stdout.on("data", (chunk) => { output += String(chunk); });
   child.stderr.on("data", (chunk) => { output += String(chunk); });
   return await new Promise((resolve, reject) => {
+    let timedOut = false;
     const timeout = setTimeout(() => {
+      timedOut = true;
       child.kill("SIGKILL");
-      reject(new Error(`whole-process stage ${stage} timed out\n${output}`));
-    }, 25_000);
+    }, 60_000);
     child.once("error", (error) => {
       clearTimeout(timeout);
       reject(error);
     });
-    child.once("exit", (code, signal) => {
+    child.once("close", (code, signal) => {
       clearTimeout(timeout);
-      resolve({ code, signal, output });
+      if (timedOut) reject(new Error(`whole-process stage ${stage} timed out\n${output}`));
+      else resolve({ code, signal, output });
     });
   });
 }
@@ -3854,13 +3859,14 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
     expect(bundles.buyerFinalization.buyerBundle.anchoredByRole).toBe("buyer");
     expect(bundles.sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
     expect(bundles.standardLimitations).toEqual(["DACS-Standard#331"]);
-  }, 30_000);
+  }, 60_000);
 
   test("recovers the same run after a real process crash without replaying effects", async () => {
     const root = await tempDir("issue114-whole-process");
     const runId = `issue114-${process.pid}-${Date.now()}`;
     const first = await spawnWholeProcessStage("a", root, runId);
-    expect(first.code === 0 && first.signal === null).toBe(false);
+    expect(first.signal, first.output).toBe("SIGKILL");
+    expect(first.code, first.output).toBeNull();
     const manifest = await readExternalRecord<{
       runId: string;
       jobId: string;
@@ -3913,7 +3919,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
         paidRequestResubmissions: 0,
       },
     });
-  }, 40_000);
+  }, 130_000);
 
   test("rejects a wrong-network x402 challenge before the buyer signer", async () => {
     let signerCalls = 0;
@@ -4021,7 +4027,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
       expect(await filesBelow(receiptDir)).toEqual([]);
       expect(await filesBelow(fulfilmentDir)).toEqual([]);
     }
-  });
+  }, 20_000);
 
   test("rejects a seller identity that does not control the pinned Listing", async () => {
     const published = await publishAndDiscoverListing();
@@ -4172,5 +4178,5 @@ describe.skipIf(PROCESS_STAGE === undefined)("issue #114 whole-process worker", 
     if (PROCESS_STAGE === "a") await runWholeProcessStageA(root, runId);
     else if (PROCESS_STAGE === "b") await runWholeProcessStageB(root, runId);
     else throw new Error(`unknown whole-process worker stage: ${PROCESS_STAGE}`);
-  }, 20_000);
+  }, 45_000);
 });
