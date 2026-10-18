@@ -278,17 +278,22 @@ Both evidence loaders are optional members of
 `DacsVetTerminalBundleTransportRuntimeV1`, so existing implementations of the
 interface still conform.
 
-Native DEM live factories require a verifier-owned
+Native DEM and x402 live factories require a verifier-owned
 `context.authenticateSessionProfile(jobId)` callback, also configurable on the
 role runtime. It must authenticate the exact session's buyer and seller, the
 pinned Standard release and every module version from deployment authority
 independent of caller input and artifacts. It returns
 `{ status: "valid", releasePin, moduleVersions, roles }`, with exactly one
-`{ jobId, role, participant }` entry for each role. Every native operation and
+`{ jobId, role, participant }` entry for each role. Every live operation and
 inbound entry point rechecks this authority before effects; missing or conflicting
 admission refuses the action. The public BundleBinding resolver requires the same
 independent callback before deriving an address, and the Demos publication adapter
 checks it before discovery. Configure this authority for both roles before use.
+The x402 seller also rechecks the matched HTTP session before payment handling
+or retained-response delivery. Supply the callback again when reopening a paid
+session; a previously successful admission is never persisted as authority.
+An unanswered admission read keeps inbound validation `unavailable` (HTTP 503),
+so the durable sender can retry after the authority provider recovers.
 
 The fixed-price live factories also connect that runtime to the agreement
 worker. The first local objective `fail` stores a durable Vet invocation,

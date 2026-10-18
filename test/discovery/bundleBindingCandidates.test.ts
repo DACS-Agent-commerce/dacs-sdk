@@ -527,12 +527,15 @@ it("captures candidate and request bytes before asynchronous admission", async (
   const candidate = binding(address, one);
   const { value, fetched } = input([candidate], { [address]: one });
   const authenticate = value.authenticateSessionProfile;
+  let admissions = 0;
   value.authenticateSessionProfile = async () => {
+    admissions++;
     candidate.nativeAddress = "stor-" + "2".repeat(40);
     value.jobId = "01J8ME0SXKQ4T9V2RC5HJ6WX7F";
     return await authenticate();
   };
   await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({ disposition: "present" });
+  expect(admissions).toBe(1);
   expect(fetched).toEqual([address]);
 });
 
@@ -540,12 +543,20 @@ it("admits the requested orchestrator role independently of artifact parties", a
   const one = { ...copy("orchestrator"), parties: [{ role: "orchestrator", primaryClaim: SELLER }] };
   const address = "stor-" + "1".repeat(40);
   const candidate = binding(address, one, { role: "orchestrator", logicalAddress: bundleAddress(JOB_ID, "orchestrator") });
-  const { value } = input([candidate], { [address]: one }, {
-    role: "orchestrator", authenticateSessionProfile: () => ({ status: "valid", releasePin: DACS_STANDARD_PIN,
-      moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS, roles: [{ jobId: JOB_ID, role: "orchestrator", participant: SELLER }] }),
+  let admissions = 0;
+  const { value, fetched } = input([candidate], { [address]: one }, {
+    role: "orchestrator", authenticateSessionProfile: () => { admissions++; return { status: "valid", releasePin: DACS_STANDARD_PIN,
+      moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS, roles: [{ jobId: JOB_ID, role: "orchestrator", participant: SELLER }] }; },
     verifyCopy: () => ({ valid: true, signers: [SELLER], fullySigned: true, abortStanding: false }),
   });
   await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({ disposition: "present" });
+  expect(admissions).toBe(1);
+  expect(fetched).toEqual([address]);
+  fetched.length = 0;
+  value.roleHolder = OUTSIDER;
+  await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/role holder differs/);
+  expect(admissions).toBe(2);
+  expect(fetched).toEqual([]);
 });
 
 it("never invokes candidate accessors while capturing an unadmitted request", async () => {

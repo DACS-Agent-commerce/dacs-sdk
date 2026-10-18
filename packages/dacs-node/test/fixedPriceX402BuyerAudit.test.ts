@@ -1,4 +1,5 @@
 import { trustedSessionProfile } from "./helpers/sessionProfile.js";
+import { admitDacsX402LiveGraph } from "../src/sessionProfileAdmission.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1233,8 +1234,9 @@ async function completionHarness(
       record: { jobId: JOB_ID, buyer: BUYER, seller: SELLER },
     }),
   });
+  const authenticateSessionProfile = vi.fn((): unknown => trustedSessionProfile(JOB_ID, BUYER, SELLER));
   const context = {
-    authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
+    authenticateSessionProfile,
     role: "buyer",
     authority: BUYER,
     peerAuthority: SELLER,
@@ -1300,7 +1302,7 @@ async function completionHarness(
         publications,
       },
     } as never);
-  return { adapter, audit, authorize, context, copies, sellerProvider };
+  return { adapter, audit, authorize, context, copies, sellerProvider, authenticateSessionProfile };
 }
 
 // The strict verifier's use of the adapter: exact readback at each native
@@ -1363,6 +1365,32 @@ describe("buyer two-copy completion adapter", () => {
   });
   afterEach(() => {
     mocks.verifyCompleted.mockReset();
+  });
+
+  it("re-admits a recovered paid x402 graph before verifying both published copies", async () => {
+    const harness = await completionHarness("x402");
+    const paidOperation = { order: { jobId: JOB_ID, tracks: { payment: { state: "final" } } } };
+    const reopen = () => admitDacsX402LiveGraph({
+      role: "buyer", operations: { audit: harness.authorize }, router: {},
+    } as never, harness.context) as unknown as { operations: { audit(input: unknown): Promise<boolean> } };
+    const first = reopen();
+    harness.authenticateSessionProfile.mockReturnValueOnce(undefined);
+    await expect(first.operations.audit(paidOperation)).rejects.toThrow(/session profile/);
+    expect(harness.adapter.readAnchor).not.toHaveBeenCalled();
+    expect(mocks.verifyCompleted).not.toHaveBeenCalled();
+
+    // Reopening must preserve independently supplied authority, rather than a
+    // saved successful admission. The real audit re-reads both published copies.
+    const recovered = reopen();
+    await expect(recovered.operations.audit(paidOperation)).resolves.toBe(true);
+    expect(harness.authenticateSessionProfile).toHaveBeenCalledWith(JOB_ID);
+    for (const role of ["buyer", "seller"] as const) {
+      expect(harness.adapter.readAnchor).toHaveBeenCalledWith(harness.copies[role].nativeAddress);
+    }
+    const reads = harness.adapter.readAnchor.mock.calls.length;
+    harness.authenticateSessionProfile.mockReturnValueOnce(undefined);
+    await expect(recovered.operations.audit(paidOperation)).rejects.toThrow(/session profile/);
+    expect(harness.adapter.readAnchor).toHaveBeenCalledTimes(reads);
   });
 
   it.each(["x402", "pay-dem"] as const)(
