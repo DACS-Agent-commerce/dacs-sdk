@@ -7,6 +7,7 @@ import {
   isEvidenceBoundFaultAttestationBundle,
   isFaultAttestationBundle,
   isIdentityBundle,
+  isListing,
 } from "../../src/artifacts/validators.js";
 
 import {
@@ -229,6 +230,66 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     expect(verify).toHaveBeenCalledOnce();
     const extension = omitted.includes("signature") ? "signatures" : "signature";
     for (const value of [undefined, { note: "tampered extension" }]) {
+      const tampered = structuredClone(artifact);
+      if (value === undefined) delete tampered[extension];
+      else tampered[extension] = value;
+      backend.records.set(written.anchor.address, tampered);
+      expect((await repository.read(LOGICAL, SELLER, verify)).status).toBe("hash-mismatch");
+    }
+    expect(verify).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ...[
+      "agreementVersion",
+      "payeeBoundAgreementVersion",
+      "identityBoundAgreementVersion",
+      "identityBoundPayeeAgreementVersion",
+    ].map((discriminator) => ({
+      name: `Listing carrying ${discriminator}`,
+      record: () => {
+        const listing = { ...upstreamScenario().listing, [discriminator]: "1", signatures: ["signed extension"] };
+        expect(isListing(listing)).toBe(true);
+        return listing;
+      },
+      extension: discriminator,
+      omitted: ["signature"],
+    })),
+    { name: "Listing carrying competing Agreement versions", record: () => {
+      const listing = { ...upstreamScenario().listing, agreementVersion: "2", identityBoundAgreementVersion: "1" };
+      expect(isListing(listing)).toBe(true);
+      return listing;
+    }, extension: "agreementVersion", omitted: ["signature"] },
+    { name: "AttestationBundle carrying agreementVersion", record: () => {
+      const { evidenceBoundFaultBundleVersion: _version, faultedParty: _fault, ...scope } = upstreamScenario().terminalInput.bundle;
+      const bundle = { ...scope, bundleVersion: "1", agreementVersion: "1" };
+      expect(isAttestationBundle(bundle)).toBe(true);
+      return bundle;
+    }, extension: "agreementVersion", omitted: ["signatures", "anchoredByRole"] },
+    { name: "IdentityBundle carrying agreementVersion", record: () => {
+      const bundle = { ...upstreamScenario().listing.seller.identity, agreementVersion: "1" };
+      expect(isIdentityBundle(bundle)).toBe(true);
+      return bundle;
+    }, extension: "agreementVersion", omitted: ["presentation"] },
+    { name: "singular-signature record carrying agreementVersion", record: () => ({
+      ...RECORD, agreementVersion: "1", signatures: ["signed extension"],
+    }), extension: "agreementVersion", omitted: ["signature"] },
+  ])("keeps a $name on its own contract (CORE SIG-5)", async ({ record, extension, omitted }) => {
+    const artifact = record() as Record<string, unknown>;
+    const expectedHash = independentHash(artifact, omitted);
+    expect(expectedHash).not.toBe(independentHash(artifact, ["signatures"]));
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    const written = await repository.write(LOGICAL, artifact);
+    expect(written.binding.contentHash).toBe(expectedHash);
+    expect(backend.anchorMetadata[0]?.contentHash).toBe(expectedHash);
+    const verify = vi.fn(() => true);
+    expect((await repository.read(LOGICAL, SELLER, verify)).status).toBe("verified");
+    expect(verify).toHaveBeenCalledOnce();
+    for (const value of [undefined, "3"]) {
       const tampered = structuredClone(artifact);
       if (value === undefined) delete tampered[extension];
       else tampered[extension] = value;

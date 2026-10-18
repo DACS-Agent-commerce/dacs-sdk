@@ -25,30 +25,33 @@ import {
   isEvidenceBoundFaultAttestationBundle,
   isFaultAttestationBundle,
   isIdentityBundle,
+  isListing,
 } from "../artifacts/validators.js";
 import { attestationBundleHash } from "../agent/twoSidedBundle.js";
 import { identityBundleHash } from "../identity/bundle.js";
 
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The envelope members all four DACS-3 §8.5.1 Agreement versions carry. */
+function hasAgreementEnvelope(artifact: Record<string, unknown>): boolean {
+  return (
+    typeof artifact.jobId === "string" && artifact.jobId.length > 0 &&
+    isPlainRecord(artifact.listingRef) &&
+    Array.isArray(artifact.parties) &&
+    isPlainRecord(artifact.terms) &&
+    typeof artifact.derivedFromPattern === "string" &&
+    typeof artifact.generatedAt === "number" && Number.isSafeInteger(artifact.generatedAt) && artifact.generatedAt >= 0 &&
+    Array.isArray(artifact.signatures)
+  );
+}
+
 /** Select the artifact contract, never the mere presence of a signature field. */
 function artifactContentHash(artifact: Record<string, unknown>): string {
-  // DACS-3 §8.5.1 defines the same omission set for all four Agreement
-  // versions, including the identity-bound types not yet executable by this
-  // SDK. Select their hash contract from the exact, exclusive discriminator;
-  // full artifact/signature/authorization validation remains the reader's job.
-  const agreementVersions = [
-    "agreementVersion",
-    "payeeBoundAgreementVersion",
-    "identityBoundAgreementVersion",
-    "identityBoundPayeeAgreementVersion",
-  ].filter((key) => Object.prototype.hasOwnProperty.call(artifact, key));
-  if (agreementVersions.length > 0) {
-    if (agreementVersions.length !== 1 || artifact[agreementVersions[0]!] !== "1") {
-      throw new Error("Agreement requires exactly one supported version discriminator");
-    }
-    // Hash the original record: opposite-named signature extensions and all
-    // other additive fields remain authenticated.
-    return contentHash(artifact, "signatures");
-  }
+  // A record that passes a complete artifact validator keeps that artifact's
+  // contract. CORE SIG-5 makes every unknown member, including an
+  // Agreement-named one, ordinary signed data of that artifact.
+  if (isListing(artifact)) return contentHash(artifact);
   if (
     isAttestationBundle(artifact) ||
     isFaultAttestationBundle(artifact) ||
@@ -57,6 +60,25 @@ function artifactContentHash(artifact: Record<string, unknown>): string {
     return attestationBundleHash(artifact);
   }
   if (isIdentityBundle(artifact)) return identityBundleHash(artifact);
+  // DACS-3 §8.5.1 defines the same omission set for all four Agreement
+  // versions, including the identity-bound types not yet executable by this
+  // SDK. Select their hash contract from the exact, exclusive discriminator
+  // on a complete Agreement envelope; full artifact/signature/authorization
+  // validation remains the reader's job.
+  const agreementVersions = [
+    "agreementVersion",
+    "payeeBoundAgreementVersion",
+    "identityBoundAgreementVersion",
+    "identityBoundPayeeAgreementVersion",
+  ].filter((key) => Object.prototype.hasOwnProperty.call(artifact, key));
+  if (agreementVersions.length > 0 && hasAgreementEnvelope(artifact)) {
+    if (agreementVersions.length !== 1 || artifact[agreementVersions[0]!] !== "1") {
+      throw new Error("Agreement requires exactly one supported version discriminator");
+    }
+    // Hash the original record: opposite-named signature extensions and all
+    // other additive fields remain authenticated.
+    return contentHash(artifact, "signatures");
+  }
   // ChannelTranscript has no public SDK validator yet. Check its complete
   // envelope contract here; signature authentication remains the reader's job.
   if (

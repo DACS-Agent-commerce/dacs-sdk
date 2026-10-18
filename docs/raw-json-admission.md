@@ -88,9 +88,12 @@ and the corresponding artifact-specific signing and verification paths.
 and binding reads: all four Agreement types (including both identity-bound
 variants) and ChannelTranscripts omit `signatures`, terminal
 bundles use `attestationBundleHash`, and IdentityBundles use `identityBundleHash`.
-Agreement hashing requires exactly one supported version discriminator; artifact
-and signer authorization still require the reader's verifier. Hash support alone
-does not enable execution of identity-bound phases.
+A record that passes the complete Listing, terminal-bundle or IdentityBundle
+validator keeps that contract even when it carries an Agreement-named extension.
+The Agreement contract applies only to a complete Agreement envelope with
+exactly one supported version discriminator; artifact and signer authorization
+still require the reader's verifier. Hash support alone does not enable
+execution of identity-bound phases.
 Other records retain the singular-signature default. Opposite-named extensions
 remain in the content hash. Anchor metadata also retains a full-envelope hash,
 including all signature and per-copy fields. These hashes bind the stored
