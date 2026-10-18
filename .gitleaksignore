@@ -46,3 +46,8 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 
 # Seller kit (wire): test idempotency labels and a fixture file digest, reviewed 2026-10-18; not credentials.
 49463e76100441e947cd0ea3270c169d8e6eee76:test/wire/originalFixture.test.ts:generic-api-key:84
+
+# PR #268: ed25519 PUBLIC signer key in a SettlementEvidence test fixture, not a credential.
+# Source: a2dcd490, test/rails/crossChainHtlc.test.ts:6307, the signature's `signer` field.
+# Exact historical fingerprint only; re-review any finding at a rewritten commit.
+a2dcd490c4a0bd535f37c19a3d476768f0b0594e:test/rails/crossChainHtlc.test.ts:generic-api-key:6307
