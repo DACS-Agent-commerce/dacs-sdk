@@ -46,7 +46,7 @@ a replacement debit. The original fee metadata is retained after a successful
 audit, and every subsequent restart authenticates execution again.
 
 For a request carrying `priorAttempts`, `payDemSettle` performs only this audit;
-it never calls the submit-capable idempotency store, even if that store has lost
+it never calls the submit-capable idempotency claim, even if the rail log has lost
 its record. The complete history must contain 1–256 entries for the same native
 hash and network. The reconciler receives the canonical retained hash in
 `context.txHash` and must bind it to the original journal's signed nonce and
@@ -55,6 +55,21 @@ throw. An executed result or bound permanent failure must name that same hash.
 Repeated calls audit again without relying on an in-memory success cache. Once
 this bridge has retained an audit identity, later calls for the same key remain
 read-only even if they omit history; conflicting terms or hashes are refused.
+
+Native retained recovery requires `SettlementIdempotencyStore.readOutcome(key,
+binding)`; `createIdempotencyStore` implements it using the backing log's
+`readOutcome(key)`. The log returns an immutable `SettlementOutcomeRecord` or
+`null`, without acquiring or renewing a lease, changing a generation or writing
+an outcome. Legacy custom stores/logs may still use `once`, but must provide this
+lookup before retained recovery can proceed. Missing capability or malformed
+lookup data throws. The store validates the binding hash, parties and finality;
+the native bridge compares the retained hash against its in-process identity
+and the recorded outcome, then reads the log again after auditing execution.
+Different hashes, blocks or permanent proofs throw without returning a terminal
+failure or overwriting the rail log. An old success can still become a bound
+failure for that same transaction. Same-key bridge calls are serialized so a
+slow submission cannot be overtaken by a conflicting audit; different keys
+remain independent. An empty log never grants another submission during audit.
 
 ## Custom native clients
 

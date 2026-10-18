@@ -119,6 +119,8 @@ export type SettlementOutcomeWrite =
   | { status: "stale" | "conflict" };
 
 export interface SettlementLog {
+  /** Read an immutable outcome without acquiring a lease or changing a generation. */
+  readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
   claimIntent(input: Readonly<{
     key: string;
@@ -186,6 +188,15 @@ export interface SettlementReplayAuthorization {
 }
 
 export interface SettlementIdempotencyStore {
+  /**
+   * Read and validate a recorded outcome under these exact terms, without
+   * claiming an intent. Required for native retained-transaction audits.
+   * `null` means no recorded outcome, never permission to submit again.
+   */
+  readOutcome?(
+    key: string,
+    binding: Readonly<SettlementBinding>,
+  ): Promise<SettleResult | null>;
   /**
    * Run one settlement under a generation-fenced write-ahead protocol.
    *
@@ -532,6 +543,10 @@ export function createInMemorySettlementLog(): SettlementLog {
     record.lease.expiresAt > input.now;
 
   return {
+    async readOutcome(key) {
+      const outcome = records.get(key)?.outcome;
+      return outcome === undefined ? null : cloneOutcome(outcome);
+    },
     async claimIntent(input) {
       const expiresAt = leaseExpiry(input.now, input.leaseDurationMs);
       const existing = records.get(input.key);
@@ -670,6 +685,7 @@ type BoundSettlementLog = Readonly<{
 function settlementLogMethod<K extends keyof SettlementLog>(
   log: SettlementLog,
   name: K,
+  optional = false,
 ): SettlementLog[K] {
   let cursor: object | null = log;
   while (cursor !== null) {
@@ -686,6 +702,7 @@ function settlementLogMethod<K extends keyof SettlementLog>(
     }
     cursor = Object.getPrototypeOf(cursor) as object | null;
   }
+  if (optional) return undefined as SettlementLog[K];
   throw new DacsError(`settlement log is missing ${String(name)}`);
 }
 
@@ -694,6 +711,7 @@ function captureSettlementLog(log: SettlementLog): BoundSettlementLog {
     throw new DacsError("settlement log must be a stable object capability");
   }
   return Object.freeze({
+    readOutcome: settlementLogMethod(log, "readOutcome", true),
     claimIntent: settlementLogMethod(log, "claimIntent"),
     isCurrent: settlementLogMethod(log, "isCurrent"),
     grantRecovery: settlementLogMethod(log, "grantRecovery"),
@@ -772,6 +790,31 @@ export function createIdempotencyStore(
   };
 
   return {
+    async readOutcome(key, binding) {
+      const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
+      const bindingHash = settlementBindingHash(capturedBinding);
+      if (settlementKey(capturedBinding.railId, capturedBinding.jobId, capturedBinding.phaseIndex) !== key) {
+        throw new DacsError("settlement outcome lookup binding does not match its idempotency key");
+      }
+      if (durable.readOutcome === undefined) {
+        throw new DacsError("settlement log requires read-only outcome lookup for retained recovery");
+      }
+      const flying = inflight.get(key);
+      if (flying !== undefined) {
+        if (flying.bindingHash !== bindingHash) {
+          throw new DacsError(`settlement ${key} is already running under different terms`);
+        }
+        await flying.promise;
+      }
+      const raw = await durable.readOutcome(key);
+      if (raw === null) return null;
+      const outcome = captureStoredOutcome(raw, "settlement read-only outcome");
+      if (outcome.bindingHash !== bindingHash) {
+        throw new DacsError(`settlement ${key} outcome binding conflicts with requested terms`);
+      }
+      return captureBoundResult(outcome.result as SettleResult, capturedBinding,
+        "settlement read-only outcome") as SettleResult;
+    },
     async once(key, binding, submit, reconcile) {
       const capturedBinding = frozenClone(
         binding,

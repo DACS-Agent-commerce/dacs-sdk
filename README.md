@@ -637,7 +637,14 @@ even when its rail log is empty. All retained native attempts must name the same
 hash and network (at most 256 entries). The reconciler receives that canonical
 hash as `context.txHash`; it must load the original prepared-transfer journal and
 authenticate its signed nonce and payment tuple, throwing if the journal is
-missing or conflicting. Repeat audits always reread execution. Every request
+missing or conflicting. Retained recovery also requires `readOutcome(key, binding)`
+on the settlement store (and `readOutcome(key)` on its backing log). This read
+must return the immutable recorded outcome or `null` without claiming or renewing
+a generation. The bridge checks the exact payment binding and transaction
+identity before and after the execution read. Conflicting history, cached
+identities, blocks or permanent proofs withhold a result without an outcome write
+or another debit. Missing lookup support fails closed; `null` never grants submit
+authority. Repeat audits always reread execution. Every request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and

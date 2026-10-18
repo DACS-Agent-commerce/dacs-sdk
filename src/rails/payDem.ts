@@ -2111,6 +2111,12 @@ export function payDemSettle(
     "once",
     "pay-dem settlement store once",
   );
+  const readOutcomeProperty = stableDataProperty(store, "readOutcome", "pay-dem settlement store readOutcome");
+  const storeReadOutcome = !readOutcomeProperty.found || readOutcomeProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
+        store, "readOutcome", "pay-dem settlement store readOutcome",
+      );
   const configuredRecipient = optionalStableString(
     cfg,
     "recipient",
@@ -2191,6 +2197,9 @@ export function payDemSettle(
     context: Readonly<PayDemSettlementRecoveryContext>;
     txHash: string;
   }>>();
+  // Keep a slow submit/reconcile from being overtaken by another call for the
+  // same effect. Different settlement keys remain independent.
+  const operations = new Map<string, Promise<SettleResult>>();
   return async (req) => {
     const {
       amount,
@@ -2280,44 +2289,7 @@ export function payDemSettle(
       payee: payeeAddress,
       amountOs,
     }) satisfies Readonly<PayDemSettlementRecoveryContext>;
-    const priorAuthenticated = authenticatedResults.get(key);
-    if (
-      priorAuthenticated !== undefined &&
-      !sameRecoveryContext(priorAuthenticated.context, context) &&
-      priorAuthenticated.result.txHash.length > 0
-    ) {
-      throw new DacsError(
-        "pay-dem retained intent/outcome belongs to different payment terms; refusing reconciliation or rebroadcast",
-      );
-    }
     const suppliedTxHash = retainedPayDemHash(req, network);
-    const retainedAudit = retainedAudits.get(key);
-    if (retainedAudit !== undefined &&
-        (!sameRecoveryContext(retainedAudit.context, context) ||
-          (suppliedTxHash !== undefined && suppliedTxHash !== retainedAudit.txHash))) {
-      throw new DacsError("pay-dem retained audit belongs to different payment terms or transaction; refusing reuse or rebroadcast");
-    }
-    const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash;
-    if (retainedTxHash !== undefined) {
-      // SessionStore and the rail log can be restored independently. A fresh
-      // store.once claim is therefore unsafe even for a saved success. Audit
-      // every retained native attempt before any submit-capable operation, and
-      // reread on every invocation rather than trusting authenticatedResults.
-      retainedAudits.set(key, { context, txHash: retainedTxHash });
-      authenticatedResults.delete(key);
-      if (reconcile === undefined) {
-        throw new DacsError("pay-dem retained transaction requires read-only reconciliation; refusing reuse or rebroadcast");
-      }
-      const recovered = await reconcile(Object.freeze({ ...context, txHash: retainedTxHash }));
-      if (recovered === null) {
-        throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
-      }
-      const captured = capturePayDemReconciliation(recovered, context);
-      if (captured.txHash !== retainedTxHash) {
-        throw new DacsError("pay-dem reconciliation does not match the retained transaction; refusing reuse or rebroadcast");
-      }
-      return publicPayDemResult(captured, expectedPayee);
-    }
     const binding = Object.freeze({
       bindingVersion: "1",
       railId,
@@ -2332,86 +2304,165 @@ export function payDemSettle(
       network,
       finality: Object.freeze({ model: "bft-final" }),
     }) satisfies Readonly<SettlementBinding>;
-    const submit = async (effectFence?: Readonly<SettlementEffectFence>) => {
-      const submitted = await railSettle({
-        recipient: payeeAddress,
-        amount: amountOs,
-        network,
-        recovery: context,
-      }, effectFence);
-      const captured = captureFreshPayDemResult(submitted, context);
-      authenticatedResults.set(key, { context, result: captured });
-      return captured;
-    };
-    const reconcileForStore: SettlementReconcile | undefined = reconcile === undefined
-      ? undefined
-      : async (reconcileKey) => {
-          if (reconcileKey !== key) {
-            throw new DacsError(
-              "pay-dem idempotency store requested reconciliation under a different settlement key",
-            );
-          }
-          const found = await reconcile(context);
-          if (found === null) return null;
-          const captured = capturePayDemReconciliation(found, context);
-          authenticatedResults.set(key, { context, result: captured });
-          return captured;
-        };
-    const result = await storeOnce(
-      key,
-      binding,
-      submit,
-      reconcileForStore,
-    );
-    let captured = capturePayDemResult(
-      result,
-      context,
-      "cached or completed pay-dem settlement",
-    );
-    const known = authenticatedResults.get(key);
-    if (
-      known === undefined ||
-      !sameRecoveryContext(known.context, context) ||
-      !samePayDemResult(known.result, captured)
-    ) {
-      if (reconcile === undefined) {
-        throw new DacsError(
-          "pay-dem durable outcome cannot be authenticated after restart without reconciliation; refusing reuse or rebroadcast",
-        );
-      }
-      const recovered = await reconcile(context);
-      if (recovered === null) {
-        throw new DacsError(
-          "pay-dem durable outcome contradicts reconciliation proof of absence; refusing reuse or rebroadcast",
-        );
-      }
-      const reconciled = capturePayDemReconciliation(recovered, context);
-      if (captured.errorClass === "permanent" && !samePayDemResult(captured, reconciled)) {
-        throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
-      }
+    const previous = operations.get(key);
+    const operation = (previous ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      const priorAuthenticated = authenticatedResults.get(key);
       if (
-        reconciled.txHash !== captured.txHash ||
-        reconciled.blockNumber !== captured.blockNumber
+        priorAuthenticated !== undefined &&
+        !sameRecoveryContext(priorAuthenticated.context, context) &&
+        priorAuthenticated.result.txHash.length > 0
       ) {
         throw new DacsError(
-          "pay-dem durable outcome does not match the authoritative reconciled transaction",
+          "pay-dem retained intent/outcome belongs to different payment terms; refusing reconciliation or rebroadcast",
         );
       }
-      authenticatedResults.set(key, { context, result: reconciled });
-      captured = reconciled;
-    }
-    // The low-level native rail reports the exact on-chain address. The public
-    // settlement seam must return the request-bound identifier verbatim so the
-    // orchestrator can check it without applying rail-specific normalization.
-    // Verify the equivalence here before restoring that identifier.
-    const resultPayeeAddress =
-      demosAddressFromClaim(captured.payee) ??
-      normalizeDemosNativeAddress(captured.payee);
-    if (resultPayeeAddress !== payeeAddress) {
-      throw new DacsError(
-        `pay-dem settlement returned payee ${captured.payee}, expected Demos address ${payeeAddress}`,
+      const retainedAudit = retainedAudits.get(key);
+      if (retainedAudit !== undefined &&
+          (!sameRecoveryContext(retainedAudit.context, context) ||
+            (suppliedTxHash !== undefined && suppliedTxHash !== retainedAudit.txHash))) {
+        throw new DacsError("pay-dem retained audit belongs to different payment terms or transaction; refusing reuse or rebroadcast");
+      }
+      const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash;
+      if (retainedTxHash !== undefined) {
+        // Independent session/rail snapshots must agree on the effect identity.
+        // Never let history B discard an authenticated or durably recorded A.
+        const assertHash = (result: SettleResult) => {
+          if (result.txHash.length > 0 && result.txHash !== retainedTxHash) {
+            retainedAudits.set(key, { context, txHash: result.txHash });
+            throw new DacsError("pay-dem retained transaction conflicts with the rail outcome; refusing reuse or rebroadcast");
+          }
+        };
+        if (priorAuthenticated !== undefined) assertHash(priorAuthenticated.result);
+        // Remember the identity before awaiting the store: uncertainty must not
+        // restore submit authority when a subsequent call omits its history.
+        retainedAudits.set(key, { context, txHash: retainedTxHash });
+        if (storeReadOutcome === undefined) {
+          throw new DacsError("pay-dem retained recovery requires read-only outcome lookup; refusing reuse or rebroadcast");
+        }
+        const readOutcome = async () => {
+          const raw = await storeReadOutcome(key, binding);
+          if (raw === null) return null;
+          const outcome = capturePayDemResult(raw, context, "pay-dem read-only rail outcome");
+          if (!outcome.ok && outcome.errorClass !== "permanent") {
+            throw new DacsError("pay-dem read-only rail outcome is not definitive");
+          }
+          assertHash(outcome);
+          return outcome;
+        };
+        const before = await readOutcome();
+        if (reconcile === undefined) {
+          throw new DacsError("pay-dem retained transaction requires read-only reconciliation; refusing reuse or rebroadcast");
+        }
+        const recovered = await reconcile(Object.freeze({ ...context, txHash: retainedTxHash }));
+        if (recovered === null) {
+          throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
+        }
+        const captured = capturePayDemReconciliation(recovered, context);
+        if (captured.txHash !== retainedTxHash) {
+          throw new DacsError("pay-dem reconciliation does not match the retained transaction; refusing reuse or rebroadcast");
+        }
+        // A different store/bridge can finish while the chain read is pending.
+        // Recheck without a lease or outcome write before returning any verdict.
+        const after = await readOutcome();
+        for (const existing of [priorAuthenticated?.result, before, after]) {
+          if (existing === undefined || existing === null || existing.txHash.length === 0) continue;
+          if (existing.blockNumber !== undefined && existing.blockNumber !== captured.blockNumber) {
+            throw new DacsError("pay-dem retained transaction block conflicts with the rail outcome");
+          }
+          if (existing.errorClass === "permanent" && !samePayDemResult(existing, captured)) {
+            throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
+          }
+        }
+        authenticatedResults.set(key, { context, result: captured });
+        return publicPayDemResult(captured, expectedPayee);
+      }
+      const submit = async (effectFence?: Readonly<SettlementEffectFence>) => {
+        const submitted = await railSettle({
+          recipient: payeeAddress,
+          amount: amountOs,
+          network,
+          recovery: context,
+        }, effectFence);
+        const captured = captureFreshPayDemResult(submitted, context);
+        authenticatedResults.set(key, { context, result: captured });
+        return captured;
+      };
+      const reconcileForStore: SettlementReconcile | undefined = reconcile === undefined
+        ? undefined
+        : async (reconcileKey) => {
+            if (reconcileKey !== key) {
+              throw new DacsError(
+                "pay-dem idempotency store requested reconciliation under a different settlement key",
+              );
+            }
+            const found = await reconcile(context);
+            if (found === null) return null;
+            const captured = capturePayDemReconciliation(found, context);
+            authenticatedResults.set(key, { context, result: captured });
+            return captured;
+          };
+      const result = await storeOnce(
+        key,
+        binding,
+        submit,
+        reconcileForStore,
       );
+      let captured = capturePayDemResult(
+        result,
+        context,
+        "cached or completed pay-dem settlement",
+      );
+      const known = authenticatedResults.get(key);
+      if (
+        known === undefined ||
+        !sameRecoveryContext(known.context, context) ||
+        !samePayDemResult(known.result, captured)
+      ) {
+        if (reconcile === undefined) {
+          throw new DacsError(
+            "pay-dem durable outcome cannot be authenticated after restart without reconciliation; refusing reuse or rebroadcast",
+          );
+        }
+        const recovered = await reconcile(context);
+        if (recovered === null) {
+          throw new DacsError(
+            "pay-dem durable outcome contradicts reconciliation proof of absence; refusing reuse or rebroadcast",
+          );
+        }
+        const reconciled = capturePayDemReconciliation(recovered, context);
+        if (captured.errorClass === "permanent" && !samePayDemResult(captured, reconciled)) {
+          throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
+        }
+        if (
+          reconciled.txHash !== captured.txHash ||
+          reconciled.blockNumber !== captured.blockNumber
+        ) {
+          throw new DacsError(
+            "pay-dem durable outcome does not match the authoritative reconciled transaction",
+          );
+        }
+        authenticatedResults.set(key, { context, result: reconciled });
+        captured = reconciled;
+      }
+      // The low-level native rail reports the exact on-chain address. The public
+      // settlement seam must return the request-bound identifier verbatim so the
+      // orchestrator can check it without applying rail-specific normalization.
+      // Verify the equivalence here before restoring that identifier.
+      const resultPayeeAddress =
+        demosAddressFromClaim(captured.payee) ??
+        normalizeDemosNativeAddress(captured.payee);
+      if (resultPayeeAddress !== payeeAddress) {
+        throw new DacsError(
+          `pay-dem settlement returned payee ${captured.payee}, expected Demos address ${payeeAddress}`,
+        );
+      }
+      return publicPayDemResult(captured, expectedPayee);
+    });
+    operations.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (operations.get(key) === operation) operations.delete(key);
     }
-    return publicPayDemResult(captured, expectedPayee);
   };
 }

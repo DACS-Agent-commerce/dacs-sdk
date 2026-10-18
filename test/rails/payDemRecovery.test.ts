@@ -80,7 +80,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
       return { ...executed(), chainId: network };
     });
     const settle = payDemSettle({ address: payer, settle: f.submit }, { network },
-      { store: { once: f.once }, reconcile });
+      { store: { once: f.once, readOutcome: async () => null }, reconcile });
     const history = Array.from({ length: 256 }, () => ({
       ...prior(), chainId: network, txHash: `0x${txHash.toUpperCase()}`,
     }));
@@ -180,7 +180,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     expect(f.submit).not.toHaveBeenCalled();
     for (const req of [{ ...withoutHistory, amount: "2" },
       request([{ ...prior(), txHash: "34".repeat(32) }])]) {
-      await expect(f.settle(req)).rejects.toThrow(/retained audit belongs to different/);
+      await expect(f.settle(req)).rejects.toThrow(/retained (?:audit|intent\/outcome) belongs to different/);
     }
     expect(reconcile).toHaveBeenCalledTimes(2);
     expect(f.once).not.toHaveBeenCalled();

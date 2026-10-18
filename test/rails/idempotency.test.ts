@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
@@ -737,5 +737,104 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     expect(() => settlementKey("x402", "default:job", 0)).toThrow(
       /colon-free job id/,
     );
+  });
+});
+
+describe("read-only settlement outcome lookup", () => {
+  test("absence and an unresolved intent never acquire, renew, release or write", async () => {
+    const log = createInMemorySettlementLog();
+    const claim = vi.spyOn(log, "claimIntent");
+    const write = vi.spyOn(log, "putOutcome");
+    const release = vi.spyOn(log, "releaseIntent");
+    const recover = vi.spyOn(log, "grantRecovery");
+    const store = createIdempotencyStore(log, { now: () => 100, leaseDurationMs: 10 });
+    await expect(store.readOutcome!(KEY, binding())).resolves.toBeNull();
+    expect(claim).not.toHaveBeenCalled();
+    const held = await log.claimIntent({ key: KEY, bindingHash: settlementBindingHash(binding()),
+      owner: "original", now: 100, leaseDurationMs: 10 });
+    await expect(store.readOutcome!(KEY, binding())).resolves.toBeNull();
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(write).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(recover).not.toHaveBeenCalled();
+    if (held.status !== "acquired") throw new Error("expected initial generation");
+    await expect(log.isCurrent({ key: KEY, bindingHash: held.bindingHash, lease: held.lease, now: 101 })).resolves.toBe(true);
+  });
+
+  test("returns a frozen detached outcome after restart and rejects changed binding/key", async () => {
+    const log = createInMemorySettlementLog();
+    const store = createIdempotencyStore(log);
+    const original = ok("recorded-effect");
+    await store.once(KEY, binding(), async () => original);
+    const restarted = createIdempotencyStore(log);
+    const read = await restarted.readOutcome!(KEY, binding());
+    expect(read).toEqual(original);
+    expect(read).not.toBe(original);
+    expect(Object.isFrozen(read)).toBe(true);
+    expect(Object.isFrozen(read!.finality)).toBe(true);
+    await expect(restarted.readOutcome!(KEY, binding({ amount: "2000000" }))).rejects.toThrow(/binding conflicts/);
+    await expect(restarted.readOutcome!("other-key", binding())).rejects.toThrow(/does not match its idempotency key/);
+  });
+
+  test("waits for the same-store submission without acquiring another generation", async () => {
+    const log = createInMemorySettlementLog();
+    const claim = vi.spyOn(log, "claimIntent");
+    const store = createIdempotencyStore(log);
+    let finish!: (result: SettleResult) => void;
+    let started!: () => void;
+    const submitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<SettleResult>((resolve) => { finish = resolve; });
+    const pending = store.once(KEY, binding(), async () => { started(); return gate; });
+    await submitted;
+    const read = store.readOutcome!(KEY, binding());
+    await expect(store.readOutcome!(KEY, binding({ amount: "2000000" }))).rejects.toThrow(/different terms/);
+    finish(ok("in-flight-effect"));
+    await pending;
+    await expect(read).resolves.toMatchObject({ txHash: "in-flight-effect" });
+    expect(claim).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([undefined, {}, { bindingHash: "invalid", result: ok("effect") },
+    { bindingHash: settlementBindingHash(binding()), result: { ...ok("effect"), payer: "other" } },
+    { bindingHash: settlementBindingHash(binding()), result: { ...ok("effect"), finality: { model: "other" } } },
+  ])("rejects malformed or unbound lookup response %#", async (raw) => {
+    const log = { ...createInMemorySettlementLog(), readOutcome: async () => raw } as SettlementLog;
+    await expect(createIdempotencyStore(log).readOutcome!(KEY, binding())).rejects.toThrow();
+  });
+
+  test("legacy logs fail closed for read-only recovery while ordinary once remains compatible", async () => {
+    const { readOutcome: _read, ...legacy } = createInMemorySettlementLog();
+    const store = createIdempotencyStore(legacy);
+    await expect(store.readOutcome!(KEY, binding())).rejects.toThrow(/requires read-only outcome lookup/);
+    await expect(store.once(KEY, binding(), async () => ok("legacy-effect"))).resolves.toMatchObject({ txHash: "legacy-effect" });
+  });
+
+  test("captures the lookup receiver and method before awaiting caller-controlled code", async () => {
+    const log = createInMemorySettlementLog();
+    await createIdempotencyStore(log).once(KEY, binding(), async () => ok("original-effect"));
+    class LookupLog implements SettlementLog {
+      #backing = log;
+      claimIntent = log.claimIntent;
+      isCurrent = log.isCurrent;
+      grantRecovery = log.grantRecovery;
+      putOutcome = log.putOutcome;
+      releaseIntent = log.releaseIntent;
+      readOutcome(key: string) { return this.#backing.readOutcome!(key); }
+    }
+    const lookup = new LookupLog();
+    const captured = createIdempotencyStore(lookup);
+    lookup.readOutcome = async () => { throw new Error("replaced receiver method"); };
+    await expect(captured.readOutcome!(KEY, binding())).resolves.toMatchObject({ txHash: "original-effect" });
+    const cause = new Error("lookup timed out");
+    log.readOutcome = async () => { throw cause; };
+    await expect(captured.readOutcome!(KEY, binding())).rejects.toBe(cause);
+  });
+
+  test("does not invoke a lookup accessor", () => {
+    const log = createInMemorySettlementLog();
+    let reads = 0;
+    Object.defineProperty(log, "readOutcome", { get() { reads += 1; return async () => null; } });
+    expect(() => createIdempotencyStore(log)).toThrow(/readOutcome must be stable callable data/);
+    expect(reads).toBe(0);
   });
 });

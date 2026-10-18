@@ -1175,6 +1175,53 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     },
   );
 
+  test("conflicting session history cannot turn an executed rail payment into terminal failure", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+      supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    const hashA = "12".repeat(32);
+    const hashB = "34".repeat(32);
+    const payer = "ab".repeat(32);
+    const payee = sellerDid.split(":").at(-1)!;
+    const oldSuccess: SettleResult = { ok: true, txHash: hashB, chainId: "demos", payer,
+      payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
+    const first = await makeDeps(store, { kv, settle: async () => oldSuccess,
+      anchor: async (name, value) => {
+        if (name === sessionAnchorName.evidence("job-1")) throw new Error("checkpoint crash");
+        const ref = `stor:${name}`; kv.set(ref, value as Record<string, unknown>); return ref;
+      },
+    });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("checkpoint crash");
+    const railStore = createIdempotencyStore();
+    await railStore.once("pay-dem:job-1:0", {
+      bindingVersion: "1", railId: "pay-dem", jobId: "job-1", phaseIndex: 0, phase: "pay-dem",
+      amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer, payee,
+      network: "demos", finality: { model: "bft-final" },
+    }, async () => ({ ...oldSuccess, txHash: hashA, payee }));
+    const once = vi.spyOn(railStore, "once");
+    const submit = vi.fn(async () => { throw new Error("must not broadcast"); });
+    const reconcile = vi.fn(async () => ({ ok: false as const, txHash: hashB, chainId: "demos", payer, payee,
+      blockNumber: 42, txRefKind: "demos", errorClass: "permanent" as const, amountOs: "1000000000",
+      failureProof: { kind: "demos-failed-record" as const, txHash: hashB, payer, payee,
+        nonce: 9, blockNumber: 42, amountOs: "1000000000" } }));
+    const audit = payDemSettle({ address: payer, settle: submit }, {}, { store: railStore, reconcile });
+    const before = await store.load("job-1");
+    const beforeEvidence = structuredClone([...kv]);
+    const resumed = await makeDeps(store, { kv, resumeSettlement: audit });
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/conflicts with the rail outcome|different.*transaction/);
+      expect(await store.load("job-1")).toEqual(before);
+      expect([...kv]).toEqual(beforeEvidence);
+    }
+    expect(once).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(resumed.settleCalls.n).toBe(0);
+  });
+
   test.each(["checkpoint", "anchored evidence"].flatMap((saved) =>
     ["absent", "indeterminate", "timeout", "hash", "network", "payer", "payee", "block", "fee", "proof amount", "stale success", "missing reconciler"]
       .map((reply) => ({ saved, reply }))),
