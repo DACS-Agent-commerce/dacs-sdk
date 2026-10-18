@@ -1,5 +1,6 @@
 import { types as nodeTypes } from "node:util";
 
+import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import {
@@ -28,7 +29,10 @@ const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 const DEFAULT_INCLUSION_POLL_INTERVAL_MS = 500;
 const DEFAULT_STATUS_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS = 60_000;
+const DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS = 30_000;
 const DACS_DEMOS_INCLUDED_STATE = "included";
+const DEMOS_EXECUTED_RECORD_STATUS = "confirmed";
+const DEMOS_FAILED_RECORD_STATUS = "failed";
 
 type AnyMethod = (...args: never[]) => unknown;
 
@@ -164,6 +168,15 @@ function canonicalDemosTxHash(value: unknown): string | null {
  * A transfer that doesn't reach observed inclusion settles `ok: false` and no
  * finality is stamped — evidence is never minted for a payment we didn't see land.
  *
+ * EXECUTION-GATED (#338): inclusion alone is not execution. A node can include a
+ * transaction and record it `failed` (for example a stale nonce). After the
+ * status index reports `included`, the rail reads the node's transaction record
+ * for the signed hash and reports success only for a `confirmed` record at the
+ * same block whose body is exactly the prepared transfer (hash, payer, payee,
+ * nonce, amount). A `failed` record settles `ok: false`; a record the bounded
+ * read cannot establish stays indeterminate (`ok: false` with the hash retained,
+ * so the settlement intent stays held). Neither ever causes another broadcast.
+ *
  * Amount units (§9.5.9 step 2): the agreement's DACS `Price.amount` is a canonical
  * DECIMAL DEM string; the chain moves integer OS base units (1 DEM = 10^9 OS). The
  * `payDemSettle` seam is the converter — it asserts the currency is DEM and turns
@@ -230,6 +243,15 @@ export interface PayDemSettlementRecoveryContext {
  */
 export interface PayDemReconciledSettlement extends SettleResult {
   amountOs: string;
+  /**
+   * The reconciler's statement that the node's transaction record for
+   * `txHash` is `confirmed` at `blockNumber` and binds the payer, payee and
+   * amount (#338). A status-index `included` alone is not execution: the SDK
+   * refuses a reconciliation without this, as {@link payDemSettleCore} refuses
+   * a transfer result without {@link DemosTransferResult.execution}. It is not
+   * persisted with the settlement.
+   */
+  execution: "executed";
 }
 
 /**
@@ -237,11 +259,24 @@ export interface PayDemReconciledSettlement extends SettleResult {
  * transfer for this tuple landed, but cannot by itself revoke an earlier process
  * or signed transaction. Native DEM therefore remains fail-closed after absence
  * unless a higher-level adapter supplies a separately fenced replay primitive.
- * An indeterminate or non-final observation must throw.
+ * Return a settlement only after reading the node's transaction record for the
+ * hash and finding it `confirmed` at the inclusion block for this payer, payee
+ * and amount, and set `execution: "executed"`. A node reports `included` in its
+ * status index for a transaction whose record `failed` (#338), so inclusion
+ * alone must not be returned as a settlement. A bound `failed` record may
+ * return `PayDemReconciledFailure` with a permanent class and exact failure
+ * proof. Indeterminate or non-final observations must throw.
  */
+export interface PayDemReconciledFailure extends SettleResult {
+  ok: false;
+  amountOs: string;
+  errorClass: "permanent";
+  failureProof: DemosFailedRecordProof;
+}
+
 export type PayDemSettlementReconcile = (
   context: Readonly<PayDemSettlementRecoveryContext>,
-) => Promise<PayDemReconciledSettlement | null>;
+) => Promise<PayDemReconciledSettlement | PayDemReconciledFailure | null>;
 
 /** The result of submitting a native transfer and independently observing finality. */
 export interface DemosTransferResult {
@@ -250,10 +285,22 @@ export interface DemosTransferResult {
   /**
    * The terminal transaction state the client observed. DACS-4 §9.5.9 permits
    * `bft-final` only for the exact Demos `included` state; every other token
-   * (`confirmed`, `finalized`, `failed`, `timeout`, a nonterminal poll, …)
-   * fails closed.
+   * (`confirmed`, `finalized`, `failed`, `timeout`, `indeterminate`, a
+   * nonterminal poll, …) fails closed. A client reports `included` with
+   * `ok: true` only after the node's transaction record shows the prepared
+   * transfer executed (#338).
    */
   state?: string;
+  /**
+   * `"executed"` when the client read the node's transaction record for the
+   * signed hash and it shows the prepared transfer executed at `blockNumber`
+   * (#338). Inclusion alone is not execution: {@link payDemSettleCore} reports
+   * success only when this is present, so a client that observed only the
+   * status index fails closed.
+   */
+  execution?: "executed";
+  /** Bound terminal failed record; a status-index failure alone cannot issue it. */
+  failureProof?: DemosFailedRecordProof;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
   /** Confirmed transfer amount plus network fee, in integer OS. */
@@ -273,7 +320,12 @@ export const TERMINAL_INCLUDED = new Set([DACS_DEMOS_INCLUDED_STATE]);
 export interface DemosNativeClient {
   /** The payer's Demos address. */
   address: string;
-  /** Sign, confirm, and broadcast a native DEM transfer; resolve its receipt. */
+  /**
+   * Sign, confirm, and broadcast a native DEM transfer; resolve its receipt.
+   * Resolve `ok: true, state: "included", execution: "executed"` only when the
+   * node's transaction record for the signed hash shows the exact prepared
+   * transfer executed; inclusion alone is not success (#338).
+   */
   transfer(args: {
     to: string;
     amountOs: bigint;
@@ -420,19 +472,19 @@ export function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   effectFence?: Readonly<SettlementEffectFence>,
-): Promise<SettleResult>;
+): Promise<PayDemRailResult>;
 export function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   defaultNetwork?: string,
   effectFence?: Readonly<SettlementEffectFence>,
-): Promise<SettleResult>;
+): Promise<PayDemRailResult>;
 export async function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   defaultNetworkOrFence: string | Readonly<SettlementEffectFence> = "demos",
   effectFenceOverride?: Readonly<SettlementEffectFence>,
-): Promise<SettleResult> {
+): Promise<PayDemRailResult> {
   // Capture all caller-controlled values and the effect method before the first
   // await. A mutable parameter/client object must not be able to change the
   // transfer destination and then make the returned evidence attest a different
@@ -576,11 +628,19 @@ export async function payDemSettleCore(
     "blockNumber",
     "pay-dem transfer result blockNumber",
   );
+  const executionProperty = stableDataProperty(
+    response,
+    "execution",
+    "pay-dem transfer result execution",
+  );
   const totalDebitProperty = stableDataProperty(
     response,
     "totalDebitOs",
     "pay-dem transfer result totalDebitOs",
   );
+  const failureProperty = stableDataProperty(response, "failureProof", "pay-dem failure proof");
+  const failureProof = failureProperty.value === undefined ? undefined :
+    snapshotCanonicalJsonRead(failureProperty.value, "pay-dem failure proof");
   const txHash = hashProperty.found
     ? canonicalDemosTxHash(hashProperty.value)
     : null;
@@ -611,15 +671,27 @@ export async function payDemSettleCore(
   // Observed inclusion (§9.5.9): a verifiable tx id AND the exact terminal
   // `included` state AND the finality-witness block height. Broadcast acceptance
   // or an unregistered status alias is NOT finality — without these three, we do
-  // not stamp bft-final, because the tx may never have landed.
+  // not stamp bft-final, because the tx may never have landed. Inclusion is not
+  // execution either (#338): the client must also attest that the node's
+  // transaction record shows the transfer executed.
   const observedFinal =
     okProperty.value === true &&
     txHash.length > 0 &&
     state === DACS_DEMOS_INCLUDED_STATE &&
+    executionProperty.value === "executed" &&
     Number.isSafeInteger(blockNumber) &&
     (blockNumber as number) >= 0;
 
   if (!observedFinal) {
+    const failed = {
+      ok: false, txHash, chainId, payer, payee: recipient,
+      errorClass: "permanent" as const, failureProof,
+      blockNumber, txRefKind: "demos",
+    };
+    if (okProperty.value === false && state === "failed" &&
+        hasDefinitiveDemosFailure(failed, amount, chainId)) {
+      return failed as PayDemRailResult;
+    }
     return {
       ok: false,
       txHash,
@@ -633,12 +705,12 @@ export async function payDemSettleCore(
 
   return {
     ok: true,
+    execution: "executed",
     txHash,
     chainId,
     payer,
     payee: recipient,
-    // §9.5.9: inclusion IS finality on Demos; the tx is a `demos` ref carrying
-    // the block height that witnesses it.
+    // The confirmed execution is BFT-final at this inclusion block on Demos.
     finality: { model: "bft-final" },
     blockNumber: blockNumber as number,
     txRefKind: "demos",
@@ -682,6 +754,22 @@ export interface PayDemRailConfig {
   statusRequestTimeoutMs?: number;
   /** Bound for the post-inclusion account-nonce projection (default 60 seconds). */
   nonceVisibilityTimeoutMs?: number;
+  /**
+   * Overall budget for reading the node's transaction record after inclusion
+   * (default 30 seconds). Each read is also bounded by `statusRequestTimeoutMs`.
+   * When execution is not established within it, the settlement is
+   * indeterminate and never resubmitted. demosdk's transport retries a
+   * connection error or a 502–504 up to four times inside one read, backing
+   * off 250, 500, 1 000 and 2 000 ms (up to 8 seconds only when the node sends
+   * `Retry-After`). One transient error adds about 250 ms. Five fast failures
+   * end the read in about 3.75 seconds with an error result, which is polled
+   * again. A read outlasts a 5 second `statusRequestTimeoutMs` only when all
+   * four backoffs (3.75 seconds) plus the requests' own time pass it, when the
+   * node sends a `Retry-After` of 5 seconds or more, or when one response is
+   * slow. It then counts as stalled and the settlement is indeterminate at
+   * once (liveness only, never a resubmission).
+   */
+  transactionRecordTimeoutMs?: number;
 }
 
 /** Immutable public recovery facts persisted before a pay-DEM broadcast. */
@@ -705,14 +793,25 @@ export interface PayDemPreparedTransfer {
   recovery?: Readonly<PayDemSettlementRecoveryContext>;
 }
 
+/** Fresh native-rail outcome. Success attests a bound, confirmed record. */
+export type PayDemRailResult = SettleResult & (
+  | { ok: true; execution: "executed" }
+  | { ok: false; execution?: never }
+);
+
 export interface PayDemRail {
   /** The buyer's Demos address. */
   readonly address: string;
-  /** Settle one session's payment via a native DEM transfer. */
+  /**
+   * Settle one payment. Success requires reading the transaction record and
+   * verifying literal `confirmed` status, hash, nonce, inclusion block, payer,
+   * payee and amount, then returning `execution: "executed"`. Status-index
+   * inclusion alone must return a not-ok outcome retaining the signed hash.
+   */
   settle(
     params: PayDemSettleParams,
     effectFence?: Readonly<SettlementEffectFence>,
-  ): Promise<SettleResult>;
+  ): Promise<PayDemRailResult>;
 }
 
 /**
@@ -960,6 +1059,38 @@ async function observeDemosTerminalByHash(
   }
 }
 
+type TransactionIdentityBinding =
+  | Readonly<{ status: "bound"; transaction: Record<string, unknown> }>
+  | Readonly<{ status: "no-body" }>
+  | Readonly<{ status: "hash-mismatch" }>
+  | Readonly<{ status: "nonce-mismatch" }>;
+
+/**
+ * Bind a node-supplied transaction body to the signed transfer's hash and
+ * nonce. Shared by the pre-broadcast confirmation and the post-inclusion
+ * transaction record, so both are held to the same signed identity.
+ */
+function transactionIdentityBinding(
+  transaction: unknown,
+  input: Readonly<{ signedHash: string; signedNonce: number }>,
+): TransactionIdentityBinding {
+  if (transaction === null || typeof transaction !== "object" ||
+      Array.isArray(transaction)) {
+    return { status: "no-body" };
+  }
+  const candidate = transaction as Record<string, unknown>;
+  const candidateHash = canonicalDemosTxHash(candidate.hash);
+  if (candidateHash === null || candidateHash !== input.signedHash) {
+    return { status: "hash-mismatch" };
+  }
+  const content = candidate.content;
+  if (content === null || typeof content !== "object" || Array.isArray(content) ||
+      confirmedNonce((content as Record<string, unknown>).nonce) !== input.signedNonce) {
+    return { status: "nonce-mismatch" };
+  }
+  return { status: "bound", transaction: candidate };
+}
+
 function confirmedTransactionBinding(
   value: unknown,
   input: Readonly<{ signedHash: string; signedNonce: number }>,
@@ -973,28 +1104,23 @@ function confirmedTransactionBinding(
       };
     }
   )?.response?.data;
-  const transaction = data?.transaction;
-  if (transaction === null || typeof transaction !== "object" ||
-      Array.isArray(transaction)) {
+  const binding = transactionIdentityBinding(data?.transaction, input);
+  if (binding.status === "no-body") {
     throw new DacsError(
       "pay-dem: confirmation has no stable transaction body; refusing broadcast",
     );
   }
-  const confirmed = transaction as Record<string, unknown>;
-  const confirmedHash = canonicalDemosTxHash(confirmed.hash);
-  if (confirmedHash === null || confirmedHash !== input.signedHash) {
+  if (binding.status === "hash-mismatch") {
     throw new DacsError(
       "pay-dem: confirmed transaction hash does not match the signed transfer; refusing broadcast",
     );
   }
-  const content = confirmed.content;
-  if (content === null || typeof content !== "object" || Array.isArray(content) ||
-      confirmedNonce((content as Record<string, unknown>).nonce) !== input.signedNonce) {
+  if (binding.status === "nonce-mismatch") {
     throw new DacsError(
       "pay-dem: confirmed transaction nonce does not match the signed transfer; refusing broadcast",
     );
   }
-  return confirmed;
+  return binding.transaction;
 }
 
 function nativeTransferBodyMatches(
@@ -1094,11 +1220,146 @@ function confirmedDebitFromValidity(
   return feeOs === null ? null : input.amountOs + feeOs;
 }
 
+type ObservedDemosExecution =
+  | Readonly<{ state: "executed" }>
+  | Readonly<{ state: "failed" }>
+  | Readonly<{ state: "indeterminate"; reason: string }>;
+
+/**
+ * Establish whether an included transaction executed (#338). The status index
+ * can report `included` for a transaction the node recorded as `failed`, so read
+ * the node's transaction record for the retained signed hash. Only a
+ * `confirmed` record at the observed inclusion block whose body is exactly the
+ * prepared transfer is execution. A `failed` record bound the same way is not
+ * settled. A record that is missing, pending, unreadable or malformed, or that
+ * carries another hash, is polled again within the budget; a stalled read, or
+ * a confirmed or failed record for the signed hash whose nonce, block or body
+ * does not bind the prepared transfer, is indeterminate at once. Like the
+ * status poll, this never retries or duplicates the broadcast.
+ *
+ * Node semantics this relies on, verified against kynesyslabs/node
+ * `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578` (what node2 reports
+ * at `GET /version`) and `stabilisation@52e2e569`:
+ * - `getTransactionStatus` reports `included` for every stored row, failed ones
+ *   included, and never produces `failed` (`src/libs/blockchain/chainTypes.ts`
+ *   `TxStatus`, `chainTransactions.ts` `getTransactionStatus`);
+ * - the record `status` is `confirmed`, `failed` or `pending`
+ *   (`src/utilities/constants.ts` `TRANSACTION_STATUS`);
+ * - `content.nonce` is a pg `bigint` column, so it is served as a decimal
+ *   string (`src/model/entities/Transactions.ts`);
+ * - `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and
+ *   as a decimal string above it (`src/libs/blockchain/transaction.ts`
+ *   `fromEntityToWireNumber`); both forms are accepted;
+ * - not-found is `{result: 400, response: "error"}` at 61b8e75 and
+ *   `{result: 404, response: null}` at 52e2e569; both are polled.
+ * The default branch (`testnet`) has no `getTransactionStatus`. The recorded
+ * node2 records in `test/fixtures/demos-node2-records.json` pin this shape;
+ * see `docs/pay-dem-execution.md`.
+ *
+ * @internal Exported for tests; terminal failed-record proof is issued only
+ * after these binding checks. Not re-exported from the rails
+ * index or the package root.
+ */
+export async function observeDemosExecutionByHash(
+  txHash: string,
+  getTxByHash: (hash: string) => Promise<unknown>,
+  expected: Readonly<{
+    blockNumber: number;
+    transfer: Readonly<{
+      payer: string;
+      payee: string;
+      amountOs: bigint;
+      nonce: number;
+      postFork: boolean;
+    }>;
+  }>,
+  options: Readonly<{
+    transactionRecordTimeoutMs: number;
+    inclusionPollIntervalMs: number;
+    statusRequestTimeoutMs: number;
+  }>,
+): Promise<ObservedDemosExecution> {
+  const deadline = Date.now() + options.transactionRecordTimeoutMs;
+  let pending = "transaction record was not observed";
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { state: "indeterminate", reason: pending };
+
+    const request = Promise.resolve().then(() => getTxByHash(txHash));
+    const result = await boundedPromise(
+      request,
+      Math.max(1, Math.min(options.statusRequestTimeoutMs, remaining)),
+    );
+    // As with the status poll, never stack reads on a transport that ignored
+    // its bound.
+    if (result.status === "timeout") {
+      return { state: "indeterminate", reason: "transaction record read timed out" };
+    }
+    if (result.status === "rejected") {
+      pending = "transaction record read failed";
+    } else {
+      let snapshot: unknown;
+      try {
+        snapshot = snapshotCanonicalJsonRead(
+          result.value,
+          "pay-dem transaction record",
+        );
+      } catch {
+        snapshot = undefined;
+      }
+      const identity = transactionIdentityBinding(snapshot, {
+        signedHash: txHash,
+        signedNonce: expected.transfer.nonce,
+      });
+      const record = snapshot as Record<string, unknown>;
+      if (identity.status === "no-body" || identity.status === "hash-mismatch") {
+        pending = "transaction record is missing or malformed";
+      } else if (record.status === DEMOS_FAILED_RECORD_STATUS ||
+          record.status === DEMOS_EXECUTED_RECORD_STATUS) {
+        // A terminal status says something about this transfer only when the
+        // record binds it, whether the status is `failed` or `confirmed`.
+        if (identity.status !== "bound") {
+          return {
+            state: "indeterminate",
+            reason: "transaction record does not bind the signed nonce",
+          };
+        }
+        if (confirmedNonce(record.blockNumber) !== expected.blockNumber) {
+          return {
+            state: "indeterminate",
+            reason: "transaction record block does not match the observed inclusion",
+          };
+        }
+        if (!nativeTransferBodyMatches(
+          identity.transaction,
+          expected.transfer,
+          "confirmed",
+        )) {
+          return {
+            state: "indeterminate",
+            reason: "transaction record does not match the prepared transfer",
+          };
+        }
+        return record.status === DEMOS_FAILED_RECORD_STATUS
+          ? { state: "failed" }
+          : { state: "executed" };
+      } else {
+        pending = "transaction record has no terminal execution status";
+      }
+    }
+
+    const afterRead = deadline - Date.now();
+    if (afterRead <= 0) return { state: "indeterminate", reason: pending };
+    await wait(Math.min(options.inclusionPollIntervalMs, afterRead));
+  }
+}
+
 /**
  * Construct a pay-dem rail from a Demos RPC + wallet secret. Lazily imports
  * demosdk so the SDK core stays importable without the chain deps installed.
  * Submits via sign → confirm → durable preparation journal → one broadcast,
- * while independently observing inclusion by the signed hash.
+ * while independently observing inclusion and then execution (the node's
+ * transaction record) by the signed hash.
  *
  * The low-level rail signs a fresh transaction on every call. The exported
  * runSession bridge, {@link payDemSettle}, therefore wraps it in the shared
@@ -1159,6 +1420,12 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     "pay-dem nonceVisibilityTimeoutMs",
     DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS,
   );
+  const transactionRecordTimeoutMs = optionalPositiveInteger(
+    config,
+    "transactionRecordTimeoutMs",
+    "pay-dem transactionRecordTimeoutMs",
+    DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS,
+  );
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
   const demos = new Demos();
@@ -1206,6 +1473,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     demos,
     "nodeCall",
     "pay-dem Demos.nodeCall",
+  );
+  const getTxByHash = stableMethod<(hash: string) => Promise<unknown>>(
+    demos,
+    "getTxByHash",
+    "pay-dem Demos.getTxByHash",
   );
   const waitForNonce = stableMethod<(
     address: string,
@@ -1428,9 +1700,46 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         };
       }
 
+      // `included` is not execution (#338): the node can include the signed
+      // transaction and record it failed. Require the transaction record to
+      // show this exact prepared transfer executed before reporting success.
+      const execution = await observeDemosExecutionByHash(
+        txHash,
+        getTxByHash,
+        { blockNumber: terminal.blockNumber, transfer: transferBinding },
+        {
+          transactionRecordTimeoutMs,
+          inclusionPollIntervalMs,
+          statusRequestTimeoutMs,
+        },
+      );
+      if (execution.state === "failed") {
+        return {
+          ok: false,
+          state: "failed",
+          hash: txHash,
+          blockNumber: terminal.blockNumber,
+          failureProof: {
+            kind: "demos-failed-record",
+            txHash, nonce: signedNonce, blockNumber: terminal.blockNumber,
+            payer: normalizeDemosNativeAddress(address)!,
+            payee: normalizeDemosNativeAddress(to)!, amountOs: amountOs.toString(),
+          },
+          message: "pay-dem transaction was included but its record reports it failed",
+        };
+      }
+      if (execution.state === "indeterminate") {
+        return {
+          ok: false,
+          state: "indeterminate",
+          hash: txHash,
+          message: `pay-dem execution was not established: ${execution.reason}`,
+        };
+      }
+
       // Inclusion can precede the account read reflecting the consumed nonce.
       // Bound even a non-cooperative projection read. DACS-4 §9.5.1 PC-7 makes
-      // the included payment final regardless: a lag may delay only idempotent
+      // the executed payment final regardless: a lag may delay only idempotent
       // evidence-anchor bookkeeping and can never authorise resubmission.
       await boundedPromise(
         Promise.resolve().then(() => waitForNonce(address, signedNonce)),
@@ -1440,6 +1749,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       return {
         ok: true,
         state: "included",
+        execution: "executed",
         hash: txHash,
         blockNumber: terminal.blockNumber,
         ...(confirmedDebitOs === null
@@ -1483,6 +1793,8 @@ const PAY_DEM_RESULT_KEYS = new Set([
   "blockNumber",
   "txRefKind",
   "networkFeeOs",
+  "errorClass",
+  "failureProof",
 ]);
 
 function sameRecoveryContext(
@@ -1501,6 +1813,8 @@ function sameRecoveryContext(
 
 function samePayDemResult(left: SettleResult, right: SettleResult): boolean {
   return left.ok === right.ok &&
+    left.errorClass === right.errorClass &&
+    JSON.stringify(left.failureProof) === JSON.stringify(right.failureProof) &&
     left.txHash === right.txHash &&
     left.chainId === right.chainId &&
     left.payer === right.payer &&
@@ -1562,6 +1876,10 @@ function capturePayDemResult(
     );
   }
 
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
+      !hasDefinitiveDemosFailure(result as unknown as SettleResult, context.amountOs, context.network)) {
+    throw new DacsError(`${label} has an invalid terminal-failure proof`);
+  }
   const blockNumber = result.blockNumber;
   if (
     blockNumber !== undefined &&
@@ -1607,6 +1925,8 @@ function capturePayDemResult(
 
   return {
     ok: result.ok,
+    ...(result.errorClass === "permanent" ? { errorClass: "permanent" as const,
+      failureProof: result.failureProof as DemosFailedRecordProof } : {}),
     txHash,
     chainId: context.network,
     payer: context.payer,
@@ -1642,16 +1962,48 @@ function capturePayDemReconciliation(
   }
   const settlement = { ...record };
   delete settlement.amountOs;
+  delete settlement.execution;
   const captured = capturePayDemResult(
     settlement,
     context,
     "pay-dem reconciliation result",
   );
-  if (!captured.ok) {
+  if (!captured.ok && !hasDefinitiveDemosFailure(captured, context.amountOs, context.network)) {
     throw new DacsError(
       "pay-dem reconciliation is indeterminate; a definitive finalized result is required",
     );
   }
+  // Inclusion is not execution (#338): a reconciler written when `included`
+  // alone meant success must not turn an included-but-failed transfer into a
+  // settlement on recovery.
+  if (!captured.ok && record.execution !== undefined) {
+    throw new DacsError("pay-dem permanent failure must not attest successful execution");
+  }
+  if (captured.ok && record.execution !== "executed") {
+    throw new DacsError(
+      "pay-dem reconciliation does not attest that the transaction record shows the transfer executed (#338); refusing reuse or rebroadcast",
+    );
+  }
+  return captured;
+}
+
+function captureFreshPayDemResult(
+  value: unknown,
+  context: Readonly<PayDemSettlementRecoveryContext>,
+): SettleResult {
+  const snapshot = snapshotCanonicalJsonRead(value, "fresh pay-dem settlement");
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new DacsError("fresh pay-dem settlement must be a settlement result object");
+  }
+  const { execution, ...settlement } = snapshot as Record<string, unknown>;
+  const captured = capturePayDemResult(settlement, context, "fresh pay-dem settlement");
+  if (captured.ok && execution !== "executed") {
+    throw new DacsError("fresh pay-dem settlement does not attest executed transaction record; refusing success or rebroadcast");
+  }
+  if (!captured.ok && execution !== undefined) {
+    throw new DacsError("failed pay-dem settlement must not attest successful execution");
+  }
+  // The attestation authenticates this invocation, not a durable cache entry.
   return captured;
 }
 
@@ -1906,11 +2258,7 @@ export function payDemSettle(
         network,
         recovery: context,
       }, effectFence);
-      const captured = capturePayDemResult(
-        submitted,
-        context,
-        "fresh pay-dem settlement",
-      );
+      const captured = captureFreshPayDemResult(submitted, context);
       authenticatedResults.set(key, { context, result: captured });
       return captured;
     };

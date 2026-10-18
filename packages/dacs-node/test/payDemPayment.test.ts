@@ -513,6 +513,7 @@ describe("native DEM buyer payment track", () => {
         events.push("broadcast");
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -605,6 +606,7 @@ describe("native DEM buyer payment track", () => {
         await input.assertCurrentBeforeBroadcast!();
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -671,6 +673,7 @@ describe("native DEM buyer payment track", () => {
         events.push("broadcast");
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -772,6 +775,7 @@ describe("native DEM buyer payment track", () => {
           broadcasts += 1;
           return {
             ok: true,
+            execution: "executed",
             txHash: TX_HASH,
             chainId: "demos",
             payer: PAYER,
@@ -1096,6 +1100,7 @@ describe("native DEM buyer payment track", () => {
         broadcasts += 1;
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,
@@ -1177,6 +1182,7 @@ describe("native DEM buyer payment track", () => {
         async settle() {
           return {
             ok: true,
+            execution: "executed",
             txHash: TX_HASH,
             chainId: "demos",
             payer: PAYER,
@@ -1231,6 +1237,7 @@ describe("native DEM buyer payment track", () => {
         await input.assertCurrentBeforeBroadcast!();
         return {
           ok: true,
+          execution: "executed",
           txHash: TX_HASH,
           chainId: "demos",
           payer: PAYER,

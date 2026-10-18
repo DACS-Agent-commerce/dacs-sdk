@@ -151,7 +151,7 @@ export interface DacsPayDemPaymentNoticeV1 {
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | {
       status: "completed";
-      settlement: Readonly<PayDemReconciledSettlement>;
+      settlement: Readonly<Omit<PayDemReconciledSettlement, "execution">>;
     }
   | { status: "absent"; absenceProofHash: string }
   | { status: "indeterminate"; reasonCode: string; retryAt?: number }
@@ -889,7 +889,11 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             );
           }
           await beginEffect;
-          settlement = captureSettlement(raw, payment);
+          if (!plainObject(raw) || raw.execution !== "executed") {
+            throw new DacsPayDemBuyerPaymentError("pay-dem-chain-execution-unconfirmed");
+          }
+          const { execution: _execution, ...settlementData } = raw;
+          settlement = captureSettlement(settlementData, payment);
           await claim!.permit.settle(walletSettlement(payment, settlement));
           await options.publishNotice({
             notice: createDacsPayDemPaymentNoticeV1(payment, settlement),
