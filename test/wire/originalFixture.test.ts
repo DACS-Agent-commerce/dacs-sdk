@@ -1,6 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
+import { sha256ProvenanceFile } from "./provenanceFixture.js";
 // Compares the SDK wire with the original plugin wire captured from frontend
 // 82bf8c4 (test/wire/fixtures/plugin-wire-82bf8c4.original.json; captured messages are immutable),
 // through its separately identified TP-1 revision adaptation
@@ -91,7 +92,7 @@ describe("original plugin wire fixture (frontend 82bf8c4)", () => {
       ["http-mcp/public/portal/seller-session-limits.mjs", "6ca54be7de1d2eeb0fa4a16c2a3a48be0cda2a99"],
     ]);
     expect(original.nature).toMatch(/not a pre-existing plugin artifact/);
-    expect(sha256File(new URL("../../scripts/wire/capture-plugin-wire-fixture.mjs", import.meta.url))).toBe(original.provenance.generator.sha256);
+    expect(sha256ProvenanceFile(new URL("../../scripts/wire/capture-plugin-wire-fixture.mjs", import.meta.url))).toBe(original.provenance.generator.sha256);
     expect(original.provenance.generator.captureSha256).toBe("bbd61306977b956e61987b90d1e9bd4789f275aee7559dfaffe3457b05187dbb");
     expect(original.publicationNote).toMatch(/redacted for publication/);
     // The pre-revision adaptation retains its messages; its descriptive provenance was redacted.
@@ -102,7 +103,7 @@ describe("original plugin wire fixture (frontend 82bf8c4)", () => {
     expect(preRevision.changes.map((c: any) => c.id)).toEqual(["D6-1", "D6-2", "D6-3", "D6-4"]);
     // The revision adaptation, derived from both by its pinned script.
     expect(sha256File(ADAPTED_PATH)).toBe(ADAPTED_SHA256);
-    expect(sha256File(new URL("../../scripts/wire/adapt-tp1-revision-fixture.mjs", import.meta.url))).toBe(ADAPTER_SHA256);
+    expect(sha256ProvenanceFile(new URL("../../scripts/wire/adapt-tp1-revision-fixture.mjs", import.meta.url))).toBe(ADAPTER_SHA256);
     expect(adapted.generator).toEqual({ path: "scripts/wire/adapt-tp1-revision-fixture.mjs", sha256: ADAPTER_SHA256 });
     expect(adapted.derivedFrom).toEqual([
       { fixture: "plugin-wire-82bf8c4.original", sha256: ORIGINAL_SHA256 },
