@@ -83,6 +83,44 @@ artifact `dacs-registry-container-275d856a1bbea2de6f666c069878277b23544ff1`:
   package the image lacks, blocks without a baseline. The b7b180f run predates
   the inventory; the acceptance workflow uploads regenerated fixtures with it.
 
+Run [38706155424, attempt 1](https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/38706155424/attempts/1),
+job `clean registry consumer (Node 20 / Docker)`, at merge commit
+`5c27c28fd9225cff3e7653a5a013fd5f3168398c` (`ded30d5` into `3904d70`),
+adds two individually reviewed upstream dependency findings. Their source and
+dispositions are in `policyFindings.additionalSources`. The original summary,
+SBOM errors and reduced lock/inventory are retained in
+`test/scripts/fixtures/registry-container-5c27c28/`; its README records the
+artifact URL, original file hashes and the reduction. This run has no unlisted
+advisory IDs, image-inventory errors or missing required image packages.
+
+- `productionImageDependencies`: `pqcrypto` at `node_modules/pqcrypto` has
+  installed manifest version `1.0.01`, while the registry lock entry is
+  `1.0.1` with integrity
+  `sha512-83SHdhiOYAaUK6HUKihoH36SqQ11ma+Q7o+DQUasV/IUZSrW8doQVPoTPrR0xU+tUyFnrJSC4aIp5rKnlELrqw==`.
+  `@kynesyslabs/demosdk@4.0.16` already requires `pqcrypto ^1.0.1`.
+  The package is in the production closure; its shipped manifest disagrees
+  with the registry metadata. **Disposition:** retain this upstream package
+  metadata defect under #191 until the upstream package fixes its version.
+  The inventory continues to report the mismatch; no version normalization or
+  package exclusion is added to the gate.
+- `physicalSbomProblems`:
+  `invalid: bip39@3.1.2, 3.1.0 required by @multiversx/sdk-core@13.17.2`.
+  demosdk requires `bip39 ^3.1.0` and `@multiversx/sdk-core ^13.17.2`;
+  MultiversX optionally requires exactly `bip39 3.1.0`. The generated lock
+  contains that nested optional copy, but `--omit=optional` removes it.
+  npm's physical SBOM then sees top-level `bip39@3.1.2`, which does not meet
+  that exact optional constraint. **Disposition:** retain this upstream
+  optional-dependency SBOM defect under #191 until the dependency constraint
+  is resolved upstream. The SBOM still fails with ESBOMPROBLEMS; the
+  disposition uses the existing exact package / required-range / parent rule.
+
+These are npm dependency findings in the generated image/consumer, not OS
+base-image CVEs. They receive the same #191 baseline-only disposition as the
+existing upstream findings. Neither is a reachability assessment or production
+publication approval. No gate predicate or exit code changes: replaying this
+evidence is exit 4, `securityGate.passed` remains false, and unrecorded rules
+still exit 3.
+
 A run whose failing checks match only these entries is baseline-only (exit 4).
 Each entry keeps the version and integrity its source run observed, as
 evidence, but matches by rule: the lock location, the dependency field and

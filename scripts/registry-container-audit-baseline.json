@@ -250,6 +250,7 @@
       "invalid: @solana/web3.js@1.89.1, ^1.95.5 required by @solana/spl-token@0.4.15"
     ],
     "physicalSbomProblems": [
+      "invalid: bip39@3.1.2, 3.1.0 required by @multiversx/sdk-core@13.17.2",
       "invalid: node-fetch@2.7.0, 2.6.7 required by @near-js/providers@0.2.3"
     ],
     "productionImageDependencies": [
@@ -258,6 +259,35 @@
         "location": "node_modules/typescript",
         "version": "5.9.2",
         "integrity": "sha512-CWBzXQrc/qOkhidw1OzBTQuYRbfyxDXJMVJ1XNwUHGROVmuaeiEm3OslpZ1RV96d7SKKjZKrSJu3+t/xlw3R9A=="
+      },
+      {
+        "name": "pqcrypto",
+        "location": "node_modules/pqcrypto",
+        "version": "1.0.01",
+        "integrity": "sha512-83SHdhiOYAaUK6HUKihoH36SqQ11ma+Q7o+DQUasV/IUZSrW8doQVPoTPrR0xU+tUyFnrJSC4aIp5rKnlELrqw=="
+      }
+    ],
+    "additionalSources": [
+      {
+        "commit": "5c27c28fd9225cff3e7653a5a013fd5f3168398c",
+        "run": "38706155424/1",
+        "job": "clean registry consumer (Node 20 / Docker)",
+        "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/38706155424/attempts/1",
+        "evidence": "artifact dacs-registry-container-fixtures-5c27c28fd9225cff3e7653a5a013fd5f3168398c (11959340907); acceptance-summary.json, generated-package-lock.json, runtime-image-inventory.json, consumer-physical-sbom.err",
+        "dispositions": [
+          {
+            "check": "productionImage",
+            "finding": "pqcrypto@1.0.01 at node_modules/pqcrypto",
+            "disposition": "Retain as a #191 upstream package-metadata defect; production publication remains blocked.",
+            "reason": "demosdk@4.0.16 requires pqcrypto ^1.0.1. The registry lock records 1.0.1, while the installed manifest records 1.0.01. This is a version mismatch in the existing production closure, not an extra package. Fix the upstream package metadata before removing this finding."
+          },
+          {
+            "check": "physicalSbom",
+            "finding": "invalid: bip39@3.1.2, 3.1.0 required by @multiversx/sdk-core@13.17.2",
+            "disposition": "Retain as a #191 upstream optional-dependency SBOM defect; production publication remains blocked.",
+            "reason": "demosdk@4.0.16 requires bip39 ^3.1.0 and @multiversx/sdk-core ^13.17.2. The latter optionally requires exactly bip39 3.1.0. The lock has a nested optional 3.1.0 copy; --omit=optional removes it and npm sbom sees top-level 3.1.2 instead. Resolve that upstream dependency constraint before removing this finding."
+          }
+        ]
       }
     ]
   }
