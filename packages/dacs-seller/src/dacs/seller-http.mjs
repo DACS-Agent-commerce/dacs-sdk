@@ -7,7 +7,7 @@
 // Only an authenticated definite refusal becomes SellerRefusedError in that
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
 import { SellerAgentError } from './seller-agent.mjs';
-import { canonicalize } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 
 const MAX_BODY = 64 * 1024;
@@ -90,6 +90,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     if (Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) throw new SellerTransportError('seller_response_too_large', 503);
     if (authentication && request) headers[SELLER_TRANSPORT_HEADER] = await authentication.responseHeader(request, status, text);
     if (res.destroyed || res.writableEnded) return;
+    if (status === 200 && request) agent.assertSettlementCredit?.(request.jobId);
     res.writeHead(status, headers);
     res.end(text);
   };
@@ -114,15 +115,16 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (req.headers['content-length'] && Number(req.headers['content-length']) > MAX_BODY) return await send(res, 413, { error: 'body_too_large' }, null, { close: true });
       const rawBody = await readRequest(req, bodyTimeoutMs);
       let body;
-      try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(rawBody)); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
+      try { body = admitRawJson(rawBody); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       if (authentication) {
         request = authentication.readRequest(req.headers[SELLER_TRANSPORT_HEADER]);
-        authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId) });
+        authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId), ...(contextStep && context.attemptPresentation ? {onAuthenticatedBody:()=>context.attemptPresentation(request,body,authentication.store)} : {}) });
         if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
         // The context step reads the journal first and runs its admission only
         // for new work, recording the start in the reserve transaction.
         reservation = contextStep ? await context.reserve(request, body, authentication.store) : authentication.store.reserve(request, body);
+        if (reservation.disposition === 'cached') agent.assertSettlementCredit?.(request.jobId);
         if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
         if (reservation.disposition === 'uncertain') {
           // Never call the route or resume work here, with one exception
@@ -265,13 +267,14 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
           chunks.push(value);
         }
       }
-      const answerText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+      const responseBytes = Buffer.concat(chunks);
+      const answer = admitRawJson(responseBytes);
+      const answerText = new TextDecoder('utf-8', { fatal: true }).decode(responseBytes);
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
       if (authentication) authentication.verifyResponse(signed.payload, { header: response.headers.get(SELLER_TRANSPORT_HEADER), status: response.status, text: answerText });
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
-      const answer = JSON.parse(answerText);
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
       if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
       if (!response.ok) throw new Error('seller did not return success');

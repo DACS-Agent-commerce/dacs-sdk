@@ -21,7 +21,7 @@ test('B2 global unpaid-start limit covers different buyers before all effects, i
  const w=await world(t,{limits:{maxStartsPerHour:1,maxStartsPerBuyerPerHour:5}});assert.equal((await exchange(w.handler,await w.wire())).status,200);const before=w.effects();
  const refused=await exchange(w.handler,await w.wire({actor:w.other,jobId:JOBS[1]}));assert.equal(JSON.parse(refused.text).error,'unpaid_start_limit');assert.deepEqual(w.effects(),before);
  const reopened=createSellerTransportStore({path:w.path});t.after(()=>reopened.close());const input=await w.wire({actor:w.other,jobId:JOBS[1]});const request=w.auth.readRequest(input.header),body=JSON.parse(input.text);
- await assert.rejects(w.route.reserve(request,body,reopened),{code:'unpaid_start_limit'});assert.deepEqual(w.effects(),before);
+ await assert.rejects(w.route.reserve(request,body,reopened),{code:'context_challenge_consumed'});assert.deepEqual(w.effects(),before);
 });
 test('B3 accepted start at the exact one-hour boundary is outside the rolling count; one millisecond before is still inside',async t=>{
  const w=await world(t);await exchange(w.handler,await w.wire());w.advance(3599999);const before=w.effects();assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,409);assert.deepEqual(w.effects(),before);
@@ -66,14 +66,14 @@ test('B12 a body timeout ends before authentication or any journal entry',async 
  const w=await world(t,{bodyTimeoutMs:5}),req=new PassThrough();Object.assign(req,{url:SELLER_CONTEXT_PATH,method:'POST',headers:{'content-type':'application/json'},socket:{remoteAddress:'127.0.0.1',localAddress:'127.0.0.1'}});
  const res={writeHead(status){this.status=status},end(){this.writableEnded=true}},before=w.effects();await w.handler(req,res);assert.equal(res.status,408);assert.deepEqual(w.effects(),before);req.destroy();
 });
-test('B13 start-limit rejection executes no journal mutation, even a subsequently rolled-back INSERT or DDL',async t=>{
+test('B13 start-limit rejection commits only the required anti-replay consumption',async t=>{
  const originalPrepare=DatabaseSync.prototype.prepare,originalExec=DatabaseSync.prototype.exec,mutations=[];let watch=false;
  DatabaseSync.prototype.prepare=function(sql){const statement=originalPrepare.call(this,sql);if(/^\s*(INSERT|UPDATE|DELETE|REPLACE)/i.test(sql)){const run=statement.run;statement.run=function(...args){if(watch)mutations.push(sql);return run.apply(this,args)}}return statement;};
  DatabaseSync.prototype.exec=function(sql){if(watch&&/\b(CREATE|INSERT|UPDATE|DELETE|DROP|REPLACE)\b/i.test(sql))mutations.push(sql);return originalExec.call(this,sql);};
  t.after(()=>{DatabaseSync.prototype.prepare=originalPrepare;DatabaseSync.prototype.exec=originalExec});
  const w=await world(t);await exchange(w.handler,await w.wire());const input=await w.wire({jobId:JOBS[1]}),before=w.effects();watch=true;
  const response=await exchange(w.handler,input);watch=false;
- assert.equal(response.status,409);assert.deepEqual(mutations,[],'SQL writes before a later rollback still violate admission order');assert.deepEqual(w.effects(),before);
+ assert.equal(response.status,409);assert.deepEqual(mutations,['UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?'],'only the SN-4 anti-replay write is permitted before admission refusal');assert.deepEqual(w.effects(),before);
 });
 test('B14 an uncertain context effect is read back without a second hold or provider write',async t=>{
  const w=await world(t,{perform:async()=>{throw new Error('unknown fixture outcome')}});const first=await exchange(w.handler,await w.wire());assert.equal(first.status,503);const before=w.effects();
@@ -220,10 +220,10 @@ test('B31 the context client preserves a definite non-pass decision and attribut
  const answer=await client.resolveBuyer({scope,buyerIdentityBundle:bundle},{operation:{state:{protocol:{sellerContextRequest:{generatedAt:T,buyerBundle:bundle}}}}});assert.equal(answer.disposition,'rejected');assert.equal(answer.code,'party_vet_non_pass');assert.equal(answer.errorClass,'counterparty');assert.match(answer.reason,/seller Vet decision: fail/);
 });
 
-test('B32 another buyer cannot consume the issuing buyer challenge',async t=>{
+test('B32 another buyer consumes the issued challenge before mismatch refusal',async t=>{
  const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),nonce=body.buyerIdentityBundle.sessionNonce;
  assert.throws(()=>w.store.attemptContextPresentation({jobId:JOBS[1],buyer:w.other.claim},{scope:body.scope,buyerIdentityBundle:{sessionNonce:nonce}}),{code:'context_challenge_mismatch'});
- assert.equal((await exchange(w.handler,input)).status,200);
+ const replay=await exchange(w.handler,input);assert.equal(replay.status,409);assert.equal(JSON.parse(replay.text).error,'context_challenge_consumed');
 });
 test('B33 every malformed challenge value is a definite refusal before policy or journal effects',async t=>{
  const w=await world(t),input=await w.wire();
@@ -254,22 +254,22 @@ test('B35 HTTP and retained recovery preserve every Vet fault class; malformed c
  }
 });
 
-test('B36 total retained context capacity refuses HTTP starts and challenges before holds, presentation consumption or journal writes',async t=>{
+test('B36 total context capacity consumes an attempted presentation but refuses before holds or new effects',async t=>{
  const w=await world(t,{maxContextRecords:1,limits:{maxStartsPerHour:100,maxStartsPerBuyerPerHour:100}});
  const next=await w.wire({jobId:JOBS[1],actor:w.other});
  assert.equal((await exchange(w.handler,await w.wire())).status,200);
  w.advance(3600001);
  const before=w.effects();
  const result=await exchange(w.handler,next); // refresh only transport expiry; keep the issued presentation
- assert.equal(result.status,408);
+ assert.equal(result.status,409);assert.equal(JSON.parse(result.text).error,'context_challenge_expired');
  const body=JSON.parse(next.text),text=JSON.stringify(body);
  const client=createSellerTransportClientAuth({buyerSigner:w.other,seller:w.seller.claim,resolveJob:()=>({listingPin:w.pin,agreementHash:sellerContextScopeHash(body.scope)}),now:w.now});
  const signed=await client.request(SELLER_CONTEXT_PATH,body,text);
  const refusal=await exchange(w.handler,{text,header:signed.header});
- assert.equal(refusal.status,503); assert.equal(JSON.parse(refusal.text).error,'peer_context_capacity');
+ assert.equal(refusal.status,409); assert.equal(JSON.parse(refusal.text).error,'context_challenge_consumed');
  assert.deepEqual(w.effects(),before);
  const db=new DatabaseSync(w.path,{readOnly:true});
- try { assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce = ?').get(body.buyerIdentityBundle.sessionNonce).attempted,0); }
+ try { assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce = ?').get(body.buyerIdentityBundle.sessionNonce).attempted,1); }
  finally { db.close(); }
  const scope=sellerContextChallengeScope({...body.scope,generatedAt:w.now()});
  const challengeBody={scope},challengeText=JSON.stringify(challengeBody);
@@ -277,4 +277,13 @@ test('B36 total retained context capacity refuses HTTP starts and challenges bef
  const challenge=await challengeClient.request(SELLER_CONTEXT_CHALLENGE_PATH,challengeBody,challengeText);
  const denied=await exchange(w.handler,{url:SELLER_CONTEXT_CHALLENGE_PATH,text:challengeText,header:challenge.header});
  assert.equal(denied.status,503);assert.equal(JSON.parse(denied.text).error,'peer_context_capacity');assert.deepEqual(w.effects(),before);
+});
+
+
+test('B37 an authenticated malformed context consumes its recognized nonce before transport scope validation',async t=>{
+ const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),nonce=body.buyerIdentityBundle.sessionNonce;
+ body.unexpected=true;
+ const response=await exchange(w.handler,await signed(w,body));assert.equal(response.status,409);
+ const db=new DatabaseSync(w.path,{readOnly:true});try{assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce=?').get(nonce).attempted,1);}finally{db.close();}
+ const replay=await exchange(w.handler,input);assert.equal(replay.status,409);assert.equal(JSON.parse(replay.text).error,'context_challenge_consumed');
 });

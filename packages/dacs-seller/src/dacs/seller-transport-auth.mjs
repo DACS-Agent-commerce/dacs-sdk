@@ -6,7 +6,7 @@ import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { decodeSignature } from '../wallet/demos-signature.mjs';
 import { assertSellerSessionLifetime } from '../../public/portal/seller-session-limits.mjs';
 
@@ -89,7 +89,7 @@ function verifiedHeader(header, kind, principal, { requireDelegation = false, on
   const bytes = Buffer.from(header, 'base64url');
   if (bytes.toString('base64url') !== header) fail('peer_envelope_invalid');
   let envelope;
-  try { envelope = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { fail('peer_envelope_invalid'); }
+  try { envelope = admitRawJson(bytes); } catch { fail('peer_envelope_invalid'); }
   const delegated = kind === 'request' && requireDelegation && Object.hasOwn(envelope ?? {}, 'delegation');
   if (!keys(envelope, ['payload', 'signature', ...(delegated ? ['delegation'] : [])]) || !payloadValid(envelope.payload, kind)) fail('peer_envelope_invalid');
   if (requireDelegation && !delegated) fail('peer_delegation_required');
@@ -331,17 +331,19 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
         return { sessionNonce, expiresAt };
       });
     },
-    // Called after dry admission, before inspecting the presentation proof.
+    // Called after transport authentication, before admission or presentation validation.
     // Consumption commits even when proof verification subsequently refuses.
     attemptContextPresentation(request, body) {
       const problem = transaction(() => {
         const nonce = body.buyerIdentityBundle?.sessionNonce;
         if (typeof nonce !== 'string' || !HASH.test(nonce)) return 'context_challenge_mismatch';
         const row = get('SELECT * FROM peer_context_challenges WHERE nonce = ?', nonce);
-        if (!row || row.buyer !== request.buyer) return 'context_challenge_mismatch';
+        if (!row) return 'context_challenge_mismatch';
         if (row.attempted) return 'context_challenge_consumed';
         run('UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', row.nonce);
-        if (row.job !== request.jobId || row.buyer !== request.buyer || row.scope !== sellerContextScopeHash(sellerContextChallengeScope(body.scope))) return 'context_challenge_mismatch';
+        try {
+          if (row.job !== request.jobId || row.buyer !== request.buyer || row.scope !== sellerContextScopeHash(sellerContextChallengeScope(body.scope))) return 'context_challenge_mismatch';
+        } catch { return 'context_challenge_mismatch'; }
         if (row.expires_at <= now()) return 'context_challenge_expired';
         return null;
       });
@@ -434,7 +436,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
         if (p.path === PAYMENT) {
           const tx = body.txHash.replace(/^0x/, '').toLowerCase();
           const claimed = get('SELECT job, effect FROM peer_transactions WHERE tx = ?', tx);
-          if (claimed && (claimed.job !== p.jobId || claimed.effect !== effectKey)) fail('peer_payment_conflict', 409);
+          // A transport claim is not SB-2 authority. Competing jobs must reach
+          // authenticated payment intake so it can suspend the collision group.
           if (!dryRun && !claimed) run('INSERT INTO peer_transactions VALUES (?, ?, ?)', tx, p.jobId, effectKey);
         }
         // Dry admission checks execute no INSERT, UPDATE, DELETE or DDL.
@@ -569,13 +572,14 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     store: requireDelegation ? guardedStore : store,
     requireDelegation,
     readRequest: (header) => verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) }),
-    validate(request, { method, path, rawBody, body, agreement }) {
+    validate(request, { method, path, rawBody, body, agreement, onAuthenticatedBody }) {
       if (request.seller !== sellerSigner.claim) fail('peer_audience_wrong');
+      if (request.method !== method || request.path !== path || request.bodyHash !== sha256Hex(rawBody)) fail('peer_request_mismatch');
+      onAuthenticatedBody?.();
       const time = now();
       // An expired retry can follow a previously completed effect. It is a
       // timeout/unknown answer, never proof that the operation was refused.
       if (!uint(time) || request.expiresAt <= time || request.expiresAt > time + maxLifetimeMs) fail('peer_expired', 408);
-      if (request.method !== method || request.path !== path || request.bodyHash !== sha256Hex(rawBody)) fail('peer_request_mismatch');
       if (!exact(request.listingPin, pin)) fail('peer_listing_mismatch', 409);
       validateBody(request, body);
       const delegation = delegations.get(request);

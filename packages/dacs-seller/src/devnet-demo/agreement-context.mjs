@@ -170,7 +170,7 @@ function durableOperationStore(state,job,role,{now,clock}) {
 // retainedScope({jobId,buyer}) (seller context route, seller-context-route.mjs
 // createSellerContextRecords): the scope of that buyer's completed route step
 // from the seller's durable records, or null.
-export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
+export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
   if(anchor?.writer!==wallet?.claim || typeof wallet?.signBytes!=='function') throw new TypeError('Vet producer and native anchor must belong to the seller');
   if(typeof anchor.hasIntent!=='function') throw new TypeError('the native anchor must answer whether a CREATE intent is retained');
   if(!store || !['read','update','entries'].every((key)=>typeof store[key]==='function')) throw new TypeError('party Vet state requires the seller\'s party Vet store');
@@ -188,6 +188,93 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const nonPass = record => ({ disposition:'rejected', code:'party_vet_non_pass',
     errorClass:vetPhaseFailureClass(record.overallDecision),
     reason:`${record.evaluatedParty === listing.seller.identity.presentedBy ? 'seller' : 'buyer'} Vet decision: ${record.overallDecision}` });
+  // counterparty is a buyer-owned capability, not a seller signing adapter.
+  // Its issuer must retain and consume its challenge before evaluating this
+  // exact presentation. The seller independently authenticates the returned CVR.
+  const counterpartyReady = () => counterparty && typeof counterparty.issueChallenge === 'function' && typeof counterparty.evaluate === 'function';
+  const strictRecord = (record, {jobId,bundle,requirement,authority}) => verifyCompositeVerificationRecord(record,
+    {jobId,evaluatedParty:bundle.presentedBy,bundleHash:identityBundleHash(bundle),requirement,verifier:authority,freshness:[],dealSpecific:[]},
+    {nowMs:now,resolve:async()=>null,resolveRecipe:async()=>null,isRecipeSignerAuthorized:()=>false,isVerifyResultSignerAuthorized:()=>false,
+      resolvePublicKey:signature=>signature.signer===authority?authority:null,verify:verifier.verify,verifyAuthorityAttestation:()=> 'unresolved'});
+  const validReceipt = async (read,logicalAddress,artifact,authority) => read?.status==='present'
+    && ['accepted','finalized'].includes(read.receipt?.state)
+    && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority})==='valid';
+  async function sellerSession(job) {
+    let kept=(await state.read(job.jobId))?.presentation;
+    if(!kept){
+      if(!counterpartyReady()) fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
+      const buyer=job.binding.buyerIdentityBundle.presentedBy;
+      const challenge=await counterparty.issueChallenge({jobId:job.jobId,buyer,seller:wallet.claim});
+      if(challenge?.issuer!==buyer || challenge?.jobId!==job.jobId || challenge?.seller!==wallet.claim
+        || !/^[a-f0-9]{64}$/.test(challenge?.sessionNonce??'') || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt<=now()) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
+      // This durable key prevents even a broken buyer issuer from reusing a
+      // challenge in another job, including after provider restart.
+      const key=`seller-challenge/${sha256Hex(canonicalize([buyer,challenge.sessionNonce]))}`;
+      await store.update(key,current=>{
+        if(current && current.jobId!==job.jobId) fail('seller_challenge_reused','buyer challenge was already presented for another job');
+        return current?undefined:{jobId:job.jobId,buyer,sessionNonce:challenge.sessionNonce};
+      });
+      const {presentation:_publicationProof,...identity}=listing.seller.identity;
+      const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
+      kept=(await state.update(job.jobId,current=>{
+        if(!current?.binding || !same(current.binding,job.binding)) fail('binding-changed','seller presentation binding changed');
+        if(current.presentation)return undefined;
+        return {...current,presentation:value};
+      })).presentation;
+    }
+    if(!kept.bundle.presentation){
+      if(kept.challenge.expiresAt<=now()) fail('seller_challenge_expired','seller challenge expired before presentation');
+      guard(job,'seller presentation');await markWrite(job);guard(job,'seller presentation');
+      const raw=await wallet.signBytes(Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(kept.bundle)}`));
+      const signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
+      const bundle={...kept.bundle,presentation:{kind:'per-claim',signatures:[{ref:wallet.claim,signature}]}};
+      kept=(await state.update(job.jobId,current=>{
+        if(!current?.binding || !same(current.binding,job.binding) || !same(current.presentation.challenge,kept.challenge)) fail('binding-changed','seller presentation binding changed');
+        if(current.presentation.bundle.presentation)return undefined;
+        return {...current,presentation:{...current.presentation,bundle}};
+      })).presentation;
+    }
+    return clone(kept.bundle);
+  }
+  async function contextAuthentic(input) {
+    for(const [role,authority,requirement] of [['buyer',wallet.claim,listing.buyerRequirement],['seller',input.buyer.identityBundle.presentedBy,SELLER_REQUIREMENT]]){
+      const bundle=input[role].identityBundle,ref=input[role].vetRecordRef;
+      const logicalAddress=compositeVerificationAddress(input.jobId,bundle.presentedBy);
+      const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
+      if(read.status!=='present' || ref.signer!==authority || contentHash(read.artifact)!==ref.contentHash
+        || !await validReceipt(read,logicalAddress,read.artifact,authority))return false;
+      if((await strictRecord(read.artifact,{jobId:input.jobId,bundle,requirement,authority})).status!=='valid')return false;
+    }
+    return true;
+  }
+  async function produceSeller(job) {
+    const identityBundle=await sellerSession(job),authority=job.binding.buyerIdentityBundle.presentedBy;
+    const logicalAddress=compositeVerificationAddress(job.jobId,wallet.claim);
+    let record=(await state.read(job.jobId))?.counterpartyRecord;
+    if(!record){
+      guard(job,'counterparty Vet');
+      record=await counterparty.evaluate({jobId:job.jobId,buyer:authority,seller:wallet.claim,identityBundle:clone(identityBundle),requirement:clone(SELLER_REQUIREMENT)});
+      const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
+      if(record?.signature?.signer!==authority || strict.status!=='valid') fail('seller_vet_invalid',`buyer-issued seller Vet failed strict verification: ${strict.status}:${strict.code}`);
+      await state.update(job.jobId,current=>{
+        if(!current?.binding || !same(current.binding,job.binding)) fail('binding-changed','counterparty Vet binding changed');
+        if(current.counterpartyRecord){if(!same(current.counterpartyRecord,record))fail('conflict','counterparty returned another Vet record');return undefined;}
+        return {...current,counterpartyRecord:clone(record)};
+      });
+    }
+    const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
+    if(record?.signature?.signer!==authority || strict.status!=='valid')fail('seller_vet_invalid','retained seller Vet is not authenticated by the buyer');
+    if(record.overallDecision!=='pass')return {refused:nonPass(record)};
+    let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});
+    if(read.status!=='present'){
+      guard(job,'counterparty anchor');await markWrite(job);
+      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>job.open()});
+    }
+    if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority))fail('seller_vet_receipt_invalid','seller Vet has no verified accepted anchor receipt');
+    const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(record),signer:authority};
+    invocations.push({evaluatedParty:wallet.claim,recordRef:clone(recordRef),receipt:clone(read.receipt),record:clone(record),strictStatus:strict.status});
+    return {record,recordRef,identityBundle};
+  }
   // Marks the job durably before its first signature or anchor intent; from
   // then on its binding is kept, because a write may exist.
   async function markWrite(job) {
@@ -268,7 +355,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const strict=await verifyCompositeVerificationRecord(made.record,{jobId,evaluatedParty:identityBundle.presentedBy,bundleHash:identityBundleHash(identityBundle),requirement,verifier:wallet.claim,freshness:[],dealSpecific:[]},{nowMs:now,resolve:async()=>null,resolveRecipe:async()=>null,isRecipeSignerAuthorized:()=>false,isVerifyResultSignerAuthorized:()=>false,resolvePublicKey:verifier.resolvePublicKey,verify:verifier.verify,verifyAuthorityAttestation:()=> 'unresolved'});
     if(strict.status!=='valid')throw new Error(`party Vet closure failed: ${strict.status}:${strict.code}`);
     const logicalAddress=address,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});
-    if(read.status!=='present'||contentHash(read.artifact)!==contentHash(made.record))throw new Error('party Vet native readback failed');
+    if(read.status!=='present'||contentHash(read.artifact)!==contentHash(made.record)||!await validReceipt(read,logicalAddress,made.record,wallet.claim))throw new Error('party Vet native readback failed');
     const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(made.record),signer:wallet.claim};
     if(made.record.overallDecision!=='pass')return{refused:nonPass(made.record)};
     invocations.push({evaluatedParty:identityBundle.presentedBy,recordRef:clone(recordRef),nativeRecordRef:clone(made.recordRef),receipt:clone(read.receipt),record:clone(made.record),strictStatus:strict.status});
@@ -330,9 +417,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(bound!=='bound')return{refused:bound};
         try{
           const session=createInMemoryFencedSessionStore();await session.create({jobId:scope.jobId,phase:'settle-pending',now:now()});const leased=await session.acquireLease({jobId:scope.jobId,owner:'devnet-demo-party-vet',ttlMs:300000,now:now()});if(!leased.ok)throw new Error(`party Vet lease failed: ${leased.reason}`);
+          await sellerSession(job);
           job.buyerVet??=await produce({job,identityBundle:buyerIdentityBundle,session,lease:leased.lease,role:'buyer'});
           if(job.buyerVet.refused)return job.buyerVet;
-          const sellerVet=await produce({job,identityBundle:listing.seller.identity,session,lease:leased.lease,role:'seller'});
+          const sellerVet=await produceSeller(job);
           if(sellerVet.refused)return sellerVet;
           return{job,buyerVet:job.buyerVet,sellerVet};
         }catch(error){
@@ -375,13 +463,15 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // write may start.
   async function resolveBuyer({scope,buyerIdentityBundle},{writable=()=>true}={}) {
     assertAccess(buyerIdentityBundle.presentedBy);
+    if(!counterpartyReady())return {disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
     const produced=await jobVet(scope,buyerIdentityBundle,writable);
     if(produced.refused?.code==='party_vet_non_pass')return produced.refused;
     if(produced.refused==='legacy')return{disposition:'rejected',reason:LEGACY_REASON,code:LEGACY_PARTY_VET_STATE};
     if(produced.refused)return{disposition:'rejected',reason:'demo Agreement context scope conflict'};
     const {job,buyerVet,sellerVet}=produced;
-    const input={jobId:scope.jobId,verifiedListing:{disposition:'verified',listing,pin:listingPin(listing)},buyer:{identityBundle:buyerIdentityBundle,vetRecordRef:buyerVet.recordRef},seller:{identityBundle:listing.seller.identity,vetRecordRef:sellerVet.recordRef},selectedRail:{...DEM_RAIL},payoutBindings:[{railId:DEM_RAIL.railId,phaseIndex:protocolSupport(listing).phases.payment,payeeAddress:scope.payee}],generatedAt:scope.generatedAt};
-    const vetRequirements=[buyerVet,sellerVet].map((vet,index)=>({vetRecordRef:clone(vet.recordRef),evaluatedParty:vet.record.evaluatedParty,requirement:clone(index===0?listing.buyerRequirement:SELLER_REQUIREMENT),verifier:wallet.claim,freshness:[],dealSpecific:[]}));
+    const input={jobId:scope.jobId,verifiedListing:{disposition:'verified',listing,pin:listingPin(listing)},buyer:{identityBundle:buyerIdentityBundle,vetRecordRef:buyerVet.recordRef},seller:{identityBundle:sellerVet.identityBundle,vetRecordRef:sellerVet.recordRef},selectedRail:{...DEM_RAIL},payoutBindings:[{railId:DEM_RAIL.railId,phaseIndex:protocolSupport(listing).phases.payment,payeeAddress:scope.payee}],generatedAt:scope.generatedAt};
+    const vetRequirements=[buyerVet,sellerVet].map((vet,index)=>({vetRecordRef:clone(vet.recordRef),evaluatedParty:vet.record.evaluatedParty,requirement:clone(index===0?listing.buyerRequirement:SELLER_REQUIREMENT),verifier:index===0?wallet.claim:buyerIdentityBundle.presentedBy,freshness:[],dealSpecific:[]}));
+    if(!await contextAuthentic(input))fail('party_vet_unavailable','party Vet receipts no longer authenticate');
     await retain(job,clone(input),vetRequirements);
     // One context per exact scope: a later plan request carries a new
     // generatedAt and reuses the job's Vet refs.
@@ -396,18 +486,23 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // scope, unless the job already has a context with another scope.
   async function recoverBuyer({scope,buyerIdentityBundle}) {
     assertAccess(buyerIdentityBundle.presentedBy);
+    const retained=await state.read(scope.jobId);
+    const sellerIdentity=retained?.presentation?.bundle;
+    const {generatedAt:_time,...terms}=scope;
+    if(!sellerIdentity?.presentation || !same(retained.binding?.scope,terms) || !same(retained.binding?.buyerIdentityBundle,buyerIdentityBundle))return null;
     const records=[];
-    for(const bundle of [buyerIdentityBundle,listing.seller.identity]){
-      const logicalAddress=compositeVerificationAddress(scope.jobId,bundle.presentedBy),read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});
+    for(const bundle of [buyerIdentityBundle,sellerIdentity]){
+      const logicalAddress=compositeVerificationAddress(scope.jobId,bundle.presentedBy),read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
       if(read.status!=='present')return null;
-      const strict=await verifyCompositeVerificationRecord(read.artifact,{jobId:scope.jobId,evaluatedParty:bundle.presentedBy,bundleHash:identityBundleHash(bundle),requirement:bundle.presentedBy===listing.seller.identity.presentedBy?SELLER_REQUIREMENT:listing.buyerRequirement,verifier:wallet.claim,freshness:[],dealSpecific:[]},{nowMs:now,resolve:async()=>null,resolveRecipe:async()=>null,isRecipeSignerAuthorized:()=>false,isVerifyResultSignerAuthorized:()=>false,resolvePublicKey:verifier.resolvePublicKey,verify:verifier.verify,verifyAuthorityAttestation:()=> 'unresolved'});
-      if(strict.status!=='valid')return null;
+      const authority=bundle.presentedBy===wallet.claim?buyerIdentityBundle.presentedBy:wallet.claim;
+      const strict=await strictRecord(read.artifact,{jobId:scope.jobId,bundle,requirement:bundle.presentedBy===wallet.claim?SELLER_REQUIREMENT:listing.buyerRequirement,authority});
+      if(strict.status!=='valid'||read.artifact.signature?.signer!==authority||!await validReceipt(read,logicalAddress,read.artifact,authority))return null;
       if(read.artifact.overallDecision!=='pass')return nonPass(read.artifact);
-      records.push({recordRef:{anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(read.artifact),signer:wallet.claim},record:read.artifact});
+      records.push({recordRef:{anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(read.artifact),signer:authority},record:read.artifact,identityBundle:bundle});
     }
     const [buyerVet,sellerVet]=records;
-    const input={jobId:scope.jobId,verifiedListing:{disposition:'verified',listing,pin:listingPin(listing)},buyer:{identityBundle:buyerIdentityBundle,vetRecordRef:buyerVet.recordRef},seller:{identityBundle:listing.seller.identity,vetRecordRef:sellerVet.recordRef},selectedRail:{...DEM_RAIL},payoutBindings:[{railId:DEM_RAIL.railId,phaseIndex:protocolSupport(listing).phases.payment,payeeAddress:scope.payee}],generatedAt:scope.generatedAt};
-    const vetRequirements=records.map((vet,index)=>({vetRecordRef:clone(vet.recordRef),evaluatedParty:vet.record.evaluatedParty,requirement:clone(index===0?listing.buyerRequirement:SELLER_REQUIREMENT),verifier:wallet.claim,freshness:[],dealSpecific:[]}));
+    const input={jobId:scope.jobId,verifiedListing:{disposition:'verified',listing,pin:listingPin(listing)},buyer:{identityBundle:buyerIdentityBundle,vetRecordRef:buyerVet.recordRef},seller:{identityBundle:sellerVet.identityBundle,vetRecordRef:sellerVet.recordRef},selectedRail:{...DEM_RAIL},payoutBindings:[{railId:DEM_RAIL.railId,phaseIndex:protocolSupport(listing).phases.payment,payeeAddress:scope.payee}],generatedAt:scope.generatedAt};
+    const vetRequirements=records.map((vet,index)=>({vetRecordRef:clone(vet.recordRef),evaluatedParty:vet.record.evaluatedParty,requirement:clone(index===0?listing.buyerRequirement:SELLER_REQUIREMENT),verifier:index===0?wallet.claim:buyerIdentityBundle.presentedBy,freshness:[],dealSpecific:[]}));
     if([...contexts.values()].some((entry)=>entry.input.jobId===scope.jobId&&!same(entry.scope,scope)))return null;
     const key=canonicalize(scope);
     if(!contexts.has(key))contexts.set(key,{scope:clone(scope),input:clone(input),vetRequirements});
@@ -455,10 +550,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const matches=(input)=>same(input.verifiedListing.pin,pin)&&same(input.buyer.identityBundle,buyerIdentityBundle)&&input.generatedAt===generatedAt;
     const answer=(found)=>({disposition:'present',value:{input:clone(found.input),vetRequirements:clone(found.vetRequirements)}});
     const forJob=[...contexts.values()].filter((entry)=>entry.input.jobId===jobId),found=forJob.find((entry)=>matches(entry.input));
-    if(found)return answer(found);
+    if(found)return await contextAuthentic(found.input)?answer(found):{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
     const kept=(await state.read(jobId))?.seller ?? null;
     const durable=kept?.generatedAts.includes(generatedAt)?{input:{...kept.input,generatedAt},vetRequirements:kept.vetRequirements}:null;
-    if(durable&&matches(durable.input))return answer(durable);
+    if(durable&&matches(durable.input) && await recoverBuyer({scope:{...((await state.read(jobId)).binding.scope),generatedAt},buyerIdentityBundle}))return answer(durable);
     const recovered=retainedScope?await recoverSeller({jobId,pin,buyerIdentityBundle,generatedAt}):null;
     if(recovered&&matches(recovered.input))return answer(recovered);
     if(!forJob.length&&!kept)return{disposition:'indeterminate',reason:'buyer context is not retained'};

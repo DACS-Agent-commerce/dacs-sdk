@@ -1,3 +1,10 @@
+Current behavior and executable coverage are specified by PROFILE.json and
+ADMISSION.md. The dispositions below record the frozen source port and are
+historical; they do not authorize exceptions or describe current protocol
+qualification. Bilateral session presentations and independent buyer Vet
+authority are now required by the standalone context adapter. Native writes
+require independently verified deployment qualification.
+
 # D5 review dispositions
 
 Inputs: the reviews of the two frozen source heads.

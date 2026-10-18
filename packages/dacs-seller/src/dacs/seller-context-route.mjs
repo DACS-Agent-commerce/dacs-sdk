@@ -104,7 +104,17 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     if (!Number.isSafeInteger(scope.generatedAt) || Math.abs(scope.generatedAt - now()) > GENERATED_AT_SKEW_MS) return 'context_generated_at';
     return null;
   }
+  const attempted=new WeakSet();
+  const consume=(request,body,store)=>{
+    if(attempted.has(request))return;
+    store.attemptContextPresentation(request,body);attempted.add(request);
+  };
   return Object.freeze({
+    // Called once exact bytes authenticate, before protocol/admission checks.
+    attemptPresentation: (request,body,store) => {
+      try { if(store.classify(request,body)!=='start')return; } catch { /* admission cannot preserve an issued nonce */ }
+      consume(request,body,store);
+    },
     path: SELLER_CONTEXT_PATH,
     challengePath: SELLER_CONTEXT_CHALLENGE_PATH,
     challenge: (request, body, store) => oneAtATime(store, async () => {
@@ -116,15 +126,18 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     }),
     // Runs after transport authentication (seller-http.mjs) and returns the
     // journal's reservation. Every refusal before a 'perform' reservation is
-    // definite and nothing was written.
+    // definite; only required anti-replay consumption may have been written.
     reserve: (request, body, store) => oneAtATime(store, async () => {
-      if (store.classify(request, body) !== 'start') return store.reserve(request, body);
+      let kind;
+      try { kind = store.classify(request, body); }
+      catch (error) { consume(request, body, store); throw error; }
+      if (kind !== 'start') return store.reserve(request, body);
 
+      consume(request, body, store);
       try { assertBuyerAccess(request.buyer); } catch (error) { if (error?.code === 'buyer_access_closed') await refused(request, 'buyer_access_closed'); throw error; }
       if (knownJob !== null && (await knownJob(request.jobId, request.buyer)) !== true) await refused(request, 'context_job_unknown');
       // Check every start limit before even a policy hold or refusal log.
       store.classify(request, body, { admit: admitStart(request) });
-      store.attemptContextPresentation(request, body);
       const problem = scopeProblem(body);
       if (problem) await refused(request, problem);
       const hold = randomUUID();

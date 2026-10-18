@@ -3,6 +3,7 @@
 // policy/state implementations are real; only absent host/shared modules are fixtures.
 import { registerHooks } from 'node:module';
 const sources = {
+  '/src/dacs/fixture-anchors.mjs': `export const verifyFixtureRecord=()=>{throw new Error('fixture anchor read not requested by this isolated test')};`,
   '/src/devnet-demo/stop-request.mjs': `export const stopRequested=()=>false; export const stopSignal=new AbortController().signal;`,
   '/src/wallet/demos-signature.mjs': `export const addressForClaim=c=>'0x'+c.slice('did:demos:agent:'.length); export const decodeSignature=s=>Buffer.from(s,/^(?:0x)?[a-f0-9]{128}$/i.test(s)?'hex':'base64url');`,
   '/src/wallet/durable-journal.mjs': `export const openDurableWalletJournal=()=>{throw new Error('D1 journal fixture cannot open journals')};`,

@@ -1,3 +1,9 @@
+The governing input is [PROFILE.json](PROFILE.json), pinned to DACS-Standard
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`. Historical planning notes,
+proposed register entries and workstream names below are port history only.
+They grant no exception to the Standard. This experimental package has no
+qualified live deployment; unsupported qualification stays blocked.
+
 # D5 admission
 
 The kit has one purchase source: the seller agent's durable sessions. It has
@@ -21,7 +27,7 @@ pre-payment write. #59's admission reserves capacity; it is not signing authorit
 | Listing, or any write in manual mode | Held for exact seller approval | Publication and manual mode confer no automatic authority | d5-admission.test.mjs A6 (Listing, Vet and Deliverable in manual mode) |
 | Paid-job policy refusal | Held for exact seller approval, with exact confirmation | Retain paid state and allow the seller to complete it | d5-admission.test.mjs A7 |
 | Known request/effect, including uncertain work | Cached answer or readback only; a shutdown cut may resume only with proven unsigned absence and a new bounded hold | Retries confer no new start authority; unknown issuance stays counted | d5-limits-before-effects.test.mjs B4; d5-admission.test.mjs A4, A8; d5-limits-before-effects.test.mjs B14; d5-limits-before-effects.test.mjs B20; d5-recovery.test.mjs R2 (real provider/SDK, separate processes; host harness pending D12) |
-| Fresh context at the buyer, global or journal capacity limit | Refused before a hold, decision-log line, journal mutation or provider call | Bound unpaid traffic before effects | d5-limits-before-effects.test.mjs B1–B3, B5–B6, B17–B19, B26, B36; d5-challenge-retention.test.mjs T10–T13, T17–T18 |
+| Fresh context at the buyer, global or journal capacity limit | Refused after required nonce consumption, before a hold, decision-log line, new effect or provider call | Bound unpaid traffic before effects | d5-limits-before-effects.test.mjs B1–B3, B5–B6, B17–B19, B26, B36; d5-challenge-retention.test.mjs T10–T13, T17–T18 |
 | Fresh context or challenge for a terminal seller session, including a different buyer after cleanup | Refused with context_session_terminal before mutation or a provider call | Terminal state is authoritative by job and survives transport cleanup | d5-challenge-retention.test.mjs T11, T19 |
 | Fresh Agreement job at the retained job limit | Refused with peer_job_capacity before mutation unless enough unused bindings can be reclaimed | Real effects keep their bindings; definite no-effect completion frees unused bindings | d5-challenge-retention.test.mjs T7–T9, T15–T17, T20 |
 | A valid but non-pass Vet record | Definite refusal with decision, evaluated role and VPC-4 errorClass, initially and on recovery; admission stays counted | Authenticity does not establish a passing Vet decision | d5-vet-decisions.test.mjs VPC4 (nine decision/control cases plus the shared mapper case); d5-limits-before-effects.test.mjs B21, B31, B35 |
@@ -40,7 +46,7 @@ six writes per job, 24 writes and 96 DEM per hour, and 4 DEM per write. Unresolv
 writes count beyond the hour until completed. Configuration may lower or raise
 the PR-defined configurable limits; it cannot disable their validation.
 
-Admission checks start counts before any policy hold or journal mutation, then
+Admission checks start counts after required nonce consumption and before any policy hold or new effect, then
 rechecks them in the transport's reserve transaction. One route serializes all
 new starts across jobs. The seller's process-lifetime state lock is required
 when D12 opens these journals. Refused fresh traffic leaves no decision-log
@@ -53,7 +59,11 @@ The pre-payment hold remains an explicit product limitation, including for
 closed-access custody buyers. Authentication alone never removes it. The
 in-process comparison in the frozen tests is a test oracle, not a kit mode.
 
-Restricted in TP-1 (empty buyer requirement on sellers): this context profile explicitly binds an empty buyer requirement on sellers. WS-2/R-2 must add proposed register entry G10 `empty-buyer-requirement-on-sellers` with declaration label “Buyer requirements on sellers are restricted to empty in TP-1”. That entry is required and is not present in this snapshot; qualification stays blocked.
+This experimental API supports an explicit empty seller requirement only.
+It does not claim an accepted TP-1 or G10 profile. No unpublished register
+entry is needed to interpret this local restriction, and no protocol exception
+is authorized by it. A buyer-owned verifier must issue the session challenge
+and sign the seller CVR; without that capability, context creation is refused.
 Buyer-side seller requirements are not a capability of this route: an extra
 request scope field is refused. The seller is evaluated against that empty
 requirement, independently of the Listing's buyer requirement, during initial
@@ -68,13 +78,14 @@ in lowercase hex) and `expiresAt` (one minute). Copy that nonce into the buyer
 bundle before producing its presentation, then hash the bundle and send the
 normal context scope. Issuance is limited to five per buyer and twelve globally
 per rolling hour by default, and is also subject to unpaid-start limits. An
-identical outstanding issuance request reads the same challenge. Consumption
-commits on any presentation attempt carrying an issued nonce, by the issuing buyer, including a
-failed proof or scope match. A different buyer is refused without consuming the nonce. Non-string or non-canonical nonce values are definite refusals before SQL lookup. Records are retained durably. An exact retained
-effect retry reads its old result without accepting another presentation.
-This presenter-scoped consumption follows PLAN §3.3's ledger tuple (issuer, presenter, job, attempt, expiry, consumed on first attempt). CORE §B.8 SN-4 says consumption occurs on any presentation attempt carrying the issued nonce. The difference in wording is an explicit reading for the SDK maintainer to resolve in S-15's challenge-ledger work; no broader SN-4 qualification is claimed. Bilateral seller identity challenges remain S-15/G2 work. The buyer integration
-must obtain and save this challenge before signing (D11/S-15); the former
-buyer-chosen presentation is refused.
+identical outstanding issuance request reads the same challenge. Consumption commits on every authenticated presentation attempt carrying
+an issued nonce, before access, job, capacity, scope, expiry or proof checks.
+A different presenter consumes the recognized nonce and is refused. Only a
+read of an exact retained effect bypasses consumption. Non-string or
+non-canonical nonce values are refused before lookup. The anti-replay UPDATE
+is required even when admission refuses; holds, provider calls and new effects
+remain absent on refusal. Buyer-owned seller challenges use a separate durable
+ledger and the exact accepted seller presentation is retained per job.
 
 There is a remaining policy-ledger race: another route can consume journal
 capacity between the dry admission check and the real reservation. A final
@@ -95,3 +106,18 @@ Remaining issuance P3: the default twelve challenges can exhaust the global hour
 Retained context starts have an independent total cap, `maxContextRecords`, defaulting to `maxRecords` (10,000). Each admitted start owns one context effect, effect-to-job row and slot; all four collections stay within that cap for context traffic. `peer_context_capacity` (503) refuses fresh starts and new challenges before any policy hold, presentation consumption or SQL mutation; retained retries still read their answers. Successful new context reservation may reclaim an old admission, its completed effect, slot, effect-to-job row and expired nonce/rate rows only after the full hourly start window, the nonce rate window, expiry of every associated transport request and trusted terminal seller-session evidence. Pending/uncertain effects and unknown/non-terminal sessions stay fenced. A fresh context effect for a terminal session is refused, including after cleanup and restart. T10–T13 and B36 test these rules, counts, restart, replay and zero-mutation refusals. D12 must retain authoritative terminal state after transport cleanup; missing state eventually fills the cap and remains a stated block, rather than permission to repeat work.
 
 Capacity lookup work is bounded by retained rows with indexed effect/job references. Opening an existing store creates indexes on peer_effect_jobs(job), peer_transactions(job) and peer_nonces(effect). Job reclamation checks legacy unmapped effects once, then selects only the needed unused jobs through indexed anti-joins, including an indexed slot-prefix check. Context reclamation runs only when capacity needs space and stops after enough trusted terminal contexts; below capacity it reads no old sessions. At a full context cap with no terminal sessions it may inspect every retained context once; D12 must supply a bounded synchronous job-state lookup. T17–T18 verify 10,000-row query plans, constant SQL statement counts, early stopping and zero-mutation refusal; T20 keeps legacy reference fences. These focused bounds do not qualify the missing public host.
+
+Standalone validation is available through `npm run seller:test` and the stock
+SDK `npm test` command. The entry point runs the isolated D5 files, bilateral
+Vet authority and receipt checks, exact-byte HTTP admission, native nonce and
+deployment qualification checks, durable settlement collisions and a fresh
+checkout provenance check. The remaining copied browser/plugin harness files
+are historical port inputs, outside the executable standalone selection; their
+imports do not establish lifecycle coverage.
+
+Native publication requires `pins.deployment` with a full source commit, a clean
+build marker, an artifact SHA-256, and qualification of fee, nonce, broadcast
+and confirmation operations. The trusted source capability must independently
+verify that exact pin through `verifyDeployment`. No live artifact is currently
+supplied by this package; absent or dirty deployment evidence refuses before
+intent creation or a wallet request.

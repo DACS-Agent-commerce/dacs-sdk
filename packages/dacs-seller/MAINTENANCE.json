@@ -1,0 +1,143 @@
+{
+  "baseline": "d231c7d11170fe27dfa85f701c9893b10716708e",
+  "files": [
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
+      "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
+      "sha256": "c368a274d4e6a3ebf3686049aaec5382ea41148d8c4156b5906f992712d1d7a7",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-context-route.mjs",
+      "originalSha256": "ca0377f1d93a5af069547bc6a1a63d2ba53fd84d92357909b3307e74d8f60fba",
+      "sha256": "418dce7fb1ba59c727290999b0fc4d98c584aa0e9bd2ef28d3bdd8a18a011e19",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-durable-state.mjs",
+      "originalSha256": "9e6c0523c8bdbbd57c2df54836a6787414cc8991235cb259b35f2716bde870fe",
+      "sha256": "49bb97c95f5082294e9543da8243809cb8b4ab8bb7e0c5cede49b7098c5fad42",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-http.mjs",
+      "originalSha256": "5b306bb8da34a8d2ace2d179d3e51daf64ca7a24072970eb3044e1456b91ead9",
+      "sha256": "9f0cd0fe9e28cc08b5aca8e8a95c9f59c8279e857a6c002e9446c75aa51a70f3",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/seller-transport-auth.mjs",
+      "originalSha256": "82c5b7dbdd866cad0d601325d05680db2503ce87d7ff1346d6e06eb9683b645f",
+      "sha256": "27a517d672c06506c81a82c0eb7698ce32247e6ec8de97a2faf7713dac8e1a6c",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/agreement-context.mjs",
+      "originalSha256": "ce56ddcb8659ecc66ade10dbbf21b14a466c11bbd390a42324b4e67d3a7e4d66",
+      "sha256": "f0aa218bd40393d6fc3a59c4cd75922391f63d198ebb9fbffd70e84ade1a4b31",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/artifact-anchor.mjs",
+      "originalSha256": "b9aadf636868c2c01bdff93a42bb1c74708fe5dc1970978fabb02e3f3823a6ec",
+      "sha256": "3395ea65bae295443993dd0efc9cd3e4559759a477acc4860c7b36724722ad19",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/deployment-qualification.mjs",
+      "originalSha256": null,
+      "sha256": "d82386e3e2885f8fb4636809dd5d0269e06aaf02107590fd74d71efd9407d71e",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/seller-purchase-source.mjs",
+      "originalSha256": "fdc3f0328c52b3748f7811cdda77e3e1037038cf20dbe19a4511201bf48179bc",
+      "sha256": "3dffb2f7ae4a3811be96523c1a8fa0dba5e25378d63a0ec0298c39a1847902db",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/bilateral-vet.test.mjs",
+      "originalSha256": null,
+      "sha256": "f7dab22b928dffd39c12bc263774836d39086ddc59f29751390fda8fc2110d7f",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/d5-limits-before-effects.test.mjs",
+      "originalSha256": "7f3d8c7c6f62cb90fae6fb2dad6ca8d99b380be8bb0466d23a6b9927dd8415f7",
+      "sha256": "1778a47c65cc432782f81aee740e6560cb1eb74feb2998a9d177d84ace5ce022",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/d5-recovery.test.mjs",
+      "originalSha256": "40f685fe7cd08178f397f136f74aa2d755c915e0586350ff8092a370cd693b07",
+      "sha256": "4613f7d31e93b35438502eff4dda79a5a0f450d78d7d4caca931bb01d194b182",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/d5-vet-decisions.test.mjs",
+      "originalSha256": "138283ce81dc6cf07f4048b9db4158178aae8967edcf7676deac606fadae3524",
+      "sha256": "16e4515794bfe9a6c12ccac449a3757b8017f0c0b00be93e9efc2a4aa38441ef",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-storage-write-recovery.test.mjs",
+      "originalSha256": "11da500ee430169313194e301163ac6b3387e6536835bbe8f15d38820c6db725",
+      "sha256": "5ff44b2dd27eccbc7e3935bf84d2cc542f0ef0f7e9ae3f595c98eda7efdebc1a",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/anchor-isolated-fixture.mjs",
+      "originalSha256": null,
+      "sha256": "24558e97925124f4acab4ba4fe5a49e402260e6dab6dac216dba13e5e46a61dc",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/bilateral-vet-fixture.mjs",
+      "originalSha256": null,
+      "sha256": "e165f6f46e9b7f89d8a899a2e7e1c97346a4c63d5415a78a17995b83b8d283bb",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/d5-isolated-dependencies.mjs",
+      "originalSha256": "7fccb503616d2514b23a8a4af98df0a36e1d7498a5d86ef3387addf1543df7f2",
+      "sha256": "b83ee2154af0b7bd260896dea50dcfa808216b251408537d6dc7a43b1b04e010",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/d5-restart-process.mjs",
+      "originalSha256": "59417358a0fb3349732952339a06f66e8825378f88b3a2a1f6f6cd2e509dc698",
+      "sha256": "50837fba8b5cdf0b415965653384809e8feba15242d3ee7274dde46941bba1d4",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/seller-agent-isolated-fixture.mjs",
+      "originalSha256": null,
+      "sha256": "ed151bd215081e3a9ea3e985c413170293e69d628da8a6d91e8072d0b687edae",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/provenance-checkout.test.mjs",
+      "originalSha256": null,
+      "sha256": "79e5cf6bbcaa43b70c8244e50a827034da4f52f453104c6dac464fbe40c64740",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-lifecycle-gates.test.mjs",
+      "originalSha256": null,
+      "sha256": "57e80ea88d0e6476079d0fbccdca06679c026b33eadb5ed171a6e4cb89d25fef",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-raw-json.test.mjs",
+      "originalSha256": null,
+      "sha256": "8a10fbe7a836524eaa28c0abf7f9bd85dba3e0a9301b0ffdd85f0291415c43c9",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/settlement-collisions.test.mjs",
+      "originalSha256": null,
+      "sha256": "fd5e58d2d11f88b13a8eac71bb092760bfed894f504186de0b3d238aa82c24ca",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    }
+  ]
+}

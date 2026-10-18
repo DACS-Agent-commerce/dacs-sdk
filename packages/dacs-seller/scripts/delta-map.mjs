@@ -7,7 +7,9 @@ import {fileURLToPath} from 'node:url';
 import {originalPath,redactText} from './lib/publication-text.mjs';
 export const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 export const PKG='packages/dacs-seller';
-export const BASE='28d27ed';
+export const BASE='d231c7d11170fe27dfa85f701c9893b10716708e';
+export const BASELINE_SHA256='d5b11fa618bd98e6c6a20b574a29f3a9b4b560b9b3dd284d1f8518e0151b8b65';
+export const publishedBaseline=()=>JSON.parse(readFileSync(join(ROOT,PKG,'PUBLISHED-BASELINE.json')));
 export const git=(...args)=>execFileSync('git',['-C',ROOT,...args],{maxBuffer:64*1024*1024});
 const code=s=>'`'+String(s).replaceAll('`',"'").replaceAll('|','\\|')+'`';
 function coordinates(entry) {
@@ -34,15 +36,16 @@ function coordinates(entry) {
  return lines.map(line => code(entry.path.replace(PKG+'/', '')+':'+line)).join('<br>');
 }
 export function render(manifest){
- const baseline=JSON.parse(redactText(git('show',`${BASE}:${PKG}/PROVENANCE.json`).toString()));
+ const baseline=JSON.parse(readFileSync(join(ROOT,PKG,'PROVENANCE.json')));
+ const blobs=new Map(publishedBaseline().files.map(e=>[e.path,e.gitBlob]));
  const delta=new Map((manifest.deltas?.files??[]).map(e=>[e.path,e]));
  const supplies=new Map();
  for(const entry of delta.values())for(const s of entry.supplied??[]){if(!s.path)continue;const targets=supplies.get(s.path)??[];targets.push(`${entry.path.replace(PKG+'/','')}:${s.target.join('-')} ← ${s.lines.join('-')}`);supplies.set(s.path,targets);}
  const rows=['<!-- BEGIN GENERATED: scripts/delta-map.mjs -->','| D5 file:line | Change and reason | Named commits |','| --- | --- | --- |',...[(manifest.deltas?.files??[]),(manifest.deltas?.support??[])].flat().map(e=>`| ${coordinates(e)} | ${e.reason} | ${(e.commits??['port']).join(', ')} |`),'',
- '| File | Source path @ commit | Source blob | Status | Current blob | Supplied lines (target ← source) |',
+ '| File | Source path @ commit | Published baseline blob | Status | Current blob | Supplied lines (target ← source) |',
  '| --- | --- | --- | --- | --- | --- |'];
  for(const e of baseline.files){
-  const d=delta.get(e.path),sourceBlob=git('rev-parse',`${BASE}:${originalPath(e.path)}`).toString().trim(),current=existsSync(join(ROOT,e.path))?git('hash-object','--',e.path).toString().trim():'deleted';
+  const d=delta.get(e.path),sourceBlob=blobs.get(e.path)??'not published',current=existsSync(join(ROOT,e.path))?git('hash-object','--',e.path).toString().trim():'deleted';
   const uses=supplies.get(e.path)??[];
   const status=(manifest.publication?.files??[]).some(p=>p.path===e.path)?'redacted for publication; original source pin retained':d?.deleted?'deleted by D5':d?'changed by D5':uses.length?'merged into src/ or test/ by D5':'unchanged';
   rows.push(`| ${code(e.path.replace(PKG+'/',''))} | ${code(e.sourcePath+' @ '+e.sourceCommit)} | ${code(sourceBlob)} | ${status} | ${code(current)} | ${uses.map(code).join('<br>')||'—'} |`);

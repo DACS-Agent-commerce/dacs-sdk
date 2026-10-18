@@ -1,3 +1,5 @@
+import {assertQualifiedDeployment} from './deployment-qualification.mjs';
+import {createPublicKey,verify as verifySignature} from 'node:crypto';
 import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // Application-owned native publication for the real demo composition. Every
 // CREATE is produced by the packaged seller wallet and then accepted only
@@ -12,7 +14,7 @@ import { storageWriteRpcSigner } from './storage-write-recovery.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { OPERATOR_CLOSING } from './operator-approval.mjs';
 import {
-  canonicalize,
+  ARTIFACT_SEPARATORS, signedBytes, canonicalize,
   contentHash,
   isCompositeVerificationRecord,
   isFinalityCommitmentRecord,
@@ -40,9 +42,16 @@ const HASH=/^[0-9a-f]{64}$/;
 // absent, so callers publish it again, which asks the operator again.
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
 
-function artifactValid(kind,value,writer) {
+function artifactValid(kind,value,writer,verifier=writer) {
   if(kind==='Listing') return isListing(value) && value.seller?.identity?.presentedBy===writer;
-  if(kind==='CompositeVerificationRecord') return isCompositeVerificationRecord(value) && value.signature?.signer===writer;
+  if(kind==='CompositeVerificationRecord') {
+    if(!isCompositeVerificationRecord(value) || value.signature?.signer!==verifier || value.signature.algorithm!=='ed25519'
+      || !/^did:demos:agent:[a-f0-9]{64}$/.test(verifier)
+      || (value.evaluatedParty===writer ? verifier===writer : verifier!==writer)) return false;
+    try { return verifySignature(null,signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord,contentHash(value)),
+      createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),Buffer.from(verifier.slice(16),'hex')]),format:'der',type:'spki'}),Buffer.from(value.signature.value,'base64url')); }
+    catch { return false; }
+  }
   if(kind==='FinalityCommitmentRecord') return isFinalityCommitmentRecord(value) && value.signature?.signer===writer;
   if(kind==='SettlementEvidence')return isNativeDeliveryEvidence(value,writer,`dacs4:evidence:${value.jobId}`);
   return kind==='Deliverable' && value?.reportVersion==='1' && value.kind==='dacs-chatgpt-plugin/devnet-purchased-report'
@@ -196,14 +205,14 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // anything) is replaced under this lock by a fresh intent and asked again.
   // Every other retained intent is only read back, as without it, apart from
   // a 'closing' one (a shutdown ended its approval), which is always asked again.
-  async function publish({logicalAddress,artifact,artifactKind,writer=claim,deliveryBinding,authorize,reaskDenied=false}) {
+  async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,reaskDenied=false}) {
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
-    if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,writer)) fail('invalid','demo artifact kind, producer, or signed shape differs');
+    if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,writer,verifier)) fail('invalid','demo artifact kind, producer, or signed shape differs');
     if(artifactKind==='SettlementEvidence'&&logicalAddress!==`dacs4:evidence:${artifact.jobId}`)fail('invalid','delivery evidence address differs from its job');
     const value=clone(artifact), jobId=value.jobId ?? `listing:${value.listingId}`, receiptContentHash=contentHash(value);
     if((artifactKind==='Deliverable')!==Boolean(deliveryBinding) || (deliveryBinding && !deliveryBindingValid(deliveryBinding,value,logicalAddress,receiptContentHash))) fail('invalid','demo Deliverable is not bound to the exact Agreement, Listing, fulfilment, amount and payload');
-    const input={logicalAddress,artifact:value,artifactKind,writer,receiptContentHash,...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
-    return journal.withWalletLock(keyFor(logicalAddress),async()=>{
+    const input={logicalAddress,artifact:value,artifactKind,writer,receiptContentHash,...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
+    return journal.withWalletLock(`demo/nonce/${exactHash([network,sourceCapability.pins.chainIdentity,owner])}`,()=>journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
       if(retained) {
         if(retained.inputHash!==exactHash(input)) fail('conflict','immutable demo artifact intent differs');
@@ -214,6 +223,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
         if(retained.stage!=='closing'&&!(reaskDenied===true&&artifactKind==='Listing'&&neverSigned)) return observe(input,retained);
       }
       authorizeJob(artifactKind,jobId);
+      await assertQualifiedDeployment(sourceCapability);
       // Another application seam (for example native SettlementEvidence)
       // may have used this same seller/source nonce lane immediately before
       // delivery. Authenticate and release that exact retained transaction;
@@ -223,6 +233,14 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       const response=await sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]});
       const current=response?.response;
       if(response?.result!==200 || !Number.isSafeInteger(current) || current<0) fail('indeterminate','seller nonce is unavailable');
+      // Retained signed or reserved bytes fence this nonce even after inclusion.
+      // Wait for the RPC to catch up instead of preparing a duplicate CREATE.
+      const priorRows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
+      const retainedNonces=priorRows.filter(([,row])=>!(!row?.hash&&!row?.signedTransaction&&(row?.stage==='closing'||(row?.stage==='denied'&&row.error==='user_rejected'))))
+        .flatMap(([,row])=>[row?.transaction,row?.signedTransaction])
+        .filter(tx=>tx?.content?.from===owner).map(tx=>tx.content.nonce);
+      if(retainedNonces.some(n=>!Number.isSafeInteger(n)||n<0)) fail('indeterminate','retained seller nonce is invalid');
+      if(current===Number.MAX_SAFE_INTEGER||retainedNonces.some(n=>n>current)) fail('indeterminate','seller nonce RPC has not caught up with retained CREATEs');
       const nonce=current+1, programName=logicalToStorageProgramName(logicalAddress), storageAddress=deriveStorageAddress(owner,programName,nonce,'');
       const transaction=buildStorageProgramCreatePayload({from:owner,storageAddress,programName,logicalAddress,signedListing:value,nonce,timestamp:now()});
       transaction.content.from_ed25519_address=owner;
@@ -256,13 +274,13 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       const issued={...intent,stage:'issued',hash:answer.data.hash};
       await journal.put(keyFor(logicalAddress),issued);
       return observe(input,issued,answer.data.writeProof);
-    });
+    }));
   }
-  async function read({logicalAddress,artifact,artifactKind,writer=claim,deliveryBinding,fresh=false}) {
-    if(writer!==claim || !artifactValid(artifactKind,artifact,writer)) return {status:'rejected',reason:'demo read scope differs'};
+  async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false}) {
+    if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier)) return {status:'rejected',reason:'demo read scope differs'};
     const retained=await journal.get(keyFor(logicalAddress));
     if(!retained) return {status:'absent',reason:'no seller-owned demo CREATE intent'};
-    const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
+    const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
     if(retained.inputHash!==exactHash(input)) return {status:'rejected',reason:'retained demo CREATE scope differs'};
     authorizeRetained(retained);
     if(retained.stage==='closing') return closingAbsence(logicalAddress,retained);
@@ -314,11 +332,11 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     && sha256Hex(JSON.stringify(projection.content))===projection.hash
     && projection.signature?.type==='ed25519' && verifyDemosSignature({address:owner,message:projection.hash,signature:projection.signature.data})
     && receipt.transactionRef.value===projection.hash;
-  async function verifyReceipt({logicalAddress,artifact,artifactKind,receipt,writer=claim,signedProjection,deliveryBinding,fresh=false}) {
+  async function verifyReceipt({logicalAddress,artifact,artifactKind,receipt,writer=claim,verifier=writer,signedProjection,deliveryBinding,fresh=false}) {
     // The request itself is checked first, with no read: this anchor's writer,
     // an artifact of a kind it publishes in that writer's signed shape, and a
     // receipt naming a transaction hash.
-    if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,claim) || !HASH.test(receipt?.transactionRef?.value ?? '')) return 'invalid';
+    if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,claim,verifier) || !HASH.test(receipt?.transactionRef?.value ?? '')) return 'invalid';
     const projection=signedProjection ?? await publicProjection(receipt.transactionRef.value);
     const requestJob=artifact?.jobId ?? `listing:${artifact?.listingId}`;
     if(!projection) { authorizeJob(artifactKind,requestJob); return 'indeterminate'; }
@@ -329,7 +347,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     const bound=createBinding(projection);
     authorizeJob(bound.artifactKind,bound.jobId);
     if(bound.artifactKind!==artifactKind || bound.jobId!==requestJob) return 'invalid';
-    const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
+    const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
     const cacheable=cachedKinds.has(artifactKind),cacheKey=cacheScope(input,projection,receipt);
     if(cacheable&&!fresh&&immutable.get(cacheKey)){await sourceCapability.observeBinding();return 'valid';}
     const verdict=await reader.verifyReceipt({receipt,logicalAddress,artifact,expectedWriter:writer,artifactKind,...(deliveryBinding?{deliveryBinding}:{}),receiptContentHash:contentHash(artifact),signedProjection:projection});

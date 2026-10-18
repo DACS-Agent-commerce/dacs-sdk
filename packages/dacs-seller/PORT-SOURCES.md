@@ -1,3 +1,9 @@
+The governing input is [PROFILE.json](PROFILE.json), pinned to DACS-Standard
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`. Historical planning notes,
+proposed register entries and workstream names below are port history only.
+They grant no exception to the Standard. This experimental package has no
+qualified live deployment; unsupported qualification stays blocked.
+
 # Port sources: #58 and #59
 
 `port-sources/` holds publication copies of the files that frontend #58 and #59 add or change, taken at their inspected heads and redacted for publication. Nothing imports them. D5 merges them into `src/` in the port, and every merged line is then listed in `DELTA-MAP.md`. `PROVENANCE.json` records each file with `role: port-source`, the PR head as `sourceCommit`, the head the plan names, and the file's SHA-256 at that head (`planNamedSha256`, or `null` where the file does not exist there).
@@ -7,7 +13,7 @@
 | #58 | seller-sourced purchase lookup, manual hold of pre-payment writes (`purchaseSource: "seller"`) | `786aa1d9d6b6393190a6f388a4b92cb921af1fc6` | `5274f18541ac0e8c77e3e71463bb6c811f048922` | `port-sources/pr58-786aa1d/` |
 | #59 | Vet and Agreement-context route, per-buyer and global unpaid-start limits (`DACS_SELLER_CONTEXT=route`) | `ffef873a58a1e71f3a91ae159d92a549992c3857` | `febba6cc2e732a59124eb39f33a50f017d4e3d4c` | `port-sources/pr59-ffef873/` |
 
-Both inspected heads descend from the heads the plan names, and both merge main `82bf8c4`, the integration base of `src/` and `test/`. So `git diff 82bf8c4 786aa1d -- http-mcp` is exactly #58's change, and likewise for #59 (checked with `git merge-base --is-ancestor`; `scripts/check-provenance.mjs --source` checks it again). The source heads were frozen on 2026-10-14. Publication was approved on 2026-10-18.
+Both inspected heads descend from the heads the plan names, and both merge main `82bf8c4`, the integration base of `src/` and `test/`. So `git diff 82bf8c4 786aa1d -- http-mcp` is exactly #58's change, and likewise for #59 (checked with `git merge-base --is-ancestor`; the original preparation tooling recorded that check). The source heads were frozen on 2026-10-14. Publication was approved on 2026-10-18.
 
 **What is ported:** every file under `http-mcp/src` that the PR adds or changes and that is in the seller set or is new seller-side code, plus every test or test helper the PR adds or changes. "Same at the plan-named head" says whether the file already had these bytes at the head the plan names. "Absent there" means the file came in through the PR's merge of main.
 
@@ -118,7 +124,7 @@ This records the collision; D5 resolves it. Line numbers are in the ported files
    - A Vet write that #58 held and the operator then approved must convert at most one context slot and be counted once.
 4. **Whose records answer "is this job known".**
    - #59's admission asks the composition's `knownJob` and `assertBuyerAccess` (`seller-context-route.mjs:148-149`, `:191-192`). In-process, these are the buyer application's records, and the route takes its per-buyer limit from the plugin's `config.mjs` (`:34`, `:47-52`).
-   - #58's seller records exist to remove those application reads (K1, DESIGN-SELLER-KIT §1.2).
+   - #58's seller records exist to remove those application reads (K1, historical design note §1.2).
    - The merged admission has to answer from seller-owned records, so that a public seller holds no buyer database.
 
 Tests that bear on the merge, from both PRs:
@@ -127,6 +133,19 @@ Tests that bear on the merge, from both PRs:
 
 ## Publication redactions (2026-10-18)
 
-The original SHA-256 values, source commits and source/target ranges remain recorded. `PROVENANCE.json` adds a `publication` extension with the redacted copies’ SHA-256 values and the pre-publication commit. `scripts/publication-provenance.mjs --write` generates these pins; `--check` verifies them. The transformation is recorded in `scripts/lib/publication-text.mjs`, including reversible aliases for renamed source files. Its forbidden spellings use fragments so those spellings do not appear in the published text. No fixture is excluded from scanning.
+The original SHA-256 values, source commits and source/target ranges remain
+immutable in PROVENANCE.json. PUBLISHED-BASELINE.json records the 197 source
+hashes and Git blobs from published commit
+`d231c7d11170fe27dfa85f701c9893b10716708e`. The checker pins that file by its
+SHA-256, so it also works in shallow clones and exported source checkouts.
+MAINTENANCE.json records each later source change with its original and current
+SHA-256. The original frontend identities remain available for independent
+upstream comparison; current checks establish published-source integrity and
+explicit maintenance changes. They do not claim to reconstruct unavailable
+preparation history or independently verify private frontend ancestry.
 
-`scripts/check-provenance.mjs --source <frontend repository>` still checks the original step-1 tree against its source blobs and copy plan. It additionally checks that every publication copy is exactly its original content after the recorded text transformation. Supplied ranges are compared after that same transformation. `scripts/import-cut-map.mjs --source <frontend repository>` regenerates the import map using the public aliases.
+Run `node packages/dacs-seller/scripts/check-provenance.mjs` and
+`node packages/dacs-seller/scripts/publication-provenance.mjs --check`.
+The historical `check-step1-provenance.mjs --root <original snapshot> --source
+<frontend repository>` remains available for owners holding those source
+objects. Current qualification does not depend on its preparation commits.

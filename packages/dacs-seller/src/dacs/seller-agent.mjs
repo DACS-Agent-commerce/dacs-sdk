@@ -149,7 +149,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (durableDirectory && suppliedReceiptStore) throw new Error('durable seller recovery owns the pinned filesystem receipt store');
   const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin }) : null;
   const sign = (bytes) => new Uint8Array(durable ? durable.signOnce(`signature:${sha256Hex(bytes)}`, Buffer.from(bytes)) : signer.sign(Buffer.from(bytes)));
-  const receiptStore = durable?.receiptStore ?? suppliedReceiptStore ?? createInMemorySellerReceiptStore();
+  const rawReceiptStore = durable?.receiptStore ?? suppliedReceiptStore ?? createInMemorySellerReceiptStore();
   const retainedAdmission = durable?.context();
   // Historical admission captured once, atomically with the Listing bytes it
   // validated; payment intake replays exactly this result (never live state).
@@ -167,7 +167,38 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const sessions = new Map(); // jobId -> session
   const signatures = new Map(); // planHash -> seller signature
   const contributions = new Map(); // proposalHash -> contribution
-  const settlementJobs = new Map(); // canonical settlement id -> the one job it paid (SB-2)
+  const settlementJobs = new Map(); // canonical settlement id -> all admissible claims
+  const bindSettlement = (id, jobId, candidate = null) => {
+    const claims = settlementJobs.get(id) ?? new Map();
+    claims.set(jobId, candidate); settlementJobs.set(id, claims);
+    const local = claims.size === 1;
+    const retained = durable ? durable.bindSettlement(id, jobId, candidate) : true;
+    return local && retained;
+  };
+  const hasSettlementCredit = (id, jobId) => (!settlementJobs.has(id) || (settlementJobs.get(id).size === 1 && settlementJobs.get(id).has(jobId))) && (!durable || durable.settlementJob(id) === jobId);
+  const assertSettlementCredit = (jobId) => {
+    const session = sessions.get(jobId) ?? durable?.loadSession(jobId);
+    const id = session?.payment?.settlementId ?? session?.paymentWork?.intake?.settlementId ?? session?.nativeEvidenceWork?.intake?.settlementId;
+    if (id && !hasSettlementCredit(id, jobId)) throw new SellerAgentError('settlement_collision', 'competing admissible settlement claims require binding authority', 503);
+  };
+  // The SDK calls claim only after authenticating the complete payment tuple.
+  // Keep that tuple before the primitive's provisional election, including a loser.
+  const receiptStore = {
+    claim: async candidate => { bindSettlement(candidate.settlementId, candidate.jobId, structuredClone(candidate)); return rawReceiptStore.claim(candidate); },
+    consumePermit: async (id,handoff) => {
+      const permit=await rawReceiptStore.inspectPermit(id);
+      if(permit.claim && !hasSettlementCredit(permit.claim.settlementId,permit.claim.jobId))return {status:'invalid'};
+      return rawReceiptStore.consumePermit(id,handoff);
+    },
+    inspectPermit: (...args) => rawReceiptStore.inspectPermit(...args),
+  };
+  const sessionView = (session) => {
+    if(!session)return null;
+    const copy=structuredClone(session);
+    try { assertSettlementCredit(session.jobId); }
+    catch(error) { if(error.code!=='settlement_collision')throw error;copy.settlementCredit='indeterminate';copy.stage='settlement-indeterminate'; }
+    return copy;
+  };
   const deliveryReport=(session,settlementId)=>{
     const report=deliverableProducer ? deliverableProducer({agreement:structuredClone(session.agreement),listing:structuredClone(listing),settlementId}) : buildReport({agreement:session.agreement,listing,settlementId});
     if(report?.jobId!==session.jobId || report.agreementHash!==contentHash(session.agreement) || report.settlementId!==settlementId) throw new SellerAgentError('deliverable_producer_invalid','the application deliverable is not bound to this Agreement and settlement',503);
@@ -181,7 +212,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // another journal: as the native publisher's authorize hook (called under its
   // address lock with nothing awaited before the CREATE intent), or just before
   // a wallet or delivery call. A holder that lost its job's row sends nothing.
-  const heldFor = (jobId) => (durable ? () => durable.assertHeld(jobId) : undefined);
+  const heldFor = (jobId) => () => { assertSettlementCredit(jobId); return durable ? durable.assertHeld(jobId) : true; };
   function recordPhase(session, index, invokedAt, result) {
     const contextDelta = structuredClone(result.contextDelta ?? {});
     const entry = { index, step: structuredClone(listing.pipeline[index]), invokedAt, result: { ...structuredClone(result), contextDelta }, contextDelta };
@@ -219,6 +250,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const sessionFor = (jobId) => {
     const session = sessions.get(jobId);
     if (!session) throw new SellerAgentError('unknown_job', 'no session for this job', 404);
+    assertSettlementCredit(jobId);
     return session;
   };
 
@@ -301,6 +333,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   function agreementState(identity) {
+    assertSettlementCredit(identity?.jobId);
     if (durable) restore(durable.loadSession(identity?.jobId));
     const session = sessions.get(identity?.jobId);
     if (!session?.proposal || session.transportIdentity?.proposalHash !== identity.proposalHash) return { proposal: null, contribution: null };
@@ -499,6 +532,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       ref?.railId === DEM_RAIL.railId && railRegistryVersion === RAIL_REGISTRY_VERSION ? { disposition: 'verified', rail: structuredClone(DEM_RAIL_DEFINITION), railRegistryVersion } : { disposition: 'rejected', reason: 'unknown rail' },
     resolveIdentityBundle: async (bundleHash) => {
       if (bundleHash === identityBundleHash(sellerBundle)) return { disposition: 'verified', bundle: structuredClone(sellerBundle) };
+      for (const session of sessions.values()) {
+        const presented=session.demDeliveryContext?.input?.seller?.identityBundle;
+        if(presented && identityBundleHash(presented)===bundleHash)return {disposition:'verified',bundle:structuredClone(presented)};
+      }
       for (const session of sessions.values()) if (session.buyerBundleHash === bundleHash) return { disposition: 'verified', bundle: structuredClone(session.buyerBundle) };
       return { disposition: 'rejected', reason: 'unknown identity bundle' };
     },
@@ -512,7 +549,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   };
 
   async function anchorOnce(logicalAddress, artifact) {
-    const authorize = () => signAnchorWrite(sign, logicalAddress, contentHash(artifact));
+    if(artifact.jobId)assertSettlementCredit(artifact.jobId);
+    const authorize = () => { if(artifact.jobId)assertSettlementCredit(artifact.jobId);return signAnchorWrite(sign, logicalAddress, contentHash(artifact)); };
     const receipt = durable ? await durable.anchor({ jobId: artifact.jobId, logicalAddress, artifact, anchors, authorize }) : await anchors.write({ logicalAddress, artifact, writer: claim, writerSignature: authorize() });
     return { ref: fixtureRef(logicalAddress, contentHash(artifact)), receipt };
   }
@@ -840,20 +878,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const terms = agreementTerms(session.agreement);
     if (session.paymentWork && (session.paymentWork.txHash !== String(txHash).toLowerCase() || session.paymentWork.payerPayingKey !== payerPayingKey)) throw new SellerAgentError('seller_payment_work_conflict', 'a different verified claim is retained for this job', 503);
     const intake = session.paymentWork?.intake ?? await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash } }, intakeDeps);
+    if ([...settlementJobs].some(([id,claims]) => claims.has(jobId) && !hasSettlementCredit(id,jobId))) return { status: 'indeterminate', reason: 'settlement-collision' };
     if (intake.disposition !== 'verified' || (intake.fulfilment !== 'claim' && intake.fulfilment !== 'already-claimed')) {
       return { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason };
     }
-    // SB-2: one transaction counts for one session. The SDK receipt store
-    // keeps re-selecting its winner until a permit is consumed, and this agent
-    // never consumes one (no V2 fulfilment handoff), so the canonical
-    // settlement identity is bound set-once (synchronous check-and-set) to the
-    // first verified job before any evidence or delivery. The fenced store's
-    // bindHash is not usable here: it refuses new bindings for leased sessions
-    // without recording one.
-    const boundTo = settlementJobs.get(intake.settlementId);
-    if (boundTo && boundTo !== jobId) return { status: 'rejected', reason: 'settlement-bound-to-another-job' };
-    if (durable && !durable.bindSettlement(intake.settlementId, jobId)) return { status: 'rejected', reason: 'settlement-bound-to-another-job' };
-    settlementJobs.set(intake.settlementId, jobId);
+    if (!bindSettlement(intake.settlementId, jobId)) return { status: 'indeterminate', reason: 'settlement-collision' };
     if (durable && !session.paymentWork) {
       session.paymentWork = { txHash: String(txHash).toLowerCase(), payerPayingKey, intake: JSON.parse(JSON.stringify(intake)), deliveredAt: now() };
       persist(session);
@@ -900,6 +929,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   function publicPayment(session) {
+    assertSettlementCredit(session.jobId);
     const p = session.payment;
     return { status: 'delivered', settlementId: p.settlementId, evidenceAddress: p.ref.anchor.locator, deliverableAddress: p.deliverableRef.anchor.locator, deliveryEvidenceAddress: p.deliveryRef.anchor.locator };
   }
@@ -916,6 +946,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   function nativeEvidenceResponse(work, delivery) {
+    assertSettlementCredit(work.intake.jobId);
     return { status: 'payment-evidenced', settlementId: work.intake.settlementId, evidenceAddress: work.address,
       evidenceHash: work.intake.evidenceHash, anchorReceipt: work.nativeReceipt, signedProjection: retainedNativeEvidenceProjection(work),
       anchorAttempt: work.anchorAttempt, finality: 'one-node-fixture-view-not-independent', delivery };
@@ -1094,9 +1125,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const terms = agreementTerms(session.agreement);
       step = 'payment-intake';
       const intake = await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash: hash } }, { ...intakeDeps, observeDemosTransfer: nativeEvidence.observeDemosTransfer });
+      if ([...settlementJobs].some(([id,claims]) => claims.has(jobId) && !hasSettlementCredit(id,jobId))) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
       if (intake.disposition !== 'verified' || !['claim', 'already-claimed'].includes(intake.fulfilment)) return { answer: { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason } };
       step = 'settlement-binding';
-      if (!durable.bindSettlement(intake.settlementId, jobId)) return { answer: { status: 'rejected', reason: 'settlement-bound-to-another-job' } };
+      if (!bindSettlement(intake.settlementId, jobId)) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
       step = 'evidence-signing';
       const evidence = await signEvidence(structuredClone(intake.evidenceInput));
       if (contentHash(evidence) !== intake.evidenceHash) throw new SellerAgentError('evidence_hash_mismatch', 'SDK signed evidence hash differs', 500);
@@ -1133,7 +1165,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const started = await startNativePaymentEvidence({ session, jobId, hash, payerPayingKey });
       if (!started.work) return started.answer;
       work = started.work;
-      durable.assertHeld(jobId);
+      durable.assertHeld(jobId);assertSettlementCredit(jobId);
       try {
         const answer = await nativeEvidence.anchorEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId, receiptContentHash: work.intake.evidenceHash });
         work.anchorAnswer = JSON.parse(JSON.stringify(answer ?? null));
@@ -1414,6 +1446,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   return {
+    assertSettlementCredit,
     claim,
     listingPin: pin,
     receiveProposal: recoveryCall(receiveProposal),
@@ -1431,16 +1464,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
       return structuredClone(session?.agreement ?? session?.proposal?.plan?.draft ?? null);
     },
-    stageOf: (jobId) => (durable?.loadSession(jobId) ?? sessions.get(jobId))?.stage ?? null,
+    stageOf: (jobId) => sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId))?.stage ?? null,
     deliveryStateOf: (jobId) => {
+      assertSettlementCredit(jobId);
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
       return structuredClone(session?.deliveryReady ?? session?.deliveryHold ?? null);
     },
     // Read-only copies of this seller's own authenticated durable sessions, for
     // an operator whose seller policy and resume pass read seller records
     // (sellerApproval.purchaseSource "seller"). Synchronous; never signs or reads the chain.
-    durableSessionOf: durable ? (jobId) => structuredClone(durable.loadSession(jobId)) : undefined,
-    durableSessions: durable ? () => durable.sessions() : undefined,
+    durableSessionOf: durable ? (jobId) => sessionView(durable.loadSession(jobId)) : undefined,
+    durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     reconcile: durable ? async({ jobId }) => {
       const session=durable.loadSession(jobId);
       // Only an issued unknown CREATE earns a read; otherwise refuse with no chain access.

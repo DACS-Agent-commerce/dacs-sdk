@@ -39,7 +39,7 @@ export function sellerRecordsPurchaseResolver({sessionOf,buyerAccess,now}){
     const presented=session.buyerBundle?.presentedBy,buyer=CLAIM.test(presented??'')&&party('buyer')===presented?presented:null;
     if(buyer&&!buyerAccess().allowsWallet(addressForClaim(buyer)))return false;
     const ref=agreement?.listingRef,price=agreement?.terms?.price,amount=price?.currency==='DEM'?demOs(price.amount):null;
-    const paymentObserved=intakeVerified(session.nativeEvidenceWork,session.jobId)||intakeVerified(session.paymentWork,session.jobId)||typeof session.payment?.settlementId==='string';
+    const paymentObserved=session.settlementCredit!=='indeterminate'&&(intakeVerified(session.nativeEvidenceWork,session.jobId)||intakeVerified(session.paymentWork,session.jobId)||typeof session.payment?.settlementId==='string');
     const admitted=session.proposalAdmission?.observedAt,generatedAt=session.proposal?.plan?.draft?.generatedAt,deadline=agreement?.terms?.deadline,at=now();
     const since=Number.isSafeInteger(admitted)&&Number.isSafeInteger(generatedAt)?Math.min(admitted,generatedAt):null;
     // Closed before payment: expired, past the Agreement deadline, or already
@@ -55,7 +55,7 @@ export function sellerRecordsPurchaseResolver({sessionOf,buyerAccess,now}){
 // evidence readback. The seller reached delivery-ready and has not read the
 // evidence back (it would then be delivered).
 export function sellerHeldEvidenceJobs(sessions){
-  return sessions.filter((session)=>session?.stage==='delivery-ready'&&session.deliveryReady&&session.nativeEvidenceWork).map((session)=>({jobId:session.jobId}));
+  return sessions.filter((session)=>session?.settlementCredit!=='indeterminate'&&session?.stage==='delivery-ready'&&session.deliveryReady&&session.nativeEvidenceWork).map((session)=>({jobId:session.jobId}));
 }
 
 // Shown with the manual approval of a pre-payment write the seller policy held.

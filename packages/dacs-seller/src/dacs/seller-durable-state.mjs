@@ -406,16 +406,18 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           if (prior?.pending && prior.jobId === jobId) putEffect(id, { ...prior, pending: false });
         });
       },
-      bindSettlement(settlementId, jobId) {
+      bindSettlement(settlementId, jobId, claim = null) {
         if (typeof settlementId !== 'string' || settlementId.length < 1 || settlementId.length > 512 || !isCanonicalJobId(jobId)) fail('seller_state_binding_invalid');
         return transaction(() => {
           fence(jobId);
           const row = get('SELECT * FROM seller_settlements WHERE id=?', settlementId);
           const previous = row ? verified(row.value, 'settlement', settlementId) : null;
-          if (previous && previous.job !== jobId) return false;
           if (previous && row.job !== previous.job) fail('seller_state_corrupt');
-          if (!previous) run('INSERT INTO seller_settlements VALUES (?,?,?)', settlementId, jobId, authenticated('settlement', settlementId, { job: jobId }));
-          return true;
+          const claims = previous?.claims ?? (previous ? [{ jobId: previous.job }] : []);
+          if (!claims.some(c => c.jobId === jobId)) claims.push({ jobId, ...(claim ? { claim } : {}) });
+          const value = { job: previous?.job ?? jobId, claims };
+          run('INSERT OR REPLACE INTO seller_settlements VALUES (?,?,?)', settlementId, value.job, authenticated('settlement', settlementId, value));
+          return claims.length === 1;
         });
       },
       settlementJob(settlementId) {
@@ -423,7 +425,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         if (!row) return null;
         const retained = verified(row.value, 'settlement', settlementId);
         if (row.job !== retained.job) fail('seller_state_corrupt');
-        return retained.job;
+        return (retained.claims?.length ?? 1) === 1 ? retained.job : null;
       },
       signOnce(id, bytes) {
         const bytesHash = sha256Hex(bytes), jobId = scopedJob();

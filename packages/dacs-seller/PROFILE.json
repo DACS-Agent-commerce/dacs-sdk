@@ -1,0 +1,13 @@
+{
+  "profile": "dacs-seller:experimental-fixed-price-dem:v1",
+  "standardRevision": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+  "normativeAuthority": "DACS-Standard at standardRevision; no exceptions",
+  "qualification": "unsupported pending complete host integration and deployment qualification",
+  "sellerRequirement": {
+    "requirementVersion": "1",
+    "required": [],
+    "preferredPresentation": "any"
+  },
+  "liveDeployment": null,
+  "historicalPlanningDocuments": "Non-normative port context only; no protocol authority"
+}
