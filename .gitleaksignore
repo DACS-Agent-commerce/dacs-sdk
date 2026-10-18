@@ -43,3 +43,13 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:96
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:103
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:104
+
+# Seller kit (client): test idempotency labels and a fixture file digest, reviewed 2026-10-18; not credentials.
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:517
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:580
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:610
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:643
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:781
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:830
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:903
+5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/showcase-ledger-integration.test.mjs:generic-api-key:77
