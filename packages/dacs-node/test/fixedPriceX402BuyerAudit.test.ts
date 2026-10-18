@@ -51,6 +51,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  sellerProjection: vi.fn(), sellerPayment: vi.fn(), sellerAdmission: vi.fn(),
+  sellerCommitment: vi.fn(), sellerVet: vi.fn(), sellerSession: vi.fn(),
   agreementPublication: vi.fn(),
   bundleRequest: vi.fn(),
   nativeAgreementPublication: vi.fn(),
@@ -64,13 +66,15 @@ const mocks = vi.hoisted(() => ({
 // Current candidate refusal is covered at the core public entry points.
 vi.mock("@kynesyslabs/dacs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@kynesyslabs/dacs")>();
-  return { ...actual, getAuthenticatedRailProvenance: mocks.provenance,
+  return { ...actual, projectDurableSellerAuditPending: mocks.sellerProjection, getAuthenticatedRailProvenance: mocks.provenance,
     verifySettlementEvidence: actual.verifyLegacySettlementEvidence,
     verifyFinalizedSessionSettlement: actual.verifyLegacyFinalizedSessionSettlement };
 });
 
 vi.mock("../src/fixedPriceX402Profile.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/fixedPriceX402Profile.js")>()),
+  loadDacsFixedPriceX402SellerAdmissionV1: mocks.sellerAdmission,
+  loadDacsFixedPriceX402CommitmentResultV1: mocks.sellerCommitment,
   loadDacsFixedPriceX402BuyerAgreementPublicationV1:
     mocks.agreementPublication,
 }));
@@ -82,6 +86,8 @@ vi.mock("../src/bundleTransportRuntime.js", async (importOriginal) => ({
 
 vi.mock("../src/fixedPricePayDemProfile.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/fixedPricePayDemProfile.js")>()),
+  loadDacsFixedPricePayDemSellerAdmissionV1: mocks.sellerAdmission,
+  loadDacsFixedPricePayDemCommitmentResultV1: mocks.sellerCommitment,
   loadDacsFixedPricePayDemBuyerAgreementPublicationV1:
     mocks.nativeAgreementPublication,
 }));
@@ -90,6 +96,8 @@ vi.mock("../src/sessionBootstrapAgreementRuntime.js", async (importOriginal) => 
   ...(await importOriginal<
     typeof import("../src/sessionBootstrapAgreementRuntime.js")
   >()),
+  loadDacsSellerSessionAgreementFactsForOrderV1: mocks.sellerSession,
+  loadDacsPayDemSellerSessionAgreementFactsForOrderV1: mocks.sellerSession,
   loadDacsBuyerSessionAgreementFactsForOrderV1: mocks.sessionFacts,
   loadDacsPayDemBuyerSessionAgreementFactsForOrderV1: mocks.nativeSessionFacts,
 }));
@@ -100,6 +108,21 @@ vi.mock("../src/x402SellerEvm.js", async (importOriginal) => ({
     observeX402Transfer: mocks.observeX402Transfer,
   }),
 }));
+
+
+vi.mock("../src/sellerX402Runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/sellerX402Runtime.js")>()),
+  loadDacsSellerX402AuthorizationForOrderV1: mocks.sellerPayment,
+}));
+vi.mock("../src/payDemSellerPayment.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/payDemSellerPayment.js")>()),
+  loadDacsPayDemSellerPaymentAuthorizationForOrderV1: mocks.sellerPayment,
+}));
+vi.mock("../src/agreementTransportRuntime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/agreementTransportRuntime.js")>()),
+  loadDacsSellerAgreementVetProductionForOrderV1: mocks.sellerVet,
+}));
+import { createDacsFixedPriceSellerAuditV1 } from "../src/fixedPriceX402SellerAudit.js";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import {
@@ -1033,5 +1056,83 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       authenticated,
       request: exactRequest,
     })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+  });
+});
+
+// Reuse signed public artifacts; stub only the prior durable-state projections.
+// Seller audit receipt/hash checks, signature checks and dependency provider are real.
+describe("seller audit full cleartext payload binding", () => {
+  it.each(["x402", "pay-dem"] as const)("admits complete %s payload hashes and refuses payload-only tampering", async (paymentProfile) => {
+    const f = paymentProfile === "x402" ? await fixture() : await payDemFixture();
+    const logicalAddress = f.deliveryEvidence.deliverableAnchor.locator;
+    const native = f.names.get(logicalAddress)!;
+    const payload = f.artifacts.get(native)!;
+    const expectedHash = sha256Hex(canonicalize(payload));
+    expect(expectedHash).not.toBe(contentHash(payload));
+    const payment = { jobId: JOB_ID, phaseIndex: 2, railId: f.rail.railId,
+      evidenceHash: f.paymentRef.contentHash,
+      listingRef: f.preliminaryRequest.signedScope.listingRef };
+    mocks.sellerPayment.mockResolvedValue({ authorization: payment });
+    if (paymentProfile === "x402") mocks.sellerPayment.mockReturnValue({ paymentAuthorization: payment });
+    mocks.sellerAdmission.mockReturnValue({ application: f.application });
+    mocks.sellerCommitment.mockReturnValue({ agreement: f.agreement, commitment: {
+      recordKind: "finality", record: f.artifacts.get(f.names.get(f.commitmentRef.anchor.locator)!),
+      logicalAddress: f.commitmentRef.anchor.locator,
+      anchorReceipt: f.receipts.get(f.names.get(f.commitmentRef.anchor.locator)!),
+      committedAt: NOW - 11_000,
+    } });
+    mocks.sellerSession.mockReturnValue({
+      buyerVetRecord: f.buyerVet, buyerVetRef: f.buyerVetRef,
+      buyerVetReceipt: f.receipts.get(f.buyerVetNative), sellerIdentity: f.sellerIdentity,
+    });
+    mocks.sellerVet.mockReturnValue({ record: f.sellerVet,
+      recordRef: f.sellerVetRef, anchorReceipt: f.receipts.get(f.sellerVetNative) });
+    const terminal = {
+      deliveryAnchorReceipt: f.receipts.get(native),
+      result: { evidence: f.deliveryEvidence, evidenceRef: f.deliveryRef,
+        evidenceAnchorReceipt: f.receipts.get(f.names.get(f.deliveryRef.anchor.locator)!) },
+    };
+    mocks.sellerProjection.mockResolvedValue({ terminal, session: { lastUpdatedAt: NOW },
+      sessionArtifacts: { settlementEvidence: [f.paymentRef, f.deliveryRef] } });
+    const bindingHash = "a".repeat(64);
+    const adapter = {
+      resolveAnchorByName: vi.fn(async (name: string) => ({ status: "present", address: f.names.get(name) })),
+      readAnchor: vi.fn(async (address: string) => admittedFixture(structuredClone(f.artifacts.get(address) ?? null))),
+      resolveDemosAnchorReceipt: vi.fn(async ({ nativeAddress }: { nativeAddress: string }) => f.receipts.get(nativeAddress)),
+      verifyDemosAnchorReceipt: vi.fn(async () => true), anchorWriteOnce: vi.fn(), sign: vi.fn(),
+    };
+    const context = { role: "seller", authority: SELLER, peerAuthority: BUYER,
+      database: { loadEffectInput: () => ({ finalizationVersion: "1", jobId: JOB_ID,
+        localBindingHash: bindingHash, finalisedAt: NOW }), readTime: () => NOW },
+      sessionStore: { load: async () => ({ status: "ok", record: {} }) },
+      demos: { adapter, publicKey: SELLER_KEY },
+    };
+    const audit = createDacsFixedPriceSellerAuditV1({ context,
+      paymentProfile, fulfilment: { fulfilmentDeps: {
+        resolveAgreement: async () => ({ status: "verified", value: f.agreement }),
+        resolveListing: async () => ({ status: "verified", value: f.application.listing }),
+      } },
+    } as never);
+    const input = { operation: { order: { jobId: JOB_ID, buyer: BUYER, seller: SELLER,
+      localBindingHash: bindingHash, protocol: { phase: paymentProfile === "x402" ? "pay-x402" : "pay-dem",
+        rail: { railId: f.rail.railId } } } },
+      retained: { localBindingHash: bindingHash, application: f.application } };
+    const material = await audit.resolveMaterial(input as never);
+    const dependency = material.input.dependencies.find((d) => d.source.kind === "deliverable")!;
+    expect(dependency.anchorReceipt.contentHash).toBe(expectedHash);
+    const requirement = { contentHash: expectedHash };
+    expect(await material.provider.verifyDependencyBinding({ dependency, requirement,
+      artifact: payload } as never)).toBe("valid");
+    for (const changed of [{ ...payload, signature: "changed" },
+      { ...payload, signatures: ["changed"] }]) {
+      expect(await material.provider.verifyDependencyBinding({ dependency, requirement,
+        artifact: changed } as never)).toBe("invalid");
+      f.artifacts.set(native, changed);
+      await expect(audit.resolveMaterial(input as never)).rejects.toMatchObject({
+        reasonCode: "seller-audit-retained-anchor-invalid",
+      });
+    }
+    expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
+    expect(adapter.sign).not.toHaveBeenCalled();
   });
 });

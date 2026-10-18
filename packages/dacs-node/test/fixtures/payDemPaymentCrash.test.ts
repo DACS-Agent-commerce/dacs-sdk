@@ -1,3 +1,9 @@
+// Historical state-machine fixtures run below release admission. Current
+// admission and zero-effect composition have separate unmocked coverage.
+vi.mock("../../src/currentProfileAdmission.js", () => ({
+  requireDacsCurrentProfileForNewEffectsV1: () => undefined,
+}));
+
 import { writeFile } from "node:fs/promises";
 
 import type { PayDemRail } from "@kynesyslabs/dacs";
@@ -10,7 +16,7 @@ import {
   type FixedPricePayDemProtocolBinding,
   type FixedPricePayDemTrackOperation,
 } from "@kynesyslabs/dacs/commerce";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../../src/config.js";
 import { putDacsLiveOrderInputV1 } from "../../src/orderInput.js";

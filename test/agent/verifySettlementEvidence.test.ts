@@ -649,6 +649,25 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — settlement decision 
     expect(result.decision).not.toBe("pass");
     expect(result.reasons.join(" ")).toMatch(/HTLC|expiry/);
   });
+  test.each(["sourceFinalitySec", "safetyWindowSec"] as const)(
+    "authenticated HTLC requires unsigned safe integer %s", async (field) => {
+      const ev = htlc();
+      const { contentHash } = await import("../../src/canonical/index.js");
+      const ctx = paymentAuthenticatedContext();
+      ctx.rail = { railId: "polygon-amoy-usdc", railType: "cross-chain-htlc", asset: "USDC",
+        handler: "pay-cross-chain-htlc", sourceFinalitySec: 120, safetyWindowSec: 600 };
+      ctx.result = { ok: true, txRefs: ev.paymentTxRefs };
+      ctx.attestationRef = { ...ctx.attestationRef, contentHash: contentHash(ev) };
+      ctx.htlcExpiry = { source: 10_000, dest: 5_000, unit: "unix-seconds" };
+      const deps = { resolvePublicKey: async () => new Uint8Array(32), verify: () => true };
+      expect((await verifySettlementEvidence(ev, ctx, deps)).decision).toBe("pass");
+      for (const value of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+        ctx.rail[field] = value;
+        expect((await verifySettlementEvidence(ev, ctx, deps)).decision).not.toBe("pass");
+      }
+    },
+  );
+
   test("authenticated HTLC accepts a safe Unix-second margin and refuses ambiguous units", async () => {
     const ev = htlc();
     const { contentHash } = await import("../../src/canonical/index.js");

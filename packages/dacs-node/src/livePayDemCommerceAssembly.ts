@@ -1,3 +1,4 @@
+import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import type { BundleRequirement } from "@kynesyslabs/dacs/artifacts";
 import type { FixedPricePayDemOrderInput } from "@kynesyslabs/dacs/commerce";
 
@@ -192,6 +193,7 @@ function common(
 export async function createDacsBuyerPayDemLiveCommerceAssemblyV1(
   options: Readonly<DacsBuyerPayDemLiveCommerceAssemblyOptionsV1>,
 ): Promise<Readonly<DacsBuyerPayDemLiveCommerceGraphV1>> {
+  requireDacsCurrentProfileForNewEffectsV1();
   common(options, "buyer");
   const context = options.context;
   if (context.demos.payDem === undefined) {
@@ -265,6 +267,7 @@ export async function createDacsBuyerPayDemLiveCommerceAssemblyV1(
 export async function createDacsSellerPayDemLiveCommerceAssemblyV1(
   options: Readonly<DacsSellerPayDemLiveCommerceAssemblyOptionsV1>,
 ): Promise<Readonly<DacsSellerPayDemLiveCommerceGraphV1>> {
+  requireDacsCurrentProfileForNewEffectsV1();
   common(options, "seller");
   const context = options.context;
   const sessionBootstrap = createDacsSellerSessionBootstrapTransportRuntimeV1({

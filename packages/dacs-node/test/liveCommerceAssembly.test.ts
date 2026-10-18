@@ -1,3 +1,9 @@
+// Historical state-machine fixtures run below release admission. Current
+// admission and zero-effect composition have separate unmocked coverage.
+vi.mock("../src/currentProfileAdmission.js", () => ({
+  requireDacsCurrentProfileForNewEffectsV1: () => undefined,
+}));
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const factories = vi.hoisted(() => ({

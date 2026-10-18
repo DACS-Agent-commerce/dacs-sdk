@@ -1,3 +1,4 @@
+import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import {
   createDacsFixedPriceX402SellerAgreementPolicyV1,
   createDacsFixedPriceX402SellerSessionPolicyV1,
@@ -33,6 +34,7 @@ export interface DacsFixedPriceX402SellerLiveOptionsV1
 export async function createDacsFixedPriceX402SellerLiveV1(
   options: Readonly<DacsFixedPriceX402SellerLiveOptionsV1>,
 ): Promise<Readonly<DacsSellerLiveCommerceGraphV1>> {
+  requireDacsCurrentProfileForNewEffectsV1();
   const session = createDacsFixedPriceX402SellerSessionPolicyV1({
     context: options.context,
     rail: options.rail,

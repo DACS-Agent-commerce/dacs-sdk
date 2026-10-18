@@ -8,6 +8,12 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 > package commands in this repository build and verify release candidates; use a
 > source checkout until the first release is published.
 
+The pinned Standard revision is an unreleased corrective candidate. Current live
+commerce assembly and fresh buyer payment effects refuse until a coordinated
+release is admitted. Existing payment records remain available for read-only
+chain reconciliation. Explicit legacy settlement APIs inspect historical data;
+the legacy publisher refuses current JID-1 jobs and cannot grant current authority.
+
 ## What this is
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.

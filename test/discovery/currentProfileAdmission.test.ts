@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isCanonicalJobId, finalityCommitmentAddress } from '@kynesyslabs/dacs/negotiate';
-import { isCurrentJobId, admitArtifactJson, contentHash } from '@kynesyslabs/dacs/canonical';
+import { isCanonicalJobId, finalityCommitmentAddress } from '../../src/negotiate/index.js';
+import { isCurrentJobId, admitArtifactJson, contentHash } from '../../src/canonical/index.js';
 import { createBoundArtifactRepository, createInMemoryBindingStore } from '../../src/discovery/index.js';
 const JOB = '01J8ME0SXKQ4T9V2RC5HJ6WX7D';
 describe('exact current job admission', () => {
@@ -42,7 +42,7 @@ describe('exact current job admission', () => {
   });
 });
 
-import { verifySettlementEvidence } from '@kynesyslabs/dacs';
+import { verifySettlementEvidence } from '../../src/agent/verifySettlementEvidence.js';
 it('requires authenticated absolute HTLC expiry instants before an authenticated payment pass', async () => {
   const signer = 'did:demos:orchestrator';
   const record = admitArtifactJson(Buffer.from(JSON.stringify({

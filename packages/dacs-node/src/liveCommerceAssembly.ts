@@ -1,3 +1,4 @@
+import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import {
   createDacsBuyerAgreementTrackV1,
   createDacsSellerAgreementTrackV1,
@@ -193,6 +194,7 @@ function common(
 export async function createDacsBuyerLiveCommerceAssemblyV1(
   options: Readonly<DacsBuyerLiveCommerceAssemblyOptionsV1>,
 ): Promise<Readonly<DacsBuyerLiveCommerceGraphV1>> {
+  requireDacsCurrentProfileForNewEffectsV1();
   common(options, "buyer");
   const context = options.context;
   const sessionBootstrap = createDacsBuyerSessionBootstrapTransportRuntimeV1(context);
@@ -264,6 +266,7 @@ export async function createDacsBuyerLiveCommerceAssemblyV1(
 export async function createDacsSellerLiveCommerceAssemblyV1<T = unknown>(
   options: Readonly<DacsSellerLiveCommerceAssemblyOptionsV1<T>>,
 ): Promise<Readonly<DacsSellerLiveCommerceGraphV1>> {
+  requireDacsCurrentProfileForNewEffectsV1();
   common(options, "seller");
   const context = options.context;
   const sessionBootstrap = createDacsSellerSessionBootstrapTransportRuntimeV1({

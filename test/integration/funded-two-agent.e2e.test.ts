@@ -44,6 +44,7 @@ import {
  */
 import {
   ARTIFACT_SEPARATORS,
+  assertCurrentDacsProfileAdmission,
   AnchorWaitError,
   BUNDLE_BINDING_SEPARATOR,
   EIP3009_AUTHORIZATION_USED_TOPIC,
@@ -6416,6 +6417,7 @@ describe("issue #114 guarded funded two-agent spine", () => {
       const fastProfile = productionLatencyProfile();
       let preflight: Preflight | undefined;
       try {
+        assertCurrentDacsProfileAdmission();
         preflight = await stage("preflight", () => runNoWritePreflight(env, true));
         requireCondition(env.LIVE_E2E_CONFIRM === "1", "spend-not-confirmed");
         const demosDebitBudget = createFundedDemosDebitBudget(

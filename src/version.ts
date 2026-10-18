@@ -11,3 +11,8 @@ export const DACS_STANDARD_PIN =
 /** PROFILE at DACS_STANDARD_PIN has no admissible coordinated release. */
 export const DACS_CURRENT_PROFILE_ADMISSION_ERROR =
   "current DACS profile is an unreleased corrective candidate without an admitted coordinated release; current settlement authority is unavailable";
+
+/** Refuse new current-profile protocol effects until this exact pin is released. */
+export function assertCurrentDacsProfileAdmission(): void {
+  throw new Error(DACS_CURRENT_PROFILE_ADMISSION_ERROR);
+}

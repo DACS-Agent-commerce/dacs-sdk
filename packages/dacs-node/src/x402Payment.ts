@@ -1,3 +1,4 @@
+import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -351,8 +352,11 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
     verifySignature ?? undefined;
   const stableConfirmUnused: X402BuyerEvmUnusedConfirmer | undefined =
     confirmUnused ?? undefined;
-  const recoverDisclosure = recoveredDisclosure ??
-    createX402BuyerRetainedDisclosureRecovery({});
+  const disclose = recoveredDisclosure ?? createX402BuyerRetainedDisclosureRecovery({});
+  const recoverDisclosure: X402BuyerEvmDisclosureRecovery = async (...args) => {
+    requireDacsCurrentProfileForNewEffectsV1();
+    return disclose(...args);
+  };
 
   return Object.freeze(async (
     reservation: Readonly<WalletSpendReservationV1>,
@@ -780,6 +784,11 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
       input: Readonly<DacsX402BuyerPaymentInputV1>;
       fence: Readonly<DacsLiveEffectFenceV1>;
     }>) {
+      try {
+        requireDacsCurrentProfileForNewEffectsV1();
+      } catch {
+        return control("operator-action", "current-dacs-profile-unavailable");
+      }
       const paymentInput = capturePaymentInput(invocation.input);
       if (paymentInput.orderLocalBindingHash !== invocation.fence.bindingHash ||
           paymentInput.intent.jobId !== invocation.fence.jobId) {
@@ -905,6 +914,7 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
     ...(options.retryDelayMs === undefined
       ? {} : { retryDelayMs: options.retryDelayMs }),
     async buildInput(operationInput) {
+      requireDacsCurrentProfileForNewEffectsV1();
       const intent = await options.prepareIntent(operationInput);
       assertX402BuyerSettlementIntent(intent);
       if (intent.jobId !== operationInput.order.jobId ||

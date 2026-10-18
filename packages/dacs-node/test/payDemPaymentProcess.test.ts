@@ -269,7 +269,9 @@ describe("native DEM process recovery", () => {
 
     expect(settle).not.toHaveBeenCalled();
     expect(reconcile).toHaveBeenCalledTimes(1);
-    expect(publishNotice).toHaveBeenCalledTimes(1);
+    // This recovery uses real current-profile admission. It can authenticate
+    // the existing transfer, while the unreleased pin permits no new message.
+    expect(publishNotice).not.toHaveBeenCalled();
     expect(await coordinator.getOrderStatus(JOB_ID)).toMatchObject({
       tracks: {
         agreement: { state: "final", outcome: "success" },

@@ -1,3 +1,4 @@
+import { requireDacsCurrentProfileForNewEffectsV1 } from "./currentProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -782,6 +783,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
     track: "payment",
     workerId: options.workerId,
     async buildInput(operation) {
+      requireDacsCurrentProfileForNewEffectsV1();
       const retained = loadDacsLiveOrderInputForTrackV1(operation, database);
       const authority = captureAuthority(
         await options.resolveAuthority({ operation, retained }),
@@ -802,6 +804,12 @@ export function createDacsPayDemBuyerPaymentTrackV1(
     },
     adapter: {
       async execute({ input, fence }) {
+        try {
+          requireDacsCurrentProfileForNewEffectsV1();
+        } catch {
+          return { effectControlVersion: "1", status: "operator-action",
+            reasonCode: "current-dacs-profile-unavailable" };
+        }
         const payment = capturePaymentInput(input);
         await fence.assertCurrent();
         const reservation = walletReservation(payment);
@@ -925,6 +933,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               reservation,
               walletSettlement(payment, captured.result.settlement),
             );
+            // A finalized existing payment remains reconcilable even while new
+            // protocol messages and signatures are unavailable at this pin.
+            try {
+              requireDacsCurrentProfileForNewEffectsV1();
+            } catch {
+              return captured;
+            }
             await options.publishNotice({
               notice: createDacsPayDemPaymentNoticeV1(
                 payment,

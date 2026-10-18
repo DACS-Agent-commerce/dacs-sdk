@@ -62,7 +62,7 @@ const PUBLIC_KEY = rawPublicKey(publicKeyFromSeed(SEED));
 const NOW = 1_777_000_000_000;
 const TX_HASH = "e".repeat(64);
 
-function authorization(jobId = "7NDPS5RJ448HFDFTJVR53ZP995"): SellerPaymentAuthorization {
+function authorization(jobId = "legacy-publication-job"): SellerPaymentAuthorization {
   const evidenceInput: SellerPaymentEvidenceInput = {
     evidenceVersion: "1" as const,
     jobId,
@@ -482,7 +482,7 @@ describe("publishSellerSessionSettlement", () => {
   });
 
   it("keeps one effect identity as authenticated proof observations advance", async () => {
-    const value = authorization("22G6BGH40AK66JYF48H6PS9RKH");
+    const value = authorization("legacy-proof-observations");
     const first = harness(value);
     const replay = harness(value);
     replay.resolveProof.mockResolvedValue(proofAuthentication(value, {
@@ -1176,4 +1176,18 @@ it("current candidate publication refuses before inspection, signing or anchorin
   expect(inspectPermit).not.toHaveBeenCalled();
   expect(sign).not.toHaveBeenCalled();
   expect(anchorEvidence).not.toHaveBeenCalled();
+});
+
+it.each([
+  "7NDPS5RJ448HFDFTJVR53ZP995", "01J8ME0SXKQ4T9V2RC5HJ6WX7D",
+])("legacy publisher refuses current JID-1 %s before any effects", async (jobId) => {
+  const h = harness(authorization(jobId));
+  const result = await publishSellerSessionSettlement(request(h), h.deps);
+  expect(result).toMatchObject({
+    disposition: "error", reason: expect.stringContaining("unreleased corrective candidate"),
+  });
+  expect(h.inspect).not.toHaveBeenCalled();
+  expect(h.resolveProof).not.toHaveBeenCalled();
+  expect(h.sign).not.toHaveBeenCalled();
+  expect(h.anchor).not.toHaveBeenCalled();
 });

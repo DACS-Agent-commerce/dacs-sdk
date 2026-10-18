@@ -22,6 +22,7 @@ import {
   canonicalize,
   contentHash,
   encodeAddressSegment,
+  isCurrentJobId,
   sha256Hex,
 } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
@@ -875,13 +876,16 @@ export async function publishSellerSessionSettlement(
   return failure("error", DACS_CURRENT_PROFILE_ADMISSION_ERROR);
 }
 
-/** Explicit historical-profile publication; does not confer current admission. */
+/** Historical job publication only; JID-1 artifacts cannot bypass release admission. */
 export async function publishLegacySellerSessionSettlement(
   requestInput: SellerSessionSettlementPublicationRequest,
   depsInput: SellerSessionSettlementPublicationDeps,
 ): Promise<SellerSessionSettlementPublicationResult> {
   const request = parseRequest(requestInput);
   if (!request) return failure("error", "settlement publication request is not exact canonical data");
+  if (isCurrentJobId(request.authorization.jobId)) {
+    return failure("error", DACS_CURRENT_PROFILE_ADMISSION_ERROR);
+  }
   if (!advertisesEd25519EvidenceSigner(depsInput)) {
     return failure(
       "error",

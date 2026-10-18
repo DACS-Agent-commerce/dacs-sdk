@@ -16,7 +16,7 @@ export {
  * IMPLEMENTATION.md.
  */
 
-export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
+export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN, assertCurrentDacsProfileAdmission } from "./version.js";
 export * from "./commerce/index.js";
 export {
   admitChannelMessage,
