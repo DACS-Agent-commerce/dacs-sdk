@@ -183,6 +183,7 @@ export interface ListingValidationResult {
 
 export type VerifiedListingAdmission = ListingValidationResult & {
   disposition: "verified";
+  executionMode: "simulation";
   listing: Listing;
   listingContentHash: string;
   receivedJsonBase64: string;
@@ -242,6 +243,7 @@ export function isVerifiedListingAdmission(
 ): result is VerifiedListingAdmission {
   if (
     result.disposition !== "verified" ||
+    result.executionMode !== "simulation" ||
     result.step !== 9 ||
     !result.listing ||
     !result.listingContentHash ||

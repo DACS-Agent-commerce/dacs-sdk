@@ -65,6 +65,24 @@ const terms = { price: { amount: "1", asset: "USDC", decimals: 6, rail: "pay-x40
   deliveryPhase: "deliver-attested-payload", deliveryFormat: "application/json" };
 
 describe("Listing CF-5 ingress before verification or effects", () => {
+  it("requires the simulation marker when binding a verified Listing result", async () => {
+    const listing = listingFixture();
+    const bytes = Buffer.from(JSON.stringify(listing));
+    const result = await validateListingArtifact(bytes, validationDeps());
+    expect(result).toMatchObject({ disposition: "verified", executionMode: "simulation" });
+    expect(isVerifiedListingAdmission(listing as unknown as Record<string, unknown>, result)).toBe(true);
+    const { executionMode: _mode, ...missingMode } = result;
+    for (const altered of [missingMode, { ...result, executionMode: "live" }]) {
+      expect(isVerifiedListingAdmission(
+        listing as unknown as Record<string, unknown>, altered as typeof result,
+      )).toBe(false);
+      expect(await discoverListings(["listing"], async () => bytes, {
+        executionMode: "simulation", trustListings: true,
+        nowMs: validationDeps().nowMs, validateListing: () => altered as typeof result,
+      })).toEqual([]);
+    }
+  });
+
   it("admits a signed unknown signatures extension through the ordered Listing gate", async () => {
     const listing = { ...listingFixture(), signatures: [{ note: "authenticated extension" }] };
     listing.signature.value = Buffer.from(ed25519Sign(

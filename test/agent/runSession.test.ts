@@ -250,6 +250,7 @@ function verifiedAdmissionFor(listing: Listing) {
   }
   return {
     disposition: "verified" as const,
+    executionMode: "simulation" as const,
     step: 9 as const,
     reason: "verified",
     receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),

@@ -84,6 +84,18 @@ single-signature artifacts. They refuse the IdentityBundle presentation and
 three terminal bundle domains: use `identityBundleHash` or `attestationBundleHash`
 and the corresponding artifact-specific signing and verification paths.
 
+`createBoundArtifactRepository` uses the same artifact contract on publication
+and binding reads: Agreements and ChannelTranscripts omit `signatures`, terminal
+bundles use `attestationBundleHash`, and IdentityBundles use `identityBundleHash`.
+Other records retain the singular-signature default. Opposite-named extensions
+remain in the content hash. Anchor metadata also retains a full-envelope hash,
+including all signature and per-copy fields. These hashes bind the stored
+record; readers still need the artifact's signature verifier to authenticate it.
+
+Verified Listing admission results carry `executionMode: "simulation"`. Public
+Listing result binding requires that literal marker as well as the admitted
+bytes and matching Listing hash.
+
 On Demos, `DemosAdapter.readAnchor` returns a storage program's `data` already
 parsed by `@kynesyslabs/demosdk`. The SDK writes Listings with the `json`
 encoding, and the node stores that member as `jsonb` and serves it through

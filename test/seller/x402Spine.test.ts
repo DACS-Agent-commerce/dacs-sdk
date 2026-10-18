@@ -419,6 +419,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
       step: 9,
       reason: "verified",
       receivedJsonBase64: Buffer.from(JSON.stringify(listing)).toString("base64"),
+      executionMode: "simulation",
       listing,
       listingContentHash: listingRef.contentHash,
       revocation: "absent",
