@@ -20,6 +20,45 @@ import {
   type VerifiedReadDeps,
 } from "./verifiedRead.js";
 import { normalizedBindingOwner } from "./owner.js";
+import {
+  isAgreementArtifact,
+  isAttestationBundle,
+  isEvidenceBoundFaultAttestationBundle,
+  isFaultAttestationBundle,
+  isIdentityBundle,
+} from "../artifacts/validators.js";
+import { attestationBundleHash } from "../agent/twoSidedBundle.js";
+import { identityBundleHash } from "../identity/bundle.js";
+
+/** Select the artifact contract, never the mere presence of a signature field. */
+function artifactContentHash(artifact: Record<string, unknown>): string {
+  // The Agreement shape guard predates additive singular-signature extensions.
+  // Ignore that extension only while identifying the contract; hash the full
+  // artifact below so it remains authenticated.
+  const { signature: _signatureExtension, ...agreementShape } = artifact;
+  if (isAgreementArtifact(agreementShape)) return contentHash(artifact, "signatures");
+  if (
+    isAttestationBundle(artifact) ||
+    isFaultAttestationBundle(artifact) ||
+    isEvidenceBoundFaultAttestationBundle(artifact)
+  ) {
+    return attestationBundleHash(artifact);
+  }
+  if (isIdentityBundle(artifact)) return identityBundleHash(artifact);
+  // ChannelTranscript has no public SDK validator yet. Check its complete
+  // envelope contract here; signature authentication remains the reader's job.
+  if (
+    artifact.transcriptVersion === "1" &&
+    typeof artifact.channelId === "string" && artifact.channelId.length > 0 &&
+    Array.isArray(artifact.members) && artifact.members.every((member) => typeof member === "string") &&
+    Array.isArray(artifact.messages) &&
+    typeof artifact.generatedAt === "number" && Number.isSafeInteger(artifact.generatedAt) && artifact.generatedAt >= 0 &&
+    Array.isArray(artifact.signatures)
+  ) {
+    return contentHash(artifact, "signatures");
+  }
+  return contentHash(artifact);
+}
 
 /** Minimal substrate seam needed for binding-aware immutable artifacts. */
 export interface BoundArtifactAdapter {
@@ -270,7 +309,7 @@ export function createBoundArtifactRepository(
           cause: error,
         });
       }
-      const artifactContentHash = contentHash(pinnedArtifact);
+      const pinnedContentHash = artifactContentHash(pinnedArtifact);
       const envelopeHash = sha256Hex(canonicalize(pinnedArtifact));
       const anchor = await deps.adapter.anchorWriteOnce(
         storageName,
@@ -278,7 +317,7 @@ export function createBoundArtifactRepository(
         anchorOptionsWithLogicalAddress(
           logicalAddress,
           options?.anchor,
-          artifactContentHash,
+          pinnedContentHash,
           envelopeHash,
         ),
       );
@@ -290,7 +329,7 @@ export function createBoundArtifactRepository(
         logicalAddress,
         nativeAddress: anchor.address,
         owner,
-        contentHash: artifactContentHash,
+        contentHash: pinnedContentHash,
         ...(options?.version === undefined
           ? {}
           : { version: options.version }),
@@ -313,7 +352,7 @@ export function createBoundArtifactRepository(
     async read(logicalAddress, expectedOwner, verifySignature) {
       return resolveAndRead(deps.index, logicalAddress, expectedOwner, {
         read: (nativeAddress) => deps.adapter.readAnchor(nativeAddress),
-        contentHashOf: contentHash,
+        contentHashOf: artifactContentHash,
         ...(verifySignature === undefined ? {} : { verifySignature }),
       });
     },

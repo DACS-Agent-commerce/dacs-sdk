@@ -1,4 +1,13 @@
-import { describe, expect, test } from "vitest";
+import { readFileSync } from "node:fs";
+import { describe, expect, test, vi } from "vitest";
+
+import {
+  isAgreementArtifact,
+  isAttestationBundle,
+  isEvidenceBoundFaultAttestationBundle,
+  isFaultAttestationBundle,
+  isIdentityBundle,
+} from "../../src/artifacts/validators.js";
 
 import {
   canonicalize,
@@ -20,6 +29,24 @@ const RECORD = {
   price: "5",
   signature: "sig-real",
 };
+
+function upstreamScenario(kind = "agreement") {
+  const corpus = JSON.parse(readFileSync(new URL(
+    "../../vendor/DACS-Standard/conformance/vectors/security/identity-bundle-hash-binding-v0.1.json",
+    import.meta.url,
+  ), "utf8"));
+  return corpus.scenarios[kind];
+}
+
+function upstreamAgreement(): Record<string, unknown> {
+  return upstreamScenario().agreement;
+}
+
+function independentHash(record: Record<string, unknown>, omitted: string[]): string {
+  return sha256Hex(canonicalize(Object.fromEntries(
+    Object.entries(record).filter(([key]) => !omitted.includes(key)),
+  )));
+}
 
 interface FakeBackend {
   nextAddress: number;
@@ -70,6 +97,106 @@ function fakeAdapter(owner: string, backend: FakeBackend): BoundArtifactAdapter 
 }
 
 describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)", () => {
+  test("publishes the upstream Agreement hash in both binding and anchor metadata", async () => {
+    const agreement = upstreamAgreement();
+    expect(isAgreementArtifact(agreement)).toBe(true);
+    const expectedHash = independentHash(agreement, ["signatures"]);
+    expect(expectedHash).toBe("b52c3c0a9fc7f9265d5d0e42e81e8d8da024bfd691e0e13a62b9af713bdce479");
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    const written = await repository.write(`dacs3:${agreement.jobId}:agreement`, agreement);
+    expect(written).toMatchObject({ status: "published", binding: { contentHash: expectedHash } });
+    expect(backend.anchorMetadata[0]).toEqual({
+      logicalAddress: `dacs3:${agreement.jobId}:agreement`,
+      contentHash: expectedHash,
+      envelopeHash: sha256Hex(canonicalize(agreement)),
+    });
+    expect(backend.records.get(written.anchor.address)).toEqual(agreement);
+  });
+
+  test("reads a pre-existing correctly hashed Agreement binding and invokes its verifier", async () => {
+    const agreement = upstreamAgreement();
+    const logicalAddress = `dacs3:${agreement.jobId}:agreement`;
+    const backend = createBackend();
+    backend.records.set("stor-existing", agreement);
+    const bindings = createInMemoryBindingStore([{
+      logicalAddress, nativeAddress: "stor-existing", owner: SELLER,
+      contentHash: independentHash(agreement, ["signatures"]),
+    }]);
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter("0xreader", backend), index: bindings, publisher: bindings,
+    });
+    const verify = vi.fn(() => true);
+    expect(await repository.read(logicalAddress, SELLER, verify)).toMatchObject({
+      status: "verified", record: agreement,
+    });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(backend.writes).toBe(0);
+  });
+
+  test.each([
+    { name: "Agreement", record: () => ({ ...upstreamAgreement(), signature: { note: "signed extension" } }), omitted: ["signatures"] },
+    { name: "PayeeBoundAgreement", record: () => {
+      const agreement = upstreamScenario("payeeBoundAgreement").agreement;
+      expect(isAgreementArtifact(agreement)).toBe(true);
+      return { ...agreement, signature: { note: "signed extension" } };
+    }, omitted: ["signatures"] },
+    { name: "ChannelTranscript", record: () => ({
+      transcriptVersion: "1", channelId: "channel-1", members: ["buyer", "seller"],
+      messages: [], generatedAt: 1, signatures: [{ party: "buyer", algorithm: "ed25519", value: "AA" }],
+      signature: { note: "signed extension" },
+    }), omitted: ["signatures"] },
+    { name: "AttestationBundle", record: () => {
+      const { evidenceBoundFaultBundleVersion: _version, faultedParty: _fault, ...scope } = upstreamScenario().terminalInput.bundle;
+      const bundle = { ...scope, bundleVersion: "1" };
+      expect(isAttestationBundle(bundle)).toBe(true);
+      return { ...bundle, signature: { note: "signed extension" } };
+    }, omitted: ["signatures", "anchoredByRole"] },
+    { name: "FaultAttestationBundle", record: () => {
+      const { evidenceBoundFaultBundleVersion: _version, ...scope } = upstreamScenario().terminalInput.bundle;
+      const bundle = { ...scope, faultBundleVersion: "1" };
+      expect(isFaultAttestationBundle(bundle)).toBe(true);
+      return { ...bundle, signature: { note: "signed extension" } };
+    }, omitted: ["signatures", "anchoredByRole"] },
+    { name: "EvidenceBoundFaultAttestationBundle", record: () => {
+      const bundle = upstreamScenario().terminalInput.bundle;
+      expect(isEvidenceBoundFaultAttestationBundle(bundle)).toBe(true);
+      return { ...bundle, signature: { note: "signed extension" } };
+    }, omitted: ["signatures", "anchoredByRole"] },
+    { name: "IdentityBundle", record: () => {
+      const bundle = upstreamScenario().listing.seller.identity;
+      expect(isIdentityBundle(bundle)).toBe(true);
+      return { ...bundle, signature: { note: "signed extension" }, signatures: ["signed extension"] };
+    }, omitted: ["presentation"] },
+    { name: "singular-signature record", record: () => ({ ...RECORD, signatures: ["signed extension"] }), omitted: ["signature"] },
+  ])("uses the $name contract on write and read and binds opposite-named extensions", async ({ record, omitted }) => {
+    const artifact = record() as Record<string, unknown>;
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    const repository = createBoundArtifactRepository({
+      adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
+    });
+    const expectedHash = independentHash(artifact, omitted);
+    const written = await repository.write(LOGICAL, artifact);
+    expect(written.binding.contentHash).toBe(expectedHash);
+    expect(backend.anchorMetadata[0]?.contentHash).toBe(expectedHash);
+    const verify = vi.fn(() => true);
+    expect((await repository.read(LOGICAL, SELLER, verify)).status).toBe("verified");
+    expect(verify).toHaveBeenCalledOnce();
+    const extension = omitted.includes("signature") ? "signatures" : "signature";
+    for (const value of [undefined, { note: "tampered extension" }]) {
+      const tampered = structuredClone(artifact);
+      if (value === undefined) delete tampered[extension];
+      else tampered[extension] = value;
+      backend.records.set(written.anchor.address, tampered);
+      expect((await repository.read(LOGICAL, SELLER, verify)).status).toBe("hash-mismatch");
+    }
+    expect(verify).toHaveBeenCalledOnce();
+  });
+
   test("writer publishes logical→native binding and an independent reader verifies it", async () => {
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
