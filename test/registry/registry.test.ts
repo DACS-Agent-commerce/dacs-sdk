@@ -1854,3 +1854,10 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
     );
   });
 });
+
+// Exercise the dormant dispatch wiring with mocked wallet dependencies. The
+// real unreleased-profile boundary is pinned in rails/profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
+});

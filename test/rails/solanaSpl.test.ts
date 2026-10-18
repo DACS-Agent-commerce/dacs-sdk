@@ -222,7 +222,7 @@ describe("advanceSolanaSplSettlement", () => {
         },
         broadcastRetained,
       }),
-    }));
+    }), { executionMode: "simulation" });
 
     expect(result).toMatchObject({ status: "indeterminate" });
     expect(recordAttempt).not.toHaveBeenCalled();
@@ -245,7 +245,7 @@ describe("advanceSolanaSplSettlement", () => {
     });
     const result = await advanceSolanaSplSettlement(input({
       adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
-    }));
+    }), { executionMode: "simulation" });
     expect(result).toEqual({
       status: "settled",
       settlement: {
@@ -276,7 +276,7 @@ describe("advanceSolanaSplSettlement", () => {
         prepareSignedTransfer,
         broadcastRetained,
       }),
-    }))).resolves.toEqual({
+    }), { executionMode: "simulation" })).resolves.toEqual({
       status: "failed",
       errorClass: "counterparty",
       reason: "solana-spl-payee-ata-missing",
@@ -293,7 +293,7 @@ describe("advanceSolanaSplSettlement", () => {
         preflight: async () => preflight({ payeeAtaExists: false }),
         prepareSignedTransfer,
       }),
-    }))).resolves.toMatchObject({ status: "settled" });
+    }), { executionMode: "simulation" })).resolves.toMatchObject({ status: "settled" });
     expect(prepareSignedTransfer.mock.calls[0]?.[0]).toMatchObject({
       createPayeeAta: true,
       payerFundsAtaRentLamports: "2039280",
@@ -311,7 +311,7 @@ describe("advanceSolanaSplSettlement", () => {
     await expect(advanceSolanaSplSettlement(input({
       authority: authority({ createPayeeAtaIfMissing: true }),
       adapter: adapter({ preflight: async () => checked, prepareSignedTransfer }),
-    }))).resolves.toEqual({ status: "failed", errorClass: "permanent", reason });
+    }), { executionMode: "simulation" })).resolves.toEqual({ status: "failed", errorClass: "permanent", reason });
     expect(prepareSignedTransfer).not.toHaveBeenCalled();
   });
 
@@ -333,12 +333,12 @@ describe("advanceSolanaSplSettlement", () => {
       adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
       now: () => clock,
     });
-    await expect(advanceSolanaSplSettlement(shared)).resolves.toEqual({
+    await expect(advanceSolanaSplSettlement(shared, { executionMode: "simulation" })).resolves.toEqual({
       status: "indeterminate",
       reason: "rpc-unavailable",
     });
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
       .resolves.toMatchObject({ status: "settled" });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
@@ -363,9 +363,9 @@ describe("advanceSolanaSplSettlement", () => {
       adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
       now: () => clock,
     });
-    await advanceSolanaSplSettlement(shared);
+    await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
       .resolves.toMatchObject({ status: "settled" });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
     expect(wires).toHaveLength(2);
@@ -404,9 +404,9 @@ describe("advanceSolanaSplSettlement", () => {
       adapter: adapter({ prepareSignedTransfer, reconcile }),
       now: () => clock,
     });
-    await advanceSolanaSplSettlement(shared);
+    await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
       .resolves.toMatchObject({
         status: "settled",
         settlement: { txRef: { signature: SIGNATURE_2 } },
@@ -457,9 +457,9 @@ describe("advanceSolanaSplSettlement", () => {
       now: () => clock,
     });
 
-    await advanceSolanaSplSettlement(shared);
+    await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
       .resolves.toEqual({
         status: "indeterminate",
         reason: "solana-spl-expiry-proof-invalid",
@@ -500,9 +500,9 @@ describe("advanceSolanaSplSettlement", () => {
           },
         }),
       });
-      await advanceSolanaSplSettlement(shared);
+      await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
       clock += 101;
-      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
         .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-expiry-persistence-uncertain" });
       expect(prepareSignedTransfer).toHaveBeenCalledTimes(1);
       expect(broadcastRetained).toHaveBeenCalledTimes(1);
@@ -525,14 +525,14 @@ describe("advanceSolanaSplSettlement", () => {
       store: memory, now: () => clock,
       adapter: adapter({ prepareSignedTransfer, broadcastRetained, reconcile }),
     });
-    await advanceSolanaSplSettlement(shared);
+    await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     clock += 101;
-    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" });
+    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(2);
     clock += 101;
     await expect(advanceSolanaSplSettlement({
       ...shared, owner: "worker-c", store: legacyExpiryView(memory),
-    })).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-retained-state-corrupt" });
+    }, { executionMode: "simulation" })).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-retained-state-corrupt" });
     expect(prepareSignedTransfer).toHaveBeenCalledTimes(2);
     expect(broadcastRetained).toHaveBeenCalledTimes(2);
     expect(reconcile).toHaveBeenCalledTimes(3);
@@ -573,11 +573,11 @@ describe("advanceSolanaSplSettlement", () => {
       now: () => clock,
     });
 
-    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({
+    await expect(advanceSolanaSplSettlement(shared, { executionMode: "simulation" })).resolves.toMatchObject({
       status: "indeterminate",
     });
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
       .resolves.toEqual({
         status: "indeterminate",
         reason: "solana-spl-preflight-unavailable",
@@ -600,7 +600,7 @@ describe("advanceSolanaSplSettlement", () => {
     });
 
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-c" }))
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-c" }, { executionMode: "simulation" }))
       .resolves.toMatchObject({
         status: "settled",
         settlement: { txRef: { signature: SIGNATURE_2 } },
@@ -644,16 +644,16 @@ describe("advanceSolanaSplSettlement", () => {
         now: () => clock,
       });
 
-      await advanceSolanaSplSettlement(shared);
+      await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
       clock += 101;
-      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
         .resolves.toMatchObject({ status: "indeterminate" });
       clock += 101;
       await expect(advanceSolanaSplSettlement({
         ...shared,
         owner: "worker-c",
         store: legacyExpiryView(memory),
-      })).resolves.toEqual({
+      }, { executionMode: "simulation" })).resolves.toEqual({
         status: "indeterminate",
         reason: mode === "unavailable"
           ? "solana-spl-reconciliation-unavailable"
@@ -700,15 +700,15 @@ describe("advanceSolanaSplSettlement", () => {
       now: () => clock,
     });
 
-    await advanceSolanaSplSettlement(shared);
+    await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     clock += 101;
-    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" });
+    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" });
     clock += 101;
     await expect(advanceSolanaSplSettlement({
       ...shared,
       owner: "worker-c",
       store: legacyExpiryView(memory),
-    })).resolves.toMatchObject({
+    }, { executionMode: "simulation" })).resolves.toMatchObject({
       status: "settled",
       settlement: { txRef: { signature: SIGNATURE_1 } },
     });
@@ -753,15 +753,15 @@ describe("advanceSolanaSplSettlement", () => {
       now: () => clock,
     });
 
-    await advanceSolanaSplSettlement(shared);
+    await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     clock += 101;
-    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" });
+    await advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" });
     clock += 101;
     await expect(advanceSolanaSplSettlement({
       ...shared,
       owner: "worker-c",
       store: legacyExpiryView(memory),
-    })).resolves.toEqual({
+    }, { executionMode: "simulation" })).resolves.toEqual({
       status: "waiting",
       reason: "solana-spl-broadcast-not-yet-visible",
     });
@@ -781,7 +781,7 @@ describe("advanceSolanaSplSettlement", () => {
       adapter: adapter({
         reconcile: async () => ({ disposition: "settled-same", transfer }),
       }),
-    }))).resolves.toEqual({
+    }), { executionMode: "simulation" })).resolves.toEqual({
       status: "failed",
       errorClass: "permanent",
       reason: "solana-spl-settled-instruction-mismatch",
@@ -796,9 +796,9 @@ describe("advanceSolanaSplSettlement", () => {
       return adapter().prepareSignedTransfer(plan, attempt, fence);
     });
     const shared = input({ adapter: adapter({ prepareSignedTransfer }) });
-    const first = advanceSolanaSplSettlement(shared);
+    const first = advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     await vi.waitFor(() => expect(prepareSignedTransfer).toHaveBeenCalledTimes(1));
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
       .resolves.toEqual({ status: "waiting", reason: "solana-spl-settlement-held" });
     release();
     await expect(first).resolves.toMatchObject({ status: "settled" });
@@ -823,7 +823,7 @@ describe("advanceSolanaSplSettlement", () => {
         prepareSignedTransfer,
         broadcastRetained,
       }),
-    }));
+    }), { executionMode: "simulation" });
 
     expect(result).toEqual({
       status: "indeterminate",
@@ -844,7 +844,7 @@ describe("advanceSolanaSplSettlement", () => {
         leaseDurationMs,
         store: { ...base, claim },
         adapter: adapter({ prepareSignedTransfer }),
-      }))).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
+      }), { executionMode: "simulation" })).resolves.toMatchObject({ status: "failed", errorClass: "permanent" });
       expect(claim).not.toHaveBeenCalled();
       expect(prepareSignedTransfer).not.toHaveBeenCalled();
     },
@@ -877,11 +877,11 @@ describe("advanceSolanaSplSettlement", () => {
       adapter: adapter({ broadcastRetained, reconcile }),
       now: () => clock,
     });
-    await expect(advanceSolanaSplSettlement(shared)).resolves.toMatchObject({
+    await expect(advanceSolanaSplSettlement(shared, { executionMode: "simulation" })).resolves.toMatchObject({
       status: "indeterminate",
     });
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual({
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" })).resolves.toEqual({
       status: "indeterminate",
       reason: "solana-spl-retained-state-corrupt",
     });
@@ -922,9 +922,9 @@ describe("advanceSolanaSplSettlement", () => {
       now: () => clock,
     });
 
-    await advanceSolanaSplSettlement(shared);
+    await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }))
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" }))
       .resolves.toEqual({
         status: "indeterminate",
         reason: "solana-spl-retained-state-corrupt",
@@ -948,9 +948,9 @@ describe("advanceSolanaSplSettlement", () => {
       adapter: adapter({ broadcastRetained, reconcile }),
       now: () => clock,
     });
-    await advanceSolanaSplSettlement(shared);
+    await advanceSolanaSplSettlement(shared, { executionMode: "simulation" });
     clock += 101;
-    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual({
+    await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" })).resolves.toEqual({
       status: "indeterminate",
       reason: "solana-spl-absence-proof-invalid",
     });

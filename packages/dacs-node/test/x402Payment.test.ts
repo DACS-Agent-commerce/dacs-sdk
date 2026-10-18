@@ -593,6 +593,7 @@ describe("coordinator x402 buyer payment track", () => {
       asset: ASSET.toLowerCase(),
     });
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority,
       finalityBlocks: 1,
       database: opened,
@@ -700,6 +701,7 @@ describe("coordinator x402 buyer payment track", () => {
         },
       };
       const track = createDacsX402BuyerPaymentTrackV1({
+        executionMode: "simulation",
         walletSpendAuthority,
         finalityBlocks: 1,
         database: opened,
@@ -743,6 +745,7 @@ describe("coordinator x402 buyer payment track", () => {
       { disposition: "settled-same", settlement: captured(retained) },
     ]);
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       finalityBlocks: 1,
       database: opened,
@@ -795,6 +798,7 @@ describe("coordinator x402 buyer payment track", () => {
       recordOutcome,
     };
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       finalityBlocks: 1,
       database: opened,
@@ -859,6 +863,7 @@ describe("coordinator x402 buyer payment track", () => {
       disclosure: disclosure(),
     }));
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       finalityBlocks: 1,
       database: opened,
@@ -1185,6 +1190,7 @@ describe("coordinator x402 buyer payment track", () => {
         disclosure: disclosure(),
       }));
       const track = createDacsX402BuyerPaymentTrackV1({
+        executionMode: "simulation",
         database: opened,
         workerId: "buyer-payment-worker",
         settlementStore,
@@ -1284,6 +1290,7 @@ describe("coordinator x402 buyer payment track", () => {
       disclosure: disclosure(),
     }));
     const track = createDacsX402BuyerPaymentTrackV1({
+      executionMode: "simulation",
       database: opened,
       workerId: "buyer-payment-worker",
       settlementStore,
@@ -1419,6 +1426,7 @@ describe("coordinator x402 buyer payment track", () => {
         disclosure: disclosure(),
       }));
       const track = createDacsX402BuyerPaymentTrackV1({
+        executionMode: "simulation",
         database: opened,
         workerId: "buyer-payment-worker",
         settlementStore,

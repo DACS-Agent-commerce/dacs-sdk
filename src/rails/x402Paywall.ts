@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { isDeepStrictEqual } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -1130,7 +1131,9 @@ function postSettlementError(
 export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   input: X402PaywallHandleInput,
   deps: X402PaywallCoreDeps<TAuthorization, T>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<X402PaywallResult<T>> {
+  requireAdmissibleProfile(policy);
   let captured: X402PaywallCoreDeps<TAuthorization, T>;
   try {
     const server = deps?.server;
@@ -2184,6 +2187,7 @@ export async function createX402Paywall<TAuthorization = unknown, T = unknown>(
   config: X402PaywallConfig,
   handlers: X402PaywallHandlers<TAuthorization, T>,
 ): Promise<X402Paywall<T>> {
+  requireAdmissibleProfile({});
   const configSnapshot = captureConfig(config);
   const expected = validateConfig(configSnapshot);
   const capturedConfig = snapshotConfig(configSnapshot, expected);

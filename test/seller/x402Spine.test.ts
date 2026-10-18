@@ -964,7 +964,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
         },
         expected: structuredClone(expected),
         ...spine,
-      });
+      }, { executionMode: "simulation" });
     },
     setObservation(value) {
       observation = structuredClone(value);

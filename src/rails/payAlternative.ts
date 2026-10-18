@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import type {
@@ -2176,7 +2177,9 @@ export async function authorizeAlternativePayment<TResult>(
     phaseIndex: number;
     handler: PaymentPhaseType;
   }>) => Promise<TResult> | TResult,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<TResult> {
+  requireAdmissibleProfile(policy);
   const { projection } = authenticatedAuthorizationPair(input);
   return authorize(
     deepFreeze({

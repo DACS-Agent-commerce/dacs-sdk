@@ -18,7 +18,7 @@ export {
  */
 
 export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
-export { CORRECTIVE_PROFILE, requireAdmissibleProfile, type ProfileExecutionPolicy } from "./profile.js";
+export { CORRECTIVE_PROFILE, captureExecutionMode, requireAdmissibleProfile, type ProfileExecutionPolicy } from "./profile.js";
 export * from "./commerce/index.js";
 export {
   admitChannelMessage,

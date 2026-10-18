@@ -246,6 +246,7 @@ describe("native DEM process recovery", () => {
     });
     const publishNotice = vi.fn();
     const payment = createDacsPayDemBuyerPaymentTrackV1({
+      executionMode: "simulation",
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database,
       workerId: "buyer-payment-after-kill",

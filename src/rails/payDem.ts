@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
@@ -458,19 +459,24 @@ export function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   effectFence?: Readonly<SettlementEffectFence>,
+  effectFenceOverride?: undefined,
+  policy?: ProfileExecutionPolicy,
 ): Promise<SettleResult>;
 export function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   defaultNetwork?: string,
   effectFence?: Readonly<SettlementEffectFence>,
+  policy?: ProfileExecutionPolicy,
 ): Promise<SettleResult>;
 export async function payDemSettleCore(
   params: PayDemSettleParams,
   client: DemosNativeClient,
   defaultNetworkOrFence: string | Readonly<SettlementEffectFence> = "demos",
   effectFenceOverride?: Readonly<SettlementEffectFence>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<SettleResult> {
+  requireAdmissibleProfile(policy);
   // Capture all caller-controlled values and the effect method before the first
   // await. A mutable parameter/client object must not be able to change the
   // transfer destination and then make the returned evidence attest a different
@@ -1143,6 +1149,7 @@ function confirmedDebitFromValidity(
  * session/phase-keyed settlement idempotency store (#43/#52).
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
+  requireAdmissibleProfile({});
   const rpc = requiredStableString(config, "rpc", "pay-dem rail rpc");
   const secret = requiredStableString(config, "secret", "pay-dem rail secret");
   const network = optionalStableString(config, "network", "pay-dem rail network");
@@ -1694,6 +1701,9 @@ function capturePayDemReconciliation(
 }
 
 /**
+ * The unreleased profile permits only explicit `executionMode: "simulation"`
+ * options with locally injected rails; connected wallet rails are refused.
+ *
  * Bridge a PayDemRail to the runSession `settle` seam.
  *
  * DESTINATION (legacy safety guard, not PB-2 conformance): the transfer
@@ -1732,11 +1742,12 @@ export function payDemSettle(
     /** Exact payment invocation selected from the committed pipeline. */
     phaseIndex?: number;
   } = {},
-  opts: {
+  opts: ProfileExecutionPolicy & {
     store?: SettlementIdempotencyStore;
     reconcile?: PayDemSettlementReconcile;
   } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
+  requireAdmissibleProfile(opts);
   const storeProperty = stableDataProperty(
     opts,
     "store",

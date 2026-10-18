@@ -1,3 +1,4 @@
+import { captureExecutionMode, requireAdmissibleProfile, type ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -101,7 +102,7 @@ export interface DacsX402BuyerPaymentResultV1 {
   settlement: Readonly<X402BuyerCapturedSettlement>;
 }
 
-export interface DacsX402BuyerPaymentTrackOptionsV1<TObservation = unknown> {
+export interface DacsX402BuyerPaymentTrackOptionsV1<TObservation = unknown> extends ProfileExecutionPolicy {
   database: DacsNodeSqliteDatabase;
   workerId: string;
   settlementStore: X402BuyerSettlementStore;
@@ -514,6 +515,8 @@ function reconciliationFence(
 export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
   options: Readonly<DacsX402BuyerPaymentTrackOptionsV1<TObservation>>,
 ): FixedPriceX402TrackOperation {
+  const executionMode = captureExecutionMode(options);
+  requireAdmissibleProfile({ executionMode });
   if (options === null || typeof options !== "object" ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
       !options.settlementStore || typeof options.settlementStore.load !== "function" ||
@@ -818,7 +821,7 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
         },
         now: () => database.readTime(),
         leaseDurationMs: settlementLeaseDurationMs,
-      });
+      }, { executionMode });
       if (progress.status === "captured") {
         // The inner store is a recovery checkpoint, not the keyed authority.
         // Re-authenticate even a retained terminal result before the outer

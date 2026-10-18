@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile } from "@kynesyslabs/dacs";
 import {
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
@@ -80,6 +81,7 @@ function loadPlan(
 export function createDacsFixedPricePayDemBuyerPaymentV1(
   options: Readonly<DacsFixedPricePayDemBuyerPaymentOptionsV1>,
 ): Readonly<DacsFixedPricePayDemBuyerPaymentV1> {
+  requireAdmissibleProfile({});
   const context = options?.context;
   const rail = options?.rail;
   const provenance = getAuthenticatedRailProvenance(rail);

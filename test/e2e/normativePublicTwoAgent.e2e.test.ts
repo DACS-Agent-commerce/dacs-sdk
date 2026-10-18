@@ -1848,7 +1848,7 @@ async function createSellerRuntime(input: {
           }
           return result;
         },
-      });
+      }, { executionMode: "simulation" });
       return result;
     },
   };
@@ -2029,7 +2029,7 @@ async function prepareSettlementIntent(input: {
     client: challengeClient(),
     fetchImpl: async () => new Response(JSON.stringify(challenge), { status: 402 }),
     transportPolicy: { mode: "insecure-test" },
-  });
+  }, { executionMode: "simulation" });
   expect(prepared.disposition).toBe("prepared");
   if (prepared.disposition !== "prepared") throw new Error(prepared.reason);
   return prepared.intent;
@@ -2072,7 +2072,7 @@ async function settleAndRecover(input: {
         headers: paywall.response.headers,
       });
     },
-  });
+  }, { executionMode: "simulation" });
   let buyerStore = await createFsX402BuyerSettlementStore({ dir: buyerStoreDir });
   const firstProgress = await advanceX402BuyerSettlement({
     intent,
@@ -2082,7 +2082,7 @@ async function settleAndRecover(input: {
     transport: paidTransport,
     now: () => state.now,
     leaseDurationMs: 1_000,
-  });
+  }, { executionMode: "simulation" });
   expect(firstProgress).toEqual({
     status: "indeterminate",
     reason: "eip3009-settlement-not-finalized",
@@ -2194,7 +2194,7 @@ async function settleAndRecover(input: {
     },
     now: () => state.now,
     leaseDurationMs: 1_000,
-  });
+  }, { executionMode: "simulation" });
   expect(buyerRecovered.status).toBe("captured");
   expect(coldTransportCalls).toBe(0);
   expect(state.responseAcknowledgementLosses).toBe(1);
@@ -3646,7 +3646,7 @@ async function runWholeProcessStageA(root: string, runId: string): Promise<never
         headers: paywall.response.headers,
       });
     },
-  });
+  }, { executionMode: "simulation" });
   const first = await advanceX402BuyerSettlement({
     intent,
     owner: `${runId}:buyer-process-a`,
@@ -3655,7 +3655,7 @@ async function runWholeProcessStageA(root: string, runId: string): Promise<never
     transport,
     now: () => state.now,
     leaseDurationMs: 1_000,
-  });
+  }, { executionMode: "simulation" });
   expect(first).toEqual({
     status: "indeterminate",
     reason: "eip3009-settlement-not-finalized",
@@ -3760,7 +3760,7 @@ async function runWholeProcessStageB(root: string, runId: string): Promise<void>
     },
     now: () => state.now,
     leaseDurationMs: 1_000,
-  });
+  }, { executionMode: "simulation" });
   expect(buyer.status).toBe("captured");
   expect(resubmissions).toBe(0);
 
@@ -3949,7 +3949,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
         resource: { url: HTTP_RESOURCE },
         accepts: [{ ...structuredClone(X402_REQUIREMENTS), network: "eip155:1" }],
       }), { status: 402 }),
-    });
+    }, { executionMode: "simulation" });
     expect(result).toEqual({
       disposition: "rejected",
       reason: "x402-payment-requirements-mismatch",

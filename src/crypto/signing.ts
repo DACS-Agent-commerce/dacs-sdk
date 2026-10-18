@@ -17,7 +17,8 @@ import {
  *
  * Registry membership (all 30) is distinct from *generic single-hash signing
  * support*: most entries sign the single-hash payload `separator || artifact_hash`
- * and are usable via {@link signArtifact}, but two entries are composite-payload
+ * and are usable via {@link signArtifact}. Identity presentations and terminal
+ * bundles require their artifact-specific helpers; two other entries are composite-payload
  * separators ({@link COMPOSITE_DOMAIN_SEPARATORS}) that frame more than one value
  * and MUST use their recipe-specific helpers below. The generic helpers reject
  * the composite separators so a caller can never silently sign the wrong bytes.
@@ -89,7 +90,7 @@ const COMPOSITE_SET: ReadonlySet<string> = new Set(COMPOSITE_DOMAIN_SEPARATORS);
 /**
  * True for the composite-payload separators that must use a recipe-specific
  * helper rather than the generic single-hash signer. A registered separator is
- * generic-signable iff it is registered AND not composite.
+ * also requires an ordinary artifact scope to be generic-signable.
  */
 export function isCompositeSeparator(
   sep: string,
@@ -117,6 +118,14 @@ export function signedBytes(separator: string, artifactHash: string): Uint8Array
   ]);
 }
 
+/** These artifact scopes cannot be expressed by omitting one signature field. */
+const SPECIALIZED_SCOPE_SEPARATORS: ReadonlySet<string> = new Set([
+  "dacs-bundle-presentation:v1:",
+  "dacs-bundle:v1:",
+  "dacs-fault-bundle:v1:",
+  "dacs-evidence-bound-fault-bundle:v1:",
+]);
+
 /** Contract-selected omission, independent of attacker-supplied member names. */
 function signatureFieldForSeparator(separator: DomainSeparator): "signature" | "signatures" {
   switch (separator) {
@@ -124,9 +133,7 @@ function signatureFieldForSeparator(separator: DomainSeparator): "signature" | "
     case "dacs-payee-bound-agreement:v1:":
     case "dacs-identity-bound-agreement:v1:":
     case "dacs-identity-bound-payee-agreement:v1:":
-    case "dacs-bundle:v1:":
-    case "dacs-fault-bundle:v1:":
-    case "dacs-evidence-bound-fault-bundle:v1:":
+    case "dacs-transcript:v1:":
       return "signatures";
     default:
       return "signature";
@@ -143,6 +150,8 @@ function signatureFieldForSeparator(separator: DomainSeparator): "signature" | "
  * REJECTED here: its `signed_bytes` frames more than one value, so signing it as
  * a single hash would produce the wrong payload. Use the recipe-specific helper
  * ({@link signSessionBinding}, {@link signAutoAcceptInstance}) instead.
+ * Identity presentations and terminal bundles likewise require their specialized
+ * identityBundleHash / attestationBundleHash signing and verification paths.
  */
 export function signArtifact(
   separator: DomainSeparator,
@@ -156,6 +165,11 @@ export function signArtifact(
     throw new DacsError(
       `composite-payload separator ${separator} cannot be signed as a single ` +
         `hash — use its recipe-specific helper (§B.7)`,
+    );
+  }
+  if (SPECIALIZED_SCOPE_SEPARATORS.has(separator)) {
+    throw new DacsError(
+      `separator ${separator} requires its artifact-specific bundle hash and signing/verification path`,
     );
   }
   const key = signer instanceof Uint8Array ? privateKeyFromSeed(signer) : signer;
@@ -179,7 +193,7 @@ export function verifyArtifact(
   publicKey: Uint8Array | KeyObject,
 ): boolean {
   if (!isRegisteredSeparator(separator)) return false;
-  if (isCompositeSeparator(separator)) return false;
+  if (isCompositeSeparator(separator) || SPECIALIZED_SCOPE_SEPARATORS.has(separator)) return false;
   const key = publicKey instanceof Uint8Array ? publicKeyFromRaw(publicKey) : publicKey;
   try {
     return ed25519Verify(

@@ -405,7 +405,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
           recipientEvm,
           asset,
-        }),
+        }, { executionMode: "simulation" }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(boundRail.settle).toHaveBeenCalledTimes(1);
@@ -428,7 +428,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
           recipientEvm,
           asset,
-        }),
+        }, { executionMode: "simulation" }),
       }),
     ).rejects.toThrow(/x402 destination mismatch/);
     expect(omittedRail.settle).not.toHaveBeenCalled();
@@ -558,7 +558,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           deliveryPhase: "deliver-attested-payload",
           deliveryFormat: "application/json",
         },
-        settle: payDemSettle(rail, { network: "demos:testnet" }),
+        settle: payDemSettle(rail, { network: "demos:testnet" }, { executionMode: "simulation" }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(transfer).toHaveBeenCalledOnce();

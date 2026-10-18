@@ -346,7 +346,7 @@ describe("x402PaywallCore adversarial settlement authorization", () => {
           authorizeSettlement: authorizeSettlement as X402PaywallCoreDeps["authorizeSettlement"],
           authorizePayment,
           fulfil,
-        }),
+        }), { executionMode: "simulation" },
       );
 
       expect(result, scenario.name).toMatchObject(scenario.expected);
@@ -397,12 +397,12 @@ describe("x402PaywallCore adversarial settlement authorization", () => {
       fulfil,
     });
 
-    const first = await x402PaywallCore(invocation(paidRequest(payload)), deps);
+    const first = await x402PaywallCore(invocation(paidRequest(payload)), deps, { executionMode: "simulation" });
     expect(first).toMatchObject({ disposition: "authorization-indeterminate", settled: true });
     returnedAuthorization.finalized.agreementHash = "mutated-after-retention";
     returnedAuthorization.roles.push("attacker");
 
-    const replay = await x402PaywallCore(invocation(paidRequest(payload)), deps);
+    const replay = await x402PaywallCore(invocation(paidRequest(payload)), deps, { executionMode: "simulation" });
     expect(replay).toMatchObject({ disposition: "settled", settled: true });
     expect(authorizeSettlement).toHaveBeenCalledTimes(1);
     expect(server.processHTTPRequest).toHaveBeenCalledTimes(1);
@@ -457,7 +457,7 @@ describe("x402PaywallCore adversarial replay and recovery", () => {
         reconcileSettlement,
       });
 
-      await x402PaywallCore(invocation(paidRequest(payload)), deps);
+      await x402PaywallCore(invocation(paidRequest(payload)), deps, { executionMode: "simulation" });
       const processCalls = server.processHTTPRequest.mock.calls.length;
       const settlementCalls = server.processSettlement.mock.calls.length;
 
@@ -472,7 +472,7 @@ describe("x402PaywallCore adversarial replay and recovery", () => {
         ["different", paidRequest(differentPayload)],
       ];
       for (const [name, inputRequest] of variants) {
-        const conflict = await x402PaywallCore(invocation(inputRequest), deps);
+        const conflict = await x402PaywallCore(invocation(inputRequest), deps, { executionMode: "simulation" });
         expect(conflict, `${terminalState}/${name}`).toMatchObject({
           disposition: "indeterminate",
           settled: "unknown",
@@ -511,14 +511,14 @@ describe("x402PaywallCore adversarial replay and recovery", () => {
         settlementStore: store,
         reconcileSettlement,
       });
-      await x402PaywallCore(invocation(paidRequest(payload)), initialDeps);
+      await x402PaywallCore(invocation(paidRequest(payload)), initialDeps, { executionMode: "simulation" });
       const processCalls = server.processHTTPRequest.mock.calls.length;
       const settlementCalls = server.processSettlement.mock.calls.length;
 
       const replay = await x402PaywallCore(invocation(paidRequest(payload)), {
         ...initialDeps,
         expected: { ...expected, amount: "250001" },
-      });
+      }, { executionMode: "simulation" });
       expect(replay).toMatchObject({
         disposition: "indeterminate",
         settled: "unknown",
@@ -602,7 +602,7 @@ describe("x402PaywallCore adversarial replay and recovery", () => {
         fulfil,
       });
 
-      const first = await x402PaywallCore(invocation(paidRequest(payload)), deps);
+      const first = await x402PaywallCore(invocation(paidRequest(payload)), deps, { executionMode: "simulation" });
       expect(first).toMatchObject({
         disposition: "settlement-evidence-indeterminate",
         settled: true,
@@ -613,7 +613,7 @@ describe("x402PaywallCore adversarial replay and recovery", () => {
       expect(authorizePayment).not.toHaveBeenCalled();
       expect(fulfil).not.toHaveBeenCalled();
 
-      const recovered = await x402PaywallCore(invocation(paidRequest(payload)), deps);
+      const recovered = await x402PaywallCore(invocation(paidRequest(payload)), deps, { executionMode: "simulation" });
       expect(recovered).toMatchObject({ disposition: "settled", settled: true });
       expect(store.retained.get(key)?.outcome?.status).toBe("settled");
       expect(server.processHTTPRequest).toHaveBeenCalledTimes(1);
@@ -662,7 +662,7 @@ describe("x402PaywallCore adversarial replay and recovery", () => {
       fulfil,
     });
 
-    const first = await x402PaywallCore(invocation(paidRequest(payload)), deps);
+    const first = await x402PaywallCore(invocation(paidRequest(payload)), deps, { executionMode: "simulation" });
     expect(first).toMatchObject({
       disposition: "indeterminate",
       settled: "unknown",
@@ -670,7 +670,7 @@ describe("x402PaywallCore adversarial replay and recovery", () => {
     });
     expect(server.processSettlement).not.toHaveBeenCalled();
 
-    const recovered = await x402PaywallCore(invocation(paidRequest(payload)), deps);
+    const recovered = await x402PaywallCore(invocation(paidRequest(payload)), deps, { executionMode: "simulation" });
     expect(recovered).toMatchObject({ disposition: "settled", settled: true });
     expect(server.processSettlement).toHaveBeenCalledTimes(1);
     const submittedPayload = server.processSettlement.mock.calls[0]?.[0] as
@@ -683,7 +683,7 @@ describe("x402PaywallCore adversarial replay and recovery", () => {
     expect(reconcileSettlement).toHaveBeenCalledTimes(1);
     expect(authorizeSettlement).toHaveBeenCalledTimes(1);
 
-    const terminalReplay = await x402PaywallCore(invocation(paidRequest(payload)), deps);
+    const terminalReplay = await x402PaywallCore(invocation(paidRequest(payload)), deps, { executionMode: "simulation" });
     expect(terminalReplay).toMatchObject({ disposition: "settled", settled: true });
     expect(server.processSettlement).toHaveBeenCalledTimes(1);
     expect(reconcileSettlement).toHaveBeenCalledTimes(1);
@@ -790,7 +790,7 @@ describe("x402PaywallCore adversarial snapshots and transport output", () => {
       settlementStore: store,
       authorizeSettlement,
       fulfil,
-    }));
+    }), { executionMode: "simulation" });
     state.headers.set("payment-signature", "attacker-swapped-after-entry");
     state.headers.set("x-secret", "attacker-mutated");
     state.query.sku = "attacker";
@@ -828,7 +828,7 @@ describe("x402PaywallCore adversarial snapshots and transport output", () => {
       invocation(paidRequest(payload)),
       coreDeps<Uint8Array>(server, {
         fulfil: async () => ({ disposition: "fulfilled", body: sourceBytes }),
-      }),
+      }), { executionMode: "simulation" },
     );
 
     expect(result).toMatchObject({ disposition: "settled", settled: true });
@@ -851,7 +851,7 @@ describe("x402PaywallCore adversarial snapshots and transport output", () => {
     });
     const invalidProtocol = await x402PaywallCore(
       invocation(request()),
-      coreDeps(protocolServer),
+      coreDeps(protocolServer), { executionMode: "simulation" },
     );
     expect(invalidProtocol).toMatchObject({
       disposition: "indeterminate",
@@ -873,7 +873,7 @@ describe("x402PaywallCore adversarial snapshots and transport output", () => {
           headers: { "x-delivery": "ready\u0000injected" },
           body: "must-not-be-released",
         }),
-      }),
+      }), { executionMode: "simulation" },
     );
     expect(invalidFulfilment).toMatchObject({
       disposition: "fulfilment-indeterminate",
@@ -895,7 +895,7 @@ describe("x402PaywallCore adversarial snapshots and transport output", () => {
           },
         },
       });
-      const result = await x402PaywallCore(invocation(request()), coreDeps(server));
+      const result = await x402PaywallCore(invocation(request()), coreDeps(server), { executionMode: "simulation" });
       expect(result).toMatchObject({
         disposition: "indeterminate",
         settled: false,
@@ -1183,7 +1183,7 @@ describe("buyer/seller SB-3 nonce agreement", () => {
       jobId: JOB_ID,
       phaseIndex: -0,
       request: request(),
-    }, coreDeps(server))).resolves.toMatchObject({
+    }, coreDeps(server), { executionMode: "simulation" })).resolves.toMatchObject({
       disposition: "rejected",
       settled: false,
       reason: "invalid-phaseIndex",
@@ -1198,4 +1198,11 @@ describe("buyer/seller SB-3 nonce agreement", () => {
     })).rejects.toThrow("jobId");
     expect(() => x402Eip3009Nonce("", PHASE_INDEX)).toThrow("jobId");
   });
+});
+
+// Test the dormant connected wiring with local wallet/transport doubles.
+// Real profile refusal is covered in rails/profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });

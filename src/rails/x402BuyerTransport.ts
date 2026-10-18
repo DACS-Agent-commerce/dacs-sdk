@@ -1,3 +1,4 @@
+import { captureExecutionMode, requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import { sha256Hex } from "../canonical/index.js";
@@ -342,7 +343,9 @@ function challengeBody(bytes: Uint8Array): unknown {
 export async function prepareX402BuyerSettlement(
   input: Readonly<PrepareX402BuyerSettlementInput>,
   deps: Readonly<PrepareX402BuyerSettlementDeps>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<X402BuyerSettlementPreparation> {
+  requireAdmissibleProfile(policy);
   let rawAuthority: unknown;
   let rawChallengeHeaders: unknown;
   try {
@@ -513,7 +516,9 @@ export async function prepareX402BuyerSettlement(
  */
 export function createX402BuyerPaidRequestTransport(
   options: Readonly<X402BuyerPaidRequestTransportOptions> = {},
+  policy: ProfileExecutionPolicy = {},
 ): X402BuyerPaidRequestTransport {
+  requireAdmissibleProfile(policy);
   const fetchImpl = stableDataProperty(
     options,
     "fetchImpl",
@@ -623,8 +628,11 @@ export function createX402BuyerPaidRequestTransport(
  */
 export function createX402BuyerRetainedDisclosureRecovery(
   options: Readonly<X402BuyerPaidRequestTransportOptions>,
+  policy: ProfileExecutionPolicy = {},
 ): X402BuyerEvmDisclosureRecovery {
-  const transport = createX402BuyerPaidRequestTransport(options);
+  requireAdmissibleProfile(policy);
+  const executionMode = captureExecutionMode(policy);
+  const transport = createX402BuyerPaidRequestTransport(options, { executionMode });
   return async ({ intent, fence }) => {
     const result = await transport.submitRetained(intent, fence);
     return result.disposition === "response" ? result.disclosure : undefined;

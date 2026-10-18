@@ -130,7 +130,7 @@ describe("fixed-price pay-dem coordinator", () => {
           payment: async () => {
             try {
               await payDemSettleCore({ recipient: "d4".repeat(32), amount: "1", network: "demos" },
-                { address: "c3".repeat(32), transfer });
+                { address: "c3".repeat(32), transfer }, undefined, undefined, { executionMode: "simulation" });
             } catch (error) {
               return { status: "final", outcome: "failure", errorClass: faultCategory(error),
                 faultedParty: "none", reference: "payment:rail-down-before-submit" };

@@ -398,7 +398,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
               confirmations: 1,
               finalityObservedAt: 1_700_000_000_000,
             }),
-          },
+          }, undefined, { executionMode: "simulation" },
         ),
       // Vet the seller through an anchored, signed current VerifyResult.
       vet: ({ jobId, evaluatedParty }) =>

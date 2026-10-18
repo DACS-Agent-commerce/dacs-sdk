@@ -1,3 +1,9 @@
+import { createDacsPayDemBuyerPaymentTrackV1 } from "../src/payDemPayment.js";
+import { createDacsFixedPricePayDemBuyerPaymentV1 } from "../src/fixedPricePayDemBuyerPayment.js";
+import { createDacsDemosActorRuntimeV1 } from "../src/demosRuntime.js";
+import { createDacsX402BuyerEvmRuntimeV1 } from "../src/evmRuntime.js";
+import { createDacsX402BuyerPaymentTrackV1 } from "../src/x402Payment.js";
+import { createDacsX402BuyerRuntimePaymentTrackV1 } from "../src/x402RuntimePayment.js";
 import { describe, expect, it, vi } from "vitest";
 import { createDacsLiveRoleServiceV1 } from "../src/service.js";
 import { createDacsLiveRoleRuntimeV1 } from "../src/roleRuntime.js";
@@ -54,4 +60,23 @@ describe("host corrective profile admission", () => {
     expect(() => createDacsPurchaseQueueExecutorV1(options as never)).toThrow(/unreleased/);
     expect(inspected).not.toHaveBeenCalled();
   });
+});
+
+
+it("refuses public buyer payment track factories before inspecting callbacks or stores", () => {
+  const touched = vi.fn();
+  const options = new Proxy({}, { get: touched, getOwnPropertyDescriptor: touched }) as never;
+  expect(() => createDacsPayDemBuyerPaymentTrackV1(options)).toThrow(/unreleased|stable data/);
+  expect(() => createDacsFixedPricePayDemBuyerPaymentV1(options)).toThrow(/unreleased/);
+  expect(() => createDacsX402BuyerPaymentTrackV1(options)).toThrow(/unreleased|stable data/);
+  expect(() => createDacsX402BuyerRuntimePaymentTrackV1(options)).toThrow(/unreleased/);
+  expect(touched).not.toHaveBeenCalled();
+});
+
+it("refuses connected actor wallet runtimes before reading wallet material", async () => {
+  const touched = vi.fn();
+  const options = new Proxy({}, { get: touched, getOwnPropertyDescriptor: touched }) as never;
+  await expect(createDacsDemosActorRuntimeV1(options)).rejects.toThrow(/unreleased/);
+  await expect(createDacsX402BuyerEvmRuntimeV1(options)).rejects.toThrow(/unreleased/);
+  expect(touched).not.toHaveBeenCalled();
 });

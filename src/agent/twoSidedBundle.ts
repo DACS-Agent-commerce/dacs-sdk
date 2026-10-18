@@ -7,7 +7,8 @@
  *
  * Why this module owns the omission set: `canonical/hash.ts` strips only
  * `signature` by default, so `contentHash()` — and therefore `signArtifact()` — computes
- * the WRONG scope for a bundle: it leaves `anchoredByRole` in. Every producer that hand-deletes
+ * the WRONG scope for a bundle: it leaves `anchoredByRole` in (the generic
+ * signing helpers therefore reject these domains). Every producer that hand-deletes
  * the field at its own call site duplicates that knowledge and can drift. `BUNDLE_SIGNED_SCOPE_OMIT`
  * below is the single source; signer and verifier MUST both go through it or signatures will not
  * round-trip across the two copies.

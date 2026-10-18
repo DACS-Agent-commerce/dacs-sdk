@@ -464,7 +464,7 @@ async function evaluate(
       },
       () => {
         effects.walletAuthorizations += 1;
-      },
+      }, { executionMode: "simulation" },
     );
     return { verdict: "pass" };
   }
@@ -837,7 +837,7 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
         },
         () => {
           calls += 1;
-        },
+        }, { executionMode: "simulation" },
       ),
     ).rejects.toThrow(/authenticated APR projection/);
     expect(calls).toBe(0);
@@ -860,7 +860,7 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
         { projection: second.projection, replacement: first.replacement },
         () => {
           calls += 1;
-        },
+        }, { executionMode: "simulation" },
       ),
     ).rejects.toThrow(/authenticated APR projection/);
     expect(calls).toBe(0);

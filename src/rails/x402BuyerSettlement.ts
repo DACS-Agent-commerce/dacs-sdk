@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -1850,7 +1851,9 @@ function captureReconciliation(
  */
 export async function advanceX402BuyerSettlement<TObservation = unknown>(
   input: AdvanceX402BuyerSettlementInput<TObservation>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<X402BuyerSettlementProgress> {
+  requireAdmissibleProfile(policy);
   const intent = captureIntent(input?.intent);
   const owner = asciiString(input?.owner, "x402 buyer owner");
   const now = typeof input?.now === "function" ? input.now : Date.now;

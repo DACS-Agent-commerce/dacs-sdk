@@ -377,3 +377,10 @@ describe("Stripe AP2 credential gate", () => {
     expect(getterCalls).toBe(0);
   });
 });
+
+// Exercise connected adapter internals with local fixtures. The independent
+// profileAdmission suite pins refusal at the real public boundary.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
+});

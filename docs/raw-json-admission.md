@@ -78,6 +78,11 @@ select its plural field explicitly, for example `contentHash(agreement, "signatu
 All other top-level members remain in the hash, including an unknown `signatures`
 extension on a Listing or RailDefinition. Bundle callers should use
 `attestationBundleHash`, which also omits the defined `anchoredByRole` field.
+The generic `signArtifact` / `verifyArtifact` helpers select plural `signatures`
+for Agreements and ChannelTranscripts, and singular `signature` for ordinary
+single-signature artifacts. They refuse the IdentityBundle presentation and
+three terminal bundle domains: use `identityBundleHash` or `attestationBundleHash`
+and the corresponding artifact-specific signing and verification paths.
 
 On Demos, `DemosAdapter.readAnchor` returns a storage program's `data` already
 parsed by `@kynesyslabs/demosdk`. The SDK writes Listings with the `json`
@@ -119,6 +124,18 @@ The SDK-wide pin `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20` also declares an
 tuple is CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5.
 Agent construction and the Listing, session, seller payment and live coordinator
 entry points default to refusing live protocol action before dependency calls.
+The public `x402Settle`, `payDemSettle`, `evmErc20Settle`, and `payD402Settle`
+bridges likewise require explicit local simulation policy in their options before
+reading payment coordinates or accessing a settlement store. Connected wallet
+rail and seller paywall factories, registry `settleFromRail` dispatch, and the
+host's connected buyer payment track refuse even a simulation label before
+constructing wallets. The connected DACS EVM challenge client and Stripe AP2
+integration likewise remain unavailable. The injected payment cores, durable
+AP2/SPL/x402 engines, retained paid HTTP transport and recovery, x402 preparation
+and paywall core, and alternative payment authorization helper
+require separate local execution policy (their final argument). The host's
+injected x402 buyer payment track captures policy from its construction options.
+All of these boundaries default to refusing live execution.
 Copying this pin or tuple into an artifact or caller-supplied profile record does
 not grant admission. `executionMode: "simulation"` is explicit trusted local
 policy for non-live conformance fixtures with injected local dependencies; it is

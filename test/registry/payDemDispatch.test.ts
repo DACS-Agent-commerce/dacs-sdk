@@ -947,3 +947,10 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     }));
   });
 });
+
+// Exercise the dormant dispatch wiring with mocked wallet dependencies. The
+// real unreleased-profile boundary is pinned in rails/profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
+});

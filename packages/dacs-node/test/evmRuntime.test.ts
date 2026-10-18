@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import { describe, expect, it } from "vitest";
 import { verifyMessage } from "viem";
 import { signedBytes } from "@kynesyslabs/dacs/crypto";
@@ -140,4 +141,10 @@ describe("buyer EVM runtime", () => {
     expect(loaded.destroyed).toBe(true);
     expect(JSON.stringify(identity)).not.toContain("44".repeat(32));
   });
+});
+
+// Local connected-runtime unit doubles exercise the wiring below the profile gate.
+vi.mock("../../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });
