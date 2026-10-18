@@ -55,11 +55,17 @@ test('launch review: unrelated future SDK commits do not need a client re-pin',t
  execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false','commit','-qm','docs: unrelated SDK update']);
  const result=check(dir);assert.equal(result.status,0,result.text);
 });
-test('launch review: unrelated main commits and a PR merge preserve client provenance',t=>{
+function checkMainMerge(t, { detached = false } = {}) {
  const dir=scratch(t),git=(...args)=>execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false',...args],{encoding:'utf8'});
- const branch=git('branch','--show-current').trim();git('checkout','-qb','advanced-main');
+ git('checkout','-qb','pr-review');
+ if(detached)git('checkout','-q','--detach','HEAD');
+ assert.equal(git('branch','--show-current').trim(),detached?'':'pr-review');
+ // Pull-request checkouts can have a detached HEAD, with no branch name.
+ const start=git('rev-parse','--verify','HEAD').trim();git('checkout','-qb','advanced-main');
  appendFileSync(join(dir,'src/index.ts'),'\n// SDK hotfix\n');git('add','src/index.ts');git('commit','-qm','fix: unrelated SDK hotfix');
- git('checkout','-q',branch);appendFileSync(join(dir,'README.md'),'\nPR documentation\n');git('add','README.md');git('commit','-qm','docs: unrelated PR update');
+ git('checkout','-q','--detach',start);appendFileSync(join(dir,'README.md'),'\nPR documentation\n');git('add','README.md');git('commit','-qm','docs: unrelated PR update');
  git('merge','--no-ff','-qm','test PR merge','advanced-main');
  const result=check(dir);assert.equal(result.status,0,result.text);
-});
+}
+test('launch review: unrelated main commits and a PR merge preserve client provenance',t=>checkMainMerge(t));
+test('launch review: unrelated main commits and a PR merge preserve client provenance from a detached HEAD',t=>checkMainMerge(t,{detached:true}));

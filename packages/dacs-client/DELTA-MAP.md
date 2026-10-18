@@ -873,6 +873,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` (deleted) |
 | delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-extension-probe.test.mjs` (deleted) |
 | delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-write-batch.test.mjs` (deleted) |
+| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/DELTA-MAP.md:1` |
+| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/HOLD.json:1` |
+| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
