@@ -28,14 +28,18 @@ const verified = (ref: string): BundleClaimLike => ({
 const selfAsserted = (ref: string): BundleClaimLike => ({ ref });
 
 describe("deriveIdentityTier (§6.3.2.1, IT-1..IT-3)", () => {
-  test("uses one authenticated semantic domain claim for tier resolution", () => {
-    const isVerified = vi.fn((claim: BundleClaimLike) => claim.ref === "domain:agent.example");
-    const claims = [verified("web2:domain:Agent.Example"), verified("domain:agent.example")];
+  test.each([false, true])("verifies original alias proofs before folding tier outcomes (reverse=%s)", (reverse) => {
+    const original = verified("web2:domain:Agent.Example");
+    const alias = selfAsserted("domain:agent.example");
+    const claims = reverse ? [alias, original] : [original, alias];
+    const isVerified = vi.fn((claim: BundleClaimLike) =>
+      claim === original && claim.verifiedBy === original.verifiedBy);
     expect(deriveIdentityTier({ bundleVersion: "1", claims }, isVerified)).toBe("verified");
-    expect(isVerified).toHaveBeenCalledOnce();
-    expect(isVerified.mock.calls[0]![0].ref).toBe("domain:agent.example");
-    expect(claims[0]!.ref).toBe("web2:domain:Agent.Example");
-    expect(deriveIdentityTier({ bundleVersion: "2", claims: [claims[0]!] }, isVerified)).toBe("self-declared");
+    expect(isVerified.mock.calls.map(([claim]) => claim)).toEqual(claims);
+    expect(original.ref).toBe("web2:domain:Agent.Example");
+    expect(deriveIdentityTier({ bundleVersion: "1", claims: [original] }, isVerified)).toBe("verified");
+    expect(deriveIdentityTier({ bundleVersion: "1", claims }, () => false)).toBe("self-declared");
+    expect(deriveIdentityTier({ bundleVersion: "2", claims: [original] }, isVerified)).toBe("self-declared");
   });
 
   test("claimScheme reads the scheme before the first colon, lower-cased", () => {

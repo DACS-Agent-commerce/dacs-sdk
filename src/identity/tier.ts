@@ -111,18 +111,18 @@ export function deriveIdentityTier(
       if (bundle?.bundleVersion !== "1") continue;
       try { ref = authenticatedDomainClaimReference(ref); } catch { continue; }
     }
+    // Proof references bind the original signed claim. Fold only verified
+    // outcomes, so an unverified alias cannot hide another alias's proof.
+    if (!isClaimVerified(claim)) continue;
     if (ref.startsWith("domain:")) {
       if (domains.has(ref)) continue;
       domains.add(ref);
     }
     claims.push(ref === claim.ref ? claim : { ...claim, ref });
   }
-  const verified = claims.filter(
-    (c) => c && typeof c.ref === "string" && isClaimVerified(c),
-  );
-  if (verified.some((c) => TIER1_SCHEMES.has(claimScheme(c.ref)))) {
+  if (claims.some((c) => TIER1_SCHEMES.has(claimScheme(c.ref)))) {
     return "institutional";
   }
-  if (verified.length > 0) return "verified";
+  if (claims.length > 0) return "verified";
   return "self-declared";
 }
