@@ -158,7 +158,7 @@ export function verifyWireResponse(suppliedRequest: WireRequestPayload, supplied
   assertPurchaseProfile(request?.profile, received.binding);
   const expectedRequestHash = wireRequestHash(request);
   const responseBytes = ownedBytes(received.body);
-  const { payload: response } = openWireEnvelope(received.header, "response", { binding: received.binding, local: received.local, purchaseProfile: request.profile, principal: request.seller });
+  const { payload: response, authenticationHash } = openWireEnvelope(received.header, "response", { binding: received.binding, local: received.local, purchaseProfile: request.profile, principal: request.seller });
   const body = admitWireResponseBody(responseBytes);
   const { kind, bodyHash, expiresAt, requestHash, status, ...identity } = response;
   const { kind: _k, bodyHash: _b, expiresAt: _e, ...expected } = request;
@@ -166,5 +166,5 @@ export function verifyWireResponse(suppliedRequest: WireRequestPayload, supplied
   if (!sameCanonical(identity, expected) || requestHash !== expectedRequestHash || status !== received.status ||
       bodyHash !== sha256Hex(responseBytes) || !isUint(received.now) || expiresAt <= received.now ||
       expiresAt > received.now + DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs) fail("peer_response_mismatch");
-  return { principal: request.seller, audience: request.buyer, messageId: request.nonce, messageHash: requestHash, authenticationHash: sha256Hex(received.header as string), body };
+  return { principal: request.seller, audience: request.buyer, messageId: request.nonce, messageHash: requestHash, authenticationHash, body };
 }

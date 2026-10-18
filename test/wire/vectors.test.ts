@@ -1,3 +1,4 @@
+import { agreementFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 // Replays vectors/dacs-seller-http-v1.json. Each negative must fail with its
 // own named code, not an earlier one. scripts/wire/mutate-wire-checks.mjs runs
@@ -176,7 +177,7 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
       // checkSubject: what reaches checkWireRequest instead of the opened envelope.
       const subject = input.checkSubject === "decoded-header" ? JSON.parse(rawBodyText(input.header))
         : input.checkSubject === "copy" ? { ...opened } : opened;
-      const { readbackOnly } = wire.checkWireRequest(subject, {
+      const { readbackOnly } = wire.checkWireRequest(subject, { reserveRequest: () => true, artifacts: agreementFixture(opened),
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
         method: "POST", path: input.path, rawBody, now: file.now, requireDelegation: input.requireDelegation,
         binding: input.checkSubject === "other-binding" ? bind(own) : binding, local: input.checkLocal ?? own,

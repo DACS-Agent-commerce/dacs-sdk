@@ -1,8 +1,8 @@
-# `dacs-seller-http/v1`: the buyer-to-seller wire (design draft)
+# `dacs-seller-http/v1`: the buyer-to-seller wire
 
-> **Status: design draft; proposed; composition qualification pending.** Not for
-> merge until the sole wire, SDK package layout and testnet profile decisions
-> are recorded. The wire runs only
+> **Status: SDK wire definitions ready for review; composition qualification pending.**
+> The implementation decisions below define this library change. Seller and
+> client integration remains a release qualification requirement. The wire runs only
 > under testnet profile TP-1 ([testnet-profile-tp1.md](testnet-profile-tp1.md)).
 
 `@kynesyslabs/dacs/wire` defines the HTTPS wire between a buyer and a seller's
@@ -10,12 +10,13 @@ own endpoint: the route table, the signed request and response envelopes, the
 seller session delegation, the discovery document and endpoint proof, their
 exact signing bytes, and validators. It has no I/O: no HTTP server or client,
 no storage, no journal. The seller host (`@kynesyslabs/dacs-seller`) and the
-buyer client (`@kynesyslabs/dacs-client`) import it.
+buyer client (`@kynesyslabs/dacs-client`) are its intended consumers.
 
 It is the wire the buyer plugins run today, ported from the plugin
 implementation, with two enumerated changes (D6 domains and profile, D7
 exact-bytes admission) and two new parts (discovery and endpoint proof, the
-TP-1 identity gate). Unless a section says otherwise, behaviour is the
+TP-1 identity gate). Host admission additionally requires the replay and
+Agreement context checks described below. Unless a section says otherwise, behaviour is the
 plugin's. The plugin implementation is not public. Where this SDK pins a ported
 behaviour, the table names its own source and tests. The original-behaviour
 capture in `test/wire/fixtures/` was made by running the unmodified plugin
@@ -32,6 +33,21 @@ not yet independently checked (composition checks qualify it).
 | Limits | `DACS_SELLER_HTTP_LIMITS` in `src/wire/routes.ts`; `test/wire/wire.test.ts` |
 | Raw JSON admission | dacs-sdk `3904d70` `src/canonical/rawJson.ts:92-212` (`admitRawJson`) |
 | Discovery and endpoint proof | new: `src/wire/discovery.ts`; the discovery vectors |
+
+## Implementation decisions and release scope
+
+This PR implements one buyer-to-seller transport, `dacs-seller-http/v1`,
+without a fallback to the plugin signing domains. Its definitions and validators
+ship in the existing core package as `@kynesyslabs/dacs/wire` (`./wire`);
+HTTP hosting, clients and durable journals belong to their consuming packages.
+The only supported profile is experimental TP-1 on the approved Demos testnet
+identity. This change does not enable a mainnet identity or a mainnet release.
+
+These are the wire, package layout and profile choices implemented here.
+Merging the library does not qualify a seller/client composition: the retained
+effect paths and the checks listed in the TP-1 declaration remain pending
+before that composition can be released. The declaration and register retain
+that proposed status until the checks run.
 
 ## Routes
 
@@ -136,8 +152,8 @@ handling uses that body, never a separately parsed copy. A request
 authenticated only by an expired delegation can reach only declared read
 routes, where it is `readbackOnly`. Effect routes fail with
 `peer_delegation_expired` before a checked body reaches their handlers. The
-wire has no journal reservation adapter, so it refuses even a replay of a
-journaled effect on an effect route. The plugin's
+wire refuses even a retry of a journaled effect on an effect route after
+delegation expiry; a nonce reservation never extends that authority. The plugin's
 request body checks and its context-scope check stay with the seller package.
 
 **The seller's order of checks.** Each seller entry point reads its options
@@ -152,8 +168,24 @@ below):
    verified under that binding; the kept tuple again; the lifetime override;
    audience; expiry and lifetime; the body's admission; method, path and body
    hash; the Listing pin; a required delegation; the delegation's scope,
-   Agreement deadline and expiry.
-3. `signWireResponse(request, status, text, ctx)`: the kept tuple, before the
+   Agreement deadline and expiry. Delegated requests require at least one
+   host-owned proposal draft or retained Agreement in `artifacts`; omission, an
+   empty list or only null entries fails with `peer_delegation_agreement_required`.
+   For an initial proposal, the host supplies the admitted proposal draft; it
+   must not substitute request-derived scope for its retained Agreement.
+3. Before returning a checked body on an effect route, `checkWireRequest`
+   requires `reserveRequest`. The host must atomically and durably claim its
+   `key` (SHA-256 of canonical `{buyer, seller, profile, nonce}`) across workers
+   and restarts, retain `requestHash` and `expiresAt`, and return `true` only
+   after the new reservation commits. It returns `false` for an already claimed
+   key, including an identical retry (`peer_request_replayed`, HTTP 409). Keep
+   the reservation until `expiresAt`; never release it after an ambiguous or
+   failed effect. Recovery uses declared read routes. Missing hooks fail with
+   `seller_replay_guard_required`; non-boolean results, including promises, fail
+   with `seller_replay_guard_invalid`. The hook is synchronous and must finish
+   its durable write before returning. Read routes need no reservation. All
+   authentication, body, scope and deadline checks precede this callback.
+4. `signWireResponse(request, status, text, ctx)`: the kept tuple, before the
    request or the body is read; the retained request's complete shape and hash;
    the lifetime override; the body's size and
    admission; the signer's claim; then `signWireEnvelope`, which checks the
@@ -161,7 +193,10 @@ below):
 
 The buyer's `verifyWireResponse` takes the exact received response body bytes,
 not a decoded string. It admits them before hashing and returns the admitted
-body with the receipt. Both signers (`signWireRequest`, `signWireResponse`)
+body with the receipt. `authenticationHash` is SHA-256 of the base64url
+canonical header after normalizing its signature to canonical base64url; it
+is stable across accepted hex encodings and JSON member order or whitespace.
+The hash remains unchanged for headers produced by this SDK. Both signers (`signWireRequest`, `signWireResponse`)
 apply the same admission profile to the body they are about to sign
 (`outgoing_body_rejected`), so neither signs a body its peer must refuse.
 This changes seller behaviour: the plugin signed any `JSON.stringify(answer)`.
@@ -178,7 +213,7 @@ with `notBefore < expiresAt`, a lifetime of at most 24 h, and the new `profile`
 member. The delegation lets that session key authenticate transport toward
 that seller, Listing and job until expiry; it never authorizes an identity
 presentation, a storage write, an Agreement or a payment. Wallet signatures are
-accepted as hex (with one or more `0x` prefixes) or base64url, as the plugin's
+accepted as hex (with one or more `0x` prefixes) or canonical base64url, as the plugin's
 `decodeSignature` does. Producing the bytes to sign
 (`sellerSessionDelegationSigningBytes`) already requires the wallet side's TP-1
 binding, so a wallet with no approved identity is never asked to sign.
@@ -560,3 +595,13 @@ Expired session delegations are accepted only on the declared read routes.
 before returning a body to a handler. Journaled replay on effect routes is
 unavailable until a seller journal adapter can enforce that mode; hosts must
 not bypass this refusal to recover journaled effects.
+
+
+## Host validation requirements
+
+The transport capture comparisons supply host-owned Agreement context and a
+test reservation callback separately from the immutable captured messages.
+These host requirements apply to both direct and delegated effect requests;
+acceptance of a captured signature alone does not authorize repeating an effect.
+The library performs no storage itself: production hosts must implement the
+atomic durable reservation contract above. A process-local set does not meet it.

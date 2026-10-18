@@ -3,8 +3,9 @@
 > **Status: proposed; composition qualification pending.** This declaration and
 > [`conformance/tp1-register.json`](../conformance/tp1-register.json) are
 > approved only after composition checks qualify the exact composition of the moved
-> seller and client packages against the base below. It is a design draft: not
-> for merge until the wire, package layout and testnet profile decisions are recorded. The identity binding
+> seller and client packages against the base below. The library implementation
+> choices are recorded in the wire document's [implementation decisions](dacs-seller-http-v1.md#implementation-decisions-and-release-scope);
+> library merge does not qualify or release that composition. The identity binding
 > below (the profile tuple inside every signed message) is approved, on
 > 2026-10-15 at 21:23Z, as proposed.
 >

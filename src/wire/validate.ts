@@ -159,7 +159,7 @@ export function walletSignatureBytes(value: unknown, code = "peer_delegation_sig
   if (/^[0-9a-fA-F]{128}$/.test(stripped)) return Buffer.from(stripped, "hex");
   if (BASE64URL_SIGNATURE.test(stripped)) {
     const bytes = Buffer.from(stripped, "base64url");
-    if (bytes.length === 64) return bytes;
+    if (bytes.length === 64 && bytes.toString("base64url") === stripped) return bytes;
   }
   return fail(code);
 }

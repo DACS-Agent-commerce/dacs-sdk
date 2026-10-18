@@ -1,3 +1,4 @@
+import { agreementFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -301,7 +302,7 @@ describe("request and response byte budgets and the discovery Listing count", ()
     for (const n of [maxRequestBodyBytes, maxRequestBodyBytes + 1]) {
       const text = body(n);
       const opened = w.openWireEnvelope(header(signed({ ...x.request, bodyHash: sha(text) }, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context);
-      const check = () => w.checkWireRequest(opened, { ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
+      const check = () => w.checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
       if (n === maxRequestBodyBytes) expect(Object.keys(check().body)).toEqual(["p"]);
       else await expect(Promise.resolve().then(() => { check(); effects++; })).rejects.toMatchObject({ code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" });
     }
@@ -370,7 +371,7 @@ describe("expired session authority at every seller route", () => {
     const request = { ...x.request, path: route.path };
     const h = header({ ...signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.session), delegation });
     const opened = w.openWireEnvelope(h, "request", { ...x.context, requireDelegation: true });
-    const check = () => w.checkWireRequest(opened, { ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true });
+    const check = () => w.checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true });
     let effects = 0;
     if (route.effect === "effect") await refuses(() => { check(); effects++; }, "peer_delegation_expired");
     else expect(check()).toMatchObject({ readbackOnly: true, body: {} });

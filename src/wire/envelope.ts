@@ -2,7 +2,7 @@
 //
 // Ported from the plugin implementation's payload check, signing bytes, header
 // encoding and decoding, and server-side request checks (its body checks and
-// context-route branch stay with the seller). Changes, all
+// context-route branch stay with the seller). Transport changes
 // enumerated as D6/D7: the `dacs-seller-http:v1:{request,response}:` domains
 // replace `dacs-chatgpt-plugin:loopback-seller-peer:v1:`; every payload carries
 // the TP-1 `profile`; the header is admitted with admitRawJson before parsing;
@@ -20,7 +20,7 @@ import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./d
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
   isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedBytes, ownedConfig, ownedFields, ownedOrNothing, sameCanonical,
-  uncurry, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
+  uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 export interface WireRequestPayload {
@@ -134,6 +134,8 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
 export interface OpenedEnvelope<P extends WirePayload> {
   readonly payload: P;
   readonly delegation: SellerSessionDelegation | null;
+  /** SHA-256 of the canonical header with signatures normalized to base64url. */
+  readonly authenticationHash: string;
 }
 
 // Each envelope openWireEnvelope verified, with the binding it was verified
@@ -187,7 +189,14 @@ export function openWireEnvelope<K extends WireKind>(header: unknown, kind: K, o
   const delegation = delegated ? verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer }) : null;
   const key = delegation?.sessionPublicKey ?? claimKey(actor);
   if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
-  const result = deepFreeze({ payload: cloneJson(payload), delegation: delegated ? cloneJson(envelope.delegation as SellerSessionDelegation) : null });
+  const normalizedDelegation = delegated ? {
+    payload: (envelope.delegation as SellerSessionDelegation).payload,
+    signature: walletSignatureBytes((envelope.delegation as SellerSessionDelegation).signature).toString("base64url"),
+  } : null;
+  const normalizedHeader = Buffer.from(canonicalize({ payload, signature: envelopeSignatureBytes(envelope.signature).toString("base64url"),
+    ...(normalizedDelegation ? { delegation: normalizedDelegation } : {}) })).toString("base64url");
+  const result = deepFreeze({ payload: cloneJson(payload), delegation: delegated ? cloneJson(envelope.delegation as SellerSessionDelegation) : null,
+    authenticationHash: sha256Hex(normalizedHeader) });
   recordOpened(opened, result, binding);
   return result;
 }
@@ -213,8 +222,23 @@ export interface RequestCheck {
    */
   purchaseProfile: Tp1WireProfile | null;
   requireDelegation?: boolean;
-  /** The proposal draft and/or retained Agreement for this job, when present. */
+  /** The host's proposal draft and/or retained Agreement. At least one is required for delegated requests. */
   artifacts?: readonly unknown[];
+  /**
+   * Required for effect routes. Atomically and durably reserve this key before
+   * returning true; return false if already reserved, even for the same hash.
+   * Share the journal across workers/restarts and retain the reservation until
+   * expiresAt. A failed/ambiguous effect must not release it. This synchronous
+   * hook must finish its durable write before returning; promises are refused.
+   */
+  reserveRequest?: (reservation: WireRequestReservation) => boolean;
+}
+
+export interface WireRequestReservation {
+  /** SHA-256 of {buyer, seller, profile, nonce}; shared across jobs and routes. */
+  readonly key: string;
+  readonly requestHash: string;
+  readonly expiresAt: number;
 }
 
 /** A lifetime override must be an integer from 1 to 60 000 ms, as the plugin's own configuration check requires. */
@@ -224,7 +248,18 @@ export function messageLifetime(override: unknown, code: string): number {
   return ms;
 }
 
-const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "artifacts"] as const;
+const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "artifacts", "reserveRequest"] as const;
+
+function reserveEffectRequest(request: WireRequestPayload, reserve: RequestCheck["reserveRequest"]): void {
+  if (isReadRoute(request.path)) return;
+  if (typeof reserve !== "function") fail("seller_replay_guard_required", 500);
+  const { buyer, seller, profile, nonce } = request;
+  const reservation = deepFreeze({ key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })),
+    requestHash: wireRequestHash(request), expiresAt: request.expiresAt });
+  const result = reserve(reservation);
+  if (result === false) fail("peer_request_replayed", 409);
+  if (result !== true) fail("seller_replay_guard_invalid", 500);
+}
 
 export interface CheckedWireRequest {
   /** The admitted request body. Effect handling must use this, never a separately parsed copy. */
@@ -265,7 +300,11 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   if (request.method !== c.method || request.path !== c.path || request.bodyHash !== sha256Hex(rawBody)) fail("peer_request_mismatch");
   if (!sameCanonical(request.listingPin, listingPin)) fail("peer_listing_mismatch", 409);
   if (c.requireDelegation && !delegation) fail("peer_delegation_required");
-  if (!delegation) return { body, readbackOnly: false };
+  if (!delegation) {
+    reserveEffectRequest(request, c.reserveRequest);
+    return { body, readbackOnly: false };
+  }
+  if (!artifacts.some((artifact) => artifact != null)) fail("peer_delegation_agreement_required", 409);
   for (const artifact of artifacts.filter((a) => a != null) as JsonRecord[]) {
     const parties = Array.isArray(artifact.parties) ? (artifact.parties as JsonRecord[]) : [];
     if (artifact.jobId !== request.jobId || !sameCanonical(artifact.listingRef ?? null, listingPin) ||
@@ -278,9 +317,10 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
   if (c.now < delegation.payload.expiresAt) {
     if (request.expiresAt > delegation.payload.expiresAt) fail("peer_delegation_expired", 408);
+    reserveEffectRequest(request, c.reserveRequest);
     return { body, readbackOnly: false };
   }
-  // There is no journal reservation adapter in this transport package yet.
+  // A nonce reservation never extends expired delegation authority.
   // Refuse effect routes rather than returning a flag a host could overlook.
   if (!isReadRoute(request.path)) fail("peer_delegation_expired", 408);
   return { body, readbackOnly: true };

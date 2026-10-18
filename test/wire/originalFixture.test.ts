@@ -1,3 +1,4 @@
+import { agreementFixture } from "./agreementFixture.js";
 // Compares the SDK wire with the original plugin wire captured from frontend
 // 82bf8c4 (test/wire/fixtures/plugin-wire-82bf8c4.original.json; captured messages are immutable),
 // through its separately identified TP-1 revision adaptation
@@ -58,7 +59,7 @@ function sellerVerdict(c: any): string {
   return code(() => {
     const body = c.bodyText ?? `{"jobId":"${scope.jobId}"}`;
     const opened = openWireEnvelope(c.header, "request", { binding: sellerBinding, local: adapted.localBindings.seller, purchaseProfile: sellerBinding.profile, requireDelegation: c.requireDelegation ?? false });
-    checkWireRequest(opened, {
+    checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened),
       seller: c.server?.seller === "other" ? adapted.parties.other : adapted.parties.seller,
       listingPin: c.server?.listingPin ?? scope.listingPin, method: "POST", path: scope.path, rawBody: Buffer.from(body),
       now: adapted.now, binding: sellerBinding, local: adapted.localBindings.seller, purchaseProfile: sellerBinding.profile, requireDelegation: c.requireDelegation ?? false,

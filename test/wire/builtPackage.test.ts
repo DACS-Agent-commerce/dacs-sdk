@@ -69,7 +69,7 @@ const signWith = (binding, local) => code(() => wire.signWireRequest({ signer, b
 let effects = 0;
 const effect = (fn) => code(() => { fn(); effects += 1; });
 const decodedRequest = JSON.parse(b(vector["request/valid-direct"].header).toString("utf8"));
-const check = { seller: file.parties.seller, listingPin: file.job.listingPin, method: "POST", path: vector["request/valid-direct"].path, rawBody: b(vector["request/valid-direct"].body), now: file.now, purchaseProfile: profile };
+const check = { reserveRequest: () => true, seller: file.parties.seller, listingPin: file.job.listingPin, method: "POST", path: vector["request/valid-direct"].path, rawBody: b(vector["request/valid-direct"].body), now: file.now, purchaseProfile: profile };
 async function verifyAll(sellerBinding, sLocal, buyerBinding, bLocal) {
   return {
     openWireEnvelope: await effect(() => wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sLocal, purchaseProfile: profile })),
@@ -148,7 +148,7 @@ const endpointProof = wire.verifyEndpointProof(discoveryBytes, { readListingElig
 sellerSigner.calls = 0;
 const approvedRequest = await wire.signWireRequest({ endpointProof, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now });
 const approvedOpened = wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
-wire.checkWireRequest(approvedOpened, { seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
+wire.checkWireRequest(approvedOpened, { reserveRequest: () => true, seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
 const approvedResponse = await wire.signWireResponse(approvedOpened.payload, 200, "{}", { signer: sellerSigner, binding: sb, local: sellerLocal, now: file.now, purchaseProfile: sb.profile });
 const receipt = wire.verifyWireResponse(approvedRequest.payload, { header: approvedResponse, status: 200, body: Buffer.from("{}"), now: file.now, binding: bb, local: buyerLocal });
 out.approvedIdentity = { recordDigest: bb.recordDigest, sameProfile: canonicalize(bb.profile) === canonicalize(sb.profile), differentEndpoints: bb.local.endpoint !== sb.local.endpoint, verifiedSeller: receipt.principal === sellerSigner.claim, signatures: signer.calls + sellerSigner.calls };
