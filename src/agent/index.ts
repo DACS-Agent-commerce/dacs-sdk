@@ -308,6 +308,7 @@ export {
   type SessionTerms,
   type SettleRequest,
   type SettleResult,
+  type DemosFailedRecordProof,
   type SettlementRecoveryAttempt,
 } from "./runSessionCore.js";
 export {
