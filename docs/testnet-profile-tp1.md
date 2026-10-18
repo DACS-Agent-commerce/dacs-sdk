@@ -69,6 +69,28 @@ execution is stored as `included`. No execution-failed live transaction was
 reproduced. L2/G10's node-status
 explanation is this source inference, not an authenticated deployment result.
 
+Closing node deployment qualification requires evidence from the deployment
+owner for the build observed by these fixtures:
+
+- A cryptographic digest of the exact deployed image or complete runtime
+  bundle, with the artifact retained for inspection. A source archive's digest
+  or the fixture hashes alone does not identify the deployed runtime.
+- The complete source tree for that artifact, including the dirty overlay on
+  `61b8e75aa8db5e408c49e1c3a89db4d673f45578`, and its dependency lockfile and
+  build inputs. The overlay must be retained under an immutable reference or
+  content digest; the reported source commit alone is insufficient.
+- A deployment record binding that artifact and source tree to node2 and the
+  observation timestamps, including the reported version, branch, dirty flag
+  and build time. A later clean deployment cannot retrospectively qualify
+  these captures.
+
+After those inputs are supplied, record their references in the observation
+manifest and qualify status behaviour against the identified build. An
+execution-failure claim also needs captured execution and status evidence for
+that build; the missing-transaction fixtures do not establish it. Until then,
+`nodeObservationEvidence.deploymentQualified` remains `false`, the deployment
+digest and overlay remain unknown, and the source-inference labels remain.
+
 The decision record supplies this pin independently of the endpoint being
 admitted. The identity decision did not depend on these later read-only node observations. `endpoint` and `transportAuthority`
 are per actor for each connection and are excluded from the approved record.

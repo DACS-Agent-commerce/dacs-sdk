@@ -14,7 +14,13 @@ describe("pinned read-only node observations", () => {
       expect(read(name).request.method).toBe("nodeCall");
     }
     const version = body("network.json").response.nodeVersion;
-    expect(version.commit).toBe(manifest.sourceCommit);
+    expect(version).toMatchObject({
+      version: manifest.version,
+      commit: manifest.sourceCommit,
+      branch: manifest.branch,
+      dirty: manifest.dirty,
+      builtAt: manifest.builtAt,
+    });
     expect(version.dirty).toBe(true);
     expect(manifest.deploymentArtifactDigest).toBeNull();
     expect(manifest.deploymentOverlay).toBeNull();
