@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { runDoctor } from "../../src/cli/doctor.js";
+import { VERIFIED_DEMOS_NODE_REVISION, runDoctor } from "../../src/cli/doctor.js";
 
 const http = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), connectWallet: vi.fn() }));
 vi.mock("../../src/cli/demosHttp.js", () => ({ demosHttpClient: () => http }));
@@ -12,7 +12,7 @@ vi.mock("../../src/substrate/index.js", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   http.post.mockImplementation(async (_url, body) => ({
-    data: { response: body.params[0].message === "getLastBlockNumber" ? 42 : {} },
+    data: { result: 200, response: body.params[0].message === "getLastBlockNumber" ? 42 : {} },
   }));
 });
 
@@ -33,5 +33,27 @@ describe("doctor default adapter matches demosdk's HTTP 200 connection contract"
     const report = await runDoctor({ rpc: "https://rpc.example" });
     expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("pass");
     expect(http.post).toHaveBeenCalled();
+  });
+});
+
+
+test.each([400, 503, "200", undefined])("rejects failed/malformed height result %s despite a plausible payload", async (result) => {
+  http.get.mockResolvedValue({ status: 200 });
+  http.post.mockResolvedValue({ data: { result, response: 42 } });
+  const report = await runDoctor({ rpc: "https://rpc.example" });
+  expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("fail");
+  expect(report.exitCode).toBe(3);
+});
+
+test("does not pass a failed revision envelope carrying the pinned build", async () => {
+  http.get.mockResolvedValue({ status: 200 });
+  http.post.mockImplementation(async (_url, body) => ({ data:
+    body.params[0].message === "getLastBlockNumber" ? { result: 200, response: 42 } :
+      { result: 400, response: { nodeVersion: { name: "demos-node-software", version: "0.9.8",
+        commit: VERIFIED_DEMOS_NODE_REVISION, dirty: false } } },
+  }));
+  const report = await runDoctor({ rpc: "https://rpc.example" });
+  expect(report.checks.find((c) => c.id === "rpc.node-revision")).toMatchObject({
+    status: "warn", data: { reported: null },
   });
 });

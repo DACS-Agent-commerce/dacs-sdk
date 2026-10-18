@@ -26,6 +26,7 @@ import {
 import type { AnchorReceipt as ProtocolAnchorReceipt } from "../artifacts/types.js";
 import { AnchorWaitError } from "./AnchorWaitError.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
+import { assertDahrCommitment } from "./dahrCommitment.js";
 import {
   assertDemosWriteEvidence,
   decodeDemosAnchorReceiptProof,
@@ -3926,7 +3927,7 @@ export class DemosAdapter implements SubstrateAdapter {
     }
   }
 
-  private async waitForAuthenticatedDahrInclusion(txRef: string): Promise<void> {
+  private async waitForAuthenticatedDahrInclusion(txRef: string): Promise<NonNullable<ProxyFetchResult["methodEvidence"]>> {
     const ctx = this.newContext(
       `dahr:${txRef}`,
       DAHR_INCLUSION_TIMEOUT_MS,
@@ -3979,6 +3980,7 @@ export class DemosAdapter implements SubstrateAdapter {
         `Demos block ${String(blockNumber)} does not authenticate DAHR transaction ${txRef}`,
       );
     }
+    return { kind: "demos-web2-request", transaction: structuredClone(transaction), block: structuredClone(block) };
   }
 
   /**
@@ -3991,6 +3993,22 @@ export class DemosAdapter implements SubstrateAdapter {
     if (!this.connected) {
       throw new Error("DemosAdapter not connected — call connect() first");
     }
+    // Capture validated header data before any asynchronous work. Cloning the
+    // caller's object first would invoke accessors and erase this boundary.
+    const requestOptions = dahrRequestOptions(req.headers);
+    const request = { url: req.url, method: req.method, body: req.body };
+    if (request.body !== undefined && typeof request.body !== "string") {
+      throw new SubstrateError("DAHR request body must be exact UTF-8 text");
+    }
+    if (request.body !== undefined && request.method !== "POST") {
+      throw new SubstrateError("DAHR request bodies require POST");
+    }
+    const url = new URL(request.url.trim());
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+      throw new SubstrateError("DAHR requires an HTTP(S) URL without embedded credentials");
+    }
+    url.hash = "";
+    request.url = url.href;
     const key = this.walletQueueKey();
     return queueWalletWrite(
       key,
@@ -4004,22 +4022,29 @@ export class DemosAdapter implements SubstrateAdapter {
             // headers both becomes `Bearer undefined` and places it in the
             // anchored request. Split it into the SDK's transient authorization
             // channel instead.
-            const requestOptions = dahrRequestOptions(req.headers);
             const response = await dahr.startProxy({
-              url: req.url,
-              method: req.method ?? "GET",
-              options: requestOptions,
+              url: request.url,
+              method: request.method ?? "GET",
+              options: { ...requestOptions, ...(request.body === undefined ? {} : { payload: request.body }) },
             });
             const txRef = typeof response?.txHash === "string" &&
                 response.txHash.length > 0
               ? response.txHash
               : undefined;
-            if (txRef) await this.waitForAuthenticatedDahrInclusion(txRef);
+            if (!txRef) throw new SubstrateError("DAHR response lacks a transaction reference");
+            const methodEvidence = await this.waitForAuthenticatedDahrInclusion(txRef);
+            assertDahrCommitment(methodEvidence.transaction, {
+              url: request.url, method: request.method ?? "GET",
+              headers: requestOptions.headers ?? {},
+              ...(request.body === undefined ? {} : { body: request.body }),
+            }, response);
             return {
-              body: String(response?.body ?? response?.data ?? ""),
-              status: Number(response?.status ?? 0),
-              responseHash: String(response?.responseHash ?? ""),
-              ...(txRef === undefined ? {} : { anchorTxRef: txRef }),
+              body: response.data,
+              status: response.status,
+              responseHash: response.responseHash,
+              responseHeadersHash: response.responseHeadersHash,
+              anchorTxRef: txRef,
+              methodEvidence,
               fetchedAt: Number(response?.timestamp ?? Date.now()),
             };
           } finally {

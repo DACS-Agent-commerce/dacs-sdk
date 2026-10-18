@@ -76,14 +76,21 @@ Domain ClaimReferences use a strict trust boundary. Native Demos
 presentation, validates persistent native metadata, and deduplicates domain
 claims before signing. A
 signed current `domain:` reference is never repaired during reading. Historical
-`web2:domain:` aliases are available only through
-`readAuthenticatedDomainClaims()`, which authenticates the original artifact
-before deriving a separate, deduplicated semantic claim set. Alias compatibility
+`web2:domain:` aliases are read by `readAuthenticatedDomainClaims()` and the
+Vet consumers after authenticating the original presentation. They derive a
+separate, deduplicated semantic claim set for requirement and primary-claim
+decisions, while hashes and signature checks retain the original bytes. Alias compatibility
 is selected by authenticated `bundleVersion: "1"` bytes and does not depend on
 producer release metadata. For persistent GCR
 evidence, `verifyDemosGcrDomainClaims()` additionally checks authenticated
 transaction/finality, writer, validation-profile, freshness and presentation-
 control inputs; it never treats copied bundle metadata as authority.
+The pinned native node does not itself establish the strict
+`demos-web2-domain-v1` proof-body grammar: its parser accepts alternate tags and
+its fetch path trims whitespace. Native GCR inclusion alone therefore leaves
+this profile indeterminate. An injected resolver must independently authenticate
+the exact strict validation rule and original proof bytes; it must never
+re-fetch a historical proof body to reconstruct that evidence.
 
 CCI resolution covers all eight production Demos identity contexts. Live
 `xm`, `web2`, `pqc`, `ud`, `nomis`, `humanpassport`, `ethos`, and TLSN-backed
@@ -977,6 +984,7 @@ credential files always fail admission, as they do on the host; use stdin or an
 environment variable there. Windows ACLs are not checked. Other modes, owner
 mismatches, and symlinks, including one swapped in after inspection, fail
 admission (exit code `1`); the secret is not read and no adapter is created.
+An ordinary file replaced after inspection produces a usage error (exit code `2`).
 Files are limited to 65,536 bytes, with path and descriptor size checks and
 bounded reads that also reject growth beyond the limit. Content is decoded as
 strict UTF-8 and trimmed, like the host consumer does. Empty, oversized,
@@ -1005,7 +1013,7 @@ offline mode, which makes no connections, writes, or payments.
 | `runtime.node` | pass, fail | `version`, `required` |
 | `runtime.module` | pass, fail | `type` |
 | `package.version` | pass, fail (compiled SDK version differs from `package.json`) | `version`, `packageVersion` on fail |
-| `config.secrets` | pass, skip | `walletSecret` (always `[redacted]`) |
+| `config.secrets` | pass, fail, skip | `walletSecret` (always `[redacted]`) |
 | `config.{rpc,wallet}-file.symlink` | pass, fail | none |
 | `config.{rpc,wallet}-file.mode` | pass, fail, skip (file not opened) | `mode`: 4-digit octal string |
 | `config.{rpc,wallet}-file.owner` | pass, fail, skip (symlink, or no user ID) | `ownerUid`, `currentUid` |

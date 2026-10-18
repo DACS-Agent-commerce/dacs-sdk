@@ -1,4 +1,6 @@
 import { isDeepStrictEqual, types as nodeTypes } from "node:util";
+import type { IdentityBundle } from "../artifacts/types.js";
+import { DacsError } from "../errors.js";
 
 import { ed25519Verify, publicKeyFromRaw } from "../crypto/index.js";
 import {
@@ -347,6 +349,44 @@ function deriveSemanticDomainClaims(
 
   }
   return { ok: true, semanticClaims, ...(policyViolation ? { policyViolation } : {}) };
+}
+
+/** DCR-4/5 identity key, only for data whose original enclosing bytes were authenticated. */
+export function authenticatedDomainClaimReference(ref: string): string {
+  const derived = deriveSemanticDomainClaims([ref]);
+  if (!derived.ok || derived.policyViolation) {
+    throw new DacsError("authenticated bundle contains a malformed domain reference");
+  }
+  return derived.semanticClaims[0] ?? ref;
+}
+
+/**
+ * Semantic view for consumers AFTER authenticating the original version-1
+ * presentation. Never hash, verify or sign this view as the original bundle.
+ * The original bundle, its presentation and all signed bytes remain untouched.
+ */
+export function authenticatedIdentityBundleSemantics(bundle: Readonly<IdentityBundle>): IdentityBundle {
+  if (bundle.bundleVersion !== "1") throw new DacsError("domain aliases require bundleVersion 1");
+  const claims = new Map<string, IdentityBundle["claims"][number]>();
+  for (const claim of bundle.claims) {
+    const ref = authenticatedDomainClaimReference(claim.ref);
+    const semantic = { ...claim, ref };
+    const previous = claims.get(ref);
+    if (previous && ref.startsWith("domain:")) {
+      // Never combine evidence or metadata from aliases. Retain one source
+      // claim, preferring the actual signed presenter for primary control.
+      if (claim.ref === bundle.presentedBy) claims.set(ref, semantic);
+      continue;
+    }
+    // Preserve non-domain duplicates for consumers' existing ambiguity gates.
+    claims.set(ref.startsWith("domain:") ? ref : `${claims.size}:${ref}`, semantic);
+  }
+  const presentedBy = authenticatedDomainClaimReference(bundle.presentedBy);
+  if (![...claims.values()].some((claim) => claim.ref === presentedBy) &&
+      /^(?:domain|web2:domain):/.test(bundle.presentedBy)) {
+    throw new DacsError("semantic domain presenter is not carried by the bundle");
+  }
+  return { ...bundle, claims: [...claims.values()], presentedBy };
 }
 
 /**

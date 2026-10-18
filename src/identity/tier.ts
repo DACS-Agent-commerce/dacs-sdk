@@ -12,6 +12,8 @@
  * effective-window gate; a missing, failing, or stale `verifiedBy` does not.
  */
 
+import { authenticatedDomainClaimReference } from "./domainClaimVerification.js";
+
 export type IdentityTier = "institutional" | "verified" | "self-declared";
 
 /** The `verifiedBy` reference on a bundle claim (an anchored VerifyResult). */
@@ -32,6 +34,7 @@ export interface BundleClaimLike {
 
 export interface IdentityBundleLike {
   claims?: BundleClaimLike[];
+  bundleVersion?: string;
 }
 
 /**
@@ -91,12 +94,29 @@ export function claimHasStructuralProof(claim: BundleClaimLike): boolean {
  * caller MUST supply the predicate. For a deliberate offline/structural-only read
  * (NOT IT-1-conformant) pass the exported {@link claimHasStructuralProof} — naming
  * it is the loud opt-in.
+ * Authenticate the original version-1 bundle presentation before using this
+ * function's historical-domain semantic view.
  */
 export function deriveIdentityTier(
   bundle: IdentityBundleLike | null | undefined,
   isClaimVerified: (claim: BundleClaimLike) => boolean,
 ): IdentityTier {
-  const claims = Array.isArray(bundle?.claims) ? bundle!.claims! : [];
+  const source = Array.isArray(bundle?.claims) ? bundle!.claims! : [];
+  const claims: BundleClaimLike[] = [];
+  const domains = new Set<string>();
+  for (const claim of source) {
+    if (!claim || typeof claim.ref !== "string") continue;
+    let ref = claim.ref;
+    if (ref.startsWith("web2:domain:")) {
+      if (bundle?.bundleVersion !== "1") continue;
+      try { ref = authenticatedDomainClaimReference(ref); } catch { continue; }
+    }
+    if (ref.startsWith("domain:")) {
+      if (domains.has(ref)) continue;
+      domains.add(ref);
+    }
+    claims.push(ref === claim.ref ? claim : { ...claim, ref });
+  }
   const verified = claims.filter(
     (c) => c && typeof c.ref === "string" && isClaimVerified(c),
   );

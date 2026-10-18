@@ -437,6 +437,32 @@ describe("dacs doctor", () => {
     const NAME = "demos-node-software";
     const verified = { name: NAME, commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8" };
 
+    it.each(["path", "encoded-path", "query", "encoded-query", "wallet"])(
+      "omits valid-looking build fields reflecting %s credentials in JSON output",
+      async (source) => {
+        const name = "credential-name";
+        const version = "credential-version";
+        const commit = "b".repeat(40);
+        const token = `${name}/${version}/${commit}`;
+        const rpc = source === "path" ? `https://rpc.example/${token}` :
+          source === "encoded-path" ? `https://rpc.example/${encodeURIComponent(token)}` :
+          source === "query" ? `https://rpc.example/?name=${name}&version=${version}&commit=${commit}` :
+          source === "encoded-query" ? `https://rpc.example/?token=${encodeURIComponent(token)}` :
+          "https://rpc.example";
+        const walletSecret = source === "wallet" ? name : undefined;
+        const report = await runDoctor({ rpc, walletSecret, adapterFactory: () => ({
+          connect: async () => {}, getAddress: () => "unused", getLastBlockNumber: async () => 7,
+          getNetworkInfo: build({ name, version, commit, dirty: false }),
+        }) });
+        const json = JSON.stringify(report);
+        expect(json).not.toContain(name);
+        if (source !== "wallet") {
+          expect(json).not.toContain(version);
+          expect(json).not.toContain(commit);
+        }
+      },
+    );
+
     it("pins the verified node package to kynesyslabs/node at the verified revision", () => {
       expect(VERIFIED_DEMOS_NODE_PACKAGE).toEqual({ name: NAME, version: "0.9.8" });
     });

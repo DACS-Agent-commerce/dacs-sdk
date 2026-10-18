@@ -15,6 +15,8 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../../src/crypto/index.js";
+import { sha256Hex } from "../../src/canonical/index.js";
+import { createStripeAp2Integration } from "../../src/rails/ap2Stripe.js";
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../../src/identity/index.js";
 
 const RPC = "https://node2.demos.sh";
@@ -25,6 +27,22 @@ const makeAdapter = (
   chainIdentity: "test-chain",
   writeJournal,
 });
+
+// SDK 4.0.18 Web2Calls.web2Payload, with a real request/result commitment.
+function dahrTransaction(url = "https://example.com/data", headers = {}, body?: string) {
+  return {
+    hash: "0xdahr", status: "confirmed", blockNumber: 7,
+    content: { type: "web2Request", data: ["web2Request", { message: {
+      sessionId: "session", payload: "", authorization: "",
+      web2Request: {
+        raw: { action: "startProxy", url, method: body === undefined ? "GET" : "POST", headers },
+        result: { targetUrl: url, status: 200, headers: {},
+          responseHash: sha256Hex("ok"), responseHeadersHash: sha256Hex(""),
+          ...(body === undefined ? {} : { requestHash: sha256Hex(body) }) },
+      },
+    } }] },
+  };
+}
 
 // The storage-program search posts with global fetch, bypassing `raw`, and
 // index observation keeps polling after a write's test has finished. Keep fetch
@@ -266,6 +284,27 @@ describe("DemosAdapter", () => {
     ).rejects.toThrow(/not connected/);
   });
 
+  it("rejects accessor-backed DAHR headers without reading them or starting a proxy", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const getter = vi.fn(() => "Bearer unused");
+    const headers = Object.defineProperty({}, "Authorization", { get: getter, enumerable: true });
+    const createDahr = vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2, "createDahr");
+    await expect(adapter.proxyFetch({ url: "https://example.com/data", headers }))
+      .rejects.toThrow(/stable string data/);
+    expect(getter).not.toHaveBeenCalled();
+    expect(createDahr).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unsupported GET body before starting a proxy", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const createDahr = vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2, "createDahr");
+    await expect(adapter.proxyFetch({ url: "https://example.com/data", method: "GET", body: "ignored-by-node" }))
+      .rejects.toThrow(/bodies require POST/);
+    expect(createDahr).not.toHaveBeenCalled();
+  });
+
   it("keeps Bearer credentials out of DAHR anchored request headers", async () => {
     const statusCredential = ["rk", "test", "StatusCredential456"].join("_");
     const adapter = makeAdapter();
@@ -276,9 +315,7 @@ describe("DemosAdapter", () => {
       blockNumber: 7,
     } as never);
     const transaction = vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
-      hash: "0xdahr",
-      status: "confirmed",
-      blockNumber: 7,
+      ...dahrTransaction("https://api.stripe.com/v1/payment_intents/pi_test", { Accept: "json" }),
     } as never);
     const block = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({
       number: 7,
@@ -289,7 +326,7 @@ describe("DemosAdapter", () => {
     const startProxy = vi.fn(async () => ({
       data: "ok",
       status: 200,
-      responseHash: "a".repeat(64),
+      responseHash: sha256Hex("ok"), responseHeadersHash: sha256Hex(""), headers: {},
       txHash: "0xdahr",
       timestamp: 1,
     }));
@@ -356,13 +393,17 @@ describe("DemosAdapter", () => {
       status?: (status: Mutable) => void;
       transaction?: (transaction: Mutable) => void;
       block?: (block: Mutable) => Mutable | null | void;
+      response?: (response: Mutable) => void;
+      body?: string;
+      requestUrl?: string;
+      method?: "GET" | "POST";
     } = {}) {
       const adapter = makeAdapter();
       Object.assign(adapter, { connected: true });
       vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
       const status: Mutable = { state: "included", blockNumber: 7 };
       change.status?.(status);
-      const transaction: Mutable = { hash: "0xdahr", status: "confirmed", blockNumber: 7 };
+      const transaction: Mutable = dahrTransaction("https://example.com/data", {}, change.body);
       change.transaction?.(transaction);
       let block: Mutable | null = {
         number: 7,
@@ -376,22 +417,98 @@ describe("DemosAdapter", () => {
       vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue(transaction as never);
       const getBlock = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue(block as never);
       const stopProxy = vi.fn(async () => undefined);
+      const response: Mutable = {
+        data: "ok", status: 200, responseHash: sha256Hex("ok"),
+        responseHeadersHash: sha256Hex(""), headers: {}, txHash: "0xdahr", timestamp: 3,
+        ...(change.body === undefined ? {} : { requestHash: sha256Hex(change.body) }),
+      };
+      change.response?.(response);
       vi.spyOn((adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
-        "createDahr").mockResolvedValue({
-          startProxy: async () => ({
-            data: "ok", status: 200, responseHash: "c".repeat(64), txHash: "0xdahr", timestamp: 3,
-          }),
-          stopProxy,
-        });
-      const outcome = await adapter.proxyFetch({ url: "https://example.com/data" })
+        "createDahr").mockResolvedValue({ startProxy: async () => response, stopProxy });
+      const outcome = await adapter.proxyFetch({ url: change.requestUrl ?? "https://example.com/data",
+        method: change.method ?? (change.body === undefined ? undefined : "POST"), body: change.body })
         .then((result) => result, (error: unknown) => error);
       expect(stopProxy).toHaveBeenCalledOnce();
-      return { outcome, getBlock };
+      return { outcome, getBlock, adapter };
     }
 
     it("returns the anchored response for the matching control", async () => {
       const { outcome } = await dahrFetch();
       expect(outcome).toMatchObject({ body: "ok", anchorTxRef: "0xdahr" });
+    });
+
+    it.each<[string, Parameters<typeof dahrFetch>[0]]>([
+      ["an included native transfer", { transaction: (tx) => { tx.content = { type: "native", data: [] }; } }],
+      ["missing transaction content", { transaction: (tx) => { delete tx.content; } }],
+      ["a different URL", { transaction: (tx) => { tx.content.data[1].message.web2Request.raw.url += "/other"; } }],
+      ["a different target URL", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.targetUrl += "/other"; } }],
+      ["a different method", { transaction: (tx) => { tx.content.data[1].message.web2Request.raw.method = "POST"; } }],
+      ["a different proxy action", { transaction: (tx) => { tx.content.data[1].message.web2Request.raw.action = "create"; } }],
+      ["different request headers", { transaction: (tx) => { tx.content.data[1].message.web2Request.raw.headers = { accept: "other" }; } }],
+      ["a different status", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.status = 201; } }],
+      ["a substituted body", { response: (r) => { r.data = "fabricated"; } }],
+      ["a substituted response hash", { response: (r) => { r.responseHash = "a".repeat(64); } }],
+      ["a substituted response headers hash", { response: (r) => { r.responseHeadersHash = "b".repeat(64); } }],
+      ["substituted response headers", { response: (r) => { r.headers = { "content-type": "text/plain" }; } }],
+      ["substituted transaction headers", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.headers = { vary: "accept" }; } }],
+      ["an unexpected request body hash", { transaction: (tx) => { tx.content.data[1].message.web2Request.result.requestHash = "c".repeat(64); } }],
+      ["a different request body hash", { body: "request", response: (r) => { r.requestHash = "c".repeat(64); } }],
+      ["a non-string body", { response: (r) => { r.data = { ok: true }; } }],
+    ])("rejects %s as DAHR evidence", async (_label, change) => {
+      const { outcome } = await dahrFetch(change);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/canonical web2Request commitment/);
+    });
+
+    it("authenticates exact UTF-8 data and the pinned stable-header hash profile", async () => {
+      const body = "  café ☕\n";
+      const responseHash = sha256Hex(body);
+      const responseHeadersHash = sha256Hex("content-type:text/plain\nx-roles:a, b");
+      const { outcome } = await dahrFetch({
+        requestUrl: "  HTTPS://EXAMPLE.COM:443/data#unanchored-fragment  ",
+        transaction: (tx) => { Object.assign(tx.content.data[1].message.web2Request.result, {
+          headers: { "Content-Type": " text/plain ", "X-Roles": ["a", "b"], date: "then" },
+          responseHash, responseHeadersHash,
+        }); },
+        response: (r) => { Object.assign(r, { data: body, responseHash, responseHeadersHash,
+          headers: { "x-roles": ["a", "b"], "content-type": "text/plain", date: "now" } }); },
+      });
+      expect(outcome).toMatchObject({ body, responseHash, responseHeadersHash, anchorTxRef: "0xdahr" });
+    });
+
+    it("binds POST and its exact UTF-8 request body", async () => {
+      const { outcome } = await dahrFetch({ method: "POST", body: "requesté",
+        transaction: (tx) => { tx.content.data[1].message.web2Request.raw.method = "POST"; } });
+      expect(outcome).toMatchObject({ body: "ok", anchorTxRef: "0xdahr" });
+    });
+
+    it("requires a transaction reference", async () => {
+      const { outcome } = await dahrFetch({ response: (r) => { delete r.txHash; } });
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/lacks a transaction reference/);
+    });
+
+    it("retains canonical evidence and binds a supplied request body", async () => {
+      const { outcome } = await dahrFetch({ body: "request" });
+      expect(outcome).toMatchObject({ body: "ok", methodEvidence: {
+        kind: "demos-web2-request", transaction: dahrTransaction("https://example.com/data", {}, "request"),
+        block: { number: 7 },
+      } });
+    });
+
+    it("keeps provider payment status indeterminate for an included native transfer", async () => {
+      const { adapter } = await dahrFetch({
+        transaction: (tx) => { tx.content.type = "native"; },
+        response: (r) => { r.data = JSON.stringify({ id: "pi_test", status: "succeeded", currency: "usd", amount_received: 100, metadata: {} }); r.responseHash = sha256Hex(r.data); },
+      });
+      const { provider } = createStripeAp2Integration({
+        createCredential: ["rk", "test", "create"].join("_"),
+        statusCredential: ["rk", "test", "status"].join("_"),
+        payeeId: "merchant", currencyMinorUnits: 2, substrate: adapter,
+      });
+      const status = await provider.readAttestedStatus({ providerRef: "pi_test",
+        intent: { currency: "USD" } as never, fence: { assertCurrent: async () => {} } as never });
+      expect(status.disposition).toBe("indeterminate");
     });
 
     it.each<[string, Parameters<typeof dahrFetch>[0]]>([

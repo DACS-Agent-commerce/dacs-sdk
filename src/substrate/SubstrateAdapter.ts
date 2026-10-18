@@ -188,6 +188,8 @@ export interface ProxyFetchRequest {
   url: string;
   method?: "GET" | "POST";
   headers?: Record<string, string>;
+  /** Exact UTF-8 request body for POST, when present. */
+  body?: string;
 }
 
 export interface ProxyFetchResult {
@@ -196,6 +198,13 @@ export interface ProxyFetchResult {
   status: number;
   /** sha256 of the exact body bytes committed by the selected SR-3 binding. */
   responseHash: string;
+  responseHeadersHash?: string;
+  /** Canonical native evidence retained for repeatable commitment checks. */
+  methodEvidence?: {
+    kind: "demos-web2-request";
+    transaction: Record<string, unknown>;
+    block: Record<string, unknown>;
+  };
   /** Native transaction carrying the binding's request/response commitment. */
   anchorTxRef?: string;
   /** Epoch-millis the fetch was performed. */

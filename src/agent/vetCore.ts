@@ -1,4 +1,5 @@
 import { types as nodeTypes } from "node:util";
+import { authenticatedIdentityBundleSemantics, authenticatedDomainClaimReference } from "../identity/domainClaimVerification.js";
 
 import { canonicalize, contentHash, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
 import type {
@@ -3406,6 +3407,7 @@ async function authenticateCarriedResult<TKey>(
   deps: CapturedPartyVetDeps<TKey>,
   now: number,
 ): Promise<"freshness" | "dealSpecific"> {
+  bundle = authenticatedIdentityBundleSemantics(bundle);
   const matches = bundle.claims.filter((claim) =>
     sameCanonicalClaimIdentity(claim.ref, claimSubject)
   );
@@ -3957,14 +3959,15 @@ async function partyVetCoreCaptured<TKey>(
   if (!presentationValid) {
     throw new DacsError("party Vet IdentityBundle presentation is not authenticated");
   }
+  const semanticBundle = authenticatedIdentityBundleSemantics(request.identityBundle);
 
   let presentedClaimControlled: boolean | undefined;
   if (request.requirement.primaryClaimSelector !== undefined) {
     const presentedIdentity = parseCanonicalClaimReference(
-      request.identityBundle.presentedBy,
+      semanticBundle.presentedBy,
     );
-    const presentedClaims = request.identityBundle.claims.filter((claim) =>
-      sameCanonicalClaimIdentity(claim.ref, request.identityBundle.presentedBy)
+    const presentedClaims = semanticBundle.claims.filter((claim) =>
+      sameCanonicalClaimIdentity(claim.ref, semanticBundle.presentedBy)
     );
     presentedClaimControlled = false;
     if (
@@ -3982,7 +3985,9 @@ async function partyVetCoreCaptured<TKey>(
               "party Vet selector-control bundle",
             ),
             claim: snapshot(
-              presentedClaims[0]!,
+              request.identityBundle.claims.find((claim) => claim.ref === request.identityBundle.presentedBy) ??
+                request.identityBundle.claims.find((claim) =>
+                  authenticatedDomainClaimReference(claim.ref) === presentedClaims[0]!.ref)!,
               "party Vet selector-control claim",
             ),
           }))

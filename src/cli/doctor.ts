@@ -178,7 +178,7 @@ export function rpcSensitiveNeedles(rpc?: string): string[] {
       url.search.startsWith("?") ? url.search.slice(1) : url.search,
       ...searchParts,
       url.hash.startsWith("#") ? url.hash.slice(1) : url.hash,
-    ].flatMap(decoded).filter((part) => part.length > 0);
+    ].flatMap(decoded).flatMap((part) => [part, ...part.split("/")]).filter((part) => part.length > 0);
   } catch {
     return [rpc];
   }
@@ -207,7 +207,16 @@ async function readOnlyNodeCall(
     method: "nodeCall",
     params: [{ type: "nodeCall", message, sender: null, receiver: null, timestamp: null, data: {}, extra: "" }],
   }, { headers: { "Content-Type": "application/json" }, signal });
-  return typeof data === "object" && data !== null ? (data as { response?: unknown }).response : undefined;
+  // Preserve the pinned node's explicit loading failure for its dedicated
+  // diagnostic. This sentinel can only fail reachability, never pass it.
+  if (message === "getLastBlockNumber" && typeof data === "object" && data !== null &&
+      (data as { result?: unknown }).result === 503 &&
+      (data as { response?: unknown }).response === "STATE_NOT_READY") return "STATE_NOT_READY";
+  if (typeof data !== "object" || data === null ||
+      (data as { result?: unknown }).result !== 200) {
+    throw new Error("Demos RPC returned an unsuccessful result");
+  }
+  return (data as { response?: unknown }).response;
 }
 
 async function defaultAdapterFactory(config: {
@@ -291,7 +300,7 @@ function timedOutDetail(call: string): string {
   return `${call} did not answer within ${RPC_CALL_TIMEOUT_MS} ms`;
 }
 
-async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null): Promise<DoctorCheck> {
+async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null, secrets: Array<string | undefined>): Promise<DoctorCheck> {
   const remediation = "Compare the node's Demos build with the verified revision before relying on this doctor's RPC verdict.";
   const getNetworkInfo = adapter.getNetworkInfo?.bind(adapter);
   if (!getNetworkInfo) {
@@ -302,7 +311,15 @@ async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null):
   try {
     const answer = await withDeadline((signal) => getNetworkInfo(signal));
     if (answer === RPC_CALL_TIMED_OUT) timedOut = true;
-    else reported = reportedNodeBuild(answer);
+    else {
+      reported = reportedNodeBuild(answer);
+      if (reported) {
+        for (const field of ["name", "version", "commit"] as const) {
+          const value = reported[field];
+          if (value !== null && sanitizeText(value, secrets) !== value) reported[field] = null;
+        }
+      }
+    }
   } catch {
     // Untrusted transport failures are reported as an unknown build.
   }
@@ -511,7 +528,7 @@ export async function runDoctorForCli(
               data: { ...data, lastBlockNumber: height },
             }),
           );
-          checks.push(await nodeRevisionCheck(made, VERIFIED_DEMOS_NODE_REVISION));
+          checks.push(await nodeRevisionCheck(made, VERIFIED_DEMOS_NODE_REVISION, needles));
         } else if (height === STATE_NOT_READY) {
           checks.push(
             check(RPC_REACHABLE, "fail", "Demos node is not ready", {

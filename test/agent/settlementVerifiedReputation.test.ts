@@ -405,6 +405,29 @@ describe("settlement-verified semantic conformance", () => {
 });
 
 describe("deriveSettlementVerifiedReputation", () => {
+  test("matches a historical domain party only after authenticating the original bundle", async () => {
+    const evidence = paymentEvidence("historical-domain");
+    const agreementValue = agreement("historical-domain");
+    const value = bundle("historical-domain", "completed", [evidenceRef(evidence)], agreementValue);
+    value.parties[0]!.primaryClaim = "web2:domain:Agent.Example";
+    const source = input(value);
+    const original = JSON.stringify(source);
+    const authority = deps([evidence], [agreementValue]);
+    const authenticate = vi.fn(async (candidate: SettlementVerifiedBundleInput) => {
+      expect(candidate).toEqual(source);
+      return { disposition: "verified" as const, partyRole: "buyer" as const, fullySigned: true };
+    });
+    const result = await deriveSettlementVerifiedReputation("domain:agent.example", [source], WINDOW,
+      { ...authority, authenticateBundle: authenticate });
+    expect(authenticate).toHaveBeenCalledOnce();
+    expect(result.bundleCount).toBe(1);
+    expect(result.partyPrimaryClaim).toBe("domain:agent.example");
+    expect(JSON.stringify(source)).toBe(original);
+    const rejected = await deriveSettlementVerifiedReputation("domain:agent.example", [source], WINDOW,
+      { ...authority, authenticateBundle: async () => ({ disposition: "rejected", reason: "invalid signature" }) });
+    expect(rejected.bundleCount).toBe(0);
+  });
+
   test("deduplicates ratings by the rater's parameter-free CF-3 identity", async () => {
     const evidence = paymentEvidence("rating-alias");
     const agreementValue = agreement("rating-alias");

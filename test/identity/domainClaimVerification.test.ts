@@ -14,6 +14,11 @@ import {
   type DomainClaimArtifactLike,
 } from "../../src/identity/domainClaimVerification.js";
 
+import { canonicalize } from "../../src/canonical/index.js";
+import { authenticatedIdentityBundleSemantics } from "../../src/identity/domainClaimVerification.js";
+import { aggregatePresenceAwareCompositeVerification } from "../../src/agent/compositeVerification.js";
+import { deriveIdentityTier } from "../../src/identity/tier.js";
+import type { IdentityBundle } from "../../src/artifacts/types.js";
 import { serializeDomainClaimArtifact, type DomainClaimProducerInput } from "../../src/identity/index.js";
 
 interface VectorArtifact {
@@ -61,6 +66,8 @@ interface DomainVector {
     semanticClaims?: string[];
     metadataEqualsAuthority?: boolean;
     originalBytesPreserved?: boolean;
+    tierGain?: boolean;
+    oneOfGain?: boolean;
   };
 }
 
@@ -206,6 +213,22 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
       if (vector.want?.semanticClaims) {
         expect(verdict.semanticClaims).toEqual(vector.want.semanticClaims);
       }
+      if (vector.want?.tierGain !== undefined || vector.want?.oneOfGain !== undefined) {
+        // Authenticate original corpus bytes/signature before using the semantic view.
+        expect(authenticate(vector.artifact)(vector.artifact.unsigned).status).toBe("authenticated");
+        const original = vector.artifact.unsigned as unknown as IdentityBundle;
+        const semantic = authenticatedIdentityBundleSemantics(original);
+        const single = { ...semantic, claims: semantic.claims.slice(0, 1) };
+        expect(deriveIdentityTier(semantic, () => false) !== deriveIdentityTier(single, () => false))
+          .toBe(vector.want.tierGain);
+        const requirement = { requirementVersion: "1" as const, required: [],
+          oneOf: [[{ scheme: "domain", verificationRequired: false }]] };
+        const decide = (bundle: IdentityBundle) => aggregatePresenceAwareCompositeVerification({
+          bundle, requirement, evaluatedAt: vector.evaluatedAt, verified: [],
+        });
+        expect(decide(original)).toBe("pass");
+        expect(decide(original) !== decide(single)).toBe(vector.want.oneOfGain);
+      }
       if (vector.want?.metadataEqualsAuthority) {
         expect(verdict.data?.demosGcrDomain).toEqual(vector.authoritativeGcr);
       }
@@ -248,6 +271,62 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
     }
   });
 
+  test("preserves additive canonical JSON metadata at every extensible level", () => {
+    const input = structuredClone(fixture.vectors.find((v) => v.name === "canonical-production")!.producerInput!);
+    input.claims[0]!.metadata.extra = { enabled: true, note: "retained" };
+    const native = input.claims[0]!.metadata.demosGcrDomain as Record<string, unknown>;
+    native.extraNative = [1, "two"];
+    (native.sourceTransaction as Record<string, unknown>).extraSource = "retained";
+    const emitted = serializeDomainClaimArtifact(input);
+    expect(JSON.parse(emitted).claims[0].metadata).toEqual(input.claims[0]!.metadata);
+    expect(emitted).toBe(canonicalize(JSON.parse(emitted)));
+  });
+
+  test("rejects only a wrong reported query-time fetchedAt after a passing control", async () => {
+    const vector = fixture.vectors.find((v) => v.name === "canonical-production")!;
+    const metadata = vector.authoritativeGcr as unknown as DemosGcrDomainMetadata;
+    const deps = {
+      authenticateArtifact: authenticate(vector.artifact), requiredMethod: vector.requiredMethod,
+      recipeDefaultMaxAgeSec: vector.recipeDefaultMaxAgeSec, evaluatedAt: vector.evaluatedAt,
+      resolveGcr: () => resolution(vector),
+      reportedResult: { verifiedAt: metadata.recordedAt, fetchedAt: vector.evaluatedAt,
+        validUntil: metadata.recordedAt + vector.recipeDefaultMaxAgeSec * 1000 },
+    };
+    expect((await verifyDemosGcrDomainClaims(vector.artifact.unsigned, deps)).verdict).toBe("pass");
+    deps.reportedResult.fetchedAt += 1;
+    expect(await verifyDemosGcrDomainClaims(vector.artifact.unsigned, deps)).toMatchObject({
+      verdict: "fail", diagnostic: { code: "reported-result-mismatch" },
+    });
+  });
+
+  test.each([
+    ["altered prefix", (p: string) => p.replace("demos:", "other:")],
+    ["altered tag", (p: string) => p.replace(":dw2p:", ":other:")],
+    ["uppercase signature", (p: string) => p.slice(0, 19) + p.slice(19).toUpperCase()],
+    ["surrounding whitespace", (p: string) => ` ${p}\n`],
+  ] as const)("rejects %s even with authenticated profile provenance and never refetches", async (_label, change) => {
+    const vector = fixture.vectors.find((v) => v.name === "canonical-production")!;
+    const source = resolution(vector);
+    if (source.status !== "authenticated" || !source.validationProfile) throw new Error("fixture");
+    const fetch = vi.fn(() => { throw new Error("historical proof fetch forbidden"); });
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const deps = { authenticateArtifact: authenticate(vector.artifact), requiredMethod: vector.requiredMethod,
+        recipeDefaultMaxAgeSec: vector.recipeDefaultMaxAgeSec, evaluatedAt: vector.evaluatedAt,
+        resolveGcr: () => source };
+      expect((await verifyDemosGcrDomainClaims(vector.artifact.unsigned, deps)).verdict).toBe("pass");
+      source.validationProfile.proofPayload = change(source.validationProfile.proofPayload);
+      expect(await verifyDemosGcrDomainClaims(vector.artifact.unsigned, deps)).toMatchObject({
+        verdict: "fail", diagnostic: { code: "registration-proof-invalid" },
+      });
+      delete source.validationProfile;
+      expect(await verifyDemosGcrDomainClaims(vector.artifact.unsigned, deps)).toMatchObject({
+        verdict: "indeterminate", diagnostic: { code: "validation-profile-unavailable" },
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   test.each([undefined, "canonical-domain-v0.6", "historical-domain-alias"] as const)(
     "authenticated bundle bytes preserve legacy reads with profile %s",
     async (profile) => {
@@ -286,7 +365,6 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
 
   test.each([
     ["missing source transaction", (m: Record<string, unknown>) => { delete m["sourceTransaction"]; }],
-    ["extra metadata", (m: Record<string, unknown>) => { m["proofBody"] = "copied"; }],
     ["wrong context", (m: Record<string, unknown>) => { m["context"] = "web2.other"; }],
     ["wrong hostname", (m: Record<string, unknown>) => { m["hostname"] = "other.example"; }],
     ["uppercase account", (m: Record<string, unknown>) => { m["account"] = (m["account"] as string).toUpperCase(); }],

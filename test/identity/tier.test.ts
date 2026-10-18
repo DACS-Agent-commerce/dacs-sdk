@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, test } from "vitest";
+import { describe, expect, it, test, vi } from "vitest";
 
 import {
   deriveIdentityTier,
@@ -28,6 +28,16 @@ const verified = (ref: string): BundleClaimLike => ({
 const selfAsserted = (ref: string): BundleClaimLike => ({ ref });
 
 describe("deriveIdentityTier (§6.3.2.1, IT-1..IT-3)", () => {
+  test("uses one authenticated semantic domain claim for tier resolution", () => {
+    const isVerified = vi.fn((claim: BundleClaimLike) => claim.ref === "domain:agent.example");
+    const claims = [verified("web2:domain:Agent.Example"), verified("domain:agent.example")];
+    expect(deriveIdentityTier({ bundleVersion: "1", claims }, isVerified)).toBe("verified");
+    expect(isVerified).toHaveBeenCalledOnce();
+    expect(isVerified.mock.calls[0]![0].ref).toBe("domain:agent.example");
+    expect(claims[0]!.ref).toBe("web2:domain:Agent.Example");
+    expect(deriveIdentityTier({ bundleVersion: "2", claims: [claims[0]!] }, isVerified)).toBe("self-declared");
+  });
+
   test("claimScheme reads the scheme before the first colon, lower-cased", () => {
     expect(claimScheme("lei:529900T8BM49AURSDO55")).toBe("lei");
     expect(claimScheme("DOMAIN:example.com")).toBe("domain");

@@ -1649,6 +1649,140 @@ describe("partyVetCore durable party-level producer", () => {
     expect(harness.effects).toEqual({ methods: 0, signs: 1, anchors: 1 });
   });
 
+  test.each([false, true])("authenticates historical domain aliases through presence, oneOf and primary selection (duplicate=%s)", async (duplicate) => {
+    const harness = state();
+    const subject = "web2:domain:Agent.Example";
+    const jobId = `job-party-historical-domain-${duplicate}`;
+    const requirement: CompositeBundleRequirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "domain", verificationRequired: false }],
+      oneOf: [[{ scheme: "domain", verificationRequired: false }]],
+      primaryClaimSelector: "domain",
+    };
+    const refs = duplicate ? ["domain:agent.example", subject] : [subject];
+    const identity = await bundle(subject, refs, refs.map((ref) => ({ ref, metadata: { source: ref } })));
+    const originalBytes = canonicalize(identity);
+    const pinScopeHash = partyVetPinScopeHash({
+      jobId,
+      evaluatedParty: subject,
+      identityBundle: identity,
+      requirement,
+      verifier: { algorithm: "ed25519", signer: VERIFIER },
+      attempts: [],
+    });
+    const { sessionSnapshot } = await createPartyVetPinFixture({
+      jobId,
+      evaluatedParty: subject,
+      sessionStartHash: pinScopeHash,
+      partyPlanHash: pinScopeHash,
+      bundleRequirement: requirement,
+      recipes: [await recipe("domain")],
+      attempts: [],
+      stewardSigner: STEWARD,
+      stewardPublicKey: STEWARD_KEY,
+      verify: (bytes, signature, publicKey) =>
+        ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
+      now: NOW,
+    });
+    await activateEffectLease(harness, jobId);
+    const production = await partyVetCore(
+      {
+        jobId,
+        evaluatedParty: subject,
+        identityBundle: identity,
+        requirement,
+        attempts: [],
+        sessionRecipeRegistrySnapshot: sessionSnapshot,
+      },
+      deps(harness, { presentedClaimControlled: true }),
+    );
+    expect(production.record).toMatchObject({
+      overallDecision: "pass",
+      freshness: [],
+      dealSpecific: [],
+    });
+    const strict = await verifyCompositeVerificationRecord(
+      production.record,
+      {
+        jobId,
+        evaluatedParty: subject,
+        bundleHash: identityBundleHash(identity),
+        requirement,
+        verifier: VERIFIER,
+        freshness: [],
+        dealSpecific: [],
+        presence: {
+          bundle: identity,
+          sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash,
+        },
+      },
+      {
+        nowMs: () => NOW,
+        resolve: async () => null,
+        resolveRecipe: async () => null,
+        isRecipeSignerAuthorized: () => false,
+        isVerifyResultSignerAuthorized: () => false,
+        resolvePublicKey: ({ signer }) =>
+          signer === VERIFIER ? VERIFIER_KEY : null,
+        verify: ({ signedBytes: bytes, signature, publicKey }) =>
+          ed25519Verify(
+            bytes,
+            Uint8Array.from(Buffer.from(signature.value, "base64url")),
+            publicKeyFromRaw(publicKey),
+          ),
+        verifyAuthorityAttestation: () => "unresolved",
+        isSessionRecipeRegistrySnapshotAuthenticated: (hash) =>
+          hash === sessionSnapshot.snapshotHash,
+        verifyIdentityPresentation: ({ bundle: candidate, bundleHash }) => {
+          expect(canonicalize(candidate)).toBe(originalBytes);
+          if (candidate.presentation.kind !== "siwd") return false;
+          return ed25519Verify(signedBytes("dacs-bundle-presentation:v1:", bundleHash),
+            Buffer.from(candidate.presentation.signature, "hex"), publicKeyFromRaw(PRESENTER_KEY));
+        },
+        isPresentedClaimControlled: ({ bundle: candidate, claim }) => {
+          expect(canonicalize(candidate)).toBe(originalBytes);
+          return claim.ref === subject;
+        },
+      },
+    );
+    expect(strict).toMatchObject({
+      status: "valid",
+      record: { overallDecision: "pass" },
+    });
+    expect(harness.effects).toEqual({ methods: 0, signs: 1, anchors: 1 });
+    expect(canonicalize(identity)).toBe(originalBytes);
+    expect(production.record.bundleHash).toBe(identityBundleHash(identity));
+    const invalid = structuredClone(identity);
+    invalid.claims[0]!.ref = "web2:domain:Other.Example";
+    await expect(partyVetCore({ jobId, evaluatedParty: subject, identityBundle: invalid,
+      requirement, attempts: [], sessionRecipeRegistrySnapshot: sessionSnapshot },
+      deps(harness, { presentedClaimControlled: true }))).rejects.toThrow();
+  });
+
+  test.each([false, true])("verifies a canonical domain requirement carried only as a historical alias (carried=%s)", async (carried) => {
+    const harness = state();
+    const subject = "web2:domain:Agent.Example";
+    const canonical = "domain:agent.example";
+    const jobId = `job-party-verified-domain-${carried}`;
+    const verifiedBy = carried ? await storeCarriedResult(harness, canonical) : undefined;
+    const identity = await bundle(subject, [subject], [{ ref: subject, ...(verifiedBy ? { verifiedBy } : {}) }]);
+    const originalBytes = canonicalize(identity);
+    const requirement: CompositeBundleRequirement = { requirementVersion: "1",
+      required: [{ scheme: "domain", verificationRequired: true, recipeVersion: 1 }],
+      primaryClaimSelector: "domain" };
+    const attempts = await pinnedRequestAttempts(jobId, subject, identity, requirement, [{
+      requirementPath: { kind: "required", index: 0 }, claimSubject: canonical,
+      recipe: await recipe("domain"), classification: carried ? "freshness" : "dealSpecific",
+    }]);
+    await activateEffectLease(harness, jobId);
+    const production = await partyVetCore({ jobId, evaluatedParty: subject,
+      identityBundle: identity, requirement, attempts }, deps(harness, { presentedClaimControlled: true }));
+    expect(production.record.overallDecision).toBe("pass");
+    expect(production.record[carried ? "freshness" : "dealSpecific"]).toHaveLength(1);
+    expect(production.record.bundleHash).toBe(identityBundleHash(identity));
+    expect(canonicalize(identity)).toBe(originalBytes);
+  });
+
   test("composes presence and verified members and the strict consumer reproduces the mixed decision", async () => {
     const harness = state();
     const subject = `key:${Buffer.from(PRESENTER_KEY).toString("hex")}`;
