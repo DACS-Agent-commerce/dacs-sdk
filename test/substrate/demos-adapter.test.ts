@@ -469,7 +469,7 @@ describe("DemosAdapter", () => {
     });
 
     it("authenticates exact UTF-8 data and the pinned stable-header hash profile", async () => {
-      const body = "  café ☕\n";
+      const body = "\uFEFF  café ☕ 𝄞\n";
       const responseHash = sha256Hex(body);
       const responseHeadersHash = sha256Hex("content-type:text/plain\nx-roles:a, b");
       const { outcome } = await dahrFetch({
@@ -485,7 +485,8 @@ describe("DemosAdapter", () => {
     });
 
     it.each([
-      "text/plain", "TEXT/CSV; charset=utf-8", "application/json",
+      "text/plain", "TEXT/CSV; charset=utf-8", 'text/plain; CHARSET="UTF-8"',
+      "text/csv; header=present; charset=utf-8", "application/json",
       "application/problem+json", "application/xml", "application/atom+xml",
     ])("accepts committed textual content type %s", async (contentType) => {
       const headers = { "Content-Type": contentType };
@@ -499,6 +500,51 @@ describe("DemosAdapter", () => {
     });
 
     it.each([
+      ["Latin-1", [0xe9], "text/plain; charset=iso-8859-1"],
+      ["malformed UTF-8 declared as UTF-8", [0xc3, 0x28], "text/plain; charset=utf-8"],
+      ["truncated UTF-8 without a charset", [0xe2, 0x82], "text/plain"],
+      ["overlong UTF-8", [0xc0, 0xaf], "application/json"],
+      ["UTF-8 encoding of a surrogate", [0xed, 0xa0, 0x80], "application/xml"],
+      ["out-of-range UTF-8", [0xf4, 0x90, 0x80, 0x80], "text/plain"],
+    ] as const)("refuses %s even when the included hash matches the node-decoded text", async (_label, bytes, contentType) => {
+      const original = Buffer.from(bytes);
+      // Reproduce pinned Proxy.ts: Buffer.toString() replaces malformed bytes,
+      // then responseHash commits to the UTF-8 re-encoding of that changed text.
+      const body = original.toString("utf8");
+      expect(Buffer.from(body, "utf8").equals(original)).toBe(false);
+      const headers = { "content-type": contentType };
+      const responseHash = sha256Hex(body);
+      const responseHeadersHash = sha256Hex(`content-type:${contentType}`);
+      const { outcome } = await dahrFetch({
+        transaction: (tx) => Object.assign(tx.content.data[1].message.web2Request.result,
+          { headers, responseHash, responseHeadersHash }),
+        response: (r) => Object.assign(r, { data: body, headers, responseHash, responseHeadersHash }),
+      });
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/not byte-preserving/);
+    });
+
+    it.each(["literal \uFFFD", "unpaired high \uD800", "unpaired low \uDC00"])(
+      "refuses ambiguous or non-round-tripping text %j", async (body) => {
+        const responseHash = sha256Hex(body);
+        const { outcome } = await dahrFetch({
+          transaction: (tx) => { tx.content.data[1].message.web2Request.result.responseHash = responseHash; },
+          response: (r) => Object.assign(r, { data: body, responseHash }),
+        });
+        expect(outcome).toBeInstanceOf(Error);
+        expect((outcome as Error).message).toMatch(/not byte-preserving/);
+      },
+    );
+
+    it.each([
+      { "content-type": "text/plain; charset=iso-8859-1" },
+      { "content-type": "application/json; charset=utf-16" },
+      { "content-type": 'text/plain; charset="windows-1252"' },
+      { "content-type": "text/plain; charset=utf-8; charset=iso-8859-1" },
+      { "content-type": "text/plain; charset=iso-8859-1; charset=utf-8" },
+      { "content-type": "text/plain; charset=utf-8; charset=utf-8" },
+      { "content-type": 'text/plain; charset="utf-8' },
+      { "content-type": "text/plain; charset" },
       { "content-type": "application/octet-stream" },
       { "content-type": "image/png" },
       { "content-type": "application/pdf" },

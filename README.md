@@ -812,8 +812,12 @@ hash is never mislabeled as a Storage Program locator, and the raw Stripe body
 (which can include provider secrets) is never published as public DACS content.
 
 DAHR supports textual responses (`text/*`, JSON, XML, and `+json`/`+xml`
-media types); binary or missing content types are rejected. Its response hash
-covers the node-decoded UTF-8 text. At the pinned Demos node `61b8e75`,
+media types) with UTF-8 bytes. Binary or missing content types, explicit
+non-UTF-8 charsets, ambiguous content-type parameters, and non-round-tripping
+text are rejected. The pinned node hashes decoded UTF-8 text, so DAHR also
+rejects every U+FFFD replacement character, including a literal U+FFFD: its
+origin cannot be distinguished from a lossy decode. Byte-exact delivery is
+unavailable for these responses. At the pinned Demos node `61b8e75`,
 broadcasting a DAHR POST repeats the request without its body or authorization.
 Use only idempotent or read-only POST endpoints, and spell the request header
 `Content-Type` with that casing for the node's request handling.

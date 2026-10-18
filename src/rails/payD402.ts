@@ -57,8 +57,8 @@ export interface D402WaitOptions {
 export interface D402ClientLike {
   createPayment(requirement: D402PaymentRequirement): Promise<unknown>;
   settle(payment: unknown): Promise<D402SettlementResult>;
-  /** Read a broadcast payment back by hash (demosdk 4.0.17+); never broadcasts. */
-  waitForSettlement(hash: string, options?: D402WaitOptions): Promise<D402SettlementResult>;
+  /** Optional compatibility member (demosdk 4.0.17+); funded use is disabled. */
+  waitForSettlement?(hash: string, options?: D402WaitOptions): Promise<D402SettlementResult>;
 }
 
 /** Per-session settlement inputs, derived from the negotiated agreement. */
@@ -137,7 +137,7 @@ export interface PayD402RailConfig {
 export interface PayD402Rail {
   readonly address: string;
   settle(params: PayD402SettleParams): Promise<SettleResult>;
-  waitForSettlement(params: PayD402WaitParams): Promise<SettleResult>;
+  waitForSettlement?(params: PayD402WaitParams): Promise<SettleResult>;
 }
 
 export interface PayD402SettleCoreDeps {
@@ -170,7 +170,7 @@ export interface PayD402Paywall {
 export function payD402Settle(
   _rail: PayD402Rail,
   _paywall: PayD402Paywall,
-  _opts: { store: SettlementIdempotencyStore },
+  _opts?: { store: SettlementIdempotencyStore },
 ): (req: SettleRequest) => Promise<SettleResult> {
   return async () => unavailable();
 }
