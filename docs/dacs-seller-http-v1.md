@@ -1,0 +1,509 @@
+# `dacs-seller-http/v1`: the buyer-to-seller wire (design draft)
+
+> **Status: design draft; proposed; composition qualification pending.** Not for
+> merge until the sole wire, SDK package layout and testnet profile decisions
+> are recorded. The wire runs only
+> under testnet profile TP-1 ([testnet-profile-tp1.md](testnet-profile-tp1.md)).
+
+`@kynesyslabs/dacs/wire` defines the HTTPS wire between a buyer and a seller's
+own endpoint: the route table, the signed request and response envelopes, the
+seller session delegation, the discovery document and endpoint proof, their
+exact signing bytes, and validators. It has no I/O: no HTTP server or client,
+no storage, no journal. The seller host (`@kynesyslabs/dacs-seller`) and the
+buyer client (`@kynesyslabs/dacs-client`) import it.
+
+It is the wire the buyer plugins run today, ported from the plugin
+implementation, with two enumerated changes (D6 domains and profile, D7
+exact-bytes admission) and two new parts (discovery and endpoint proof, the
+TP-1 identity gate). Unless a section says otherwise, behaviour is the
+plugin's. The plugin implementation is not public. Where this SDK pins a ported
+behaviour, the table names its own source and tests. The original-behaviour
+capture in `test/wire/fixtures/` was made by running the unmodified plugin
+module, and `test/wire/originalFixture.test.ts` compares this wire against it.
+Anything else said here about the plugin is taken from its implementation and
+not yet independently checked (composition checks qualify it).
+
+| What | Pinned in this SDK by |
+|---|---|
+| Route table, including the context route | `src/wire/routes.ts`; `test/wire/wire.test.ts` |
+| Envelope, signing bytes, header | `src/wire/envelope.ts`, `src/wire/validate.ts`; the original-behaviour capture (`test/wire/originalFixture.test.ts`) |
+| Delegation | `src/wire/delegation.ts`; the original-behaviour capture |
+| Response and client half | `src/wire/response.ts`; the original-behaviour capture |
+| Limits | `DACS_SELLER_HTTP_LIMITS` in `src/wire/routes.ts`; `test/wire/wire.test.ts` |
+| Raw JSON admission | dacs-sdk `3904d70` `src/canonical/rawJson.ts:92-212` (`admitRawJson`) |
+| Discovery and endpoint proof | new: `src/wire/discovery.ts`; the discovery vectors |
+
+## Routes
+
+All signed routes are `POST` with a JSON body and the signed envelope in the
+`x-dacs-seller-peer` header. Paths are matched exactly against the raw request
+target; a query string, trailing slash, other case or encoded alias is not a
+route (`findDacsSellerHttpRoute`).
+
+| Route | Effect | Mounted |
+|---|---|---|
+| `POST /dacs/v1/agreements/proposals` | effect | always |
+| `POST /dacs/v1/agreements/state` | read | always |
+| `POST /dacs/v1/commitments` | effect | always |
+| `POST /dacs/v1/payments` | effect | always |
+| `POST /dacs/v1/bundles/request` | effect | always |
+| `POST /dacs/v1/bundles/countersignature` | effect | always |
+| `POST /dacs/v1/bundles/buyer-copy` | read | always |
+| `POST /dacs/v1/commitments/signature` | effect | seller option commit-on-signature |
+| `POST /dacs/v1/agreements/context` | effect | seller option context route |
+| `GET /.well-known/dacs-seller.json` | read | always; signed document, no envelope |
+
+## Limits (unchanged)
+
+| Limit | Value |
+|---|---|
+| Request body | 64 KiB |
+| Response body | 512 KiB |
+| Signed request or response lifetime (`expiresAt - now`) | at most 60 s; an override (`maxLifetimeMs`) must be an integer from 1 to 60,000 ms or the call fails with `seller_configuration_invalid`, as the plugin's configuration check does |
+| Envelope header | at most 4,096 base64url characters |
+| Seller session delegation | at most 24 h (`expiresAt - notBefore`) |
+| Discovery document | at most 16 KiB, valid at most 10 minutes (new) |
+
+## Signing domains
+
+The signed bytes of every wire message are its domain followed by the RFC 8785
+(JCS, with CF-1 values-NFC) canonical form of its payload:
+
+| Message | Domain | Replaces (plugin) |
+|---|---|---|
+| Request | `dacs-seller-http:v1:request:` | `dacs-chatgpt-plugin:loopback-seller-peer:v1:` |
+| Response | `dacs-seller-http:v1:response:` | the same request domain (the plugin signed both kinds under one domain) |
+| Seller session delegation | `dacs-seller-http:v1:delegation:` | `dacs-chatgpt-plugin:seller-session-delegation:v1:` |
+| Discovery document | `dacs-seller-http:v1:discovery:` | none (new) |
+
+**These are SDK wire domains, not DACS-Standard artifact domains.** The
+Standard's signature domain separators (the registry of CORE §B.7,
+`spec/CORE.md:470-521` at `d45c0a2`; the SDK's `SIGNATURE_DOMAIN_SEPARATORS`) sign DACS artifacts:
+Listings, bundles, Agreements, settlement evidence and the rest. A wire
+signature authenticates one transport message between two parties and is
+never a DACS artifact signature: it does not authorize an identity
+presentation, a storage write, an Agreement or a payment. No wire domain is a
+Standard domain or a prefix of one, and the Standard does not standardise this
+transport yet. Making it normative is a separate proposal to the Standard
+until the Standard adopts it, this document is the SDK's own
+description. There is no compatibility arm for the old plugin domains.
+
+## Request and response envelopes
+
+Header `x-dacs-seller-peer` is the base64url (no padding) encoding of the
+canonical JSON `{payload, signature, delegation?}`. `signature` is the 64-byte
+Ed25519 signature in base64url. `delegation` is present only when the seller
+requires delegated sessions.
+
+Request payload, exact fields:
+
+| Field | Value |
+|---|---|
+| `version` | `"1"` |
+| `kind` | `"request"` |
+| `method` | `"POST"` |
+| `path` | the exact route, `^/dacs/v1/[a-z/-]+$`, at most 160 characters |
+| `bodyHash` | sha256 hex of the exact body bytes sent |
+| `jobId` | canonical job ID (26-character uppercase Crockford ULID) |
+| `buyer`, `seller` | `did:demos:agent:<64 lowercase hex>`, different |
+| `listingPin` | `{listingId (1-256 chars), version (positive integer), contentHash (64 hex)}` |
+| `agreementHash` | 64 hex: the Agreement's hash; for the context route, the hash of the exact context scope |
+| `nonce` | canonical base64url, 22-86 characters |
+| `expiresAt` | Unix ms; the seller requires `now < expiresAt <= now + 60 s` |
+| `profile` | **new (D6):** `{id, revision, base, chainIdentity, pinVersion}`, see below |
+
+A response payload is the request payload with `kind: "response"`, `bodyHash`
+of the exact response body bytes, its own `expiresAt` (at most 60 s), and two more
+fields: `requestHash` (sha256 of the canonical request payload, profile
+included) and `status` (the HTTP status, 200-599). The seller signs every
+answer, refusals included, with its Listing key; the buyer verifies it against
+the seller claim of the verified Listing and requires every request field,
+the profile among them, to be echoed exactly.
+
+Request signers: the buyer key directly, or a session key the buyer's wallet
+delegated (below). The seller additionally binds the request to the HTTP
+exchange: audience, expiry and lifetime, method, path and `bodyHash`, Listing
+pin, and the delegation's scope, Agreement deadline and expiry
+(`checkWireRequest`). `checkWireRequest` takes only the frozen envelope that
+`openWireEnvelope` returned, verified under the same binding; the SDK keeps a
+private record of the envelopes it verified, so a payload, delegation or copy a
+caller assembles is refused (`peer_request_unverified`) and no unverified
+request reaches effect handling. `checkWireRequest` also admits the exact received body
+bytes (D7) before comparing their hash, and returns the admitted body; effect
+handling uses that body, never a separately parsed copy. A request
+authenticated only by an expired delegation is `readbackOnly`: the seller may
+answer it only from effects it has already journaled for that job.
+`readbackOnly` is a plain flag here. The plugin enforced it inside its guarded
+store, so the seller package must route every `readbackOnly` request to
+journaled-only reservation; nothing in `/wire` enforces that. The plugin's
+request body checks and its context-scope check stay with the seller package.
+
+**The seller's order of checks.** Each seller entry point reads its options
+once and checks its TP-1 binding and current connection first. Then, in
+order (`purchaseProfile` is the tuple the seller kept for the purchase,
+below):
+1. `openWireEnvelope(header, "request", options)`: the kept tuple, before the
+   header is read; the header's admission (D7) and members; the received
+   profile (below); the payload; the delegation; the signature. A refused
+   request is never decoded into a value the seller holds.
+2. `checkWireRequest(opened, check)`: the envelope `openWireEnvelope`
+   verified under that binding; the kept tuple again; the lifetime override;
+   audience; expiry and lifetime; the body's admission; method, path and body
+   hash; the Listing pin; a required delegation; the delegation's scope,
+   Agreement deadline and expiry.
+3. `signWireResponse(request, status, text, ctx)`: the kept tuple, before the
+   request or the body is read; the lifetime override; the body's size and
+   admission; the signer's claim; then `signWireEnvelope`, which checks the
+   kept tuple and the profile again before it calls the signer.
+
+The buyer's `verifyWireResponse` takes the exact received response body bytes,
+not a decoded string. It admits them before hashing and returns the admitted
+body with the receipt. Both signers (`signWireRequest`, `signWireResponse`)
+apply the same admission profile to the body they are about to sign
+(`outgoing_body_rejected`), so neither signs a body its peer must refuse.
+This changes seller behaviour: the plugin signed any `JSON.stringify(answer)`.
+The seller port must produce NFC, in-profile JSON before it signs, by
+normalizing its answer or refusing it earlier.
+
+## Seller session delegation
+
+The buyer's wallet signs, under `dacs-seller-http:v1:delegation:`:
+
+`{version: "1", kind: "seller-session-delegation", buyer, sessionPublicKey, seller, listingPin, jobId, notBefore, expiresAt, profile}`
+
+with `notBefore < expiresAt`, a lifetime of at most 24 h, and the new `profile`
+member. The delegation lets that session key authenticate transport toward
+that seller, Listing and job until expiry; it never authorizes an identity
+presentation, a storage write, an Agreement or a payment. Wallet signatures are
+accepted as hex (with one or more `0x` prefixes) or base64url, as the plugin's
+`decodeSignature` does. Producing the bytes to sign
+(`sellerSessionDelegationSigningBytes`) already requires the wallet side's TP-1
+binding, so a wallet with no approved identity is never asked to sign.
+
+## Discovery document and endpoint proof (new)
+
+The seller serves `GET /.well-known/dacs-seller.json`: the canonical JSON
+`{payload, signature}` with the payload signed by the seller's Listing key
+under `dacs-seller-http:v1:discovery:`.
+
+| Field | Value |
+|---|---|
+| `format` | `"dacs-seller-discovery/v1"` |
+| `profile` | the TP-1 profile member |
+| `seller` | the seller claim |
+| `publicEndpoint` | absolute HTTPS URL, no credentials, query or fragment |
+| `transport` | `["dacs-seller-http/v1"]` |
+| `listings` | 1-32 Listing pins served here |
+| `capabilities` | exactly `TP1_CAPABILITIES` (listed below) |
+| `ready` | whether the seller accepts new purchases |
+| `issuedAt`, `expiresAt` | Unix ms, at most 10 minutes apart |
+
+The **endpoint proof** is this document checked against the verified Listing
+(`verifyEndpointProof`): the signer must be the Listing's seller, the
+signature must verify, `publicEndpoint` must equal the Listing's
+`publicEndpoint` byte for byte (never normalized), the Listing's pin must be
+listed, the capabilities must be exactly TP-1's, and the document must be
+current. The buyer runs it before preparing or signing anything for a
+purchase; it stops a Listing from aiming buyer traffic at a server its seller
+does not control.
+
+`capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
+`pay-dem`; `did:demos:agent` claims; delivery through Demos storage at
+`dacs4:deliverable:{jobId}`; `fixed-text` and configured pure, synchronous text
+modules only; the existing bounded report envelope
+(`dacs-chatgpt-plugin/devnet-purchased-report`, report version `"1"`,
+`text/plain; charset=utf-8`, at most 16,384 characters, synchronous:
+`TP1_CAPABILITIES` in `src/wire/profile.ts`; that the plugins' producer accepts
+only this is taken from the plugin implementation); no buyer request input. A
+document stating anything else is refused.
+
+## The TP-1 profile member and identity gate
+
+Every request, response, delegation and discovery document carries, inside
+its signed bytes,
+`profile: {id: "dacs-testnet-tp1", revision: "TP-1", base: "d45c0a29…0f20", chainIdentity, pinVersion}`.
+`id`, `revision` and `base` (the full 40-hex Standard base commit) are the
+profile tuple; `chainIdentity` and `pinVersion` are the approved record's pins. This
+identity binding is approved, on 2026-10-15 at 21:23Z, as proposed: each party
+requires an exact match with the tuple it selected locally and with the tuple
+kept for that purchase, and a missing, unknown or mismatched value is refused
+before any effect, with no fallback to admission on identifier and base alone.
+
+When a payload has exactly the wire's members, a receiver checks its profile
+before every other payload check and before the signature (a payload with
+missing or extra members is refused as malformed first). In order, it refuses: no profile (`tp1_profile_missing`); a profile
+without `revision` (`tp1_profile_revision_missing`), which includes the
+pre-revision `{id, base, chainIdentity, pinVersion}` and a profile of
+identifier and base alone; a revision this SDK does not define
+(`tp1_profile_revision_unknown`), compared exactly against
+`TP1_PROFILE_REVISIONS` (only `"TP-1"`), so `"tp-1"`, `" TP-1"`, `"TP-1 "`, a
+number, `null`, a list, and a later revision's name such as `"TP-1.1"` are all
+unknown; and any other difference from its own bound profile, an extra member
+included (`tp1_profile_mismatch`). A revision given twice in the received bytes
+is refused at admission (`wire_json_rejected`, `DUPLICATE-MEMBER`), so a second
+value cannot hide behind the signed one. Signers apply the same check to the
+payload they are given and sign only their own exact tuple. Endpoints are
+deliberately not in the profile: two parties may use different RPC endpoints
+for the same approved chain.
+
+**The tuple kept for the purchase.** Each party also holds the tuple it kept
+for the purchase, and requires it to be exactly its own bound profile, and so
+exactly the profile of every message for that purchase (`assertPurchaseProfile`;
+`tp1_purchase_profile_mismatch`).
+
+- Buyer: `WireJobContext.profile` (required) is the tuple the buyer selected and
+  kept for the job. `signWireRequest` signs nothing unless it is exactly the
+  binding's profile. `verifyWireResponse` refuses, before it opens the answer,
+  a kept request that names another tuple, and opens the answer under that
+  tuple; the answer must then carry the same tuple as both the request and the
+  buyer's binding. The buyer always has a kept tuple: `null` is refused.
+- Seller: `openWireEnvelope`, `checkWireRequest` and `signWireResponse` each
+  take a required `purchaseProfile`: the tuple the seller kept for the job, or
+  `null` for a job with none kept yet (a new purchase; the seller then keeps
+  the request's). Omitted, or any value but the seller's own bound profile, is
+  refused before the header, the request or the body is read: no request is
+  opened, and the seller's signer is not called. The opened request must then
+  carry that same profile (`assertPeerProfile`), and `checkWireRequest` checks
+  the kept tuple again before the exchange is compared.
+- `signWireEnvelope`, which both signers call and which is exported, takes the
+  same required `purchaseProfile` and checks it before the profile and before
+  its signer. `null` passes only for a response (a seller's answer to a new
+  purchase); a request is never signed without a kept tuple.
+
+With one revision defined, a message naming any other revision is unknown.
+When a later SDK defines another revision, a party that selected or kept
+`TP-1` refuses a message or purchase naming the other as `tp1_profile_mismatch`
+or `tp1_purchase_profile_mismatch`; nothing is admitted on identifier and base
+alone.
+
+`chainIdentity` and `pinVersion` come from the approved immutable testnet
+identity record. The integrator supplies the record; the SDK approves it.
+`bindTp1Profile` checks the record's SHA-256 digest against the SDK's own
+`TP1_APPROVED_IDENTITY_RECORD_DIGESTS` (`src/wire/approval.ts`, a frozen list)
+and takes no approval list from its caller. The list pins the canonical digest
+of `TP1_APPROVED_IDENTITY_RECORD`, approved by the owner on 2026-10-15 at 16:41Z:
+record identifier and pin version `dacs-demos-testnet-identity/2026-10-15`,
+source kind `confirmed-block-one-predecessor`, with its documented fallback.
+The complete record and digest are in the [TP-1 declaration](testnet-profile-tp1.md#profile).
+Actor-local endpoints and transport authorities are excluded. The gate refuses,
+in order: no record;
+a record without its pins; a malformed record; the plugin's simulated-fixture
+chain identity (`DACS_STORAGE_ANCHOR_CHAIN_IDENTITY`, the SHA-256 of a fixture
+string, which `TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES` derives) used as a live
+pin; a refused identity; and any record
+whose digest the SDK has not approved. Refused identities are the SDK's own
+`TP1_REFUSED_CHAIN_IDENTITIES` (empty until a dated approval names any, for example a
+known mainnet identity) plus any the caller adds; a caller can add refusals but
+never remove one. A network label such as `"demos-testnet"` never authorizes
+anything: a mocked mainnet identity labelled testnet is unapproved, with or
+without a caller refusal list, and even when the caller passes its own
+approval list.
+
+`bindTp1Profile` reads each of its options once and takes one owned copy of
+the record and of the local connection (`snapshotCanonicalJsonConfig`,
+`src/canonical/snapshot.ts`) before any check. Every check, the approval
+digest and the bound `chainIdentity` and `pinVersion` come from that copy, so
+a record cannot be approved as one value and bound as another. A Proxy, an
+accessor property or an exotic prototype is refused outright
+(`tp1_identity_record_invalid`, `tp1_local_binding_invalid`), whatever it
+answers; frozen plain data is accepted. String values are compared after CF-1
+normalization, the form the approval digest has always covered. Verifiers copy
+their current connection the same way, and `verifySellerSessionDelegation` and
+`signWireRequest` copy a caller's delegation once, so the payload checked,
+returned, used to bound the request's expiry and embedded in the header is the
+one whose signature verified (`peer_delegation_invalid` otherwise).
+
+The same rule holds at every exported function in `src/wire/` that takes a
+caller-built record, payload, envelope, profile or options object: it takes
+one owned, data-only copy at entry and checks and uses only that copy.
+- **Payloads, requests, delegations and profiles** are copied with
+  `snapshotCanonicalJsonRead`, which accepts frozen plain data and refuses a
+  Proxy, an accessor, an exotic prototype or an `undefined` member. So the
+  profile a signer checks is the profile in the bytes it signs and in the
+  header, document or delegation it returns. Each refuses with its own code:
+  `peer_envelope_invalid` (`signWireEnvelope`, `wireEnvelopeSigningBytes`,
+  `wireRequestHash`, and the request given to `signWireResponse` or
+  `verifyWireResponse`), `peer_delegation_invalid` (both delegation signers),
+  `discovery_invalid` (`signDiscoveryDocument`, `discoverySigningBytes`) and
+  `tp1_profile_mismatch` (`assertPeerProfile`). The predicates
+  `isTp1WireProfile` and `isWirePayload` answer `false` for such a value.
+- **Options objects** (the signing context, `openWireEnvelope`'s options,
+  `checkWireRequest`'s check, a delegation scope, `signWireRequest`'s input,
+  the received response, `verifyEndpointProof`'s options and
+  `bindTp1Profile`'s options) are read once, field by field, through their own
+  data properties, so no getter or Proxy trap runs. A Proxy, an accessor or a
+  prototype other than `Object.prototype` or `null` is refused
+  (`wire_input_invalid`). The records inside them (a Listing pin, a job, a
+  Listing, the retained artifacts, a refusal list) are copied as above, and
+  body bytes are copied once through the typed array's own slots. The body
+  that is admitted is then the body that is hashed.
+- **What is not copied:** a binding and an opened envelope are proved by
+  membership in a set the SDK holds, and are frozen. A signer is a callback:
+  its `claim` is read once and `sign` called once.
+
+No shipped module takes another approval list: there is no test entry point
+in `src/` or `dist/`. Tests need bindings for synthetic records, so they
+replace `src/wire/approval.ts` with `test/wire/testApproval.ts` through
+`vi.mock`, and call the same `bindTp1Profile`. `test/wire/wire.test.ts` pins
+that only `profile.ts` imports the approval module in `src/`, `packages/` and
+`scripts/`. `test/wire/builtPackage.test.ts` builds the package, installs it
+for a consumer in a separate Node process, imports every compiled wire module
+by its resolved file path, and checks that none offers an approval, that the
+consumer's own attempts give zero signatures, that every reachable function's
+result is refused as a binding, and that every verification entry point
+refuses a forged binding. A copy of that build whose `approval.js` alone names
+the synthetic vector record shows the compiled verifiers also refuse a changed
+connection and an unverified envelope.
+
+Every signing function (`signWireRequest`, `signWireResponse`,
+`signWireEnvelope`, `signSellerSessionDelegation`,
+`sellerSessionDelegationSigningBytes`, `signDiscoveryDocument`) first
+requires a binding made by `bindTp1Profile` and
+the signer's current local connection (`endpoint`, `transportAuthority`,
+`connectionId`), which must equal the one the binding was made with. Changing
+an actor's own endpoint, authority or connection invalidates its binding
+(`tp1_local_binding_changed`) before its signer is called (the local connection fence);
+the peer's endpoint is never compared. The three that sign a request or
+response then require the tuple kept for the purchase, as above.
+
+Every verification function (`openWireEnvelope`, `checkWireRequest`,
+`verifySellerSessionDelegation`, `verifyWireResponse`, `verifyEndpointProof`)
+requires the same: a binding made by `bindTp1Profile` and the verifier's
+current connection (`local`), checked before anything is read.
+`openWireEnvelope` then checks the tuple kept for the purchase before it reads
+the header, and `checkWireRequest` checks it again before it compares the
+exchange. A binding is
+proved only by membership in a set private to `profile.ts` that
+`bindTp1Profile` fills; an object carrying the same profile or fields, a copy,
+a prototype child or a proxy of a binding is not a member
+(`tp1_binding_required`). `assertPeerProfile` also refuses a non-binding; it
+takes no connection. The set and list lookups are taken from their prototypes
+when the module loads, so a later patch of `Array`, `WeakSet` or `WeakMap`
+prototypes does not open the gate. With the owned copies above, this holds
+against callers, including a record, connection, payload, request, delegation
+or options object whose answers change between reads, at binding, signing and
+verifying alike, and against code that changes the runtime after the SDK
+loaded; it does not hold against code
+that replaces SDK modules through the loader or patches the runtime before the
+SDK loads, which could equally call a signer directly.
+
+## Exact-bytes admission (D7)
+
+Every received signed or hashed wire input is admitted from its exact bytes
+with `admitRawJson` (CF-5) before anything parses or hashes it, inside the
+function that accepts it: the envelope header (`openWireEnvelope`), the request
+body (`checkWireRequest`, through `admitWireRequestBody`), the response body
+(`verifyWireResponse`, through `admitWireResponseBody`) and the discovery
+document (`verifyEndpointProof`). Producers apply the same profile to the
+bodies they sign. Admission refuses malformed UTF-8,
+byte-order marks, duplicate member names, numbers outside the DACS magnitude,
+non-JSON constants and nesting over 128. The wire adds one rule: every string
+**value** must already be NFC (`WIRE-NON-NFC-STRING`), because CF-1 normalizes
+values when canonicalizing and two different received values could otherwise
+carry one signature. Member names are not normalized, as CF-1 requires.
+Admission does not require JCS whitespace or member order. The plugin parsed
+these inputs with `JSON.parse`: it accepted duplicate members and non-NFC
+values, which this wire refuses.
+
+## Refusal codes
+
+Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
+`bad_json`, `bad_request`). New codes:
+
+| Code | Meaning |
+|---|---|
+| `wire_json_rejected` (detail: admission code) | envelope header failed admission |
+| `bad_json` (detail: admission code) | request body failed admission |
+| `response_json_rejected` (detail: admission code) | response body failed admission |
+| `outgoing_body_rejected` (detail: admission code) | a signer was given a body its peer would refuse |
+| `seller_configuration_invalid` | a lifetime override outside 1-60,000 ms |
+| `tp1_profile_missing`, `tp1_profile_mismatch` | profile absent, or not the receiver's own |
+| `tp1_profile_revision_missing`, `tp1_profile_revision_unknown` | profile without a revision, or naming a revision this SDK does not define (exact comparison) |
+| `tp1_purchase_profile_mismatch` | the tuple kept for the purchase is absent, `null` where only a seller's new purchase allows it, or not the actor's own bound profile |
+| `tp1_identity_record_missing`, `tp1_identity_pin_missing`, `tp1_identity_record_invalid`, `tp1_identity_fixture`, `tp1_identity_refused`, `tp1_identity_unapproved` | identity gate |
+| `tp1_binding_required`, `tp1_local_binding_changed`, `tp1_local_binding_invalid` | signing or verifying without a binding from `bindTp1Profile`, or on a changed connection |
+| `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
+| `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype) |
+| `discovery_*` | discovery document and endpoint proof |
+
+## Vectors, fixtures and checks
+
+- `vectors/dacs-seller-http-v1.json` (167 vectors, from
+  `scripts/wire/generate-wire-vectors.mjs`): valid and invalid envelopes,
+  expired and wrong-scope delegations, wrong domain, wrong and missing profile,
+  the profile tuple (a correctly signed message, request, response, delegation
+  or discovery document, naming TP-1's identifier and base with a missing,
+  unknown or later revision; identifier and base alone; twelve case,
+  whitespace and type variants of `"TP-1"`; an extra member; a duplicated
+  revision; the tuple kept for the purchase omitted, pre-revision or naming
+  another revision or chain, at the seller, the buyer and the buyer's signer;
+  the seller's kept tuple differing at its opening only or at its check only,
+  and omitted or naming another revision at its signer and at the generic
+  envelope signer, where `null` signs an answer to a new purchase but no
+  request; and the exact tuple, kept and for a new purchase),
+  mismatched endpoint proof, response binding (principal, identity, request
+  hash, status, body, expiry, lifetime), the delegated request's Agreement
+  checks, an overlong lifetime override, the identity gate (the SDK's own
+  approval list, a caller's own list, and the tests' replacement list), and
+  CF-5 raw-input negatives named explicitly for the header, the request body,
+  the response body and the discovery document (duplicate keys, malformed
+  UTF-8, non-NFC strings, invalid numeric tokens). `signing/*` vectors show
+  both signers refuse duplicate keys, non-NFC strings and invalid numeric
+  tokens with zero signatures; malformed UTF-8 has no signing case, because
+  both signers take the body as a string. At every verification entry point,
+  a forged binding (a plain object carrying only the vector's profile) and a
+  changed connection are refused, and `checkWireRequest` refuses a decoded,
+  copied or differently bound envelope. `view` vectors pass the approved
+  record, the actor's connection, a delegation's payload, or a signer's
+  payload or request, as a Proxy or with an accessor whose answer changes
+  after n reads. The replay requires the same refusal, with zero signatures,
+  for every n from 0 to 16. In `signing/request-delegation-edited-while-signing`
+  a session signer edits the caller's delegation while it signs, and the header
+  must still embed the verified delegation. `test/wire/networkIdentity.test.ts`
+  does the same at every exported entry point that takes a caller-built input,
+  with a Proxy and a getter.
+  Each negative names the check that refuses it, and
+  `test/wire/vectors.test.ts` checks that each received revision vector is
+  correctly signed by its party, so only the profile gate can refuse it.
+  `scripts/wire/mutate-wire-checks.mjs` disables each check in a scratch copy
+  and shows its vectors then fail (85 mutants; the ten for the revision and
+  the kept tuple, and two connection mutants whose pattern the kept-tuple
+  check changed, have not been run in their current form).
+- The original-behaviour capture in `test/wire/fixtures/`: the plugin
+  implementation has no static wire fixture (its wire tests generate wallets
+  per run), so this file is a **capture** of the unmodified original module's
+  behaviour,
+  made by `scripts/wire/capture-plugin-wire-fixture.mjs`, with provenance (git
+  blob ids of the three source files, the vendored SDK tarball's SHA-256). It
+  has immutable captured messages; a test pins the whole file's SHA-256. The SDK is compared against it.
+  Neither fixture records which `dacs-sdk` build the capture ran against: it
+  was the pre-revision wire code, committed as `f96b5d5` (`src/wire` is unchanged
+  through `3037e0c` except one comment). The capture script calls
+  `bindTp1Profile` with its own approval list, which the current API refuses, so
+  it no longer runs against the current SDK. Its descriptive text was redacted
+  for publication and the fixture metadata re-pinned; the original capture's
+  generator hash is retained as `captureSha256`. A recapture needs a new script version and a new fixture
+  name.
+- The TP-1 adaptation next to it in `test/wire/fixtures/`: a separately
+  identified adaptation of that capture with the enumerated D6 changes
+  (D6-1..D6-4). **It is not verbatim.** Its profile has no `revision`, so the
+  SDK now refuses its messages (`tp1_profile_revision_missing`) under their
+  valid signatures; its messages stay unchanged as that pre-revision case.
+- The TP-1 revision adaptation next to them in `test/wire/fixtures/`:
+  derived from the capture and that adaptation by
+  `scripts/wire/adapt-tp1-revision-fixture.mjs`, with D6-5 (the `revision`
+  member) added. The first adaptation's keys were discarded, so four new
+  run-time keys replace them one for one (K-1, recorded in the file) and every
+  message is re-signed by the substitute of the key that signed it. It records
+  no original-module verdicts: the original module was not run on it. **It is
+  not verbatim.** `test/wire/originalFixture.test.ts` compares the SDK against
+  the capture through it, with K-1 undone, and pins all three files and the
+  adapter script by SHA-256.
+- Publication metadata is re-pinned with
+  `node scripts/wire/repin-publication-provenance.mjs`. On 2026-10-18 this
+  removed internal labels from descriptive provenance and regenerated the
+  revision adaptation with fresh test keys. Captured messages, source citations,
+  case IDs and expected outcomes were retained; each fixture records the redaction.
+- Keys in all of these were generated at run time and discarded; the files hold
+  public keys and signatures only. Every identity record in them is synthetic
+  and labelled so; none is the approved record.

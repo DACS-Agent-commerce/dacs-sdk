@@ -2,7 +2,7 @@
 
 TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents — the reusable runtime that takes an agent through the five-stage lifecycle: **Identify → Vet → Negotiate → Settle → Verify**.
 
-> **Status: pre-alpha / in development.** This repo is being extracted from the `agent-commerce-demo` reference implementation into a reusable library. See **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** for the v0.1 MVP build plan.
+> **Status: pre-alpha / in development.** This repo is being extracted from the `agent-commerce-demo` reference implementation into a reusable library. See **[IMPLEMENTATION.md](https://github.com/DACS-Agent-commerce/dacs-sdk/blob/main/IMPLEMENTATION.md)** for the v0.1 MVP build plan.
 
 > **Package availability:** the SDK packages are not yet published to npm. The
 > package commands in this repository build and verify release candidates; use a
@@ -15,6 +15,9 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 - **Optionally integrates with** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
 - **Tested against** the canonical conformance vectors in [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard) — the normative source of truth.
 - **Presence oracle update:** see [adoption scope and remaining runtime boundary](./docs/presence-conformance-adoption.md).
+- **Testnet release:** see [About the DACS testnet release](./docs/about-the-testnet-release.md) for what it is in plain
+  terms, and the [TP-1 declaration](./docs/testnet-profile-tp1.md) for the ways it is known to fall short of the
+  Standard so far (composition checks qualify and complete that list).
 
 ## Layering
 
@@ -101,7 +104,7 @@ GCR inclusion alone is not either proof. The returned runtime-branded record
 can be passed to `projectCciSupplementarySignals()` with explicit Nomis, Human
 Passport, and Ethos freshness ceilings; stale, expired, future-dated, and
 non-passing values are reported as omissions. The resulting signals are
-advisory DACS-2 `supplementary` entries and never affect `overallDecision`.
+informational DACS-2 `supplementary` entries and never affect `overallDecision`.
 `AgentConfig.demosCci` exposes the same captured capabilities through
 `agent.resolveAuthenticatedIdentity()`.
 
@@ -118,7 +121,7 @@ The normal durable path is `agent.partyVetWithNativeCciTlsn()`. It obtains the
 evaluation instant from the trusted Party Vet clock, independently matches the
 active-session nonce, journals qualification for deterministic restart/replay,
 and retains compact exact provenance in an SDK-reserved signal inside the
-signed CVR. The signal remains advisory under DACS-2, while failed native
+signed CVR. The signal remains informational under DACS-2, while failed native
 qualification is a mandatory precondition that prevents all Vet effects.
 
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
@@ -513,8 +516,8 @@ never clamped. Rate-phase orchestration and terminal-bundle handoff remain
 authority-separated: the planner authenticates completed settlement, each actor
 publishes only its own direction, and the handoff re-authenticates every remote
 publication before exposing terminal fields. Explicit decline and absence are
-non-fatal. A Listing rate step with required:true is reported through
-requiredAdvisoryMissingRoles but, as DACS-5 ST-5 requires, never blocks terminal
+non-fatal. A missing role from a Listing rate step with required:true is reported
+as a diagnostic but, as DACS-5 ST-5 requires, never blocks terminal
 bundle production or demotes completed commerce. The final handoff is stored in
 the existing generation-fenced session WAL, so restart recovery returns the
 same phase entry and refs and rejects any attempt to rebind them. An application
@@ -556,8 +559,14 @@ state remains the finality authority; an `included`, `confirmed`, or `finalized`
 transaction-body label is accepted only when that status and confirmed-block
 membership agree. RPC time and decoded JSON size are bounded (15 seconds and
 64 MiB by default, both configurable), including the potentially larger
-confirmed-block response. The native-send payload disambiguates the denomination
-fork:
+confirmed-block response.
+
+For TP-1, this description does not establish rejection of an `included`
+transfer whose execution failed: [L2 in the TP-1 declaration](docs/testnet-profile-tp1.md#live-use-rules-tp-1-does-not-meet)
+currently covers the buyer rail only, and a composition review must separately
+qualify the seller observer before delivery.
+
+The native-send payload disambiguates the denomination fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
 are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
@@ -582,8 +591,8 @@ Immediately before settlement, the test atomically writes and syncs a permanent
 intent marker and never removes it. An ambiguous or merely unobserved settlement
 therefore blocks that run id from being submitted again even if its wallet or
 amount is changed. The guarantee is scoped to the same marker directory on the
-same host: changing hosts or directories, deleting the ledger, or using
-ephemeral storage bypasses it. Preserve and back up the directory with the
+same host. It does not cover changing hosts or directories, deleting the ledger,
+or using ephemeral storage. Preserve and back up the directory with the
 funded-run records; do not use a network filesystem unless its exclusive-create
 and fsync guarantees have been independently established. Use fresh dedicated
 wallets and a new run id only for a separately reconciled and approved attempt.
@@ -726,7 +735,7 @@ it returns no Listings or diagnostics, and the caller retries its unchanged
 `retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
 `historyPageSize`, when supplied, must be an integer from 1 through 100.
 
-See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
+See **[examples/hello-world.ts](https://github.com/DACS-Agent-commerce/dacs-sdk/blob/main/examples/hello-world.ts)** for the full lifecycle end to end.
 
 ### AP2 reference integration (optional)
 
@@ -1037,7 +1046,7 @@ to npm.
 
 Maintainer-controlled prerelease publication and first-release credential
 bootstrap are documented in
-[the npm prerelease release runbook](./docs/npm-prerelease-release.md).
+[the npm prerelease release runbook](https://github.com/DACS-Agent-commerce/dacs-sdk/blob/main/docs/npm-prerelease-release.md).
 
 ## License
 

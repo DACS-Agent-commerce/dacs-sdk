@@ -70,6 +70,10 @@
     "./substrate": {
       "types": "./dist/substrate/index.d.ts",
       "import": "./dist/substrate/index.js"
+    },
+    "./wire": {
+      "types": "./dist/wire/index.d.ts",
+      "import": "./dist/wire/index.js"
     }
   },
   "bin": {
@@ -94,6 +98,11 @@
     "docs/x402-seller-paywall.md",
     "docs/wallet-spend-authority.md",
     "docs/raw-json-admission.md",
+    "docs/testnet-profile-tp1.md",
+    "docs/about-the-testnet-release.md",
+    "conformance/tp1-register.json",
+    "docs/dacs-seller-http-v1.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {
@@ -107,7 +116,7 @@
     "host:test": "npm test --workspace @kynesyslabs/dacs-node",
     "host:test:postgres": "npm run test:postgres --workspace @kynesyslabs/dacs-node",
     "generator:test": "npm test --workspace create-dacs-agent",
-    "audit:test": "vitest run test/scripts/check-npm-advisories.test.ts",
+    "audit:test": "vitest run test/scripts/check-npm-*.test.ts",
     "test:live": "vitest run test/integration/live.e2e.test.ts",
     "test:live:pay-dem": "vitest run test/integration/pay-dem-two-agent.live.test.ts",
     "test:watch": "vitest",

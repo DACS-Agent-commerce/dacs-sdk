@@ -1,0 +1,294 @@
+// Signed request and response envelopes of dacs-seller-http/v1.
+//
+// Ported from the plugin implementation's payload check, signing bytes, header
+// encoding and decoding, and server-side request checks (its body checks and
+// context-route branch stay with the seller). Changes, all
+// enumerated as D6/D7: the `dacs-seller-http:v1:{request,response}:` domains
+// replace `dacs-chatgpt-plugin:loopback-seller-peer:v1:`; every payload carries
+// the TP-1 `profile`; the header is admitted with admitRawJson before parsing;
+// signing and verifying require a TP-1 binding for the actor's current
+// connection and the tuple the actor kept for the purchase; checkWireRequest
+// takes only an envelope openWireEnvelope verified; every caller-built payload
+// and options object is read once, into an owned copy.
+import { canonicalize } from "../canonical/jcs.js";
+import { sha256Hex } from "../canonical/hash.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
+import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS } from "./routes.js";
+import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
+import {
+  admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
+  isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedBytes, ownedConfig, ownedFields, ownedOrNothing, sameCanonical,
+  uncurry, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
+} from "./validate.js";
+
+export interface WireRequestPayload {
+  version: "1";
+  kind: "request";
+  method: "POST";
+  path: string;
+  bodyHash: string;
+  jobId: string;
+  buyer: string;
+  seller: string;
+  listingPin: ListingPin;
+  agreementHash: string;
+  nonce: string;
+  expiresAt: number;
+  profile: Tp1WireProfile;
+}
+
+export interface WireResponsePayload extends Omit<WireRequestPayload, "kind"> {
+  kind: "response";
+  requestHash: string;
+  status: number;
+}
+
+export type WirePayload = WireRequestPayload | WireResponsePayload;
+export type WireKind = WirePayload["kind"];
+
+const REQUEST_FIELDS = ["version", "kind", "method", "path", "bodyHash", "jobId", "buyer", "seller", "listingPin", "agreementHash", "nonce", "expiresAt", "profile"];
+const RESPONSE_FIELDS = [...REQUEST_FIELDS, "requestHash", "status"];
+
+/** Shape of one owned copy: a Proxy or accessor is not a payload. */
+export function isWirePayload(supplied: unknown, kind: unknown): supplied is WirePayload {
+  return payloadShape(ownedOrNothing(supplied), kind);
+}
+
+function payloadShape(p: unknown, kind: unknown): p is WirePayload {
+  return (kind === "request" || kind === "response") && hasKeys(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS) &&
+    p.version === "1" && p.kind === kind && p.method === "POST" &&
+    typeof p.path === "string" && /^\/dacs\/v1\/[a-z/-]+$/.test(p.path) && p.path.length <= 160 &&
+    isHash(p.bodyHash) && isCanonicalJobId(p.jobId) && isClaim(p.buyer) && isClaim(p.seller) && p.buyer !== p.seller &&
+    isListingPin(p.listingPin) && isHash(p.agreementHash) && typeof p.nonce === "string" && NONCE.test(p.nonce) &&
+    Buffer.from(p.nonce, "base64url").toString("base64url") === p.nonce && isUint(p.expiresAt) &&
+    isTp1WireProfile(p.profile) &&
+    (kind !== "response" || (isHash(p.requestHash) && isUint(p.status) && (p.status as number) >= 200 && (p.status as number) <= 599));
+}
+
+/** Exact bytes a request or response signature covers, from one owned copy of the payload. */
+export function wireEnvelopeSigningBytes(supplied: WirePayload): Buffer {
+  const payload = ownedArtifact(supplied, "peer_envelope_invalid") as WirePayload;
+  if (!payloadShape(payload, payload?.kind)) fail("peer_envelope_invalid");
+  return Buffer.from(`${DACS_SELLER_HTTP_DOMAINS[payload.kind]}${canonicalize(payload)}`, "utf8");
+}
+
+/** sha256 of the canonical request payload, from one owned copy; a response binds it. */
+export const wireRequestHash = (request: WireRequestPayload): string =>
+  sha256Hex(canonicalize(ownedArtifact(request, "peer_envelope_invalid", 500)));
+
+export interface SigningContext {
+  signer: WireSigner;
+  binding: Tp1Binding;
+  /** The signer's connection right now; it must be the one the binding was made with. */
+  local: unknown;
+}
+
+/** signWireEnvelope's context: the signer's, and the tuple it kept for the purchase. */
+export interface EnvelopeSigningContext extends SigningContext {
+  /**
+   * Required: the tuple the signer kept for this purchase, exactly the
+   * binding's profile. `null` (none kept yet) only for a seller's answer to a
+   * new purchase; a request is always signed under a kept tuple. Omitted is
+   * refused.
+   */
+  purchaseProfile: Tp1WireProfile | null;
+}
+
+/**
+ * Sign a payload and encode the envelope header. Nothing is signed without a
+ * current TP-1 binding and the tuple kept for the purchase. The payload and
+ * delegation are copied once: the profile check, the signed bytes and the
+ * header all come from those copies.
+ */
+export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
+  const { signer, binding, local, purchaseProfile } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile"]) as Partial<EnvelopeSigningContext>;
+  assertTp1Binding(binding, local);
+  const payload = ownedArtifact(supplied, "peer_envelope_invalid", 500);
+  if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
+  if (purchaseProfile !== null || payload.kind !== "response") assertPurchaseProfile(purchaseProfile, binding, 500);
+  const delegation = suppliedDelegation ? ownedArtifact(suppliedDelegation, "peer_delegation_invalid", 500) : null;
+  assertPeerProfile(payload.profile, binding, 500);
+  const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(wireEnvelopeSigningBytes(payload as unknown as WirePayload))).toString("base64url");
+  return Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
+}
+
+/** A verified envelope, frozen. Only openWireEnvelope makes one that checkWireRequest accepts. */
+export interface OpenedEnvelope<P extends WirePayload> {
+  readonly payload: P;
+  readonly delegation: SellerSessionDelegation | null;
+}
+
+// Each envelope openWireEnvelope verified, with the binding it was verified
+// under. Methods taken at module load (see profile.ts).
+const opened = new WeakMap<object, Tp1Binding>();
+const openedBinding = uncurry(WeakMap.prototype.get) as (map: WeakMap<object, Tp1Binding>, key: object) => Tp1Binding | undefined;
+const recordOpened = uncurry(WeakMap.prototype.set) as (map: WeakMap<object, Tp1Binding>, key: object, value: Tp1Binding) => unknown;
+
+export interface OpenEnvelopeOptions {
+  binding: Tp1Binding;
+  /** The verifier's connection right now; it must be the one the binding was made with. */
+  local: unknown;
+  /**
+   * Required: the tuple the verifier kept for this purchase, exactly the
+   * binding's profile. The seller opening a request passes the tuple kept for
+   * the job, or `null` when it keeps none yet (a new purchase); the buyer
+   * opening a response passes the tuple its request carries. Omitted, or
+   * `null` for a response, is refused.
+   */
+  purchaseProfile: Tp1WireProfile | null;
+  /** Required signer of a response (the seller); a request is signed by its buyer or delegated session key. */
+  principal?: string;
+  /** Seller-side: a request must carry a delegation, and one is read only then. */
+  requireDelegation?: boolean;
+}
+
+/**
+ * Admit, decode and verify an envelope header. Order: the TP-1 binding, then
+ * the tuple kept for the purchase, before the header is read; then the
+ * plugin's header decoding.
+ */
+export function openWireEnvelope<K extends WireKind>(header: unknown, kind: K, options: OpenEnvelopeOptions): OpenedEnvelope<Extract<WirePayload, { kind: K }>> {
+  const { binding, local, purchaseProfile, principal, requireDelegation = false } = ownedFields(options, ["binding", "local", "purchaseProfile", "principal", "requireDelegation"]) as Partial<OpenEnvelopeOptions>;
+  assertTp1Binding(binding, local);
+  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding);
+  if (typeof header !== "string" || header.length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength || !/^[A-Za-z0-9_-]+$/.test(header)) fail("peer_envelope_invalid");
+  const bytes = Buffer.from(header as string, "base64url");
+  if (bytes.toString("base64url") !== header) fail("peer_envelope_invalid");
+  const envelope = admitWireJson(bytes, DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "wire_json_rejected", 401) as JsonRecord;
+  const delegated = kind === "request" && requireDelegation && Object.hasOwn(envelope ?? {}, "delegation");
+  if (!hasKeys(envelope, ["payload", "signature", ...(delegated ? ["delegation"] : [])])) fail("peer_envelope_invalid");
+  const p = envelope.payload as JsonRecord;
+  if (lacksProfile(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) fail("tp1_profile_missing", 409);
+  // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
+  if (hasKeys(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) assertPeerProfile(p.profile, binding);
+  if (!payloadShape(p, kind)) fail("peer_envelope_invalid");
+  if (requireDelegation && !delegated) fail("peer_delegation_required");
+  const payload = p as unknown as Extract<WirePayload, { kind: K }>;
+  const actor = kind === "request" ? payload.buyer : payload.seller;
+  if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");
+  const delegation = delegated ? verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer }) : null;
+  const key = delegation?.sessionPublicKey ?? claimKey(actor);
+  if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
+  const result = deepFreeze({ payload: cloneJson(payload), delegation: delegated ? cloneJson(envelope.delegation as SellerSessionDelegation) : null });
+  recordOpened(opened, result, binding);
+  return result;
+}
+
+export interface RequestCheck {
+  seller: string;
+  listingPin: ListingPin;
+  method: string;
+  path: string;
+  /** The exact received body bytes; they are admitted (CF-5) here, before their hash is compared. */
+  rawBody: Uint8Array;
+  now: number;
+  /** At most the 60 s default; anything else is a configuration error (as in the plugin). */
+  maxLifetimeMs?: number;
+  /** The binding the request was opened under. */
+  binding: Tp1Binding;
+  /** The seller's connection right now; it must be the one the binding was made with. */
+  local: unknown;
+  /**
+   * Required: the tuple the seller kept for this job, or `null` when it keeps
+   * none yet (a new purchase; the seller then keeps the request's). Omitted or
+   * anything but the request's own tuple is refused.
+   */
+  purchaseProfile: Tp1WireProfile | null;
+  requireDelegation?: boolean;
+  /** The proposal draft and/or retained Agreement for this job, when present. */
+  artifacts?: readonly unknown[];
+}
+
+/** A lifetime override must be an integer from 1 to 60 000 ms, as the plugin's own configuration check requires. */
+export function messageLifetime(override: unknown, code: string): number {
+  const ms = override ?? DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs;
+  if (!isUint(ms) || ms < 1 || ms > DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs) fail(code, 500);
+  return ms;
+}
+
+const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "artifacts"] as const;
+
+export interface CheckedWireRequest {
+  /** The admitted request body. Effect handling must use this, never a separately parsed copy. */
+  body: JsonRecord;
+  /**
+   * Only an expired delegation authenticates the request. The seller must then
+   * route it to journaled-only reservation: readback of effects already
+   * journaled for the job, never a new effect.
+   */
+  readbackOnly: boolean;
+}
+
+/**
+ * Seller-side binding of an opened request to this HTTP exchange
+ * (the plugin's server-side request checks, without its body checks). It takes only the
+ * value openWireEnvelope returned, under the same binding, and the seller's
+ * current connection: a payload or delegation the caller assembled is refused.
+ * The check is read once (ownedFields), and its Listing pin, artifacts and body
+ * bytes copied once. The tuple kept for the job is compared first, then the
+ * exchange. The received body bytes are admitted (CF-5) before their hash is
+ * compared, and the admitted body is returned.
+ */
+export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): CheckedWireRequest {
+  const c = ownedFields(check, CHECK_FIELDS) as unknown as RequestCheck;
+  assertTp1Binding(c.binding, c.local);
+  const listingPin = ownedConfig(c.listingPin, "wire_input_invalid") as ListingPin;
+  const artifacts = (c.artifacts === undefined ? [] : ownedArtifact(c.artifacts, "wire_input_invalid", 500)) as unknown[];
+  if (!Array.isArray(artifacts)) fail("wire_input_invalid", 500);
+  const rawBody = ownedBytes(c.rawBody);
+  if (typeof envelope !== "object" || envelope === null || openedBinding(opened, envelope) !== c.binding ||
+      envelope.payload?.kind !== "request") fail("peer_request_unverified", 500);
+  // openWireEnvelope checked the kept tuple and the request's own; the tuple kept now is checked again.
+  if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding);
+  const { payload: request, delegation } = envelope;
+  const maxLifetimeMs = messageLifetime(c.maxLifetimeMs, "seller_configuration_invalid");
+  if (request.seller !== c.seller) fail("peer_audience_wrong");
+  if (!isUint(c.now) || request.expiresAt <= c.now || request.expiresAt > c.now + maxLifetimeMs) fail("peer_expired", 408);
+  const body = admitWireRequestBody(rawBody);
+  if (request.method !== c.method || request.path !== c.path || request.bodyHash !== sha256Hex(rawBody)) fail("peer_request_mismatch");
+  if (!sameCanonical(request.listingPin, listingPin)) fail("peer_listing_mismatch", 409);
+  if (c.requireDelegation && !delegation) fail("peer_delegation_required");
+  if (!delegation) return { body, readbackOnly: false };
+  for (const artifact of artifacts.filter((a) => a != null) as JsonRecord[]) {
+    const parties = Array.isArray(artifact.parties) ? (artifact.parties as JsonRecord[]) : [];
+    if (artifact.jobId !== request.jobId || !sameCanonical(artifact.listingRef ?? null, listingPin) ||
+        parties.find((party) => party?.role === "buyer")?.primaryClaim !== request.buyer ||
+        parties.find((party) => party?.role === "seller")?.primaryClaim !== request.seller) fail("peer_delegation_agreement_mismatch", 409);
+    const deadline = (artifact.terms as JsonRecord | undefined)?.deadline;
+    if (!isUint(deadline)) fail("peer_delegation_deadline", 409);
+    verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, deadline: deadline as number });
+  }
+  verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
+  if (c.now < delegation.payload.expiresAt) {
+    if (request.expiresAt > delegation.payload.expiresAt) fail("peer_delegation_expired", 408);
+    return { body, readbackOnly: false };
+  }
+  return { body, readbackOnly: true };
+}
+
+/** CF-5 admission of a received request body (64 KiB); it must be a JSON object. */
+export function admitWireRequestBody(rawBody: Uint8Array): JsonRecord {
+  const body = admitWireJson(rawBody, DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes, "bad_json", 400);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) fail("bad_request", 400);
+  return body as JsonRecord;
+}
+
+/**
+ * A producer applies the receiver's admission profile to the exact bytes it is
+ * about to hash and sign (CF-5's last sentence), so it never signs a body its
+ * peer must refuse. Returns those bytes.
+ */
+export function admitOutgoingBody(text: string, maxBytes: number): Buffer {
+  const bytes = Buffer.from(text, "utf8");
+  const body = admitWireJson(bytes, maxBytes, "outgoing_body_rejected", 500);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) fail("outgoing_body_rejected", 500, "NOT-AN-OBJECT");
+  return bytes;
+}
+
+/** CF-5 admission of a received response body (512 KiB); it must be a JSON object. */
+export function admitWireResponseBody(bytes: Uint8Array): JsonRecord {
+  const body = admitWireJson(bytes, DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes, "response_json_rejected", 502);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) fail("response_json_rejected", 502, "NOT-AN-OBJECT");
+  return body as JsonRecord;
+}
