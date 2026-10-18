@@ -1,9 +1,13 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import * as wire from "../../src/wire/index.js";
 import { contentHash } from "../../src/canonical/index.js";
 import { verifyArtifact } from "../../src/crypto/index.js";
 import { isListingEnvelope } from "../../src/artifacts/validators.js";
+
+const bindTp1Fixture = fixtureBinder(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 18);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -19,7 +23,7 @@ function signer() {
 async function world(change: Record<string, unknown> = {}) {
   const buyer = signer(), seller = signer();
   const local = { endpoint: "https://rpc.eligibility.invalid/", transportAuthority: "test", connectionId: "1" };
-  const binding = wire.bindTp1Profile({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
+  const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
   const selected = {
     pricingKind: "fixed", negotiation: "negotiate-fixed-price", rail: "pay-dem",
     delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output,

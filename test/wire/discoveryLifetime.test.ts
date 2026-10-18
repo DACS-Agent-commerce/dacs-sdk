@@ -1,14 +1,18 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 
+const bindTp1Fixture = fixtureBinder(fixtureWire);
+
 it("admits exactly ten minutes, rejects ten minutes plus one millisecond at receiver and before producer signing", async () => {
   const keys = generateKeyPairSync("ed25519");
   const claim = `did:demos:agent:${keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex")}`;
   const local = { endpoint: "https://rpc.lifetime.invalid/", transportAuthority: "test", connectionId: "1" };
-  const binding = wire.bindTp1Profile({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
+  const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
   const now = Date.UTC(2026, 9, 18);
   const listing = { seller: claim, publicEndpoint: "https://seller.lifetime.invalid", listingPin: { listingId: "report", version: 1, contentHash: "c".repeat(64) } };
   let calls = 0;

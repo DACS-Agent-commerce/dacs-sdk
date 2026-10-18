@@ -1,7 +1,11 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import * as wire from "../../src/wire/index.js";
 import { FIXTURE_ENDPOINT, registerDiscoverySigner, signRequestWithProof } from "./requestFixture.js";
+
+const bindTp1Fixture = fixtureBinder(fixtureWire);
 
 function signer(): wire.WireSigner {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -14,7 +18,7 @@ it.each([false, true])("uses the selected implementation for the entire proof fi
   registerDiscoverySigner(seller);
   const now = Date.UTC(2026, 9, 18);
   const local = { endpoint: "https://rpc.fixture.invalid/", transportAuthority: "test", connectionId: "1" };
-  const binding = wire.bindTp1Profile({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
+  const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
   const listingPin = { listingId: "report", version: 1, contentHash: "c".repeat(64) };
   const input = {
     signer: buyer, binding, local, now, seller: seller.claim, path: "/dacs/v1/commitments", jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", text: "{}",

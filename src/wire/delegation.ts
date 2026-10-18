@@ -11,7 +11,7 @@
 // TP-1 binding.
 import { canonicalize } from "../canonical/jcs.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
-import { assertPeerProfile, assertTp1Binding, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
+import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
   claimKey, cloneJson, fail, hasKeys, HASH, isClaim, isListingPin, isUint, lacksProfile, ownedArtifact, ownedConfig, ownedFields,
@@ -55,7 +55,9 @@ function ownedSigning(supplied: unknown, binding: Tp1Binding, local: unknown): {
   assertTp1Binding(binding, local);
   const payload = ownedArtifact(supplied, "peer_delegation_invalid", 500) as SellerSessionDelegationPayload;
   assertPeerProfile((payload as unknown as JsonRecord | null)?.profile, binding, 500);
-  return { payload, bytes: payloadBytes(payload) };
+  const bytes = payloadBytes(payload);
+  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
+  return { payload, bytes };
 }
 
 /**
@@ -71,7 +73,9 @@ export function sellerSessionDelegationSigningBytes(payload: SellerSessionDelega
 export async function signSellerSessionDelegation(supplied: SellerSessionDelegationPayload, walletSigner: WireSigner, binding: Tp1Binding, local: unknown): Promise<SellerSessionDelegation> {
   const { payload, bytes } = ownedSigning(supplied, binding, local);
   if (walletSigner.claim !== payload.buyer) fail("peer_delegation_invalid", 500);
+  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   const signature = await walletSigner.sign(bytes);
+  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   return { payload, signature: walletSignatureBytes(typeof signature === "string" ? signature : Buffer.from(signature).toString("base64url")).toString("base64url") };
 }
 
@@ -109,6 +113,7 @@ export function verifySellerSessionDelegation(supplied: unknown, scope: Delegati
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
   if (hasKeys(p, FIELDS)) assertPeerProfile(p.profile, binding as Tp1Binding);
   const bytes = payloadBytes(p);
+  assertTp1Authority(binding as Tp1Binding, local, [p.buyer, p.seller], p.jobId);
   if (!verifyEd25519(bytes, walletSignatureBytes(delegation.signature), claimKey(p.buyer))) fail("peer_delegation_signature_invalid");
   if ((buyer !== undefined && p.buyer !== buyer) || (seller !== undefined && p.seller !== seller) ||
       (listingPin !== undefined && !sameCanonical(p.listingPin, listingPin)) || (jobId !== undefined && p.jobId !== jobId)) {

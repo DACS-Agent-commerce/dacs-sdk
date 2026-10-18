@@ -98,6 +98,10 @@ release is meant to show the label in the last column. Labels marked
 Four more differences (G2, G3, G4 and G6) are about how sessions, vetting
 records, profile checks and exact-bytes checks work inside the protocol. They
 are written down in the declaration and have no on-screen label.
+The wire library checks profile authority through a trusted local integration:
+the active connection must serve the approved chain, and authenticated
+participants must use the exact module versions for that purchase. The moved
+seller and client packages still need to supply and qualify this integration.
 
 ## What changes next
 

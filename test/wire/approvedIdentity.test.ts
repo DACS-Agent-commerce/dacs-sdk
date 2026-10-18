@@ -1,3 +1,5 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // 2026-10-15 approval through the real approval module. No mock or replacement approval.
@@ -7,12 +9,14 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import {
-  bindTp1Profile, checkWireRequest, openWireEnvelope, signWireEnvelope, signWireResponse,
+  checkWireRequest, openWireEnvelope, signWireEnvelope, signWireResponse,
   signSellerSessionDelegation, verifySellerSessionDelegation, signDiscoveryDocument, verifyEndpointProof,
   verifyWireResponse, TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_APPROVED_IDENTITY_RECORD,
   TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES, TP1_CAPABILITIES, WireError,
   type LocalNetworkBinding, type Tp1Binding, type Tp1WireProfile, type WireRequestPayload,
 } from "../../src/wire/index.js";
+
+const bindTp1Fixture = fixtureBinder(fixtureWire);
 
 const RECORD = TP1_APPROVED_IDENTITY_RECORD;
 const DIGEST = "c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd";
@@ -59,13 +63,13 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
     expect(Object.isFrozen(RECORD) && Object.isFrozen(RECORD.provenance)).toBe(true);
     expect(RECORD).not.toHaveProperty("endpoint");
     expect(RECORD).not.toHaveProperty("transportAuthority");
-    expect(bindTp1Profile({ record: RECORD, local: A }).recordDigest).toBe(DIGEST);
+    expect(bindTp1Fixture({ record: RECORD, local: A }).recordDigest).toBe(DIGEST);
   });
 
   it.each([[A, B], [B, A]])("signs and verifies requests and responses in both directions with different RPC bindings (%j)", async (buyerLocal, sellerLocal) => {
     const buyer = party(), seller = party();
-    const bb = bindTp1Profile({ record: structuredClone(RECORD), local: buyerLocal });
-    const sb = bindTp1Profile({ record: RECORD, local: sellerLocal });
+    const bb = bindTp1Fixture({ record: structuredClone(RECORD), local: buyerLocal });
+    const sb = bindTp1Fixture({ record: RECORD, local: sellerLocal });
     expect(bb.profile).toEqual(sb.profile);
     const { payload, header } = await request(buyer, seller, bb, buyerLocal);
     const opened = openWireEnvelope(header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
@@ -77,8 +81,8 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
 
   it("signs and verifies delegation and discovery under the approved identity", async () => {
     const buyer = party(), seller = party(), session = party();
-    const bb = bindTp1Profile({ record: RECORD, local: A });
-    const sb = bindTp1Profile({ record: RECORD, local: B });
+    const bb = bindTp1Fixture({ record: RECORD, local: A });
+    const sb = bindTp1Fixture({ record: RECORD, local: B });
     const delegation = await signSellerSessionDelegation({ version: "1", kind: "seller-session-delegation", buyer: buyer.claim, sessionPublicKey: session.key, seller: seller.claim, listingPin: PIN, jobId: JOB, notBefore: NOW, expiresAt: NOW + 60_000, profile: bb.profile }, buyer, bb, A);
     verifySellerSessionDelegation(delegation, { buyer: buyer.claim, seller: seller.claim, listingPin: PIN, jobId: JOB, time: NOW, binding: sb, local: B });
     const publicEndpoint = "https://seller.identity.invalid";
@@ -108,7 +112,7 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
     const buyer = party(), seller = party();
     let sends = 0;
     expect(await refusal(async () => {
-      const binding = bindTp1Profile({ record, local: A });
+      const binding = bindTp1Fixture({ record, local: A });
       await request(buyer, seller, binding, A);
       sends += 1;
     })).toBe(expected);
@@ -119,8 +123,8 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
   for (const actor of ["buyer", "seller"] as const) {
     it.each([["endpoint", "https://rpc-c.identity.invalid/"], ["transportAuthority", "changed"], ["connectionId", "changed"]])(`refuses changed ${actor} %s before signing and verification`, async (field, value) => {
       const buyer = party(), seller = party();
-      const bb = bindTp1Profile({ record: RECORD, local: A });
-      const sb = bindTp1Profile({ record: RECORD, local: B });
+      const bb = bindTp1Fixture({ record: RECORD, local: A });
+      const sb = bindTp1Fixture({ record: RECORD, local: B });
       const original = await request(buyer, seller, bb, A);
       const response = await signWireResponse(original.payload, 200, "{}", { signer: seller, binding: sb, local: B, now: NOW, purchaseProfile: sb.profile });
       const before = buyer.calls + seller.calls;
@@ -141,8 +145,8 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
 
   it("refuses a peer with a mismatched identity under an otherwise valid signature", async () => {
     const buyer = party(), seller = party();
-    const bb = bindTp1Profile({ record: RECORD, local: A });
-    const sb = bindTp1Profile({ record: RECORD, local: B });
+    const bb = bindTp1Fixture({ record: RECORD, local: A });
+    const sb = bindTp1Fixture({ record: RECORD, local: B });
     const { header } = await request(buyer, seller, bb, A);
     const envelope = JSON.parse(Buffer.from(header, "base64url").toString("utf8")) as { payload: WireRequestPayload; signature: string };
     envelope.payload.profile = { ...bb.profile, chainIdentity: hash("SYNTHETIC/peer-other-chain") };
@@ -152,8 +156,8 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
 
   it("the seller opens no request and signs no answer unless the tuple it kept for the purchase is given and exactly its own", async () => {
     const buyer = party(), seller = party();
-    const bb = bindTp1Profile({ record: RECORD, local: A });
-    const sb = bindTp1Profile({ record: RECORD, local: B });
+    const bb = bindTp1Fixture({ record: RECORD, local: A });
+    const sb = bindTp1Fixture({ record: RECORD, local: B });
     const { payload, header } = await request(buyer, seller, bb, A);
     const answer = { ...payload, kind: "response" as const, bodyHash: hash("{}"), expiresAt: NOW + 60_000, requestHash: hash(canonicalize(payload)), status: 200 };
     const { revision: _r, ...preRevision } = sb.profile;
@@ -178,8 +182,8 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
 
   it("binds the approved tuple (identifier, revision, base) and refuses a missing or other revision in every signed message, under a valid signature", async () => {
     const buyer = party(), seller = party(), session = party();
-    const bb = bindTp1Profile({ record: RECORD, local: A });
-    const sb = bindTp1Profile({ record: RECORD, local: B });
+    const bb = bindTp1Fixture({ record: RECORD, local: A });
+    const sb = bindTp1Fixture({ record: RECORD, local: B });
     expect(bb.profile).toEqual({ id: "dacs-testnet-tp1", revision: "TP-1", base: "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20", chainIdentity: RECORD.chainIdentity, pinVersion: RECORD.pinVersion });
     const { payload } = await request(buyer, seller, bb, A);
     const { revision: _r, ...preRevision } = bb.profile;

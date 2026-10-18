@@ -1,3 +1,5 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
 // Compares the SDK wire with the original plugin wire captured from frontend
 // 82bf8c4 (test/wire/fixtures/plugin-wire-82bf8c4.original.json; captured messages are immutable),
@@ -13,7 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/index.js";
 import {
-  bindTp1Profile, checkWireRequest, DACS_SELLER_HTTP_DOMAINS, openWireEnvelope, verifySellerSessionDelegation,
+  checkWireRequest, DACS_SELLER_HTTP_DOMAINS, openWireEnvelope, verifySellerSessionDelegation,
   verifyWireResponse, wireEnvelopeSigningBytes, WireError, type Tp1Binding,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
@@ -21,6 +23,8 @@ import {
 vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
 import { envelopeSignatureBytes, verifyEd25519 } from "../../src/wire/validate.js";
+
+const bindTp1Fixture = fixtureBinder(fixtureWire);
 
 const ORIGINAL_PATH = new URL("./fixtures/plugin-wire-82bf8c4.original.json", import.meta.url);
 const PRE_REVISION_PATH = new URL("./fixtures/plugin-wire-82bf8c4.tp1-adapted.json", import.meta.url);
@@ -44,7 +48,7 @@ const unsubstitute = (v: unknown): unknown => (typeof v === "string" ? capturedK
   : Array.isArray(v) ? v.map(unsubstitute)
   : v !== null && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, unsubstitute(x)])) : v);
 
-const bind = (local: unknown): Tp1Binding => withTestApproval([adapted.syntheticIdentityRecord.digest], () => bindTp1Profile({
+const bind = (local: unknown): Tp1Binding => withTestApproval([adapted.syntheticIdentityRecord.digest], () => bindTp1Fixture({
   record: adapted.syntheticIdentityRecord.record, local,
 }));
 const sellerBinding = bind(adapted.localBindings.seller);

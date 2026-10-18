@@ -1,3 +1,5 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Network identity gate with instrumented signers and transports. Missing
@@ -25,7 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/index.js";
 import {
-  assertPeerProfile, assertPurchaseProfile, assertTp1Binding, bindTp1Profile, checkWireRequest, discoverySigningBytes, isTp1WireProfile, isWirePayload,
+  assertPeerProfile, assertPurchaseProfile, assertTp1Binding, checkWireRequest, discoverySigningBytes, isTp1WireProfile, isWirePayload,
   openWireEnvelope, sellerSessionDelegationSigningBytes, signDiscoveryDocument, signSellerSessionDelegation, signWireEnvelope,
   signWireResponse, TP1_CAPABILITIES, TP1_REFUSED_CHAIN_IDENTITIES, TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES,
   verifyEndpointProof, verifySellerSessionDelegation, verifyWireResponse, wireEnvelopeSigningBytes, WireError, wireRequestHash,
@@ -35,6 +37,8 @@ import {
 // test list (./testApproval.ts); no shipped module takes an approval list.
 vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
+
+const bindTp1Fixture = fixtureBinder(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -107,22 +111,22 @@ describe("TP-1 network identity gate", () => {
   const mockedMainnet = synthetic("MOCKED-MAINNET-labelled-testnet");
 
   const testApproved = (r: unknown, approvedRecordDigests: readonly string[], local: unknown, refusedChainIdentities?: readonly string[]) =>
-    withTestApproval(approvedRecordDigests, () => bindTp1Profile({ record: r, local, ...(refusedChainIdentities ? { refusedChainIdentities } : {}) }));
+    withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record: r, local, ...(refusedChainIdentities ? { refusedChainIdentities } : {}) }));
   /** The public gate, with an approval list passed in as a caller might try. */
   const callerApproves = (r: unknown, approvedRecordDigests: string[]) =>
-    bindTp1Profile({ record: r, local: RPC_A, approvedRecordDigests } as BindTp1Options);
+    bindTp1Fixture({ record: r, local: RPC_A, approvedRecordDigests } as unknown as BindTp1Options);
 
   const refusals: Array<[string, () => unknown, string]> = [
-    ["no approved identity record supplied", () => bindTp1Profile({ record: undefined, local: RPC_A }), "tp1_identity_record_missing"],
-    ["a record with no chain identity pin", () => bindTp1Profile({ record: { ...record, chainIdentity: null }, local: RPC_A }), "tp1_identity_pin_missing"],
-    ["a record with no pin version", () => bindTp1Profile({ record: { ...record, pinVersion: undefined }, local: RPC_A }), "tp1_identity_pin_missing"],
+    ["no approved identity record supplied", () => bindTp1Fixture({ record: undefined, local: RPC_A }), "tp1_identity_record_missing"],
+    ["a record with no chain identity pin", () => bindTp1Fixture({ record: { ...record, chainIdentity: null }, local: RPC_A }), "tp1_identity_pin_missing"],
+    ["a record with no pin version", () => bindTp1Fixture({ record: { ...record, pinVersion: undefined }, local: RPC_A }), "tp1_identity_pin_missing"],
     ["the plugin fixture identity used as a live pin, even if approved", () => { const r = synthetic("fixture", PLUGIN_FIXTURE_IDENTITY); return testApproved(r, [digest(r)], RPC_A); }, "tp1_identity_fixture"],
-    ["an unapproved synthetic record", () => bindTp1Profile({ record, local: RPC_A }), "tp1_identity_unapproved"],
+    ["an unapproved synthetic record", () => bindTp1Fixture({ record, local: RPC_A }), "tp1_identity_unapproved"],
     ["a valid record the caller tries to approve with its own list", () => callerApproves(record, [digest(record)]), "tp1_identity_unapproved"],
-    ["a mocked mainnet identity labelled testnet, with no caller refused list", () => bindTp1Profile({ record: mockedMainnet, local: RPC_A }), "tp1_identity_unapproved"],
+    ["a mocked mainnet identity labelled testnet, with no caller refused list", () => bindTp1Fixture({ record: mockedMainnet, local: RPC_A }), "tp1_identity_unapproved"],
     ["a mocked mainnet identity labelled testnet that the caller tries to approve itself", () => callerApproves(mockedMainnet, [digest(mockedMainnet)]), "tp1_identity_unapproved"],
     ["a mocked mainnet identity labelled testnet, approved by mistake but on a refused list", () => testApproved(mockedMainnet, [...approved, digest(mockedMainnet)], RPC_A, [mockedMainnet.chainIdentity]), "tp1_identity_refused"],
-    ["a record whose network label alone says testnet but whose schema is not the record format", () => bindTp1Profile({ record: { network: "demos-testnet", chainIdentity: record.chainIdentity, pinVersion: "1" }, local: RPC_A }), "tp1_identity_record_invalid"],
+    ["a record whose network label alone says testnet but whose schema is not the record format", () => bindTp1Fixture({ record: { network: "demos-testnet", chainIdentity: record.chainIdentity, pinVersion: "1" }, local: RPC_A }), "tp1_identity_record_invalid"],
   ];
 
   it("derives the refused fixture identity from its fixture string (the plugin constant's value)", async () => {
@@ -301,7 +305,7 @@ describe("TP-1 network identity gate", () => {
       WeakMap.prototype.get = () => w.sellerBinding;
       Array.prototype.includes = () => true;
       codes = await w.verifyAll([forged, RPC_B], [forged, RPC_A]);
-      bound = await errorCode(() => bindTp1Profile({ record, local: RPC_A }));
+      bound = await errorCode(() => bindTp1Fixture({ record, local: RPC_A }));
       checked = await errorCode(() => checkWireRequest(decoded, { ...w.check, binding: w.sellerBinding, local: RPC_B }));
     } finally {
       WeakSet.prototype.has = has;
@@ -386,7 +390,7 @@ describe("TP-1 network identity gate", () => {
     const opened = (w: World) => openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
     // [entry point: the input that changes, the call, the one outcome expected for every read count]
     const rows: Array<[string, (w: World, c: Changing) => unknown, string]> = [
-      ["bindTp1Profile: options", (_w, c) => withTestApproval(approved, () => bindTp1Profile(c({ record, local: RPC_A } as BindTp1Options, "record", mockedMainnet))), "wire_input_invalid"],
+      ["bindTp1Profile: options", (_w, c) => withTestApproval(approved, () => bindTp1Fixture(c({ record, local: RPC_A } as BindTp1Options, "record", mockedMainnet))), "wire_input_invalid"],
       ["assertTp1Binding: current connection", (w, c) => assertTp1Binding(w.buyerBinding, c(RPC_A, "endpoint", "http://rpc-unchecked.identity.invalid/")), "tp1_local_binding_invalid"],
       ["isTp1WireProfile: profile", (w, c) => isTp1WireProfile(c(w.buyerBinding.profile, "chainIdentity", "not a chain identity")), "false"],
       ["assertPeerProfile: received profile", (w, c) => assertPeerProfile(c(w.buyerBinding.profile, "chainIdentity", mockedMainnet.chainIdentity), w.buyerBinding), "tp1_profile_mismatch"],

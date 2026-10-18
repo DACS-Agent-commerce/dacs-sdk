@@ -1,8 +1,12 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
 import { walletSignatureBytes } from "../../src/wire/validate.js";
+
+const bindTp1Fixture = fixtureBinder(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 18);
 const LOCAL = { endpoint: "https://rpc.review.invalid/", transportAuthority: "test", connectionId: "1" };
@@ -15,7 +19,7 @@ function party() {
 const header = (value: unknown) => Buffer.from(canonicalize(value)).toString("base64url");
 function world(path = "/dacs/v1/payments") {
   const buyer = party(), seller = party(), session = party();
-  const binding = wire.bindTp1Profile({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
+  const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
   const context = { binding, local: LOCAL, purchaseProfile: binding.profile };
   const request: wire.WireRequestPayload = {
     version: "1", kind: "request", method: "POST", path, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H",

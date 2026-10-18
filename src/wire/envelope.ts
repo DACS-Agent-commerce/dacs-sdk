@@ -14,7 +14,7 @@ import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { assertEndpointProof, type EndpointProof } from "./discovery.js";
-import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
+import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
@@ -126,7 +126,9 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
     publicEndpoint: publicEndpoint as string, now: now as number,
   });
+  assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");
+  assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   return Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
 }
 
@@ -184,6 +186,7 @@ export function openWireEnvelope<K extends WireKind>(header: unknown, kind: K, o
   if (!payloadShape(p, kind)) fail("peer_envelope_invalid");
   if (requireDelegation && !delegated) fail("peer_delegation_required");
   const payload = p as unknown as Extract<WirePayload, { kind: K }>;
+  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   const actor = kind === "request" ? payload.buyer : payload.seller;
   if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");
   const delegation = delegated ? verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer }) : null;
@@ -293,6 +296,7 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   // openWireEnvelope checked the kept tuple and the request's own; the tuple kept now is checked again.
   if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding);
   const { payload: request, delegation } = envelope;
+  assertTp1Authority(c.binding, c.local, [request.buyer, request.seller], request.jobId);
   const maxLifetimeMs = messageLifetime(c.maxLifetimeMs, "seller_configuration_invalid");
   if (request.seller !== c.seller) fail("peer_audience_wrong");
   if (!isUint(c.now) || request.expiresAt <= c.now || request.expiresAt > c.now + maxLifetimeMs) fail("peer_expired", 408);

@@ -7,9 +7,10 @@
 // constant or value observed from an RPC can stand in for it.
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { TP1_APPROVED_IDENTITY_RECORD_DIGESTS } from "./approval.js";
 import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_V1 } from "./routes.js";
-import { deepFreeze, fail, hasKeys, HASH, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
+import { deepFreeze, fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
 
 export const TP1_PROFILE_ID = "dacs-testnet-tp1";
 /** The profile revision. Each later revision (TP-1.1, ...) is a new value with its own base. */
@@ -154,7 +155,36 @@ export interface Tp1Binding {
   readonly recordDigest: string;
   readonly local: Readonly<LocalNetworkBinding>;
   readonly localDigest: string;
+  /** Digest of the independently authenticated connection and its provenance. */
+  readonly authorityDigest: string;
 }
+
+/** Local verifier/orchestrator context, never obtained from a wire payload. */
+export interface Tp1AuthorityScope {
+  readonly local: Readonly<LocalNetworkBinding>;
+  /** Exact job ID, or the discovery format for seller discovery; null checks only the connection. */
+  readonly sessionId: string | null;
+  readonly participants: readonly string[];
+}
+
+export interface Tp1AuthorityDecision {
+  local: LocalNetworkBinding;
+  chainIdentity: string;
+  /** Identifies the authenticated transport attestation, including connection generation. */
+  provenance: string;
+  sessionId: string | null;
+  participants: Array<{ claim: string; profile: Tp1WireProfile; modules: typeof TESTNET_PROFILE_TP1.tuple }>;
+}
+
+/**
+ * Trusted integration installed by the verifier/orchestrator, outside request
+ * data. Authenticate the actual transport and each participant's implementation
+ * pin for this exact session independently of signed declarations. Recheck the
+ * current source of truth on every call; throw the original error or return no
+ * decision if unavailable/revoked. Network I/O belongs to the integration and
+ * requires byte/list bounds and a deadline, including third-party reads.
+ */
+export type Tp1AuthorityReader = (scope: Readonly<Tp1AuthorityScope>) => unknown;
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
 const isIdentifier = (v: unknown): v is string => typeof v === "string" && IDENTIFIER.test(v);
@@ -165,6 +195,9 @@ const bindings = new WeakSet<object>();
 const listHas = uncurry(Array.prototype.includes) as (list: readonly string[], value: string) => boolean;
 const isBinding = uncurry(WeakSet.prototype.has) as (set: WeakSet<object>, value: object) => boolean;
 const addBinding = uncurry(WeakSet.prototype.add) as (set: WeakSet<object>, value: object) => WeakSet<object>;
+const authorities = new WeakMap<object, Tp1AuthorityReader>();
+const authorityGet = uncurry(WeakMap.prototype.get) as (map: typeof authorities, key: object) => Tp1AuthorityReader | undefined;
+const authoritySet = uncurry(WeakMap.prototype.set) as (map: typeof authorities, key: object, reader: Tp1AuthorityReader) => unknown;
 
 export interface BindTp1Options {
   /** the approved record, supplied independently of the endpoint. */
@@ -173,7 +206,25 @@ export interface BindTp1Options {
   refusedChainIdentities?: readonly string[];
   /** This actor's own endpoint, transport authority and connection. */
   local: unknown;
+  /** Trusted, connection-specific and participant/session-specific authority. */
+  readAuthority: Tp1AuthorityReader;
 }
+
+function readAuthorityDecision(reader: Tp1AuthorityReader, local: LocalNetworkBinding, chainIdentity: string,
+  sessionId: string | null, participants: readonly string[]): Tp1AuthorityDecision {
+  // Do not catch reader errors: timeout, not-found and refusal retain their causes.
+  const decision = ownedArtifact(reader(deepFreeze({ local: { ...local }, sessionId, participants: [...participants] })), "tp1_connection_unverified", 500);
+  if (!hasKeys(decision, ["local", "chainIdentity", "provenance", "sessionId", "participants"]) ||
+      decision.chainIdentity !== chainIdentity || !isIdentifier(decision.provenance) ||
+      canonicalize(localBinding(decision.local)) !== canonicalize(local)) fail("tp1_connection_unverified", 500);
+  if (decision.sessionId !== sessionId || !Array.isArray(decision.participants) ||
+      decision.participants.length !== participants.length) fail("tp1_participant_profile_mismatch", 500);
+  return decision as unknown as Tp1AuthorityDecision;
+}
+
+const connectionDigest = (decision: Tp1AuthorityDecision) => sha256Hex(canonicalize({
+  local: decision.local, chainIdentity: decision.chainIdentity, provenance: decision.provenance,
+}));
 
 function localBinding(supplied: unknown): LocalNetworkBinding {
   const local = ownedConfig(supplied, "tp1_local_binding_invalid");
@@ -199,7 +250,7 @@ function localBinding(supplied: unknown): LocalNetworkBinding {
  * authorizes anything.
  */
 export function bindTp1Profile(options: BindTp1Options): Tp1Binding {
-  const { record: supplied, refusedChainIdentities: suppliedRefused = [], local: suppliedLocal } = ownedFields(options, ["record", "refusedChainIdentities", "local"]);
+  const { record: supplied, refusedChainIdentities: suppliedRefused = [], local: suppliedLocal, readAuthority } = ownedFields(options, ["record", "refusedChainIdentities", "local", "readAuthority"]);
   const refusedChainIdentities = ownedConfig(suppliedRefused, "wire_input_invalid");
   if (!Array.isArray(refusedChainIdentities)) return fail("wire_input_invalid", 500);
   if (supplied === undefined || supplied === null) return fail("tp1_identity_record_missing", 500);
@@ -224,13 +275,18 @@ export function bindTp1Profile(options: BindTp1Options): Tp1Binding {
   const recordDigest = sha256Hex(canonicalize(record));
   if (!listHas(TP1_APPROVED_IDENTITY_RECORD_DIGESTS, recordDigest)) return fail("tp1_identity_unapproved", 500);
   const local = localBinding(suppliedLocal);
+  if (typeof readAuthority !== "function") fail("tp1_authority_required", 500);
+  const reader = readAuthority as Tp1AuthorityReader;
+  const decision = readAuthorityDecision(reader, local, record.chainIdentity as string, null, []);
   const binding: Tp1Binding = deepFreeze({
     profile: { id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISION, base: TP1_BASE_REVISION, chainIdentity: record.chainIdentity, pinVersion: record.pinVersion },
     recordDigest,
     local,
     localDigest: sha256Hex(canonicalize(local)),
+    authorityDigest: connectionDigest(decision),
   });
   addBinding(bindings, binding);
+  authoritySet(authorities, binding, reader);
   return binding;
 }
 
@@ -247,6 +303,29 @@ export function assertTp1Binding(binding: unknown, currentLocal: unknown): asser
   if (!isTp1Binding(binding)) fail("tp1_binding_required", 500);
   const local = localBinding(currentLocal);
   if (sha256Hex(canonicalize(local)) !== (binding as Tp1Binding).localDigest) fail("tp1_local_binding_changed", 500);
+  assertTp1Authority(binding as Tp1Binding, local, [], null);
+}
+
+/** Recheck independent connection and participant/session authority; declarations alone never authorize. */
+export function assertTp1Authority(binding: Tp1Binding, local: unknown, suppliedParticipants: readonly string[], sessionId: string | null): void {
+  if (!isTp1Binding(binding)) fail("tp1_binding_required", 500);
+  const current = localBinding(local);
+  if (sha256Hex(canonicalize(current)) !== binding.localDigest) fail("tp1_local_binding_changed", 500);
+  const participants = ownedConfig(suppliedParticipants, "tp1_participant_profile_mismatch") as string[];
+  const expectedCount = sessionId === null ? 0 : sessionId === "dacs-seller-discovery/v1" ? 1 : 2;
+  if ((sessionId !== null && sessionId !== "dacs-seller-discovery/v1" && !isCanonicalJobId(sessionId)) ||
+      !Array.isArray(participants) || participants.length !== expectedCount || !participants.every(isClaim) ||
+      (participants.length === 2 && participants[0] === participants[1])) fail("tp1_participant_profile_mismatch", 500);
+  const reader = authorityGet(authorities, binding);
+  if (!reader) fail("tp1_authority_required", 500);
+  const decision = readAuthorityDecision(reader, current, binding.profile.chainIdentity, sessionId, participants);
+  if (connectionDigest(decision) !== binding.authorityDigest) fail("tp1_connection_unverified", 500);
+  for (let i = 0; i < participants.length; i++) {
+    const participant = decision.participants[i];
+    if (!hasKeys(participant, ["claim", "profile", "modules"]) || participant.claim !== participants[i] ||
+        canonicalize(participant.profile) !== canonicalize(binding.profile) ||
+        canonicalize(participant.modules) !== canonicalize(TESTNET_PROFILE_TP1.tuple)) fail("tp1_participant_profile_mismatch", 500);
+  }
 }
 
 const profileShape = (v: unknown): v is Tp1WireProfile =>
@@ -270,9 +349,12 @@ export const isTp1WireProfile = (v: unknown): v is Tp1WireProfile => profileShap
  * base alone is never admitted); a revision this SDK does not define, compared
  * exactly, so case, whitespace and type variants are unknown; any other
  * difference. A caller that goes on to sign must sign from its own copy too.
+ * This comparison alone does not authenticate a participant implementation;
+ * action boundaries also require assertTp1Authority for the parties and session.
  */
 export function assertPeerProfile(received: unknown, own: Tp1Binding, status = 409): void {
   if (!isTp1Binding(own)) fail("tp1_binding_required", 500);
+  assertTp1Binding(own, own.local);
   if (received === undefined) fail("tp1_profile_missing", status);
   const profile = ownedArtifact(received, "tp1_profile_mismatch", status);
   if (isRecord(profile) && !Object.hasOwn(profile, "revision")) fail("tp1_profile_revision_missing", status);
@@ -287,9 +369,11 @@ export function assertPeerProfile(received: unknown, own: Tp1Binding, status = 4
  * or identity, under a profile without a revision, or with no tuple at all is
  * refused before any effect. `own` must be a binding from bindTp1Profile; the
  * kept tuple is copied once and the copy compared.
+ * Participant implementation authority is checked separately for the exact job.
  */
 export function assertPurchaseProfile(kept: unknown, own: Tp1Binding, status = 409): void {
   if (!isTp1Binding(own)) fail("tp1_binding_required", 500);
+  assertTp1Binding(own, own.local);
   const copy = ownedOrNothing(kept);
   if (!profileShape(copy) || canonicalize(copy) !== canonicalize(own.profile)) fail("tp1_purchase_profile_mismatch", status);
 }

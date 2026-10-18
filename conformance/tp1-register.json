@@ -146,13 +146,13 @@
     },
     {
       "id": "G4", "kind": "gap",
-      "summary": "Participant profile admission is the TP-1 identifier, profile revision and base pin; there is no module-tuple authentication.",
+      "summary": "The wire requires independent authenticated connection and participant/session module evidence; retained effect-adapter integration remains unqualified.",
       "evidence": [ { "source": "plugin implementation (not public)", "provenance": "prov-03" } ],
-      "pinnedBy": ["src/wire/profile.ts", "vectors/dacs-seller-http-v1.json"],
-      "tp1": "Every signed dacs-seller-http/v1 message carries {id, revision, base, chainIdentity, pinVersion}; a receiver refuses any value but its own bound profile and the tuple kept for the purchase. The module version tuple is declared, not exchanged.",
+      "pinnedBy": ["src/wire/profile.ts", "test/wire/authority.test.ts", "vectors/dacs-seller-http-v1.json"],
+      "tp1": "Every signed dacs-seller-http/v1 message carries {id, revision, base, chainIdentity, pinVersion}. A trusted local readAuthority independently authenticates the active connection and every participant profile and complete six-module tuple for the exact job before signing or acceptance; evidence is rechecked on reuse. Wire bytes are unchanged. The retained seller/client effect paths still require integration and composition qualification.",
       "classification": null,
       "label": "declaration only",
-      "closedBy": "runtime participant profile admission per job in the SDK",
+      "closedBy": "install the authenticated authority reader in retained effect adapters and qualify the composition",
       "blocksPublication": false,
       "status": "open"
     },

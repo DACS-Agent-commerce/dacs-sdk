@@ -1,3 +1,5 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
@@ -13,12 +15,14 @@ import { canonicalize } from "../../src/canonical/index.js";
 import {
   checkWireRequest, DACS_SELLER_HTTP_DOMAINS, openWireEnvelope, signDiscoveryDocument,
   signSellerSessionDelegation, signWireResponse, TP1_CAPABILITIES, verifyEndpointProof,
-  bindTp1Profile, verifySellerSessionDelegation, verifyWireResponse, WireError, type DiscoveryPayload, type WireSigner,
+  verifySellerSessionDelegation, verifyWireResponse, WireError, type DiscoveryPayload, type WireSigner,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
 // test list (./testApproval.ts); no shipped module takes an approval list.
 vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
+
+const bindTp1Fixture = fixtureBinder(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -53,8 +57,8 @@ function world() {
   const buyer = party(), seller = party(), session = party();
   const record = synthetic("round-trip");
   const approvedRecordDigests = [digest(record)];
-  const buyerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Profile({ record, local: RPC_A }));
-  const sellerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Profile({ record, local: RPC_B }));
+  const buyerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record, local: RPC_A }));
+  const sellerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record, local: RPC_B }));
   return { buyer, seller, session, record, approvedRecordDigests, buyerBinding, sellerBinding };
 }
 
@@ -111,7 +115,7 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
     expect(await code(() => sellerReceives(w, raw(noProfile, DACS_SELLER_HTTP_DOMAINS.request, w.buyer), text))).toBe("tp1_profile_missing");
     // A buyer bound to another (also approved) chain: the seller refuses, and the buyer refuses that seller's answers.
     const other = synthetic("other-chain");
-    const otherBuyer = withTestApproval([digest(other)], () => bindTp1Profile({ record: other, local: RPC_A }));
+    const otherBuyer = withTestApproval([digest(other)], () => bindTp1Fixture({ record: other, local: RPC_A }));
     const crossed = await signWireRequest({ signer: w.buyer, binding: otherBuyer, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: AGREEMENT, profile: otherBuyer.profile }, now: NOW });
     expect(await code(() => sellerReceives(w, crossed.header, text))).toBe("tp1_profile_mismatch");
     const answer = '{"status":"committed"}';

@@ -9,7 +9,7 @@
 // the TP-1 restrictions as its capabilities.
 import { snapshotWireJsonRead } from "../canonical/snapshot.js";
 import { canonicalize } from "../canonical/jcs.js";
-import { assertPeerProfile, assertTp1Binding, isTp1WireProfile, TP1_CAPABILITIES, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
+import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, TP1_CAPABILITIES, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_V1 } from "./routes.js";
 import {
   admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isListingPin, isUint,
@@ -80,7 +80,9 @@ export async function signDiscoveryDocument(supplied: DiscoveryPayload, signer: 
   if (signer.claim !== payload.seller) fail("discovery_signer_wrong", 500);
   const signingBytes = discoverySigningBytes(payload);
   if (Buffer.byteLength(canonicalize({ payload, signature: "A".repeat(86) })) > DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes) fail("discovery_too_large", 500);
+  assertTp1Authority(binding, local, [payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
   const signature = envelopeSignatureBytes(await signer.sign(signingBytes), "discovery_signature_invalid").toString("base64url");
+  assertTp1Authority(binding, local, [payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
   return Buffer.from(canonicalize({ payload, signature }), "utf8");
 }
 
@@ -161,6 +163,7 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
   if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 502);
   if (!p.ready) fail("seller_not_ready", 503);
   assertListingEligibility(kept.readListingEligibility, kept.listing, scope.now);
+  assertTp1Authority(scope.binding, scope.binding.local, [p.payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
 }
 
 /**
@@ -184,6 +187,7 @@ export function verifyEndpointProof(bytes: Uint8Array, options: { listing: Verif
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
   if (hasKeys(p, FIELDS)) assertPeerProfile(p.profile, binding as Tp1Binding, 502);
   if (!payloadValid(p)) fail("discovery_invalid", 502);
+  assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   if (!hasKeys(listing, ["seller", "publicEndpoint", "listingPin"]) || !isClaim(listing.seller) ||
       !isPublicEndpoint(listing.publicEndpoint) || !isListingPin(listing.listingPin)) fail("wire_input_invalid", 500);
   if (p.seller !== listing.seller) fail("discovery_signer_wrong", 502);
@@ -195,6 +199,7 @@ export function verifyEndpointProof(bytes: Uint8Array, options: { listing: Verif
   if (!sameCanonical(p.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 502);
   if (!isUint(now) || p.issuedAt > now + ISSUED_SKEW_MS || p.expiresAt <= now) fail("discovery_expired", 502);
   assertListingEligibility(readListingEligibility, listing, now as number);
+  assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   const proof = deepFreeze({ payload: cloneJson(p), ready: p.ready });
   proofSet(proofs, proof, { binding: binding as Tp1Binding, listing: deepFreeze(listing), readListingEligibility });
   return proof;

@@ -1,3 +1,5 @@
+import * as fixtureWire from "../../src/wire/index.js";
+import { fixtureBinder } from "./authorityFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
@@ -5,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import * as w from "../../src/wire/index.js";
 import { isListingPin } from "../../src/wire/validate.js";
+
+const bindTp1Fixture = fixtureBinder(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 18);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -19,7 +23,7 @@ function party() {
 }
 function world() {
   const buyer = party(), seller = party(), session = party();
-  const binding = w.bindTp1Profile({ record: w.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
+  const binding = bindTp1Fixture({ record: w.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
   const request: w.WireRequestPayload = {
     version: "1", kind: "request", method: "POST", path: "/dacs/v1/commitments", bodyHash: sha("{}"), jobId: JOB,
     buyer: buyer.claim, seller: seller.claim, listingPin: PIN, agreementHash: "a".repeat(64), nonce: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX", expiresAt: NOW + 30_000, profile: binding.profile,
@@ -151,7 +155,7 @@ describe("endpoint proof purchase gate", () => {
     for (const patch of [{ seller: party().claim }, { publicEndpoint: ENDPOINT + "/" }, { job: { ...x.input.job, listingPin: { ...PIN, version: 2 } } }]) {
       await refuses(() => w.signWireRequest({ ...x.input, endpointProof: p, ...patch }), "endpoint_proof_mismatch");
     }
-    const otherBinding = w.bindTp1Profile({ record: w.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
+    const otherBinding = bindTp1Fixture({ record: w.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
     await refuses(() => w.signWireRequest({ ...x.input, endpointProof: p, binding: otherBinding }), "endpoint_proof_required");
     await refuses(() => w.signWireRequest({ ...x.input, endpointProof: p, now: NOW + 60_000 }), "discovery_expired");
     const notReady = await proof(x, { ready: false });
@@ -189,6 +193,37 @@ describe("endpoint proof purchase gate", () => {
       await refuses(() => w.signWireEnvelope({ ...x.request, [role]: x.request[role].replace(/^did:/, "DID:") }, { ...x.context, signer: x.buyer }), "peer_envelope_invalid");
     }
     expect(x.buyer.calls).toBe(0);
+  });
+  it("refuses correctly signed uppercase key components at every wire boundary and before producer signatures", async () => {
+    const x = world();
+    const uppercaseKey = (claim: string) => claim.slice(0, -64) + claim.slice(-64).toUpperCase();
+    for (const role of ["buyer", "seller"] as const) {
+      const claim = uppercaseKey(x.request[role]);
+      expect(claim).not.toBe(x.request[role]);
+      const request = { ...x.request, [role]: claim };
+      const delegation = { ...x.delegation, [role]: claim };
+      const envelope = signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer);
+      const delegated = signed(delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer);
+      const key = createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(x.buyer.raw, "hex")]), format: "der", type: "spki" });
+      for (const [message, domain] of [[envelope, w.DACS_SELLER_HTTP_DOMAINS.request], [delegated, w.DACS_SELLER_HTTP_DOMAINS.delegation]] as const) {
+        expect(verify(null, Buffer.from(domain + canonicalize(message.payload)), key, Buffer.from(message.signature, "base64url"))).toBe(true);
+      }
+      x.buyer.calls = x.seller.calls = 0;
+      await refuses(() => w.openWireEnvelope(header(envelope), "request", x.context), "peer_envelope_invalid");
+      await refuses(() => w.verifySellerSessionDelegation(delegated, { binding: x.binding, local: LOCAL }), "peer_delegation_invalid");
+      await refuses(() => w.signWireEnvelope(request, { ...x.context, signer: x.buyer }), "peer_envelope_invalid");
+      await refuses(() => w.signSellerSessionDelegation(delegation, x.buyer, x.binding, LOCAL), "peer_delegation_invalid");
+      await refuses(() => w.sellerSessionDelegationSigningBytes(delegation, x.binding, LOCAL), "peer_delegation_invalid");
+      expect(x.buyer.calls + x.seller.calls).toBe(0);
+    }
+    const discovery = { ...x.discovery, seller: uppercaseKey(x.seller.claim) };
+    const document = signed(discovery, w.DACS_SELLER_HTTP_DOMAINS.discovery, x.seller);
+    const sellerKey = createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(x.seller.raw, "hex")]), format: "der", type: "spki" });
+    expect(verify(null, Buffer.from(w.DACS_SELLER_HTTP_DOMAINS.discovery + canonicalize(discovery)), sellerKey, Buffer.from(document.signature, "base64url"))).toBe(true);
+    x.seller.calls = 0;
+    await refuses(() => w.verifyEndpointProof(Buffer.from(canonicalize(document)), { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_invalid");
+    await refuses(() => w.signDiscoveryDocument(discovery, { ...x.seller, claim: discovery.seller }, x.binding, LOCAL), "discovery_invalid");
+    expect(x.seller.calls).toBe(0);
   });
 });
 

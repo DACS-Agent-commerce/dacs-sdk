@@ -30,6 +30,7 @@ export {
   TESTNET_PROFILE_TP1,
   bindTp1Profile,
   assertTp1Binding,
+  assertTp1Authority,
   assertPeerProfile,
   assertPurchaseProfile,
   isTp1WireProfile,
@@ -38,6 +39,9 @@ export {
   type TestnetIdentityRecord,
   type Tp1Binding,
   type Tp1WireProfile,
+  type Tp1AuthorityScope,
+  type Tp1AuthorityDecision,
+  type Tp1AuthorityReader,
 } from "./profile.js";
 export {
   isWirePayload,

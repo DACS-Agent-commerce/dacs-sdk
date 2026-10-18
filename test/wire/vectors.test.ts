@@ -1,3 +1,4 @@
+import { fixtureBinder } from "./authorityFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 // Replays vectors/dacs-seller-http-v1.json. Each negative must fail with its
@@ -25,6 +26,7 @@ import { withTestApproval } from "./testApproval.js";
 const impl = process.env.DACS_WIRE_IMPL;
 vi.doMock(impl ? impl.replace(/index\.ts$/, "approval.ts") : "../../src/wire/approval.js", () => import("./testApproval.js"));
 const wire = (await import(impl ?? "../../src/wire/index.js")) as typeof WireModule;
+const bindTp1Fixture = fixtureBinder(wire);
 const { signRequestWithProof, registerDiscoverySigner } = await import("./requestFixture.js");
 
 interface Vector {
@@ -65,7 +67,7 @@ function signedMessage(v: Vector): { domain: string; party: string; payload: Rec
 const rawKey = (claim: string) => createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(claim.slice(-64), "hex")]), format: "der", type: "spki" });
 
 function bind(local: unknown) {
-  return withTestApproval(file.identity.testApprovedRecordDigests, () => wire.bindTp1Profile({ record: file.identity.record, local }));
+  return withTestApproval(file.identity.testApprovedRecordDigests, () => bindTp1Fixture({ record: file.identity.record, local }));
 }
 
 /** A signer made for one vector; it counts its calls and its key is discarded. */
@@ -201,9 +203,9 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
     case "binding": {
       const { gate, approvedRecordDigests, view: _view, local = file.localBindings.buyer, ...options } = input;
       // "test-approval": the vector's list stands in for the SDK's (approval.ts).
-      if (gate === "test-approval") withTestApproval(approvedRecordDigests, () => wire.bindTp1Profile({ ...options, local } as WireModule.BindTp1Options));
+      if (gate === "test-approval") withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ ...options, local } as WireModule.BindTp1Options));
       // "public": no test approval is active; any vector list is passed in as a caller might try.
-      else if (gate === "public") wire.bindTp1Profile({ ...options, ...(approvedRecordDigests ? { approvedRecordDigests } : {}), local } as WireModule.BindTp1Options);
+      else if (gate === "public") bindTp1Fixture({ ...options, ...(approvedRecordDigests ? { approvedRecordDigests } : {}), local } as WireModule.BindTp1Options);
       else throw new Error(`unknown gate ${gate}`);
       return { ok: true };
     }

@@ -29,6 +29,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const wire = await import("@kynesyslabs/dacs/wire");
 const { canonicalize } = await import("@kynesyslabs/dacs/canonical");
+// Independent test authority for the compiled consumer, with no production mocks.
+const bindTp1Fixture = (options) => wire.bindTp1Profile({ ...options, readAuthority: (scope) => ({
+  local: { ...scope.local }, chainIdentity: options.record.chainIdentity, provenance: "compiled-test-authority/v1",
+  sessionId: scope.sessionId, participants: scope.participants.map((claim) => ({ claim,
+    profile: { id: wire.TP1_PROFILE_ID, revision: wire.TP1_PROFILE_REVISION, base: wire.TP1_BASE_REVISION, chainIdentity: options.record.chainIdentity, pinVersion: options.record.pinVersion },
+    modules: { CORE: "0.3", "DACS-1": "0.7", "DACS-2": "0.6", "DACS-3": "0.5", "DACS-4": "0.8", "DACS-5": "0.5" },
+  })),
+}) });
+
 const file = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const vector = Object.fromEntries(file.vectors.map((v) => [v.id, v.input]));
 const b = (text) => Buffer.from(text, "base64url");
@@ -88,15 +97,15 @@ const forgeries = (local) => [
 
 if (process.argv[3] === "approved-synthetic") {
   // This copy approves the SYNTHETIC vector record only; it is never shipped.
-  const sellerBinding = wire.bindTp1Profile({ record, local: sellerLocal });
-  const buyerBinding = wire.bindTp1Profile({ record, local: buyerLocal });
+  const sellerBinding = bindTp1Fixture({ record, local: sellerLocal });
+  const buyerBinding = bindTp1Fixture({ record, local: buyerLocal });
   const changed = (local) => ({ ...local, connectionId: local.connectionId + "-changed" });
   out.genuine = await verifyAll(sellerBinding, sellerLocal, buyerBinding, buyerLocal);
   out.genuineEffects = effects; effects = 0;
   out.changedLocal = await verifyAll(sellerBinding, changed(sellerLocal), buyerBinding, changed(buyerLocal));
   out.copiedBinding = await verifyAll({ ...sellerBinding }, sellerLocal, { ...buyerBinding }, buyerLocal);
   out.copiedEnvelope = await code(() => wire.checkWireRequest({ ...wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile }) }, { ...check, binding: sellerBinding, local: sellerLocal }));
-  out.otherBindingEnvelope = await code(() => wire.checkWireRequest(wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile }), { ...check, binding: wire.bindTp1Profile({ record, local: sellerLocal }), local: sellerLocal }));
+  out.otherBindingEnvelope = await code(() => wire.checkWireRequest(wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile }), { ...check, binding: bindTp1Fixture({ record, local: sellerLocal }), local: sellerLocal }));
   out.otherEffects = effects;
   // The compiled profile gate on the vectors' correctly signed revision cases.
   const open = (id) => code(() => wire.openWireEnvelope(vector[id].header, "request", { binding: sellerBinding, local: sellerLocal, purchaseProfile: profile }));
@@ -109,10 +118,10 @@ if (process.argv[3] === "approved-synthetic") {
 
 // The shipped build: the consumer's own approval attempts, then forged bindings.
 const digest = sha(canonicalize(record));
-out.bindWithCallerList = await code(() => wire.bindTp1Profile({ record, local: buyerLocal, approvedRecordDigests: [digest] }));
+out.bindWithCallerList = await code(() => bindTp1Fixture({ record, local: buyerLocal, approvedRecordDigests: [digest] }));
 out.extendSdkList = await code(() => wire.TP1_APPROVED_IDENTITY_RECORD_DIGESTS.push(digest));
 out.extendProfileList = await code(() => wire.TESTNET_PROFILE_TP1.network.approvedIdentityRecordDigests.push(digest));
-out.bindAfterAttempts = await code(() => wire.bindTp1Profile({ record, local: buyerLocal }));
+out.bindAfterAttempts = await code(() => bindTp1Fixture({ record, local: buyerLocal }));
 out.signWithForgedBinding = await signWith(forgeries(buyerLocal)[1], buyerLocal);
 out.forgedVerification = [];
 for (const [i, forged] of forgeries(sellerLocal).entries()) out.forgedVerification.push(await verifyAll(forged, sellerLocal, forgeries(buyerLocal)[i], buyerLocal));
@@ -136,8 +145,8 @@ out.signatures = signer.calls;
 out.effects = effects;
 // The unmodified shipped approval module admits the supplied approved identity record.
 const approvedRecord = wire.TP1_APPROVED_IDENTITY_RECORD;
-const bb = wire.bindTp1Profile({ record: approvedRecord, local: buyerLocal });
-const sb = wire.bindTp1Profile({ record: approvedRecord, local: sellerLocal });
+const bb = bindTp1Fixture({ record: approvedRecord, local: buyerLocal });
+const sb = bindTp1Fixture({ record: approvedRecord, local: sellerLocal });
 const sellerKeys = generateKeyPairSync("ed25519");
 const sellerSigner = { claim: "did:demos:agent:" + sellerKeys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"), calls: 0,
   sign(bytes) { sellerSigner.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), sellerKeys.privateKey)); } };

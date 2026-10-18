@@ -355,6 +355,45 @@ anything: a mocked mainnet identity labelled testnet is unapproved, with or
 without a caller refusal list, and even when the caller passes its own
 approval list.
 
+The approved record identifies the allowed chain. Binding also requires a
+`readAuthority: Tp1AuthorityReader` installed by the local verifier or
+orchestrator, outside caller-controlled artifacts and HTTP phase input. It
+must authenticate the active transport's chain independently of the approved
+record. An endpoint string and a network label do not establish that fact.
+The reader returns `{local, chainIdentity, provenance, sessionId, participants}`.
+`local` includes the exact endpoint, transport authority and connection
+generation; `provenance` identifies that connection's authenticated attestation.
+The binding retains their digest and the reader in process-local state. A
+missing reader, wrong chain, changed connection or changed attestation refuses
+authorization. Two independently authenticated endpoints for the approved
+chain remain usable.
+
+Before signing or accepting a request, response or delegation, the wire asks
+that same reader for both authenticated participants in their exact `jobId`
+session. Discovery checks its seller in the `dacs-seller-discovery/v1` scope.
+Each participant entry is `{claim, profile, modules}`: the authenticated claim,
+the complete five-field wire profile, and exactly CORE 0.3, DACS-1 0.7,
+DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5. These are independent local
+authority, not additional wire members; the existing signed bytes are preserved.
+The returned session and ordered participant list must match exactly, with no
+missing or duplicate entry. A signed claim that names the right base cannot
+override different authenticated module evidence.
+
+The reader must consult current authenticated transport and participant/session
+state on every call and refuse revoked, missing, ambiguous or unavailable
+evidence. It must not echo the query or populate decisions from peer messages.
+The query with `sessionId: null` and an empty participant list checks only the
+connection, including at binding. It is not participant authorization. Every
+use rechecks authority, including admission of an already opened request and
+signing under a retained endpoint proof. Signers recheck after an asynchronous
+signature before returning it. Reader exceptions preserve their original
+causes. Reads performed by the integration, including through third-party
+libraries, require a byte limit before decoding, bounded decoded lists and a
+deadline. The wire itself performs no network I/O. Neither bindings nor a
+saved successful decision are restart credentials; recreate a binding and
+authenticate its current evidence after restart. Retained effect adapters still
+require composition qualification.
+
 `bindTp1Profile` reads each of its options once and takes one owned copy of
 the record and of the local connection (`snapshotCanonicalJsonConfig`,
 `src/canonical/snapshot.ts`) before any check. Every check, the approval
@@ -434,8 +473,9 @@ exchange. A binding is
 proved only by membership in a set private to `profile.ts` that
 `bindTp1Profile` fills; an object carrying the same profile or fields, a copy,
 a prototype child or a proxy of a binding is not a member
-(`tp1_binding_required`). `assertPeerProfile` also refuses a non-binding; it
-takes no connection. The set and list lookups are taken from their prototypes
+(`tp1_binding_required`). `assertPeerProfile` also refuses a non-binding and
+rechecks connection authority using the binding's stored local connection.
+The set and list lookups are taken from their prototypes
 when the module loads, so a later patch of `Array`, `WeakSet` or `WeakMap`
 prototypes does not open the gate. With the owned copies above, this holds
 against callers, including a record, connection, payload, request, delegation
@@ -480,6 +520,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 | `tp1_purchase_profile_mismatch` | the tuple kept for the purchase is absent, `null` where only a seller's new purchase allows it, or not the actor's own bound profile |
 | `tp1_identity_record_missing`, `tp1_identity_pin_missing`, `tp1_identity_record_invalid`, `tp1_identity_fixture`, `tp1_identity_refused`, `tp1_identity_unapproved` | identity gate |
 | `tp1_binding_required`, `tp1_local_binding_changed`, `tp1_local_binding_invalid` | signing or verifying without a binding from `bindTp1Profile`, or on a changed connection |
+| `tp1_authority_required`, `tp1_connection_unverified`, `tp1_participant_profile_mismatch` | missing trusted reader, unauthenticated/changed active connection, or mismatched authenticated participant/session profile and module evidence |
 | `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype) |
 | `discovery_*` | discovery document and endpoint proof |
