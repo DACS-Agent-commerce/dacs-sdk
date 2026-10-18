@@ -155,3 +155,10 @@ Publication cleanup approved 2026-10-18: current source comments, test labels, f
 Fixture publication cleanup: synthetic participant names use buyer/account roles, example account handles use fixture roles, residual numbered work labels describe their test behavior, and address-only fixture inputs use documentation address ranges. Assertions and authorization decisions are retained.
 
 Policy publication cleanup: historical finding/workstream citations use behavior and package labels. The policy regression applies exactly those documented citation substitutions to the immutable reviewed record before comparing; the remaining policy text, source references, regression requirements and gate paragraphs remain exact. A fixture administrator username is replaced with an operator role.
+
+
+Launch review correction: the hold and reciprocal controls now freeze only this private package. Unrelated SDK additions, edits, removals and merges do not need client re-pins. The provenance checker retains the published commit inventory and audits later client changes, while excluding unrelated later SDK commits and merge commits. Generated outside-file coordinates no longer depend on the evolving SDK tree.
+
+Every executable package test is discovered and run once with its registered count checked. Historical application tests requiring missing or removed components, and the source-only historical probe, are retained as exact text evidence under `evidence/source-tests/`, with a snapshot-bound index. Historical pass counts establish no current coverage. The package remains private, exports remain empty, purchase actions remain held, and the D11, DEC-16 and independent review prerequisites are still open.
+
+The explicit JSON maximum and transaction-comparison export are required by retained RPC/Directory and native authentication callers. Their bounded opt-in behavior is unchanged. Unrelated lockfile funding/deprecation metadata is restored to the merge-base values; the remaining lockfile diff registers the private workspace only.

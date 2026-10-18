@@ -157,6 +157,13 @@ Fixture publication cleanup: synthetic participant names use buyer/account roles
 
 Policy publication cleanup: historical finding/workstream citations use behavior and package labels. The policy regression applies exactly those documented citation substitutions to the immutable reviewed record before comparing; the remaining policy text, source references, regression requirements and gate paragraphs remain exact. A fixture administrator username is replaced with an operator role.
 
+
+Launch review correction: the hold and reciprocal controls now freeze only this private package. Unrelated SDK additions, edits, removals and merges do not need client re-pins. The provenance checker retains the published commit inventory and audits later client changes, while excluding unrelated later SDK commits and merge commits. Generated outside-file coordinates no longer depend on the evolving SDK tree.
+
+Every executable package test is discovered and run once with its registered count checked. Historical application tests requiring missing or removed components, and the source-only historical probe, are retained as exact text evidence under `evidence/source-tests/`, with a snapshot-bound index. Historical pass counts establish no current coverage. The package remains private, exports remain empty, purchase actions remain held, and the D11, DEC-16 and independent review prerequisites are still open.
+
+The explicit JSON maximum and transaction-comparison export are required by retained RPC/Directory and native authentication callers. Their bounded opt-in behavior is unchanged. Unrelated lockfile funding/deprecation metadata is restored to the merge-base values; the remaining lockfile diff registers the private workspace only.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -189,6 +196,196 @@ Policy publication cleanup: historical finding/workstream citations use behavior
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` | 306f583fa3a05fe470893f8d604131681ada172f |
 | | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` | ad06ad3f730a4b61f626a3eef35317bd839047b1 |
 | | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` | d370b9a3a69a7e927e6afde4100960654d82a8bb |
+| D16 | delta(client): D16 scope launch checks and identify executable tests | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/agreement-anchor-node-junk.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-context-durable-vet.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-context-integration.browser.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-context-integration.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-context-interactions.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-context-legacy-ops-health.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-context-replay-resend.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-context-single-vet.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-context-write-effect.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-plan-route-single-vet.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-plan-single-flight.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/agreement-plan-speed-composition.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/browser/dacs-storage-anchor-wallet.browser.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback-commit-on-signature.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback-final-hold.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback-in-flight.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback-off-identity.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback-proof.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback-source-native.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback-unit.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback-unmarked-invalid.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/buyer-chain-readback.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/catalog-observed-at.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closed-access-boundaries.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closed-access-guard-unit.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closed-access-paid-recovery.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closed-access-readback.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closed-access-receipt-verify.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closed-access-resend-notice.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closed-access-retained-resend.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closed-access-rpc-auth.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closure-identity-recovery.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closure-identity-sdk.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/closure-identity-witness.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commit-on-signature-authorization.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commit-on-signature-journal.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commit-on-signature-native.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commit-on-signature-recovery.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commit-on-signature.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commitment-consumer-proof-indeterminate.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commitment-node-junk-purchase-chain-readback.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commitment-node-junk-purchase-cos.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commitment-node-junk-purchase.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/commitment-node-junk-reader.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/completion-readiness.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/config-equivalence.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/current-delivery-readback.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-demos-sr2-wallet.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-demos-sr2.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-network-binding.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-offline-agreement-runtime.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-offline-browser-broker-coverage.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-offline-browser-broker.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-purchase.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-seller-recovery.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-seller-transport.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/dacs-storage-anchor-wallet.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/delivery-deadline-watch.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/denied-agreement-recovery.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-agreement-transport.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-buyer-access-prefixed.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-demo-anchor-recovery.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-live-composition-app.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-live-composition-artifacts.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-live-composition-builder.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-native-blockzero-fallback-prefixed.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-native-inclusion-wait.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-native-transport.browser.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-native-transport.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-approval-deadline.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-construction-cleanup.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-node2-fallback-prefixed.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-plan-shutdown-owned.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-prefixed-controls.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-prefixed-startup.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-seller-tls.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-operator-sequential-prefixed.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/devnet-storage-write-recovery.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/durable-wallet-journal.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/embedded-wallet-contract.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/embedded-wallet-flow.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/embedded-wallet-sdk.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/embedded-wallet-transaction.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/env-contract-defaults.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/fee-approval-recovery-offline.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/funding-help.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/github-signals-integration.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/github-signals.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/identities.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/identity-actions.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/immutable-readbacks.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/live-directory-check.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/mcp-seller-content-integration.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/mcp-seller-content.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/mcp-seller-diagnostics-errors.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/mcp-seller-diagnostics-settlement.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/mcp-seller-diagnostics.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-agreement-payment.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-agreement-readback-cache.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-payment-cancel-equivalent.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-payment-cancel-failed-lane.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-payment-cancel-out-of-order.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-payment-cancel-refused.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-payment-cancel-send.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-payment-evidence.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/native-settlement-consumer.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/node2-native-transfer-readback-prefixed.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/offline-tester.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/operator-approval-closing.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/ops-health-lost-attempt.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/ops-health.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/overnight-acceptance-core.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/overnight-core-identities-wire.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/overnight-core-seller.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/portal-auto-advance-hooks.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/portal-auto-assets.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/portal-auto-create-reload.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/portal-delivery-evidence-label.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/portal-seller-session-delegation.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/protocol-revision-races.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/public-sr2-projection.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/public-text-report-storage.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/purchase-abuse-limits.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/purchase-model-view.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/purchase-readback-cache.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/purchase-receipt.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/purchase.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/purchased-report.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-cli-recovery-coverage-operator-buyer.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-cli-recovery-coverage-seller-commitment.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-commit-phase-coverage-adoption.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-commit-retry-coverage-interactions.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-native-delivery-coverage.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-native-payment-coverage.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-native-readback-current-coverage.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-node2-current-coverage-block-zero.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-node2-current-coverage-consumers.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-node2-current-coverage-layout.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-node2-current-coverage-lifecycle.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/review-sr2-binding-coverage-interactions.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-durable-state-locks.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-http-failure-cause.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-identities-integration.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-identities.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-payment-recovery-repair-prefixed.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-session-final-recheck.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-session-key-retirement.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-session-keys.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-session-open-access.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-sr2-agreement.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-uncertain-payment-recovery-prefixed.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/seller-write-batch.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/server-hosting.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/service-request-binding-doc.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/settlement-kind-bridge.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-ledger-integration.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-live-operator.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-progress.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-publication-view.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-receipt-config.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-report-commit-on-signature.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-report-main-switches.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-report-seller-identities.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-report-settlement.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-safety.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/showcase-walkthrough.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/source-demo-e2e.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/st11-finalizers.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-compose.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-create-fence.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-devnet.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-operator-auth.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-peer-write.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-production.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-retry.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-review-wallet.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-switch.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/start-intent-wallet.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/switch-registry.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/tester-quickstart.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/ui-status.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/unit.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/wallet-demo-plan-admission.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/wallet-extension-probe.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/wallet-write-batch.test.mjs` (deleted) | deleted |
 
 ## Complete commit and file inventory
 
@@ -248,7 +445,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fd17519cb11c569b4fa6b45de6e61869c093c4ef | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
 | fd17519cb11c569b4fa6b45de6e61869c093c4ef | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 | 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `docs/raw-json-admission.md:1` |
-| 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `src/canonical/rawJson.ts:8`, `src/canonical/rawJson.ts:13` |
+| 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `src/canonical/rawJson.ts:1` |
 | 3448a7cc6edba4aaf938400b132952b6ddc7b02e | `test/canonical/rawJson.test.ts:1` |
 | 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/DELTA-LEDGER.json:1` |
@@ -264,7 +461,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | c93f168048b2604ce84eaa37fc95a184e3eaf51f | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | c93f168048b2604ce84eaa37fc95a184e3eaf51f | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
 | d938bf3db38a9c428569dc251b3385cf34614dae | `docs/raw-json-admission.md:1` |
-| d938bf3db38a9c428569dc251b3385cf34614dae | `src/canonical/rawJson.ts:8`, `src/canonical/rawJson.ts:13` |
+| d938bf3db38a9c428569dc251b3385cf34614dae | `src/canonical/rawJson.ts:1` |
 | d938bf3db38a9c428569dc251b3385cf34614dae | `test/canonical/rawJson.test.ts:1` |
 | delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/DELTA-LEDGER.json:1` |
@@ -275,6 +472,407 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` |
 | delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` |
 | delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `package-lock.json:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/IMPORT-CUT-MAP.md:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/README.md:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/PUBLICATION.md:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/INDEX.json:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/README.md:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/scripts/stale-pointer.probe.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-anchor-node-junk.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-durable-vet.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-integration.browser.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-integration.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-interactions.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-legacy-ops-health.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-replay-resend.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-single-vet.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-write-effect.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-plan-route-single-vet.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-plan-single-flight.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-plan-speed-composition.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/browser/dacs-storage-anchor-wallet.browser.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-commit-on-signature.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-final-hold.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-in-flight.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-off-identity.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-proof.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-source-native.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-unit.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-unmarked-invalid.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/catalog-observed-at.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-boundaries.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-guard-unit.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-paid-recovery.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-readback.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-receipt-verify.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-resend-notice.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-retained-resend.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-rpc-auth.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closure-identity-recovery.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closure-identity-sdk.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closure-identity-witness.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-authorization.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-journal.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-native.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-recovery.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-consumer-proof-indeterminate.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-chain-readback.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-cos.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-reader.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/completion-readiness.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/config-equivalence.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/current-delivery-readback.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-demos-sr2-wallet.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-demos-sr2.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-network-binding.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-offline-agreement-runtime.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-offline-browser-broker-coverage.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-offline-browser-broker.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-purchase.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-seller-recovery.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-seller-transport.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-storage-anchor-wallet.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/delivery-deadline-watch.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/denied-agreement-recovery.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-agreement-transport.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-buyer-access-prefixed.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-demo-anchor-recovery.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-app.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-artifacts.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-builder.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-native-blockzero-fallback-prefixed.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-native-inclusion-wait.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-native-transport.browser.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-native-transport.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-approval-deadline.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-construction-cleanup.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-node2-fallback-prefixed.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-plan-shutdown-owned.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-prefixed-controls.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-prefixed-startup.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-seller-tls.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-sequential-prefixed.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-storage-write-recovery.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/durable-wallet-journal.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-contract.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-flow.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-sdk.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-transaction.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/env-contract-defaults.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/fee-approval-recovery-offline.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/funding-help.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/github-signals-integration.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/github-signals.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/identities.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/identity-actions.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/immutable-readbacks.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/live-directory-check.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-content-integration.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-content.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics-errors.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics-settlement.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-agreement-payment.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-agreement-readback-cache.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-equivalent.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-failed-lane.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-out-of-order.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-refused.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-send.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-evidence.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-settlement-consumer.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/node2-native-transfer-readback-prefixed.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/offline-tester.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/operator-approval-closing.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/ops-health-lost-attempt.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/ops-health.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/overnight-acceptance-core.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/overnight-core-identities-wire.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/overnight-core-seller.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-auto-advance-hooks.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-auto-assets.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-auto-create-reload.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-delivery-evidence-label.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-seller-session-delegation.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/protocol-revision-races.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/public-sr2-projection.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/public-text-report-storage.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase-abuse-limits.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase-model-view.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase-readback-cache.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase-receipt.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchased-report.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-cli-recovery-coverage-operator-buyer.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-cli-recovery-coverage-seller-commitment.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-commit-phase-coverage-adoption.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-commit-retry-coverage-interactions.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-native-delivery-coverage.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-native-payment-coverage.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-native-readback-current-coverage.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-block-zero.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-consumers.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-layout.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-lifecycle.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-sr2-binding-coverage-interactions.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-durable-state-locks.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-http-failure-cause.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-identities-integration.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-identities.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-payment-recovery-repair-prefixed.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-policy-delivery-evidence.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-session-final-recheck.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-session-key-retirement.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-session-keys.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-session-open-access.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-sr2-agreement.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-uncertain-payment-recovery-prefixed.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-write-batch.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/server-hosting.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/service-request-binding-doc.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/settlement-kind-bridge.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-ledger-integration.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-live-operator.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-progress.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-publication-view.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-receipt-config.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-report-commit-on-signature.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-report-main-switches.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-report-seller-identities.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-report-settlement.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-safety.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-walkthrough.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/source-demo-e2e.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/st11-finalizers.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-compose.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-create-fence.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-devnet.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-operator-auth.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-peer-write.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-production.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-retry.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-review-wallet.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-switch.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-wallet.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/switch-registry.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/tester-quickstart.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/ui-status.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/unit.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/wallet-demo-plan-admission.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/wallet-extension-probe-routes.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/wallet-extension-probe.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/wallet-write-batch.test.mjs.txt:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/package.json:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/import-cut-map.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/pin-delta.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/stale-pointer.probe.test.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/test-layout.test.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/test.mjs:1` |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-anchor-node-junk.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-durable-vet.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-integration.browser.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-integration.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-interactions.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-legacy-ops-health.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-replay-resend.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-single-vet.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-write-effect.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-plan-route-single-vet.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-plan-single-flight.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-plan-speed-composition.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/browser/dacs-storage-anchor-wallet.browser.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-commit-on-signature.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-final-hold.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-in-flight.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-off-identity.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-proof.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-source-native.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-unit.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-unmarked-invalid.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/catalog-observed-at.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-boundaries.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-guard-unit.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-paid-recovery.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-readback.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-receipt-verify.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-resend-notice.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-retained-resend.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-rpc-auth.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closure-identity-recovery.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closure-identity-sdk.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closure-identity-witness.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature-authorization.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature-journal.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature-native.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature-recovery.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-consumer-proof-indeterminate.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-purchase-chain-readback.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-purchase-cos.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-purchase.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-reader.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/completion-readiness.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/config-equivalence.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/current-delivery-readback.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-demos-sr2-wallet.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-demos-sr2.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-network-binding.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-offline-agreement-runtime.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-offline-browser-broker-coverage.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-offline-browser-broker.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-purchase.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-seller-recovery.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-seller-transport.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-storage-anchor-wallet.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/delivery-deadline-watch.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/denied-agreement-recovery.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-agreement-transport.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-buyer-access-prefixed.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-demo-anchor-recovery.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-live-composition-app.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-live-composition-artifacts.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-live-composition-builder.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-native-blockzero-fallback-prefixed.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-native-inclusion-wait.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-native-transport.browser.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-native-transport.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-approval-deadline.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-construction-cleanup.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-node2-fallback-prefixed.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-plan-shutdown-owned.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-prefixed-controls.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-prefixed-startup.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-seller-tls.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-sequential-prefixed.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-storage-write-recovery.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/durable-wallet-journal.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/embedded-wallet-contract.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/embedded-wallet-flow.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/embedded-wallet-sdk.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/embedded-wallet-transaction.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/env-contract-defaults.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/fee-approval-recovery-offline.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/funding-help.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/github-signals-integration.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/github-signals.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/identities.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/identity-actions.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/immutable-readbacks.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/live-directory-check.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-content-integration.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-content.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-diagnostics-errors.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-diagnostics-settlement.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-diagnostics.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-agreement-payment.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-agreement-readback-cache.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-equivalent.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-failed-lane.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-out-of-order.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-refused.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-send.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-evidence.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-settlement-consumer.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/node2-native-transfer-readback-prefixed.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/offline-tester.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/operator-approval-closing.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/ops-health-lost-attempt.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/ops-health.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/overnight-acceptance-core.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/overnight-core-identities-wire.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/overnight-core-seller.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-auto-advance-hooks.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-auto-assets.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-auto-create-reload.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-delivery-evidence-label.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-seller-session-delegation.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/protocol-revision-races.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/public-sr2-projection.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/public-text-report-storage.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase-abuse-limits.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase-model-view.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase-readback-cache.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase-receipt.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchased-report.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-cli-recovery-coverage-operator-buyer.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-cli-recovery-coverage-seller-commitment.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-commit-phase-coverage-adoption.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-commit-retry-coverage-interactions.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-native-delivery-coverage.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-native-payment-coverage.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-native-readback-current-coverage.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-node2-current-coverage-block-zero.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-node2-current-coverage-consumers.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-node2-current-coverage-layout.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-node2-current-coverage-lifecycle.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-sr2-binding-coverage-interactions.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-durable-state-locks.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-http-failure-cause.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-identities-integration.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-identities.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-payment-recovery-repair-prefixed.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-session-final-recheck.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-session-key-retirement.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-session-keys.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-session-open-access.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-sr2-agreement.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-uncertain-payment-recovery-prefixed.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-write-batch.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/server-hosting.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/service-request-binding-doc.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/settlement-kind-bridge.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-ledger-integration.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-live-operator.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-progress.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-publication-view.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-receipt-config.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-report-commit-on-signature.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-report-main-switches.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-report-seller-identities.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-report-settlement.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-safety.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-walkthrough.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/source-demo-e2e.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/st11-finalizers.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-compose.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-create-fence.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-devnet.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-operator-auth.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-peer-write.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-production.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-retry.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-review-wallet.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-switch.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-wallet.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/switch-registry.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/tester-quickstart.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/ui-status.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/unit.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-demo-plan-admission.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-extension-probe.test.mjs` (deleted) |
+| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-write-batch.test.mjs` (deleted) |
 
 ## Original moved files
 
@@ -332,27 +930,27 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/util/text.mjs` | `http-mcp/src/util/text.mjs` | 1d922fed1da018ce9a4296d97bb50323e5eb67f6 | unchanged | 1d922fed1da018ce9a4296d97bb50323e5eb67f6 |
 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs` | `http-mcp/src/wallet/devnet-native-transport.mjs` | 218571c937066a1d0b01908d2fe1eb86d40144af | unchanged | 218571c937066a1d0b01908d2fe1eb86d40144af |
 | `packages/dacs-client/src/wallet/durable-journal.mjs` | `http-mcp/src/wallet/durable-journal.mjs` | 8917eac7303f718f2fb1ec4dad47235c0364c4cb | unchanged | 8917eac7303f718f2fb1ec4dad47235c0364c4cb |
-| `packages/dacs-client/test/agreement-context-durable-vet.test.mjs` | `http-mcp/test/agreement-context-durable-vet.test.mjs` | b0a38b796a121d15243b049904e66ac511cf2a37 | unchanged | b0a38b796a121d15243b049904e66ac511cf2a37 |
-| `packages/dacs-client/test/agreement-context-integration.browser.test.mjs` | `http-mcp/test/agreement-context-integration.browser.test.mjs` | b7452f47ac9b6288476d3276e351e63e2894e1a6 | unchanged | b7452f47ac9b6288476d3276e351e63e2894e1a6 |
-| `packages/dacs-client/test/agreement-context-integration.test.mjs` | `http-mcp/test/agreement-context-integration.test.mjs` | ae9502b5dc105e5017d2290936b890a8da99d602 | unchanged | ae9502b5dc105e5017d2290936b890a8da99d602 |
-| `packages/dacs-client/test/agreement-context-interactions.test.mjs` | `http-mcp/test/agreement-context-interactions.test.mjs` | e8ac917d67218d5bfbc2c4a56bb3cdddf200e0a5 | unchanged | e8ac917d67218d5bfbc2c4a56bb3cdddf200e0a5 |
-| `packages/dacs-client/test/agreement-context-legacy-ops-health.test.mjs` | `http-mcp/test/agreement-context-legacy-ops-health.test.mjs` | ecd5a865c34ebf6701d4db6859d077efaf84f1c8 | unchanged | ecd5a865c34ebf6701d4db6859d077efaf84f1c8 |
-| `packages/dacs-client/test/agreement-context-replay-resend.test.mjs` | `http-mcp/test/agreement-context-replay-resend.test.mjs` | 9442b85b89f5c3fc25737d144cd6e004812cfe18 | unchanged | 9442b85b89f5c3fc25737d144cd6e004812cfe18 |
-| `packages/dacs-client/test/agreement-context-single-vet.test.mjs` | `http-mcp/test/agreement-context-single-vet.test.mjs` | 6a1f4ed05facd9b0a9c9542bf50a5bf8c121cca9 | unchanged | 6a1f4ed05facd9b0a9c9542bf50a5bf8c121cca9 |
-| `packages/dacs-client/test/agreement-context-write-effect.test.mjs` | `http-mcp/test/agreement-context-write-effect.test.mjs` | 6dfb653a365d8910cd47f745880964ffd7c3b350 | unchanged | 6dfb653a365d8910cd47f745880964ffd7c3b350 |
-| `packages/dacs-client/test/agreement-plan-route-single-vet.test.mjs` | `http-mcp/test/agreement-plan-route-single-vet.test.mjs` | 0b1a54b31bfb6857b0ae139bf0bf817a38821e9e | unchanged | 0b1a54b31bfb6857b0ae139bf0bf817a38821e9e |
-| `packages/dacs-client/test/agreement-plan-single-flight.test.mjs` | `http-mcp/test/agreement-plan-single-flight.test.mjs` | c50c9f25d5244f0491021ac7185ab18a4f3446c8 | unchanged | c50c9f25d5244f0491021ac7185ab18a4f3446c8 |
-| `packages/dacs-client/test/agreement-plan-speed-composition.test.mjs` | `http-mcp/test/agreement-plan-speed-composition.test.mjs` | 8260ad26219dc1a1258120b37b06ceb986cf6be8 | unchanged | 8260ad26219dc1a1258120b37b06ceb986cf6be8 |
-| `packages/dacs-client/test/browser/dacs-storage-anchor-wallet.browser.test.mjs` | `http-mcp/test/browser/dacs-storage-anchor-wallet.browser.test.mjs` | fce110d3f6e66d93d2e95f51e93d1224727dabd9 | unchanged | fce110d3f6e66d93d2e95f51e93d1224727dabd9 |
-| `packages/dacs-client/test/buyer-chain-readback-commit-on-signature.test.mjs` | `http-mcp/test/buyer-chain-readback-commit-on-signature.test.mjs` | a6fd4b3caa8c0ab69e662c39426dfcdece59b638 | unchanged | a6fd4b3caa8c0ab69e662c39426dfcdece59b638 |
-| `packages/dacs-client/test/buyer-chain-readback-final-hold.test.mjs` | `http-mcp/test/buyer-chain-readback-final-hold.test.mjs` | f99ba15d85fe52bff0aa6f40aba71870da299c1d | unchanged | f99ba15d85fe52bff0aa6f40aba71870da299c1d |
-| `packages/dacs-client/test/buyer-chain-readback-in-flight.test.mjs` | `http-mcp/test/buyer-chain-readback-in-flight.test.mjs` | 6e0a3dc336002d136c6c88819d9ce27e29db67c3 | unchanged | 6e0a3dc336002d136c6c88819d9ce27e29db67c3 |
-| `packages/dacs-client/test/buyer-chain-readback-off-identity.test.mjs` | `http-mcp/test/buyer-chain-readback-off-identity.test.mjs` | fdcb5f583d9110658db8e75025b1fceaf3972fdf | unchanged | fdcb5f583d9110658db8e75025b1fceaf3972fdf |
-| `packages/dacs-client/test/buyer-chain-readback-proof.test.mjs` | `http-mcp/test/buyer-chain-readback-proof.test.mjs` | fac9a852c54dea9450a367b82646d4065da469a1 | unchanged | fac9a852c54dea9450a367b82646d4065da469a1 |
-| `packages/dacs-client/test/buyer-chain-readback-source-native.test.mjs` | `http-mcp/test/buyer-chain-readback-source-native.test.mjs` | 4d690c0a6fe187d669f393bb29f1cdb6a676a8d6 | unchanged | 4d690c0a6fe187d669f393bb29f1cdb6a676a8d6 |
-| `packages/dacs-client/test/buyer-chain-readback-unit.test.mjs` | `http-mcp/test/buyer-chain-readback-unit.test.mjs` | e2adf9a20edc66da14fb83f279837402f8a7cd9f | unchanged | e2adf9a20edc66da14fb83f279837402f8a7cd9f |
-| `packages/dacs-client/test/buyer-chain-readback.test.mjs` | `http-mcp/test/buyer-chain-readback.test.mjs` | e7054a6458185949ec040218cd081aabe41db872 | unchanged | e7054a6458185949ec040218cd081aabe41db872 |
-| `packages/dacs-client/test/catalog-observed-at.test.mjs` | `http-mcp/test/catalog-observed-at.test.mjs` | 55fdbc46647f4478849de7623006639408b38792 | unchanged | 55fdbc46647f4478849de7623006639408b38792 |
+| `packages/dacs-client/test/agreement-context-durable-vet.test.mjs` | `http-mcp/test/agreement-context-durable-vet.test.mjs` | b0a38b796a121d15243b049904e66ac511cf2a37 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-context-integration.browser.test.mjs` | `http-mcp/test/agreement-context-integration.browser.test.mjs` | b7452f47ac9b6288476d3276e351e63e2894e1a6 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-context-integration.test.mjs` | `http-mcp/test/agreement-context-integration.test.mjs` | ae9502b5dc105e5017d2290936b890a8da99d602 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-context-interactions.test.mjs` | `http-mcp/test/agreement-context-interactions.test.mjs` | e8ac917d67218d5bfbc2c4a56bb3cdddf200e0a5 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-context-legacy-ops-health.test.mjs` | `http-mcp/test/agreement-context-legacy-ops-health.test.mjs` | ecd5a865c34ebf6701d4db6859d077efaf84f1c8 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-context-replay-resend.test.mjs` | `http-mcp/test/agreement-context-replay-resend.test.mjs` | 9442b85b89f5c3fc25737d144cd6e004812cfe18 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-context-single-vet.test.mjs` | `http-mcp/test/agreement-context-single-vet.test.mjs` | 6a1f4ed05facd9b0a9c9542bf50a5bf8c121cca9 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-context-write-effect.test.mjs` | `http-mcp/test/agreement-context-write-effect.test.mjs` | 6dfb653a365d8910cd47f745880964ffd7c3b350 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-plan-route-single-vet.test.mjs` | `http-mcp/test/agreement-plan-route-single-vet.test.mjs` | 0b1a54b31bfb6857b0ae139bf0bf817a38821e9e | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-plan-single-flight.test.mjs` | `http-mcp/test/agreement-plan-single-flight.test.mjs` | c50c9f25d5244f0491021ac7185ab18a4f3446c8 | deleted by D16 | deleted |
+| `packages/dacs-client/test/agreement-plan-speed-composition.test.mjs` | `http-mcp/test/agreement-plan-speed-composition.test.mjs` | 8260ad26219dc1a1258120b37b06ceb986cf6be8 | deleted by D16 | deleted |
+| `packages/dacs-client/test/browser/dacs-storage-anchor-wallet.browser.test.mjs` | `http-mcp/test/browser/dacs-storage-anchor-wallet.browser.test.mjs` | fce110d3f6e66d93d2e95f51e93d1224727dabd9 | deleted by D16 | deleted |
+| `packages/dacs-client/test/buyer-chain-readback-commit-on-signature.test.mjs` | `http-mcp/test/buyer-chain-readback-commit-on-signature.test.mjs` | a6fd4b3caa8c0ab69e662c39426dfcdece59b638 | deleted by D16 | deleted |
+| `packages/dacs-client/test/buyer-chain-readback-final-hold.test.mjs` | `http-mcp/test/buyer-chain-readback-final-hold.test.mjs` | f99ba15d85fe52bff0aa6f40aba71870da299c1d | deleted by D16 | deleted |
+| `packages/dacs-client/test/buyer-chain-readback-in-flight.test.mjs` | `http-mcp/test/buyer-chain-readback-in-flight.test.mjs` | 6e0a3dc336002d136c6c88819d9ce27e29db67c3 | deleted by D16 | deleted |
+| `packages/dacs-client/test/buyer-chain-readback-off-identity.test.mjs` | `http-mcp/test/buyer-chain-readback-off-identity.test.mjs` | fdcb5f583d9110658db8e75025b1fceaf3972fdf | deleted by D16 | deleted |
+| `packages/dacs-client/test/buyer-chain-readback-proof.test.mjs` | `http-mcp/test/buyer-chain-readback-proof.test.mjs` | fac9a852c54dea9450a367b82646d4065da469a1 | deleted by D16 | deleted |
+| `packages/dacs-client/test/buyer-chain-readback-source-native.test.mjs` | `http-mcp/test/buyer-chain-readback-source-native.test.mjs` | 4d690c0a6fe187d669f393bb29f1cdb6a676a8d6 | deleted by D16 | deleted |
+| `packages/dacs-client/test/buyer-chain-readback-unit.test.mjs` | `http-mcp/test/buyer-chain-readback-unit.test.mjs` | e2adf9a20edc66da14fb83f279837402f8a7cd9f | deleted by D16 | deleted |
+| `packages/dacs-client/test/buyer-chain-readback.test.mjs` | `http-mcp/test/buyer-chain-readback.test.mjs` | e7054a6458185949ec040218cd081aabe41db872 | deleted by D16 | deleted |
+| `packages/dacs-client/test/catalog-observed-at.test.mjs` | `http-mcp/test/catalog-observed-at.test.mjs` | 55fdbc46647f4478849de7623006639408b38792 | deleted by D16 | deleted |
 | `packages/dacs-client/test/source-review-cli-recovery-coverage-operator-buyer.test.mjs` | `http-mcp/test/source-review-cli-recovery-coverage-operator-buyer.test.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/test/source-review-cli-recovery-coverage-seller-commitment.test.mjs` | `http-mcp/test/source-review-cli-recovery-coverage-seller-commitment.test.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/test/source-review-commit-phase-coverage-adoption.test.mjs` | `http-mcp/test/source-review-commit-phase-coverage-adoption.test.mjs` | deleted before publication | unchanged | deleted |
@@ -365,67 +963,67 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/test/source-review-node2-current-coverage-layout.test.mjs` | `http-mcp/test/source-review-node2-current-coverage-layout.test.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/test/source-review-node2-current-coverage-lifecycle.test.mjs` | `http-mcp/test/source-review-node2-current-coverage-lifecycle.test.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/test/source-review-sr2-binding-coverage-interactions.test.mjs` | `http-mcp/test/source-review-sr2-binding-coverage-interactions.test.mjs` | deleted before publication | unchanged | deleted |
-| `packages/dacs-client/test/closed-access-boundaries.test.mjs` | `http-mcp/test/closed-access-boundaries.test.mjs` | 4a45912824137080eb3439104737bc662c55a5be | unchanged | 4a45912824137080eb3439104737bc662c55a5be |
-| `packages/dacs-client/test/closed-access-guard-unit.test.mjs` | `http-mcp/test/closed-access-guard-unit.test.mjs` | 529d33024d5204e4a54eb580167041d46ebf627f | unchanged | 529d33024d5204e4a54eb580167041d46ebf627f |
-| `packages/dacs-client/test/closed-access-paid-recovery.test.mjs` | `http-mcp/test/closed-access-paid-recovery.test.mjs` | cb2272f32d6850564b40a5320d6da9ce2ff4e3bc | unchanged | cb2272f32d6850564b40a5320d6da9ce2ff4e3bc |
-| `packages/dacs-client/test/closed-access-readback.test.mjs` | `http-mcp/test/closed-access-readback.test.mjs` | e381b9323a0f5c1be848ed866a915cbc5a5998fa | unchanged | e381b9323a0f5c1be848ed866a915cbc5a5998fa |
-| `packages/dacs-client/test/closed-access-receipt-verify.test.mjs` | `http-mcp/test/closed-access-receipt-verify.test.mjs` | bf8840ea3aec8ea7d23bfd9696c53735a977911c | unchanged | bf8840ea3aec8ea7d23bfd9696c53735a977911c |
-| `packages/dacs-client/test/closed-access-resend-notice.test.mjs` | `http-mcp/test/closed-access-resend-notice.test.mjs` | 5e7fa8615a9e4b04e8a8b508fb75233d7c459352 | unchanged | 5e7fa8615a9e4b04e8a8b508fb75233d7c459352 |
-| `packages/dacs-client/test/closed-access-retained-resend.test.mjs` | `http-mcp/test/closed-access-retained-resend.test.mjs` | 2f3a9862e7d15339b2cbb3c2a13d3ad9e7998eb5 | unchanged | 2f3a9862e7d15339b2cbb3c2a13d3ad9e7998eb5 |
-| `packages/dacs-client/test/closed-access-rpc-auth.test.mjs` | `http-mcp/test/closed-access-rpc-auth.test.mjs` | d79d1120647b80c3bf55a4710d953b84cafa9076 | unchanged | d79d1120647b80c3bf55a4710d953b84cafa9076 |
-| `packages/dacs-client/test/closure-identity-recovery.test.mjs` | `http-mcp/test/closure-identity-recovery.test.mjs` | d6a63139981da26fcac23139708bac87c76f8f29 | unchanged | d6a63139981da26fcac23139708bac87c76f8f29 |
-| `packages/dacs-client/test/closure-identity-sdk.test.mjs` | `http-mcp/test/closure-identity-sdk.test.mjs` | 3959113db6977399b99cde4b1b1a41c810525006 | unchanged | 3959113db6977399b99cde4b1b1a41c810525006 |
-| `packages/dacs-client/test/closure-identity-witness.test.mjs` | `http-mcp/test/closure-identity-witness.test.mjs` | cda627ffbcd931b325378ae231a567c781e0edd1 | unchanged | cda627ffbcd931b325378ae231a567c781e0edd1 |
-| `packages/dacs-client/test/commit-on-signature-authorization.test.mjs` | `http-mcp/test/commit-on-signature-authorization.test.mjs` | 20d1c4874f7355f799b99635688d027f13ca400c | unchanged | 20d1c4874f7355f799b99635688d027f13ca400c |
-| `packages/dacs-client/test/commit-on-signature-journal.test.mjs` | `http-mcp/test/commit-on-signature-journal.test.mjs` | 836d312bd9ab20fe3915ecef7c80bace1d4f40be | unchanged | 836d312bd9ab20fe3915ecef7c80bace1d4f40be |
-| `packages/dacs-client/test/commit-on-signature-native.test.mjs` | `http-mcp/test/commit-on-signature-native.test.mjs` | a4024302e97d79d662eae43bd0a81573f8224a91 | unchanged | a4024302e97d79d662eae43bd0a81573f8224a91 |
-| `packages/dacs-client/test/commit-on-signature-recovery.test.mjs` | `http-mcp/test/commit-on-signature-recovery.test.mjs` | d3fe0fef1685f502c360396cf042aa168ca5eee1 | unchanged | d3fe0fef1685f502c360396cf042aa168ca5eee1 |
-| `packages/dacs-client/test/commit-on-signature.test.mjs` | `http-mcp/test/commit-on-signature.test.mjs` | b8a44082e3670bd86db9e165293bb67cfe0dfcb4 | unchanged | b8a44082e3670bd86db9e165293bb67cfe0dfcb4 |
-| `packages/dacs-client/test/completion-readiness.test.mjs` | `http-mcp/test/completion-readiness.test.mjs` | 7c7da91c6deedcdf4afc14314a73110240fee3d1 | unchanged | 7c7da91c6deedcdf4afc14314a73110240fee3d1 |
-| `packages/dacs-client/test/config-equivalence.test.mjs` | `http-mcp/test/config-equivalence.test.mjs` | 4a210e595ccf64840c482281adddc08419d88167 | unchanged | 4a210e595ccf64840c482281adddc08419d88167 |
-| `packages/dacs-client/test/current-delivery-readback.test.mjs` | `http-mcp/test/current-delivery-readback.test.mjs` | 88a16f2b3d361cdd85831b3bdeae3b9c6448b844 | unchanged | 88a16f2b3d361cdd85831b3bdeae3b9c6448b844 |
-| `packages/dacs-client/test/dacs-demos-sr2-wallet.test.mjs` | `http-mcp/test/dacs-demos-sr2-wallet.test.mjs` | 2937af523b7d565cadd8902b553151d3f67598a9 | unchanged | 2937af523b7d565cadd8902b553151d3f67598a9 |
-| `packages/dacs-client/test/dacs-demos-sr2.test.mjs` | `http-mcp/test/dacs-demos-sr2.test.mjs` | a873dd4dadf009def8d24aeb549d9ea9cc7aada7 | unchanged | a873dd4dadf009def8d24aeb549d9ea9cc7aada7 |
+| `packages/dacs-client/test/closed-access-boundaries.test.mjs` | `http-mcp/test/closed-access-boundaries.test.mjs` | 4a45912824137080eb3439104737bc662c55a5be | deleted by D16 | deleted |
+| `packages/dacs-client/test/closed-access-guard-unit.test.mjs` | `http-mcp/test/closed-access-guard-unit.test.mjs` | 529d33024d5204e4a54eb580167041d46ebf627f | deleted by D16 | deleted |
+| `packages/dacs-client/test/closed-access-paid-recovery.test.mjs` | `http-mcp/test/closed-access-paid-recovery.test.mjs` | cb2272f32d6850564b40a5320d6da9ce2ff4e3bc | deleted by D16 | deleted |
+| `packages/dacs-client/test/closed-access-readback.test.mjs` | `http-mcp/test/closed-access-readback.test.mjs` | e381b9323a0f5c1be848ed866a915cbc5a5998fa | deleted by D16 | deleted |
+| `packages/dacs-client/test/closed-access-receipt-verify.test.mjs` | `http-mcp/test/closed-access-receipt-verify.test.mjs` | bf8840ea3aec8ea7d23bfd9696c53735a977911c | deleted by D16 | deleted |
+| `packages/dacs-client/test/closed-access-resend-notice.test.mjs` | `http-mcp/test/closed-access-resend-notice.test.mjs` | 5e7fa8615a9e4b04e8a8b508fb75233d7c459352 | deleted by D16 | deleted |
+| `packages/dacs-client/test/closed-access-retained-resend.test.mjs` | `http-mcp/test/closed-access-retained-resend.test.mjs` | 2f3a9862e7d15339b2cbb3c2a13d3ad9e7998eb5 | deleted by D16 | deleted |
+| `packages/dacs-client/test/closed-access-rpc-auth.test.mjs` | `http-mcp/test/closed-access-rpc-auth.test.mjs` | d79d1120647b80c3bf55a4710d953b84cafa9076 | deleted by D16 | deleted |
+| `packages/dacs-client/test/closure-identity-recovery.test.mjs` | `http-mcp/test/closure-identity-recovery.test.mjs` | d6a63139981da26fcac23139708bac87c76f8f29 | deleted by D16 | deleted |
+| `packages/dacs-client/test/closure-identity-sdk.test.mjs` | `http-mcp/test/closure-identity-sdk.test.mjs` | 3959113db6977399b99cde4b1b1a41c810525006 | deleted by D16 | deleted |
+| `packages/dacs-client/test/closure-identity-witness.test.mjs` | `http-mcp/test/closure-identity-witness.test.mjs` | cda627ffbcd931b325378ae231a567c781e0edd1 | deleted by D16 | deleted |
+| `packages/dacs-client/test/commit-on-signature-authorization.test.mjs` | `http-mcp/test/commit-on-signature-authorization.test.mjs` | 20d1c4874f7355f799b99635688d027f13ca400c | deleted by D16 | deleted |
+| `packages/dacs-client/test/commit-on-signature-journal.test.mjs` | `http-mcp/test/commit-on-signature-journal.test.mjs` | 836d312bd9ab20fe3915ecef7c80bace1d4f40be | deleted by D16 | deleted |
+| `packages/dacs-client/test/commit-on-signature-native.test.mjs` | `http-mcp/test/commit-on-signature-native.test.mjs` | a4024302e97d79d662eae43bd0a81573f8224a91 | deleted by D16 | deleted |
+| `packages/dacs-client/test/commit-on-signature-recovery.test.mjs` | `http-mcp/test/commit-on-signature-recovery.test.mjs` | d3fe0fef1685f502c360396cf042aa168ca5eee1 | deleted by D16 | deleted |
+| `packages/dacs-client/test/commit-on-signature.test.mjs` | `http-mcp/test/commit-on-signature.test.mjs` | b8a44082e3670bd86db9e165293bb67cfe0dfcb4 | deleted by D16 | deleted |
+| `packages/dacs-client/test/completion-readiness.test.mjs` | `http-mcp/test/completion-readiness.test.mjs` | 7c7da91c6deedcdf4afc14314a73110240fee3d1 | deleted by D16 | deleted |
+| `packages/dacs-client/test/config-equivalence.test.mjs` | `http-mcp/test/config-equivalence.test.mjs` | 4a210e595ccf64840c482281adddc08419d88167 | deleted by D16 | deleted |
+| `packages/dacs-client/test/current-delivery-readback.test.mjs` | `http-mcp/test/current-delivery-readback.test.mjs` | 88a16f2b3d361cdd85831b3bdeae3b9c6448b844 | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-demos-sr2-wallet.test.mjs` | `http-mcp/test/dacs-demos-sr2-wallet.test.mjs` | 2937af523b7d565cadd8902b553151d3f67598a9 | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-demos-sr2.test.mjs` | `http-mcp/test/dacs-demos-sr2.test.mjs` | a873dd4dadf009def8d24aeb549d9ea9cc7aada7 | deleted by D16 | deleted |
 | `packages/dacs-client/test/dacs-loopback-fixture.test.mjs` | `http-mcp/test/dacs-loopback-fixture.test.mjs` | deleted before publication | unchanged | deleted |
-| `packages/dacs-client/test/dacs-network-binding.test.mjs` | `http-mcp/test/dacs-network-binding.test.mjs` | b1ec40864360733e25cfcf1df497d1523583e78d | unchanged | b1ec40864360733e25cfcf1df497d1523583e78d |
-| `packages/dacs-client/test/dacs-offline-agreement-runtime.test.mjs` | `http-mcp/test/dacs-offline-agreement-runtime.test.mjs` | de3ddc481243b4611942312d32bafd41feb25898 | unchanged | de3ddc481243b4611942312d32bafd41feb25898 |
-| `packages/dacs-client/test/dacs-offline-browser-broker-coverage.test.mjs` | `http-mcp/test/dacs-offline-browser-broker-coverage.test.mjs` | f5af04210c5711b44df5142b8da5dabf8a784af7 | unchanged | f5af04210c5711b44df5142b8da5dabf8a784af7 |
-| `packages/dacs-client/test/dacs-offline-browser-broker.test.mjs` | `http-mcp/test/dacs-offline-browser-broker.test.mjs` | d155af03d8b3ccc59d4ec5597879d48ea9c62d38 | unchanged | d155af03d8b3ccc59d4ec5597879d48ea9c62d38 |
-| `packages/dacs-client/test/dacs-purchase.test.mjs` | `http-mcp/test/dacs-purchase.test.mjs` | ab836aa9a6e2ac3b676bb5aaf4368006392ab278 | unchanged | ab836aa9a6e2ac3b676bb5aaf4368006392ab278 |
-| `packages/dacs-client/test/dacs-seller-recovery.test.mjs` | `http-mcp/test/dacs-seller-recovery.test.mjs` | fadbd6ae9cacbb18ade3c3aa4c36772d38b76655 | unchanged | fadbd6ae9cacbb18ade3c3aa4c36772d38b76655 |
-| `packages/dacs-client/test/dacs-seller-transport.test.mjs` | `http-mcp/test/dacs-seller-transport.test.mjs` | 9a65731deee638b944283dae0b6379a87d682573 | unchanged | 9a65731deee638b944283dae0b6379a87d682573 |
-| `packages/dacs-client/test/dacs-storage-anchor-wallet.test.mjs` | `http-mcp/test/dacs-storage-anchor-wallet.test.mjs` | 02b4abc02f8c88e54f5cbb894dcb266e1b7a5b87 | unchanged | 02b4abc02f8c88e54f5cbb894dcb266e1b7a5b87 |
-| `packages/dacs-client/test/delivery-deadline-watch.test.mjs` | `http-mcp/test/delivery-deadline-watch.test.mjs` | 62348902519cf5979f9d691d92b897a99557a681 | unchanged | 62348902519cf5979f9d691d92b897a99557a681 |
-| `packages/dacs-client/test/denied-agreement-recovery.test.mjs` | `http-mcp/test/denied-agreement-recovery.test.mjs` | 0d78e9cf8bc75d432ea663e0261ab276941b712e | unchanged | 0d78e9cf8bc75d432ea663e0261ab276941b712e |
-| `packages/dacs-client/test/devnet-agreement-transport.test.mjs` | `http-mcp/test/devnet-agreement-transport.test.mjs` | d19fb5e178922c2a2ae77f3db4a34b69e7b9bd43 | unchanged | d19fb5e178922c2a2ae77f3db4a34b69e7b9bd43 |
-| `packages/dacs-client/test/devnet-buyer-access-prefixed.test.mjs` | `http-mcp/test/devnet-buyer-access-prefixed.test.mjs` | 23bfb2cd91a8502cf1a02cb7bf16a90343ac6fdf | unchanged | 23bfb2cd91a8502cf1a02cb7bf16a90343ac6fdf |
-| `packages/dacs-client/test/devnet-demo-anchor-recovery.test.mjs` | `http-mcp/test/devnet-demo-anchor-recovery.test.mjs` | a99e514f1d168ea1b315a9496bb1ce5f68ec918c | unchanged | a99e514f1d168ea1b315a9496bb1ce5f68ec918c |
-| `packages/dacs-client/test/devnet-live-composition-app.test.mjs` | `http-mcp/test/devnet-live-composition-app.test.mjs` | fa21c5fb1c20a5a4a7e5a8776f6579b5cde8c5ca | unchanged | fa21c5fb1c20a5a4a7e5a8776f6579b5cde8c5ca |
-| `packages/dacs-client/test/devnet-live-composition-artifacts.test.mjs` | `http-mcp/test/devnet-live-composition-artifacts.test.mjs` | ef4c78fcbf8b1de074ef6303d8c948b52b570ff9 | unchanged | ef4c78fcbf8b1de074ef6303d8c948b52b570ff9 |
-| `packages/dacs-client/test/devnet-live-composition-builder.test.mjs` | `http-mcp/test/devnet-live-composition-builder.test.mjs` | ebd2e70614ac7548502173b3cac7a725b8b2f7a4 | unchanged | ebd2e70614ac7548502173b3cac7a725b8b2f7a4 |
-| `packages/dacs-client/test/devnet-native-blockzero-fallback-prefixed.test.mjs` | `http-mcp/test/devnet-native-blockzero-fallback-prefixed.test.mjs` | b79eb794301316fee06fe03492bcde907d38b930 | unchanged | b79eb794301316fee06fe03492bcde907d38b930 |
-| `packages/dacs-client/test/devnet-native-inclusion-wait.test.mjs` | `http-mcp/test/devnet-native-inclusion-wait.test.mjs` | c9cdcc8e449257d34636f63df0fcb849f1a6f65d | unchanged | c9cdcc8e449257d34636f63df0fcb849f1a6f65d |
-| `packages/dacs-client/test/devnet-native-transport.browser.test.mjs` | `http-mcp/test/devnet-native-transport.browser.test.mjs` | 2dae8bda731c7008cb33e8a24384541baf11a8c3 | unchanged | 2dae8bda731c7008cb33e8a24384541baf11a8c3 |
-| `packages/dacs-client/test/devnet-native-transport.test.mjs` | `http-mcp/test/devnet-native-transport.test.mjs` | 6fbc6752ea280a561acc7243301867426227fe88 | unchanged | 6fbc6752ea280a561acc7243301867426227fe88 |
-| `packages/dacs-client/test/devnet-operator-approval-deadline.test.mjs` | `http-mcp/test/devnet-operator-approval-deadline.test.mjs` | 633290ff57ca8c8c82a470d9440b3bf3a7435355 | unchanged | 633290ff57ca8c8c82a470d9440b3bf3a7435355 |
-| `packages/dacs-client/test/devnet-operator-construction-cleanup.test.mjs` | `http-mcp/test/devnet-operator-construction-cleanup.test.mjs` | 0fa804bd74e7c82630d236bab3e936bdaf26ebac | unchanged | 0fa804bd74e7c82630d236bab3e936bdaf26ebac |
-| `packages/dacs-client/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs` | `http-mcp/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs` | c005a6d8ac41edbfdbf46de5135301adbc8ea6de | unchanged | c005a6d8ac41edbfdbf46de5135301adbc8ea6de |
-| `packages/dacs-client/test/devnet-operator-node2-fallback-prefixed.test.mjs` | `http-mcp/test/devnet-operator-node2-fallback-prefixed.test.mjs` | 95e44e787d1ad975ab21ced0a095be4c43001e1c | unchanged | 95e44e787d1ad975ab21ced0a095be4c43001e1c |
-| `packages/dacs-client/test/devnet-operator-plan-shutdown-owned.test.mjs` | `http-mcp/test/devnet-operator-plan-shutdown-owned.test.mjs` | 0701bfa1c340b965b9ff386b6df363d8b7105ac4 | unchanged | 0701bfa1c340b965b9ff386b6df363d8b7105ac4 |
-| `packages/dacs-client/test/devnet-operator-prefixed-controls.test.mjs` | `http-mcp/test/devnet-operator-prefixed-controls.test.mjs` | 7f52d9a8dbd81f24f2927fd33e1a9f89871f82fa | unchanged | 7f52d9a8dbd81f24f2927fd33e1a9f89871f82fa |
-| `packages/dacs-client/test/devnet-operator-prefixed-startup.test.mjs` | `http-mcp/test/devnet-operator-prefixed-startup.test.mjs` | 2e719c32422b8bafad9db62b6ec86cf88ff59f66 | unchanged | 2e719c32422b8bafad9db62b6ec86cf88ff59f66 |
-| `packages/dacs-client/test/devnet-operator-seller-tls.test.mjs` | `http-mcp/test/devnet-operator-seller-tls.test.mjs` | 1f5dce6ce65d541b20de3622cb646fdb645cb064 | unchanged | 1f5dce6ce65d541b20de3622cb646fdb645cb064 |
-| `packages/dacs-client/test/devnet-operator-sequential-prefixed.test.mjs` | `http-mcp/test/devnet-operator-sequential-prefixed.test.mjs` | 4e270efcd1c119deee58172caf83ad40903b2083 | unchanged | 4e270efcd1c119deee58172caf83ad40903b2083 |
+| `packages/dacs-client/test/dacs-network-binding.test.mjs` | `http-mcp/test/dacs-network-binding.test.mjs` | b1ec40864360733e25cfcf1df497d1523583e78d | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-offline-agreement-runtime.test.mjs` | `http-mcp/test/dacs-offline-agreement-runtime.test.mjs` | de3ddc481243b4611942312d32bafd41feb25898 | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-offline-browser-broker-coverage.test.mjs` | `http-mcp/test/dacs-offline-browser-broker-coverage.test.mjs` | f5af04210c5711b44df5142b8da5dabf8a784af7 | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-offline-browser-broker.test.mjs` | `http-mcp/test/dacs-offline-browser-broker.test.mjs` | d155af03d8b3ccc59d4ec5597879d48ea9c62d38 | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-purchase.test.mjs` | `http-mcp/test/dacs-purchase.test.mjs` | ab836aa9a6e2ac3b676bb5aaf4368006392ab278 | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-seller-recovery.test.mjs` | `http-mcp/test/dacs-seller-recovery.test.mjs` | fadbd6ae9cacbb18ade3c3aa4c36772d38b76655 | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-seller-transport.test.mjs` | `http-mcp/test/dacs-seller-transport.test.mjs` | 9a65731deee638b944283dae0b6379a87d682573 | deleted by D16 | deleted |
+| `packages/dacs-client/test/dacs-storage-anchor-wallet.test.mjs` | `http-mcp/test/dacs-storage-anchor-wallet.test.mjs` | 02b4abc02f8c88e54f5cbb894dcb266e1b7a5b87 | deleted by D16 | deleted |
+| `packages/dacs-client/test/delivery-deadline-watch.test.mjs` | `http-mcp/test/delivery-deadline-watch.test.mjs` | 62348902519cf5979f9d691d92b897a99557a681 | deleted by D16 | deleted |
+| `packages/dacs-client/test/denied-agreement-recovery.test.mjs` | `http-mcp/test/denied-agreement-recovery.test.mjs` | 0d78e9cf8bc75d432ea663e0261ab276941b712e | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-agreement-transport.test.mjs` | `http-mcp/test/devnet-agreement-transport.test.mjs` | d19fb5e178922c2a2ae77f3db4a34b69e7b9bd43 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-buyer-access-prefixed.test.mjs` | `http-mcp/test/devnet-buyer-access-prefixed.test.mjs` | 23bfb2cd91a8502cf1a02cb7bf16a90343ac6fdf | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-demo-anchor-recovery.test.mjs` | `http-mcp/test/devnet-demo-anchor-recovery.test.mjs` | a99e514f1d168ea1b315a9496bb1ce5f68ec918c | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-live-composition-app.test.mjs` | `http-mcp/test/devnet-live-composition-app.test.mjs` | fa21c5fb1c20a5a4a7e5a8776f6579b5cde8c5ca | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-live-composition-artifacts.test.mjs` | `http-mcp/test/devnet-live-composition-artifacts.test.mjs` | ef4c78fcbf8b1de074ef6303d8c948b52b570ff9 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-live-composition-builder.test.mjs` | `http-mcp/test/devnet-live-composition-builder.test.mjs` | ebd2e70614ac7548502173b3cac7a725b8b2f7a4 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-native-blockzero-fallback-prefixed.test.mjs` | `http-mcp/test/devnet-native-blockzero-fallback-prefixed.test.mjs` | b79eb794301316fee06fe03492bcde907d38b930 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-native-inclusion-wait.test.mjs` | `http-mcp/test/devnet-native-inclusion-wait.test.mjs` | c9cdcc8e449257d34636f63df0fcb849f1a6f65d | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-native-transport.browser.test.mjs` | `http-mcp/test/devnet-native-transport.browser.test.mjs` | 2dae8bda731c7008cb33e8a24384541baf11a8c3 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-native-transport.test.mjs` | `http-mcp/test/devnet-native-transport.test.mjs` | 6fbc6752ea280a561acc7243301867426227fe88 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-approval-deadline.test.mjs` | `http-mcp/test/devnet-operator-approval-deadline.test.mjs` | 633290ff57ca8c8c82a470d9440b3bf3a7435355 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-construction-cleanup.test.mjs` | `http-mcp/test/devnet-operator-construction-cleanup.test.mjs` | 0fa804bd74e7c82630d236bab3e936bdaf26ebac | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs` | `http-mcp/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs` | c005a6d8ac41edbfdbf46de5135301adbc8ea6de | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-node2-fallback-prefixed.test.mjs` | `http-mcp/test/devnet-operator-node2-fallback-prefixed.test.mjs` | 95e44e787d1ad975ab21ced0a095be4c43001e1c | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-plan-shutdown-owned.test.mjs` | `http-mcp/test/devnet-operator-plan-shutdown-owned.test.mjs` | 0701bfa1c340b965b9ff386b6df363d8b7105ac4 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-prefixed-controls.test.mjs` | `http-mcp/test/devnet-operator-prefixed-controls.test.mjs` | 7f52d9a8dbd81f24f2927fd33e1a9f89871f82fa | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-prefixed-startup.test.mjs` | `http-mcp/test/devnet-operator-prefixed-startup.test.mjs` | 2e719c32422b8bafad9db62b6ec86cf88ff59f66 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-seller-tls.test.mjs` | `http-mcp/test/devnet-operator-seller-tls.test.mjs` | 1f5dce6ce65d541b20de3622cb646fdb645cb064 | deleted by D16 | deleted |
+| `packages/dacs-client/test/devnet-operator-sequential-prefixed.test.mjs` | `http-mcp/test/devnet-operator-sequential-prefixed.test.mjs` | 4e270efcd1c119deee58172caf83ad40903b2083 | deleted by D16 | deleted |
 | `packages/dacs-client/test/devnet-purchase.browser.test.mjs` | `http-mcp/test/devnet-purchase.browser.test.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/test/devnet-purchase.test.mjs` | `http-mcp/test/devnet-purchase.test.mjs` | deleted before publication | unchanged | deleted |
-| `packages/dacs-client/test/devnet-storage-write-recovery.test.mjs` | `http-mcp/test/devnet-storage-write-recovery.test.mjs` | f122a6ac3311e3b0fed22a228a932c04960abecf | unchanged | f122a6ac3311e3b0fed22a228a932c04960abecf |
-| `packages/dacs-client/test/durable-wallet-journal.test.mjs` | `http-mcp/test/durable-wallet-journal.test.mjs` | 8b3228f152227f6f8042c595422805c21e41282e | unchanged | 8b3228f152227f6f8042c595422805c21e41282e |
-| `packages/dacs-client/test/embedded-wallet-contract.test.mjs` | `http-mcp/test/embedded-wallet-contract.test.mjs` | 31d105b6b8efb545f175b1f8588879a15be20e87 | unchanged | 31d105b6b8efb545f175b1f8588879a15be20e87 |
-| `packages/dacs-client/test/embedded-wallet-flow.test.mjs` | `http-mcp/test/embedded-wallet-flow.test.mjs` | 7b0c1438cb608366584774add49d9e8806758304 | unchanged | 7b0c1438cb608366584774add49d9e8806758304 |
-| `packages/dacs-client/test/embedded-wallet-sdk.test.mjs` | `http-mcp/test/embedded-wallet-sdk.test.mjs` | 4056ae83be29e7efb7e768ac313ada62e9f01505 | unchanged | 4056ae83be29e7efb7e768ac313ada62e9f01505 |
-| `packages/dacs-client/test/embedded-wallet-transaction.test.mjs` | `http-mcp/test/embedded-wallet-transaction.test.mjs` | ce227ccbced6b39504c1e51890faf38eae3af999 | unchanged | ce227ccbced6b39504c1e51890faf38eae3af999 |
-| `packages/dacs-client/test/env-contract-defaults.test.mjs` | `http-mcp/test/env-contract-defaults.test.mjs` | 7ad2209623612abbd29fb558b3e65d60887e1ffa | unchanged | 7ad2209623612abbd29fb558b3e65d60887e1ffa |
-| `packages/dacs-client/test/fee-approval-recovery-offline.test.mjs` | `http-mcp/test/fee-approval-recovery-offline.test.mjs` | 015f4a680b9902c5f1eaccc00285a7f4802af1fe | unchanged | 015f4a680b9902c5f1eaccc00285a7f4802af1fe |
+| `packages/dacs-client/test/devnet-storage-write-recovery.test.mjs` | `http-mcp/test/devnet-storage-write-recovery.test.mjs` | f122a6ac3311e3b0fed22a228a932c04960abecf | deleted by D16 | deleted |
+| `packages/dacs-client/test/durable-wallet-journal.test.mjs` | `http-mcp/test/durable-wallet-journal.test.mjs` | 8b3228f152227f6f8042c595422805c21e41282e | deleted by D16 | deleted |
+| `packages/dacs-client/test/embedded-wallet-contract.test.mjs` | `http-mcp/test/embedded-wallet-contract.test.mjs` | 31d105b6b8efb545f175b1f8588879a15be20e87 | deleted by D16 | deleted |
+| `packages/dacs-client/test/embedded-wallet-flow.test.mjs` | `http-mcp/test/embedded-wallet-flow.test.mjs` | 7b0c1438cb608366584774add49d9e8806758304 | deleted by D16 | deleted |
+| `packages/dacs-client/test/embedded-wallet-sdk.test.mjs` | `http-mcp/test/embedded-wallet-sdk.test.mjs` | 4056ae83be29e7efb7e768ac313ada62e9f01505 | deleted by D16 | deleted |
+| `packages/dacs-client/test/embedded-wallet-transaction.test.mjs` | `http-mcp/test/embedded-wallet-transaction.test.mjs` | ce227ccbced6b39504c1e51890faf38eae3af999 | deleted by D16 | deleted |
+| `packages/dacs-client/test/env-contract-defaults.test.mjs` | `http-mcp/test/env-contract-defaults.test.mjs` | 7ad2209623612abbd29fb558b3e65d60887e1ffa | deleted by D16 | deleted |
+| `packages/dacs-client/test/fee-approval-recovery-offline.test.mjs` | `http-mcp/test/fee-approval-recovery-offline.test.mjs` | 015f4a680b9902c5f1eaccc00285a7f4802af1fe | deleted by D16 | deleted |
 | `packages/dacs-client/test/fixtures/authorization-server.pre-dcr-logout.mjs` | `http-mcp/test/fixtures/authorization-server.pre-dcr-logout.mjs` | 2821bf43b14367810b3b5b651fdac6e57a0778ef | unchanged | 2821bf43b14367810b3b5b651fdac6e57a0778ef |
 | `packages/dacs-client/test/fixtures/buyer-chain-readback-off-identity.json` | `http-mcp/test/fixtures/buyer-chain-readback-off-identity.json` | 57276c9da5e05c05cd1ea843da30a1bbe7de5242 | unchanged | 57276c9da5e05c05cd1ea843da30a1bbe7de5242 |
 | `packages/dacs-client/test/fixtures/chain-server.mjs` | `http-mcp/test/fixtures/chain-server.mjs` | f88b51cf492bbbfb10cb1ba907fe89f3ba461f58 | unchanged | f88b51cf492bbbfb10cb1ba907fe89f3ba461f58 |
@@ -440,9 +1038,9 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/test/fixtures/switch-slice-da459ee.json` | `http-mcp/test/fixtures/switch-slice-da459ee.json` | 14c51f43c4a7260c9837bb5fa882559124da3340 | unchanged | 14c51f43c4a7260c9837bb5fa882559124da3340 |
 | `packages/dacs-client/test/fixtures/test-issuer.mjs` | `http-mcp/test/fixtures/test-issuer.mjs` | c0b9c4e7af299b1d6264d21188adc9ec8dadb82b | unchanged | c0b9c4e7af299b1d6264d21188adc9ec8dadb82b |
 | `packages/dacs-client/test/fixtures/wallet.mjs` | `http-mcp/test/fixtures/wallet.mjs` | 4ee7eacda377c731fd70105eaa3bf862421e01c3 | unchanged | 4ee7eacda377c731fd70105eaa3bf862421e01c3 |
-| `packages/dacs-client/test/funding-help.test.mjs` | `http-mcp/test/funding-help.test.mjs` | 7f0243bfdc78cf6b4c5ea9d6430a8bd3a1956774 | unchanged | 7f0243bfdc78cf6b4c5ea9d6430a8bd3a1956774 |
-| `packages/dacs-client/test/github-signals-integration.test.mjs` | `http-mcp/test/github-signals-integration.test.mjs` | 00c86be32e848ec683826242e72644d62fae55ed | unchanged | 00c86be32e848ec683826242e72644d62fae55ed |
-| `packages/dacs-client/test/github-signals.test.mjs` | `http-mcp/test/github-signals.test.mjs` | 8e26c17fda4b5e0aceaa41285c36822224a9df98 | unchanged | 8e26c17fda4b5e0aceaa41285c36822224a9df98 |
+| `packages/dacs-client/test/funding-help.test.mjs` | `http-mcp/test/funding-help.test.mjs` | 7f0243bfdc78cf6b4c5ea9d6430a8bd3a1956774 | deleted by D16 | deleted |
+| `packages/dacs-client/test/github-signals-integration.test.mjs` | `http-mcp/test/github-signals-integration.test.mjs` | 00c86be32e848ec683826242e72644d62fae55ed | deleted by D16 | deleted |
+| `packages/dacs-client/test/github-signals.test.mjs` | `http-mcp/test/github-signals.test.mjs` | 8e26c17fda4b5e0aceaa41285c36822224a9df98 | deleted by D16 | deleted |
 | `packages/dacs-client/test/helpers/agreement-context-integration.mjs` | `http-mcp/test/helpers/agreement-context-integration.mjs` | 3bbc74d4d3f72101e8b3d3b2ff27449ba4105add | unchanged | 3bbc74d4d3f72101e8b3d3b2ff27449ba4105add |
 | `packages/dacs-client/test/helpers/agreement-context-interactions.mjs` | `http-mcp/test/helpers/agreement-context-interactions.mjs` | 394daf0a79c06daca32a652af4518a580b3eead1 | unchanged | 394daf0a79c06daca32a652af4518a580b3eead1 |
 | `packages/dacs-client/test/helpers/answer-writer-worker.mjs` | `http-mcp/test/helpers/answer-writer-worker.mjs` | 0dfaa97df64033fb3e15553fae6649b3c626a90d | unchanged | 0dfaa97df64033fb3e15553fae6649b3c626a90d |
@@ -522,90 +1120,90 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/test/helpers/wallet-extension-probe-dom.mjs` | `http-mcp/test/helpers/wallet-extension-probe-dom.mjs` | 82ed93b9e4d001302b7fc8ea6e57b5ee5c04467c | unchanged | 82ed93b9e4d001302b7fc8ea6e57b5ee5c04467c |
 | `packages/dacs-client/test/helpers/wallet-extension-probe-sdk.mjs` | `http-mcp/test/helpers/wallet-extension-probe-sdk.mjs` | 7845ed9e5ec7ef0d68886924899f8e7780055c4d | unchanged | 7845ed9e5ec7ef0d68886924899f8e7780055c4d |
 | `packages/dacs-client/test/helpers/wallet-write-batch-child.mjs` | `http-mcp/test/helpers/wallet-write-batch-child.mjs` | 764309a83279905a9684713aab2102e70c992c1c | unchanged | 764309a83279905a9684713aab2102e70c992c1c |
-| `packages/dacs-client/test/identities.test.mjs` | `http-mcp/test/identities.test.mjs` | 08d742ef7fdf29ae97679557b92955f24a420918 | unchanged | 08d742ef7fdf29ae97679557b92955f24a420918 |
-| `packages/dacs-client/test/identity-actions.test.mjs` | `http-mcp/test/identity-actions.test.mjs` | fd197db0ad13e9754e8094315232f5a0c6717990 | unchanged | fd197db0ad13e9754e8094315232f5a0c6717990 |
-| `packages/dacs-client/test/immutable-readbacks.test.mjs` | `http-mcp/test/immutable-readbacks.test.mjs` | f8dd18c87541eacb81c19031caa1e43d19c14723 | unchanged | f8dd18c87541eacb81c19031caa1e43d19c14723 |
-| `packages/dacs-client/test/live-directory-check.test.mjs` | `http-mcp/test/live-directory-check.test.mjs` | 896a37d7d504eaa7871271247c98007caa1c06b6 | unchanged | 896a37d7d504eaa7871271247c98007caa1c06b6 |
-| `packages/dacs-client/test/mcp-seller-content-integration.test.mjs` | `http-mcp/test/mcp-seller-content-integration.test.mjs` | 6864f583776866930efd4f4b6f61594bdbce22f9 | unchanged | 6864f583776866930efd4f4b6f61594bdbce22f9 |
-| `packages/dacs-client/test/mcp-seller-content.test.mjs` | `http-mcp/test/mcp-seller-content.test.mjs` | 7186af1b00de543bd9db977eb43c5954bb0de893 | unchanged | 7186af1b00de543bd9db977eb43c5954bb0de893 |
-| `packages/dacs-client/test/mcp-seller-diagnostics-errors.test.mjs` | `http-mcp/test/mcp-seller-diagnostics-errors.test.mjs` | 0b0d5f0bbae55afd9cefbb37b9e8187ef328d71e | unchanged | 0b0d5f0bbae55afd9cefbb37b9e8187ef328d71e |
-| `packages/dacs-client/test/mcp-seller-diagnostics-settlement.test.mjs` | `http-mcp/test/mcp-seller-diagnostics-settlement.test.mjs` | aede5d12f06253cff8b55874972502ec990f3d5d | unchanged | aede5d12f06253cff8b55874972502ec990f3d5d |
-| `packages/dacs-client/test/mcp-seller-diagnostics.test.mjs` | `http-mcp/test/mcp-seller-diagnostics.test.mjs` | 541702b3ad6d252938557ac21bb7f990a4573d69 | unchanged | 541702b3ad6d252938557ac21bb7f990a4573d69 |
-| `packages/dacs-client/test/native-agreement-payment.test.mjs` | `http-mcp/test/native-agreement-payment.test.mjs` | 6ca9fda96702a116649d2772b8e3e4c227de4fdd | unchanged | 6ca9fda96702a116649d2772b8e3e4c227de4fdd |
-| `packages/dacs-client/test/native-agreement-readback-cache.test.mjs` | `http-mcp/test/native-agreement-readback-cache.test.mjs` | f8bc67391ae08b4b52b0e903cba08da52285a4d1 | unchanged | f8bc67391ae08b4b52b0e903cba08da52285a4d1 |
-| `packages/dacs-client/test/native-payment-cancel-equivalent.test.mjs` | `http-mcp/test/native-payment-cancel-equivalent.test.mjs` | 7ca9619279addee3ae172dbde6c33537e8c3419f | unchanged | 7ca9619279addee3ae172dbde6c33537e8c3419f |
-| `packages/dacs-client/test/native-payment-cancel-failed-lane.test.mjs` | `http-mcp/test/native-payment-cancel-failed-lane.test.mjs` | 6ea6e31233b6bc5eff72f25430ecd4344a05ba60 | unchanged | 6ea6e31233b6bc5eff72f25430ecd4344a05ba60 |
-| `packages/dacs-client/test/native-payment-cancel-out-of-order.test.mjs` | `http-mcp/test/native-payment-cancel-out-of-order.test.mjs` | 3c13d5f7ed51f4ba2bf1ec94bb624c9330dc70dd | unchanged | 3c13d5f7ed51f4ba2bf1ec94bb624c9330dc70dd |
-| `packages/dacs-client/test/native-payment-cancel-refused.test.mjs` | `http-mcp/test/native-payment-cancel-refused.test.mjs` | 8db37e978f0810751910e61bc41f21dedbaee736 | unchanged | 8db37e978f0810751910e61bc41f21dedbaee736 |
-| `packages/dacs-client/test/native-payment-cancel-send.test.mjs` | `http-mcp/test/native-payment-cancel-send.test.mjs` | c6fcbf02f0cfcb79a6e1622f37498e6b839e4064 | unchanged | c6fcbf02f0cfcb79a6e1622f37498e6b839e4064 |
-| `packages/dacs-client/test/native-payment-evidence.test.mjs` | `http-mcp/test/native-payment-evidence.test.mjs` | 8b621484673ce423199ee32ae9810dc030e6912f | unchanged | 8b621484673ce423199ee32ae9810dc030e6912f |
-| `packages/dacs-client/test/native-settlement-consumer.test.mjs` | `http-mcp/test/native-settlement-consumer.test.mjs` | 7dc4758f418dadf71d5ec87eb32485d71c78b8a8 | unchanged | 7dc4758f418dadf71d5ec87eb32485d71c78b8a8 |
-| `packages/dacs-client/test/node2-native-transfer-readback-prefixed.test.mjs` | `http-mcp/test/node2-native-transfer-readback-prefixed.test.mjs` | 3d349d684805b944bf99562924db227123c17238 | unchanged | 3d349d684805b944bf99562924db227123c17238 |
-| `packages/dacs-client/test/offline-tester.test.mjs` | `http-mcp/test/offline-tester.test.mjs` | 082153dc66ddf530f555fafc1888654066bf59fe | unchanged | 082153dc66ddf530f555fafc1888654066bf59fe |
-| `packages/dacs-client/test/operator-approval-closing.test.mjs` | `http-mcp/test/operator-approval-closing.test.mjs` | 81b0fc28526d6beee1718fad2cd850bbae9c1901 | unchanged | 81b0fc28526d6beee1718fad2cd850bbae9c1901 |
-| `packages/dacs-client/test/ops-health-lost-attempt.test.mjs` | `http-mcp/test/ops-health-lost-attempt.test.mjs` | 3c6377eb0b648d72493db93a3256a90a0f895b96 | unchanged | 3c6377eb0b648d72493db93a3256a90a0f895b96 |
-| `packages/dacs-client/test/ops-health.test.mjs` | `http-mcp/test/ops-health.test.mjs` | b88578207a349f2186509bc8a70ce1a22310d650 | unchanged | b88578207a349f2186509bc8a70ce1a22310d650 |
-| `packages/dacs-client/test/overnight-acceptance-core.test.mjs` | `http-mcp/test/overnight-acceptance-core.test.mjs` | fc269dbb6ceae5fbe3296b843857a82c3569c2dc | unchanged | fc269dbb6ceae5fbe3296b843857a82c3569c2dc |
-| `packages/dacs-client/test/overnight-core-identities-wire.test.mjs` | `http-mcp/test/overnight-core-identities-wire.test.mjs` | ca7ce99d01179e786bed3e163d7f424df9d715dc | unchanged | ca7ce99d01179e786bed3e163d7f424df9d715dc |
-| `packages/dacs-client/test/overnight-core-seller.test.mjs` | `http-mcp/test/overnight-core-seller.test.mjs` | 29f335f36d7bb40a05337c8d13931146f0c174d6 | unchanged | 29f335f36d7bb40a05337c8d13931146f0c174d6 |
-| `packages/dacs-client/test/portal-auto-advance-hooks.test.mjs` | `http-mcp/test/portal-auto-advance-hooks.test.mjs` | eaf08c7693f2c5ee3173310dc7750801eaddcbcd | unchanged | eaf08c7693f2c5ee3173310dc7750801eaddcbcd |
-| `packages/dacs-client/test/portal-auto-assets.test.mjs` | `http-mcp/test/portal-auto-assets.test.mjs` | b10e39e464ac68ac890b2ef23a942ec960d691a9 | unchanged | b10e39e464ac68ac890b2ef23a942ec960d691a9 |
-| `packages/dacs-client/test/portal-auto-create-reload.test.mjs` | `http-mcp/test/portal-auto-create-reload.test.mjs` | 717d660fa15e289ac7344463557b3a3d6f9db867 | unchanged | 717d660fa15e289ac7344463557b3a3d6f9db867 |
-| `packages/dacs-client/test/portal-delivery-evidence-label.test.mjs` | `http-mcp/test/portal-delivery-evidence-label.test.mjs` | 5ab19a93ca73f82d8d9493498a2c4cb617957c96 | unchanged | 5ab19a93ca73f82d8d9493498a2c4cb617957c96 |
-| `packages/dacs-client/test/portal-seller-session-delegation.test.mjs` | `http-mcp/test/portal-seller-session-delegation.test.mjs` | c6fac8465fa420880661236808c00e7b8239fd4d | unchanged | c6fac8465fa420880661236808c00e7b8239fd4d |
-| `packages/dacs-client/test/protocol-revision-races.test.mjs` | `http-mcp/test/protocol-revision-races.test.mjs` | 9563926720abb31a483bd86da057952c8d34d375 | unchanged | 9563926720abb31a483bd86da057952c8d34d375 |
-| `packages/dacs-client/test/public-sr2-projection.test.mjs` | `http-mcp/test/public-sr2-projection.test.mjs` | 7a9d2bc74e19595d45f5ec8a9f108a8fdb7fbe8a | unchanged | 7a9d2bc74e19595d45f5ec8a9f108a8fdb7fbe8a |
-| `packages/dacs-client/test/public-text-report-storage.test.mjs` | `http-mcp/test/public-text-report-storage.test.mjs` | b52c158dd3aee5b2db75e399c9f6cb6eca5424e0 | unchanged | b52c158dd3aee5b2db75e399c9f6cb6eca5424e0 |
-| `packages/dacs-client/test/purchase-abuse-limits.test.mjs` | `http-mcp/test/purchase-abuse-limits.test.mjs` | f3712e8ad39d5771e734bd86c4ae691a36ccb24e | unchanged | f3712e8ad39d5771e734bd86c4ae691a36ccb24e |
-| `packages/dacs-client/test/purchase-model-view.test.mjs` | `http-mcp/test/purchase-model-view.test.mjs` | 133e2ca73c4085eec0a04bbc365de619c3dbcd7c | unchanged | 133e2ca73c4085eec0a04bbc365de619c3dbcd7c |
-| `packages/dacs-client/test/purchase-readback-cache.test.mjs` | `http-mcp/test/purchase-readback-cache.test.mjs` | e5630402e08a42858f3a8aea3d8c7c54b2d8295e | unchanged | e5630402e08a42858f3a8aea3d8c7c54b2d8295e |
-| `packages/dacs-client/test/purchase-receipt.test.mjs` | `http-mcp/test/purchase-receipt.test.mjs` | 918fcc4bf385fb93ce601ff217c5be6b9a69e7ec | unchanged | 918fcc4bf385fb93ce601ff217c5be6b9a69e7ec |
-| `packages/dacs-client/test/purchase.test.mjs` | `http-mcp/test/purchase.test.mjs` | 4e202c7cd7505a88d76638b53d2b745142a8b153 | unchanged | 4e202c7cd7505a88d76638b53d2b745142a8b153 |
-| `packages/dacs-client/test/purchased-report.test.mjs` | `http-mcp/test/purchased-report.test.mjs` | c611c8f74749302c3a6dfa62973f84817a1c8379 | unchanged | c611c8f74749302c3a6dfa62973f84817a1c8379 |
-| `packages/dacs-client/test/seller-durable-state-locks.test.mjs` | `http-mcp/test/seller-durable-state-locks.test.mjs` | 7ea6ed6c1bc0edb03eac34806ca5d8b9cc52e919 | unchanged | 7ea6ed6c1bc0edb03eac34806ca5d8b9cc52e919 |
-| `packages/dacs-client/test/seller-http-failure-cause.test.mjs` | `http-mcp/test/seller-http-failure-cause.test.mjs` | a9c5aef97f8154da66d37b6b464e1b68b7a1dade | unchanged | a9c5aef97f8154da66d37b6b464e1b68b7a1dade |
-| `packages/dacs-client/test/seller-identities-integration.test.mjs` | `http-mcp/test/seller-identities-integration.test.mjs` | 2fadd9540264b72c9379b787e20dc6994f0f529a | unchanged | 2fadd9540264b72c9379b787e20dc6994f0f529a |
-| `packages/dacs-client/test/seller-identities.test.mjs` | `http-mcp/test/seller-identities.test.mjs` | 3c327c21a6c463ab12c3ff7144f14b8280b83572 | unchanged | 3c327c21a6c463ab12c3ff7144f14b8280b83572 |
-| `packages/dacs-client/test/seller-payment-recovery-repair-prefixed.test.mjs` | `http-mcp/test/seller-payment-recovery-repair-prefixed.test.mjs` | c1599b3f0d78e3ad7225347b331d129aff6a6dc3 | unchanged | c1599b3f0d78e3ad7225347b331d129aff6a6dc3 |
-| `packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs` | `http-mcp/test/seller-policy-delivery-evidence.test.mjs` | 61af4bb4eae46cf9f65c77ee6c488599f82074ab | unchanged | 61af4bb4eae46cf9f65c77ee6c488599f82074ab |
-| `packages/dacs-client/test/seller-session-final-recheck.test.mjs` | `http-mcp/test/seller-session-final-recheck.test.mjs` | 23b22e5b3bccb3cc1f5565e9586b9639a0b4defe | unchanged | 23b22e5b3bccb3cc1f5565e9586b9639a0b4defe |
-| `packages/dacs-client/test/seller-session-key-retirement.test.mjs` | `http-mcp/test/seller-session-key-retirement.test.mjs` | a212a34ad9c75964b21cfc5ad16d76810fa38201 | unchanged | a212a34ad9c75964b21cfc5ad16d76810fa38201 |
-| `packages/dacs-client/test/seller-session-keys.test.mjs` | `http-mcp/test/seller-session-keys.test.mjs` | 6ef16aa92fb424bc27214ade72a01d90211de342 | unchanged | 6ef16aa92fb424bc27214ade72a01d90211de342 |
-| `packages/dacs-client/test/seller-session-open-access.test.mjs` | `http-mcp/test/seller-session-open-access.test.mjs` | 7502bf1a33d3e0ded0c9628ee30798a39766bf8e | unchanged | 7502bf1a33d3e0ded0c9628ee30798a39766bf8e |
-| `packages/dacs-client/test/seller-sr2-agreement.test.mjs` | `http-mcp/test/seller-sr2-agreement.test.mjs` | c08ee672a374af1f78d65c74bb8523da9d79b1a2 | unchanged | c08ee672a374af1f78d65c74bb8523da9d79b1a2 |
-| `packages/dacs-client/test/seller-uncertain-payment-recovery-prefixed.test.mjs` | `http-mcp/test/seller-uncertain-payment-recovery-prefixed.test.mjs` | 1ca8e17dea986f477b092d579b257073604a3471 | unchanged | 1ca8e17dea986f477b092d579b257073604a3471 |
-| `packages/dacs-client/test/seller-write-batch.test.mjs` | `http-mcp/test/seller-write-batch.test.mjs` | a46c75199640332c7a959031147408c458b611db | unchanged | a46c75199640332c7a959031147408c458b611db |
-| `packages/dacs-client/test/service-request-binding-doc.test.mjs` | `http-mcp/test/service-request-binding-doc.test.mjs` | 2eb4e8f564912eb6ad2574ae75d9cd0b0e72d3f9 | unchanged | 2eb4e8f564912eb6ad2574ae75d9cd0b0e72d3f9 |
-| `packages/dacs-client/test/settlement-kind-bridge.test.mjs` | `http-mcp/test/settlement-kind-bridge.test.mjs` | ed0a5ccf289098e042ad24c0043ce59754744be0 | unchanged | ed0a5ccf289098e042ad24c0043ce59754744be0 |
-| `packages/dacs-client/test/showcase-ledger-integration.test.mjs` | `http-mcp/test/showcase-ledger-integration.test.mjs` | 4b8b609a9e07e85195c17071ae950c15219f61de | unchanged | 4b8b609a9e07e85195c17071ae950c15219f61de |
-| `packages/dacs-client/test/showcase-live-operator.test.mjs` | `http-mcp/test/showcase-live-operator.test.mjs` | 9cadab583d3bdbc949e65c5826f62c955172349d | unchanged | 9cadab583d3bdbc949e65c5826f62c955172349d |
-| `packages/dacs-client/test/showcase-progress.test.mjs` | `http-mcp/test/showcase-progress.test.mjs` | 35cea9e295296320b0d7b5c4f25db2e9ef5bf83e | unchanged | 35cea9e295296320b0d7b5c4f25db2e9ef5bf83e |
-| `packages/dacs-client/test/showcase-publication-view.test.mjs` | `http-mcp/test/showcase-publication-view.test.mjs` | 5d2107d7f65e019b6544e78fc693e83b6241ff80 | unchanged | 5d2107d7f65e019b6544e78fc693e83b6241ff80 |
-| `packages/dacs-client/test/showcase-receipt-config.test.mjs` | `http-mcp/test/showcase-receipt-config.test.mjs` | 027c9dce0615af772abc25cab8d62948acf8fff3 | unchanged | 027c9dce0615af772abc25cab8d62948acf8fff3 |
-| `packages/dacs-client/test/showcase-report-commit-on-signature.test.mjs` | `http-mcp/test/showcase-report-commit-on-signature.test.mjs` | e90b0774ec7445c3139582d781d6f1e203cf50da | unchanged | e90b0774ec7445c3139582d781d6f1e203cf50da |
-| `packages/dacs-client/test/showcase-report-main-switches.test.mjs` | `http-mcp/test/showcase-report-main-switches.test.mjs` | 2909ef6bc824912cc9b7407e84310c08cda9aec0 | unchanged | 2909ef6bc824912cc9b7407e84310c08cda9aec0 |
-| `packages/dacs-client/test/showcase-report-seller-identities.test.mjs` | `http-mcp/test/showcase-report-seller-identities.test.mjs` | c98aed962d208536da8a5c7f4f7c5e445f6ebde5 | unchanged | c98aed962d208536da8a5c7f4f7c5e445f6ebde5 |
-| `packages/dacs-client/test/showcase-report-settlement.test.mjs` | `http-mcp/test/showcase-report-settlement.test.mjs` | 789589876aa24628127b3dac244674fa5f1247d7 | unchanged | 789589876aa24628127b3dac244674fa5f1247d7 |
-| `packages/dacs-client/test/showcase-safety.test.mjs` | `http-mcp/test/showcase-safety.test.mjs` | 33592ba9db541a08c7da0b6ab3886e11aba9ba44 | unchanged | 33592ba9db541a08c7da0b6ab3886e11aba9ba44 |
-| `packages/dacs-client/test/showcase-walkthrough.test.mjs` | `http-mcp/test/showcase-walkthrough.test.mjs` | 6ba82ac4aaf12f7a90ae9e2e1f10744d73c6f17e | unchanged | 6ba82ac4aaf12f7a90ae9e2e1f10744d73c6f17e |
-| `packages/dacs-client/test/source-demo-e2e.test.mjs` | `http-mcp/test/source-demo-e2e.test.mjs` | f434aa15f6507683b7729b508519aa9d1e8c1cd3 | unchanged | f434aa15f6507683b7729b508519aa9d1e8c1cd3 |
-| `packages/dacs-client/test/st11-finalizers.test.mjs` | `http-mcp/test/st11-finalizers.test.mjs` | 61de42a53ec0b878cf50b0e9b1b31791445cbf10 | unchanged | 61de42a53ec0b878cf50b0e9b1b31791445cbf10 |
-| `packages/dacs-client/test/start-intent-compose.test.mjs` | `http-mcp/test/start-intent-compose.test.mjs` | d5d458db5217bb07ca3ab279e5a12f481b51f3db | unchanged | d5d458db5217bb07ca3ab279e5a12f481b51f3db |
-| `packages/dacs-client/test/start-intent-create-fence.test.mjs` | `http-mcp/test/start-intent-create-fence.test.mjs` | 826a4d8f62ffa5c7d7e0587911dd0ae6b942a364 | unchanged | 826a4d8f62ffa5c7d7e0587911dd0ae6b942a364 |
-| `packages/dacs-client/test/start-intent-devnet.test.mjs` | `http-mcp/test/start-intent-devnet.test.mjs` | 8d340e3cbac6066652a35e3eb1e7a1837a0e1cd7 | unchanged | 8d340e3cbac6066652a35e3eb1e7a1837a0e1cd7 |
-| `packages/dacs-client/test/start-intent-operator-auth.test.mjs` | `http-mcp/test/start-intent-operator-auth.test.mjs` | 8355ae8a0273c7396ed57ccf35a9ff289735f71e | unchanged | 8355ae8a0273c7396ed57ccf35a9ff289735f71e |
-| `packages/dacs-client/test/start-intent-peer-write.test.mjs` | `http-mcp/test/start-intent-peer-write.test.mjs` | b275c67d75befb4ac3e337af11a4bfce79f2bfdc | unchanged | b275c67d75befb4ac3e337af11a4bfce79f2bfdc |
-| `packages/dacs-client/test/start-intent-production.test.mjs` | `http-mcp/test/start-intent-production.test.mjs` | 0d79405dea10af3ff55718eb5c370f2e780471a8 | unchanged | 0d79405dea10af3ff55718eb5c370f2e780471a8 |
-| `packages/dacs-client/test/start-intent-retry.test.mjs` | `http-mcp/test/start-intent-retry.test.mjs` | 846ce19be4f36bf41900fdb30e064e10e8823aad | unchanged | 846ce19be4f36bf41900fdb30e064e10e8823aad |
-| `packages/dacs-client/test/start-intent-review-wallet.test.mjs` | `http-mcp/test/start-intent-review-wallet.test.mjs` | cc3f3dccb38a79c1e7ba39b672f969aa95ec1e9d | unchanged | cc3f3dccb38a79c1e7ba39b672f969aa95ec1e9d |
-| `packages/dacs-client/test/start-intent-switch.test.mjs` | `http-mcp/test/start-intent-switch.test.mjs` | bfd12a5d743a1b6441f5f9bfd05b894a951e9ca6 | unchanged | bfd12a5d743a1b6441f5f9bfd05b894a951e9ca6 |
-| `packages/dacs-client/test/start-intent-wallet.test.mjs` | `http-mcp/test/start-intent-wallet.test.mjs` | d3f0b6c95036be12c1303de8eb03a209dfd12de5 | unchanged | d3f0b6c95036be12c1303de8eb03a209dfd12de5 |
-| `packages/dacs-client/test/switch-registry.test.mjs` | `http-mcp/test/switch-registry.test.mjs` | 24fe16ee6f204222fcd09e908bdfec0b653f25cb | unchanged | 24fe16ee6f204222fcd09e908bdfec0b653f25cb |
-| `packages/dacs-client/test/tester-quickstart.test.mjs` | `http-mcp/test/tester-quickstart.test.mjs` | 8b3c5d7666d5758602aa7622cd80b78c3c9645a6 | unchanged | 8b3c5d7666d5758602aa7622cd80b78c3c9645a6 |
-| `packages/dacs-client/test/ui-status.test.mjs` | `http-mcp/test/ui-status.test.mjs` | eebbba6c3aac998a9321d4d39bfc061897787583 | unchanged | eebbba6c3aac998a9321d4d39bfc061897787583 |
-| `packages/dacs-client/test/unit.test.mjs` | `http-mcp/test/unit.test.mjs` | a032de79e0a399ba4889a4108d6c7abb5b1c5f46 | unchanged | a032de79e0a399ba4889a4108d6c7abb5b1c5f46 |
+| `packages/dacs-client/test/identities.test.mjs` | `http-mcp/test/identities.test.mjs` | 08d742ef7fdf29ae97679557b92955f24a420918 | deleted by D16 | deleted |
+| `packages/dacs-client/test/identity-actions.test.mjs` | `http-mcp/test/identity-actions.test.mjs` | fd197db0ad13e9754e8094315232f5a0c6717990 | deleted by D16 | deleted |
+| `packages/dacs-client/test/immutable-readbacks.test.mjs` | `http-mcp/test/immutable-readbacks.test.mjs` | f8dd18c87541eacb81c19031caa1e43d19c14723 | deleted by D16 | deleted |
+| `packages/dacs-client/test/live-directory-check.test.mjs` | `http-mcp/test/live-directory-check.test.mjs` | 896a37d7d504eaa7871271247c98007caa1c06b6 | deleted by D16 | deleted |
+| `packages/dacs-client/test/mcp-seller-content-integration.test.mjs` | `http-mcp/test/mcp-seller-content-integration.test.mjs` | 6864f583776866930efd4f4b6f61594bdbce22f9 | deleted by D16 | deleted |
+| `packages/dacs-client/test/mcp-seller-content.test.mjs` | `http-mcp/test/mcp-seller-content.test.mjs` | 7186af1b00de543bd9db977eb43c5954bb0de893 | deleted by D16 | deleted |
+| `packages/dacs-client/test/mcp-seller-diagnostics-errors.test.mjs` | `http-mcp/test/mcp-seller-diagnostics-errors.test.mjs` | 0b0d5f0bbae55afd9cefbb37b9e8187ef328d71e | deleted by D16 | deleted |
+| `packages/dacs-client/test/mcp-seller-diagnostics-settlement.test.mjs` | `http-mcp/test/mcp-seller-diagnostics-settlement.test.mjs` | aede5d12f06253cff8b55874972502ec990f3d5d | deleted by D16 | deleted |
+| `packages/dacs-client/test/mcp-seller-diagnostics.test.mjs` | `http-mcp/test/mcp-seller-diagnostics.test.mjs` | 541702b3ad6d252938557ac21bb7f990a4573d69 | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-agreement-payment.test.mjs` | `http-mcp/test/native-agreement-payment.test.mjs` | 6ca9fda96702a116649d2772b8e3e4c227de4fdd | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-agreement-readback-cache.test.mjs` | `http-mcp/test/native-agreement-readback-cache.test.mjs` | f8bc67391ae08b4b52b0e903cba08da52285a4d1 | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-payment-cancel-equivalent.test.mjs` | `http-mcp/test/native-payment-cancel-equivalent.test.mjs` | 7ca9619279addee3ae172dbde6c33537e8c3419f | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-payment-cancel-failed-lane.test.mjs` | `http-mcp/test/native-payment-cancel-failed-lane.test.mjs` | 6ea6e31233b6bc5eff72f25430ecd4344a05ba60 | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-payment-cancel-out-of-order.test.mjs` | `http-mcp/test/native-payment-cancel-out-of-order.test.mjs` | 3c13d5f7ed51f4ba2bf1ec94bb624c9330dc70dd | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-payment-cancel-refused.test.mjs` | `http-mcp/test/native-payment-cancel-refused.test.mjs` | 8db37e978f0810751910e61bc41f21dedbaee736 | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-payment-cancel-send.test.mjs` | `http-mcp/test/native-payment-cancel-send.test.mjs` | c6fcbf02f0cfcb79a6e1622f37498e6b839e4064 | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-payment-evidence.test.mjs` | `http-mcp/test/native-payment-evidence.test.mjs` | 8b621484673ce423199ee32ae9810dc030e6912f | deleted by D16 | deleted |
+| `packages/dacs-client/test/native-settlement-consumer.test.mjs` | `http-mcp/test/native-settlement-consumer.test.mjs` | 7dc4758f418dadf71d5ec87eb32485d71c78b8a8 | deleted by D16 | deleted |
+| `packages/dacs-client/test/node2-native-transfer-readback-prefixed.test.mjs` | `http-mcp/test/node2-native-transfer-readback-prefixed.test.mjs` | 3d349d684805b944bf99562924db227123c17238 | deleted by D16 | deleted |
+| `packages/dacs-client/test/offline-tester.test.mjs` | `http-mcp/test/offline-tester.test.mjs` | 082153dc66ddf530f555fafc1888654066bf59fe | deleted by D16 | deleted |
+| `packages/dacs-client/test/operator-approval-closing.test.mjs` | `http-mcp/test/operator-approval-closing.test.mjs` | 81b0fc28526d6beee1718fad2cd850bbae9c1901 | deleted by D16 | deleted |
+| `packages/dacs-client/test/ops-health-lost-attempt.test.mjs` | `http-mcp/test/ops-health-lost-attempt.test.mjs` | 3c6377eb0b648d72493db93a3256a90a0f895b96 | deleted by D16 | deleted |
+| `packages/dacs-client/test/ops-health.test.mjs` | `http-mcp/test/ops-health.test.mjs` | b88578207a349f2186509bc8a70ce1a22310d650 | deleted by D16 | deleted |
+| `packages/dacs-client/test/overnight-acceptance-core.test.mjs` | `http-mcp/test/overnight-acceptance-core.test.mjs` | fc269dbb6ceae5fbe3296b843857a82c3569c2dc | deleted by D16 | deleted |
+| `packages/dacs-client/test/overnight-core-identities-wire.test.mjs` | `http-mcp/test/overnight-core-identities-wire.test.mjs` | ca7ce99d01179e786bed3e163d7f424df9d715dc | deleted by D16 | deleted |
+| `packages/dacs-client/test/overnight-core-seller.test.mjs` | `http-mcp/test/overnight-core-seller.test.mjs` | 29f335f36d7bb40a05337c8d13931146f0c174d6 | deleted by D16 | deleted |
+| `packages/dacs-client/test/portal-auto-advance-hooks.test.mjs` | `http-mcp/test/portal-auto-advance-hooks.test.mjs` | eaf08c7693f2c5ee3173310dc7750801eaddcbcd | deleted by D16 | deleted |
+| `packages/dacs-client/test/portal-auto-assets.test.mjs` | `http-mcp/test/portal-auto-assets.test.mjs` | b10e39e464ac68ac890b2ef23a942ec960d691a9 | deleted by D16 | deleted |
+| `packages/dacs-client/test/portal-auto-create-reload.test.mjs` | `http-mcp/test/portal-auto-create-reload.test.mjs` | 717d660fa15e289ac7344463557b3a3d6f9db867 | deleted by D16 | deleted |
+| `packages/dacs-client/test/portal-delivery-evidence-label.test.mjs` | `http-mcp/test/portal-delivery-evidence-label.test.mjs` | 5ab19a93ca73f82d8d9493498a2c4cb617957c96 | deleted by D16 | deleted |
+| `packages/dacs-client/test/portal-seller-session-delegation.test.mjs` | `http-mcp/test/portal-seller-session-delegation.test.mjs` | c6fac8465fa420880661236808c00e7b8239fd4d | deleted by D16 | deleted |
+| `packages/dacs-client/test/protocol-revision-races.test.mjs` | `http-mcp/test/protocol-revision-races.test.mjs` | 9563926720abb31a483bd86da057952c8d34d375 | deleted by D16 | deleted |
+| `packages/dacs-client/test/public-sr2-projection.test.mjs` | `http-mcp/test/public-sr2-projection.test.mjs` | 7a9d2bc74e19595d45f5ec8a9f108a8fdb7fbe8a | deleted by D16 | deleted |
+| `packages/dacs-client/test/public-text-report-storage.test.mjs` | `http-mcp/test/public-text-report-storage.test.mjs` | b52c158dd3aee5b2db75e399c9f6cb6eca5424e0 | deleted by D16 | deleted |
+| `packages/dacs-client/test/purchase-abuse-limits.test.mjs` | `http-mcp/test/purchase-abuse-limits.test.mjs` | f3712e8ad39d5771e734bd86c4ae691a36ccb24e | deleted by D16 | deleted |
+| `packages/dacs-client/test/purchase-model-view.test.mjs` | `http-mcp/test/purchase-model-view.test.mjs` | 133e2ca73c4085eec0a04bbc365de619c3dbcd7c | deleted by D16 | deleted |
+| `packages/dacs-client/test/purchase-readback-cache.test.mjs` | `http-mcp/test/purchase-readback-cache.test.mjs` | e5630402e08a42858f3a8aea3d8c7c54b2d8295e | deleted by D16 | deleted |
+| `packages/dacs-client/test/purchase-receipt.test.mjs` | `http-mcp/test/purchase-receipt.test.mjs` | 918fcc4bf385fb93ce601ff217c5be6b9a69e7ec | deleted by D16 | deleted |
+| `packages/dacs-client/test/purchase.test.mjs` | `http-mcp/test/purchase.test.mjs` | 4e202c7cd7505a88d76638b53d2b745142a8b153 | deleted by D16 | deleted |
+| `packages/dacs-client/test/purchased-report.test.mjs` | `http-mcp/test/purchased-report.test.mjs` | c611c8f74749302c3a6dfa62973f84817a1c8379 | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-durable-state-locks.test.mjs` | `http-mcp/test/seller-durable-state-locks.test.mjs` | 7ea6ed6c1bc0edb03eac34806ca5d8b9cc52e919 | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-http-failure-cause.test.mjs` | `http-mcp/test/seller-http-failure-cause.test.mjs` | a9c5aef97f8154da66d37b6b464e1b68b7a1dade | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-identities-integration.test.mjs` | `http-mcp/test/seller-identities-integration.test.mjs` | 2fadd9540264b72c9379b787e20dc6994f0f529a | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-identities.test.mjs` | `http-mcp/test/seller-identities.test.mjs` | 3c327c21a6c463ab12c3ff7144f14b8280b83572 | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-payment-recovery-repair-prefixed.test.mjs` | `http-mcp/test/seller-payment-recovery-repair-prefixed.test.mjs` | c1599b3f0d78e3ad7225347b331d129aff6a6dc3 | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs` | `http-mcp/test/seller-policy-delivery-evidence.test.mjs` | 61af4bb4eae46cf9f65c77ee6c488599f82074ab | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-session-final-recheck.test.mjs` | `http-mcp/test/seller-session-final-recheck.test.mjs` | 23b22e5b3bccb3cc1f5565e9586b9639a0b4defe | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-session-key-retirement.test.mjs` | `http-mcp/test/seller-session-key-retirement.test.mjs` | a212a34ad9c75964b21cfc5ad16d76810fa38201 | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-session-keys.test.mjs` | `http-mcp/test/seller-session-keys.test.mjs` | 6ef16aa92fb424bc27214ade72a01d90211de342 | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-session-open-access.test.mjs` | `http-mcp/test/seller-session-open-access.test.mjs` | 7502bf1a33d3e0ded0c9628ee30798a39766bf8e | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-sr2-agreement.test.mjs` | `http-mcp/test/seller-sr2-agreement.test.mjs` | c08ee672a374af1f78d65c74bb8523da9d79b1a2 | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-uncertain-payment-recovery-prefixed.test.mjs` | `http-mcp/test/seller-uncertain-payment-recovery-prefixed.test.mjs` | 1ca8e17dea986f477b092d579b257073604a3471 | deleted by D16 | deleted |
+| `packages/dacs-client/test/seller-write-batch.test.mjs` | `http-mcp/test/seller-write-batch.test.mjs` | a46c75199640332c7a959031147408c458b611db | deleted by D16 | deleted |
+| `packages/dacs-client/test/service-request-binding-doc.test.mjs` | `http-mcp/test/service-request-binding-doc.test.mjs` | 2eb4e8f564912eb6ad2574ae75d9cd0b0e72d3f9 | deleted by D16 | deleted |
+| `packages/dacs-client/test/settlement-kind-bridge.test.mjs` | `http-mcp/test/settlement-kind-bridge.test.mjs` | ed0a5ccf289098e042ad24c0043ce59754744be0 | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-ledger-integration.test.mjs` | `http-mcp/test/showcase-ledger-integration.test.mjs` | 4b8b609a9e07e85195c17071ae950c15219f61de | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-live-operator.test.mjs` | `http-mcp/test/showcase-live-operator.test.mjs` | 9cadab583d3bdbc949e65c5826f62c955172349d | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-progress.test.mjs` | `http-mcp/test/showcase-progress.test.mjs` | 35cea9e295296320b0d7b5c4f25db2e9ef5bf83e | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-publication-view.test.mjs` | `http-mcp/test/showcase-publication-view.test.mjs` | 5d2107d7f65e019b6544e78fc693e83b6241ff80 | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-receipt-config.test.mjs` | `http-mcp/test/showcase-receipt-config.test.mjs` | 027c9dce0615af772abc25cab8d62948acf8fff3 | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-report-commit-on-signature.test.mjs` | `http-mcp/test/showcase-report-commit-on-signature.test.mjs` | e90b0774ec7445c3139582d781d6f1e203cf50da | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-report-main-switches.test.mjs` | `http-mcp/test/showcase-report-main-switches.test.mjs` | 2909ef6bc824912cc9b7407e84310c08cda9aec0 | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-report-seller-identities.test.mjs` | `http-mcp/test/showcase-report-seller-identities.test.mjs` | c98aed962d208536da8a5c7f4f7c5e445f6ebde5 | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-report-settlement.test.mjs` | `http-mcp/test/showcase-report-settlement.test.mjs` | 789589876aa24628127b3dac244674fa5f1247d7 | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-safety.test.mjs` | `http-mcp/test/showcase-safety.test.mjs` | 33592ba9db541a08c7da0b6ab3886e11aba9ba44 | deleted by D16 | deleted |
+| `packages/dacs-client/test/showcase-walkthrough.test.mjs` | `http-mcp/test/showcase-walkthrough.test.mjs` | 6ba82ac4aaf12f7a90ae9e2e1f10744d73c6f17e | deleted by D16 | deleted |
+| `packages/dacs-client/test/source-demo-e2e.test.mjs` | `http-mcp/test/source-demo-e2e.test.mjs` | f434aa15f6507683b7729b508519aa9d1e8c1cd3 | deleted by D16 | deleted |
+| `packages/dacs-client/test/st11-finalizers.test.mjs` | `http-mcp/test/st11-finalizers.test.mjs` | 61de42a53ec0b878cf50b0e9b1b31791445cbf10 | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-compose.test.mjs` | `http-mcp/test/start-intent-compose.test.mjs` | d5d458db5217bb07ca3ab279e5a12f481b51f3db | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-create-fence.test.mjs` | `http-mcp/test/start-intent-create-fence.test.mjs` | 826a4d8f62ffa5c7d7e0587911dd0ae6b942a364 | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-devnet.test.mjs` | `http-mcp/test/start-intent-devnet.test.mjs` | 8d340e3cbac6066652a35e3eb1e7a1837a0e1cd7 | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-operator-auth.test.mjs` | `http-mcp/test/start-intent-operator-auth.test.mjs` | 8355ae8a0273c7396ed57ccf35a9ff289735f71e | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-peer-write.test.mjs` | `http-mcp/test/start-intent-peer-write.test.mjs` | b275c67d75befb4ac3e337af11a4bfce79f2bfdc | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-production.test.mjs` | `http-mcp/test/start-intent-production.test.mjs` | 0d79405dea10af3ff55718eb5c370f2e780471a8 | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-retry.test.mjs` | `http-mcp/test/start-intent-retry.test.mjs` | 846ce19be4f36bf41900fdb30e064e10e8823aad | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-review-wallet.test.mjs` | `http-mcp/test/start-intent-review-wallet.test.mjs` | cc3f3dccb38a79c1e7ba39b672f969aa95ec1e9d | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-switch.test.mjs` | `http-mcp/test/start-intent-switch.test.mjs` | bfd12a5d743a1b6441f5f9bfd05b894a951e9ca6 | deleted by D16 | deleted |
+| `packages/dacs-client/test/start-intent-wallet.test.mjs` | `http-mcp/test/start-intent-wallet.test.mjs` | d3f0b6c95036be12c1303de8eb03a209dfd12de5 | deleted by D16 | deleted |
+| `packages/dacs-client/test/switch-registry.test.mjs` | `http-mcp/test/switch-registry.test.mjs` | 24fe16ee6f204222fcd09e908bdfec0b653f25cb | deleted by D16 | deleted |
+| `packages/dacs-client/test/tester-quickstart.test.mjs` | `http-mcp/test/tester-quickstart.test.mjs` | 8b3c5d7666d5758602aa7622cd80b78c3c9645a6 | deleted by D16 | deleted |
+| `packages/dacs-client/test/ui-status.test.mjs` | `http-mcp/test/ui-status.test.mjs` | eebbba6c3aac998a9321d4d39bfc061897787583 | deleted by D16 | deleted |
+| `packages/dacs-client/test/unit.test.mjs` | `http-mcp/test/unit.test.mjs` | a032de79e0a399ba4889a4108d6c7abb5b1c5f46 | deleted by D16 | deleted |
 | `packages/dacs-client/test/source-server-hosting.test.mjs` | `http-mcp/test/source-server-hosting.test.mjs` | deleted before publication | unchanged | deleted |
-| `packages/dacs-client/test/wallet-demo-plan-admission.test.mjs` | `http-mcp/test/wallet-demo-plan-admission.test.mjs` | b608db84f142991e7d4347cbe6cece89828b41f2 | unchanged | b608db84f142991e7d4347cbe6cece89828b41f2 |
-| `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` | `http-mcp/test/wallet-extension-probe-routes.test.mjs` | 91b20906b7c9a998cb7407aa8875053e0592a144 | unchanged | 91b20906b7c9a998cb7407aa8875053e0592a144 |
-| `packages/dacs-client/test/wallet-extension-probe.test.mjs` | `http-mcp/test/wallet-extension-probe.test.mjs` | 027c7e0e586105b5481c9ee502276761c44fa441 | unchanged | 027c7e0e586105b5481c9ee502276761c44fa441 |
-| `packages/dacs-client/test/wallet-write-batch.test.mjs` | `http-mcp/test/wallet-write-batch.test.mjs` | 595f482da255f373328c30ee634af20c4911f7f4 | unchanged | 595f482da255f373328c30ee634af20c4911f7f4 |
+| `packages/dacs-client/test/wallet-demo-plan-admission.test.mjs` | `http-mcp/test/wallet-demo-plan-admission.test.mjs` | b608db84f142991e7d4347cbe6cece89828b41f2 | deleted by D16 | deleted |
+| `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` | `http-mcp/test/wallet-extension-probe-routes.test.mjs` | 91b20906b7c9a998cb7407aa8875053e0592a144 | deleted by D16 | deleted |
+| `packages/dacs-client/test/wallet-extension-probe.test.mjs` | `http-mcp/test/wallet-extension-probe.test.mjs` | 027c7e0e586105b5481c9ee502276761c44fa441 | deleted by D16 | deleted |
+| `packages/dacs-client/test/wallet-write-batch.test.mjs` | `http-mcp/test/wallet-write-batch.test.mjs` | 595f482da255f373328c30ee634af20c4911f7f4 | deleted by D16 | deleted |

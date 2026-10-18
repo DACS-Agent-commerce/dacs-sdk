@@ -46,3 +46,20 @@ test('archived source and pre-publication delta evidence cannot be rewritten',t=
  const dir=scratch(t);appendFileSync(join(dir,'packages/dacs-client/evidence/publication-history.json'),'\n');
  const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/archived source\/delta evidence digest differs/);
 });
+
+test('launch review: unrelated future SDK commits do not need a client re-pin',t=>{
+ const dir=scratch(t),path=join(dir,'README.md');appendFileSync(path,'\nSDK documentation update\n');
+ unlinkSync(join(dir,'src/index.ts'));
+ writeFileSync(join(dir,'new-sdk-doc.md'),'Unrelated SDK documentation\n');
+ execFileSync('git',['-C',dir,'add','-A']);
+ execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false','commit','-qm','docs: unrelated SDK update']);
+ const result=check(dir);assert.equal(result.status,0,result.text);
+});
+test('launch review: unrelated main commits and a PR merge preserve client provenance',t=>{
+ const dir=scratch(t),git=(...args)=>execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false',...args],{encoding:'utf8'});
+ const branch=git('branch','--show-current').trim();git('checkout','-qb','advanced-main');
+ appendFileSync(join(dir,'src/index.ts'),'\n// SDK hotfix\n');git('add','src/index.ts');git('commit','-qm','fix: unrelated SDK hotfix');
+ git('checkout','-q',branch);appendFileSync(join(dir,'README.md'),'\nPR documentation\n');git('add','README.md');git('commit','-qm','docs: unrelated PR update');
+ git('merge','--no-ff','-qm','test PR merge','advanced-main');
+ const result=check(dir);assert.equal(result.status,0,result.text);
+});

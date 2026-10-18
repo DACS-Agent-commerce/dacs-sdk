@@ -84,9 +84,9 @@ function heldSection(source, p) {
     p();
     p(`Condition: ${hold.liftRequires.condition}`);
     p();
-    p(`Probe: ${code(hold.liftRequires.probe)} (needs \`DACS_FRONTEND_REPO\`; skipped without it). ${hold.liftRequires.probeResult}`);
+    p(`Historical source probe (archived as text): ${code(hold.liftRequires.probe)} (requires the separate source repository to reproduce its historical run). ${hold.liftRequires.probeResult}`);
     p();
-    p(`Gate: ${code(record.gate)} runs from the package test script and the provenance regression suite. It pins this record and the complete package file set: exact Git blobs for every ordinary file, package.json included (exports: {}, no main or bin). The record and gate are the reviewed control pair; any pin update or lift changes both in the same reviewed commit. Any added, removed or changed package file fails. Outside the package, the record pins the complete repository inventory at the frozen work head ${code(record.step1Freeze.outside.pinnedAt.slice(0, 12))}: ${Object.keys(record.step1Freeze.outside.files).length} files with their Git blobs. The gate reads HEAD and index object identities directly and hashes working files: every frozen path must agree across HEAD, index and working tree in path, blob bytes and regular-file mode, and HEAD blobs must match the pins. Symlinks, gitlinks, unresolved index entries and a missing HEAD fail closed. It also lists unignored untracked files; any added, removed or changed outside file fails in any of these states, whatever it contains; a computed, escaped or encoded path to this package is still an added or changed file. A literal dacs-client in an outside path or file is also reported, as a tripwire only; the root lockfile's workspace registration is its one exception. No entry point is imported and no behavioural load check remains. Untracked files Git ignores, such as build output, are unseen: they belong to no commit, so they cannot reach review or a merge. Code outside the repository is unseen too; for step 1 the frozen package cannot acquire code or exports, and callable surfaces wait for reviewed deltas and D15 regressions.`);
+    p("Gate: `packages/dacs-client/scripts/check-hold.mjs` runs from the package test script and provenance regressions. The record and gate pin the complete private package and change together for reviewed package updates. Package exports remain empty; package HEAD, index and working bytes and regular-file modes are checked. Other SDK files and unrelated commits are unrestricted, including PR merge commits after main advances. This check imports no package entry point and does not establish absence of external callers or grant live admission.");
     p();
     const repins = record.step1Freeze.plannedRepins;
     p(`Planned re-pins: ${repins.what} ${repins.changes.map((change) => `${code(change.id)}: ${change.what}`).join(" ")} ${repins.mergePolicy}`);
@@ -147,7 +147,7 @@ async function main() {
   p();
   p("Paths in the first column are destinations relative to `packages/dacs-client/` with the source line number (the copies are byte-identical, so the line is the same at the source). Mapping: `http-mcp/src/X` → `src/X`, `http-mcp/public/Y` → `src/public/Y`, `http-mcp/test/Z` → `test/Z`.");
   p();
-  p("Sections 1–9 describe the original source copies. Current publication edits are recorded in the delta ledger. Publication approved 2026-10-18.");
+  p("Historical source test paths are now archived as text under `evidence/source-tests/`; `INDEX.json` records their current locations. Sections 1–9 describe the original source copies. Current publication edits are recorded in the delta ledger. Publication approved 2026-10-18.");
   p();
   heldSection(source, p);
   p("## Summary");

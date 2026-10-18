@@ -12,29 +12,10 @@
 // the actual gate blob; a gate-only or record-only edit fails. The gate itself
 // is trusted executable code, as with any repository check.
 //
-// Outside the package, HOLD.json pins the complete inventory of repository
-// files at the frozen work head, with their Git blobs. List tracked files
-// in HEAD and the index (tracked ignored output counts), plus unignored
-// untracked files. Require index entries and working files to match HEAD,
-// with no extension or directory filter, and fail on any added, removed or
-// changed outside file in any of those states, whatever it contains. A caller
-// that computes, escapes or encodes the path is still an added or changed file.
-// As an extra tripwire only, also report a literal dacs-client in an outside path or file; the root
-// lockfile's workspace registration, reviewed CI gate and exact test-fixture
-// fingerprints in .gitleaksignore are its exceptions. The tripwire is not
-// what makes the outside rule hold. Git errors, unreadable files and symlinks
-// fail closed. Any other repository change (lockfile, another workspace, a
-// rebase, a delta commit) fails until a reviewed re-pin of the control pair.
-//
-// Limits: untracked files Git ignores (build output, .git/info/exclude, a
-// global excludes file) are unseen; they belong to no commit, so they cannot
-// reach review or a merge. Code outside this repository is unseen. Blobs are
-// pinned; regular-file modes must agree across HEAD, index and working tree.
-// HEAD and index symlinks, gitlinks and unresolved entries are refused.
-// A repository with no HEAD fails closed. For step 1 the package cannot acquire
-// new code or exports, so callable surfaces wait for reviewed deltas and the D15
-// regressions. This check executes no package entry point and makes no
-// network-isolation claim. No root install needed.
+// Only this private package is frozen. Other SDK files, commits and merge
+// commits may evolve without re-pinning these controls. This is a package
+// integrity check; it makes no claim to detect callers outside the package.
+// No package entry point is imported and no live admission is granted.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -50,8 +31,8 @@ const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
 
 export const PINNED = Object.freeze({
-  holdSha256: "838a95f01cb6fbffbd1f49fd33173b7a82f89da9af78d5eec9d7b2e600d06d96",
-  holdBytesSha256: "3476a2105490d52d713bac45348e14e481664f4c525187ead523117153be517d",
+  holdSha256: "37aefc7962f5542b0b0ce512be95ad386a9d7eca473aeb9a583dfdc21471a2fd",
+  holdBytesSha256: "15ee77c9caa6c2b40a7e09bc33176400803200c1054b950335b2eb0d227d9b9a",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -66,7 +47,7 @@ export const PINNED = Object.freeze({
   ]),
   regressions: Object.freeze(["completion-orders", "existing-b-observation", "other-purchase-lane", "restart", "unauthenticated-pointer", "agreement-delivery", "same-hash-terminal", "native-supersession", "single-node-payment-transfer"]),
   liftCondition: "Every regression above passes against the reviewed destination head carrying D15's delta commit in this package (or a reviewed source fix copied with provenance).",
-  probe: "packages/dacs-client/scripts/stale-pointer.probe.test.mjs",
+  probe: "packages/dacs-client/evidence/source-tests/scripts/stale-pointer.probe.test.mjs.txt",
   blockedPrerequisites: Object.freeze([
     Object.freeze({ id: "sdk-ci", what: "Add the freeze gate and its negative tests (npm test --workspace @kynesyslabs/dacs-client) to the SDK CI workflow before any client delta PR. The gate reads files and Git metadata only; it imports no client entry point." }),
     Object.freeze({ id: "d11-transaction-contract", what: "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls joining the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart." }),
@@ -188,13 +169,13 @@ function packageFiles(dir, prefix = "", out = []) {
 function checkGitStates(repoRoot, frozen, failures) {
   const run = (...args) => sourceGit(["-C", repoRoot, ...args], { encoding: "utf8", maxBuffer: 64 << 20 });
   const head = new Map();
-  for (const entry of run("ls-tree", "-r", "--full-tree", "-z", "HEAD").split("\0").filter(Boolean)) {
+  for (const entry of run("ls-tree", "-r", "--full-tree", "-z", "HEAD", "--", PACKAGE_PREFIX).split("\0").filter(Boolean)) {
     const tab = entry.indexOf("\t");
     const [mode, type, blob] = entry.slice(0, tab).split(" ");
     head.set(entry.slice(tab + 1), { mode, type, blob });
   }
   const index = new Map();
-  for (const entry of run("ls-files", "--stage", "-z").split("\0").filter(Boolean)) {
+  for (const entry of run("ls-files", "--stage", "-z", "--", PACKAGE_PREFIX).split("\0").filter(Boolean)) {
     const tab = entry.indexOf("\t");
     const [mode, blob, stage] = entry.slice(0, tab).split(" ");
     const path = entry.slice(tab + 1);
@@ -203,15 +184,14 @@ function checkGitStates(repoRoot, frozen, failures) {
   }
   const pins = new Map([
     ...Object.entries(frozen.files).map(([path, pin]) => [PACKAGE_PREFIX + path, pin]),
-    ...Object.entries(frozen.outside.files),
   ]);
   for (const path of new Set([...pins.keys(), ...head.keys(), ...index.keys()])) {
     const committed = head.get(path);
     const staged = index.get(path);
     const pin = pins.get(path);
-    if (!committed) failures.push(`${path}: missing from HEAD; repository is frozen`);
+    if (!committed) failures.push(`${path}: missing from HEAD; package is frozen`);
     else {
-      if (!pin) failures.push(`${path}: added in HEAD; repository is frozen`);
+      if (!pin) failures.push(`${path}: added in HEAD; package is frozen`);
       if (committed.type !== "blob" || !/^100(644|755)$/.test(committed.mode)) failures.push(`${path}: HEAD entry is not a regular file`);
       if (pin?.blob && committed.blob !== pin.blob) failures.push(`${path}: HEAD blob differs from the freeze pin`);
       // HOLD.json has a reciprocal record pin instead of an ordinary blob pin.
@@ -243,7 +223,7 @@ function main() {
   if (recordBytesSha256(readFileSync(join(args.packageDir, "HOLD.json"))) !== PINNED.holdBytesSha256) failures.push("HOLD.json bytes differ from the pinned record");
 
   const frozen = record.step1Freeze;
-  if (frozen?.schema !== "dacs-client-freeze/v2" || !frozen.files || !frozen.outside?.files || !frozen.literalNameTripwire?.exceptions) throw new Error("missing step-1 freeze record");
+  if (frozen?.schema !== "dacs-client-freeze/v3" || !frozen.files) throw new Error("missing step-1 freeze record");
   const actual = new Set(packageFiles(args.packageDir));
   for (const path of actual) if (!Object.hasOwn(frozen.files, path)) failures.push(`${PACKAGE_PREFIX}${path}: added file; package is frozen`);
   for (const [path, pin] of Object.entries(frozen.files)) {
@@ -259,35 +239,10 @@ function main() {
   const pkg = readJson(join(args.packageDir, "package.json"), "package.json", failures);
   if (!pkg || JSON.stringify(pkg.exports) !== "{}" || Object.hasOwn(pkg, "main") || Object.hasOwn(pkg, "bin")) failures.push("package.json must retain exports: {} and no main or bin");
 
-  // Use the Git index to include tracked ignored output, and --others for
-  // newly added callers. No extension filter or directory skip list.
   const top = sourceGit(["-C", args.repoRoot, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   if (realpathSync(top) !== args.repoRoot) throw new Error("repo-root is not the Git worktree root");
-  const listed = new Set(sourceGit(["-C", args.repoRoot, "ls-files", "--cached", "--others", "--exclude-standard", "-z"], { encoding: "utf8", maxBuffer: 64 << 20 }).split("\0").filter(Boolean));
-  const inventory = frozen.outside.files;
-  const frozenAt = `outside files are frozen at ${frozen.outside.pinnedAt}; a change needs a reviewed re-pin of HOLD.json and check-hold.mjs`;
-  let outside = 0;
-  for (const path of listed) {
-    if (path.startsWith(PACKAGE_PREFIX)) continue;
-    outside += 1;
-    const pin = Object.hasOwn(inventory, path) ? inventory[path] : null;
-    if (!pin) failures.push(`${path}: added file outside the package; ${frozenAt}`);
-    const file = join(args.repoRoot, path);
-    let stat;
-    try { stat = lstatSync(file); } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      failures.push(`${path}: missing file outside the package (indexed, not on disk); ${frozenAt}`);
-      continue;
-    }
-    if (!stat.isFile()) { failures.push(`${path}: not a regular repository file`); continue; }
-    const bytes = readFileSync(file);
-    if (pin && (!/^[0-9a-f]{40}$/.test(pin.blob) || gitBlob(bytes) !== pin.blob)) failures.push(`${path}: changed file outside the package; ${frozenAt}`);
-    // Tripwire only: the inventory above is what holds the outside rule.
-    if (!Object.hasOwn(frozen.literalNameTripwire.exceptions, path) && (/dacs-client/i.test(path) || /dacs-client/i.test(bytes.toString("utf8")))) failures.push(`${path}: literal dacs-client outside the package (tripwire)`);
-  }
-  for (const path of Object.keys(inventory)) if (!listed.has(path)) failures.push(`${path}: missing file outside the package; ${frozenAt}`);
   checkGitStates(args.repoRoot, frozen, failures);
-  finish(failures, { files: actual.size, outside, pinnedAt: frozen.outside.pinnedAt });
+  finish(failures, { files: actual.size });
 }
 
 function finish(failures, summary) {
@@ -297,7 +252,7 @@ function finish(failures, summary) {
     process.exitCode = 1;
     return;
   }
-  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); exports: {}; outside inventory frozen (${summary.outside} files, exact blobs at ${summary.pinnedAt.slice(0, 12)}); HEAD blobs verified against pins; index and working files match HEAD (paths, blobs and regular-file modes); literal-name tripwire clear (reviewed exact-file exceptions); no behavioural imports`);
+  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); exports: {}; package HEAD blobs verified against pins; package index and working files match HEAD; outside SDK files are unrestricted; no behavioural imports`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

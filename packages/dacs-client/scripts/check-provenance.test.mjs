@@ -362,36 +362,27 @@ test("a source repository without the trusted commit fails", () => {
 });
 
 
-test("the freeze record and generator retain reviewed step-1 policy text", () => {
+test("the package-only freeze retains the original purchase prerequisites", () => {
   const sdk = join(PACKAGE_DIR, "../..");
   const reviewed = (path) => execFileSync("git", ["--no-replace-objects", "-C", sdk, "show", `5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/${path}`], { encoding: "utf8" });
   const record = JSON.parse(readFileSync(join(PACKAGE_DIR, "HOLD.json"), "utf8"));
   const step1 = JSON.parse(reviewed("HOLD.json"));
   const hold = record.holds[0], original = step1.holds[0];
-  // Reconcile only the reviewed tripwire exception clause. The remainder of
-  // the publication's freeze rule must still be retained word for word.
-  const reviewedRule = publicationPolicy(original.rule).replace(
-    "the root lockfile's workspace registration is its one exception",
-    "the root lockfile's workspace registration, reviewed CI gate and exact test-fixture fingerprints in .gitleaksignore are its only exceptions, each still pinned to exact outside-file bytes",
-  );
-  assert.ok(hold.rule.startsWith(reviewedRule), "the reviewed freeze rule must remain a prefix except for the exact tripwire clause update");
-  assert.equal(record.step1Freeze.schema, step1.step1Freeze.schema);
-  assert.equal(record.step1Freeze.outside.what, step1.step1Freeze.outside.what);
-  assert.deepEqual(record.step1Freeze.literalNameTripwire.exceptions['package-lock.json'], step1.step1Freeze.literalNameTripwire.exceptions['package-lock.json']);
-  assert.deepEqual(Object.keys(record.step1Freeze.literalNameTripwire.exceptions).sort(), ['.github/workflows/ci.yml','.gitleaksignore','package-lock.json']);
+  assert.equal(record.step1Freeze.schema, 'dacs-client-freeze/v3');
+  assert.equal(record.step1Freeze.outside, undefined);
+  assert.equal(record.step1Freeze.literalNameTripwire, undefined);
+  assert.match(hold.rule, /Other SDK files and unrelated commits are unrestricted/);
+  assert.match(hold.rule, /Independent programme review remains pending/);
   for (const key of ["schema", "package", "gate"]) assert.equal(record[key], step1[key], key);
   for (const key of ["id", "delta", "sourceRepository", "sourceCommit", "files"]) assert.deepEqual(hold[key], original[key], key);
-  for (const key of ["sourceFix", "condition", "probe"]) assert.equal(hold.liftRequires[key], publicationPolicy(original.liftRequires[key]), key);
+  for (const key of ["sourceFix", "condition"]) assert.equal(hold.liftRequires[key], publicationPolicy(original.liftRequires[key]), key);
   assert.deepEqual(hold.liftRequires.regressions.slice(0, original.liftRequires.regressions.length), original.liftRequires.regressions);
   assert.ok(hold.liftRequires.probeResult.startsWith(publicationPolicy(original.liftRequires.probeResult)));
   assert.deepEqual(hold.blockedPrerequisites[0], original.blockedPrerequisites[0]);
+  assert.match(hold.liftRequires.probe, /evidence\/source-tests\/.*\.txt$/);
   const generator = readFileSync(join(SCRIPT_DIR, "import-cut-map.mjs"), "utf8");
-  const reviewedGenerator = reviewed("scripts/import-cut-map.mjs");
-  for (const prefix of ["p(`Gate:", "p(`Planned re-pins:"]) {
-    const line = (text) => text.split("\n").find((entry) => entry.trimStart().startsWith(prefix));
-    assert.ok(line(reviewedGenerator), `reviewed generator must contain ${prefix}`);
-    assert.equal(line(generator), line(reviewedGenerator));
-  }
+  assert.doesNotMatch(generator, /step1Freeze\.outside/);
+
 });
 
 test("the generated held map renders the record and planned re-pins", { skip: NEEDS_SOURCE }, () => {

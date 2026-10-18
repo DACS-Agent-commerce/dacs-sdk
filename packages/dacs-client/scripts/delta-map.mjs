@@ -8,6 +8,7 @@ import { sourceGit } from './source-git.mjs';
 export const root = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 export const pkg = join(root, 'packages/dacs-client');
 export const prefix = 'packages/dacs-client/';
+export const PUBLICATION_HEAD = 'aac03055bdbeabc7c0771642d99f0c4baf7e3de9';
 export const BASELINE = '5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1';
 export const HISTORY_SHA256 = '4170f296835330141c4eff81bd548468f16fd1dde0000cc83ccbe6f67d3c9a00';
 export const git = (...args) => sourceGit(['-C', root, ...args], {encoding:'utf8', maxBuffer:1<<28, stdio:['ignore','pipe','pipe']}).trimEnd();
@@ -17,15 +18,15 @@ export const localBlob = path => existsSync(join(root,path)) ? blob(readFileSync
 // line 1; deleted paths have no current coordinate. Avoid self-referential
 // generated-document hunks while locating every changed source/test range.
 export function locations(path) {
+  if (!/^packages\/dacs-client\/(?:src|test)\//.test(path)) return `\`${path}:1\``;
   if (!existsSync(join(root, path))) return `\`${path}\` (deleted)`;
-  if (!/^(?:packages\/dacs-client\/(?:src|test)\/|src\/)/.test(path)) return `\`${path}:1\``;
   const diff = git('diff', '--no-renames', '--unified=0', BASELINE, '--', path);
   const starts = [...new Set([...diff.matchAll(/^@@ -[0-9,]+ \+(\d+)(?:,\d+)? @@/gm)].map(m => Math.max(1, Number(m[1]))))];
   return (starts.length ? starts : [1]).map(line => `\`${path}:${line}\``).join(', ');
 }
 export const ledger = () => JSON.parse(readFileSync(join(pkg,'DELTA-LEDGER.json'),'utf8'));
 export function commits() {
-  return git('log','--reverse','--format=%H%x09%s',BASELINE+'..HEAD').split('\n').filter(Boolean).map(row => { const at=row.indexOf('\t'); return {sha:row.slice(0,at),subject:row.slice(at+1)}; });
+  return git('log','--no-merges','--reverse','--format=%H%x09%s',BASELINE+'..HEAD').split('\n').filter(Boolean).map(row => { const at=row.indexOf('\t'); return {sha:row.slice(0,at),subject:row.slice(at+1)}; });
 }
 export function table(data = ledger()) {
   const files=JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'),'utf8')).files;
@@ -92,6 +93,10 @@ export function checkDeltas(packageDir=pkg) {
   for(const h of history) {
     const item=inventory.find(c=>c.subject===h.subject);
     const files=git('diff','--no-renames','--name-only',h.sha+'^',h.sha).split('\n').filter(Boolean).sort();
+    // The published inventory remains auditable. Later unrelated SDK work
+    // does not require a client control update; merges are excluded above.
+    let published=false;try{git('merge-base','--is-ancestor',h.sha,PUBLICATION_HEAD);published=true;}catch{}
+    if(!published&&!files.some(path=>path.startsWith(prefix)))continue;
     if(!item || (item.sha!==null && item.sha!==h.sha) || JSON.stringify([...item.files].sort())!==JSON.stringify(files)) failures.push(`complete commit/file inventory differs for ${h.sha}`);
   }
   const originals=JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'),'utf8')).files.map(f=>f.path);
