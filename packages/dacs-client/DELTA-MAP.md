@@ -227,6 +227,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:334`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:484`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:551`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:662`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:686`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1106`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1149`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1303`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1309` |
 | delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/test/readback-review-decisions.test.mjs:16` |
 | delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| eb3ddb4dc817bb89a080c4f11dca541806edaaf9 | `.github/workflows/ci.yml:1` |
+| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/evidence/PUBLICATION.md:1` |
+| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

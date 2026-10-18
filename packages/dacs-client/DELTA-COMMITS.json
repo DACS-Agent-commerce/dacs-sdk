@@ -48,5 +48,23 @@
       "packages/dacs-client/test/readback-review-decisions.test.mjs",
       "packages/dacs-client/test/sweep-contracts.test.mjs"
     ]
+  },
+  {
+    "sha": "eb3ddb4dc817bb89a080c4f11dca541806edaaf9",
+    "subject": "ci: retain publication ancestry for client verification",
+    "files": [
+      ".github/workflows/ci.yml"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 bind CI ancestry and reciprocal freeze controls",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/evidence/PUBLICATION.md",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
   }
 ]

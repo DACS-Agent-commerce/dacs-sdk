@@ -22,3 +22,7 @@ until the independently verified frontend source repository is supplied.
 The hold gate retains its full inventory and reciprocal control pair. Policy
 regressions compare the immutable publication's policy blob, which is available
 in a fresh checkout, rather than an unavailable intermediate destination commit.
+
+CI uses a full-history checkout (`fetch-depth: 0`) so the publication checkpoint
+and the ancestor carrying the outside-file inventory are available. A shallow
+checkout must fetch that ancestry before running the provenance gate.

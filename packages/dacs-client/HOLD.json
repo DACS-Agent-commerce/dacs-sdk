@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "54240ac17fa67bec2c5e62d5acc94cef5fd4ffe9"
+        "blob": "c50150035ae73a957342ac87382746d7c661e051"
       },
       "DELTA-LEDGER.json": {
         "blob": "67dfed2888cbcf18e2fd3b3747a066093f9bb294"
       },
       "DELTA-MAP.md": {
-        "blob": "17120a11bf709c81aee28ad8f5fa45c20b1dc493"
+        "blob": "e4ebcf8ef1855f2a4c35ae09418af06e3c8cdc24"
       },
       "DELTA-NOTES.md": {
         "blob": "a9cd813874580b521d4c600e14fe6be867fa9a0f"
@@ -385,7 +385,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "evidence/PUBLICATION.md": {
-        "blob": "cda95e17da48350d8ff47cfc8b5a507d060b0a0f"
+        "blob": "165c23e2199e85e16cbbb3f7f5ff5fe50bbd015e"
       },
       "evidence/d15-classifier-first.txt": {
         "blob": "e9906dd764da04825224c9832befd49b9efcd411"
@@ -451,7 +451,8 @@
         "blob": "f433ac11f747c6e2dae00e5113c3b8cea60dafa6"
       },
       "scripts/check-hold.mjs": {
-        "blob": "26022b77d821ddbc8f8ec16055cd169b19191b81"
+        "control": "gate",
+        "blob": "108bd7c6b5f05ebf3a18284ebf3af22952e54630"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "41d668efd567f63b0503d59fbbd44b0034decc1d"
@@ -1559,14 +1560,14 @@
       }
     },
     "outside": {
-      "pinnedAt": "6922053601422718bf03af51577423e91efd1d07",
+      "pinnedAt": "eb3ddb4dc817bb89a080c4f11dca541806edaaf9",
       "what": "Every tracked file outside packages/dacs-client/ at the frozen work head, with its Git blob. The gate lists tracked files (tracked ignored output included) and unignored untracked files, and fails on any added, removed or changed outside file, whatever it contains. Untracked files Git ignores are unseen: they belong to no commit, so they cannot reach review or a merge. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD.",
       "files": {
         ".cursor/environment.json": {
           "blob": "c93573df82bf3634a3e3cb669c536bb85d745799"
         },
         ".github/workflows/ci.yml": {
-          "blob": "5929ef39b68c4e89f001431472b7428310d82aa0"
+          "blob": "8c3c380dd086d6813738a43d33cc22668687389a"
         },
         ".github/workflows/package-artifact.yml": {
           "blob": "4bd070e76e75c61182a1a5f48020b87db47d2831"
