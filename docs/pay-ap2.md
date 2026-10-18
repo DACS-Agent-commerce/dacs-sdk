@@ -47,8 +47,16 @@ const result = await advanceAp2Settlement({
   verifier: mandateVerifier satisfies Ap2MandateVerifier,
   provider: providerAdapter satisfies Ap2ProviderAdapter,
   store: durableStore satisfies Ap2BindingStore,
-});
+}, { executionMode: "simulation" });
 ```
+
+The final argument is trusted local execution policy, separate from `input`.
+The pinned Standard profile is unreleased, so the core refuses live execution
+before it calls the verifier, provider or store. Pass
+`{ executionMode: "simulation" }` only for non-live runs with injected local
+dependencies such as test doubles; omitting the policy refuses. No policy
+value admits a live provider at this pin. See
+[admission boundaries](./raw-json-admission.md).
 
 An `indeterminate` result is not permission to create a new payment. Resume the
 same input after the current lease expires. The core derives the same AP2-6 key,
@@ -62,6 +70,11 @@ metadata, provider idempotency keys, a privileged local create credential, and
 a distinct relayed status-only credential.
 
 ## Stripe test-mode + Demos reference adapter
+
+**Unavailable at this pin.** `createStripeAp2Integration` connects to a real
+provider, so it refuses construction before reading any credential while the
+pinned profile is unreleased; a simulation policy does not enable it. The rest
+of this section describes its contract for a future released profile.
 
 `createStripeAp2Integration` is an optional reference implementation for
 Stripe PaymentIntents. It requires two distinct restricted keys: a local

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { createStripeAp2Integration } from "../../src/rails/ap2Stripe.js";
 import { createDacsX402BuyerEvmChallengeClient } from "../../src/rails/x402BuyerDacsEvm.js";
 import { advanceAp2Settlement } from "../../src/rails/ap2.js";
@@ -116,6 +118,17 @@ describe("public DACS payment profile admission", () => {
     await expect(evmErc20SettleCore(input, input)).rejects.toThrow(/unreleased/);
     await expect(payD402SettleCore(input, input)).rejects.toThrow(/unreleased/);
     expect(touched).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["pay-ap2.md", "advanceAp2Settlement"],
+    ["pay-solana-spl.md", "advanceSolanaSplSettlement"],
+  ])("documents %s with the separate simulation policy its engine requires", (doc, engine) => {
+    const text = readFileSync(new URL(`../../docs/${doc}`, import.meta.url), "utf8");
+    const call = text.slice(text.indexOf(`await ${engine}(`));
+    expect(call.slice(0, call.indexOf(");") + 2)).toMatch(/\n\}, \{ executionMode: "simulation" \}\);$/);
+    expect(text).toMatch(/No policy\s+value\s+admits\s+a\s+live/);
+    if (doc === "pay-ap2.md") expect(text).toMatch(/\*\*Unavailable at this pin\.\*\* `createStripeAp2Integration`/);
   });
 
   it("refuses connected registry dispatch before inspecting descriptors or wallet configuration", async () => {
