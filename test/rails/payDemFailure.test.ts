@@ -1,10 +1,9 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import { hasDefinitiveDemosFailure } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog,
   type SettlementBinding } from "../../src/rails/idempotency.js";
-import { observeDemosExecutionByHash, payDemSettle, payDemSettleCore,
+import { payDemSettle, payDemSettleCore,
   type PayDemRailResult } from "../../src/rails/payDem.js";
 
 const txHash = "ab".repeat(32);
@@ -34,24 +33,6 @@ describe("terminal failed Demos record", () => {
     expect(hasDefinitiveDemosFailure({ ...failure, txHash: hash,
       failureProof: { ...proof, txHash: hash } }, proof.amountOs)).toBe(false);
   });
-  const vectors: { vectors: Array<{ name: string; input: {
-    recordStatus: string; recordNonce: number | null; recordBlock: number;
-  }; executionState: string }> } = JSON.parse(readFileSync(new URL("../fixtures/standard-next/pay-dem-execution-v0.1.json", import.meta.url), "utf8"));
-  it.each(vectors.vectors)("replays execution conformance vector $name", async (vector) => {
-    const input = vector.input;
-    const record = { hash: txHash, status: input.recordStatus,
-      blockNumber: input.recordBlock, content: {
-        type: "native", from: payer, to: payee, amount: proof.amountOs,
-        ...(input.recordNonce === null ? {} : { nonce: String(input.recordNonce) }),
-        data: ["native", { nativeOperation: "send", args: [payee, proof.amountOs] }],
-      } };
-    const result = await observeDemosExecutionByHash(txHash, async () => record, {
-      blockNumber: 42, transfer: { payer, payee, nonce: 9,
-        amountOs: BigInt(proof.amountOs), postFork: true },
-    }, { transactionRecordTimeoutMs: 5, inclusionPollIntervalMs: 1, statusRequestTimeoutMs: 5 });
-    expect(result.state).toBe(vector.executionState);
-  });
-
   it("persists a permanent result and reuses it after a store restart without submission", async () => {
     const log = createInMemorySettlementLog();
     const submit = vi.fn(async () => failure);

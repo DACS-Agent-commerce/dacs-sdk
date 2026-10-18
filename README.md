@@ -618,13 +618,16 @@ requires of the node's transaction record after inclusion. The bridge adds the e
 `(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
 amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
-`PayDemSettlementRecoveryContext` and must return either an exact
-`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
-when authoritative observation proves no transfer for that tuple landed. A
-settlement must carry `execution: "executed"`, set only after the node's
-transaction record for the hash shows the transfer executed; status-index
-`included` alone is not enough, and a reconciliation without it is refused
-(#338). A `failed` record or any other non-final observation must throw. Even authoritative absence does not revoke a
+`PayDemSettlementRecoveryContext` and returns one of three outcomes: an exact
+`PayDemReconciledSettlement` (including the observed `amountOs` and
+`execution: "executed"` after authenticating the confirmed record); a bound
+`PayDemReconciledFailure` with `ok: false`, `errorClass: "permanent"`, the exact
+`amountOs` and `failureProof` after authenticating a terminal failed record; or
+`null` only when authoritative observation proves no transfer for that tuple
+landed. Each terminal record must bind the retained hash, signed nonce,
+inclusion block, payer, payee and OS amount. Status-index `included` alone is
+not enough (#338). Unproven, non-final or conflicting observations must throw.
+Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory

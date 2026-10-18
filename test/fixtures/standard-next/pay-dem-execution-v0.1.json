@@ -1,9 +1,9 @@
 {
   "set": "pay-dem-execution-v0.1",
-  "spec": "DACS-4 §9.5.9; PC-4; PC-7",
+  "spec": "DACS-4 \u00a79.5.9; PC-4; PC-7",
   "decisionModel": "Inclusion does not prove execution. A bound confirmed record passes; a bound failed record is permanent failure; incomplete or conflicting records remain indeterminate without rebroadcast.",
-  "count": 8,
-  "hash": "3c10e565b9db7d50eb3c4bb628ba2fa210cd076e200e41e6e0c13d28f40eff65",
+  "count": 10,
+  "hash": "da86e204d737de2be908337e3395e3185c2103cbbcb43d2c493514c6ec68323c",
   "vectors": [
     {
       "name": "included-confirmed",
@@ -89,6 +89,28 @@
         "recordStatus": "failed",
         "recordNonce": 9,
         "recordBlock": 43
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "confirmed-wrong-nonce",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "confirmed",
+        "recordNonce": 10,
+        "recordBlock": 42
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "confirmed-missing-nonce",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "confirmed",
+        "recordNonce": null,
+        "recordBlock": 42
       },
       "expected": "indeterminate",
       "executionState": "indeterminate"

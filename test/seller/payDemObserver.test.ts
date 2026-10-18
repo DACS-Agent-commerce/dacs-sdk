@@ -21,6 +21,7 @@ function includedFixture(amount: string | number = "2398") {
       blockNumber: BLOCK_NUMBER,
       content: {
         type: "native",
+        nonce: "7",
         from: `0x${PAYER}`,
         from_ed25519_address: `0x${PAYER}`,
         to: PAYEE,
@@ -145,7 +146,7 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
 
       expect(observation).toEqual({
         status: "included",
-        ...(transactionState === "confirmed" ? { execution: "executed" } : {}),
+        ...(transactionState === "confirmed" ? { execution: "executed", nonce: 7 } : {}),
         txHash: HASH,
         payer: PAYER,
         payee: PAYEE,
@@ -153,6 +154,31 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
         blockNumber: BLOCK_NUMBER,
         includedAt: BLOCK_TIMESTAMP_SECONDS * 1_000,
       });
+    },
+  );
+
+  it.each([undefined, null, "", "-1", "1.5", "07", "7 ", "9007199254740992", -1, -0, 1.5])(
+    "withholds execution for invalid confirmed-record nonce %j", async (nonce) => {
+      const fixture = includedFixture();
+      fixture.transaction.status = "confirmed";
+      const content = fixture.transaction.content as Record<string, unknown>;
+      if (nonce === undefined) delete content.nonce;
+      else content.nonce = nonce;
+
+      const observation = await observePayDemTransferCore(HASH, fixtureClient(fixture));
+      // Negative zero is rejected at the JSON-read boundary before nonce parsing.
+      expect(observation.status).toBe(Object.is(nonce, -0) ? "unavailable" : "invalid");
+      expect(observation).not.toHaveProperty("execution");
+    },
+  );
+
+  it.each([0, "0", 7, "7", Number.MAX_SAFE_INTEGER, String(Number.MAX_SAFE_INTEGER)])(
+    "carries validated confirmed-record nonce %j", async (nonce) => {
+      const fixture = includedFixture();
+      fixture.transaction.status = "confirmed";
+      (fixture.transaction.content as Record<string, unknown>).nonce = nonce;
+      await expect(observePayDemTransferCore(HASH, fixtureClient(fixture)))
+        .resolves.toMatchObject({ status: "included", execution: "executed", nonce: Number(nonce) });
     },
   );
 

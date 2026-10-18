@@ -251,10 +251,12 @@ export type DemosTransferObservation =
       status: "included";
       /**
        * Attest successful execution only after reading a `confirmed` record
-       * bound to this hash, block, payer, payee and amount. Inclusion alone is
-       * insufficient. Required before delivery or payment recovery accounting.
+       * bound to this hash, nonce, block, payer, payee and amount. Inclusion
+       * alone is insufficient. Required before delivery or payment recovery accounting.
        */
       execution?: "executed";
+      /** Validated record nonce; required for buyer prepared-transfer recovery. */
+      nonce?: number;
       txHash: string;
       payer: string;
       payee: string;
@@ -1380,7 +1382,9 @@ function isDemosTransferObservationValue(
     "blockNumber",
     "includedAt",
     "execution",
+    ...(Object.prototype.hasOwnProperty.call(value, "nonce") ? ["nonce"] : []),
   ]) &&
+    (value.nonce === undefined || isSafeUint(value.nonce)) &&
     typeof value.txHash === "string" &&
     typeof value.payer === "string" &&
     typeof value.payee === "string" &&

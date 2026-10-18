@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 
 import {
   createPayDemRail,
@@ -844,3 +845,54 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 });
+
+interface ExecutionVector {
+  name: string;
+  input: { statusIndex: string; recordStatus: string; recordNonce: number | null; recordBlock: number };
+  expected: "pass" | "fail" | "indeterminate";
+  executionState: "executed" | "failed" | "indeterminate";
+}
+const executionVectors: { count: number; hash: string; vectors: ExecutionVector[] } = JSON.parse(
+  readFileSync(new URL("../fixtures/standard-next/pay-dem-execution-v0.1.json", import.meta.url), "utf8"),
+);
+
+describe("candidate execution vectors", () => {
+  it("authenticates the complete vector manifest", () => {
+    expect(executionVectors.vectors).toHaveLength(executionVectors.count);
+    expect(sha256Hex(canonicalize(executionVectors.vectors))).toBe(executionVectors.hash);
+  });
+
+  it.each(executionVectors.vectors)("replays status and payment verdict for $name", async (vector) => {
+    const { input } = vector;
+    const record = { ...vectorRecord(), status: input.recordStatus,
+      blockNumber: input.recordBlock };
+    if (input.recordNonce === null) delete record.content.nonce;
+    else record.content.nonce = String(input.recordNonce);
+    sdk.nodeCall.mockResolvedValue({ state: input.statusIndex, blockNumber: 42 });
+    sdk.getTxByHash.mockResolvedValue(record);
+
+    const payDem = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret",
+      ...FAST, inclusionTimeoutMs: 100, transactionRecordTimeoutMs: 100 });
+    const result = await payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS });
+    const disposition = result.ok ? "pass" : result.errorClass === "permanent" ? "fail" : "indeterminate";
+    expect(disposition).toBe(vector.expected);
+    expect(result.txHash).toBe(TX_HASH);
+    expect(sdk.nodeCall).toHaveBeenCalledWith("getTransactionStatus", { hash: TX_HASH });
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    if (vector.expected !== "pass") expect(result).not.toHaveProperty("finality");
+
+    const execution = await observeDemosExecutionByHash(TX_HASH, async () => record, {
+      blockNumber: 42, transfer: { payer: WALLET, payee: RECIPIENT, nonce: NONCE,
+        amountOs: BigInt(AMOUNT_OS), postFork: true },
+    }, { transactionRecordTimeoutMs: 100, inclusionPollIntervalMs: 1, statusRequestTimeoutMs: 100 });
+    expect(execution.state).toBe(vector.executionState);
+  });
+});
+
+/** The same native transfer signed by the mocked rail, before submission. */
+function vectorRecord(): { hash: string; content: Record<string, unknown> } {
+  return { hash: TX_HASH, content: { type: "native", from: WALLET, to: RECIPIENT,
+    amount: AMOUNT_OS, nonce: String(NONCE),
+    data: ["native", { nativeOperation: "send", args: [RECIPIENT, AMOUNT_OS] }],
+  } };
+}

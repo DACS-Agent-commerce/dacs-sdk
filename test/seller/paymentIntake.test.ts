@@ -808,12 +808,23 @@ describe("verifySellerPaymentIntake", () => {
     const ctx = makeContext("pay-dem");
     if (ctx.demosObservation.status !== "included") throw new Error("fixture");
     ctx.demosObservation.execution = "executed";
+    ctx.demosObservation.nonce = 7;
 
     await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
       disposition: "verified",
       fulfilment: "claim",
     });
   });
+
+  it.each([null, "7", -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects a malformed supplied record nonce %j before fulfilment", async (nonce) => {
+      const ctx = makeContext("pay-dem");
+      ctx.demosObservation = { ...ctx.demosObservation, nonce } as never;
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "error", reason: "demos-observation-invalid-result", fulfilment: "none",
+      });
+    },
+  );
 
   it.each([undefined, "failed", "unknown", null, true, "confirmed"])(
     "rejects an included observation with execution %s before fulfilment",

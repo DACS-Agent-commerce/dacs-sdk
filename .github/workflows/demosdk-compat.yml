@@ -50,6 +50,16 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Record compatibility environment
+        run: |
+          {
+            echo "Runner: $RUNNER_OS $RUNNER_ARCH; image $ImageOS $ImageVersion"
+            cat /etc/os-release
+            uname -r
+            node --version
+            npm --version
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Install locked dependencies
         # Typecheck and build need no install scripts.
         run: npm ci --no-audit --ignore-scripts

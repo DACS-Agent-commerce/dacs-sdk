@@ -44,8 +44,9 @@ must return a not-ok result retaining the hash. Both `payDemSettle` and the
 dacs-node buyer payment track refuse a fresh success without this literal
 attestation before completing settlement, recording wallet debits or publishing
 a payment notice. The intent remains held for reconciliation. The attestation
-is removed before durable settlement storage and notice publication; stored
-results still require fresh execution authentication when recovered.
+is removed before durable settlement storage and notice publication; the rail
+bridge and buyer payment track require fresh execution authentication when
+recovering stored results.
 
 `payDemSettleCore` accepts any `DemosNativeClient`. It reports success only
 when the client's result has `ok: true`, `state: "included"`, a block number
@@ -73,8 +74,12 @@ settlement.
 The dacs-node fixed-price buyer reconciler also requires an included
 `DemosTransferObservation` to carry `execution: "executed"`. The default
 observer sets it only after the transaction record is `confirmed` and its
-hash, block, payer, payee and amount have been checked against the confirmed
-block and native send payload. Custom observers must do the same check.
+hash, nonce, block, payer, payee and amount have been checked against the
+confirmed block and native send payload. It carries the validated record nonce
+as a safe non-negative integer `nonce`. The buyer reconciler requires that value
+to equal the retained prepared transfer's signed nonce before returning
+`completed`; missing or conflicting nonces require operator recovery. Custom
+observers must supply the same checked nonce.
 Missing or other execution evidence returns `indeterminate` with
 `pay-dem-chain-execution-unconfirmed`, keeping the payment held. The
 reconciler forwards the attestation with its `completed` settlement. The host
@@ -90,18 +95,25 @@ The mapping was verified against kynesyslabs/node
 
 | Behaviour | Source |
 |---|---|
-| `getTransactionStatus` returns `pending`, `included` or `unknown`. It returns `included` for every stored transaction row, failed rows included. `failed` is reserved and never produced. | `src/libs/blockchain/chainTypes.ts` (`TxStatus`), `src/libs/blockchain/chainTransactions.ts` (`getTransactionStatus`) |
+| `getTransactionStatus` returns `pending`, `included` or `unknown`. It checks the mempool first (`pending`), then returns `included` for a stored transaction row not found there, failed rows included. `failed` is reserved and never produced. | `src/libs/blockchain/chainTypes.ts` (`TxStatus`), `src/libs/blockchain/chainTransactions.ts` (`getTransactionStatus`) |
 | A transaction record's `status` is `confirmed`, `failed` or `pending`. | `src/utilities/constants.ts` (`TRANSACTION_STATUS`) |
 | `content.nonce` is a pg `bigint` column and is served as a decimal string. `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it; the rail accepts both. | `src/model/entities/Transactions.ts`, `src/libs/blockchain/transaction.ts` (`fromEntityToWireNumber`) |
 | `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. demosdk resolves the `response` member, and both are polled. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
 
-The default branch (`testnet`) has no `getTransactionStatus` and records every
+The `testnet` snapshot at `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` has no
+`getTransactionStatus` and records every
 included transaction as `confirmed`; the rail does not support it.
 In the SDK source repository (these files are not in the npm package),
 `test/fixtures/demos-node2-records.json` holds two records read from node2 at
 61b8e75, one `confirmed` and one `failed` with `TX_NONCE_INVALID_LOW`, and
 `test/rails/payDemExecutedStatus.test.ts` runs the execution observer on them.
-Re-check this table when the deployed node moves to another commit.
+The saved 2026-10-18 build metadata also reports `nodeVersion.dirty: true`.
+The reported commit identifies a reference for the observed schemas; it does
+not reproduce the deployed source tree's unspecified local changes. The fixture
+retains the complete observed version and network-info envelopes. Exact source
+reproducibility requires a clean deployment commit or a source-tree digest.
+Re-check this table and the read-only response shapes before treating another
+deployment as compatible.
 
 ## Deviations from DACS-4 at `d45c0a29`
 
