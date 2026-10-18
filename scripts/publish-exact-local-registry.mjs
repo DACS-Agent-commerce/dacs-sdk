@@ -41,11 +41,11 @@ function loopbackRegistry(registryValue) {
   return registry;
 }
 
-// npm's publish command intentionally lets publishConfig override CLI flags, so
-// `npm publish <tarball> --provenance=false` still demands trusted publishing
-// for these packages (publishConfig.provenance=true). Changing publishConfig
-// would change the tarball bytes. The pinned acceptance job therefore calls the
-// pinned npm's libnpmpublish directly; anything else fails closed here.
+// npm 11.19.0 gives explicit CLI flags precedence over publishConfig, including
+// --provenance=false. This helper uses its pinned libnpmpublish directly to pass
+// the exact archive bytes and explicit local-registry options in one call,
+// without rewriting the packed manifest's publishConfig. The version/layout
+// checks below keep that direct dependency on npm internals explicit.
 export function loadPinnedLibnpmpublish({
   npm = args => execFileSync("npm", args, { encoding: "utf8" }).trim(),
   pinned = PINNED_ACCEPTANCE_NPM_VERSION,

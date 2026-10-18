@@ -6,10 +6,13 @@ import {
   isCanonicalClaimReference,
   parseCanonicalClaimReference,
 } from "../identity/claimReference.js";
+import { DACS_STANDARD_PIN } from "../version.js";
 
-/** Exact Standard revision supported by the native-DEM coordinator slice. */
-export const FIXED_PRICE_PAY_DEM_STANDARD_REVISION =
-  "965df755aba4ff392f1fb37a93d287242b177ba4" as const;
+/**
+ * Exact current Standard release, shared with native completion admission.
+ * Historical orders are refused, never relabelled as current-profile evidence.
+ */
+export const FIXED_PRICE_PAY_DEM_STANDARD_REVISION = DACS_STANDARD_PIN;
 
 /** Operational SDK profile; this is not a normative DACS artifact field. */
 export const FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE =
@@ -74,8 +77,10 @@ export function fixedPricePayDemProtocolBindingViolation(value: unknown): string
     "orchestrator",
     "rail",
   ])) return "fixed-price pay-dem protocol binding fields are malformed";
+  if (value.standardRevision !== FIXED_PRICE_PAY_DEM_STANDARD_REVISION) {
+    return "fixed-price pay-dem Standard revision is unsupported; historical orders require their original SDK";
+  }
   if (value.commerceProfile !== FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE ||
-      value.standardRevision !== FIXED_PRICE_PAY_DEM_STANDARD_REVISION ||
       value.phase !== "pay-dem" ||
       value.orchestratorTopology !== "seller-as-phase-orchestrator-v1" ||
       !isCanonicalClaimReference(value.orchestrator)) {

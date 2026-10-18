@@ -1117,6 +1117,8 @@ export async function verifyFixedPricePayDemAuditCompletion(
     ), "trusted session profile admission");
     if (!isRecord(admission) || !exactKeys(admission, ["status", "releasePin", "moduleVersions", "roles"]) ||
         admission.status !== "valid" || admission.releasePin !== DACS_STANDARD_PIN ||
+        admission.releasePin !== retained.buyer.protocol.standardRevision ||
+        admission.releasePin !== retained.seller.protocol.standardRevision ||
         !exact(admission.moduleVersions, COMPLETED_SESSION_MODULE_VERSIONS) ||
         !Array.isArray(admission.roles) || admission.roles.length !== 2 ||
         !(["buyer", "seller"] as const).every((role) => {

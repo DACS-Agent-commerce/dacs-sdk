@@ -1250,6 +1250,43 @@ async function gateWithAudit(
   return { fx, buyerStatus, sellerStatus, verify };
 }
 
+describe("native DEM exact profile admission", () => {
+  const historicalRelease = "965df755aba4ff392f1fb37a93d287242b177ba4";
+
+  it("binds new native orders to the current completed-session release", () => {
+    expect(FIXED_PRICE_PAY_DEM_STANDARD_REVISION).toBe(FIXED_PRICE_X402_STANDARD_REVISION);
+  });
+
+  it.each([
+    [historicalRelease, FIXED_PRICE_X402_STANDARD_REVISION],
+    [FIXED_PRICE_X402_STANDARD_REVISION, historicalRelease],
+    [historicalRelease, historicalRelease],
+  ])("refuses order release %s with admission release %s before reads", async (orderRelease, admissionRelease) => {
+    const gate = await gateWithAudit("pay-dem", (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    for (const status of [gate.buyerStatus, gate.sellerStatus]) {
+      (status.protocol as { standardRevision: string }).standardRevision = orderRelease;
+    }
+    const read = vi.fn(gate.fx.deps.readBundleCopy);
+    await expect(gate.verify({ ...gate.fx.deps, readBundleCopy: read,
+      authenticateSessionProfile: () => ({ ...trustedAdmission(), releasePin: admissionRelease }),
+    } as FixedPricePayDemAuditCompletionDeps)).rejects.toThrow();
+    expect(read).not.toHaveBeenCalled();
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
+  it.each(["buyer", "seller"] as const)("refuses a historical %s order beside a current peer", async (role) => {
+    const gate = await gateWithAudit("pay-dem", (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const status = role === "buyer" ? gate.buyerStatus : gate.sellerStatus;
+    (status.protocol as { standardRevision: string }).standardRevision = historicalRelease;
+    await expect(gate.verify()).rejects.toThrow();
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+});
+
 describe("native DEM admission deadline", () => {
   it.each(["resolve", "reject"] as const)(
     "bounds pending admission and ignores a late %s without starting reads", async (late) => {

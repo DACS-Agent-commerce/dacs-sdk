@@ -750,6 +750,29 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(after.mtimeMs).toBe(before.mtimeMs);
   });
 
+  it("refuses a historical native database without migrating or relabelling it", async () => {
+    const databasePath = join(temporaryRoot(), "historical-native.sqlite");
+    const liveOptions = { mode: "live-demos" as const, profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer" as const, authority: BUYER };
+    const database = await open(databasePath, liveOptions);
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    const raw = new BetterSqlite3(databasePath);
+    try {
+      raw.prepare("UPDATE dacs_store_metadata SET standard_revision = ? WHERE singleton = 1")
+        .run("965df755aba4ff392f1fb37a93d287242b177ba4");
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally { raw.close(); }
+    const before = readFileSync(databasePath);
+    const filesBefore = readdirSync(join(databasePath, ".."));
+    await expect(openDacsNodeSqliteDatabase(options(databasePath, liveOptions)))
+      .rejects.toMatchObject({ reasonCode: "database-binding-mismatch" });
+    expect(readFileSync(databasePath)).toEqual(before);
+    // Opening WAL can create empty sidecars even when admission is refused.
+    expect(readdirSync(join(databasePath, "..")).filter((name) =>
+      !name.endsWith("-wal") && !name.endsWith("-shm"))).toEqual(filesBefore);
+  });
+
   it("derives immutable SDK and Standard bindings and rejects caller labels", async () => {
     const root = temporaryRoot();
     const databasePath = join(root, "buyer.sqlite");

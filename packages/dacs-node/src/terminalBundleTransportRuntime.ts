@@ -291,6 +291,14 @@ function otherRole(role: Role): Role {
   return role === "buyer" ? "seller" : "buyer";
 }
 
+function isPendingValidationPrerequisite(error: unknown): error is DacsVetTerminalBundleTransportError {
+  return error instanceof DacsVetTerminalBundleTransportError && (
+    error.reasonCode === "vet-terminal-order-pending" ||
+    error.reasonCode === "vet-terminal-order-input-pending" ||
+    error.reasonCode === "vet-terminal-proposal-version-authority-unavailable"
+  );
+}
+
 function payloadValidation(
   valid: boolean,
   reasonCode: string,
@@ -523,6 +531,9 @@ async function loadOrder(
     context.database.createLiveCoordinatorStore(context.role).load(context.role, jobId),
     context.database.createPayDemCoordinatorStore(context.role).load(context.role, jobId),
   ]);
+  if (x402.status === "missing" && payDem.status === "missing") {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-order-pending");
+  }
   const x402Owned = x402.status === "ok";
   const payDemOwned = payDem.status === "ok";
   if ((x402.status !== "ok" && x402.status !== "missing") ||
@@ -565,8 +576,11 @@ async function loadOrder(
       throw busyOr(error, "vet-terminal-order-mismatch");
     }
   })();
-  if (retained === undefined || retained.localBindingHash !== record.localBindingHash) {
-    throw new DacsVetTerminalBundleTransportError("vet-terminal-order-unavailable");
+  if (retained === undefined) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-order-input-pending");
+  }
+  if (retained.localBindingHash !== record.localBindingHash) {
+    throw new DacsVetTerminalBundleTransportError("vet-terminal-order-mismatch");
   }
   let application: ReturnType<typeof captureDacsFixedPriceX402ApplicationV1>;
   try {
@@ -1238,6 +1252,9 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       await assertProposalOrder(proposal, true);
     } catch (error) {
       rethrowBusy(error);
+      if (isPendingValidationPrerequisite(error)) {
+        return Object.freeze({ disposition: "indeterminate" as const, reasonCode: error.reasonCode });
+      }
       return Object.freeze({
         disposition: "rejected" as const,
         reasonCode: error instanceof DacsVetTerminalBundleTransportError
@@ -1784,7 +1801,7 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         }
         if (assessment.disposition === "indeterminate") {
           return Object.freeze({
-            status: "authentication-failure" as const,
+            status: "unavailable" as const,
             reasonCode: assessment.reasonCode,
           });
         }
@@ -1798,16 +1815,16 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       const proposal = await loadBinding(context, "proposal", input.jobId);
       if (proposal === undefined) {
         return Object.freeze({
-          status: "authentication-failure" as const,
+          status: "unavailable" as const,
           reasonCode: "vet-terminal-proposal-pending",
         });
       }
       const assessment = await assessProposal(proposal.payload);
-      if (assessment.disposition !== "authorized") {
-        return Object.freeze({
-          status: "authentication-failure" as const,
-          reasonCode: assessment.reasonCode,
-        });
+      if (assessment.disposition === "indeterminate") {
+        return Object.freeze({ status: "unavailable" as const, reasonCode: assessment.reasonCode });
+      }
+      if (assessment.disposition === "rejected") {
+        return payloadValidation(false, assessment.reasonCode);
       }
       const contribution = captureContribution(assessment.proposal.plan, input.payload);
       return payloadValidation(
@@ -1815,6 +1832,9 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         "vet-terminal-contribution-invalid",
       );
     } catch (error) {
+      if (isPendingValidationPrerequisite(error)) {
+        return Object.freeze({ status: "unavailable" as const, reasonCode: error.reasonCode });
+      }
       // The store was locked, so nothing was decided: the sender retries.
       if (isDacsNodeSqliteBusyError(error)) {
         return Object.freeze({ status: "unavailable" as const, reasonCode: "vet-terminal-store-busy" });

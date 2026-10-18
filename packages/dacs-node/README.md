@@ -35,6 +35,14 @@ published extensionless `demoswork/operations/` directory import. Generated
 compiled services use this hook instead of shipping a general TypeScript/esbuild
 transformer in production; all unrelated resolution failures remain unchanged.
 
+The native DEM commerce profile uses Standard release
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, the same release and full module
+tuple required by its completed-session admission. Orders and databases bound
+to the historical `965df755aba4ff392f1fb37a93d287242b177ba4` release are refused;
+there is no automatic migration or relabelling of signed evidence. Retain the
+original database and use its matching SDK release to recover historical work.
+Start current-profile work in a new database.
+
 The SQLite database is permanently bound to one mode/profile, actor role,
 authority, SDK version, and Standard revision. The SDK and Standard revisions
 are derived from the installed SDK and selected commerce profile; callers
@@ -311,7 +319,9 @@ provenance remains a non-normative policy seam pending Standard issue #331.
 `POST /dacs-transport/v1/messages`. It bounds decoded JSON bodies to 256 KiB,
 rate-limits a bounded set of peers, authenticates the envelope and independently
 validates its typed payload before inbox admission, and emits only a signed
-acknowledgement after the handler disposition is durable. A thrown or malformed
+acknowledgement after the handler disposition is durable. Temporary Vet production
+verification failures and pending terminal prerequisites return HTTP 503; the
+sender retains the same signed envelope for automatic retry. A thrown or malformed
 handler result leaves the reservation pending; call `resumeDacsHttpInboxV1()`
 during startup to resume those items with the same idempotent handler before
 accepting traffic. Each call resumes one page; pass its `nextCursor` to the

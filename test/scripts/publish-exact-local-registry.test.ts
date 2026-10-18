@@ -80,6 +80,19 @@ describe("exact local registry publisher", () => {
     expect(registry.urls).toEqual([`${REGISTRY}/@kynesyslabs%2fdacs`]);
   });
 
+  it("preserves packed publishConfig while explicitly disabling local provenance", async () => {
+    const archivePath = join(tempDirectory("dacs-local-config-"), "candidate.tgz");
+    const manifest = { name: "@kynesyslabs/dacs", version: "0.1.0-test",
+      publishConfig: { access: "public", provenance: true } };
+    const bytes = packTarball({ "package/package.json": JSON.stringify(manifest) });
+    writeFileSync(archivePath, bytes);
+    const registry = fakeRegistry(onlyCandidate);
+    await publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "acceptance-placeholder", ...registry });
+    expect(registry.calls[0]!.manifest).toEqual(manifest);
+    expect(registry.calls[0]!.options.provenance).toBe(false);
+    expect(registry.calls[0]!.tarball).toEqual(bytes);
+  });
+
   it.each([
     ["an upstream version beside the candidate", ({ manifest, tarball }: { manifest: { version: string }; tarball: Buffer }) =>
       ({ versions: { [manifest.version]: { dist: { integrity: sri(tarball) } }, "0.0.9": { dist: {} } } }), /expected only the candidate/],

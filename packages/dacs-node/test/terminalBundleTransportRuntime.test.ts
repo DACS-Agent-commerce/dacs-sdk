@@ -41,6 +41,7 @@ import {
   type FixedPriceX402OrderInput,
 } from "@kynesyslabs/dacs/commerce";
 import { identityBundleHash } from "@kynesyslabs/dacs/identity";
+import BetterSqlite3 from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
@@ -69,8 +70,12 @@ import {
   createDacsVetTerminalBundleTransportRuntimeV1,
   type DacsVetTerminalBundleTransportRuntimeV1,
 } from "../src/terminalBundleTransportRuntime.js";
+import { inProcessHttpFetch } from "./helpers/httpInProcess.js";
+import { createDacsHttpEnvelopeV1 } from "../src/transport/envelope.js";
+import { createDacsHttpMessageClientV1 } from "../src/transport/http.js";
 import type {
   DacsHttpAuthenticatedEnvelopeV1,
+  DacsHttpEnvelopeV1,
   DacsVetTerminalBundleProposalV1,
 } from
   "../src/transport/envelope.js";
@@ -1171,6 +1176,130 @@ describe("role-separated Vet terminal bundle transport", () => {
     expect(attempt).toBe(2);
   });
 
+  it.each(["proposal", "contribution"] as const)(
+    "retries the exact terminal %s over HTTP after a verifier outage and sender restart", async (kind) => {
+      const buyerDatabase = await open("buyer");
+      const sellerDatabase = await open("seller");
+      let available = true;
+      const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+        context: { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+          database: buyerDatabase, sendMessage: vi.fn() } as unknown as DacsLiveRoleOperationContextV1,
+        expectedRegistryVersions: REGISTRY_VERSIONS,
+        authenticateProduction: async () => available
+          ? { status: "valid" } : { status: "indeterminate", reason: "recursive evidence pending" },
+      });
+      const registered = await runtime.registerLocalTerminal(terminalInput());
+      if (kind === "contribution") {
+        await runtime.handleMessage(authenticated("terminal-bundle-proposal-seller",
+          registered.proposal, SELLER, BUYER), { role: "buyer" } as DacsLiveRoleInboundOperationContextV1);
+      }
+      const resolveIdentity = async (input: { sender: string; jobId: string }) => {
+        const buyer = input.sender === BUYER;
+        return { status: "authenticated" as const, principal: input.sender, jobId: input.jobId,
+          role: buyer ? "buyer" as const : "seller" as const,
+          publicKey: rawPublicKey(publicKeyFromSeed(buyer ? BUYER_SEED : SELLER_SEED)),
+          evidenceHash: (buyer ? "a" : "b").repeat(64) };
+      };
+      const handle = vi.fn((message: Readonly<DacsHttpAuthenticatedEnvelopeV1>) =>
+        runtime.handleMessage(message, { role: "buyer" } as DacsLiveRoleInboundOperationContextV1));
+      const exchange = inProcessHttpFetch({
+        authority: BUYER,
+        inbox: buyerDatabase.createHttpInboxStore(), resolveIdentity,
+        validatePayload: runtime.validatePayload, handleMessage: handle,
+        signAcknowledgement: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(BUYER_SEED)),
+      });
+      {
+        const outbox = sellerDatabase.createHttpOutboxStore({ retryJitter: () => 0 });
+        const now = await outbox.readTime();
+        const signed = await createDacsHttpEnvelopeV1({
+          type: kind === "proposal" ? "terminal-bundle-proposal-seller" : "terminal-bundle-contribution-seller",
+          jobId: JOB_ID, sender: SELLER, audience: BUYER,
+          issuedAt: now - 1000, expiresAt: now + 299000,
+          nonce: Buffer.alloc(32, 17).toString("base64url"),
+          payload: kind === "proposal" ? registered.proposal : contribution(registered.proposal.plan, "seller"),
+        }, (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED))) as Readonly<DacsHttpEnvelopeV1>;
+        const statuses: number[] = [];
+        const bodies: unknown[] = [];
+        const options = { endpoint: "http://127.0.0.1/dacs-transport/v1/messages", authority: SELLER, outbox, resolveIdentity,
+          workerId: "seller-before-restart", fetch: async (...args: Parameters<typeof fetch>) => {
+            bodies.push(args[1]?.body);
+            const response = await exchange(...args);
+            statuses.push(response.status);
+            return response;
+          } };
+        available = false;
+        const client = createDacsHttpMessageClientV1(options);
+        await client.queue(signed);
+        await expect(client.dispatch(signed.envelopeId)).resolves.toMatchObject({ status: "retry-scheduled" });
+        expect(statuses).toEqual([503]);
+        const retained = (await outbox.load(signed.envelopeId))!;
+        expect(retained).toMatchObject({ state: "pending", attempts: 1, envelope: signed });
+        expect(handle).not.toHaveBeenCalled();
+        available = true;
+        const raw = new BetterSqlite3(databasePaths.get(sellerDatabase)!);
+        try { raw.prepare("UPDATE dacs_http_clock SET last_time = ? WHERE singleton = 1").run(retained.nextAttemptAt + 1); }
+        finally { raw.close(); }
+        const restarted = createDacsHttpMessageClientV1({ ...options, workerId: "seller-after-restart" });
+        await expect(restarted.dispatch(signed.envelopeId)).resolves.toMatchObject({ status: "acknowledged" });
+        await expect(restarted.dispatch(signed.envelopeId)).resolves.toMatchObject({ status: "acknowledged" });
+        expect(statuses).toEqual([503, 202]);
+        expect(bodies).toEqual([canonicalize(signed), canonicalize(signed)]);
+        expect(handle).toHaveBeenCalledOnce();
+        await expect(outbox.load(signed.envelopeId)).resolves.toMatchObject({ state: "acknowledged", attempts: 2 });
+      }
+    },
+  );
+
+  it.each(["order", "application"] as const)("retries a proposal while its local %s is pending", async (prerequisite) => {
+    const database = await open("buyer");
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context: { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+        database, sendMessage: vi.fn() } as unknown as DacsLiveRoleOperationContextV1,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: async () => ({ status: "valid" }),
+    });
+    const proposal = await terminalProposal(terminalInput());
+    const restore = prerequisite === "order"
+      ? vi.spyOn(database, "createLiveCoordinatorStore").mockReturnValue({
+          load: async () => ({ status: "missing" }),
+        } as never)
+      : vi.spyOn(database, "loadEffectInput").mockReturnValue(undefined);
+    const input = { type: "terminal-bundle-proposal-seller" as const,
+      payload: proposal, jobId: JOB_ID, sender: SELLER, audience: BUYER };
+    await expect(runtime.validatePayload(input)).resolves.toEqual({
+      status: "unavailable", reasonCode: prerequisite === "order"
+        ? "vet-terminal-order-pending" : "vet-terminal-order-input-pending",
+    });
+    restore.mockRestore();
+    await expect(runtime.validatePayload(input)).resolves.toEqual({ status: "valid" });
+  });
+
+  it("retries an early contribution until its proposal is retained and rejects proven invalid production", async () => {
+    const database = await open("buyer");
+    let valid = true;
+    const runtime = createDacsVetTerminalBundleTransportRuntimeV1({
+      context: { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+        database, sendMessage: vi.fn() } as unknown as DacsLiveRoleOperationContextV1,
+      expectedRegistryVersions: REGISTRY_VERSIONS,
+      authenticateProduction: async () => valid ? { status: "valid" }
+        : { status: "invalid", reason: "proven invalid production" },
+    });
+    const proposal = await terminalProposal(terminalInput());
+    const input = { type: "terminal-bundle-contribution-seller" as const,
+      payload: contribution(proposal.plan, "seller"), jobId: JOB_ID, sender: SELLER, audience: BUYER };
+    await expect(runtime.validatePayload(input)).resolves.toEqual({
+      status: "unavailable", reasonCode: "vet-terminal-proposal-pending",
+    });
+    await runtime.registerLocalTerminal(terminalInput());
+    await runtime.handleMessage(authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1);
+    await expect(runtime.validatePayload(input)).resolves.toEqual({ status: "valid" });
+    valid = false;
+    await expect(runtime.validatePayload(input)).resolves.toEqual({
+      status: "invalid", reasonCode: "vet-terminal-production-invalid",
+    });
+  });
+
   it("keeps an authentication outage pending without retaining terminal authority", async () => {
     const buyerDatabase = await open("buyer");
     const context = {
@@ -1819,7 +1948,7 @@ describe("role-separated Vet terminal bundle transport", () => {
 
   it.each([
     ["invalid", "invalid", "vet-terminal-production-invalid"],
-    ["indeterminate", "authentication-failure", "vet-terminal-production-indeterminate"],
+    ["indeterminate", "unavailable", "vet-terminal-production-indeterminate"],
   ] as const)("does not tombstone a distinct peer plan when Vet authentication is %s", async (
     authenticationStatus,
     validationStatus,
@@ -1946,8 +2075,7 @@ describe("role-separated Vet terminal bundle transport", () => {
     await expect(runtime.handleMessage(
       authenticated("terminal-bundle-proposal-seller", proposal, SELLER, BUYER),
       { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
-    )).resolves.toEqual({
-      disposition: "rejected",
+    )).rejects.toMatchObject({
       reasonCode: "vet-terminal-proposal-version-authority-unavailable",
     });
     expect(authenticate).not.toHaveBeenCalled();
