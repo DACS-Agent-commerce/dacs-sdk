@@ -5,12 +5,12 @@ import { DacsError } from "../errors.js";
 export type RawJsonAdmissionStage = "parse" | "profile";
 
 export interface RawJsonAdmissionOptions {
-  /** Maximum admitted view length in bytes (default 1 MiB, maximum 2 MiB). */
+  /** Maximum admitted view length in bytes (default 1 MiB, maximum 4 MiB). */
   maxBytes?: number;
 }
 
 const DEFAULT_MAX_BYTES = 1_048_576;
-const MAX_MAX_BYTES = 2_097_152;
+const MAX_MAX_BYTES = 4_194_304;
 const Uint8ArrayIntrinsic = Uint8Array;
 const typedArrayByteLength = Object.getOwnPropertyDescriptor(
   Object.getPrototypeOf(Uint8ArrayIntrinsic.prototype) as object,

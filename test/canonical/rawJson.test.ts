@@ -77,7 +77,8 @@ describe("CORE CF-5 exact-byte admission", () => {
     expect(() => admitRawJson(Buffer.from("null"), { maxBytes: 3 }))
       .toThrow(/BYTE-LIMIT-EXCEEDED/);
     expect(admitRawJson(Buffer.from("null"), { maxBytes: 2_097_152 })).toBeNull();
-    for (const maxBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_097_153]) {
+    expect(admitRawJson(Buffer.from("null"), { maxBytes: 4_194_304 })).toBeNull();
+    for (const maxBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 4_194_305]) {
       expect(() => admitRawJson(Buffer.from("0"), { maxBytes })).toThrow(TypeError);
     }
     for (const options of [null, "", [], { maxBytes: "1" }]) {
