@@ -426,31 +426,7 @@ describe("DemosAdapter", () => {
     expect(() => new DemosAdapter({ rpc: RPC, secret: "s" })).not.toThrow();
   });
 
-  it("reverse-resolves canonical CCI web2 and chain/subchain wallet refs", async () => {
-    const adapter = makeAdapter();
-    Object.assign(adapter, { connected: true });
-    const web2 = vi.spyOn(Identities.prototype, "getDemosIdsByWeb2Identity")
-      .mockResolvedValue([{ pubkey: "subject-a" }, {}, { pubkey: "subject-b" }] as never);
-    const wallet = vi.spyOn(Identities.prototype, "getDemosIdsByWeb3Identity")
-      .mockResolvedValue([{ pubkey: "subject-c" }] as never);
-
-    await expect(
-      adapter.findSubjectsByClaim("cci-web2:twitter:alice"),
-    ).resolves.toEqual(["subject-a", "subject-b"]);
-    expect(web2).toHaveBeenCalledWith(adapter.raw, "twitter", "alice");
-
-    await expect(
-      adapter.findSubjectsByClaim(
-        `cci-xm:evm:base-sepolia:0x${"11".repeat(20)}`,
-      ),
-    ).resolves.toEqual(["subject-c"]);
-    expect(wallet).toHaveBeenCalledWith(
-      adapter.raw,
-      "evm.base-sepolia",
-      `0x${"11".repeat(20)}`,
-    );
-  });
-
+  // Reverse lookups over the bounded transport: demos-cci-reverse.test.ts.
   it("fails closed when the current Demos SDK lacks a reverse resolver", async () => {
     const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });

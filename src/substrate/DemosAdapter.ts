@@ -4,7 +4,6 @@ import {
   StorageProgram,
   type StorageProgramListItem,
 } from "@kynesyslabs/demosdk/storage";
-import { Identities } from "@kynesyslabs/demosdk/abstraction";
 
 import {
   canonicalize,
@@ -31,7 +30,8 @@ import {
   DEMOS_CCI_DEFAULT_TIMEOUT_MS,
   DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS,
   defaultCciTransport,
-  readDemosCciResponse,
+  readDemosGcrRoutine,
+  type DemosGcrRoutine,
 } from "./demosCciTransport.js";
 import {
   assertDemosWriteEvidence,
@@ -509,6 +509,28 @@ function journalPortableValue(
 
 function serializeSignedTransaction(value: unknown): string {
   return canonicalize(journalPortableValue(value));
+}
+
+/**
+ * Subject pubkeys from a bounded getAccountByIdentity response, read as
+ * demosdk's getDemosIdsByIdentity reads it: result 200 carries the account
+ * list in `response`. The structural guard caps the decoded list at
+ * DEMOS_CCI_RESPONSE_LIMITS.maxArrayLength accounts before it is walked.
+ */
+function demosReverseLookupSubjects(raw: unknown): string[] {
+  assertDemosCciResponseBounds(raw);
+  if (raw === null || typeof raw !== "object" || (raw as { result?: unknown }).result !== 200) {
+    throw new SubstrateError("Demos GCR reverse identity lookup failed");
+  }
+  const accounts = (raw as { response?: unknown }).response;
+  if (accounts === undefined || accounts === null) return [];
+  if (!Array.isArray(accounts)) {
+    throw new DacsError("Demos GCR reverse identity response is not an account list");
+  }
+  return accounts
+    .map((account: unknown) => account !== null && typeof account === "object"
+      ? (account as { pubkey?: unknown }).pubkey : undefined)
+    .filter((pubkey: unknown): pubkey is string => typeof pubkey === "string");
 }
 
 /**
@@ -4120,10 +4142,60 @@ export class DemosAdapter implements SubstrateAdapter {
         },
       };
     }
-    // Match demosdk rpcCall's public/authenticated headers without allowing
-    // its Axios transport to decode an unbounded body first. Hex encoding comes
-    // from demosdk itself ("0x"-prefixed); the test pins these headers to the
-    // real rpcCall output.
+    // getIdentities authenticates only when a wallet is connected, as demosdk does.
+    const raw = await this.#readGcrRoutine(
+      { method: "getIdentities", params: [ref] },
+      () => this.#demos.walletConnected,
+    );
+    // Keep the decoded structural guard before returning to higher-level
+    // callers; Agent parsing repeats it before retaining a snapshot.
+    assertDemosCciResponseBounds(raw);
+    return { ref, boundTo: ref, raw };
+  }
+
+  /**
+   * SR-1 (reverse) — resolve a linked claim ref back to the subject pubkeys that
+   * hold it, with the request of demosdk's GCR reverse lookups
+   * (`getDemosIdsBy{Web2,Web3}Identity`, i.e. `getAccountByIdentity`). The read
+   * has resolveIdentity's raw byte ceiling, retries, deadlines and redirect
+   * refusal; the decoded account list is capped by the structural guard. Like
+   * demosdk, it always authenticates, so it needs a connected wallet.
+   */
+  async findSubjectsByClaim(claimRef: string): Promise<string[]> {
+    if (!this.connected) {
+      throw new Error("DemosAdapter not connected — call connect() first");
+    }
+    const parsed = parseClaimRef(claimRef);
+    if (!parsed) {
+      throw new Error(
+        `findSubjectsByClaim: "${claimRef}" is not a reverse-resolvable linked-claim ref`,
+      );
+    }
+    if (parsed.kind === "web2" && parsed.platform === "domain") {
+      throw new Error(
+        "findSubjectsByClaim: domain reverse lookup is not exposed by the current Demos SDK",
+      );
+    }
+    // Key order matches demosdk 4.0.16's identity objects; an absent userId
+    // is dropped by JSON, as in demosdk's own request.
+    const identity = parsed.kind === "web2"
+      ? { type: "web2", context: parsed.platform, username: parsed.handle }
+      : { type: "xm", chain: `${parsed.chainType}.${parsed.subchain}`, address: parsed.address };
+    const raw = await this.#readGcrRoutine(
+      { method: "getAccountByIdentity", params: [identity] },
+      () => true,
+    );
+    return demosReverseLookupSubjects(raw);
+  }
+
+  /**
+   * One bounded `gcr_routine` read. Match demosdk rpcCall's public or
+   * authenticated headers, rebuilt per attempt, without allowing its Axios
+   * transport to decode an unbounded body first. Hex encoding comes from
+   * demosdk itself ("0x"-prefixed); the tests pin these headers and requests
+   * to the real rpcCall output.
+   */
+  #readGcrRoutine(routine: DemosGcrRoutine, authenticate: () => boolean): Promise<unknown> {
     const buildHeaders = async (): Promise<Record<string, string>> => {
       const headers = {
         "Content-Type": "application/json",
@@ -4131,7 +4203,11 @@ export class DemosAdapter implements SubstrateAdapter {
         signature: "",
         timestamp: "",
       };
-      if (this.#demos.walletConnected) {
+      if (authenticate()) {
+        // demosdk's rpcCall would fail on the missing keypair instead.
+        if (!this.#demos.walletConnected) {
+          throw new DacsError("Demos GCR reverse identity lookup requires a connected wallet");
+        }
         headers.identity += uint8ArrayToHex(this.#demos.keypair.publicKey);
         headers.timestamp = Date.now().toString();
         const authMessage = sha256Hex(`${headers.identity}:${headers.timestamp}`);
@@ -4148,54 +4224,14 @@ export class DemosAdapter implements SubstrateAdapter {
     // otherwise nothing is sent. The message names no URL, which may hold
     // credentials.
     const transport = this.config.identityFetch ?? defaultCciTransport(this.config.rpc);
-    const raw = await readDemosCciResponse(
+    return readDemosGcrRoutine(
       this.config.rpc,
-      ref,
+      routine,
       buildHeaders,
       transport,
       this.config.identityMaxResponseBytes ?? DEMOS_CCI_MAX_RESPONSE_BYTES,
       this.config.identityTimeoutMs ?? DEMOS_CCI_DEFAULT_TIMEOUT_MS,
       this.config.identityTotalTimeoutMs ?? DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS,
     );
-    // Keep the decoded structural guard before returning to higher-level
-    // callers; Agent parsing repeats it before retaining a snapshot.
-    assertDemosCciResponseBounds(raw);
-    return { ref, boundTo: ref, raw };
-  }
-
-  /**
-   * SR-1 (reverse) — resolve a linked claim ref back to the subject pubkeys that
-   * hold it, via demosdk's GCR reverse lookups (`getDemosIdsBy{Web2,Web3}Identity`).
-   */
-  async findSubjectsByClaim(claimRef: string): Promise<string[]> {
-    if (!this.connected) {
-      throw new Error("DemosAdapter not connected — call connect() first");
-    }
-    const parsed = parseClaimRef(claimRef);
-    if (!parsed) {
-      throw new Error(
-        `findSubjectsByClaim: "${claimRef}" is not a reverse-resolvable linked-claim ref`,
-      );
-    }
-    const identities = new Identities();
-    if (parsed.kind === "web2" && parsed.platform === "domain") {
-      throw new Error(
-        "findSubjectsByClaim: domain reverse lookup is not exposed by the current Demos SDK",
-      );
-    }
-    const accounts = parsed.kind === "web2"
-      ? await identities.getDemosIdsByWeb2Identity(
-          this.#demos,
-          parsed.platform,
-          parsed.handle,
-        )
-      : await identities.getDemosIdsByWeb3Identity(
-          this.#demos,
-          `${parsed.chainType}.${parsed.subchain}`,
-          parsed.address,
-        );
-    return (accounts ?? [])
-      .map((a: { pubkey?: unknown }) => a.pubkey)
-      .filter((p: unknown): p is string => typeof p === "string");
   }
 }

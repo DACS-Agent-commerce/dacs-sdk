@@ -46,8 +46,9 @@ budget, depth 32, 20,000 nodes, 4,096 entries per array, 1,024 keys per object,
 and 512 KiB per string. `DemosAdapter.resolveIdentity()` applies the same
 decoded-value bound at its substrate boundary.
 
-For GCR identity reads, the adapter also caps the raw HTTP response body at
-2 MiB (2,097,152 bytes) before UTF-8 or JSON decoding. It checks a declared
+For GCR identity reads, forward (`resolveIdentity()`) and reverse
+(`findSubjectsByClaim()`, below), the adapter also caps the raw HTTP response
+body at 2 MiB (2,097,152 bytes) before UTF-8 or JSON decoding. It checks a declared
 `Content-Length` and counts the streamed bytes even when that header is missing,
 invalid, or understates the body. The count covers the bytes delivered by Fetch,
 including decompressed bytes. On overflow it cancels the body, retains no raw
@@ -248,7 +249,9 @@ Behind a proxy, also set `DACS_DEMOS_CCI_LIVE_GLOBAL_FETCH=1` and start Node
 22.21 or later with `NODE_USE_ENV_PROXY=1`, so the read goes through Node's
 proxy agent.
 
-Reverse lookup currently follows the operations exported by Demos SDK:
+Reverse lookup sends the requests of the operations exported by Demos SDK
+(`getDemosIdsByWeb2Identity` and `getDemosIdsByWeb3Identity`, both the
+`getAccountByIdentity` GCR routine):
 
 ```ts
 await agent.findByClaim("cci-web2:github:alice");
@@ -259,12 +262,17 @@ The current Demos SDK does not expose equivalent reverse routines for domain,
 UD, PQC, Nomis, Human Passport, Ethos, or TLSN claims. Those inputs fail closed
 instead of being mapped onto a different lookup.
 
-Reverse lookups still use Demos SDK's own `Identities` routines and transport,
-so the raw response ceiling, deadline, and redirect refusal above do not apply
-to them: Demos SDK decodes the whole HTTP/RPC response before this SDK sees it.
-The adapter currently exposes no raw-byte or decoded account-list limit for
-this path. Moving the reverse routines to a bounded transport is a known
-follow-up.
+Reverse lookups use the same bounded read as `resolveIdentity()`, not Demos
+SDK's own transport: the raw response ceiling, attempt and lookup deadlines,
+retries, redirect refusal, route checks and `identityFetch` above all apply.
+The decoded response then passes the same structural limits, so the account
+list holds at most 4,096 entries; a longer one fails closed with
+`Demos GCR identity response exceeds maxArrayLength`. The result is the string
+`pubkey` of each account in a `result: 200` response. Any other RPC result
+throws `SubstrateError` (`Demos GCR reverse identity lookup failed`), and a
+`response` that is not a list throws `DacsError`. As in Demos SDK, these
+requests are always signed with the wallet authentication headers above, so a
+reverse lookup without a connected wallet throws `DacsError` before sending.
 
 ## Authenticate before reputation use
 

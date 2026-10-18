@@ -438,10 +438,16 @@ export function defaultCciTransport(rpc: string): typeof fetch {
   return directCciFetch;
 }
 
+/** One GCR routine call, sent as demosdk sends it inside `gcr_routine`. */
+export interface DemosGcrRoutine {
+  method: string;
+  params: readonly unknown[];
+}
+
 /** One fresh, bounded attempt, including time-bound header construction. */
 async function readAttempt(
   endpoint: RpcEndpoint,
-  address: string,
+  body: string,
   buildHeaders: () => Promise<Record<string, string>>,
   transport: typeof fetch,
   maxBytes: number,
@@ -491,10 +497,7 @@ async function readAttempt(
         // "manual" the 3xx check below refuses it with a stable DacsError.
         redirect: "manual",
         signal: controller.signal,
-        body: JSON.stringify({
-          method: "gcr_routine",
-          params: [{ method: "getIdentities", params: [address] }],
-        }),
+        body,
       });
       phase = "read";
       if (expired() || attemptExpired()) {
@@ -558,9 +561,29 @@ async function readAttempt(
  * checked before each attempt, before sending and before accepting a result, so
  * a timer delivered late never lets a request or result pass the deadline.
  */
-export async function readDemosCciResponse(
+export function readDemosCciResponse(
   rpc: string,
   address: string,
+  buildHeaders: () => Promise<Record<string, string>>,
+  transport: typeof fetch,
+  maxBytes: number,
+  timeoutMs: number,
+  totalTimeoutMs: number,
+  now?: () => number,
+): Promise<unknown> {
+  return readDemosGcrRoutine(
+    rpc, { method: "getIdentities", params: [address] }, buildHeaders, transport,
+    maxBytes, timeoutMs, totalTimeoutMs, now,
+  );
+}
+
+/**
+ * Any demosdk `gcr_routine` request, such as the reverse getAccountByIdentity,
+ * with the same raw admission, retries and deadlines as readDemosCciResponse.
+ */
+export async function readDemosGcrRoutine(
+  rpc: string,
+  routine: DemosGcrRoutine,
   buildHeaders: () => Promise<Record<string, string>>,
   transport: typeof fetch,
   maxBytes: number,
@@ -569,6 +592,7 @@ export async function readDemosCciResponse(
   now: () => number = () => performance.now(),
 ): Promise<unknown> {
   const endpoint = rpcEndpoint(rpc);
+  const body = JSON.stringify({ method: "gcr_routine", params: [routine] });
   const budgetMs = Math.min(3 * timeoutMs + OVERALL_SLACK_MS, totalTimeoutMs);
   const expiresAt = now() + budgetMs;
   const overall = new AbortController();
@@ -588,7 +612,7 @@ export async function readDemosCciResponse(
       if (expired()) throw overall.signal.reason;
       try {
         return await readAttempt(
-          endpoint, address, buildHeaders, transport, maxBytes, timeoutMs,
+          endpoint, body, buildHeaders, transport, maxBytes, timeoutMs,
           overall.signal, expired, now, 250 * 2 ** attempt,
         );
       } catch (error) {
