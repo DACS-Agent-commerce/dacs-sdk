@@ -282,6 +282,10 @@ describe("dacs-seller-http/v1 vectors", () => {
       "signing/envelope-payload-changes-between-reads", "signing/delegation-payload-changes-between-reads",
       "signing/discovery-payload-changes-between-reads", "signing/response-request-changes-between-reads",
       "signing/request-delegation-edited-while-signing",
+      // Format discriminators at the signers (admission.test.ts covers the receivers with correctly signed messages).
+      "signing/delegation-version-unknown", "signing/delegation-version-number", "signing/delegation-kind-unknown",
+      "signing/discovery-format-unknown", "signing/discovery-transport-unknown", "signing/discovery-transport-extra",
+      "signing/discovery-transport-array-like",
       // The tuple (identifier, revision, base): missing, unknown, mismatched, variant, extra and duplicate revisions,
       // identifier and base alone, the tuple kept for the purchase, and the exact tuple.
       "request/valid-exact-tuple-kept", "request/valid-new-purchase",

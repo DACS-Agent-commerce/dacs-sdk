@@ -1,5 +1,5 @@
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import * as w from "../../src/wire/index.js";
@@ -36,7 +36,7 @@ function world() {
   return { buyer, seller, session, binding, request, delegation, discovery, context, input };
 }
 // Independent wire encoders intentionally do not call the SDK's shape/signing helpers.
-function signed(payload: unknown, domain: string, signer: w.WireSigner) {
+function signed<T>(payload: T, domain: string, signer: w.WireSigner) {
   const signature = Buffer.from(signer.sign(Buffer.from(domain + canonicalize(payload))) as Uint8Array).toString("base64url");
   return { payload, signature };
 }
@@ -188,6 +188,178 @@ describe("endpoint proof purchase gate", () => {
       await refuses(() => w.signWireEnvelope({ ...x.request, [role]: x.request[role].replace(/^did:/, "DID:") }, { ...x.context, signer: x.buyer }), "peer_envelope_invalid");
     }
     expect(x.buyer.calls).toBe(0);
+  });
+});
+
+describe("wire format discriminators", () => {
+  // Each refused message is correctly signed by its own party under its own domain (checked here without the SDK)
+  // and differs from the accepted control only in its discriminator, so the refusal is the discriminator's.
+  const D = w.DACS_SELLER_HTTP_DOMAINS;
+  const rawKey = (claim: string) => createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(claim.slice(-64), "hex")]), format: "der", type: "spki" });
+  const signedBy = (message: { payload: unknown; signature: string }, domain: string, key: string) =>
+    verify(null, Buffer.from(domain + canonicalize(message.payload)), rawKey(key), Buffer.from(message.signature, "base64url"));
+  const listing = { seller: "", publicEndpoint: ENDPOINT, listingPin: PIN };
+  const verifyProof = (x: ReturnType<typeof world>, bytes: Uint8Array) =>
+    w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { ...listing, seller: x.seller.claim }, binding: x.binding, local: LOCAL, now: NOW });
+  const answer = (x: ReturnType<typeof world>) => ({ ...x.request, kind: "response", bodyHash: sha("{}"), expiresAt: NOW + 30_000, requestHash: w.wireRequestHash(x.request), status: 200 });
+
+  it("accepts each control: delegation, delegated request, discovery, request and response", async () => {
+    const x = world();
+    const delegation = signed(x.delegation, D.delegation, x.buyer);
+    expect(w.verifySellerSessionDelegation(delegation, { binding: x.binding, local: LOCAL }).kind).toBe("seller-session-delegation");
+    expect(w.openWireEnvelope(header({ ...signed(x.request, D.request, x.session), delegation }), "request", { ...x.context, requireDelegation: true }).delegation).toEqual(delegation);
+    const endpointProof = verifyProof(x, Buffer.from(canonicalize(signed(x.discovery, D.discovery, x.seller))));
+    x.session.calls = 0;
+    expect((await w.signWireRequest({ ...x.input, signer: x.session, delegation, endpointProof })).payload.buyer).toBe(x.buyer.claim);
+    expect(x.session.calls).toBe(1);
+    expect(w.openWireEnvelope(header(signed(x.request, D.request, x.buyer)), "request", x.context).payload.kind).toBe("request");
+    expect(w.verifyWireResponse(x.request, { ...x.context, header: header(signed(answer(x), D.response, x.seller)), status: 200, body: Buffer.from("{}"), now: NOW }).principal).toBe(x.seller.claim);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["version 2", { version: "2" }], ["numeric version 1", { version: 1 }], ["empty version", { version: "" }], ["null version", { version: null }],
+    ["version with a trailing space", { version: "1 " }], ["another kind", { kind: "seller-session-delegation/v2" }], ["request kind", { kind: "request" }],
+    ["mixed-case kind", { kind: "Seller-Session-Delegation" }], ["array kind", { kind: ["seller-session-delegation"] }],
+  ])("refuses a correctly signed delegation with %s at every receiver and before every signer", async (_name, patch) => {
+    const x = world();
+    const payload = { ...x.delegation, ...patch } as w.SellerSessionDelegationPayload;
+    const delegation = signed(payload, D.delegation, x.buyer);
+    expect(signedBy(delegation, D.delegation, x.buyer.claim)).toBe(true);
+    const delegatedHeader = header({ ...signed(x.request, D.request, x.session), delegation });
+    const endpointProof = verifyProof(x, Buffer.from(canonicalize(signed(x.discovery, D.discovery, x.seller))));
+    x.buyer.calls = x.session.calls = x.seller.calls = 0;
+    let effects = 0;
+    await refuses(() => w.verifySellerSessionDelegation(delegation, { binding: x.binding, local: LOCAL }), "peer_delegation_invalid");
+    await refuses(() => { w.openWireEnvelope(delegatedHeader, "request", { ...x.context, requireDelegation: true }); effects++; }, "peer_delegation_invalid");
+    await refuses(() => w.signWireRequest({ ...x.input, signer: x.session, delegation, endpointProof }), "peer_delegation_invalid");
+    await refuses(() => w.signSellerSessionDelegation(payload, x.buyer, x.binding, LOCAL), "peer_delegation_invalid");
+    await refuses(() => w.sellerSessionDelegationSigningBytes(payload, x.binding, LOCAL), "peer_delegation_invalid");
+    expect(effects + x.buyer.calls + x.session.calls + x.seller.calls).toBe(0);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["format v2", { format: "dacs-seller-discovery/v2" }], ["upper-case format", { format: "DACS-SELLER-DISCOVERY/V1" }], ["numeric format", { format: 1 }],
+    ["null format", { format: null }], ["transport v2", { transport: ["dacs-seller-http/v2"] }], ["repeated transport", { transport: ["dacs-seller-http/v1", "dacs-seller-http/v1"] }],
+    ["an extra transport", { transport: ["dacs-seller-http/v1", "dacs-seller-http/v2"] }], ["no transport", { transport: [] }],
+    ["string transport", { transport: "dacs-seller-http/v1" }], ["array-like transport object", { transport: { 0: "dacs-seller-http/v1", length: 1 } }],
+    ["nested transport", { transport: [["dacs-seller-http/v1"]] }],
+  ])("refuses a correctly signed discovery document with %s before any purchase signature, and before its signer", async (_name, patch) => {
+    const x = world();
+    const payload = { ...x.discovery, ...patch } as w.DiscoveryPayload;
+    const document = signed(payload, D.discovery, x.seller);
+    expect(signedBy(document, D.discovery, x.seller.claim)).toBe(true);
+    x.seller.calls = 0;
+    await refuses(async () => w.signWireRequest({ ...x.input, endpointProof: verifyProof(x, Buffer.from(canonicalize(document))) }), "discovery_invalid", 502);
+    await refuses(() => w.signDiscoveryDocument(payload, x.seller, x.binding, LOCAL), "discovery_invalid", 502);
+    await refuses(() => w.discoverySigningBytes(payload), "discovery_invalid", 502);
+    expect(x.buyer.calls + x.seller.calls).toBe(0);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["version 2", { version: "2" }], ["numeric version 1", { version: 1 }], ["the other kind", { kind: "response" }], ["method GET", { method: "GET" }],
+  ])("refuses a correctly signed request with %s at the seller and before the buyer's signer", async (_name, patch) => {
+    const x = world();
+    const request = { ...x.request, ...patch } as unknown as w.WireRequestPayload;
+    const envelope = signed(request, D.request, x.buyer);
+    expect(signedBy(envelope, D.request, x.buyer.claim)).toBe(true);
+    x.buyer.calls = 0;
+    let effects = 0;
+    await refuses(() => { w.openWireEnvelope(header(envelope), "request", x.context); effects++; }, "peer_envelope_invalid");
+    await refuses(() => w.signWireEnvelope(request, { ...x.context, signer: x.buyer }), "peer_envelope_invalid");
+    expect(effects + x.buyer.calls).toBe(0);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["version 2", { version: "2" }], ["numeric version 1", { version: 1 }], ["the other kind", { kind: "request" }], ["method GET", { method: "GET" }],
+  ])("refuses a correctly signed response with %s at the buyer and before the seller's signer", async (_name, patch) => {
+    const x = world();
+    const response = { ...answer(x), ...patch };
+    const envelope = signed(response, D.response, x.seller);
+    expect(signedBy(envelope, D.response, x.seller.claim)).toBe(true);
+    x.seller.calls = 0;
+    await refuses(() => w.verifyWireResponse(x.request, { ...x.context, header: header(envelope), status: 200, body: Buffer.from("{}"), now: NOW }), "peer_envelope_invalid");
+    await refuses(() => w.signWireEnvelope(response as unknown as w.WirePayload, { ...x.context, signer: x.seller }), "peer_envelope_invalid");
+    expect(x.seller.calls).toBe(0);
+  });
+});
+
+describe("request and response byte budgets and the discovery Listing count", () => {
+  const { maxRequestBodyBytes, maxResponseBodyBytes } = w.DACS_SELLER_HTTP_LIMITS;
+  /** A JSON object of exactly n UTF-8 bytes. */
+  const body = (n: number) => `{"p":"${"x".repeat(n - 8)}"}`;
+  const proofFor = async (x: ReturnType<typeof world>) => w.verifyEndpointProof(await w.signDiscoveryDocument(x.discovery, x.seller, x.binding, LOCAL), { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW });
+
+  it("signs and admits a 64 KiB request body and refuses one more byte at the buyer's signer and at the seller", async () => {
+    const x = world(), endpointProof = await proofFor(x);
+    expect(Buffer.byteLength(body(maxRequestBodyBytes))).toBe(65_536);
+    x.buyer.calls = 0;
+    await w.signWireRequest({ ...x.input, text: body(maxRequestBodyBytes), endpointProof });
+    expect(x.buyer.calls).toBe(1);
+    await refuses(() => w.signWireRequest({ ...x.input, text: body(maxRequestBodyBytes + 1), endpointProof }), "body_too_large", 413);
+    expect(x.buyer.calls).toBe(1);
+    let effects = 0;
+    for (const n of [maxRequestBodyBytes, maxRequestBodyBytes + 1]) {
+      const text = body(n);
+      const opened = w.openWireEnvelope(header(signed({ ...x.request, bodyHash: sha(text) }, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context);
+      const check = () => w.checkWireRequest(opened, { ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
+      if (n === maxRequestBodyBytes) expect(Object.keys(check().body)).toEqual(["p"]);
+      else await expect(Promise.resolve().then(() => { check(); effects++; })).rejects.toMatchObject({ code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" });
+    }
+    expect(effects).toBe(0);
+  });
+
+  it("signs and admits a 512 KiB response body and refuses one more byte at the seller's signer and at the buyer", async () => {
+    const x = world();
+    expect(Buffer.byteLength(body(maxResponseBodyBytes))).toBe(524_288);
+    const ctx = { ...x.context, signer: x.seller, now: NOW };
+    const exact = await w.signWireResponse(x.request, 200, body(maxResponseBodyBytes), ctx);
+    expect(x.seller.calls).toBe(1);
+    await refuses(() => w.signWireResponse(x.request, 200, body(maxResponseBodyBytes + 1), ctx), "peer_response_too_large", 503);
+    expect(x.seller.calls).toBe(1);
+    const received = (h: string, text: string) => ({ ...x.context, header: h, status: 200, body: Buffer.from(text), now: NOW });
+    expect(w.verifyWireResponse(x.request, received(exact, body(maxResponseBodyBytes))).body).toEqual({ p: "x".repeat(maxResponseBodyBytes - 8) });
+    // One byte over, correctly signed outside the SDK's signer: the buyer refuses it before reading the answer.
+    const over = body(maxResponseBodyBytes + 1);
+    const answer = { ...x.request, kind: "response", bodyHash: sha(over), expiresAt: NOW + 30_000, requestHash: w.wireRequestHash(x.request), status: 200 };
+    await expect(Promise.resolve().then(() => w.verifyWireResponse(x.request, received(header(signed(answer, w.DACS_SELLER_HTTP_DOMAINS.response, x.seller)), over))))
+      .rejects.toMatchObject({ code: "response_json_rejected", status: 502, detail: "BYTE-LIMIT-EXCEEDED" });
+  });
+
+  it.each([[0, "refused"], [1, "accepted"], [32, "accepted"], [33, "refused"]] as const)("a discovery document listing %i pins is %s at its signer and at the buyer", async (count, outcome) => {
+    const x = world(), accepted = outcome === "accepted";
+    const listings = Array.from({ length: count }, (_, i) => (i === 0 ? PIN : { ...PIN, listingId: `report-${i}` }));
+    const payload = { ...x.discovery, listings };
+    const bytes = Buffer.from(canonicalize(signed(payload, w.DACS_SELLER_HTTP_DOMAINS.discovery, x.seller)));
+    x.seller.calls = 0;
+    const verifyIt = () => w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW });
+    if (accepted) {
+      expect(verifyIt().payload.listings).toHaveLength(count);
+      await w.signDiscoveryDocument(payload, x.seller, x.binding, LOCAL);
+      expect(x.seller.calls).toBe(1);
+    } else {
+      await refuses(verifyIt, "discovery_invalid", 502);
+      await refuses(() => w.signDiscoveryDocument(payload, x.seller, x.binding, LOCAL), "discovery_invalid", 502);
+      expect(x.seller.calls).toBe(0);
+    }
+  });
+});
+
+describe("received signature encodings", () => {
+  it("accepts hex, with or without 0x, as well as base64url, and producers write canonical base64url", async () => {
+    const x = world();
+    const request = signed(x.request, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer);
+    const discovery = signed(x.discovery, w.DACS_SELLER_HTTP_DOMAINS.discovery, x.seller);
+    const hex = (s: string) => Buffer.from(s, "base64url").toString("hex");
+    for (const encode of [(s: string) => s, hex, (s: string) => `0x${hex(s)}`, (s: string) => hex(s).toUpperCase()]) {
+      expect(w.openWireEnvelope(header({ ...request, signature: encode(request.signature) }), "request", x.context).payload).toEqual(x.request);
+      const bytes = Buffer.from(canonicalize({ ...discovery, signature: encode(discovery.signature) }));
+      expect(w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }).ready).toBe(true);
+    }
+    for (const signature of [`0x0x${hex(request.signature)}`, hex(request.signature).slice(2), `${request.signature}=`]) {
+      await refuses(() => w.openWireEnvelope(header({ ...request, signature }), "request", x.context), "peer_signature_invalid");
+    }
+    const produced = JSON.parse(Buffer.from(await w.signDiscoveryDocument(x.discovery, x.seller, x.binding, LOCAL)).toString("utf8"));
+    expect(produced.signature).toMatch(/^[A-Za-z0-9_-]{86}$/);
   });
 });
 

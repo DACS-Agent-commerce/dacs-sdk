@@ -99,6 +99,9 @@ const MUTANTS = [
   M("delegation deadline", "wire/delegation.ts", 'if (deadline !== undefined && (!isUint(deadline) || p.expiresAt > deadline)) fail("peer_delegation_deadline", 409);', "", ["delegation/beyond-deadline"]),
   M("delegation signature", "wire/delegation.ts", 'if (!verifyEd25519(bytes, walletSignatureBytes(delegation.signature), claimKey(p.buyer))) fail("peer_delegation_signature_invalid");', "", ["delegation/bad-signature"]),
   M("delegation lifetime", "wire/delegation.ts", "p.expiresAt - p.notBefore > DACS_SELLER_HTTP_LIMITS.maxDelegationLifetimeMs || ", "", ["delegation/lifetime-over-24h"]),
+  // Format discriminators: payloadBytes serves the signer and the verifier, so the signer's vectors catch each.
+  M("delegation version", "wire/delegation.ts", 'p.version !== "1" || ', "", ["signing/delegation-version-unknown", "signing/delegation-version-number"]),
+  M("delegation kind", "wire/delegation.ts", 'p.kind !== "seller-session-delegation" ||', "", ["signing/delegation-kind-unknown"]),
   M("response status binding", "wire/response.ts", "status !== received.status ||", "", ["response/wrong-status"]),
   M("response body binding", "wire/response.ts", "bodyHash !== sha256Hex(responseBytes) || ", "", ["response/wrong-body"]),
   M("response principal", "wire/envelope.ts", 'if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");', "", ["response/signer-not-seller"]),
@@ -113,6 +116,9 @@ const MUTANTS = [
   M("discovery capabilities", "wire/discovery.ts", 'if (!sameCanonical(p.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 502);\n  if (!isUint(now)', "if (!isUint(now)", ["discovery/capabilities-widened"]),
   M("discovery validity", "wire/discovery.ts", ' || p.expiresAt <= now) fail("discovery_expired", 502);', ') fail("discovery_expired", 502);', ["discovery/expired"]),
   M("discovery issuedAt skew", "wire/discovery.ts", "p.issuedAt > now + ISSUED_SKEW_MS || ", "", ["discovery/issued-in-future"]),
+  // payloadValid serves the signer and the verifier, so the signer's vectors catch each.
+  M("discovery format", "wire/discovery.ts", "p.format === DACS_SELLER_DISCOVERY_FORMAT && ", "", ["signing/discovery-format-unknown"]),
+  M("discovery transport", "wire/discovery.ts", "Array.isArray(p.transport) && p.transport.length === 1 && p.transport[0] === DACS_SELLER_HTTP_V1 &&", "", ["signing/discovery-transport-unknown", "signing/discovery-transport-extra", "signing/discovery-transport-array-like"]),
   M("identity record present", "wire/profile.ts", 'if (supplied === undefined || supplied === null) return fail("tp1_identity_record_missing", 500);', "", ["binding/record-missing"]),
   // One owned copy: without it, a record, connection or delegation whose answers change between reads
   // is checked as one value and used as another.

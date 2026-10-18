@@ -92,8 +92,10 @@ description. There is no compatibility arm for the old plugin domains.
 
 Header `x-dacs-seller-peer` is the base64url (no padding) encoding of the
 canonical JSON `{payload, signature, delegation?}`. `signature` is the 64-byte
-Ed25519 signature in base64url. `delegation` is present only when the seller
-requires delegated sessions.
+Ed25519 signature. Producers write canonical base64url; receivers also accept
+128 hex characters, with or without one `0x` prefix. The same holds for the
+discovery document's `signature`. `delegation` is
+present only when the seller requires delegated sessions.
 
 Request payload, exact fields:
 
@@ -450,7 +452,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 
 ## Vectors, fixtures and checks
 
-- `vectors/dacs-seller-http-v1.json` (167 vectors, from
+- `vectors/dacs-seller-http-v1.json` (177 vectors, from
   `scripts/wire/generate-wire-vectors.mjs`): valid and invalid envelopes,
   expired and wrong-scope delegations, wrong domain, wrong and missing profile,
   the profile tuple (a correctly signed message, request, response, delegation
@@ -472,7 +474,13 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
   UTF-8, non-NFC strings, invalid numeric tokens). `signing/*` vectors show
   both signers refuse duplicate keys, non-NFC strings and invalid numeric
   tokens with zero signatures; malformed UTF-8 has no signing case, because
-  both signers take the body as a string. At every verification entry point,
+  both signers take the body as a string. Other `signing/*` vectors show the
+  delegation and discovery signers refuse an unsupported delegation `version`
+  or `kind`, discovery `format`, or a `transport` other than exactly
+  `["dacs-seller-http/v1"]`, with zero signatures;
+  `test/wire/admission.test.ts` signs those cases, and request and response
+  `version`, `kind` and `method` variants, correctly and requires each
+  receiver to refuse them before any purchase signature. At every verification entry point,
   a forged binding (a plain object carrying only the vector's profile) and a
   changed connection are refused, and `checkWireRequest` refuses a decoded,
   copied or differently bound envelope. `view` vectors pass the approved
@@ -487,7 +495,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
   Each negative names the check that refuses it, and
   `test/wire/vectors.test.ts` checks that each received revision vector is
   correctly signed by its party, so only the profile gate can refuse it.
-  `scripts/wire/mutate-wire-checks.mjs` defines 85 named-check replay plans.
+  `scripts/wire/mutate-wire-checks.mjs` defines 89 named-check replay plans.
   Its `--check` mode verifies all source targets and vector IDs without
   applying mutations or running tests. Request producer fixtures use the
   selected `DACS_WIRE_IMPL` for signing, discovery and proof verification.

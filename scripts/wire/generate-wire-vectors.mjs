@@ -298,6 +298,15 @@ const vectors = [
   P("signing/envelope-valid", null, { producer: "envelope", payload: request }, ok),
   P("signing/delegation-valid", null, { producer: "delegation", payload: delegationPayload }, ok),
   P("signing/discovery-valid", null, { producer: "discovery", payload: discovery }, ok),
+  // Each refuses a payload whose format discriminators are not exactly the wire's, before its signer is called.
+  // test/wire/admission.test.ts signs the same cases correctly and requires each receiver to refuse them.
+  P("signing/delegation-version-unknown", "delegation version", { producer: "delegation", payload: { ...delegationPayload, version: "2" } }, no("peer_delegation_invalid")),
+  P("signing/delegation-version-number", "delegation version", { producer: "delegation", payload: { ...delegationPayload, version: 1 } }, no("peer_delegation_invalid")),
+  P("signing/delegation-kind-unknown", "delegation kind", { producer: "delegation", payload: { ...delegationPayload, kind: "seller-session-delegation/v2" } }, no("peer_delegation_invalid")),
+  P("signing/discovery-format-unknown", "discovery format", { producer: "discovery", payload: { ...discovery, format: "dacs-seller-discovery/v2" } }, no("discovery_invalid")),
+  P("signing/discovery-transport-unknown", "discovery transport", { producer: "discovery", payload: { ...discovery, transport: ["dacs-seller-http/v2"] } }, no("discovery_invalid")),
+  P("signing/discovery-transport-extra", "discovery transport", { producer: "discovery", payload: { ...discovery, transport: ["dacs-seller-http/v1", "dacs-seller-http/v2"] } }, no("discovery_invalid")),
+  P("signing/discovery-transport-array-like", "discovery transport", { producer: "discovery", payload: { ...discovery, transport: { 0: "dacs-seller-http/v1", length: 1 } } }, no("discovery_invalid")),
   // Signers sign only their own exact tuple, and the buyer only under the tuple kept for the job (`jobProfile`;
   // by default the exact tuple): each refuses before its signer is called.
   P("signing/request-purchase-profile-missing", "purchase tuple kept (signer)", { producer: "request", body: b64(enc(BODY)), jobProfile: "omitted" }, no("tp1_purchase_profile_mismatch")),

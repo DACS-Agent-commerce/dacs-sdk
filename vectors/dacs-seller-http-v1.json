@@ -4724,6 +4724,369 @@
         "ok": false,
         "code": "listing_unsupported"
       }
+    },
+    {
+      "id": "signing/delegation-version-unknown",
+      "kind": "signing",
+      "check": "delegation version",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "delegation",
+        "payload": {
+          "version": "2",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:e3bcf86334d6927b0a19750826f56c0e71bfbac5146f0dcbe959ae709798cdbc",
+          "sessionPublicKey": "fe76e83b580c68abfa1a61b829dc763e5eeb5e72fe1c096a4ed3c56afb289bde",
+          "seller": "did:demos:agent:a28a6be13cb65fd615e74addb14a02192c5fd1f489bb57112fefcfa17a789258",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "c2eef031de2de3561ab1bb45e42153c1743b5a582f46effb8e81d39465201329",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_delegation_invalid"
+      }
+    },
+    {
+      "id": "signing/delegation-version-number",
+      "kind": "signing",
+      "check": "delegation version",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "delegation",
+        "payload": {
+          "version": 1,
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:e3bcf86334d6927b0a19750826f56c0e71bfbac5146f0dcbe959ae709798cdbc",
+          "sessionPublicKey": "fe76e83b580c68abfa1a61b829dc763e5eeb5e72fe1c096a4ed3c56afb289bde",
+          "seller": "did:demos:agent:a28a6be13cb65fd615e74addb14a02192c5fd1f489bb57112fefcfa17a789258",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "c2eef031de2de3561ab1bb45e42153c1743b5a582f46effb8e81d39465201329",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_delegation_invalid"
+      }
+    },
+    {
+      "id": "signing/delegation-kind-unknown",
+      "kind": "signing",
+      "check": "delegation kind",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "delegation",
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation/v2",
+          "buyer": "did:demos:agent:e3bcf86334d6927b0a19750826f56c0e71bfbac5146f0dcbe959ae709798cdbc",
+          "sessionPublicKey": "fe76e83b580c68abfa1a61b829dc763e5eeb5e72fe1c096a4ed3c56afb289bde",
+          "seller": "did:demos:agent:a28a6be13cb65fd615e74addb14a02192c5fd1f489bb57112fefcfa17a789258",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "c2eef031de2de3561ab1bb45e42153c1743b5a582f46effb8e81d39465201329",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_delegation_invalid"
+      }
+    },
+    {
+      "id": "signing/discovery-format-unknown",
+      "kind": "signing",
+      "check": "discovery format",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "discovery",
+        "payload": {
+          "format": "dacs-seller-discovery/v2",
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "c2eef031de2de3561ab1bb45e42153c1743b5a582f46effb8e81d39465201329",
+            "pinVersion": "synthetic-test-only/1"
+          },
+          "seller": "did:demos:agent:a28a6be13cb65fd615e74addb14a02192c5fd1f489bb57112fefcfa17a789258",
+          "publicEndpoint": "https://seller.wire-fixture.invalid",
+          "transport": [
+            "dacs-seller-http/v1"
+          ],
+          "listings": [
+            {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            }
+          ],
+          "capabilities": {
+            "capability": "FP-DEM",
+            "negotiation": [
+              "negotiate-fixed-price"
+            ],
+            "rails": [
+              "pay-dem"
+            ],
+            "identityScheme": "did:demos:agent",
+            "delivery": {
+              "channel": "demos-storage",
+              "address": "dacs4:deliverable:{jobId}"
+            },
+            "services": [
+              "fixed-text",
+              "pure-synchronous-text-module"
+            ],
+            "output": {
+              "envelope": "dacs-chatgpt-plugin/devnet-purchased-report",
+              "reportVersion": "1",
+              "mediaType": "text/plain; charset=utf-8",
+              "maxCharacters": 16384,
+              "synchronous": true
+            },
+            "buyerRequestInput": false
+          },
+          "ready": true,
+          "issuedAt": 1791979199000,
+          "expiresAt": 1791979500000
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "discovery_invalid"
+      }
+    },
+    {
+      "id": "signing/discovery-transport-unknown",
+      "kind": "signing",
+      "check": "discovery transport",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "discovery",
+        "payload": {
+          "format": "dacs-seller-discovery/v1",
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "c2eef031de2de3561ab1bb45e42153c1743b5a582f46effb8e81d39465201329",
+            "pinVersion": "synthetic-test-only/1"
+          },
+          "seller": "did:demos:agent:a28a6be13cb65fd615e74addb14a02192c5fd1f489bb57112fefcfa17a789258",
+          "publicEndpoint": "https://seller.wire-fixture.invalid",
+          "transport": [
+            "dacs-seller-http/v2"
+          ],
+          "listings": [
+            {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            }
+          ],
+          "capabilities": {
+            "capability": "FP-DEM",
+            "negotiation": [
+              "negotiate-fixed-price"
+            ],
+            "rails": [
+              "pay-dem"
+            ],
+            "identityScheme": "did:demos:agent",
+            "delivery": {
+              "channel": "demos-storage",
+              "address": "dacs4:deliverable:{jobId}"
+            },
+            "services": [
+              "fixed-text",
+              "pure-synchronous-text-module"
+            ],
+            "output": {
+              "envelope": "dacs-chatgpt-plugin/devnet-purchased-report",
+              "reportVersion": "1",
+              "mediaType": "text/plain; charset=utf-8",
+              "maxCharacters": 16384,
+              "synchronous": true
+            },
+            "buyerRequestInput": false
+          },
+          "ready": true,
+          "issuedAt": 1791979199000,
+          "expiresAt": 1791979500000
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "discovery_invalid"
+      }
+    },
+    {
+      "id": "signing/discovery-transport-extra",
+      "kind": "signing",
+      "check": "discovery transport",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "discovery",
+        "payload": {
+          "format": "dacs-seller-discovery/v1",
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "c2eef031de2de3561ab1bb45e42153c1743b5a582f46effb8e81d39465201329",
+            "pinVersion": "synthetic-test-only/1"
+          },
+          "seller": "did:demos:agent:a28a6be13cb65fd615e74addb14a02192c5fd1f489bb57112fefcfa17a789258",
+          "publicEndpoint": "https://seller.wire-fixture.invalid",
+          "transport": [
+            "dacs-seller-http/v1",
+            "dacs-seller-http/v2"
+          ],
+          "listings": [
+            {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            }
+          ],
+          "capabilities": {
+            "capability": "FP-DEM",
+            "negotiation": [
+              "negotiate-fixed-price"
+            ],
+            "rails": [
+              "pay-dem"
+            ],
+            "identityScheme": "did:demos:agent",
+            "delivery": {
+              "channel": "demos-storage",
+              "address": "dacs4:deliverable:{jobId}"
+            },
+            "services": [
+              "fixed-text",
+              "pure-synchronous-text-module"
+            ],
+            "output": {
+              "envelope": "dacs-chatgpt-plugin/devnet-purchased-report",
+              "reportVersion": "1",
+              "mediaType": "text/plain; charset=utf-8",
+              "maxCharacters": 16384,
+              "synchronous": true
+            },
+            "buyerRequestInput": false
+          },
+          "ready": true,
+          "issuedAt": 1791979199000,
+          "expiresAt": 1791979500000
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "discovery_invalid"
+      }
+    },
+    {
+      "id": "signing/discovery-transport-array-like",
+      "kind": "signing",
+      "check": "discovery transport",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "producer": "discovery",
+        "payload": {
+          "format": "dacs-seller-discovery/v1",
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "c2eef031de2de3561ab1bb45e42153c1743b5a582f46effb8e81d39465201329",
+            "pinVersion": "synthetic-test-only/1"
+          },
+          "seller": "did:demos:agent:a28a6be13cb65fd615e74addb14a02192c5fd1f489bb57112fefcfa17a789258",
+          "publicEndpoint": "https://seller.wire-fixture.invalid",
+          "transport": {
+            "0": "dacs-seller-http/v1",
+            "length": 1
+          },
+          "listings": [
+            {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            }
+          ],
+          "capabilities": {
+            "capability": "FP-DEM",
+            "negotiation": [
+              "negotiate-fixed-price"
+            ],
+            "rails": [
+              "pay-dem"
+            ],
+            "identityScheme": "did:demos:agent",
+            "delivery": {
+              "channel": "demos-storage",
+              "address": "dacs4:deliverable:{jobId}"
+            },
+            "services": [
+              "fixed-text",
+              "pure-synchronous-text-module"
+            ],
+            "output": {
+              "envelope": "dacs-chatgpt-plugin/devnet-purchased-report",
+              "reportVersion": "1",
+              "mediaType": "text/plain; charset=utf-8",
+              "maxCharacters": 16384,
+              "synchronous": true
+            },
+            "buyerRequestInput": false
+          },
+          "ready": true,
+          "issuedAt": 1791979199000,
+          "expiresAt": 1791979500000
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "discovery_invalid"
+      }
     }
   ]
 }
