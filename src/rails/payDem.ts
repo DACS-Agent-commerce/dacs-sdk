@@ -234,6 +234,14 @@ export interface PayDemSettlementRecoveryContext {
   payee: string;
   /** Exact positive integer OS amount submitted by this payment phase. */
   amountOs: string;
+  /**
+   * Retained transaction identity for a read-only session audit. When present,
+   * reconciliation must load the original prepared-transfer journal, check its
+   * signed nonce and this exact hash/tuple, and throw if that journal is missing
+   * or conflicting. Absence never authorizes preparing or submitting a transfer.
+   * Fresh settlement contexts omit this field.
+   */
+  txHash?: string;
 }
 
 /**
@@ -2007,6 +2015,44 @@ function captureFreshPayDemResult(
   return captured;
 }
 
+/** A native transfer cannot supersede another retained transaction. */
+function retainedPayDemHash(req: SettleRequest, network: string): string | undefined {
+  const prior = stableDataProperty(req, "priorAttempts", "pay-dem recovery history");
+  if (!prior.found || prior.value === undefined) return undefined;
+  if (!Array.isArray(prior.value) || nodeTypes.isProxy(prior.value) ||
+      prior.value.length === 0 || prior.value.length > 256) {
+    throw new DacsError("pay-dem recovery history must contain 1–256 transaction attempts");
+  }
+  const attempts = snapshotCanonicalJsonRead(prior.value, "pay-dem recovery history");
+  let retained: string | undefined;
+  for (const attempt of attempts as unknown[]) {
+    if (attempt === null || typeof attempt !== "object" || Array.isArray(attempt)) {
+      throw new DacsError("pay-dem recovery history has a malformed attempt");
+    }
+    const record = attempt as Record<string, unknown>;
+    const hash = canonicalDemosTxHash(record.txHash);
+    if (Object.keys(record).length !== 3 || hash === null ||
+        record.chainId !== network || typeof record.ok !== "boolean") {
+      throw new DacsError("pay-dem recovery history has an invalid transaction identity or network");
+    }
+    if (retained !== undefined && retained !== hash) {
+      throw new DacsError("pay-dem recovery history contains conflicting native transactions; refusing reuse or rebroadcast");
+    }
+    retained = hash;
+  }
+  return retained;
+}
+
+function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
+  return Object.freeze({
+    ...result,
+    payee,
+    ...(result.finality === undefined
+      ? {}
+      : { finality: Object.freeze({ ...result.finality }) }),
+  });
+}
+
 /**
  * Bridge a PayDemRail to the runSession `settle` seam.
  *
@@ -2028,7 +2074,8 @@ function captureFreshPayDemResult(
  * SAFE BY DEFAULT (#43/#52): settlement is submitted at most once per
  * `(railId, jobId, phaseIndex)`. The default store protects concurrent and
  * same-process retries; inject a durable store and reconcile capability for
- * restart/crash recovery.
+ * restart/crash recovery. A request carrying priorAttempts is a read-only audit:
+ * it never claims a submit generation, even if the rail store lost its record.
  *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
@@ -2138,6 +2185,12 @@ export function payDemSettle(
       result: SettleResult;
     }>
   >();
+  // Once an identity has been retained for audit, omitting history on a later
+  // call to this bridge cannot turn the same key back into a fresh payment.
+  const retainedAudits = new Map<string, Readonly<{
+    context: Readonly<PayDemSettlementRecoveryContext>;
+    txHash: string;
+  }>>();
   return async (req) => {
     const {
       amount,
@@ -2237,6 +2290,34 @@ export function payDemSettle(
         "pay-dem retained intent/outcome belongs to different payment terms; refusing reconciliation or rebroadcast",
       );
     }
+    const suppliedTxHash = retainedPayDemHash(req, network);
+    const retainedAudit = retainedAudits.get(key);
+    if (retainedAudit !== undefined &&
+        (!sameRecoveryContext(retainedAudit.context, context) ||
+          (suppliedTxHash !== undefined && suppliedTxHash !== retainedAudit.txHash))) {
+      throw new DacsError("pay-dem retained audit belongs to different payment terms or transaction; refusing reuse or rebroadcast");
+    }
+    const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash;
+    if (retainedTxHash !== undefined) {
+      // SessionStore and the rail log can be restored independently. A fresh
+      // store.once claim is therefore unsafe even for a saved success. Audit
+      // every retained native attempt before any submit-capable operation, and
+      // reread on every invocation rather than trusting authenticatedResults.
+      retainedAudits.set(key, { context, txHash: retainedTxHash });
+      authenticatedResults.delete(key);
+      if (reconcile === undefined) {
+        throw new DacsError("pay-dem retained transaction requires read-only reconciliation; refusing reuse or rebroadcast");
+      }
+      const recovered = await reconcile(Object.freeze({ ...context, txHash: retainedTxHash }));
+      if (recovered === null) {
+        throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
+      }
+      const captured = capturePayDemReconciliation(recovered, context);
+      if (captured.txHash !== retainedTxHash) {
+        throw new DacsError("pay-dem reconciliation does not match the retained transaction; refusing reuse or rebroadcast");
+      }
+      return publicPayDemResult(captured, expectedPayee);
+    }
     const binding = Object.freeze({
       bindingVersion: "1",
       railId,
@@ -2331,12 +2412,6 @@ export function payDemSettle(
         `pay-dem settlement returned payee ${captured.payee}, expected Demos address ${payeeAddress}`,
       );
     }
-    return Object.freeze({
-      ...captured,
-      payee: expectedPayee,
-      ...(captured.finality === undefined
-        ? {}
-        : { finality: Object.freeze({ ...captured.finality }) }),
-    });
+    return publicPayDemResult(captured, expectedPayee);
   };
 }

@@ -45,6 +45,17 @@ indeterminate or conflicting observations withhold success and never authorize
 a replacement debit. The original fee metadata is retained after a successful
 audit, and every subsequent restart authenticates execution again.
 
+For a request carrying `priorAttempts`, `payDemSettle` performs only this audit;
+it never calls the submit-capable idempotency store, even if that store has lost
+its record. The complete history must contain 1–256 entries for the same native
+hash and network. The reconciler receives the canonical retained hash in
+`context.txHash` and must bind it to the original journal's signed nonce and
+payment tuple before reading execution. Missing or conflicting journals must
+throw. An executed result or bound permanent failure must name that same hash.
+Repeated calls audit again without relying on an in-memory success cache. Once
+this bridge has retained an audit identity, later calls for the same key remain
+read-only even if they omit history; conflicting terms or hashes are refused.
+
 ## Custom native clients
 
 Custom `PayDemRail` implementations return `PayDemRailResult`. A successful

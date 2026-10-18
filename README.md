@@ -632,6 +632,12 @@ possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory
 recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+carrying `priorAttempts` bypasses the submit-capable idempotency claim entirely,
+even when its rail log is empty. All retained native attempts must name the same
+hash and network (at most 256 entries). The reconciler receives that canonical
+hash as `context.txHash`; it must load the original prepared-transfer journal and
+authenticate its signed nonce and payment tuple, throwing if the journal is
+missing or conflicting. Repeat audits always reread execution. Every request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
@@ -8,6 +8,7 @@ import {
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import { payDemSettle } from "../../src/rails/payDem.js";
+import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
@@ -1068,9 +1069,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       .resolves.toEqual({ ok: false, boundTo: "job-1" });
   });
 
-  test.each(["checkpoint", "legacy checkpoint", "anchored rail", "anchored evidence", "anchor only"])(
-    "reconciles an included-only native success from %s before reuse",
-    async (saved) => {
+  test.each(["checkpoint", "legacy checkpoint", "anchored rail", "anchored evidence", "anchor only"]
+    .flatMap((saved) => [true, false].map((journalAvailable) => ({ saved, journalAvailable }))))(
+    "audits included-only native success from $saved with journalAvailable=$journalAvailable before reuse",
+    async ({ saved, journalAvailable }) => {
       const store = createInMemorySessionStore();
       const kv = new Map<string, Record<string, unknown>>();
       kv.set("stor:listing", await buildSignedArtifact({ ...listing,
@@ -1109,13 +1111,20 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         blockNumber: 42, txRefKind: "demos", errorClass: "permanent",
         failureProof: { kind: "demos-failed-record", txHash, payer, payee,
           nonce: 9, blockNumber: 42, amountOs: "1000000000" } };
+      const before = await store.load("job-1");
+      const beforeEvidence = structuredClone([...kv]);
+      const missingJournal = new Error("prepared-transfer journal missing");
+      const railStore = createIdempotencyStore();
+      const once = vi.spyOn(railStore, "once");
       let broadcasts = 0;
       const audit = payDemSettle({ address: payer, settle: async () => {
         broadcasts += 1; throw new Error("recovery must never broadcast");
       } }, {}, {
-        store: { once: async () => oldSuccess },
-        reconcile: async () => {
+        store: railStore,
+        reconcile: async (context) => {
           reconciliations += 1;
+          expect(context.txHash).toBe(txHash);
+          if (!journalAvailable) throw missingJournal;
           return { ...failure, ok: false, errorClass: "permanent",
             amountOs: "1000000000", failureProof: failure.failureProof! };
         },
@@ -1126,7 +1135,14 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           return audit(req);
         },
       });
-      if (saved.startsWith("anchor")) {
+      if (!journalAvailable) {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+            .rejects.toBe(missingJournal);
+        }
+        expect(await store.load("job-1")).toEqual(before);
+        expect([...kv]).toEqual(beforeEvidence);
+      } else if (saved.startsWith("anchor")) {
         await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
           .rejects.toThrow(/success evidence.*execution|execution.*success evidence/);
       } else {
@@ -1138,7 +1154,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
           .resolves.toMatchObject({ outcome: "failed" });
       }
-      if (saved === "checkpoint") {
+      if (journalAvailable && saved === "checkpoint") {
         const poisonedStore: NonNullable<SessionDeps["sessionStore"]> = { ...store, load: async (jobId) => {
           const loaded = await store.load(jobId);
           if (loaded.status === "ok") {
@@ -1152,7 +1168,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           .rejects.toThrow(/conflicting|invalid|indeterminate/);
         expect(stale.settleCalls.n).toBe(0);
       }
-      expect(reconciliations).toBe(1);
+      expect(reconciliations).toBe(journalAvailable ? 1 : 2);
+      expect(once).not.toHaveBeenCalled();
       expect(broadcasts).toBe(0);
       expect(resumed.settleCalls.n).toBe(0);
     },
