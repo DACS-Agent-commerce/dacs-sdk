@@ -660,7 +660,7 @@ describe("DACS-5 buyer role finalization", () => {
       () => { throw new IndeterminateSubstrateError("unanswered"); }, "retry"],
     ["a permanent DacsError", () => { throw new DacsError("binding content invalid"); }, "permanent"],
     ["absent", () => ({ disposition: "absent" }), "discovery"],
-    ["indeterminate", () => ({ disposition: "indeterminate", reason: "catalog lag" }), "discovery"],
+    ["indeterminate", () => ({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" }), "discovery"],
   ];
   function lookupAfterFirst(f: ReturnType<typeof fixture>, answer: () => unknown) {
     let calls = 0;
@@ -704,6 +704,25 @@ describe("DACS-5 buyer role finalization", () => {
     }
   });
 
+  test.each(["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
+    "bundle-binding-candidates-rejected", "bundle-binding-candidates-unfetched", "unknown-reason"])(
+    "holds initial publication for unresolved candidates: %s", async (reason) => {
+      const f = fixture("write-input");
+      f.state.anchored = anchoredBuyer(f.buyerBundle);
+      lookupAfterFirst(f, () => ({ disposition: "indeterminate", reason }));
+      await expect(finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider))
+        .rejects.toThrow(/candidate set is unresolved/);
+    });
+
+  test.each([null, { disposition: "unknown" }, { disposition: "indeterminate", reason: "" }])(
+    "rejects malformed initial publication lookup %j", async (lookup) => {
+      const f = fixture("write-input");
+      f.state.anchored = anchoredBuyer(f.buyerBundle);
+      lookupAfterFirst(f, () => lookup);
+      await expect(finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider))
+        .rejects.toThrow(/invalid disposition/);
+    });
+
   test("refuses a confirmed publication whose readback resolves a different binding", async () => {
     const f = fixture("write-input");
     f.state.anchored = anchoredBuyer(f.buyerBundle);
@@ -735,7 +754,7 @@ describe("DACS-5 buyer role finalization", () => {
     f.state.anchored = anchoredBuyer(f.buyerBundle);
     f.provider.resolveBundleBinding = vi.fn(() => ({
       disposition: "indeterminate" as const,
-      reason: "catalog lag",
+      reason: "bundle-binding-undiscovered",
     })) as never;
     await expect(finalizeCompletedBuyerBundleCore(f.finalizeInput, f.provider))
       .rejects.toBeInstanceOf(IndeterminateSubstrateError);

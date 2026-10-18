@@ -11,6 +11,7 @@ import {
   prepareVetTerminalBundle,
   terminalBundleSignedBytes,
   type PrepareVetTerminalBundleInput,
+  type PrepareVetTerminalBundleDeps,
   type ProtocolAnchorReceipt,
   type TerminalBundlePlan,
 } from "@kynesyslabs/dacs";
@@ -1026,6 +1027,29 @@ describe("role-separated Vet terminal bundle transport", () => {
     });
     expect(byName).toHaveProperty("size", 4);
   });
+
+  it.each(["error", "indeterminate"] as const)(
+    "retains authenticated parse cause for %s without blaming the verifier", async (decision) => {
+      const database = await open("buyer");
+      const context = { role: "buyer", authority: BUYER, peerAuthority: SELLER,
+        database, sendMessage: vi.fn() } as unknown as DacsLiveRoleOperationContextV1;
+      const input = terminalInput(decision);
+      const authenticateProduction = vi.fn(async ({ production, evaluatedIdentity, verifierIdentity }:
+        Parameters<PrepareVetTerminalBundleDeps["authenticateProduction"]>[0]) => ({
+        status: "valid" as const,
+        cause: { kind: "counterparty-presentation-parse" as const,
+          jobId: production.record.jobId, recordHash: production.recordRef.contentHash,
+          evaluatedIdentityHash: identityBundleHash(evaluatedIdentity),
+          verifierIdentityHash: identityBundleHash(verifierIdentity) },
+      }));
+      const runtime = createDacsVetTerminalBundleTransportRuntimeV1({ context,
+        expectedRegistryVersions: REGISTRY_VERSIONS, authenticateProduction });
+      const registered = await runtime.registerLocalTerminal(input);
+      expect(registered).toMatchObject({ prepared: { authority: { faultedParty: "seller" } } });
+      const restarted = createDacsVetTerminalBundleTransportRuntimeV1({ context,
+        expectedRegistryVersions: REGISTRY_VERSIONS, authenticateProduction });
+      await expect(restarted.registerLocalTerminal(input)).resolves.toEqual(registered);
+    });
 
   it("does not retain or sign a plan the peer cannot independently authorize", async () => {
     const buyerDatabase = await open("buyer");

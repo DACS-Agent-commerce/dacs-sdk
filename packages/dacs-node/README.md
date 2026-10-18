@@ -174,8 +174,10 @@ a stub that returns `{ status: "valid" }` lets any well-formed production
 through. Never configure a stub or a sender assertion in production. A result
 other than `valid`, a thrown error or a malformed result fails closed, with
 nothing retained or signed. A non-empty requirement also requires
-the matching `vet.produce` and `vet.authenticate` host policy; the agreement
-track will not mix a custom producer with the empty-requirement authenticator.
+the matching `vet.produce` and `vet.authenticate` host policy. Custom non-pass
+productions can use the terminal path. Passing non-empty requirements are
+unsupported by the built-in completion audits and are refused before agreement
+or payment; a custom Vet alone does not enable those sessions.
 A terminal proposal carries the exact
 finalized `VetProduction` as well as the derived co-signed plan; each role
 independently authenticates the production, reconstructs the authority and
@@ -183,8 +185,11 @@ requires byte-equivalent canonical output before retaining or signing it.
 `pass` creates no terminal authority, and a verifier outage remains retryable
 and produces no blame. Every authenticated non-pass decision ends the Vet phase
 at `vet-failed` (DACS-2 VPC-4, VP-R4): `fail` is the evaluated party's
-`counterparty` fault, while `indeterminate` or `error` is the verifier's own
-`permanent` failure, so the verifier's copy reads `failed-perm`.
+`counterparty` fault. An `indeterminate` or `error` requires independently
+authenticated `cause` evidence binding the job, record hash and both identity
+hashes. A sole counterparty-presentation parse cause maps to `counterparty`;
+an established verifier cause maps to `permanent`. Missing or mismatched cause
+evidence remains indeterminate and produces no terminal blame.
 
 When configured, the returned graph exposes `terminalBundles`.
 `registerLocalTerminal(input)` durably binds locally observed failure material,
@@ -297,8 +302,9 @@ diagnostic is a follow-up; repairTrack does not resolve a phase conflict.
 `createDacsBuyerSessionBootstrapAgreementTrackV1()` and its seller counterpart
 drive this transcript before delegating to the existing durable agreement
 tracks. The generated profile's built-in Vet producer is deliberately limited
-to an empty `BundleRequirement`; non-empty claim requirements fail closed until
-a requirement-specific provider is supplied. Complementary seller requirement
+to an empty `BundleRequirement`. A requirement-specific provider can authenticate
+non-empty Vet failures, but passing non-empty requirements remain unsupported
+by the built-in audit lifecycle. Complementary seller requirement
 provenance remains a non-normative policy seam pending Standard issue #331.
 
 `startDacsHttpMessageServerV1()` serves only
@@ -417,11 +423,12 @@ catalog), resolves them as a DACS-5 BB-6 candidate set (at most 8 fetches per
 signer, collapse, fully-signed precedence) and reads the copy at the bound
 native address. A side that no surface binds yet, whose candidates all fail
 validation, or that equivocates is `indeterminate` (BB-7, BB-8), never absent.
-Binding discovery never gates completion. Only a completion that was read and
-failed authentication needs operator action. Every retry is bounded: a track
-that stays `indeterminate` for the coordinator's `maximumSubstratePauseMs`
-(DACS-5 ST-7, default 3600 s) stops at operator action with
-`substrate-pause-exceeded`. Demos's answer against one copy goes to operator
+Non-observation alone never gates completion; unresolved BB-6 candidate sets
+remain indeterminate. A completion that was read and failed authentication needs
+operator action. A track that stays `indeterminate` for the coordinator's
+`maximumSubstratePauseMs` (default 3600 s) reports `substrate-pause-exceeded`
+and continues reconciliation, including after restart. This operational alert
+does not implement ST-7's failed-substrate terminal publication. Demos's answer against one copy goes to operator
 action even when a read of the other copy went unanswered in the same check,
 whichever arrives first: both copies settle before the check decides. A read
 that never settles is cut off at one deadline for the whole check (the seller
@@ -436,15 +443,15 @@ seconds or less of the lease left, the check stays `indeterminate` without
 reading. The service's coordinator lease (`coordinatorLeaseDurationMs`) is 300
 seconds by default; the core coordinator's own default is 30 seconds. A lease
 too short for the audit's Demos reads keeps it `indeterminate` on every retry.
-For receipt reads, only HTTP 400, 404, 410 or 422 is Demos's answer about the
-request. A connection error, a timeout or any other HTTP status (a 5xx, a
-CDN's 52x, a gateway's 401, 403 or 407, 408 or 429) is unanswered.
-
-Known operational risk, not yet tested against a live node: a plain HTTP 404
-from a proxy, a CDN or a Demos node without the requested handler cannot be
-told apart from Demos's own answer. It is taken as answered, so the audit
-fails permanently (operator action) instead of being retried. Put nothing in
-front of the Demos RPC endpoint that answers 404 on its own.
+Receipt reads are classified by method-specific response bodies and independently
+verified transaction, block and storage records. HTTP status alone does not prove
+an invalid receipt: failed POSTs, including 400/404/410/422, transport failures and
+SDK result-500 wrappers remain indeterminate. Unknown transaction/block RPC
+responses such as `{result:400,response:"error"}` do not establish finality or
+permanent invalidity. Storage-program reads separately recognize the adapter's
+genuine not-found response as absence; missing receipt observations remain
+retryable. A readable authenticated record contradicting the claimed receipt is
+a definitive rejection.
 
 `createDacsBuyerAgreementTrackV1()` and
 `createDacsSellerAgreementTrackV1()` bind the SDK's durable agreement exchange

@@ -466,6 +466,63 @@ describe("session bootstrap agreement tracks", () => {
     expect(value.buyerSend).not.toHaveBeenCalled();
   });
 
+  it.each(["buyer", "seller"] as const)(
+    "refuses passing custom non-empty Vet before %s agreement or payment", async (role) => {
+      const value = await fixture();
+      const nonEmpty = { requirementVersion: "1" as const,
+        required: [{ scheme: "did", verificationRequired: true }] };
+      const buyerAgreement = vi.fn();
+      const sellerAgreement = vi.fn();
+      const vet = { produce: vi.fn(async () => ({ status: "ready" as const,
+        production: { record: { overallDecision: "pass" } } as never })),
+        authenticate: vi.fn(async () => "valid" as const) };
+      const buyerTrack = createDacsBuyerSessionBootstrapAgreementTrackV1({
+        context: value.buyerContext, sessionBootstrap: value.buyerTransport,
+        resolveRequirements: () => ({ buyer: role === "seller" ? nonEmpty : EMPTY_REQUIREMENT,
+          seller: role === "buyer" ? nonEmpty : EMPTY_REQUIREMENT }),
+        vet, agreement: buyerAgreement,
+      });
+      const sellerTrack = createDacsSellerSessionBootstrapAgreementTrackV1({
+        context: value.sellerContext, sessionBootstrap: value.sellerTransport,
+        resolveBuyerRequirement: () => role === "seller" ? nonEmpty : EMPTY_REQUIREMENT,
+        ...(role === "seller" ? { vet } : {}), agreementProposalReady: () => true,
+        agreement: sellerAgreement,
+      });
+      await buyerTrack(value.buyerOperation);
+      const init = lastMessage(value.buyerSend);
+      await value.sellerTransport.handleMessage(await authenticated({ type: "session-init",
+        payload: init.payload as DacsHttpPayloadByType["session-init"], sender: value.buyer,
+        audience: value.seller, privateKey: value.buyerKeys.privateKey, role: "buyer", nonceByte: 61,
+      }), { role: "seller", coordinator: { startOrder: value.startOrder } } as never);
+      const loaded = await value.sellerStore.load("seller", JOB_ID);
+      if (loaded.status !== "ok") throw new Error("seller order missing");
+      const sellerOperation = operation(loaded.record);
+      await sellerTrack(sellerOperation);
+      const challenge = lastMessage(value.sellerSend);
+      await value.buyerTransport.handleMessage(await authenticated({ type: "session-challenge",
+        payload: challenge.payload as DacsHttpPayloadByType["session-challenge"], sender: value.seller,
+        audience: value.buyer, privateKey: value.sellerKeys.privateKey, role: "seller", nonceByte: 62,
+      }), { role: "buyer" } as never);
+      const buyerResult = await buyerTrack(value.buyerOperation);
+      if (role === "buyer") {
+        expect(buyerResult).toEqual({ status: "operator-action",
+          reasonCode: "buyer-session-audit-requirements-unsupported" });
+      } else {
+        const presentation = lastMessage(value.buyerSend);
+        await value.sellerTransport.handleMessage(await authenticated({ type: "session-presentation",
+          payload: presentation.payload as DacsHttpPayloadByType["session-presentation"], sender: value.buyer,
+          audience: value.seller, privateKey: value.buyerKeys.privateKey, role: "buyer", nonceByte: 63,
+        }), { role: "seller" } as never);
+        await expect(sellerTrack(sellerOperation)).resolves.toEqual({ status: "operator-action",
+          reasonCode: "seller-session-audit-requirements-unsupported" });
+      }
+      expect(vet.produce).toHaveBeenCalled();
+      expect(vet.authenticate).toHaveBeenCalled();
+      expect(buyerAgreement).not.toHaveBeenCalled();
+      expect(sellerAgreement).not.toHaveBeenCalled();
+      expect(value.sellerSend).not.toHaveBeenCalledWith(expect.objectContaining({ type: "session-admission" }));
+    });
+
   // DACS-2 VPC-4/VP-R4: every authenticated non-pass decision ends the phase.
   // A `fail` is the seller's fault; `indeterminate` or `error` is the buyer's
   // own `permanent` failure as the verifier.

@@ -327,6 +327,18 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
     await expect(consumer.publication.verifyBundleBinding(forged)).resolves.toBe("invalid");
   });
 
+  it.each([false, true])("discards invalid anchorTx before equal-copy collapse (invalid first: %s)", async (invalidFirst) => {
+    const { copy, signed } = await submitted();
+    const valid = withAnchorTx(signed, `tx-${signed.nativeAddress}`);
+    const invalid = withAnchorTx(signed, "tx-other");
+    const catalog: DacsBundleBindingDiscoverySurfaceV1 = { kind: "catalog",
+      discover: async () => invalidFirst ? [invalid, valid] : [valid, invalid] };
+    const consumer = harness("buyer", [catalog]);
+    consumer.seedProgram(signed.nativeAddress, copy, SELLER);
+    await expect(consumer.publication.resolveBoundRoleBundle("seller"))
+      .resolves.toMatchObject({ disposition: "present", binding: valid });
+  });
+
   it("accepts a binding whose anchorTx is the receipt's demos-storage-program transaction", async () => {
     const { copy, signed } = await submitted();
     const carried = withAnchorTx(signed, `tx-${signed.nativeAddress}`);

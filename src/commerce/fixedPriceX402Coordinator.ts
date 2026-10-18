@@ -640,11 +640,10 @@ interface FixedPriceCoordinatorOptions<
   >;
   leaseDurationMs?: number;
   /**
-   * DACS-5 ST-7 per-listing maximum substrate pause, in milliseconds. A track
-   * still `indeterminate` this long after its pause began stops retrying:
-   * its result becomes `operator-action` with reason
-   * `substrate-pause-exceeded`, since this profile cannot produce the
-   * `failed-substrate` bundle itself. Defaults to 3600 s.
+   * Sustained substrate-pause alert threshold, in milliseconds (default 3600 s).
+   * The SDK retains retryable work after this threshold; it has no post-agreement
+   * failed-substrate publication runtime. This operational alert does not claim
+   * the normative DACS-5 ST-7 terminal transition or change settled tracks.
    */
   maximumSubstratePauseMs?: number;
 }
@@ -3405,17 +3404,18 @@ function createFixedPriceCommerceCoordinator<
             retryAt,
           } as OperationResult;
         }
-        // DACS-5 ST-7: a substrate pause is time-bounded. This profile cannot
-        // produce the `failed-substrate` bundle, so reaching the bound ends
-        // automatic retry and raises an operator alert instead.
+        // Keep the sustained-pause alert retryable. Until a durable substrate
+        // terminal/publication runtime exists, stopping work here strands paid
+        // sessions permanently. Recovery must still reconcile only this track.
         const pausedSince = record.tracks[track]?.pausedSince;
         if ((result as { status?: unknown }).status === "indeterminate" &&
             pausedSince !== undefined) {
           const observed = await captured.store.readTime();
-          if (!safeUint(observed) ||
-              observed - pausedSince >= captured.maximumSubstratePauseMs) {
+          if (!safeUint(observed)) throw new DacsError("coordinator pause time is invalid");
+          if (observed - pausedSince >= captured.maximumSubstratePauseMs) {
             result = {
-              status: "operator-action",
+              ...result,
+              status: "indeterminate",
               reasonCode: "substrate-pause-exceeded",
             } as OperationResult;
           }

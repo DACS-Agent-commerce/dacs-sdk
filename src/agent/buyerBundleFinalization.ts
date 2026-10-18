@@ -1,4 +1,5 @@
 import { types as nodeTypes } from "node:util";
+import { isUnresolvedBundleBindingCandidateSet } from "../discovery/bundleBindingCandidates.js";
 
 import type {
   AnchorReceipt,
@@ -1177,7 +1178,7 @@ function validateBindingLookup(
 ): SellerBundleBindingLookup {
   const lookup = snapshot(value, `${role} BundleBinding lookup`) as unknown;
   if (!isRecord(lookup) || typeof lookup.disposition !== "string") {
-    throw new SubstrateError(
+    throw new DacsError(
       `${role} BundleBinding lookup returned an invalid disposition`,
     );
   }
@@ -1198,7 +1199,7 @@ function validateBindingLookup(
   ) {
     return lookup as SellerBundleBindingLookup;
   }
-  throw new SubstrateError(
+  throw new DacsError(
     `${role} BundleBinding lookup returned an invalid disposition`,
   );
 }
@@ -1441,6 +1442,12 @@ async function publishBinding(
   } catch (error) {
     if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
     published = undefined;
+  }
+  if (published?.disposition === "indeterminate" &&
+      isUnresolvedBundleBindingCandidateSet(published.reason)) {
+    throw new IndeterminateSubstrateError(
+      `published ${role} BundleBinding candidate set is unresolved: ${published.reason}`,
+    );
   }
   if (published?.disposition === "present" && !exact(published.binding, authenticatedCandidate)) {
     throw new IndeterminateSubstrateError(

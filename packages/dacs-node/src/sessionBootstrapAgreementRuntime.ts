@@ -426,7 +426,8 @@ export async function advanceDacsVetTerminalTrackV1(
   }
   if (progress.disposition === "finalised") {
     const faultedParty = progress.result.bundle.faultedParty;
-    // VPC-4: `counterparty` for a `fail`, `permanent` for `indeterminate`/`error`.
+    // VPC-4: the independently authenticated terminal plan carries the cause
+    // mapping, including parse-caused error/indeterminate counterparty faults.
     const errorClass = progress.result.bundle.phaseSummary
       .find((phase) => phase.kind === "vet-credentials" && phase.outcome === "fail")?.errorClass;
     if ((faultedParty !== "buyer" && faultedParty !== "seller") ||
@@ -793,9 +794,9 @@ async function authenticateProducedVet(
 }
 
 // DACS-2 VPC-4 and VP-R4: every authenticated non-pass decision fails the Vet
-// phase and is never retried. `fail` is the evaluated party's fault; an
-// `indeterminate` or `error` decision is the verifier's own `permanent`
-// failure. Both end at DACS-5 `vet-failed` with a terminal bundle.
+// phase and is never retried. `fail` is the evaluated party's fault;
+// `indeterminate`/`error` attribution comes from independently authenticated
+// cause provenance in the terminal bridge. All end at `vet-failed`.
 function terminalVetDecision(
   decision: CompositeVerificationRecord["overallDecision"],
 ): boolean {
@@ -951,6 +952,12 @@ export function createDacsBuyerSessionBootstrapAgreementTrackV1(
     }
     const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation);
     if (passed !== undefined) return passed;
+    if (resolvedRequirements.buyer.required.length !== 0 ||
+        (resolvedRequirements.buyer.oneOf?.length ?? 0) !== 0 ||
+        resolvedRequirements.seller.required.length !== 0 ||
+        (resolvedRequirements.seller.oneOf?.length ?? 0) !== 0) {
+      return operator("buyer-session-audit-requirements-unsupported");
+    }
     const admission = options.sessionBootstrap.resolveAdmission(operation);
     if (admission === undefined) {
       return pending(context, delay, "buyer-session-admission-pending");
@@ -1189,6 +1196,10 @@ export function createDacsSellerSessionBootstrapAgreementTrackV1(
     }
     const passed = await finalizeLocalVetPass(options.terminalBundle, context, delay, operation);
     if (passed !== undefined) return passed;
+    if (buyerRequirement.required.length !== 0 ||
+        (buyerRequirement.oneOf?.length ?? 0) !== 0) {
+      return operator("seller-session-audit-requirements-unsupported");
+    }
     let admission = options.sessionBootstrap.resolveAdmission(operation);
     if (admission === undefined) {
       admission = Object.freeze({

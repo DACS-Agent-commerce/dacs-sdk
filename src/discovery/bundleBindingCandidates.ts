@@ -29,6 +29,7 @@ import type { BundleBinding } from "../artifacts/types.js";
 import { isBundleBinding } from "../artifacts/validators.js";
 import { canonicalize } from "../canonical/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import type { BundleCopyRole, CopyValidity } from "../agent/bundleCopyValidity.js";
 import { attestationBundleHash } from "../agent/twoSidedBundle.js";
 
@@ -57,6 +58,9 @@ export interface ResolveBundleBindingCandidatesInput {
   fetchCopy(
     nativeAddress: string,
   ): Promise<Readonly<Record<string, unknown>> | null> | Readonly<Record<string, unknown>> | null;
+  /** Substrate-specific binding/receipt consistency, checked before BB-6 collapse. */
+  verifyBindingCopy?(binding: Readonly<BundleBinding>, copy: Readonly<Record<string, unknown>>):
+    Promise<boolean> | boolean;
   /** §10.4.1/§10.4.2 copy validity for `role`, e.g. core `verifyBundleCopy`. */
   verifyCopy(
     copy: Readonly<Record<string, unknown>>,
@@ -160,9 +164,13 @@ function roleHolderOf(
 export async function resolveBundleBindingCandidates(
   input: Readonly<ResolveBundleBindingCandidatesInput>,
 ): Promise<BundleBindingCandidateResolution> {
+  requireCanonicalJobId(input.jobId, "BundleBinding requested jobId");
   // BB-5 checks 1-5 and BB-4, then exact duplicates from several surfaces.
   const unique = new Map<string, BundleBinding>();
   for (const raw of input.candidates) {
+    if (raw !== null && typeof raw === "object" && "jobId" in raw) {
+      requireCanonicalJobId(raw.jobId, "BundleBinding signed jobId");
+    }
     if (!shapeValid(raw) || raw.jobId !== input.jobId || raw.role !== input.role) continue;
     let signed = false;
     try {
@@ -201,8 +209,7 @@ export async function resolveBundleBindingCandidates(
     for (const address of addresses.slice(0, BUNDLE_BINDING_FETCH_BUDGET)) {
       let copy: Record<string, unknown> | null;
       try {
-        const fetched = await input.fetchCopy(address);
-        copy = fetched === null ? null : clone(fetched);
+        copy = await input.fetchCopy(address) as Record<string, unknown> | null;
       } catch (error) {
         // Invalid content or receipt is rejected and inert; anything else
         // left this candidate unfetched.
@@ -216,10 +223,17 @@ export async function resolveBundleBindingCandidates(
       let hash: string;
       let validity: CopyValidity;
       try {
+        copy = clone(copy);
         hash = attestationBundleHash(copy as never);
-        validity = await input.verifyCopy(clone(copy), input.role);
       } catch {
-        unfetched = true;
+        // Bytes were fetched; noncanonical/unhashable content is invalid,
+        // not an unavailable read, and cannot suppress another valid copy.
+        continue;
+      }
+      try {
+        validity = await input.verifyCopy(clone(copy), input.role);
+      } catch (error) {
+        if (!(error instanceof DacsError) || error instanceof SubstrateError) unfetched = true;
         continue;
       }
       const holder = roleHolderOf(copy, input.role);
@@ -228,6 +242,14 @@ export async function resolveBundleBindingCandidates(
         if (copy["jobId"] !== binding.jobId || hash !== binding.bundleContentHash ||
             !validity.valid || holder !== binding.signer ||
             !validity.signers.includes(binding.signer)) continue;
+        if (input.verifyBindingCopy) {
+          try {
+            if (await input.verifyBindingCopy(clone(binding), clone(copy)) !== true) continue;
+          } catch (error) {
+            if (!(error instanceof DacsError) || error instanceof SubstrateError) unfetched = true;
+            continue;
+          }
+        }
         authorized.push({ binding, copy, hash, fullySigned: validity.fullySigned });
       }
     }

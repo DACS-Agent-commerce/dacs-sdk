@@ -1145,8 +1145,10 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
         });
       }
       if (plainObject(value) && value.status === "valid" &&
-          exactFields(value, ["status"])) {
-        return Object.freeze({ status: "valid" as const });
+          exactFields(value, ["status"], ["cause"])) {
+        // The core bridge validates cause shape and session/record binding.
+        return Object.freeze(snapshotJson(value, "vet-production-authentication")) as Awaited<
+          ReturnType<PrepareVetTerminalBundleDeps["authenticateProduction"]>>;
       }
       if (plainObject(value) &&
           (value.status === "invalid" || value.status === "indeterminate") &&

@@ -1,4 +1,5 @@
 import { types as nodeTypes } from "node:util";
+import { DACS_STANDARD_PIN } from "../version.js";
 
 import type {
   AnchorReceipt,
@@ -231,8 +232,19 @@ export interface FixedPriceX402AuditCompletionDeps
   extends CompletedTwoSidedSessionDeps {}
 
 /** Native-DEM alias retained as an explicit discoverable public surface. */
-export interface FixedPricePayDemAuditCompletionDeps
-  extends CompletedTwoSidedSessionDeps {}
+export const COMPLETED_SESSION_MODULE_VERSIONS = Object.freeze({
+  core: "0.3", dacs1: "0.7", dacs2: "0.6", dacs3: "0.5", dacs4: "0.8", dacs5: "0.5",
+} as const);
+
+export interface FixedPricePayDemAuditCompletionDeps extends CompletedTwoSidedSessionDeps {
+  /**
+   * Verifier-owned deployment admission, independent of all caller input.
+   * Authenticate every role's exact session, participant, release and full
+   * module tuple from trusted configuration/evidence. Never copy profile or
+   * role claims from artifacts or order statuses into this result.
+   */
+  authenticateSessionProfile(): Promise<unknown> | unknown;
+}
 
 interface CapturedAuditCompletionDeps {
   deadline: Readonly<Required<CompletedTwoSidedSessionDeadline>>;
@@ -745,12 +757,37 @@ async function requireBinding(
   // ST-11: external index visibility never gates completion, and BB-2 lets the
   // copy carry its signed binding, checked above under BB-4 and BB-5. A lookup
   // that does not show the binding, or does not answer, is no evidence either
-  // way (BB-8); only a different binding the lookup serves is an answer.
-  if (lookup.disposition === "present" &&
-      (!isBundleBinding(lookup.binding) || !exact(lookup.binding, binding))) {
-    throw new DacsError(
-      `completed ${copy.role} BundleBinding is not independently resolvable and exact`,
-    );
+  // way (BB-8). A different selected binding must independently verify the
+  // same signed content at its own native publication.
+  if (lookup.disposition === "present" && !exact(lookup.binding, binding)) {
+    const selected = lookup.binding;
+    if (!isBundleBinding(selected) || selected.jobId !== binding.jobId ||
+        selected.role !== binding.role || selected.logicalAddress !== binding.logicalAddress ||
+        selected.bundleContentHash !== binding.bundleContentHash ||
+        !sameCanonicalClaimIdentity(selected.signer, binding.signer)) {
+      throw new DacsError(`completed ${copy.role} BundleBinding is not independently resolvable and exact`);
+    }
+    // BB-6 may select an equal copy at another native address. Authenticate
+    // that binding's native publication/finality and independently verify its
+    // actual bytes; the carried copy retains all its own receipt checks.
+    const selectedKey = await deps.bundleCopyVerifier.resolvePublicKey(selected.signer);
+    const selectedSignature = Uint8Array.from(Buffer.from(selected.signature.value, "base64url"));
+    if (!selectedKey || selectedKey.byteLength !== 32 || selectedSignature.byteLength !== 64 ||
+        !(await deps.bundleCopyVerifier.verify(signedBytes(BUNDLE_BINDING_SEPARATOR,
+          contentHash(selected as unknown as Record<string, unknown>)), selectedSignature, selectedKey))) {
+      throw new DacsError(`completed ${copy.role} BundleBinding is not independently resolvable and exact: selected signature is invalid`);
+    }
+    requireValid(verificationDisposition(await unanswered(
+      () => deps.verifyBundleBinding!(clone(selected)), `${copy.role} selected BundleBinding verifier`),
+      `${copy.role} selected BundleBinding verifier`), `completed ${copy.role} selected BundleBinding verification`);
+    const selectedCopy = await unanswered(() => deps.readBundleCopy(selected.nativeAddress, copy.role),
+      `${copy.role} selected bundle native readback`);
+    if (selectedCopy === null) throw new IndeterminateSubstrateError("selected bundle copy is not yet readable");
+    const validity = await verifyBundleCopy(selectedCopy, copy.role, deps.bundleCopyVerifier);
+    if (!validity.valid || !validity.fullySigned || validity.abortStanding ||
+        !exact(bundleSignedScope(selectedCopy as unknown as FaultAttestationBundle), bundleSignedScope(copy.bundle))) {
+      throw new DacsError(`completed ${copy.role} selected BundleBinding does not name the same verified signed scope`);
+    }
   }
   const verifyBundleBinding = deps.verifyBundleBinding;
   requireValid(verificationDisposition(
@@ -869,8 +906,10 @@ async function verifyCopy(
  * host read that throws anything but a `DacsError`, a host read that throws a
  * `SubstrateError`, an `indeterminate` or `error` verifier disposition, a
  * bundle copy not yet readable at its native address, and a seller bundle its
- * name index does not show yet. A BundleBinding lookup gates nothing unless it
- * serves a different binding: the copy carries its own (ST-11, BB-2). Any
+ * name index does not show yet. A BundleBinding lookup may select an equal
+ * signed copy at another authenticated native publication (BB-6); unresolved
+ * candidate sets remain indeterminate. The copy also carries its own binding
+ * (ST-11, BB-2). Any
  * other `DacsError` is an answer against the session and needs an operator.
  */
 export async function verifyCompletedTwoSidedSession(
@@ -1045,6 +1084,26 @@ export async function verifyFixedPricePayDemAuditCompletion(
     throw new DacsError(
       "audit completion requires both operational audit tracks to reference their exact bundle",
     );
+  }
+
+  const source = objectBoundary(deps, "native DEM completion dependencies");
+  const authenticate = method<FixedPricePayDemAuditCompletionDeps["authenticateSessionProfile"]>(
+    source, "authenticateSessionProfile", "native DEM completion dependencies",
+  )!;
+  const admission = snapshotCanonicalJsonRead(await authenticate(), "trusted session profile admission");
+  if (!isRecord(admission) || !exactKeys(admission, ["status", "releasePin", "moduleVersions", "roles"]) ||
+      admission.status !== "valid" || admission.releasePin !== DACS_STANDARD_PIN ||
+      !exact(admission.moduleVersions, COMPLETED_SESSION_MODULE_VERSIONS) ||
+      !Array.isArray(admission.roles) || admission.roles.length !== 2 ||
+      !(["buyer", "seller"] as const).every((role) => {
+        const records = (admission.roles as unknown[]).filter((entry: unknown) => isRecord(entry) && entry.role === role);
+        const entry = records[0];
+        return records.length === 1 && isRecord(entry) &&
+          exactKeys(entry, ["jobId", "role", "participant"]) &&
+          entry.jobId === retained.buyer.jobId && isCanonicalClaimReference(entry.participant) &&
+          sameCanonicalClaimIdentity(entry.participant, retained.buyer[role]);
+      })) {
+    throw new DacsError("native DEM completion lacks authenticated session profile and role authority");
   }
 
   await verifyCompletedTwoSidedSession({

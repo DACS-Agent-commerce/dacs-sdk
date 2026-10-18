@@ -3677,8 +3677,24 @@ async function publishBinding(
       await provider.resolveBundleBinding(expected.logicalAddress, signer),
       "published BundleBinding readback",
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
     publishedLookup = undefined;
+  }
+  if (publishedLookup !== undefined) {
+    if (!isRecord(publishedLookup) || !(
+      (publishedLookup.disposition === "present" && hasOnlyKeys(publishedLookup, ["disposition", "binding"])) ||
+      (publishedLookup.disposition === "absent" && hasOnlyKeys(publishedLookup, ["disposition"])) ||
+      (publishedLookup.disposition === "indeterminate" &&
+        hasOnlyKeys(publishedLookup, ["disposition", "reason"]) &&
+        typeof publishedLookup.reason === "string" && publishedLookup.reason.length > 0)
+    )) throw new DacsError("published BundleBinding readback returned an invalid disposition");
+    if (publishedLookup.disposition === "indeterminate" &&
+        isUnresolvedBundleBindingCandidateSet(publishedLookup.reason)) {
+      throw new IndeterminateSubstrateError(
+        `published BundleBinding candidate set is unresolved: ${publishedLookup.reason}`,
+      );
+    }
   }
   if (
     isRecord(publishedLookup) && publishedLookup.disposition === "present" && (
@@ -3983,12 +3999,12 @@ export async function verifyFinalizedSellerBundleReadOnly(
     retainedProvider,
   );
   if (
-    !exact(currentSellerBundle, retainedSellerBundle) ||
-    current.anchored.nativeAddress !== result.nativeAddress ||
-    !sameAnchorPublicationIdentity(current.anchored.anchorReceipt, result.anchorReceipt) ||
-    (current.anchored.anchorTx !== undefined &&
-      result.anchorTx !== undefined &&
-      current.anchored.anchorTx !== result.anchorTx)
+    !exact(bundleSignedScope(currentSellerBundle), bundleSignedScope(retainedSellerBundle)) ||
+    ((retainedProvider.mapping === "pure" || current.anchored.nativeAddress === result.nativeAddress) && (
+      current.anchored.nativeAddress !== result.nativeAddress ||
+      !sameAnchorPublicationIdentity(current.anchored.anchorReceipt, result.anchorReceipt) ||
+      (current.anchored.anchorTx !== undefined && result.anchorTx !== undefined &&
+        current.anchored.anchorTx !== result.anchorTx)))
   ) {
     throw new DacsError("retained seller bundle differs from its authenticated readback");
   }
@@ -4060,14 +4076,19 @@ export async function verifyFinalizedSellerBundleReadOnly(
       throw new DacsError("retained BundleBinding readback returned an invalid disposition");
     }
     // ST-11: discovery visibility never gates completion, and non-discovery is
-    // no evidence either way (BB-8). Only a different binding resolved for
-    // this seller answers against the retained one.
-    if (bindingLookup.disposition === "present" && (
-      !isBundleBinding(bindingLookup.binding) ||
-      !bindingMatches(bindingLookup.binding, expectedBinding) ||
-      !exact(bindingLookup.binding, result.binding)
-    )) {
-      throw new DacsError("retained BundleBinding is not independently readable and exact");
+    // no evidence either way (BB-8). BB-6 may select another independently
+    // authenticated native publication of the same signed content.
+    if (bindingLookup.disposition === "present" && !exact(bindingLookup.binding, result.binding)) {
+      const selected = bindingLookup.binding;
+      // BB-6 collapses equal signed content across native publications. Each
+      // binding still authenticates its own receipt/readback, never the other's.
+      if (!isBundleBinding(selected) || selected.jobId !== expectedBinding.jobId ||
+          selected.role !== "seller" || selected.logicalAddress !== logicalAddress ||
+          selected.bundleContentHash !== expectedBundleHash || selected.signer !== expectedBinding.signer ||
+          !retainedProvider.verifyBundleBinding) {
+        throw new DacsError("retained BundleBinding is not independently readable and exact");
+      }
+      await locallyVerifyBindingSignature(selected, retainedProvider);
     }
     // BB-6, BB-7: candidates that did not resolve to one copy (for example an
     // equally signed second copy) keep the seller side indeterminate. Any
@@ -4077,6 +4098,12 @@ export async function verifyFinalizedSellerBundleReadOnly(
       throw new IndeterminateSubstrateError(
         `retained BundleBinding candidate set is unresolved: ${bindingLookup.reason}`,
       );
+    }
+    if (current.anchored.nativeAddress !== result.nativeAddress &&
+        (bindingLookup.disposition !== "present" ||
+          !isBundleBinding(bindingLookup.binding) ||
+          bindingLookup.binding.nativeAddress !== current.anchored.nativeAddress)) {
+      throw new DacsError("alternate seller readback lacks its authenticated selected BundleBinding");
     }
   }
 

@@ -50,6 +50,8 @@ import {
   type FixedPricePayDemProtocolBinding,
   type FixedPricePayDemTrackOperation,
   type FixedPriceX402AuditCompletionDeps,
+  type FixedPricePayDemAuditCompletionDeps,
+  COMPLETED_SESSION_MODULE_VERSIONS,
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402OrderInput,
   type FixedPriceX402ProtocolBinding,
@@ -82,6 +84,14 @@ function party(seedByte: number) {
 const BUYER = party(71);
 const SELLER = party(72);
 const h = (character: string): string => character.repeat(64);
+function trustedAdmission() {
+  return { status: "valid", releasePin: FIXED_PRICE_X402_STANDARD_REVISION,
+    moduleVersions: { ...COMPLETED_SESSION_MODULE_VERSIONS },
+    roles: [
+      { jobId: JOB_ID, role: "buyer", participant: BUYER.did },
+      { jobId: JOB_ID, role: "seller", participant: SELLER.did },
+    ] };
+}
 
 const PROTOCOL: FixedPriceX402ProtocolBinding = {
   commerceProfile: FIXED_PRICE_X402_COMMERCE_PROFILE,
@@ -456,7 +466,8 @@ async function fixture(phaseKind: "pay-x402" | "pay-dem" = "pay-x402") {
         ed25519Verify(bytes, signature, publicKeyFromRaw(key)),
     },
   } as unknown as FixedPriceX402AuditCompletionDeps["sellerFinalizationProvider"];
-  const deps: FixedPriceX402AuditCompletionDeps = {
+  const deps: FixedPriceX402AuditCompletionDeps & FixedPricePayDemAuditCompletionDeps = {
+    authenticateSessionProfile: () => trustedAdmission(),
     sellerFinalizationProvider,
     readBundleCopy: (nativeAddress) => bundles.get(nativeAddress) ?? null,
     verifyBundleAnchor: () => ({ disposition: "valid", mapping: "pure" }),
@@ -640,6 +651,27 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
     const sellerStatus = (await seller.getOrderStatus(JOB_ID))!;
     expect(combineFixedPricePayDemOrderStatus({ buyer: buyerStatus, seller: sellerStatus })
       .milestone).toBe("actor-audit-final");
+    const admissionInput = { buyer: buyerStatus, seller: sellerStatus,
+      sellerClosure: fx.input.sellerClosure, copies: fx.input.copies };
+    const badAdmissions: unknown[] = [undefined, { status: "invalid" },
+      { ...trustedAdmission(), releasePin: "00".repeat(20) },
+      { ...trustedAdmission(), moduleVersions: { ...COMPLETED_SESSION_MODULE_VERSIONS, dacs5: "0.4" } },
+      { ...trustedAdmission(), moduleVersions: { core: "0.3" } },
+      { ...trustedAdmission(), roles: [...trustedAdmission().roles, trustedAdmission().roles[0]] },
+      { ...trustedAdmission(), roles: trustedAdmission().roles.map((entry) => ({ ...entry, jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" })) },
+      { ...trustedAdmission(), roles: trustedAdmission().roles.map((entry) => ({ ...entry, participant: entry.role === "buyer" ? SELLER.did : BUYER.did })) },
+    ];
+    for (const bad of badAdmissions) {
+      verifySellerClosure.mockClear();
+      const read = vi.fn(fx.deps.readBundleCopy);
+      await expect(verifyFixedPricePayDemAuditCompletion(admissionInput, { ...fx.deps,
+        readBundleCopy: read, authenticateSessionProfile: () => bad })).rejects.toThrow();
+      expect(read).not.toHaveBeenCalled();
+      expect(verifySellerClosure).not.toHaveBeenCalled();
+    }
+    const { authenticateSessionProfile: _unused, ...missing } = fx.deps;
+    await expect(verifyFixedPricePayDemAuditCompletion(admissionInput, missing as never))
+      .rejects.toThrow(/authenticateSessionProfile.*required/);
     await expect(verifyFixedPricePayDemAuditCompletion({
       buyer: buyerStatus,
       seller: sellerStatus,
@@ -650,6 +682,39 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       milestone: "audit-complete",
     });
   });
+
+  it.each(["pay-x402", "pay-dem"] as const)(
+    "accepts independently verified equal copies at alternate native addresses for %s", async (rail) => {
+      const fx = await fixture(rail);
+      const carriedBuyer = binding(fx.buyerBundle, "buyer", fx.buyerNative);
+      const carriedSeller = binding(fx.sellerBundle, "seller", fx.sellerNative);
+      const alternate = binding(fx.buyerBundle, "buyer", "native:alternate-buyer");
+      const verifyBinding = vi.fn(() => ({ disposition: "valid" as const }));
+      const input = { jobId: JOB_ID, buyer: BUYER.did, seller: SELLER.did,
+        sellerClosure: { ...fx.input.sellerClosure, result: { ...fx.closureResult, binding: carriedSeller } },
+        copies: { buyer: { ...fx.input.copies.buyer, binding: carriedBuyer },
+          seller: { ...fx.input.copies.seller, binding: carriedSeller } } };
+      const deps = { ...fx.deps,
+        sellerFinalizationProvider: { ...fx.sellerFinalizationProvider, mapping: "write-input" as const },
+        verifyBundleAnchor: () => ({ disposition: "valid" as const, mapping: "write-input" as const }),
+        resolveBundleBinding: (_logical: string, _signer: string, role: string) => ({
+          disposition: "present" as const, binding: role === "buyer" ? alternate : carriedSeller }),
+        readBundleCopy: (address: string, role: "buyer" | "seller") => address === alternate.nativeAddress
+          ? fx.buyerBundle as unknown as Record<string, unknown> : fx.deps.readBundleCopy(address, role),
+        verifyBundleBinding: verifyBinding,
+      };
+      await expect(verifyCompletedTwoSidedSession(input, deps)).resolves.toMatchObject({ state: "audit-complete" });
+      expect(verifyBinding).toHaveBeenCalledWith(alternate);
+      const forged = structuredClone(alternate);
+      forged.signature.value = Buffer.alloc(64, 3).toString("base64url");
+      await expect(verifyCompletedTwoSidedSession(input, { ...deps,
+        resolveBundleBinding: (_logical, _signer, role) => ({ disposition: "present",
+          binding: role === "buyer" ? forged : carriedSeller }) })).rejects.toThrow(/signature is invalid/);
+      await expect(verifyCompletedTwoSidedSession(input, { ...deps,
+        readBundleCopy: (address, role) => address === alternate.nativeAddress
+          ? { ...fx.buyerBundle, outcome: "failed-substrate" } as unknown as Record<string, unknown>
+          : fx.deps.readBundleCopy(address, role) })).rejects.toThrow(/same verified signed scope/);
+    });
 
   it("rejects opaque audit references, missing readback, and a forged receipt writer", async () => {
     const fx = await fixture();
@@ -1180,7 +1245,8 @@ async function gateWithAudit(
   const input = { ...fx.input, buyer: buyerStatus, seller: sellerStatus };
   const verify = (deps: FixedPriceX402AuditCompletionDeps = fx.deps) => rail === "pay-x402"
     ? verifyFixedPriceX402AuditCompletion(input as never, deps)
-    : verifyFixedPricePayDemAuditCompletion(input as never, deps);
+    : verifyFixedPricePayDemAuditCompletion(input as never, {
+        authenticateSessionProfile: fx.deps.authenticateSessionProfile, ...deps });
   return { fx, buyerStatus, sellerStatus, verify };
 }
 

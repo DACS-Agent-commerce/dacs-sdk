@@ -1819,8 +1819,8 @@ describe("DACS Node SQLite durability foundation", () => {
     expect(readdirSync(root).some((name) => name.includes(".backup-v3-"))).toBe(false);
   });
 
-  // DACS-5 ST-7: the pause start is durable, so a restart does not reset it.
-  it("keeps a substrate pause's start across a restart and ends the pause at its maximum", async () => {
+  // The pause clock and retryable alert survive a database restart.
+  it("keeps a substrate pause's start across a restart and resumes after its alert", async () => {
     const databasePath = join(temporaryRoot(), "buyer.sqlite");
     const liveOptions = {
       mode: "live-demos" as const,
@@ -1862,7 +1862,15 @@ describe("DACS Node SQLite durability foundation", () => {
     const bounded = coordinator(restarted, 1);
     await bounded.runPending({ limit: 1 });
     expect((await bounded.getOrderStatus(JOB_ID))?.tracks.agreement).toMatchObject({
-      state: "operator-action", reasonCode: "substrate-pause-exceeded",
+      state: "indeterminate", reasonCode: "substrate-pause-exceeded", pausedSince: paused?.pausedSince,
+    });
+    const recovery = createFixedPriceX402BuyerCoordinator({
+      store: restarted.createLiveCoordinatorStore("buyer"), workerId: "buyer-recovered",
+      operations: { agreement: async () => ({ status: "final", outcome: "success", reference: "agreement-recovered" }) },
+    });
+    await recovery.runPending({ limit: 1 });
+    expect((await recovery.getOrderStatus(JOB_ID))?.tracks.agreement).toMatchObject({
+      state: "final", outcome: "success", reference: "agreement-recovered",
     });
   });
 

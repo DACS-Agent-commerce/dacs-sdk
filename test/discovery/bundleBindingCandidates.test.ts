@@ -107,7 +107,6 @@ describe("resolveBundleBindingCandidates (DACS-5 BB-5..BB-7)", () => {
     ["another role", { role: "buyer", logicalAddress: bundleAddress(JOB_ID, "buyer") }],
     ["a logical address not derived from its jobId and role",
       { logicalAddress: bundleAddress(JOB_ID, "buyer") }],
-    ["a malformed jobId", { jobId: "not a job", logicalAddress: "stor-" + "0".repeat(64) }],
   ])("discards a binding with %s before any fetch", async (_label, overrides) => {
     const one = copy("one");
     const { value, fetched } = input(
@@ -194,6 +193,39 @@ describe("resolveBundleBindingCandidates (DACS-5 BB-5..BB-7)", () => {
     await expect(resolveBundleBindingCandidates(value)).resolves.toEqual({
       disposition: "indeterminate", reason: "bundle-binding-candidates-unfetched",
     });
+  });
+
+  it("errors on malformed requested and signed job ids before verification or fetch", async () => {
+    let effects = 0;
+    for (const malformedRequest of [true, false]) {
+      const one = copy("one");
+      const candidate = binding("stor-" + "1".repeat(40), one);
+      const { value } = input([malformedRequest ? candidate : { ...candidate, jobId: "legacy-job" }], {}, {
+        ...(malformedRequest ? { jobId: "legacy-job" } : {}),
+        verifyBindingSignature: () => { effects++; return true; },
+        fetchCopy: () => { effects++; return null; },
+      });
+      await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/canonical uppercase ULID/);
+    }
+    expect(effects).toBe(0);
+  });
+
+  it.each(["hash", "verification"])("discards invalid fetched %s content beside a valid candidate", async (failure) => {
+    const badAddress = "stor-" + "1".repeat(40);
+    const goodAddress = "stor-" + "2".repeat(40);
+    const one = copy("one");
+    const bad = copy("bad");
+    const { value } = input([binding(badAddress, bad), binding(goodAddress, one)], {
+      [badAddress]: failure === "hash" ? { ...bad, invalid: Number.NaN } : bad,
+      [goodAddress]: one,
+    });
+    const verify = value.verifyCopy;
+    value.verifyCopy = (entry, role) => {
+      if (entry.note === "bad") throw new DacsError("definitively invalid content");
+      return verify(entry, role);
+    };
+    await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({
+      disposition: "present", binding: { nativeAddress: goodAddress }, copy: one });
   });
 
   it("is indeterminate when copy verification throws", async () => {

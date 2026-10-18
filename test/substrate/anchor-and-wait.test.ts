@@ -138,6 +138,11 @@ async function makeAdapter(options?: {
   wallet?: string;
   maximumFeeOs?: bigint;
 }) {
+  // All adapter observations in this fixture are stubs. An unconfigured
+  // fallback receipt read must fail locally instead of contacting .test hosts.
+  if (!vi.isMockFunction(globalThis.fetch)) {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fixture receipt read unavailable"));
+  }
   fixtureId += 1;
   const id = fixtureId;
   const rpc = options?.rpc ?? `https://node-${id}.test`;

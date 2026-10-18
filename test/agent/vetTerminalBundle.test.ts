@@ -200,7 +200,13 @@ describe("terminal Vet bundle preparation", () => {
     ["indeterminate", "authenticated-vet-indeterminate"],
     ["error", "authenticated-vet-error"],
   ] as const)("ends an authenticated %s decision as the verifier's permanent failure", async (decision, reason) => {
-    const result = await prepareVetTerminalBundle(input(decision), authentication());
+    const candidate = input(decision);
+    const result = await prepareVetTerminalBundle(candidate, authentication({ status: "valid", cause: {
+      kind: "verifier", jobId: candidate.jobId,
+      recordHash: candidate.production.recordRef.contentHash,
+      evaluatedIdentityHash: identityBundleHash(candidate.parties[1]!.identityBundle),
+      verifierIdentityHash: identityBundleHash(candidate.parties[0]!.identityBundle),
+    } }));
     expect(result).toMatchObject({
       status: "terminal",
       state: "vet-failed",
@@ -225,6 +231,29 @@ describe("terminal Vet bundle preparation", () => {
     const outcomes = Object.fromEntries(plan.copies.map((entry) => [entry.role, entry.outcome]));
     expect(outcomes).toEqual({ buyer: "failed-perm", seller: "failed-counterparty" });
   });
+
+  test.each(["error", "indeterminate"] as const)(
+    "attributes parse-caused %s to the counterparty on both copies", async (decision) => {
+      const candidate = input(decision);
+      const cause = {
+        kind: "counterparty-presentation-parse" as const, jobId: candidate.jobId,
+        recordHash: candidate.production.recordRef.contentHash,
+        evaluatedIdentityHash: identityBundleHash(candidate.parties[1]!.identityBundle),
+        verifierIdentityHash: identityBundleHash(candidate.parties[0]!.identityBundle),
+      };
+      const result = await prepareVetTerminalBundle(candidate, authentication({ status: "valid", cause }));
+      expect(result).toMatchObject({ status: "terminal", faultedParty: "seller",
+        sessionRecord: { phaseResults: [{ result: { errorClass: "counterparty" } }] } });
+      if (result.status !== "terminal") throw new Error();
+      expect(createTerminalBundlePlan(result.authority, { kind: "co-signed" }).copies
+        .map(({ role, outcome }) => [role, outcome]))
+        .toEqual([["buyer", "failed-counterparty"], ["seller", "failed-perm"]]);
+      await expect(prepareVetTerminalBundle(candidate, authentication()))
+        .resolves.toMatchObject({ status: "indeterminate" });
+      await expect(prepareVetTerminalBundle(candidate, authentication({ status: "valid",
+        cause: { ...cause, recordHash: "00".repeat(32) } })))
+        .resolves.toMatchObject({ status: "indeterminate" });
+    });
 
   test("passes an authenticated passing record without producing terminal state", async () => {
     const result = await prepareVetTerminalBundle(input("pass"), authentication());

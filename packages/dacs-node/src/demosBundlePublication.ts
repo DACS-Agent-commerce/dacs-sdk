@@ -389,6 +389,10 @@ export function createDacsDemosBundlePublicationV1(
           fetched.set(nativeAddress, anchored);
           return anchored.bundle as unknown as Record<string, unknown>;
         },
+        verifyBindingCopy: (binding) => {
+          const anchored = fetched.get(binding.nativeAddress);
+          return anchored !== undefined && anchorTxMatches(binding, anchored);
+        },
         verifyCopy: (bundle, copyRole) =>
           verifyBundleCopy(bundle as Record<string, unknown>, copyRole, bundleCopyVerifier),
       });
@@ -400,9 +404,6 @@ export function createDacsDemosBundlePublicationV1(
           : resolved;
       }
       const anchored = fetched.get(resolved.binding.nativeAddress)!;
-      if (!anchorTxMatches(resolved.binding, anchored)) {
-        return { disposition: "indeterminate", reason: "bundle-binding-candidates-rejected" };
-      }
       return { disposition: "present", binding: resolved.binding, anchored };
     };
 

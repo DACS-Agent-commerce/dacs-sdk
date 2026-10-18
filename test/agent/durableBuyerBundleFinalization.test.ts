@@ -1113,6 +1113,23 @@ describe("durable buyer bundle finalization", () => {
     });
   });
 
+  test.each(["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
+    "bundle-binding-candidates-rejected"])(
+    "retains a retryable durable publication for unresolved candidates: %s", async (reason) => {
+      const f = await fixture("write-input");
+      const resolve = f.provider.resolveBundleBinding!;
+      f.provider.resolveBundleBinding = vi.fn((logical: string, signer: string, carried?: Readonly<BundleBinding>) => f.state.binding
+        ? { disposition: "indeterminate" as const, reason } : resolve(logical, signer, carried));
+      await expect(advanceCompletedBuyerBundleDurable(f.input, f.provider, f.durability))
+        .resolves.toMatchObject({ disposition: "indeterminate" });
+      expect(f.provider.publishBundleBinding).toHaveBeenCalledOnce();
+      f.provider.resolveBundleBinding = resolve;
+      await expect(advanceCompletedBuyerBundleDurable(f.input, f.provider,
+        { ...f.durability, workerId: "buyer-worker-restarted" }))
+        .resolves.toMatchObject({ disposition: "finalised" });
+      expect(f.provider.publishBundleBinding).toHaveBeenCalledOnce();
+    });
+
   test("adopts exact anchor and binding readback after a post-effect crash without republishing", async () => {
     const f = await fixture("write-input");
     const ordinaryPublish = f.provider.publishBundleBinding!;

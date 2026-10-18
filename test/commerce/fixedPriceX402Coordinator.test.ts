@@ -669,7 +669,7 @@ describe("fixed-price x402 coordinator", () => {
   });
 
   // DACS-5 ST-7: pauses are time-bounded, measured from the pause's start.
-  it("ends an unbroken substrate pause at its maximum and restarts the clock after any other result", async () => {
+  it("alerts on an unbroken substrate pause and restarts the clock after any other result", async () => {
     let now = 20_000;
     let next: "indeterminate" | "pending-retry" = "indeterminate";
     const coordinator = createFixedPriceX402BuyerCoordinator({
@@ -704,50 +704,46 @@ describe("fixed-price x402 coordinator", () => {
     now = 22_200;
     await coordinator.runPending();
     expect(await track()).toMatchObject({
-      state: "operator-action", reasonCode: "substrate-pause-exceeded",
+      state: "indeterminate", reasonCode: "substrate-pause-exceeded",
     });
-    expect(await track()).not.toHaveProperty("pausedSince");
+    expect(await track()).toHaveProperty("pausedSince", 21_200);
   });
 
-  // The buyer audit answers `indeterminate` while Demos has no record for a
-  // receipt (DEMOS-MAPPING: not found is indeterminate), so a forged or stale
-  // receipt never becomes a rejection. The pause bound still ends the purchase:
-  // the audit track stops at operator action and is never run again.
-  it("stops a buyer audit whose anchor receipt stays indeterminate at the pause bound", async () => {
+  // Pause alerts must retain reconciliation work across recovery and restart.
+  it("recovers a paid buyer audit after the pause alert and restart without replaying payment", async () => {
     let now = 40_000;
+    let recovered = false;
     const calls: string[] = [];
-    const audit = vi.fn(async () => ({
-      status: "indeterminate" as const,
-      reasonCode: "demos-seller-bundle-anchor-indeterminate",
-      retryAt: now,
-    }));
-    const coordinator = createFixedPriceX402BuyerCoordinator({
-      store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => now }),
-      workerId: "buyer-worker",
-      maximumSubstratePauseMs: 1_000,
-      operations: {
-        agreement: finalOperation("agreement", calls),
-        payment: finalOperation("payment", calls),
-        "payment-evidence": finalOperation("payment-evidence", calls),
-        "buyer-received": finalOperation("buyer-received", calls),
-        audit,
-      },
-    });
+    const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => now });
+    const audit = vi.fn(async () => recovered
+      ? { status: "final" as const, outcome: "success" as const, reference: "audit-ref" }
+      : { status: "indeterminate" as const,
+          reasonCode: "demos-seller-bundle-anchor-indeterminate", retryAt: now });
+    const operations = {
+      agreement: finalOperation("agreement", calls), payment: finalOperation("payment", calls),
+      "payment-evidence": finalOperation("payment-evidence", calls),
+      "buyer-received": finalOperation("buyer-received", calls), audit,
+    };
+    const coordinator = createFixedPriceX402BuyerCoordinator({ store,
+      workerId: "buyer-worker", maximumSubstratePauseMs: 1_000, operations });
     await coordinator.startOrder(order("buyer"));
     await coordinator.runPending({ limit: 10 });
-    const track = async () => (await coordinator.getOrderStatus(JOB_ID))?.tracks.audit;
-    expect(await track()).toMatchObject({ state: "indeterminate", pausedSince: 40_000 });
-    now = 40_999;
-    await coordinator.runPending({ limit: 10 });
-    expect(await track()).toMatchObject({ state: "indeterminate" });
-
+    const before = (await coordinator.getOrderStatus(JOB_ID))!.tracks;
     now = 41_000;
     await coordinator.runPending({ limit: 10 });
-    expect(await track()).toMatchObject({ state: "operator-action", reasonCode: "substrate-pause-exceeded" });
-    const runs = audit.mock.calls.length;
+    expect((await coordinator.getOrderStatus(JOB_ID))!.tracks.audit).toMatchObject({
+      state: "indeterminate", reasonCode: "substrate-pause-exceeded", pausedSince: 40_000 });
     now = 50_000;
-    expect((await coordinator.runPending({ limit: 10 })).items).toEqual([]);
-    expect(audit).toHaveBeenCalledTimes(runs);
+    const restarted = createFixedPriceX402BuyerCoordinator({ store,
+      workerId: "buyer-worker-restarted", maximumSubstratePauseMs: 1_000, operations });
+    recovered = true;
+    await restarted.runPending({ limit: 10 });
+    const after = (await restarted.getOrderStatus(JOB_ID))!.tracks;
+    expect(after.audit).toMatchObject({ state: "final", outcome: "success", reference: "audit-ref" });
+    for (const track of ["agreement", "payment", "payment-evidence", "buyer-received"] as const) {
+      expect(after[track]).toEqual(before[track]);
+    }
+    expect(calls.filter((entry) => entry === "payment")).toHaveLength(1);
   });
 
   // ST-11: the buyer audit waits (`pending-retry`) while no discovery surface
@@ -817,7 +813,7 @@ describe("fixed-price x402 coordinator", () => {
     now = 51_000;
     await coordinator.runPending();
     expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.agreement).toMatchObject({
-      state: "operator-action", reasonCode: "substrate-pause-exceeded",
+      state: "indeterminate", reasonCode: "substrate-pause-exceeded",
     });
   });
 
@@ -841,7 +837,7 @@ describe("fixed-price x402 coordinator", () => {
     now += 1;
     await coordinator.runPending();
     expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.agreement).toMatchObject({
-      state: "operator-action", reasonCode: "substrate-pause-exceeded",
+      state: "indeterminate", reasonCode: "substrate-pause-exceeded",
     });
     expect(() => createFixedPriceX402BuyerCoordinator({
       store: createInMemoryFixedPriceX402CoordinatorStore(),

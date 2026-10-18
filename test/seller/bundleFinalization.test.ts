@@ -2467,7 +2467,7 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
   // this seller, or a native verification that fails, still does.
   test.each([
     ["absent", () => ({ disposition: "absent" }), "complete"],
-    ["indeterminate", () => ({ disposition: "indeterminate", reason: "catalog lag" }), "complete"],
+    ["indeterminate", () => ({ disposition: "indeterminate", reason: "bundle-binding-undiscovered" }), "complete"],
     ["unanswered", () => { throw new SubstrateError("index unavailable"); }, "complete"],
     ["a different binding", (binding: BundleBinding) => ({
       disposition: "present", binding: { ...binding, anchorTx: "test:other-anchor-tx" },
@@ -3123,6 +3123,24 @@ describe("read-only authentication of retained finalized seller bundles", () => 
   // BB-6, BB-7: the retained binding joins the provider's candidates; a set
   // that does not resolve to one copy keeps the seller side indeterminate,
   // while non-discovery stays no evidence either way (BB-8).
+  test.each(["bundle-binding-equivocation", "bundle-binding-budget-exhausted",
+    "bundle-binding-candidates-rejected", "bundle-binding-candidates-unfetched"])(
+    "holds initial seller publication for unresolved candidates: %s", async (reason) => {
+      const f = fixture("write-input");
+      const resolve = f.provider.resolveBundleBinding!;
+      let published = false;
+      const publish = f.provider.publishBundleBinding!;
+      f.provider.publishBundleBinding = vi.fn(async (binding) => {
+        const result = await publish(binding);
+        published = true;
+        return result;
+      });
+      f.provider.resolveBundleBinding = vi.fn((logical: string, signer: string, carried?: Readonly<BundleBinding>) => published
+        ? { disposition: "indeterminate" as const, reason } : resolve(logical, signer, carried));
+      await expect(finalizeCompletedSellerBundleCore(f.input, f.provider))
+        .rejects.toThrow(/candidate set is unresolved/);
+    });
+
   test("keeps a retained write-input closure indeterminate while its BB-6 candidate set is unresolved", async () => {
     const write = await finalizedForReadVerification("write-input");
     const lookups: unknown[][] = [];
@@ -3445,6 +3463,30 @@ describe("completed two-sided session gate over a real seller closure", () => {
     await expect(verifyCompletedTwoSidedSession(input, deps)).resolves.toMatchObject({
       state: "audit-complete",
     });
+  });
+
+  test("accepts the BB-6 selected equal seller copy through the real retained-closure verifier", async () => {
+    const { retained, input, deps } = await composition();
+    const alternateNative = `stor-${"a".repeat(40)}`;
+    const alternate = signTestComponent({
+      bindingVersion: "1", jobId: JOB_ID, role: "seller",
+      logicalAddress: bundleAddress(JOB_ID, "seller"), nativeAddress: alternateNative,
+      bundleContentHash: retained.result.bundleContentHash, signer: SELLER,
+    }, BUNDLE_BINDING_SEPARATOR, SELLER) as unknown as BundleBinding;
+    const alternateReceipt = receipt(retained.result.bundleContentHash,
+      bundleAddress(JOB_ID, "seller"), alternateNative, SELLER);
+    vi.mocked(retained.provider.resolveSellerBundle).mockReturnValue({ disposition: "present",
+      anchored: { bundle: retained.result.sellerBundle, nativeAddress: alternateNative,
+        anchorReceipt: alternateReceipt } });
+    vi.mocked(retained.provider.resolveBundleBinding!).mockReturnValue({ disposition: "present", binding: alternate });
+    const resolve = deps.resolveBundleBinding!;
+    const read = deps.readBundleCopy;
+    await expect(verifyCompletedTwoSidedSession(input, { ...deps,
+      readBundleCopy: (address, role) => address === alternateNative
+        ? retained.result.sellerBundle as unknown as Record<string, unknown> : read(address, role),
+      resolveBundleBinding: (logical, signer, role, carried) => role === "seller"
+        ? { disposition: "present", binding: alternate } : resolve(logical, signer, role, carried),
+    })).resolves.toMatchObject({ state: "audit-complete" });
   });
 
   test("reports a closure that does not match the copies as an answer", async () => {

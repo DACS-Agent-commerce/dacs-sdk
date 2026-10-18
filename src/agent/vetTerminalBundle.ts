@@ -5,8 +5,8 @@
  * finalized `VetProduction`, asks a caller-supplied verifier to authenticate that production,
  * and converts a non-pass decision into the data-only authority consumed by the role-local
  * terminal-bundle coordinator. Per DACS-2 VPC-4, `fail` is the evaluated party's fault
- * (`counterparty`), and `indeterminate` or `error` is the verifier's own `permanent` failure,
- * which VP-R4 never retries; DACS-5 ST-2 then ends both at `vet-failed`.
+ * (`counterparty`); `indeterminate` and `error` require independently authenticated cause
+ * provenance before fault attribution. DACS-5 ST-2 ends authenticated failures at `vet-failed`.
  */
 import { types as nodeTypes } from "node:util";
 
@@ -97,14 +97,24 @@ export interface PrepareVetTerminalBundleInput {
 }
 
 export type VetProductionAuthentication =
-  | Readonly<{ status: "valid" }>
+  | Readonly<{ status: "valid"; cause?: Readonly<{
+      kind: "counterparty-presentation-parse" | "verifier";
+      jobId: string;
+      recordHash: string;
+      evaluatedIdentityHash: string;
+      verifierIdentityHash: string;
+    }> }>
   | Readonly<{ status: "invalid"; reason: string }>
   | Readonly<{ status: "indeterminate"; reason: string }>;
 
 export interface PrepareVetTerminalBundleDeps {
   /**
    * Authenticate the CVR signature, its complete VerifyResult/recipe/authority closure, and the
-   * finalized CVR anchor/readback. Returning `valid` is a trust boundary, not an advisory hook.
+   * finalized CVR anchor/readback. For error/indeterminate, also independently
+   * verify the complete cause closure, including counterparty-supplied bytes,
+   * their declared parser format and every oneOf alternative. Return `cause`
+   * only if the sole proximate cause is established and session-bound. Never
+   * project a sender-selected errorClass. Returning `valid` is a trust boundary.
    */
   authenticateProduction(input: Readonly<{
     production: Readonly<VetProduction>;
@@ -303,6 +313,13 @@ function captureAuthentication(value: unknown): VetProductionAuthentication {
   const result = canonicalSnapshot(value, "Vet production authentication") as
     VetProductionAuthentication;
   if (result.status === "valid" && Object.keys(result).length === 1) return result;
+  if (result.status === "valid" && Object.keys(result).length === 2 && result.cause &&
+      Object.keys(result.cause).length === 5 &&
+      (result.cause.kind === "counterparty-presentation-parse" || result.cause.kind === "verifier") &&
+      typeof result.cause.jobId === "string" && HASH_RE.test(result.cause.recordHash) &&
+      HASH_RE.test(result.cause.evaluatedIdentityHash) && HASH_RE.test(result.cause.verifierIdentityHash)) {
+    return result;
+  }
   if ((result.status === "invalid" || result.status === "indeterminate") &&
       Object.keys(result).length === 2 && typeof result.reason === "string" &&
       result.reason.length > 0) return result;
@@ -370,9 +387,18 @@ export async function prepareVetTerminalBundle(
       record.overallDecision !== "error") {
     throw new DacsError("authenticated Vet record carries an unsupported decision");
   }
-  // DACS-2 VPC-4. The record does not carry the §7.8.2 proximate cause, so the
-  // unparseable-presentation exception cannot be shown and `permanent` applies.
-  const permanent = record.overallDecision !== "fail";
+  // Only the independent authenticator may establish proximate cause. The
+  // sender's production and errorClass never supply fault authority.
+  const cause = authentication.cause;
+  if (record.overallDecision !== "fail" && (cause === undefined ||
+      cause.jobId !== input.jobId || cause.recordHash !== input.production.recordRef.contentHash ||
+      cause.evaluatedIdentityHash !== identityBundleHash(evaluated.identityBundle) ||
+      cause.verifierIdentityHash !== identityBundleHash(verifier.identityBundle))) {
+    return deepFreeze({ status: "indeterminate",
+      reason: "Vet cause authentication is missing or not bound to this production" });
+  }
+  const permanent = record.overallDecision !== "fail" &&
+    cause?.kind !== "counterparty-presentation-parse";
   const errorClass = permanent ? "permanent" as const : "counterparty" as const;
   const faultedParty = permanent ? verifier.role : input.evaluatedRole;
   const reason = record.overallDecision === "fail" ? "authenticated-vet-failure" as const
