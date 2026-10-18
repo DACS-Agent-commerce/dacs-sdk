@@ -45,8 +45,29 @@ includes the source kind above and the exact fallback documentation:
 
 > Demos testnet nodes do not serve block 0 (`getBlockByNumber` 0 returns 400). The chain identity is block 1's `content.previousHash`, checked against the approved record `dacs-demos-testnet-identity/2026-10-15`.
 
+Correction to the quoted historical provenance: numeric `blockNumber: 0`
+returns RPC `result: 400` inside HTTP 200, while string `blockNumber: "0"`
+returns genesis successfully. The quote and approved record digest remain
+unchanged; the node limitation concerns the numeric argument only.
+
+Node inspection baseline: `kynesyslabs/node` commit
+`61b8e75aa8db5e408c49e1c3a89db4d673f45578`, version `0.9.8`.
+The timestamped, read-only node2 request/response fixtures and SHA-256 manifest
+are in [`conformance/tp1-node-observations`](../conformance/tp1-node-observations/manifest.json).
+On 2026-10-18 the deployment reported branch `stabilisation`,
+`builtAt: 2026-10-14T16:45:24Z`, and **`dirty: true`**. No deployment
+artifact digest or overlay was supplied. This source commit is an immutable
+inspection baseline, not a pin of the deployment's executable bytes; node
+composition qualification remains open until those bytes can be identified.
+Observed: genesis availability with string zero, block one's predecessor,
+missing-transaction RPC refusal, and missing status `unknown`. Inferred from
+[`chainTransactions.ts` at that source commit](https://github.com/kynesyslabs/node/blob/61b8e75aa8db5e408c49e1c3a89db4d673f45578/src/libs/blockchain/chainTransactions.ts#L96-L112):
+a stored transaction is labelled `included` without checking execution.
+No execution-failed live transaction was reproduced. L2/G10's node-status
+explanation is this source inference, not an authenticated deployment result.
+
 The decision record supplies this pin independently of the endpoint being
-admitted. This draft made no node call. `endpoint` and `transportAuthority`
+admitted. The identity decision did not depend on these later read-only node observations. `endpoint` and `transportAuthority`
 are per actor for each connection and are excluded from the approved record.
 
 The pin alone does not establish what runs: the SDK's vector pin is `d45c0a2`
@@ -100,7 +121,7 @@ composition against the base and record every difference in the register.
 | # | Rule | What TP-1 does | Label | Closed by |
 |---|---|---|---|---|
 | L1 | Live admission: the base "is not an admissible live profile until a coordinated release records an annotated tag or immutable merge commit" (`spec/PROFILE.md:52-53` at `d45c0a2`) | TP-1 is a testnet profile, not a release. Both parties authenticate the same TP-1 identifier, revision and base pin inside signed messages before any DACS action | "Testnet profile TP-1 · not a DACS live profile" | A coordinated Standard release that records a tag or immutable commit (v0.6 is the planned one) |
-| L2 | Payment finality: the base's `pay-dem` rule returns success when a transfer reaches the terminal `included` state, and says that a transfer reaching terminal `failed` did not settle and is a `permanent` failure (`spec/DACS-4-SETTLE.md:814-821` at `d45c0a2`). The Demos testnet's status wording differs: it reports `included` for a transfer whose execution failed, so `included` alone does not show that the payment executed. Current `next` also requires an authenticated Demos BFT proof | **Intended, pending a separate SDK change that is not on this branch, and composition qualification:** a payment counts only on an executed record bound to the transfer, never on `included` alone. That is stricter than reading the base's `included` rule literally against the testnet's status wording, and follows the base's statement that a failed transfer did not settle. **Current behaviour:** at this branch's base an `included` transfer whose execution failed is still returned as success by the buyer rail, a false success (dacs-sdk `3904d70` `src/rails/payDem.ts:979-981`); nothing on this branch prevents it. This statement covers only the buyer rail; the seller observer's treatment of failed execution is not checked and is in the composition qualification list. A change to the Standard's own `pay-dem` rule is being proposed separately through the Standard's own process; it is not a condition of TP-1 | Intended, pending the SDK's executed-payment check and composition qualification: "Payment executed on Demos testnet; BFT finality not independently proven". Until that check lands, this label would also appear on a payment whose execution failed | For the executed-record rule, the SDK's executed-payment check; for finality, Demos executed-status and BFT finality proof APIs, then the Standard's Demos payment-finality binding, then finality-bound `pay-dem` evidence in the SDK |
+| L2 | Payment finality: the base's `pay-dem` rule returns success when a transfer reaches the terminal `included` state, and says that a transfer reaching terminal `failed` did not settle and is a `permanent` failure (`spec/DACS-4-SETTLE.md:814-821` at `d45c0a2`). The pinned node source maps stored transfers to `included` without checking execution (source inference; deployment qualification pending), so `included` alone does not show that the payment executed. Current `next` also requires an authenticated Demos BFT proof | **Intended, pending a separate SDK change that is not on this branch, and composition qualification:** a payment counts only on an executed record bound to the transfer, never on `included` alone. That is stricter than reading the base's `included` rule literally against the testnet's status wording, and follows the base's statement that a failed transfer did not settle. **Current behaviour:** at this branch's base an `included` transfer whose execution failed is still returned as success by the buyer rail, a false success (dacs-sdk `3904d70` `src/rails/payDem.ts:979-981`); nothing on this branch prevents it. This statement covers only the buyer rail; the seller observer's treatment of failed execution is not checked and is in the composition qualification list. A change to the Standard's own `pay-dem` rule is being proposed separately through the Standard's own process; it is not a condition of TP-1 | Intended, pending the SDK's executed-payment check and composition qualification: "Payment executed on Demos testnet; BFT finality not independently proven". Until that check lands, this label would also appear on a payment whose execution failed | For the executed-record rule, the SDK's executed-payment check; for finality, Demos executed-status and BFT finality proof APIs, then the Standard's Demos payment-finality binding, then finality-bound `pay-dem` evidence in the SDK |
 | L3 | Listing currency: current `next` requires authenticated current-state (RSC) proof (DACS-1 at `df7bc20`, for example `:806`; none at `d45c0a2`) | Reads the requested Listing's chain bytes and authenticates any supplied revocation marker; does not prove the latest version, marker completeness or current non-revocation | "Listing currency not proven" | Demos authenticated current-value reads, then the Standard's current Listing binding, then current Listing admission in the SDK |
 | L4 | Presenter control of `did:demos:agent`: no mechanism in any revision (#419; control list `spec/DACS-1-IDENTIFY.md:311` at `d45c0a2`) | #419's proposed rule: the claim is controlled by its own presentation signature under the key in the identifier | Declaration; seller cards say "Seller key: self-certified Demos agent key" | A Standard rule for presenter control of `did:demos:agent` (#419) |
 

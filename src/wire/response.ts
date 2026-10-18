@@ -11,8 +11,9 @@
 // and body is read once, into an owned copy, and only the copy is used.
 import { randomBytes } from "node:crypto";
 
-import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
+import { assertEndpointProof, type EndpointProof } from "./discovery.js";
 import {
   admitOutgoingBody, admitWireResponseBody, messageLifetime, openWireEnvelope, signWireEnvelope, wireRequestHash,
   type EnvelopeSigningContext, type SigningContext, type WireRequestPayload, type WireResponsePayload,
@@ -37,12 +38,13 @@ export async function signWireResponse(supplied: WireRequestPayload, status: num
   assertTp1Binding(binding, local);
   if (purchaseProfile !== null) assertPurchaseProfile(purchaseProfile, binding, 500);
   const request = ownedArtifact(supplied, "peer_envelope_invalid", 500) as WireRequestPayload;
+  const requestHash = wireRequestHash(request);
   const maxLifetimeMs = messageLifetime(override, "seller_configuration_invalid");
   if (Buffer.byteLength(text) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) fail("peer_response_too_large", 503);
   const bytes = admitOutgoingBody(text, DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes);
   const payload: WireResponsePayload = {
     ...request, kind: "response", bodyHash: sha256Hex(bytes), expiresAt: (now as number) + maxLifetimeMs,
-    requestHash: wireRequestHash(request), status,
+    requestHash, status,
   };
   if ((signer as WireSigner).claim !== request.seller) fail("peer_signer_wrong", 500);
   return signWireEnvelope(payload, { signer: signer as WireSigner, binding, local, purchaseProfile: purchaseProfile as Tp1WireProfile | null });
@@ -58,6 +60,9 @@ export interface WireJobContext {
 }
 
 export interface WireRequestInput extends SigningContext {
+  /** Proof returned by verifyEndpointProof for this seller, Listing and endpoint. */
+  endpointProof: EndpointProof;
+  publicEndpoint: string;
   path: string;
   jobId: string;
   /** The exact body text that will be sent. */
@@ -71,11 +76,11 @@ export interface WireRequestInput extends SigningContext {
   nonce?: string;
 }
 
-const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
+const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "publicEndpoint", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
 
 /**
- * Build and sign one request. An expired delegation still signs, for readback
- * of journaled effects only. The input is read once (ownedFields), and its job
+ * Build and sign one purchase request after endpoint verification. An expired
+ * delegation can sign readback requests; seller checks refuse effect routes. The input is read once (ownedFields), and its job
  * and delegation copied once: the delegation copy is verified, bounds the
  * expiry and is embedded in the header, and the job copy scopes both the
  * delegation check and the request. Nothing is signed unless the job's kept
@@ -87,6 +92,7 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   assertTp1Binding(binding, local);
   const job = ownedConfig(input.job, "wire_input_invalid") as WireJobContext;
   assertPurchaseProfile(job?.profile, binding, 500);
+  if (!isCanonicalJobId(input.jobId)) fail("peer_envelope_invalid", 500);
   const claim = signer.claim;
   const lifetimeMs = input.lifetimeMs ?? 30_000;
   if (!isClaim(input.seller) || !isUint(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs) {
@@ -112,7 +118,10 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
     expiresAt: live ? Math.min(now + lifetimeMs, delegatedUntil ?? Number.MAX_SAFE_INTEGER) : now + lifetimeMs,
     profile: { ...binding.profile },
   };
-  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile }, delegation) };
+  // Validate the complete payload before checking the purchase effect gate.
+  wireRequestHash(payload);
+  assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now });
+  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now }, delegation) };
 }
 
 export interface WireResponseReceipt {
@@ -147,13 +156,14 @@ export function verifyWireResponse(suppliedRequest: WireRequestPayload, supplied
   assertTp1Binding(received.binding, received.local);
   const request = ownedArtifact(suppliedRequest, "peer_envelope_invalid", 500) as WireRequestPayload;
   assertPurchaseProfile(request?.profile, received.binding);
+  const expectedRequestHash = wireRequestHash(request);
   const responseBytes = ownedBytes(received.body);
   const { payload: response } = openWireEnvelope(received.header, "response", { binding: received.binding, local: received.local, purchaseProfile: request.profile, principal: request.seller });
   const body = admitWireResponseBody(responseBytes);
   const { kind, bodyHash, expiresAt, requestHash, status, ...identity } = response;
   const { kind: _k, bodyHash: _b, expiresAt: _e, ...expected } = request;
   void kind; void _k; void _b; void _e;
-  if (!sameCanonical(identity, expected) || requestHash !== sha256Hex(canonicalize(request)) || status !== received.status ||
+  if (!sameCanonical(identity, expected) || requestHash !== expectedRequestHash || status !== received.status ||
       bodyHash !== sha256Hex(responseBytes) || !isUint(received.now) || expiresAt <= received.now ||
       expiresAt > received.now + DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs) fail("peer_response_mismatch");
   return { principal: request.seller, audience: request.buyer, messageId: request.nonce, messageHash: requestHash, authenticationHash: sha256Hex(received.header as string), body };

@@ -1,3 +1,4 @@
+import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // 2026-10-15 approval through the real approval module. No mock or replacement approval.
 // The supplied decision record is used offline; generated keys and .invalid
 // endpoints test wire admission only, not retained chain-effect adapters.
@@ -5,7 +6,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import {
-  bindTp1Profile, checkWireRequest, openWireEnvelope, signWireEnvelope, signWireRequest, signWireResponse,
+  bindTp1Profile, checkWireRequest, openWireEnvelope, signWireEnvelope, signWireResponse,
   signSellerSessionDelegation, verifySellerSessionDelegation, signDiscoveryDocument, verifyEndpointProof,
   verifyWireResponse, TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_APPROVED_IDENTITY_RECORD,
   TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES, TP1_CAPABILITIES, WireError,
@@ -26,6 +27,7 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 function party() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const key = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("hex");
+  registerDiscoverySigner({ claim: `did:demos:agent:${key}`, sign: (bytes) => new Uint8Array(sign(null, Buffer.from(bytes), privateKey)) });
   return { key, claim: `did:demos:agent:${key}`, calls: 0, sign(bytes: Uint8Array) {
     this.calls += 1;
     return new Uint8Array(sign(null, Buffer.from(bytes), privateKey));

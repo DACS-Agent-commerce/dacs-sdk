@@ -13,8 +13,9 @@
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
+import { assertEndpointProof, type EndpointProof } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS } from "./routes.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
@@ -74,8 +75,11 @@ export function wireEnvelopeSigningBytes(supplied: WirePayload): Buffer {
 }
 
 /** sha256 of the canonical request payload, from one owned copy; a response binds it. */
-export const wireRequestHash = (request: WireRequestPayload): string =>
-  sha256Hex(canonicalize(ownedArtifact(request, "peer_envelope_invalid", 500)));
+export function wireRequestHash(request: WireRequestPayload): string {
+  const copy = ownedArtifact(request, "peer_envelope_invalid", 500);
+  if (!payloadShape(copy, "request")) fail("peer_envelope_invalid", 500);
+  return sha256Hex(canonicalize(copy));
+}
 
 export interface SigningContext {
   signer: WireSigner;
@@ -86,6 +90,10 @@ export interface SigningContext {
 
 /** signWireEnvelope's context: the signer's, and the tuple it kept for the purchase. */
 export interface EnvelopeSigningContext extends SigningContext {
+  /** Required when signing a request; responses do not require buyer endpoint proof. */
+  endpointProof?: EndpointProof;
+  publicEndpoint?: string;
+  now?: number;
   /**
    * Required: the tuple the signer kept for this purchase, exactly the
    * binding's profile. `null` (none kept yet) only for a seller's answer to a
@@ -102,14 +110,23 @@ export interface EnvelopeSigningContext extends SigningContext {
  * header all come from those copies.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
-  const { signer, binding, local, purchaseProfile } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile"]) as Partial<EnvelopeSigningContext>;
+  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now"]) as Partial<EnvelopeSigningContext>;
   assertTp1Binding(binding, local);
   const payload = ownedArtifact(supplied, "peer_envelope_invalid", 500);
   if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
   if (purchaseProfile !== null || payload.kind !== "response") assertPurchaseProfile(purchaseProfile, binding, 500);
   const delegation = suppliedDelegation ? ownedArtifact(suppliedDelegation, "peer_delegation_invalid", 500) : null;
   assertPeerProfile(payload.profile, binding, 500);
-  const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(wireEnvelopeSigningBytes(payload as unknown as WirePayload))).toString("base64url");
+  const signingBytes = wireEnvelopeSigningBytes(payload as unknown as WirePayload);
+  // A canonical Ed25519 signature is always 86 base64url characters. Bound
+  // the complete encoded header, including a supplied delegation, before signing.
+  const encode = (signature: string) => Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
+  if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
+  if (payload.kind === "request") assertEndpointProof(endpointProof, {
+    binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
+    publicEndpoint: publicEndpoint as string, now: now as number,
+  });
+  const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");
   return Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
 }
 
@@ -213,9 +230,8 @@ export interface CheckedWireRequest {
   /** The admitted request body. Effect handling must use this, never a separately parsed copy. */
   body: JsonRecord;
   /**
-   * Only an expired delegation authenticates the request. The seller must then
-   * route it to journaled-only reservation: readback of effects already
-   * journaled for the job, never a new effect.
+   * Only an expired delegation authenticates the request. Such requests can
+   * reach only declared read routes; effect routes are refused by this check.
    */
   readbackOnly: boolean;
 }
@@ -264,6 +280,9 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
     if (request.expiresAt > delegation.payload.expiresAt) fail("peer_delegation_expired", 408);
     return { body, readbackOnly: false };
   }
+  // There is no journal reservation adapter in this transport package yet.
+  // Refuse effect routes rather than returning a flag a host could overlook.
+  if (!isReadRoute(request.path)) fail("peer_delegation_expired", 408);
   return { body, readbackOnly: true };
 }
 

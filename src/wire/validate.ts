@@ -110,7 +110,7 @@ export interface ListingPin {
 
 export function isListingPin(pin: unknown): pin is ListingPin {
   return hasKeys(pin, ["listingId", "version", "contentHash"]) &&
-    typeof pin.listingId === "string" && pin.listingId.length > 0 && pin.listingId.length <= 256 &&
+    typeof pin.listingId === "string" && pin.listingId.length > 0 && pin.listingId.length <= 128 && !/[^A-Za-z0-9._~-]/.test(pin.listingId) &&
     isUint(pin.version) && pin.version > 0 && isHash(pin.contentHash);
 }
 

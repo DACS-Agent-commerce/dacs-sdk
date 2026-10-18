@@ -45,6 +45,8 @@
       "evidence": [ { "source": "plugin implementation (not public)", "provenance": "prov-09" } ]
     }
   },
+  "nodeObservationEvidence": {"manifest": "conformance/tp1-node-observations/manifest.json", "sourceCommit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578", "deploymentQualified": false, "reason": "Reported dirty deployment; artifact digest and overlay unavailable. Execution-failure wording is source inference, not a captured failed transaction."},
+  "wireReaderRestrictions": [{"rule": "DACS-1 DID reader spelling at d45c0a2:170-177", "deviation": "TP-1 wire accepts only canonical lowercase did:demos:agent claims; uppercase DID scheme is refused, not rewritten.", "pinnedBy": ["src/wire/validate.ts", "test/wire/admission.test.ts"]}],
   "sources": [
     { "repo": "dacs-sdk", "commit": "3904d704fb540e6e1d7dd502a0be29f20569c92d" },
     { "source": "plugin implementation (not public)", "provenance": "prov-01" },
@@ -115,7 +117,7 @@
     },
     {
       "id": "G2", "kind": "gap",
-      "summary": "The buyer derives its session-presentation nonce itself; the JID-1 candidate wants verifier-issued nonce state.",
+      "summary": "The buyer derives its session-presentation nonce itself; SN-1 requires verifier-issued nonce state.",
       "evidence": [
         { "source": "plugin implementation (not public)", "provenance": "prov-02" },
         { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "606" }

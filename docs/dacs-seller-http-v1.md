@@ -106,7 +106,7 @@ Request payload, exact fields:
 | `bodyHash` | sha256 hex of the exact body bytes sent |
 | `jobId` | canonical job ID (26-character uppercase Crockford ULID) |
 | `buyer`, `seller` | `did:demos:agent:<64 lowercase hex>`, different |
-| `listingPin` | `{listingId (1-256 chars), version (positive integer), contentHash (64 hex)}` |
+| `listingPin` | `{listingId (1–128 URL-safe ASCII characters: [A-Za-z0-9._~-]), version (positive integer), contentHash (64 hex)}` |
 | `agreementHash` | 64 hex: the Agreement's hash; for the context route, the hash of the exact context scope |
 | `nonce` | canonical base64url, 22-86 characters |
 | `expiresAt` | Unix ms; the seller requires `now < expiresAt <= now + 60 s` |
@@ -131,11 +131,11 @@ caller assembles is refused (`peer_request_unverified`) and no unverified
 request reaches effect handling. `checkWireRequest` also admits the exact received body
 bytes (D7) before comparing their hash, and returns the admitted body; effect
 handling uses that body, never a separately parsed copy. A request
-authenticated only by an expired delegation is `readbackOnly`: the seller may
-answer it only from effects it has already journaled for that job.
-`readbackOnly` is a plain flag here. The plugin enforced it inside its guarded
-store, so the seller package must route every `readbackOnly` request to
-journaled-only reservation; nothing in `/wire` enforces that. The plugin's
+authenticated only by an expired delegation can reach only declared read
+routes, where it is `readbackOnly`. Effect routes fail with
+`peer_delegation_expired` before a checked body reaches their handlers. The
+wire has no journal reservation adapter, so it refuses even a replay of a
+journaled effect on an effect route. The plugin's
 request body checks and its context-scope check stay with the seller package.
 
 **The seller's order of checks.** Each seller entry point reads its options
@@ -507,3 +507,23 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 - Keys in all of these were generated at run time and discarded; the files hold
   public keys and signatures only. Every identity record in them is synthetic
   and labelled so; none is the approved record.
+
+### TP-1 reader restriction and purchase gates
+
+TP-1 transport requires the canonical lowercase `did:demos:agent:` spelling.
+Unlike the DACS-1 reader rule at the pinned base (lines 170–177), this wire
+rejects `DID:demos:agent:…` instead of canonicalizing it. This is an explicit
+transport deviation; callers canonicalize verified artifact claims before
+building wire messages. Signed received payloads are never rewritten.
+
+`signWireRequest` and request-kind `signWireEnvelope` require `endpointProof`
+returned by `verifyEndpointProof`, the selected `publicEndpoint`, and `now`. A copied or caller-built proof is refused.
+The proof must still be ready and unexpired, under the buyer's same binding,
+for the selected seller, Listing pin and byte-exact endpoint. Signing-byte
+helpers describe transport bytes; purchase preparation uses the gated signers.
+
+Expired session delegations are accepted only on the declared read routes.
+`checkWireRequest` refuses every effect route with `peer_delegation_expired`
+before returning a body to a handler. Journaled replay on effect routes is
+unavailable until a seller journal adapter can enforce that mode; hosts must
+not bypass this refusal to recover journaled effects.

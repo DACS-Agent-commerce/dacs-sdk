@@ -1,0 +1,18 @@
+{
+  "name": "block1",
+  "time": "2026-10-18T09:07:50.443018+00:00",
+  "request": {
+    "method": "nodeCall",
+    "params": [
+      {
+        "type": "nodeCall",
+        "message": "getBlockByNumber",
+        "data": {
+          "blockNumber": 1
+        }
+      }
+    ]
+  },
+  "http": 200,
+  "body": "{\"result\":200,\"response\":{\"id\":2,\"number\":1,\"hash\":\"47a6a699c77647637811c2b38febb9b67edff544104fd598d3fc4c8dbddea94c\",\"content\":{\"ordered_transactions\":[],\"encrypted_transactions_hashes\":{},\"per_address_transactions\":{},\"web2data\":{},\"previousHash\":\"83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4\",\"timestamp\":1785237236,\"peerlist\":[\"0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156\",\"0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82\",\"0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab\"],\"l2ps_partecipating_nodes\":{},\"l2ps_banned_nodes\":{},\"native_tables_hashes\":{\"native_subnets_txs\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\",\"native_tlsnotary\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\"}},\"status\":\"confirmed\",\"proposer\":\"4e9ad6b833a07ec23797e86ad4372334cefdda3845f2b2b1c915b9e5c3057bc4\",\"next_proposer\":\"d31f880bba7ef526191687c9336c7782bb3e1dfd1420b2d460ffa3c4fbef9eb3\",\"validation_data\":{\"signatures\":{\"0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82\":\"0xc7b371fd46b5d27fe2a855f1f814a79dff036d277b7c10c7548ca4705cf2051b9b7170b8848a9cce79f88db89916923794d25962a2d892e9ff7a2550bec73b08\",\"0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156\":\"0xddcfd3f849f2c6437c41df9ff2f02054e989cfd913a865bd4631ba1f951e4137a8388fb17cf64f76ad9f29c744f68b4d08c8d0a7b46f2b87bdd2841ed4ef2609\",\"0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab\":\"0x830f2559391c5019a533c2097a2face4e6a5adb327b0b1d704eb73193b1e72a4f92ec852ad83e334fda257a3e2cd63d1ec46cfee03a3b485217e3b155ed21c0c\"}},\"attrs\":{\"gcrAppliedTxs\":[],\"gcrAppliedTxCount\":0,\"gcrAppliedTxsHash\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\"}},\"require_reply\":false,\"extra\":\"\"}"
+}

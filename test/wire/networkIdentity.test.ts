@@ -1,3 +1,4 @@
+import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Network identity gate with instrumented signers and transports. Missing
 // pins, the fixture identity used as a live pin and non-approved identities
 // (including a mocked mainnet identity labelled "testnet", with no refused list
@@ -25,7 +26,7 @@ import { canonicalize } from "../../src/canonical/index.js";
 import {
   assertPeerProfile, assertPurchaseProfile, assertTp1Binding, bindTp1Profile, checkWireRequest, discoverySigningBytes, isTp1WireProfile, isWirePayload,
   openWireEnvelope, sellerSessionDelegationSigningBytes, signDiscoveryDocument, signSellerSessionDelegation, signWireEnvelope,
-  signWireRequest, signWireResponse, TP1_CAPABILITIES, TP1_REFUSED_CHAIN_IDENTITIES, TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES,
+  signWireResponse, TP1_CAPABILITIES, TP1_REFUSED_CHAIN_IDENTITIES, TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES,
   verifyEndpointProof, verifySellerSessionDelegation, verifyWireResponse, wireEnvelopeSigningBytes, WireError, wireRequestHash,
   type BindTp1Options, type Tp1Binding, type WireRequestPayload,
 } from "../../src/wire/index.js";
@@ -57,6 +58,7 @@ function instrumentedParty() {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
   const signer = { claim: `did:demos:agent:${raw}`, calls: 0, sign(bytes: Uint8Array) { signer.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), privateKey)); } };
+  registerDiscoverySigner({ claim: signer.claim, sign: (bytes) => new Uint8Array(sign(null, Buffer.from(bytes), privateKey)) });
   return { raw, signer };
 }
 

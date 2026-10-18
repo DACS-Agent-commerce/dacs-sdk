@@ -7,12 +7,13 @@
 // byte for byte. This stops a Listing from aiming buyer traffic at a server its
 // seller does not control. The document carries the TP-1 profile and states
 // the TP-1 restrictions as its capabilities.
+import { snapshotWireJsonRead } from "../canonical/snapshot.js";
 import { canonicalize } from "../canonical/jcs.js";
 import { assertPeerProfile, assertTp1Binding, isTp1WireProfile, TP1_CAPABILITIES, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_V1 } from "./routes.js";
 import {
   admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isListingPin, isUint,
-  lacksProfile, ownedArtifact, ownedConfig, ownedFields, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
+  lacksProfile, ownedArtifact, deepFreeze, ownedFields, uncurry, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 export const DACS_SELLER_DISCOVERY_FORMAT = "dacs-seller-discovery/v1";
@@ -77,7 +78,9 @@ export async function signDiscoveryDocument(supplied: DiscoveryPayload, signer: 
   assertPeerProfile((payload as unknown as JsonRecord | null)?.profile, binding, 500);
   if (!sameCanonical(payload.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 500);
   if (signer.claim !== payload.seller) fail("discovery_signer_wrong", 500);
-  const signature = envelopeSignatureBytes(await signer.sign(discoverySigningBytes(payload)), "discovery_signature_invalid").toString("base64url");
+  const signingBytes = discoverySigningBytes(payload);
+  if (Buffer.byteLength(canonicalize({ payload, signature: "A".repeat(86) })) > DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes) fail("discovery_too_large", 500);
+  const signature = envelopeSignatureBytes(await signer.sign(signingBytes), "discovery_signature_invalid").toString("base64url");
   return Buffer.from(canonicalize({ payload, signature }), "utf8");
 }
 
@@ -89,8 +92,23 @@ export interface VerifiedListingEndpoint {
 }
 
 export interface EndpointProof {
-  payload: DiscoveryPayload;
-  ready: boolean;
+  readonly payload: DiscoveryPayload;
+  readonly ready: boolean;
+}
+
+const proofs = new WeakMap<object, { binding: Tp1Binding; listing: VerifiedListingEndpoint }>();
+const proofGet = uncurry(WeakMap.prototype.get) as (map: typeof proofs, key: object) => { binding: Tp1Binding; listing: VerifiedListingEndpoint } | undefined;
+const proofSet = uncurry(WeakMap.prototype.set) as (map: typeof proofs, key: object, value: { binding: Tp1Binding; listing: VerifiedListingEndpoint }) => unknown;
+
+/** Purchase signing accepts only a proof this module verified for the buyer's binding. */
+export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number }): asserts proof is EndpointProof {
+  const kept = typeof proof === "object" && proof !== null ? proofGet(proofs, proof) : undefined;
+  if (!kept || kept.binding !== scope.binding) fail("endpoint_proof_required", 500);
+  const p = proof as EndpointProof;
+  if (kept.listing.seller !== scope.seller || kept.listing.publicEndpoint !== scope.publicEndpoint ||
+      !sameCanonical(kept.listing.listingPin, scope.listingPin)) fail("endpoint_proof_mismatch", 500);
+  if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 502);
+  if (!p.ready) fail("seller_not_ready", 503);
 }
 
 /**
@@ -103,7 +121,9 @@ export interface EndpointProof {
 export function verifyEndpointProof(bytes: Uint8Array, options: { listing: VerifiedListingEndpoint; binding: Tp1Binding; local: unknown; now: number }): EndpointProof {
   const { listing: suppliedListing, binding, local, now } = ownedFields(options, ["listing", "binding", "local", "now"]);
   assertTp1Binding(binding, local);
-  const listing = ownedConfig(suppliedListing, "wire_input_invalid") as VerifiedListingEndpoint;
+  let listing: VerifiedListingEndpoint;
+  try { listing = snapshotWireJsonRead(suppliedListing, "verified Listing") as VerifiedListingEndpoint; }
+  catch { return fail("wire_input_invalid", 500); }
   const document = admitWireJson(bytes, DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes, "discovery_json_rejected", 502) as JsonRecord;
   if (!hasKeys(document, ["payload", "signature"])) fail("discovery_invalid", 502);
   const p = document.payload as JsonRecord;
@@ -111,6 +131,8 @@ export function verifyEndpointProof(bytes: Uint8Array, options: { listing: Verif
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
   if (hasKeys(p, FIELDS)) assertPeerProfile(p.profile, binding as Tp1Binding, 502);
   if (!payloadValid(p)) fail("discovery_invalid", 502);
+  if (!hasKeys(listing, ["seller", "publicEndpoint", "listingPin"]) || !isClaim(listing.seller) ||
+      !isPublicEndpoint(listing.publicEndpoint) || !isListingPin(listing.listingPin)) fail("wire_input_invalid", 500);
   if (p.seller !== listing.seller) fail("discovery_signer_wrong", 502);
   if (!verifyEd25519(discoverySigningBytes(p), envelopeSignatureBytes(document.signature, "discovery_signature_invalid"), claimKey(p.seller))) {
     fail("discovery_signature_invalid", 502);
@@ -119,5 +141,7 @@ export function verifyEndpointProof(bytes: Uint8Array, options: { listing: Verif
   if (!p.listings.some((pin) => sameCanonical(pin, listing.listingPin))) fail("discovery_listing_missing", 502);
   if (!sameCanonical(p.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 502);
   if (!isUint(now) || p.issuedAt > now + ISSUED_SKEW_MS || p.expiresAt <= now) fail("discovery_expired", 502);
-  return { payload: cloneJson(p), ready: p.ready };
+  const proof = deepFreeze({ payload: cloneJson(p), ready: p.ready });
+  proofSet(proofs, proof, { binding: binding as Tp1Binding, listing: deepFreeze(listing) });
+  return proof;
 }

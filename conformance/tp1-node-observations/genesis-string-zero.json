@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "nodeCall",
+    "params": [
+      {
+        "type": "nodeCall",
+        "message": "getBlockByNumber",
+        "data": {
+          "blockNumber": "0"
+        }
+      }
+    ]
+  },
+  "http": 200,
+  "body": {
+    "result": 200,
+    "response": {
+      "number": 0,
+      "hash": "83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4"
+    },
+    "require_reply": false,
+    "extra": ""
+  }
+}

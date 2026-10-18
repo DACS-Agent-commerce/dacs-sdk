@@ -1,3 +1,4 @@
+import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // TP-1 round trips with keys generated at run time: the buyer signs requests
 // and delegations, the seller verifies them, signs responses and discovery,
 // and the buyer verifies those. Buyer and seller use different RPC endpoints
@@ -9,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import {
   checkWireRequest, DACS_SELLER_HTTP_DOMAINS, openWireEnvelope, signDiscoveryDocument,
-  signSellerSessionDelegation, signWireRequest, signWireResponse, TP1_CAPABILITIES, verifyEndpointProof,
+  signSellerSessionDelegation, signWireResponse, TP1_CAPABILITIES, verifyEndpointProof,
   bindTp1Profile, verifySellerSessionDelegation, verifyWireResponse, WireError, type DiscoveryPayload, type WireSigner,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
@@ -29,6 +30,7 @@ const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 function party(): WireSigner & { raw: string } {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+  registerDiscoverySigner({ claim: `did:demos:agent:${raw}`, sign: (bytes) => new Uint8Array(sign(null, Buffer.from(bytes), privateKey)) });
   return { claim: `did:demos:agent:${raw}`, raw, sign: (bytes) => new Uint8Array(sign(null, Buffer.from(bytes), privateKey)) };
 }
 

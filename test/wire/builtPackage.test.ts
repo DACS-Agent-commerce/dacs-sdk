@@ -140,7 +140,12 @@ const sb = wire.bindTp1Profile({ record: approvedRecord, local: sellerLocal });
 const sellerKeys = generateKeyPairSync("ed25519");
 const sellerSigner = { claim: "did:demos:agent:" + sellerKeys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"), calls: 0,
   sign(bytes) { sellerSigner.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), sellerKeys.privateKey)); } };
-const approvedRequest = await wire.signWireRequest({ signer, binding: bb, local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now });
+const publicEndpoint = "https://seller.built-package.invalid";
+const discoveryBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [file.job.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
+const endpointProof = wire.verifyEndpointProof(discoveryBytes, { listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now });
+// Discovery is a separate seller signature from the request/answer pair counted below.
+sellerSigner.calls = 0;
+const approvedRequest = await wire.signWireRequest({ endpointProof, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now });
 const approvedOpened = wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
 wire.checkWireRequest(approvedOpened, { seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
 const approvedResponse = await wire.signWireResponse(approvedOpened.payload, 200, "{}", { signer: sellerSigner, binding: sb, local: sellerLocal, now: file.now, purchaseProfile: sb.profile });

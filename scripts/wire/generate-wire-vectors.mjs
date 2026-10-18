@@ -145,7 +145,7 @@ const vectors = [
   R("request/valid-direct", null, { header: req(request) }, ok),
   R("request/valid-delegated", null, { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true }, ok),
   R("request/valid-noncanonical-header", null, { header: reorderedHeader }, ok),
-  R("request/expired-delegation-readback-only", null, { header: req({ ...delegated, expiresAt: NOW + 30_000 }, { signer: session.signer, delegation: del({ ...delegationPayload, notBefore: NOW - 2 * HOUR, expiresAt: NOW - 1 }) }), requireDelegation: true }, { ok: true, readbackOnly: true }),
+  R("request/expired-delegation-readback-only", "expired delegation cannot start an effect", { header: req({ ...delegated, expiresAt: NOW + 30_000 }, { signer: session.signer, delegation: del({ ...delegationPayload, notBefore: NOW - 2 * HOUR, expiresAt: NOW - 1 }) }), requireDelegation: true }, no("peer_delegation_expired")),
   R("request/old-domain", "request signature domain", { header: req(request, { domain: OLD.request }) }, no("peer_signature_invalid")),
   R("request/response-domain", "request signature domain", { header: req(request, { domain: D.response }) }, no("peer_signature_invalid")),
   R("request/profile-missing", "profile present", { header: req(requestWithoutProfile, { domain: D.request }) }, no("tp1_profile_missing")),

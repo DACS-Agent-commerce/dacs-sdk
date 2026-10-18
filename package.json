@@ -101,6 +101,14 @@
     "docs/testnet-profile-tp1.md",
     "docs/about-the-testnet-release.md",
     "conformance/tp1-register.json",
+    "conformance/tp1-node-observations/block0.json",
+    "conformance/tp1-node-observations/block1.json",
+    "conformance/tp1-node-observations/genesis-string-zero.json",
+    "conformance/tp1-node-observations/manifest.json",
+    "conformance/tp1-node-observations/missing-status.json",
+    "conformance/tp1-node-observations/missing-tx.json",
+    "conformance/tp1-node-observations/network.json",
+
     "docs/dacs-seller-http-v1.md",
     "SECURITY.md",
     "LICENSE"
