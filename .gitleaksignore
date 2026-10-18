@@ -44,7 +44,8 @@ f5266368c979ac9ab68dee1e93f43726f44aa47e:test/rails/evmErc20.test.ts:generic-api
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:103
 80e295e5ff916d688cfa68e1e51b7247d78ffe6b:test/package-consumer/index.ts:generic-api-key:104
 
-# Seller kit (client): test idempotency labels and a fixture file digest, reviewed 2026-10-18; not credentials.
+# Seller kit (client): all eight are test `idempotencyKey` labels added by 5c7d5e0, reviewed 2026-10-18; not credentials.
+# d5d0ebd moved these files unchanged to evidence/source-tests/*.mjs.txt (no new fingerprint). Re-review any finding at another commit.
 5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:517
 5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:580
 5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/mcp-seller-diagnostics.test.mjs:generic-api-key:610
