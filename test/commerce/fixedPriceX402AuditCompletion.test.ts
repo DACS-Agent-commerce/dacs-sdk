@@ -1250,6 +1250,105 @@ async function gateWithAudit(
   return { fx, buyerStatus, sellerStatus, verify };
 }
 
+describe("native DEM admission deadline", () => {
+  it.each(["resolve", "reject"] as const)(
+    "bounds pending admission and ignores a late %s without starting reads", async (late) => {
+      const gate = await gateWithAudit("pay-dem", (fx) => ({
+        buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+      }));
+      const clock = manualDeadline();
+      const disarm = vi.fn();
+      const start = vi.fn((expire: () => void, timeoutMs: number) => {
+        const clear = clock.start(expire, timeoutMs);
+        return () => { clear(); disarm(); };
+      });
+      let resolveAdmission!: (value: unknown) => void;
+      let rejectAdmission!: (error: unknown) => void;
+      const admission = new Promise<unknown>((resolve, reject) => {
+        resolveAdmission = resolve; rejectAdmission = reject;
+      });
+      const readBundleCopy = vi.fn(gate.fx.deps.readBundleCopy);
+      const outcome = gate.verify({ ...gate.fx.deps, readBundleCopy,
+        authenticateSessionProfile: () => admission,
+        deadline: { timeoutMs: 5_000, start },
+      } as FixedPricePayDemAuditCompletionDeps).catch((error: unknown) => error);
+      await flush();
+      expect(clock.armed()).toEqual([5_000]);
+      expect(verifySellerClosure).not.toHaveBeenCalled();
+      expect(readBundleCopy).not.toHaveBeenCalled();
+      clock.expire();
+      const error = await outcome;
+      expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+      expect(String(error)).toMatch(/trusted session profile admission.*5000 ms/);
+      expect(disarm).toHaveBeenCalledOnce();
+      if (late === "resolve") resolveAdmission(trustedAdmission());
+      else rejectAdmission(new DacsError("late admission rejection"));
+      await flush();
+      expect(verifySellerClosure).not.toHaveBeenCalled();
+      expect(readBundleCopy).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledOnce();
+      expect(clock.armed()).toEqual([]);
+      await expect(outcome).resolves.toBe(error);
+    },
+  );
+
+  it("uses the admission deadline for the subsequent seller closure without rearming", async () => {
+    const gate = await gateWithAudit("pay-dem", (fx) => ({
+      buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+    }));
+    const clock = manualDeadline();
+    const start = vi.fn(clock.start);
+    let admit!: (value: unknown) => void;
+    const admission = new Promise<unknown>((resolve) => { admit = resolve; });
+    verifySellerClosure.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    const outcome = gate.verify({ ...gate.fx.deps,
+      authenticateSessionProfile: () => admission, deadline: { timeoutMs: 5_000, start },
+    } as FixedPricePayDemAuditCompletionDeps).catch((error: unknown) => error);
+    await flush();
+    expect(clock.armed()).toEqual([5_000]);
+    admit(trustedAdmission());
+    await flush();
+    expect(verifySellerClosure).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+    clock.expire();
+    const error = await outcome;
+    expect(error).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(String(error)).toMatch(/seller closure re-verification.*5000 ms/);
+    expect(clock.armed()).toEqual([]);
+  });
+
+  it.each(["invalid", "permanent error", "unavailable", "success"] as const)(
+    "disarms the deadline after admission returns %s", async (result) => {
+      const gate = await gateWithAudit("pay-dem", (fx) => ({
+        buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+      }));
+      const clock = manualDeadline();
+      const disarm = vi.fn();
+      const start = vi.fn((expire: () => void, timeoutMs: number) => {
+        const clear = clock.start(expire, timeoutMs);
+        return () => { clear(); disarm(); };
+      });
+      const permanent = new DacsError("admission rejected");
+      const outcome = await gate.verify({ ...gate.fx.deps, deadline: { start },
+        authenticateSessionProfile: () => {
+          if (result === "permanent error") throw permanent;
+          if (result === "unavailable") return Promise.reject(new Error("lookup unavailable"));
+          return result === "invalid" ? { status: "invalid" } : trustedAdmission();
+        },
+      } as FixedPricePayDemAuditCompletionDeps).catch((error: unknown) => error);
+      expect(start).toHaveBeenCalledOnce();
+      expect(disarm).toHaveBeenCalledOnce();
+      expect(clock.armed()).toEqual([]);
+      if (result === "success") expect(outcome).toMatchObject({ milestone: "audit-complete" });
+      else {
+        expect(verifySellerClosure).not.toHaveBeenCalled();
+        if (result === "permanent error") expect(outcome).toBe(permanent);
+        else expect(outcome).toBeInstanceOf(result === "unavailable" ? IndeterminateSubstrateError : DacsError);
+      }
+    },
+  );
+});
+
 describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over operational audit tracks", (rail) => {
   it("grants audit-complete when both audit tracks are final successes on the exact bundles", async () => {
     const gate = await gateWithAudit(rail, (fx) => ({ buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative) }));

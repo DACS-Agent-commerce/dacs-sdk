@@ -213,7 +213,8 @@ export const COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS = 60_000;
 
 /**
  * How long the gate may take. One deadline, armed once when the gate starts
- * and disarmed when it returns, bounds the seller-closure re-verification,
+ * and disarmed when it returns, bounds native DEM profile admission,
+ * the seller-closure re-verification,
  * both copies' verification and the final pair check. At the deadline an
  * authoritative rejection of a copy already observed is reported; without one
  * the gate throws `IndeterminateSubstrateError`, which is retryable. Whatever
@@ -921,79 +922,88 @@ export async function verifyCompletedTwoSidedSession(
   // One deadline, from here to the result, bounds every read below.
   const deadline = armDeadline(capturedDeps.deadline);
   try {
-    const verifiedClosure = await within(verifyFinalizedSellerBundleReadOnly(
-      clone(retained.sellerClosure.verificationInput),
-      clone(retained.sellerClosure.result),
-      capturedDeps.sellerFinalizationProvider,
-    ), deadline, "completed seller closure re-verification");
-    if (verifiedClosure.state !== "finalised" ||
-        verifiedClosure.nativeAddress !== retained.copies.seller.nativeAddress ||
-        !exact(verifiedClosure.anchorReceipt, retained.copies.seller.anchorReceipt) ||
-        !exact(verifiedClosure.sellerBundle, retained.copies.seller.bundle) ||
-        !exact(verifiedClosure.buyerBundle, retained.copies.buyer.bundle) ||
-        ((verifiedClosure.binding !== undefined ||
-          retained.copies.seller.binding !== undefined) &&
-          !exact(verifiedClosure.binding, retained.copies.seller.binding)) ||
-        verifiedClosure.bundleContentHash !==
-          attestationBundleHash(retained.copies.seller.bundle)) {
-      throw new DacsError(
-        "completed bundle copies do not match the authenticated durable session closure",
-      );
-    }
-
-    // Both copies settle before either rejection is reported: an unavailable
-    // read of one copy must not hide an answer about the other that arrives
-    // later. Any other rejection is reported before an unavailable read, then
-    // the buyer copy's before the seller's. A read that never settles is cut
-    // off at the deadline: a rejection already observed is reported as above,
-    // and without one the result is indeterminate.
-    const [buyerResult, sellerResult] = await settleWithin([
-      verifyCopy(retained.copies.buyer, {
-        role: "buyer",
-        jobId: retained.jobId,
-        buyer: retained.buyer,
-        seller: retained.seller,
-      }, capturedDeps),
-      verifyCopy(retained.copies.seller, {
-        role: "seller",
-        jobId: retained.jobId,
-        buyer: retained.buyer,
-        seller: retained.seller,
-      }, capturedDeps),
-    ], deadline);
-    if (buyerResult?.status === "rejected" || sellerResult?.status === "rejected") {
-      const reasons = [buyerResult, sellerResult]
-        .flatMap((result): unknown[] => result?.status === "rejected" ? [result.reason] : []);
-      throw reasons.find((reason) => !(reason instanceof IndeterminateSubstrateError)) ?? reasons[0];
-    }
-    if (buyerResult === undefined || sellerResult === undefined) {
-      throw new IndeterminateSubstrateError(
-        `completed ${buyerResult === undefined ? "buyer" : "seller"} bundle copy verification ` +
-          `did not settle within ${deadline.timeoutMs} ms`,
-      );
-    }
-    const buyerCopy = buyerResult.value;
-    const sellerCopy = sellerResult.value;
-    if (!exact(
-      bundleSignedScope(retained.copies.buyer.bundle),
-      bundleSignedScope(retained.copies.seller.bundle),
-    )) {
-      throw new DacsError("completed buyer and seller bundles carry different signed scopes");
-    }
-    const consistency = await within(bundleConsistency({
-      buyer: { disposition: "present", bundle: buyerCopy.bundle },
-      seller: { disposition: "present", bundle: sellerCopy.bundle },
-    }, {
-      isValid: async (bundle, role) => {
-        const verdict = await verifyBundleCopy(bundle, role, capturedDeps.bundleCopyVerifier);
-        return verdict.valid && verdict.fullySigned && !verdict.abortStanding;
-      },
-    }), deadline, "completed bundle pair consistency check");
-    if (consistency !== "unified") {
-      throw new DacsError(`completed bundle pair is ${consistency}, not unified`);
-    }
+    return await verifyCompletedTwoSidedSessionWithin(retained, capturedDeps, deadline);
   } finally {
     deadline.disarm();
+  }
+}
+
+// Native DEM admission and the shared gate use the same already-armed deadline.
+async function verifyCompletedTwoSidedSessionWithin(
+  retained: Readonly<CompletedTwoSidedSessionInput>,
+  capturedDeps: CapturedAuditCompletionDeps,
+  deadline: ArmedDeadline,
+): Promise<CompletedTwoSidedSessionResult> {
+  const verifiedClosure = await within(verifyFinalizedSellerBundleReadOnly(
+    clone(retained.sellerClosure.verificationInput),
+    clone(retained.sellerClosure.result),
+    capturedDeps.sellerFinalizationProvider,
+  ), deadline, "completed seller closure re-verification");
+  if (verifiedClosure.state !== "finalised" ||
+      verifiedClosure.nativeAddress !== retained.copies.seller.nativeAddress ||
+      !exact(verifiedClosure.anchorReceipt, retained.copies.seller.anchorReceipt) ||
+      !exact(verifiedClosure.sellerBundle, retained.copies.seller.bundle) ||
+      !exact(verifiedClosure.buyerBundle, retained.copies.buyer.bundle) ||
+      ((verifiedClosure.binding !== undefined ||
+        retained.copies.seller.binding !== undefined) &&
+        !exact(verifiedClosure.binding, retained.copies.seller.binding)) ||
+      verifiedClosure.bundleContentHash !==
+        attestationBundleHash(retained.copies.seller.bundle)) {
+    throw new DacsError(
+      "completed bundle copies do not match the authenticated durable session closure",
+    );
+  }
+
+  // Both copies settle before either rejection is reported: an unavailable
+  // read of one copy must not hide an answer about the other that arrives
+  // later. Any other rejection is reported before an unavailable read, then
+  // the buyer copy's before the seller's. A read that never settles is cut
+  // off at the deadline: a rejection already observed is reported as above,
+  // and without one the result is indeterminate.
+  const [buyerResult, sellerResult] = await settleWithin([
+    verifyCopy(retained.copies.buyer, {
+      role: "buyer",
+      jobId: retained.jobId,
+      buyer: retained.buyer,
+      seller: retained.seller,
+    }, capturedDeps),
+    verifyCopy(retained.copies.seller, {
+      role: "seller",
+      jobId: retained.jobId,
+      buyer: retained.buyer,
+      seller: retained.seller,
+    }, capturedDeps),
+  ], deadline);
+  if (buyerResult?.status === "rejected" || sellerResult?.status === "rejected") {
+    const reasons = [buyerResult, sellerResult]
+      .flatMap((result): unknown[] => result?.status === "rejected" ? [result.reason] : []);
+    throw reasons.find((reason) => !(reason instanceof IndeterminateSubstrateError)) ?? reasons[0];
+  }
+  if (buyerResult === undefined || sellerResult === undefined) {
+    throw new IndeterminateSubstrateError(
+      `completed ${buyerResult === undefined ? "buyer" : "seller"} bundle copy verification ` +
+        `did not settle within ${deadline.timeoutMs} ms`,
+    );
+  }
+  const buyerCopy = buyerResult.value;
+  const sellerCopy = sellerResult.value;
+  if (!exact(
+    bundleSignedScope(retained.copies.buyer.bundle),
+    bundleSignedScope(retained.copies.seller.bundle),
+  )) {
+    throw new DacsError("completed buyer and seller bundles carry different signed scopes");
+  }
+  const consistency = await within(bundleConsistency({
+    buyer: { disposition: "present", bundle: buyerCopy.bundle },
+    seller: { disposition: "present", bundle: sellerCopy.bundle },
+  }, {
+    isValid: async (bundle, role) => {
+      const verdict = await verifyBundleCopy(bundle, role, capturedDeps.bundleCopyVerifier);
+      return verdict.valid && verdict.fullySigned && !verdict.abortStanding;
+    },
+  }), deadline, "completed bundle pair consistency check");
+  if (consistency !== "unified") {
+    throw new DacsError(`completed bundle pair is ${consistency}, not unified`);
   }
   return clone({
     state: "audit-complete" as const,
@@ -1090,28 +1100,39 @@ export async function verifyFixedPricePayDemAuditCompletion(
   const authenticate = method<FixedPricePayDemAuditCompletionDeps["authenticateSessionProfile"]>(
     source, "authenticateSessionProfile", "native DEM completion dependencies",
   )!;
-  const admission = snapshotCanonicalJsonRead(await authenticate(), "trusted session profile admission");
-  if (!isRecord(admission) || !exactKeys(admission, ["status", "releasePin", "moduleVersions", "roles"]) ||
-      admission.status !== "valid" || admission.releasePin !== DACS_STANDARD_PIN ||
-      !exact(admission.moduleVersions, COMPLETED_SESSION_MODULE_VERSIONS) ||
-      !Array.isArray(admission.roles) || admission.roles.length !== 2 ||
-      !(["buyer", "seller"] as const).every((role) => {
-        const records = (admission.roles as unknown[]).filter((entry: unknown) => isRecord(entry) && entry.role === role);
-        const entry = records[0];
-        return records.length === 1 && isRecord(entry) &&
-          exactKeys(entry, ["jobId", "role", "participant"]) &&
-          entry.jobId === retained.buyer.jobId && isCanonicalClaimReference(entry.participant) &&
-          sameCanonicalClaimIdentity(entry.participant, retained.buyer[role]);
-      })) {
-    throw new DacsError("native DEM completion lacks authenticated session profile and role authority");
-  }
-
-  await verifyCompletedTwoSidedSession({
+  const completedInput = captureCompletedInput({
     jobId: retained.buyer.jobId,
     buyer: retained.buyer.buyer,
     seller: retained.buyer.seller,
     sellerClosure: retained.sellerClosure,
     copies: retained.copies,
-  }, deps);
+  });
+  const capturedDeps = captureDeps(deps);
+  const deadline = armDeadline(capturedDeps.deadline);
+  try {
+    const admission = snapshotCanonicalJsonRead(await within(
+      unanswered(() => authenticate(), "trusted session profile admission"),
+      deadline,
+      "trusted session profile admission",
+    ), "trusted session profile admission");
+    if (!isRecord(admission) || !exactKeys(admission, ["status", "releasePin", "moduleVersions", "roles"]) ||
+        admission.status !== "valid" || admission.releasePin !== DACS_STANDARD_PIN ||
+        !exact(admission.moduleVersions, COMPLETED_SESSION_MODULE_VERSIONS) ||
+        !Array.isArray(admission.roles) || admission.roles.length !== 2 ||
+        !(["buyer", "seller"] as const).every((role) => {
+          const records = (admission.roles as unknown[]).filter((entry: unknown) => isRecord(entry) && entry.role === role);
+          const entry = records[0];
+          return records.length === 1 && isRecord(entry) &&
+            exactKeys(entry, ["jobId", "role", "participant"]) &&
+            entry.jobId === retained.buyer.jobId && isCanonicalClaimReference(entry.participant) &&
+            sameCanonicalClaimIdentity(entry.participant, retained.buyer[role]);
+        })) {
+      throw new DacsError("native DEM completion lacks authenticated session profile and role authority");
+    }
+
+    await verifyCompletedTwoSidedSessionWithin(completedInput, capturedDeps, deadline);
+  } finally {
+    deadline.disarm();
+  }
   return clone({ ...operational, milestone: "audit-complete" as const });
 }

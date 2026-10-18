@@ -1,6 +1,7 @@
 import {
   BUNDLE_BINDING_SEPARATOR,
   DacsError,
+  SubstrateError,
   attestationBundleHash,
   bundleAddress,
   isBundleBindingNonObservation,
@@ -415,7 +416,10 @@ export function createDacsDemosBundlePublicationV1(
       try {
         resolved = await resolveBoundRoleBundle(role,
           carried === undefined ? [] : [copy(carried)]);
-      } catch {
+      } catch (error) {
+        // A validation answer must not become the BB-8 non-observation
+        // exception: doing so could hide equivocation or budget exhaustion.
+        if (error instanceof DacsError && !(error instanceof SubstrateError)) throw error;
         return { disposition: "indeterminate", reason: "bundle-binding-unanswered" };
       }
       if (resolved.disposition === "present") {
