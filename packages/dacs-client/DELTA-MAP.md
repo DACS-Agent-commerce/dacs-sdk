@@ -172,7 +172,7 @@ Policy publication cleanup: historical finding/workstream citations use behavior
 | | `packages/dacs-client/src/dacs/seller-agent.mjs:1`, `packages/dacs-client/src/dacs/seller-agent.mjs:117` | 64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b |
 | | `packages/dacs-client/src/dacs/seller-http.mjs:10`, `packages/dacs-client/src/dacs/seller-http.mjs:112`, `packages/dacs-client/src/dacs/seller-http.mjs:248`, `packages/dacs-client/src/dacs/seller-http.mjs:254`, `packages/dacs-client/src/dacs/seller-http.mjs:263` | afac16899f4f2d95463ce7f3ab6e9aa7e03e0ef1 |
 | | `packages/dacs-client/src/dacs/seller-transport-auth.mjs:9`, `packages/dacs-client/src/dacs/seller-transport-auth.mjs:79` | 0997b8a6390c44daf9f5075711406d9f2d60dd98 |
-| | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` | db9048fb979d382f257fc806a2883b02292b52e7 |
+| | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` | db9048fb979d382f257fc806a2883b02292b52e7 |
 | | `packages/dacs-client/test/fixtures/job-id-grammar-v0.1.json:1` | 11037f3adf3dfa9a1bf1a5773008c3c8097dcd0e |
 | | `packages/dacs-client/test/fixtures/sr2-public-creates.json:1` | cf03cf2e98c71d0ffae0ab0ea2cf1002a27cec20 |
 | | `packages/dacs-client/test/ingress-admission.test.mjs:1` | bc5df5a139d39697b81a2363c3e2554c0220551e |
@@ -183,8 +183,12 @@ Policy publication cleanup: historical finding/workstream citations use behavior
 | | `packages/dacs-client/test/readback-review-decisions.test.mjs:16` | a3260b7e24020f9a6a3b6e8ba637d59d17ebae06 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | b8e24392ce178fa7414fb3f244f0606b7c82c9b6 |
 | D16 | delta(client): D16 preserve the configured RPC byte budget | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` | 68daec2ca954a288273d8b206a32e2711810bce1 |
+| | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` | 68daec2ca954a288273d8b206a32e2711810bce1 |
 | | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` | 3bdef904346054123fcb62d863f87b1659716d27 |
+| D16 | delta(client): D16 preserve configured Directory byte budgets | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` | 306f583fa3a05fe470893f8d604131681ada172f |
+| | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` | ad06ad3f730a4b61f626a3eef35317bd839047b1 |
+| | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` | d370b9a3a69a7e927e6afde4100960654d82a8bb |
 
 ## Complete commit and file inventory
 
@@ -216,7 +220,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/seller-agent.mjs:1`, `packages/dacs-client/src/dacs/seller-agent.mjs:117` |
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/seller-http.mjs:10`, `packages/dacs-client/src/dacs/seller-http.mjs:112`, `packages/dacs-client/src/dacs/seller-http.mjs:248`, `packages/dacs-client/src/dacs/seller-http.mjs:254`, `packages/dacs-client/src/dacs/seller-http.mjs:263` |
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/seller-transport-auth.mjs:9`, `packages/dacs-client/src/dacs/seller-transport-auth.mjs:79` |
-| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` |
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/test/fixtures/job-id-grammar-v0.1.json:1` |
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/test/fixtures/sr2-public-creates.json:1` |
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/test/ingress-admission.test.mjs:1` |
@@ -252,13 +256,25 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/HOLD.json:1` |
 | 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/package.json:1` |
 | 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` |
+| 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` |
 | 2ec400580428d4643f81f33c5132a0398366c4e6 | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` |
-| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 pin the reviewed tripwire policy update | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
+| c93f168048b2604ce84eaa37fc95a184e3eaf51f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c93f168048b2604ce84eaa37fc95a184e3eaf51f | `packages/dacs-client/DELTA-MAP.md:1` |
+| c93f168048b2604ce84eaa37fc95a184e3eaf51f | `packages/dacs-client/HOLD.json:1` |
+| c93f168048b2604ce84eaa37fc95a184e3eaf51f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c93f168048b2604ce84eaa37fc95a184e3eaf51f | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
+| d938bf3db38a9c428569dc251b3385cf34614dae | `docs/raw-json-admission.md:1` |
+| d938bf3db38a9c428569dc251b3385cf34614dae | `src/canonical/rawJson.ts:8`, `src/canonical/rawJson.ts:13` |
+| d938bf3db38a9c428569dc251b3385cf34614dae | `test/canonical/rawJson.test.ts:1` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/package.json:1` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` |
+| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` |
 
 ## Original moved files
 
@@ -309,7 +325,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/public/portal/seller-session-limits.mjs` | `http-mcp/public/portal/seller-session-limits.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/purchases.mjs` | `http-mcp/src/purchases.mjs` | 79de3d54bc07c27f51c1758f81c61719c0d77595 | unchanged | 79de3d54bc07c27f51c1758f81c61719c0d77595 |
 | `packages/dacs-client/src/switch-files.mjs` | `http-mcp/src/switch-files.mjs` | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 | unchanged | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 |
-| `packages/dacs-client/src/util/http.mjs` | `http-mcp/src/util/http.mjs` | 569c5316ef89406fbf3a2d60b8b5efac9005ccf3 | changed by D16 | 68daec2ca954a288273d8b206a32e2711810bce1 |
+| `packages/dacs-client/src/util/http.mjs` | `http-mcp/src/util/http.mjs` | 569c5316ef89406fbf3a2d60b8b5efac9005ccf3 | changed by D16 | 306f583fa3a05fe470893f8d604131681ada172f |
 | `packages/dacs-client/src/util/ids.mjs` | `http-mcp/src/util/ids.mjs` | 6cb275e260df92ea17a4dd7c2417206a7ed7cc2a | unchanged | 6cb275e260df92ea17a4dd7c2417206a7ed7cc2a |
 | `packages/dacs-client/src/util/immutable-readbacks.mjs` | `http-mcp/src/util/immutable-readbacks.mjs` | 8497f6a237a1c72ad3330cdebf529275700be15b | unchanged | 8497f6a237a1c72ad3330cdebf529275700be15b |
 | `packages/dacs-client/src/util/purchase-readback-cache.mjs` | `http-mcp/src/util/purchase-readback-cache.mjs` | 835ca8f3785c926a975872f7d40a0df9dde55ab6 | unchanged | 835ca8f3785c926a975872f7d40a0df9dde55ab6 |

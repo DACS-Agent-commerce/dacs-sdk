@@ -110,7 +110,7 @@
     ]
   },
   {
-    "sha": null,
+    "sha": "c93f168048b2604ce84eaa37fc95a184e3eaf51f",
     "subject": "delta(client): D16 pin the reviewed tripwire policy update",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -118,6 +118,30 @@
       "packages/dacs-client/HOLD.json",
       "packages/dacs-client/scripts/check-hold.mjs",
       "packages/dacs-client/scripts/check-provenance.test.mjs"
+    ]
+  },
+  {
+    "sha": "d938bf3db38a9c428569dc251b3385cf34614dae",
+    "subject": "canonical: honor explicit JSON budgets up to 10000000 bytes",
+    "files": [
+      "docs/raw-json-admission.md",
+      "src/canonical/rawJson.ts",
+      "test/canonical/rawJson.test.ts"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 preserve configured Directory byte budgets",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/util/http.mjs",
+      "packages/dacs-client/test/directory-byte-budget.test.mjs",
+      "packages/dacs-client/test/rpc-byte-budget.test.mjs"
     ]
   }
 ]

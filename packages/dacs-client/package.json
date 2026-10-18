@@ -5,6 +5,6 @@
   "description": "Client delta snapshot. Exports remain disabled pending package boundary review; purchase hold and D11 prerequisites are recorded in HOLD.json.",
   "exports": {},
   "scripts": {
-    "test": "node scripts/check-hold.mjs && node --test --test-concurrency=1 scripts/check-hold.test.mjs scripts/check-provenance.test.mjs scripts/delta-provenance.test.mjs test/purchase-integrity.test.mjs test/buyer-chain-indeterminate.test.mjs test/commitment-contradiction-classifier.test.mjs test/purchase-review-races.test.mjs test/readback-review-decisions.test.mjs test/native-stage-help.test.mjs test/ingress-admission.test.mjs test/rpc-byte-budget.test.mjs test/native-adapter-auth.test.mjs test/sweep-contracts.test.mjs"
+    "test": "node scripts/check-hold.mjs && node --test --test-concurrency=1 scripts/check-hold.test.mjs scripts/check-provenance.test.mjs scripts/delta-provenance.test.mjs test/purchase-integrity.test.mjs test/buyer-chain-indeterminate.test.mjs test/commitment-contradiction-classifier.test.mjs test/purchase-review-races.test.mjs test/readback-review-decisions.test.mjs test/native-stage-help.test.mjs test/ingress-admission.test.mjs test/rpc-byte-budget.test.mjs test/directory-byte-budget.test.mjs test/native-adapter-auth.test.mjs test/sweep-contracts.test.mjs"
   }
 }

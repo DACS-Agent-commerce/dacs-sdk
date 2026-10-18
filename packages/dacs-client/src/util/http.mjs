@@ -39,6 +39,9 @@ async function readCapped(response, maxBytes) {
 }
 
 export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, method = 'GET', body, timeoutMs, maxBytes, expectedOrigin, headers = {} }) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > 10_000_000) {
+    throw new OutboundError('invalid', 'request byte limit must be an integer from 1 to 10000000');
+  }
   const target = new URL(url);
   if (expectedOrigin && target.origin !== expectedOrigin) throw new OutboundError('invalid', 'request left the configured origin');
   let response;
@@ -74,9 +77,9 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
   }
   const bytes = await readCapped(response, maxBytes);
   try {
-    // RPC block reads permit 4 MiB; retain exact-byte CF-5 admission up to
-    // that SDK resource ceiling while preserving smaller ingress budgets.
-    return admitRawJson(bytes, { maxBytes: Math.min(maxBytes, 4 * 1024 * 1024) });
+    // Use the same budget for the stream and exact-byte CF-5 admission:
+    // Directory permits 10,000,000 bytes; RPC and other reads use less.
+    return admitRawJson(bytes, { maxBytes });
   } catch (cause) {
     if (cause instanceof RawJsonAdmissionError) {
       const error = new OutboundError('invalid', cause.message);

@@ -124,6 +124,27 @@
           "after": "3bdef904346054123fcb62d863f87b1659716d27"
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 preserve configured Directory byte budgets",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "68daec2ca954a288273d8b206a32e2711810bce1",
+          "after": "306f583fa3a05fe470893f8d604131681ada172f"
+        },
+        {
+          "path": "packages/dacs-client/test/directory-byte-budget.test.mjs",
+          "before": null,
+          "after": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
+        },
+        {
+          "path": "packages/dacs-client/test/rpc-byte-budget.test.mjs",
+          "before": "3bdef904346054123fcb62d863f87b1659716d27",
+          "after": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
+        }
+      ]
     }
   ]
 }

@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "686d97ed0d800f8ddf48f6605cef2e5198ee4dec"
+        "blob": "08c1fcf64a0b625209d45ef9ed002bb726389519"
       },
       "DELTA-LEDGER.json": {
-        "blob": "b52b71c240f38107c245f525a75721a3cb54dad3"
+        "blob": "b4207b789589ae10f67d8c89a0925b7e56adb89d"
       },
       "DELTA-MAP.md": {
-        "blob": "065a8d348c4887b6cd5cbd586f8eaf0ff8803151"
+        "blob": "bf6a48fd48706a52907863523950a8e4e8134dad"
       },
       "DELTA-NOTES.md": {
         "blob": "a9cd813874580b521d4c600e14fe6be867fa9a0f"
@@ -448,11 +448,11 @@
         "blob": "9d0eefb61c4ec261faf2198931e7b59258a35ac5"
       },
       "package.json": {
-        "blob": "41fa280e0996e5356fff919a220f877c98282606"
+        "blob": "f6fdb9a545043c3971c83fba3c22ca5781ab607d"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6eb86faf74606d522b801d61c12578f2bac5efe0"
+        "blob": "03509ede201f8b0994ff1fc2c14a6765d6447358"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "40b2ef1d14e28a43091675be4238124ce1ad5108"
@@ -616,14 +616,14 @@
       "src/devnet-demo/storage-write-recovery.mjs": {
         "blob": "339752ef02b10b9f2740e833f9b6a1be239ed2b8"
       },
+      "src/public/portal-intent/intent.mjs": {
+        "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
+      },
       "src/public/portal/embedded-wallet/sdk-provider.mjs": {
         "blob": "b7183e63a75b68cda34c2b30a4d532963794b13f"
       },
       "src/public/portal/seller-session-delegation.mjs": {
         "blob": "ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42"
-      },
-      "src/public/portal-intent/intent.mjs": {
-        "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
       },
       "src/purchase-limits.mjs": {
         "blob": "e57dba177ef9a6ae96f696d2f6b1aa4fc9ceabec"
@@ -650,7 +650,7 @@
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
       },
       "src/util/http.mjs": {
-        "blob": "68daec2ca954a288273d8b206a32e2711810bce1"
+        "blob": "306f583fa3a05fe470893f8d604131681ada172f"
       },
       "src/util/ids.mjs": {
         "blob": "6cb275e260df92ea17a4dd7c2417206a7ed7cc2a"
@@ -915,6 +915,9 @@
       },
       "test/devnet-storage-write-recovery.test.mjs": {
         "blob": "f122a6ac3311e3b0fed22a228a932c04960abecf"
+      },
+      "test/directory-byte-budget.test.mjs": {
+        "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
       },
       "test/durable-wallet-journal.test.mjs": {
         "blob": "8b3228f152227f6f8042c595422805c21e41282e"
@@ -1414,6 +1417,9 @@
       "test/review-sr2-binding-coverage-interactions.test.mjs": {
         "blob": "be3f15eddc486b8a4ee6e025776eafc45890e787"
       },
+      "test/rpc-byte-budget.test.mjs": {
+        "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
+      },
       "test/seller-durable-state-locks.test.mjs": {
         "blob": "7ea6ed6c1bc0edb03eac34806ca5d8b9cc52e919"
       },
@@ -1557,13 +1563,10 @@
       },
       "test/wallet-write-batch.test.mjs": {
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
-      },
-      "test/rpc-byte-budget.test.mjs": {
-        "blob": "3bdef904346054123fcb62d863f87b1659716d27"
       }
     },
     "outside": {
-      "pinnedAt": "3448a7cc6edba4aaf938400b132952b6ddc7b02e",
+      "pinnedAt": "d938bf3db38a9c428569dc251b3385cf34614dae",
       "what": "Every tracked file outside packages/dacs-client/ at the frozen work head, with its Git blob. The gate lists tracked files (tracked ignored output included) and unignored untracked files, and fails on any added, removed or changed outside file, whatever it contains. Untracked files Git ignores are unseen: they belong to no commit, so they cannot reach review or a merge. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD.",
       "files": {
         ".cursor/environment.json": {
@@ -1663,7 +1666,7 @@
           "blob": "71fbf68a6d143f8cded264f124dc7e96b98b1a88"
         },
         "docs/raw-json-admission.md": {
-          "blob": "3068f067984eab89b7384890bef3f1516c9a99ca"
+          "blob": "5bb15b239d39060bcb701df154d51f1365456092"
         },
         "docs/rfq-negotiation-core.md": {
           "blob": "dbf550a79e07f3083f3311c0de8e35f0b9fa2311"
@@ -2527,7 +2530,7 @@
           "blob": "7cdc48d1b25f0bbf75fe8b62491f98353ba6ef2d"
         },
         "src/canonical/rawJson.ts": {
-          "blob": "353a678dcd20de9dfee50d9628b3bb4aca806427"
+          "blob": "d13bc548e8b6977152577aee94110ecd345cfe44"
         },
         "src/canonical/snapshot.ts": {
           "blob": "1622b03c229a30375c870d618d2bbf0b21577c5d"
@@ -3019,7 +3022,7 @@
           "blob": "7742beccf0064673486d2e5ae7999abdc8f8e427"
         },
         "test/canonical/rawJson.test.ts": {
-          "blob": "c73aec618f8c754bb11de6aaabf2b18075d954c5"
+          "blob": "3d4c80cd767fa0089dbe43bf21092ae7c16d4f17"
         },
         "test/canonical/snapshot.test.ts": {
           "blob": "ee759fa5b8aff97b32128cd5623dd8ec50b2a393"
