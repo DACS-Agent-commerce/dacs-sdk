@@ -1,6 +1,13 @@
 [
   {
-    "sha": null,
+    "sha": "54108442abb744d4fed5a32670ecf1b02cca7fe4",
+    "subject": "chore(secret-scan): record reviewed test-fixture false positives",
+    "files": [
+      ".gitleaksignore"
+    ]
+  },
+  {
+    "sha": "c1064bd570664fe9714220ca6d75ee4acdc4037c",
     "subject": "delta(client): D16 admit wire bytes and hold purchases pending release authority",
     "files": [
       ".github/workflows/ci.yml",
@@ -35,7 +42,7 @@
     ]
   },
   {
-    "sha": null,
+    "sha": "df2b90318c71967f25620a6c9aafcce55b31e461",
     "subject": "delta(client): D16 pin reviewed controls and preserve held readback tests",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -50,14 +57,14 @@
     ]
   },
   {
-    "sha": "eb3ddb4dc817bb89a080c4f11dca541806edaaf9",
+    "sha": "22ae458392f24ba925a4f70d491ea1d4305c8e4b",
     "subject": "ci: retain publication ancestry for client verification",
     "files": [
       ".github/workflows/ci.yml"
     ]
   },
   {
-    "sha": null,
+    "sha": "02efcbe06bd4ba3a6217c67ca5d59124c6209480",
     "subject": "delta(client): D16 bind CI ancestry and reciprocal freeze controls",
     "files": [
       "packages/dacs-client/DELTA-COMMITS.json",
@@ -65,6 +72,18 @@
       "packages/dacs-client/HOLD.json",
       "packages/dacs-client/evidence/PUBLICATION.md",
       "packages/dacs-client/scripts/check-hold.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 reconcile publication inventory and freeze records",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/check-hold.test.mjs",
+      "packages/dacs-client/scripts/delta-provenance.test.mjs"
     ]
   }
 ]

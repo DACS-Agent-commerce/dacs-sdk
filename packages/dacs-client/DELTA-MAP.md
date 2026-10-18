@@ -189,50 +189,57 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 
 | Commit / exact selector | Touched file:line |
 |---|---|
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `.github/workflows/ci.yml:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/evidence/PUBLICATION.md:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/evidence/publication-history.json:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/package.json:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/scripts/check-provenance.mjs:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/action-admission.mjs:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:28`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:149`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:191`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:204` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/completion-readiness.mjs:8`, `packages/dacs-client/src/dacs/completion-readiness.mjs:72` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/directory.mjs:4` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:170`, `packages/dacs-client/src/dacs/listing.mjs:178` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:334`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:484`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:551`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:662`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:686`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1106`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1149`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1303`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1309` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/purchase-protocol.mjs:1`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:7`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:45`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:72`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:93`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:159`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:175`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:183`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:269`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:439`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:457` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/seller-agent.mjs:1`, `packages/dacs-client/src/dacs/seller-agent.mjs:117` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/seller-http.mjs:10`, `packages/dacs-client/src/dacs/seller-http.mjs:112`, `packages/dacs-client/src/dacs/seller-http.mjs:248`, `packages/dacs-client/src/dacs/seller-http.mjs:254`, `packages/dacs-client/src/dacs/seller-http.mjs:263` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/dacs/seller-transport-auth.mjs:9`, `packages/dacs-client/src/dacs/seller-transport-auth.mjs:79` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/test/fixtures/job-id-grammar-v0.1.json:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/test/fixtures/sr2-public-creates.json:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/test/ingress-admission.test.mjs:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/test/native-adapter-auth.test.mjs:1` |
-| delta(client): D16 admit wire bytes and hold purchases pending release authority | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:334`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:484`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:551`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:662`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:686`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1106`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1149`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1303`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1309` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/test/readback-review-decisions.test.mjs:16` |
-| delta(client): D16 pin reviewed controls and preserve held readback tests | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
-| eb3ddb4dc817bb89a080c4f11dca541806edaaf9 | `.github/workflows/ci.yml:1` |
-| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/evidence/PUBLICATION.md:1` |
-| delta(client): D16 bind CI ancestry and reciprocal freeze controls | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 54108442abb744d4fed5a32670ecf1b02cca7fe4 | `.gitleaksignore:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `.github/workflows/ci.yml:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/DELTA-MAP.md:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/HOLD.json:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/evidence/PUBLICATION.md:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/evidence/publication-history.json:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/package.json:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/scripts/check-provenance.mjs:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/action-admission.mjs:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:28`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:149`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:191`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:204` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/completion-readiness.mjs:8`, `packages/dacs-client/src/dacs/completion-readiness.mjs:72` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/directory.mjs:4` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:170`, `packages/dacs-client/src/dacs/listing.mjs:178` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:334`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:484`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:551`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:662`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:686`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1106`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1149`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1303`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1309` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/purchase-protocol.mjs:1`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:7`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:45`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:72`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:93`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:159`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:175`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:183`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:269`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:439`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:457` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/seller-agent.mjs:1`, `packages/dacs-client/src/dacs/seller-agent.mjs:117` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/seller-http.mjs:10`, `packages/dacs-client/src/dacs/seller-http.mjs:112`, `packages/dacs-client/src/dacs/seller-http.mjs:248`, `packages/dacs-client/src/dacs/seller-http.mjs:254`, `packages/dacs-client/src/dacs/seller-http.mjs:263` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/dacs/seller-transport-auth.mjs:9`, `packages/dacs-client/src/dacs/seller-transport-auth.mjs:79` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/test/fixtures/job-id-grammar-v0.1.json:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/test/fixtures/sr2-public-creates.json:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/test/ingress-admission.test.mjs:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/test/native-adapter-auth.test.mjs:1` |
+| c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/DELTA-MAP.md:1` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/HOLD.json:1` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:334`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:484`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:551`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:662`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:686`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1106`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1149`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1303`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1309` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/test/readback-review-decisions.test.mjs:16` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| 22ae458392f24ba925a4f70d491ea1d4305c8e4b | `.github/workflows/ci.yml:1` |
+| 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/HOLD.json:1` |
+| 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/evidence/PUBLICATION.md:1` |
+| 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
+| delta(client): D16 reconcile publication inventory and freeze records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 

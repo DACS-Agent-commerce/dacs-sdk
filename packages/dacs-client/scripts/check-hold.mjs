@@ -20,7 +20,8 @@
 // changed outside file in any of those states, whatever it contains. A caller
 // that computes, escapes or encodes the path is still an added or changed file.
 // As an extra tripwire only, also report a literal dacs-client in an outside path or file; the root
-// lockfile's workspace registration and the reviewed CI gate are its exceptions. The tripwire is not
+// lockfile's workspace registration, reviewed CI gate and exact test-fixture
+// fingerprints in .gitleaksignore are its exceptions. The tripwire is not
 // what makes the outside rule hold. Git errors, unreadable files and symlinks
 // fail closed. Any other repository change (lockfile, another workspace, a
 // rebase, a delta commit) fails until a reviewed re-pin of the control pair.
@@ -49,8 +50,8 @@ const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
 
 export const PINNED = Object.freeze({
-  holdSha256: "335faacba68da1855ea4896eb8c1c0bcae7784ebe87fbe3aa726d2ca96972df1",
-  holdBytesSha256: "12c60fb7d523536eafb9f9d963047c60d9b6530ce3c4fad1abbaf8a7ecdaf0a5",
+  holdSha256: "c1892d17196e1f0b50e98f829a3831735408303e7bd6d3bb36074e46a91aef6d",
+  holdBytesSha256: "02413174c2416cdde769d15ae3d0f4028101ac68ac785c80e10cd50a869731f1",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -296,7 +297,7 @@ function finish(failures, summary) {
     process.exitCode = 1;
     return;
   }
-  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); exports: {}; outside inventory frozen (${summary.outside} files, exact blobs at ${summary.pinnedAt.slice(0, 12)}); HEAD blobs verified against pins; index and working files match HEAD (paths, blobs and regular-file modes); literal-name tripwire clear (lockfile registration and CI gate excepted); no behavioural imports`);
+  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); exports: {}; outside inventory frozen (${summary.outside} files, exact blobs at ${summary.pinnedAt.slice(0, 12)}); HEAD blobs verified against pins; index and working files match HEAD (paths, blobs and regular-file modes); literal-name tripwire clear (reviewed exact-file exceptions); no behavioural imports`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

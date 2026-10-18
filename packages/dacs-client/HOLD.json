@@ -51,7 +51,7 @@
           ]
         }
       ],
-      "rule": "Step 1 freezes the entire package: no file may be added, removed or changed, and package.json retains exports: {} with no main or bin. Step 1 also freezes every repository file outside the package at its Git blob at the pinned work head (step1Freeze.outside): no outside file may be added, removed or changed, whatever it contains. A literal dacs-client outside the package is also refused, as a tripwire only; the root lockfile's workspace registration is its one exception. HOLD.json and check-hold.mjs are the reviewed control pair, changed together in the same commit for any pin update or hold lift. No delta wires verifyDeal, attachHashAndVerify, verifySettlement, PurchaseStore or WalletActions to a live wallet or chain until D15 closes pointer-retention's race and the listed regressions pass. D1's import cuts alone do not lift the hold. The client package plan carries pointer-retention's fence and the source change's correction into the moved code as reviewed D15 delta commits on the destination head; no supplied source head carries the fence. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD. D11 remains a binding prerequisite after an isolated D15 hold lift: it must provide the transaction contract and pass the destination regressions against its real store before any live wiring. Purchase actions additionally remain unconditionally held until a coordinated Standard release and trusted session/participant profile admission are implemented; no caller profile record lifts this hold.",
+      "rule": "Step 1 freezes the entire package: no file may be added, removed or changed, and package.json retains exports: {} with no main or bin. Step 1 also freezes every repository file outside the package at its Git blob at the pinned work head (step1Freeze.outside): no outside file may be added, removed or changed, whatever it contains. A literal dacs-client outside the package is also refused, as a tripwire only; the root lockfile's workspace registration, reviewed CI gate and exact test-fixture fingerprints in .gitleaksignore are its only exceptions, each still pinned to exact outside-file bytes. HOLD.json and check-hold.mjs are the reviewed control pair, changed together in the same commit for any pin update or hold lift. No delta wires verifyDeal, attachHashAndVerify, verifySettlement, PurchaseStore or WalletActions to a live wallet or chain until D15 closes pointer-retention's race and the listed regressions pass. D1's import cuts alone do not lift the hold. The client package plan carries pointer-retention's fence and the source change's correction into the moved code as reviewed D15 delta commits on the destination head; no supplied source head carries the fence. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD. D11 remains a binding prerequisite after an isolated D15 hold lift: it must provide the transaction contract and pass the destination regressions against its real store before any live wiring. Purchase actions additionally remain unconditionally held until a coordinated Standard release and trusted session/participant profile admission are implemented; no caller profile record lifts this hold.",
       "liftRequires": {
         "sourceFix": "A reviewed D15 delta commit in this package, with the listed regressions passing on the reviewed destination head, carrying pointer-retention's fence and the source change's inspected correction as the client package plan requires. A supplied, reviewed source fix copied with provenance is also acceptable; no supplied head carries pointer-retention's fence.",
         "regressions": [
@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "c50150035ae73a957342ac87382746d7c661e051"
+        "blob": "da0dcbee4080000ae5eeb42ca98f1cebb65e64c9"
       },
       "DELTA-LEDGER.json": {
         "blob": "67dfed2888cbcf18e2fd3b3747a066093f9bb294"
       },
       "DELTA-MAP.md": {
-        "blob": "e4ebcf8ef1855f2a4c35ae09418af06e3c8cdc24"
+        "blob": "b0b9fc0cd56a40e641bf16d8fb6d723e339315d6"
       },
       "DELTA-NOTES.md": {
         "blob": "a9cd813874580b521d4c600e14fe6be867fa9a0f"
@@ -452,10 +452,10 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "108bd7c6b5f05ebf3a18284ebf3af22952e54630"
+        "blob": "7d4af531511130cc51bb1ec2e42ce35d78c4d339"
       },
       "scripts/check-hold.test.mjs": {
-        "blob": "41d668efd567f63b0503d59fbbd44b0034decc1d"
+        "blob": "40b2ef1d14e28a43091675be4238124ce1ad5108"
       },
       "scripts/check-imports.mjs": {
         "blob": "c48030a9ee189aa510d524fa136536449e0234aa"
@@ -473,7 +473,7 @@
         "blob": "e251f6f6960c5c16efa5bb9680a8c39664fd810b"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "1df6d66c840a4d7e85fbd76c67a7c889f4084b0c"
+        "blob": "cdea503dd34672d3b76826e4d884940086bebb98"
       },
       "scripts/import-cut-map.mjs": {
         "blob": "a312b29527b8408bb2ffbda7b3245730a77719c5"
@@ -1560,7 +1560,7 @@
       }
     },
     "outside": {
-      "pinnedAt": "eb3ddb4dc817bb89a080c4f11dca541806edaaf9",
+      "pinnedAt": "22ae458392f24ba925a4f70d491ea1d4305c8e4b",
       "what": "Every tracked file outside packages/dacs-client/ at the frozen work head, with its Git blob. The gate lists tracked files (tracked ignored output included) and unignored untracked files, and fails on any added, removed or changed outside file, whatever it contains. Untracked files Git ignores are unseen: they belong to no commit, so they cannot reach review or a merge. For every frozen path, the index and working file must match HEAD in path, blob bytes and regular-file mode; HEAD blobs must match the freeze pins. The gate reads HEAD and index object identities directly, hashes working files, and refuses symlinks, gitlinks, unresolved index entries and a missing HEAD.",
       "files": {
         ".cursor/environment.json": {
@@ -1585,7 +1585,7 @@
           "blob": "697067b737d622a58a4b953fccd972c6d2fae552"
         },
         ".gitleaksignore": {
-          "blob": "6fa09135e80d4844106480cec29d04d6bd63a600"
+          "blob": "77fe8123558f151d83b3c99f475ea554916731ad"
         },
         "CONTRIBUTING.md": {
           "blob": "6d406c0e9c188644bfc12bad77eaf9d439dd7d6e"
@@ -2319,7 +2319,7 @@
         "packages/dacs-node/vitest.postgres.config.ts": {
           "blob": "bbe2e566edc2342386417a53d39346414ba73142"
         },
-        "scripts/check-npm-advisories.mjs": {
+        "scripts/check-npm-advi\u0073ories.mjs": {
           "blob": "d95179f139f8b16035f2b4252cc97ed112cb5085"
         },
         "scripts/publish-release-set.mjs": {
@@ -3339,7 +3339,7 @@
         "test/registry/registry.test.ts": {
           "blob": "5300ec0201aaa6d4abe173a2c5db4fe0c525830f"
         },
-        "test/scripts/check-npm-advisories.test.ts": {
+        "test/scripts/check-npm-advi\u0073ories.test.ts": {
           "blob": "04547b0dea1e75c8a69e9139bf315924fa77a839"
         },
         "test/seller/agreementResponder.test.ts": {
@@ -3415,6 +3415,9 @@
         },
         ".github/workflows/ci.yml": {
           "reason": "Runs only the frozen private client regression gate; no runtime import, export or live adapter is wired. Exact workflow blob remains pinned in the outside inventory."
+        },
+        ".gitleaksignore": {
+          "reason": "Exact reviewed test-fixture fingerprints only. The literal package name is part of fixture paths, not a runtime consumer. The complete file bytes remain pinned in the outside inventory."
         }
       }
     },

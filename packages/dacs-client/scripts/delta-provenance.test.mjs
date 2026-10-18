@@ -10,6 +10,18 @@ function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));ex
 function check(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-provenance.mjs'),'--local-only'],{encoding:'utf8'});return {status:result.status,text:result.stdout+result.stderr};}
 const moved='packages/dacs-client/src/dacs/buyer-chain-readback.mjs';
 test('committed delta history and generated per-file table agree',t=>{const r=check(scratch(t));assert.equal(r.status,0,r.text);});
+test('the publication inventory cannot omit an outside-only commit or name an absent hash', t => {
+  for (const edit of [
+    rows => rows.filter(row => !row.files.includes('.gitleaksignore')),
+    rows => rows.map(row => row.subject === 'ci: retain publication ancestry for client verification' ? { ...row, sha: '0'.repeat(40) } : row),
+  ]) {
+    const dir = scratch(t), file = join(dir, 'packages/dacs-client/DELTA-COMMITS.json');
+    writeFileSync(file, JSON.stringify(edit(JSON.parse(readFileSync(file, 'utf8')))));
+    const result = check(dir);
+    assert.equal(result.status, 1, result.text);
+    assert.match(result.text, /complete commit\/file inventory differs/);
+  }
+});
 test('an unenumerated working-tree edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST edit\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
 test('a deletion needs a named delta',t=>{const dir=scratch(t);unlinkSync(join(dir,moved));const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
 test('removing a delta record cannot hide its historical file changes',t=>{const dir=scratch(t),f=join(dir,'packages/dacs-client/DELTA-LEDGER.json'),data=JSON.parse(readFileSync(f,'utf8'));data.changes.pop();writeFileSync(f,JSON.stringify(data));const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/unenumerated change/);});
