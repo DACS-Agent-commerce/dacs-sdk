@@ -200,7 +200,7 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
 export interface DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1 {
   /** Integrity-checked generated buyer effect/checkpoint store. */
   database: DacsNodeSqliteDatabase;
-  /** Finalized Demos transfer observer for the exact prepared transaction hash. */
+  /** Finalized Demos transfer observer, including the exact prepared hash and nonce. */
   observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
 }
 
@@ -476,6 +476,8 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
       }
       const chain = await observeDemosTransfer(prepared.txHash);
       if (chain.status !== "included" || chain.execution !== "executed" ||
+          typeof chain.nonce !== "number" || !Number.isSafeInteger(chain.nonce) ||
+          chain.nonce < 0 || Object.is(chain.nonce, -0) || chain.nonce !== prepared.nonce ||
           chain.txHash !== prepared.txHash ||
           chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
           chain.amountOs !== payment.amountOs) {

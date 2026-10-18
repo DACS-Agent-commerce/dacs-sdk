@@ -86,6 +86,10 @@ reconciler forwards the attestation with its `completed` settlement. The host
 payment track checks it and removes it before settlement storage and notice
 publication. Seller intake and wallet recovery authentication also require
 literal `execution: "executed"` before delivery or settlement accounting.
+Wallet recovery independently requires the observed nonce to be a safe
+non-negative integer equal to the prepared nonce; missing, malformed,
+negative-zero or conflicting values retain the wallet hold and leave both
+service and fee accounting unchanged.
 
 ## Node behaviour this depends on
 

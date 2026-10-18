@@ -8,6 +8,7 @@ import {
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
   settlementKey,
+  observePayDemTransferCore,
   type DemosTransferObservation,
   type PayDemRail,
   type PayDemRailResult,
@@ -186,12 +187,13 @@ function recoveryEffectId(payment = recoveryPayment()): string {
 function recoveryEvidenceDatabase(
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
   withPreparedCheckpoint: boolean,
+  nonce = 7,
 ): DacsNodeSqliteDatabase {
   const effectId = recoveryEffectId(payment);
   const checkpoint = {
     value: {
       txHash: TX_HASH,
-      nonce: 7,
+      nonce,
       payer: payment.payer,
       payee: payment.payee,
       amountOs: payment.amountOs,
@@ -1530,6 +1532,7 @@ describe("native DEM buyer payment track", () => {
     chain = {
       status: "included",
       execution: "executed",
+      nonce: 7,
       txHash: TX_HASH,
       payer: PAYER,
       payee: PAYEE,
@@ -1562,7 +1565,7 @@ describe("native DEM buyer payment track", () => {
     const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
       database: recoveryEvidenceDatabase(payment, true),
       observeDemosTransfer: async () => ({
-        status: "included", txHash: TX_HASH, payer: PAYER, payee: PAYEE,
+        status: "included", nonce: 7, txHash: TX_HASH, payer: PAYER, payee: PAYEE,
         amountOs: payment.amountOs, blockNumber: 42, includedAt: 1_780_000_000_000,
         ...attestation,
       }) as DemosTransferObservation,
@@ -1585,6 +1588,108 @@ describe("native DEM buyer payment track", () => {
       assets: [{ cumulativeSettledDebit: "0", reservedWorstCaseDebit: payment.maxTotalDebitOs }] });
   });
 
+  it.each([
+    ["missing", {}],
+    ["undefined", { nonce: undefined }],
+    ["wrong", { nonce: 8 }],
+    ["zero", { nonce: 0 }],
+    ["negative zero", { nonce: -0 }],
+    ["negative", { nonce: -1 }],
+    ["fractional", { nonce: 7.5 }],
+    ["unsafe", { nonce: Number.MAX_SAFE_INTEGER + 1 }],
+    ["NaN", { nonce: NaN }],
+    ["infinite", { nonce: Infinity }],
+    ["string", { nonce: "7" }],
+    ["bigint", { nonce: 7n }],
+    ["null", { nonce: null }],
+    ["boolean", { nonce: true }],
+  ] as const)("retains the wallet hold for %s observed nonce", async (_label, nonce) => {
+    const payment = recoveryPayment();
+    const reservation = recoveryReservation(payment);
+    const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+      database: recoveryEvidenceDatabase(payment, true, _label === "negative zero" ? 0 : 7),
+      observeDemosTransfer: async () => ({
+        status: "included", execution: "executed", txHash: TX_HASH,
+        payer: PAYER, payee: PAYEE, amountOs: payment.amountOs,
+        blockNumber: 42, includedAt: 1_780_000_000_000, ...nonce,
+      }) as DemosTransferObservation,
+    });
+    const wallet = recoveryWalletAuthority(authenticateRecovery, { value: 1_000 });
+    const claim = await wallet.reserve(reservation);
+    if (claim.status !== "reserved") throw new Error("expected wallet permit");
+    await claim.permit.beginEffect();
+    const before = await wallet.inspect();
+    await expect(claim.permit.settle({
+      disposition: "settled", evidenceHash: TX_HASH,
+      debits: [
+        { asset: "DEM", purpose: "service", amount: payment.amountOs },
+        { asset: "DEM", purpose: "network-fee", amount:
+          (BigInt(payment.maxTotalDebitOs) - BigInt(payment.amountOs)).toString() },
+      ],
+    })).rejects.toThrow(/authentication failed/);
+    expect(await wallet.inspect()).toEqual(before);
+    expect(before).toMatchObject({ activeEffects: 1,
+      assets: [{ cumulativeSettledDebit: "0", reservedWorstCaseDebit: payment.maxTotalDebitOs }] });
+    await expect(wallet.reserve(reservation)).resolves.toMatchObject({
+      status: "held", stage: "effect-pending",
+    });
+  });
+
+  it.each([
+    { preparedNonce: 7, recordNonce: 7, accepted: true },
+    { preparedNonce: 7, recordNonce: 8, accepted: false },
+    { preparedNonce: 0, recordNonce: 0, accepted: true },
+    { preparedNonce: Number.MAX_SAFE_INTEGER, recordNonce: Number.MAX_SAFE_INTEGER,
+      accepted: true },
+  ])("binds default-observer nonce $recordNonce to prepared nonce $preparedNonce", async ({
+    preparedNonce, recordNonce, accepted,
+  }) => {
+    const payment = recoveryPayment();
+    const reservation = recoveryReservation(payment);
+    const chain = await observePayDemTransferCore(TX_HASH, {
+      getTransactionStatus: async () => ({ state: "included", blockNumber: 42 }),
+      getTxByHash: async () => ({
+        hash: TX_HASH, status: "confirmed", blockNumber: 42,
+        content: {
+          type: "native", nonce: String(recordNonce), from: PAYER, to: PAYEE,
+          amount: payment.amountOs,
+          data: ["native", { nativeOperation: "send", args: [PAYEE, payment.amountOs] }],
+        },
+      }),
+      getBlockByNumber: async () => ({
+        number: 42, status: "confirmed",
+        content: { timestamp: 1, ordered_transactions: [TX_HASH] },
+      }),
+    });
+    expect(chain).toMatchObject({ status: "included", execution: "executed", nonce: recordNonce });
+    const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+      database: recoveryEvidenceDatabase(payment, true, preparedNonce),
+      observeDemosTransfer: async () => chain,
+    });
+    const wallet = recoveryWalletAuthority(authenticateRecovery, { value: 1_000 });
+    const claim = await wallet.reserve(reservation);
+    if (claim.status !== "reserved") throw new Error("expected wallet permit");
+    await claim.permit.beginEffect();
+    const before = await wallet.inspect();
+    const exact = {
+      disposition: "settled" as const, evidenceHash: TX_HASH,
+      debits: [
+        { asset: "DEM", purpose: "service" as const, amount: payment.amountOs },
+        { asset: "DEM", purpose: "network-fee" as const, amount:
+          (BigInt(payment.maxTotalDebitOs) - BigInt(payment.amountOs)).toString() },
+      ],
+    };
+    await expect(authenticateRecovery(reservation, exact)).resolves.toBe(accepted);
+    if (accepted) {
+      await expect(claim.permit.settle(exact)).resolves.toBeUndefined();
+      expect(await wallet.inspect()).toMatchObject({ activeEffects: 0,
+        assets: [{ cumulativeSettledDebit: payment.maxTotalDebitOs, reservedWorstCaseDebit: "0" }] });
+    } else {
+      await expect(claim.permit.settle(exact)).rejects.toThrow(/authentication failed/);
+      expect(await wallet.inspect()).toEqual(before);
+    }
+  });
+
   it("captures DEM recovery capabilities once with their original receivers", async () => {
     const payment = recoveryPayment();
     const retained = recoveryEvidenceDatabase(payment, true);
@@ -1603,6 +1708,7 @@ describe("native DEM buyer payment track", () => {
     const chain: DemosTransferObservation = {
       status: "included",
       execution: "executed",
+      nonce: 7,
       txHash: TX_HASH,
       payer: PAYER,
       payee: PAYEE,
