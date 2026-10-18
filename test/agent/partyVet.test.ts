@@ -1839,6 +1839,12 @@ describe("partyVetCore durable party-level producer", () => {
       if (identity.presentation.kind !== "siwd") throw new Error("expected signed presentation");
       expect(ed25519Verify(signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(identity)),
         Buffer.from(identity.presentation.signature, "hex"), publicKeyFromRaw(PRESENTER_KEY))).toBe(true);
+      expect(aggregatePresenceAwareCompositeVerification({ bundle: identity, evaluatedAt: NOW,
+        verified: [], requirement: { requirementVersion: "1", required: [], oneOf: requirement.oneOf } })).toBe("pass");
+      expect(aggregatePresenceAwareCompositeVerification({ bundle: identity, evaluatedAt: NOW,
+        verified: [], requirement: { requirementVersion: "1", required: [], oneOf: [[
+          { scheme: "lei", verificationRequired: false },
+        ]] } })).toBe("fail");
       expect(aggregatePresenceAwareCompositeVerification({ bundle: identity, requirement, evaluatedAt: NOW,
         verified: [], presentedClaimControlled: true })).toBe("pass");
       expect(classifyPresenceClaimRequirement(identity, { scheme: "domain", verificationRequired: false }, NOW, subject)).toBe("pass");
