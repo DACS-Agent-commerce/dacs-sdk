@@ -193,6 +193,46 @@ describe("Demos CCI raw response boundary", () => {
     expect(response.body?.locked).toBe(false);
   });
 
+  const MiB2 = DEMOS_CCI_RESPONSE_LIMITS.maxEncodedBytes;
+  it.each<[string, number, number[], number[]]>([
+    ["a small body under the default ceiling", MiB2, [300], [65_536]],
+    ["a ceiling below 64 KiB", 1_000, [300, 700], [1_000]],
+    ["chunks that double it up to the default ceiling", MiB2,
+      [...Array<number>(52).fill(40_000), MiB2 - 52 * 40_000],
+      [65_536, 131_072, 262_144, 524_288, 1_048_576, MiB2]],
+    ["a chunk larger than twice the buffer", MiB2, [10, 300_000, 1], [65_536, 300_010, 600_020]],
+    ["a ceiling that is not a power of two", 100_000, [40_000, 40_000, 20_000], [65_536, 100_000]],
+  ])("grows its body buffer only as bytes arrive: %s", async (_case, maxBytes, sizes, expected) => {
+    const total = sizes.reduce((sum, size) => sum + size, 0);
+    const text = "0123456789abcdef".repeat(Math.ceil(total / 16)).slice(0, total - 2);
+    const bytes = new TextEncoder().encode(JSON.stringify(text));
+    const chunks = sizes.map((size, index) => {
+      const offset = sizes.slice(0, index).reduce((sum, earlier) => sum + earlier, 0);
+      return bytes.subarray(offset, offset + size);
+    });
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk === undefined) controller.close();
+        else controller.enqueue(chunk);
+      },
+    }, { highWaterMark: 0 }));
+    const allocations: number[] = [];
+    vi.stubGlobal("Uint8Array", new Proxy(Uint8Array, {
+      construct(target, args) {
+        const buffer = Reflect.construct(target, args) as Uint8Array;
+        allocations.push(buffer.byteLength);
+        return buffer;
+      },
+    }));
+
+    await expect(readDemosCciResponse(
+      RPC, "subject", async () => ({}), async () => response, maxBytes, 5_000, 12_000,
+    )).resolves.toBe(text);
+
+    expect(allocations).toEqual(expected);
+  });
+
   it("counts UTF-8 bytes rather than characters", async () => {
     const json = JSON.stringify({ response: { web2: { github: [{ username: "é" }] } } });
     const { adapter } = adapterFor(new Response(json), json.length);

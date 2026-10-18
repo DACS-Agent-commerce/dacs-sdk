@@ -158,10 +158,16 @@ function responseTooLarge(): DacsError {
   return new DacsError("Demos GCR identity response exceeds maxResponseBytes");
 }
 
+// The body buffer's first size; it grows only as received bytes need it.
+const INITIAL_BODY_BYTES = 64 * 1024;
+
 // Follow x402Outbound's bounded-read pattern: check declared length, then
-// count and own each streamed chunk before retaining it. Never call json().
-// Peak memory per read is about 2 × maxBytes (the chunks, then their copy into
-// one buffer) plus the one transport chunk that is checked before it is kept.
+// count each streamed chunk and copy it into an owned buffer before keeping
+// it. Never call json(). The buffer starts at 64 KiB (or maxBytes if smaller)
+// and at least doubles, up to maxBytes, only when a received chunk needs room,
+// so past 64 KiB it stays under twice the bytes received. Peak memory is under
+// 2 × maxBytes, while one buffer is copied into its replacement, plus the one
+// transport chunk that is checked before it is kept.
 async function consumeBoundedBody(
   response: Response,
   maxBytes: number,
@@ -175,8 +181,9 @@ async function consumeBoundedBody(
   }
   if (response.body === null) return new Uint8Array();
   const reader = response.body.getReader();
-  // One owned allocation bounds overhead even for arbitrarily tiny/empty chunks.
-  const combined = new Uint8Array(maxBytes);
+  // One owned buffer, not a chunk list, bounds overhead even for arbitrarily
+  // tiny or empty chunks.
+  let combined = new Uint8Array(Math.min(INITIAL_BODY_BYTES, maxBytes));
   let total = 0;
   const abort = () => {
     void reader.cancel(signal.reason).catch(() => undefined);
@@ -192,6 +199,13 @@ async function consumeBoundedBody(
       const prospectiveTotal = total + next.value.byteLength;
       if (prospectiveTotal > maxBytes) throw responseTooLarge();
       if (next.value.byteLength === 0) continue;
+      if (prospectiveTotal > combined.byteLength) {
+        const grown = new Uint8Array(
+          Math.min(maxBytes, Math.max(prospectiveTotal, 2 * combined.byteLength)),
+        );
+        grown.set(combined.subarray(0, total));
+        combined = grown;
+      }
       combined.set(next.value, total);
       total = prospectiveTotal;
     }

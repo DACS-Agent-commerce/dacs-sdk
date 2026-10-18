@@ -146,10 +146,14 @@ message `Demos GCR identity response redirect refused`.
 
 `DemosAdapterConfig.identityMaxResponseBytes` can tighten the raw ceiling to a
 positive safe integer; values above the hard maximum of 2,097,152 are rejected
-at construction. The default is also the hard maximum. The raw reader retains
-one buffer of the configured ceiling, plus the one transport chunk that is
-checked before it is copied. Empty chunks are discarded, and tiny chunks do
-not add retained allocations. Structural
+at construction. The default is also the hard maximum. The raw reader copies
+the body into one buffer that starts at 64 KiB (or the ceiling, if smaller) and
+at least doubles, never beyond the ceiling, only when received bytes need the
+room. A small response therefore holds 64 KiB, not the ceiling; at its peak,
+while the buffer is copied into a larger one, a read holds under twice the
+ceiling, plus the one transport chunk that is checked before it is copied.
+Empty chunks are discarded, and tiny chunks do not add retained allocations.
+Structural
 limits remain fixed. `DemosAdapterConfig.identityFetch` optionally injects a Fetch-compatible
 raw response transport for CCI reads; it must return a streamed `Response`,
 without decoding or prebuffering the body. The adapter owns byte counting and

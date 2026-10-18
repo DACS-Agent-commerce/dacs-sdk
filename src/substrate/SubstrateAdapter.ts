@@ -24,8 +24,10 @@ export interface DemosAdapterConfig {
    */
   chainIdentity?: string;
   /**
-   * Raw identity response ceiling: default/max 2 MiB; positive safe integer only.
-   * A read holds at most about twice this many bytes, plus one transport chunk.
+   * Raw identity response ceiling (forward and reverse CCI reads): default/max
+   * 2 MiB; positive safe integer only. A read's buffer starts at 64 KiB and grows
+   * only as bytes arrive; at its peak, while growing, a read holds under twice
+   * this many bytes, plus one transport chunk.
    */
   identityMaxResponseBytes?: number;
   /**
