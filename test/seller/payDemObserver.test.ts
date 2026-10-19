@@ -158,7 +158,9 @@ describe("pay-DEM seller observation (DACS-4 §9.5.9)", () => {
     },
   );
 
-  it.each([undefined, null, "", "-1", "1.5", "07", "7 ", "9007199254740992", -1, -0, 1.5])(
+  // `[[7]]` passes the array `[7]`, which a coercing digit check would read as 7.
+  it.each([undefined, null, "", "-1", "1.5", "07", "7 ", "9007199254740992", -1, -0, 1.5,
+    [[7]], true])(
     "withholds execution for invalid confirmed-record nonce %j", async (nonce) => {
       const fixture = includedFixture();
       fixture.transaction.status = "confirmed";
