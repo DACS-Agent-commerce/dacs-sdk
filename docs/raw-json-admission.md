@@ -115,6 +115,8 @@ and SPL signing/broadcast. A caller-supplied store, rail, provider or fence
 cannot admit the current release. Fresh `dacsX402AuthorizationNonce` derivation requires release admission;
 `verifyDacsX402AuthorizationNonce` remains read-only. Both accept exact JID-1
 identifiers; historical Unicode spellings are not repaired into current jobs.
+Derivation throws for any other job ID; verification returns `malformed` for it,
+even when the presented nonce is that job's pre-JID-1 derivation.
 
 The AP2, SPL, durable x402 buyer and x402 paywall coordinators expose
 `reconcileOnly: true` to inspect retained state while disabling submission,

@@ -1,4 +1,4 @@
-import { requireCurrentJobId } from "../canonical/addressing.js";
+import { isCurrentJobId, requireCurrentJobId } from "../canonical/addressing.js";
 import { assertDacsRailEffectAdmission } from "./currentProfileAdmission.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { sha256Hex } from "../canonical/index.js";
@@ -673,13 +673,17 @@ export type DacsX402BindingVerdict =
  * Recompute and classify the normative textual EIP-3009 nonce form. A
  * well-formed mismatch is a hard SB-3 rejection; malformed input is an error,
  * not the absent/unverifiable fallback used when no binding can be recovered.
+ * A job ID outside JID-1 is that `malformed` verdict (CORE JID-4), returned
+ * before any derivation and never repaired into a match.
  */
 export async function verifyDacsX402AuthorizationNonce(
   input: { jobId: string; phaseIndex: number },
   presentedNonce: string,
 ): Promise<DacsX402BindingVerdict> {
   if (!/^0x[0-9a-f]{64}$/.test(presentedNonce)) return "malformed";
-  return presentedNonce === await authorizationNonceForRead(input)
+  const jobId = input?.jobId;
+  if (!isCurrentJobId(jobId)) return "malformed";
+  return presentedNonce === await authorizationNonceForRead({ jobId, phaseIndex: input.phaseIndex })
     ? "present-and-matches"
     : "present-and-mismatches";
 }

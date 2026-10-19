@@ -61,6 +61,41 @@ describe("DACS EIP-3009 session binding", () => {
     expect(await verifyDacsX402AuthorizationNonce(input, `0x${"A".repeat(64)}`)).toBe("malformed");
   });
 
+  // CORE JID-4 and DACS-4 SB-3: a malformed job operand is the `error`
+  // verdict, returned rather than raised, and is never repaired into a match.
+  test("returns malformed for a job ID outside JID-1, even with its pre-JID-1 nonce", async () => {
+    const cases = [
+      // sha256("dacs-sb3:v1:legacy-job:3"), the pre-JID-1 derivation.
+      ["legacy-job", "0xe284a4e804141bef42b8e52893d5fc2efb7b037092f80810f42147523d75e113"],
+      // sha256("dacs-sb3:v1:01arz3ndektsv4rrffq69g5fav:3"): no case folding.
+      ["01arz3ndektsv4rrffq69g5fav", "0xb2feeb58708e398de551be1d0a277eede865af5a4ff9976f1e342ab190c6ba10"],
+      ["01ARZ3NDEKTSV4RRFFQ69G5FAV\n", "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
+      ["café-job", "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
+      ["", "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
+      [undefined, "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
+    ] as const;
+    for (const [jobId, nonce] of cases) {
+      expect(await verifyDacsX402AuthorizationNonce(
+        { jobId: jobId as string, phaseIndex: 3 },
+        nonce,
+      )).toBe("malformed");
+    }
+
+    let reads = 0;
+    const input = {
+      get jobId() {
+        reads++;
+        return reads === 1 ? "01ARZ3NDEKTSV4RRFFQ69G5FAV" : "legacy-job";
+      },
+      phaseIndex: 3,
+    };
+    expect(await verifyDacsX402AuthorizationNonce(
+      input,
+      "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2",
+    )).toBe("present-and-matches");
+    expect(reads).toBe(1);
+  });
+
   test("the three normative retry cases retain the same derived nonce", async () => {
     const input = { jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 3 };
     const expected = "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2";
