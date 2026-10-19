@@ -199,6 +199,21 @@ describe("pay-dem retained identity conflict quarantine", () => {
     expect(reconcile).not.toHaveBeenCalled();
   });
 
+  test("an in-process indeterminate result for the retained hash does not block its audit", async () => {
+    const submit = vi.fn(async () => ({ ok: false as const, txHash: hashA, payer, payee, chainId: "demos" }));
+    const store = createIdempotencyStore();
+    const once = vi.spyOn(store, "once");
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed());
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    await expect(settle(request)).resolves.toMatchObject({ ok: false, txHash: hashA });
+    // The held result has no block or failure class; finality is read later.
+    await expect(settle(history(hashA, false)))
+      .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
+    expect(once).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
   test("a delayed submit cannot be overtaken by a conflicting history audit", async () => {
     let finish!: () => void;
     let started!: () => void;
