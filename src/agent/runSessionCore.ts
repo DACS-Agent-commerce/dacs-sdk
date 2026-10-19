@@ -18,6 +18,7 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
+import { DEM_DECIMALS } from "../rails/payDem.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
   isComponentSignature,
@@ -285,7 +286,8 @@ export interface SessionDeps {
   /**
    * Restart-safe recovery for a previously claimed settlement whose SessionStore
    * still carries only `settle:intent`, or for reauthenticating saved native
-   * success checkpoints and anchored success evidence on every restart.
+   * DEM outcomes (success or permanent failure, checkpoint or anchored
+   * evidence) on every restart, including a re-run of a completed session.
    *
    * This MUST use the original `(rail, jobId, phaseIndex)` idempotency binding,
    * return the prior definitive result when payment landed, and throw while state
@@ -301,10 +303,20 @@ export interface SessionDeps {
    * Callers may then wire the same wrapper as both `settle` and
    * `resumeSettlement`.
    *
-   * For a saved native success this is a read-only audit of the original
-   * transfer's execution, including its retained signed nonce. Return executed
-   * success or a bound permanent failure for that hash; throw on absence or
-   * indeterminate observations. Neither outcome authorizes another broadcast.
+   * For a saved native outcome this is a read-only audit of the original
+   * transfer's execution. Return success only for a `confirmed` record, or a
+   * bound permanent failure, for the retained hash; throw on absence or
+   * indeterminate observations. Neither outcome authorizes another broadcast,
+   * and a different native transaction is refused. The session has no signed
+   * nonce for a success: it requires the hash, network, parties, block,
+   * txRefKind, finality and any saved `networkFeeOs` to match the saved
+   * record, and a saved failure proof (nonce included) to be returned
+   * byte-for-byte. Checking the node record against the retained
+   * prepared-transfer journal, signed nonce included, is this implementation's
+   * job (`payDemSettle` gives its `reconcile` the retained hash for that). The
+   * session also trusts this seam's `ok: true` as it trusts `settle`'s:
+   * `payDemSettle` requires `execution: "executed"` from its reconciler, and a
+   * custom native implementation must apply the same check itself.
    *
    * `runSessionCore` deliberately does not call the ordinary `settle` seam under
    * an unresolved SessionStore intent because it cannot assume every implementation
@@ -2119,9 +2131,12 @@ function validateSettlementResultBinding(
   label: string,
 ): void {
   if (result.errorClass !== undefined &&
-      (request.phase !== "pay-dem" || request.asset !== "DEM" ||
-        !hasDefinitiveDemosFailure(result, baseUnits(request.amount, 9)))) {
+      (!isNativeSettlement(request) ||
+        !hasDefinitiveDemosFailure(result, baseUnits(request.amount, DEM_DECIMALS)))) {
     throw new CounterpartyError(`${label} terminal failure does not bind the payment amount and rail`);
+  }
+  if (result.networkFeeOs !== undefined && !isNativeSettlement(request)) {
+    throw new CounterpartyError(`${label} returned a native DEM network fee for a non-native settlement`);
   }
   if (result.payee !== request.expectedPayee) {
     throw new CounterpartyError(
@@ -2210,6 +2225,11 @@ function isNativeSettlement(binding: Pick<SettlementBinding, "phase" | "asset">)
   return binding.phase === "pay-dem" && binding.asset === "DEM";
 }
 
+/**
+ * The audit must re-assert every chain fact the saved success claims: block,
+ * kind and, to keep the success, finality and a saved fee. Only the original
+ * observation time is kept without an echo; it is not a chain fact.
+ */
 function canReauthenticateNativeSuccess(
   prior: DurableSettlementOutcome,
   next: DurableSettlementOutcome,
@@ -2218,11 +2238,28 @@ function canReauthenticateNativeSuccess(
     sameSettlementBinding(prior, next) &&
     prior.txHash === next.txHash && prior.chainId === next.chainId &&
     prior.payer === next.payer && prior.payee === next.payee &&
-    (prior.blockNumber === undefined || prior.blockNumber === next.blockNumber) &&
-    (prior.txRefKind === undefined || prior.txRefKind === next.txRefKind) &&
-    (prior.networkFeeOs === undefined || next.networkFeeOs === undefined ||
-      prior.networkFeeOs === next.networkFeeOs) &&
-    (next.ok || next.errorClass === "permanent");
+    prior.blockNumber === next.blockNumber &&
+    prior.txRefKind === next.txRefKind &&
+    (next.ok
+      ? (prior.networkFeeOs === undefined || prior.networkFeeOs === next.networkFeeOs) &&
+        prior.finalityModel === next.finalityModel &&
+        prior.finalityBlocks === next.finalityBlocks &&
+        prior.finalityCommitmentLevel === next.finalityCommitmentLevel
+      : next.errorClass === "permanent");
+}
+
+/** A saved native failure is reused only when the rail re-reads the exact proof. */
+function canReauthenticateNativeFailure(
+  prior: DurableSettlementOutcome,
+  next: DurableSettlementOutcome,
+): boolean {
+  return !prior.ok && prior.errorClass === "permanent" && isNativeSettlement(prior) &&
+    sameSettlementBinding(prior, next) && !next.ok && next.errorClass === "permanent" &&
+    prior.txHash === next.txHash && prior.chainId === next.chainId &&
+    prior.payer === next.payer && prior.payee === next.payee &&
+    prior.blockNumber === next.blockNumber && prior.txRefKind === next.txRefKind &&
+    prior.failureProofJson === next.failureProofJson &&
+    (prior.networkFeeOs === undefined || prior.networkFeeOs === next.networkFeeOs);
 }
 
 function sameAuthenticatedEvidenceOutcome(
@@ -2414,7 +2451,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
                 ...data, ok, txHash, chainId,
                 payer: data.payer as string, payee: data.payee as string,
                 failureProof: JSON.parse(data.failureProofJson),
-              }, baseUnits(amount, 9))) {
+              }, baseUnits(amount, DEM_DECIMALS))) {
             return { status: "invalid", reason: "invalid durable terminal-failure proof" };
           }
         } catch {
@@ -2465,7 +2502,8 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         payee.length === 0 ||
         payee.trim() !== payee ||
         (data.networkFeeOs !== undefined &&
-          (typeof data.networkFeeOs !== "string" ||
+          (phase !== "pay-dem" || asset !== "DEM" ||
+            typeof data.networkFeeOs !== "string" ||
             !/^(?:0|[1-9][0-9]*)$/.test(data.networkFeeOs))) ||
         finality === null ||
         (blockNumber !== undefined &&
@@ -4284,6 +4322,19 @@ export async function runSessionCore(
         ? { txHash: prior.txHash, chainId: prior.chainId, ok: prior.ok }
         : undefined,
     );
+    // A native transfer is never replaced (no supersession): while a retained
+    // hash is unresolved, neither another hash nor absence may close the phase.
+    if (isNativeSettlement(expectedSettlementBinding)) {
+      const retained = [...priorAttempts, ...(prior ? [prior] : [])]
+        .filter((attempt) => attempt.txHash.length > 0);
+      if (retained.some((attempt) =>
+        attempt.txHash !== outcome.txHash || attempt.chainId !== outcome.chainId)) {
+        throw new CounterpartyError(
+          `native settlement recovery returned ${outcome.chainId}:${outcome.txHash || "no transaction"}, ` +
+            "not the retained transfer; a native transfer is never replaced",
+        );
+      }
+    }
     if (prior) {
       if (
         prior.ok &&
@@ -4305,18 +4356,24 @@ export async function runSessionCore(
         throw new CounterpartyError(
           "settlement recovery contradicted a previously successful durable outcome",
         );
+      } else if ("outcomeSource" in prior && prior.errorClass === "permanent" &&
+          !canReauthenticateNativeFailure(prior, outcome)) {
+        throw new CounterpartyError(
+          "native settlement failure proof conflicts with the rail re-read; the payment remains indeterminate",
+        );
       }
     }
     // Existing signed evidence is immutable. Audit it without writing a second
     // outcome underneath it; the caller refuses any contradiction.
     if (!persist) return outcome;
-    if (prior && "outcomeSource" in prior && prior.ok && outcome.ok &&
-        canReauthenticateNativeSuccess(prior, outcome)) {
-      // Keep the exact checkpoint's fee/finality metadata after authenticating
-      // execution. Observation time or optional fee echoes need not be rebuilt.
+    if (prior && "outcomeSource" in prior &&
+        ((outcome.ok && canReauthenticateNativeSuccess(prior, outcome)) ||
+          canReauthenticateNativeFailure(prior, outcome))) {
+      // The audit re-asserted every chain fact of the exact checkpoint; keep it
+      // (and its original observation time) rather than rebuilding it.
       await bindSettlementTransaction(prior);
       // A slower audit cannot reuse a claim another worker has invalidated.
-      await completeSettlement(prior, "settled");
+      await completeSettlement(prior, prior.ok ? "settled" : "failed");
       return prior;
     }
     // A transaction without successful execution or a bound terminal failure
@@ -4373,6 +4430,9 @@ export async function runSessionCore(
     }
     if (outcome.ok && isNativeSettlement(outcome)) {
       return recoverRailOutcome("saved native success requires execution reconciliation", outcome);
+    }
+    if (outcome.errorClass === "permanent") {
+      return recoverRailOutcome("saved native failure requires execution reconciliation", outcome);
     }
     if (!outcome.ok && outcome.txHash.length > 0 && outcome.errorClass !== "permanent") {
       return recoverRailOutcome(
@@ -4630,6 +4690,13 @@ export async function runSessionCore(
         throw new CounterpartyError(
           `authenticated failure evidence carries transaction ${evidenceOutcome.chainId}:${evidenceOutcome.txHash}; ` +
             "the payment remains indeterminate and cannot become a terminal checkpoint",
+        );
+      }
+      if (!evidenceOutcome.ok && recorded.status === "current-rail" &&
+          recorded.outcome.errorClass === "permanent") {
+        // The saved proof is reported again only after the rail re-reads it.
+        await recoverRailOutcome(
+          "saved native failure evidence requires execution reconciliation", recorded.outcome, false,
         );
       }
       if (recorded.status === "absent") {

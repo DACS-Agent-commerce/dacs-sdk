@@ -5,6 +5,7 @@ import {
   runSessionCore,
   sessionAnchorName,
   type SessionDeps,
+  type SettleRequest,
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import { payDemSettle } from "../../src/rails/payDem.js";
@@ -1023,9 +1024,54 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       await expect(runSessionCore(wrongKind.listingRef, demTerms, wrongKind.deps, "job-1"))
         .rejects.toThrow(/payment remains indeterminate/);
     }
+    // A saved proof is reported again only when the rail re-reads it exactly:
+    // the signed nonce and inclusion block are bound, not just self-consistent.
+    const beforeAudit = await store.load("job-1");
+    const beforeAuditKv = structuredClone([...kv]);
+    for (const tamper of ["nonce", "consistent block", "rail reads success", "missing reconciler"]) {
+      let tamperAudits = 0;
+      const tampered = await makeDeps({ ...store, load: async (jobId) => {
+        const value = await store.load(jobId);
+        if (value.status !== "ok") return value;
+        const record = structuredClone(value.record);
+        const cp = record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome")!;
+        if (tamper === "nonce") {
+          cp.data!.failureProofJson = JSON.stringify({ ...failure.failureProof, nonce: 10 });
+        } else if (tamper === "consistent block") {
+          cp.data!.blockNumber = 43;
+          cp.data!.failureProofJson = JSON.stringify({ ...failure.failureProof, blockNumber: 43 });
+        }
+        return { status: "ok" as const, record };
+      } }, { kv,
+        settle: async () => { throw new Error("must not resubmit a tampered failure"); },
+        ...(tamper === "missing reconciler" ? {} : { resumeSettlement: async (): Promise<SettleResult> => {
+          tamperAudits += 1;
+          return tamper === "rail reads success"
+            ? { ok: true, txHash, chainId: network, payer, payee: failure.payee, blockNumber: 42,
+              txRefKind: "demos", finality: { model: "bft-final" } }
+            : failure;
+        } }),
+      });
+      if (mode === "recovered") tampered.deps.expectedSettlementPayee = payee;
+      await expect(runSessionCore(tampered.listingRef, demTerms, tampered.deps, "job-1")).rejects.toThrow(
+        tamper === "missing reconciler" ? /requires authenticated rail reconciliation/
+          : tamper === "consistent block" && anchorCommitted ? /payment remains indeterminate/
+            : /failure proof conflicts with the rail re-read/,
+      );
+      expect(tamperAudits).toBe(tamper === "missing reconciler" ||
+        (tamper === "consistent block" && anchorCommitted) ? 0 : 1);
+      expect(tampered.settleCalls.n).toBe(0);
+      expect(await store.load("job-1")).toEqual(beforeAudit);
+      expect([...kv]).toEqual(beforeAuditKv);
+    }
+    let audits = 0;
     const resumed = await makeDeps(store, { kv,
       settle: async () => { throw new Error("must not resubmit"); },
-      resumeSettlement: async () => { throw new Error("must not reconcile terminal failure"); },
+      resumeSettlement: async (req) => {
+        audits += 1;
+        expect(req.priorAttempts).toEqual([{ txHash, chainId: network, ok: false }]);
+        return failure;
+      },
     });
     if (mode === "recovered") resumed.deps.expectedSettlementPayee = payee;
     await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
@@ -1039,6 +1085,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       .toEqual([outcome!.data]);
     expect(submissions).toBe(1);
     expect(recoveries).toBe(mode === "recovered" ? 1 : 0);
+    expect(audits).toBe(2);
     const evidence = kv.get(`stor:${sessionAnchorName.evidence("job-1")}`);
     expect(evidence).toMatchObject({ outcome: "failure" });
     expect(evidence).not.toHaveProperty("settlementFinality");
@@ -1131,7 +1178,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       });
       const resumed = await makeDeps(legacyStore, { kv,
         resumeSettlement: async (req) => {
-          expect(req.priorAttempts?.at(-1)).toMatchObject({ txHash, chainId: "demos", ok: true });
+          expect(req.priorAttempts?.[0]).toMatchObject({ txHash, chainId: "demos", ok: true });
+          expect(req.priorAttempts?.every((attempt) => attempt.txHash === txHash)).toBe(true);
           return audit(req);
         },
       });
@@ -1144,7 +1192,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         expect([...kv]).toEqual(beforeEvidence);
       } else if (saved.startsWith("anchor")) {
         await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-          .rejects.toThrow(/success evidence.*execution|execution.*success evidence/);
+          .rejects.toThrow("saved native success evidence contradicts chain execution");
+        // Anchored evidence is immutable: the audit writes no outcome under it.
+        expect(await store.load("job-1")).toEqual(before);
+        expect([...kv]).toEqual(beforeEvidence);
       } else {
         await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
           .resolves.toMatchObject({ outcome: "failed" });
@@ -1168,7 +1219,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           .rejects.toThrow(/conflicting|invalid|indeterminate/);
         expect(stale.settleCalls.n).toBe(0);
       }
-      expect(reconciliations).toBe(journalAvailable ? 1 : 2);
+      // The demoted failure is itself re-read on the later resume.
+      expect(reconciliations).toBe(journalAvailable && saved.startsWith("anchor") ? 1 : 2);
       expect(once).not.toHaveBeenCalled();
       expect(broadcasts).toBe(0);
       expect(resumed.settleCalls.n).toBe(0);
@@ -1223,7 +1275,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
   });
 
   test.each(["checkpoint", "anchored evidence"].flatMap((saved) =>
-    ["absent", "indeterminate", "timeout", "hash", "network", "payer", "payee", "block", "fee", "proof amount", "stale success", "missing reconciler"]
+    ["absent", "indeterminate", "timeout", "hash", "network", "payer", "payee", "block", "block omitted", "fee",
+      "fee omitted", "saved block deleted", "saved kind deleted", "proof amount", "stale success",
+      "missing reconciler"]
       .map((reply) => ({ saved, reply }))),
   )("withholds saved native success from $saved on $reply without a second debit", async ({ saved, reply }) => {
     const store = createInMemorySessionStore();
@@ -1246,7 +1300,17 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("audit crash");
     const before = await store.load("job-1");
     let reconciliations = 0;
-    const resumed = await makeDeps(store, { kv, ...(reply === "missing reconciler" ? {} : {
+    // A saved record that lost a chain fact cannot be completed from it.
+    const resumeStore: NonNullable<SessionDeps["sessionStore"]> = !reply.startsWith("saved ") ? store
+      : { ...store, load: async (jobId) => {
+        const value = await store.load(jobId);
+        if (value.status !== "ok") return value;
+        const record = structuredClone(value.record);
+        delete record.checkpoints.find((cp) => cp.stage === "outcome")!
+          .data![reply === "saved block deleted" ? "blockNumber" : "txRefKind"];
+        return { status: "ok" as const, record };
+      } };
+    const resumed = await makeDeps(resumeStore, { kv, ...(reply === "missing reconciler" ? {} : {
       resumeSettlement: async (): Promise<SettleResult> => {
         reconciliations += 1;
         if (reply === "timeout") throw new Error("chain observation timed out");
@@ -1270,7 +1334,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         if (reply === "absent" || reply === "indeterminate") return { ok: false,
           txHash: reply === "absent" ? "" : success.txHash, chainId: success.chainId,
           payer: success.payer, payee: success.payee, blockNumber: 42, txRefKind: "demos" };
-        return { ...success,
+        const { blockNumber: _block, networkFeeOs: _fee, ...unechoed } = success;
+        return { ...(reply === "block omitted" ? { ...unechoed, networkFeeOs: "0" }
+          : reply === "fee omitted" ? { ...unechoed, blockNumber: 42 } : success),
           ...(reply === "hash" ? { txHash: "ef".repeat(32) } : {}),
           ...(reply === "network" ? { chainId: "demos:other" } : {}),
           ...(reply === "payer" ? { payer: "ef".repeat(32) } : {}),
@@ -1280,7 +1346,28 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         };
       },
     }) });
-    await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1")).rejects.toThrow();
+    const conflict = /native settlement execution remains indeterminate or conflicts with the saved success/;
+    const expected: Record<string, RegExp> = {
+      absent: /demos:no transaction, not the retained transfer; a native transfer is never replaced/,
+      indeterminate: conflict,
+      timeout: /chain observation timed out/,
+      hash: /not the retained transfer; a native transfer is never replaced/,
+      network: /demos:other:.* not the retained transfer; a native transfer is never replaced/,
+      payer: conflict,
+      payee: /expected the request-bound destination/,
+      block: conflict,
+      "block omitted": conflict,
+      fee: conflict,
+      "fee omitted": conflict,
+      "saved block deleted": conflict,
+      "saved kind deleted": conflict,
+      "proof amount": /terminal failure does not bind the payment amount and rail/,
+      "stale success": saved === "checkpoint"
+        ? /existing outcome conflicts with/ : /authenticated evidence conflicts with the durable rail outcome/,
+      "missing reconciler": /requires authenticated rail reconciliation/,
+    };
+    await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+      .rejects.toThrow(expected[reply]);
     expect(reconciliations).toBe(reply === "missing reconciler" ? 0 : 1);
     expect(resumed.settleCalls.n).toBe(0);
     const after = await store.load("job-1");
@@ -1320,18 +1407,27 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const checkpoint = loaded.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
     expect(checkpoint?.data).toMatchObject({ ok: true, networkFeeOs });
     let reconciliations = 0;
-    const resumed = await makeDeps(store, { kv, resumeSettlement: async (req) => {
+    const reconcileWith = (echoFee: boolean) => async (req: SettleRequest): Promise<SettleResult> => {
       reconciliations += 1;
       expect(req.priorAttempts?.at(-1)).toMatchObject({ txHash: "cd".repeat(32), ok: true });
       return { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer,
-        payee: req.expectedPayee, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
-    } });
+        payee: req.expectedPayee, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" },
+        ...(echoFee ? { networkFeeOs } : {}) };
+    };
+    // A saved fee is a chain fact the audit must re-assert, not keep unchecked.
+    const before = await store.load("job-1");
+    const unechoed = await makeDeps(store, { kv, resumeSettlement: reconcileWith(false) });
+    await expect(runSessionCore(unechoed.listingRef, demTerms, unechoed.deps, "job-1"))
+      .rejects.toThrow(/remains indeterminate or conflicts with the saved success/);
+    expect(await store.load("job-1")).toEqual(before);
+    expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
+    const resumed = await makeDeps(store, { kv, resumeSettlement: reconcileWith(true) });
     await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
       .resolves.toMatchObject({ outcome: "completed" });
     await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
       .resolves.toMatchObject({ outcome: "completed" });
     expect(transfers).toBe(1);
-    expect(reconciliations).toBe(2);
+    expect(reconciliations).toBe(3);
     const retained = await store.load("job-1");
     expect(retained.status === "ok" && retained.record.checkpoints.find((cp) => cp.stage === "outcome")?.data?.networkFeeOs)
       .toBe(networkFeeOs);
@@ -1365,6 +1461,117 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const loaded = await store.load("job-1");
     expect(loaded.status === "ok" && loaded.record.checkpoints.some((cp) => cp.stage === "outcome"))
       .toBe(false);
+  });
+
+  test("accepts a network fee only from a native DEM settlement, fresh or saved", async () => {
+    const store = createInMemorySessionStore();
+    const f = await makeDeps(store, { settle: async (req) => ({
+      ok: true, txHash: "0xpaid", chainId: "eip155:84532", payer: "0xbuyer", payee: req.expectedPayee,
+      networkFeeOs: "1",
+    }) });
+    await expect(runSessionCore(f.listingRef, terms, f.deps))
+      .rejects.toThrow("settlement rail returned a native DEM network fee for a non-native settlement");
+    expect(f.kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
+    const loaded = await store.load("job-1");
+    expect(loaded.status === "ok" && loaded.record.checkpoints.some((cp) => cp.stage === "outcome"))
+      .toBe(false);
+
+    const saved = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    const first = await makeDeps(saved, { kv, anchor: async (name, value) => {
+      if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor unavailable");
+      kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
+    } });
+    await expect(runSessionCore(first.listingRef, terms, first.deps)).rejects.toThrow("anchor unavailable");
+    const withFee = await makeDeps({ ...saved, load: async (jobId) => {
+      const value = await saved.load(jobId);
+      if (value.status === "ok") {
+        value.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome")!
+          .data!.networkFeeOs = "1";
+      }
+      return value;
+    } }, { kv });
+    await expect(runSessionCore(withFee.listingRef, terms, withFee.deps, "job-1")).rejects.toThrow(/malformed/);
+    expect(withFee.settleCalls.n).toBe(0);
+    expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
+  });
+
+  test.each(["permanent failure", "success", "absence"])(
+    "refuses a native %s for another transaction while the retained transfer is unresolved",
+    async (reply) => {
+      const store = createInMemorySessionStore();
+      const kv = new Map<string, Record<string, unknown>>();
+      kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+        supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+      const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+      const payer = "ab".repeat(32);
+      const payee = sellerDid.split(":").at(-1)!;
+      const hashA = "12".repeat(32);
+      const hashB = "34".repeat(32);
+      const first = await makeDeps(store, { kv, settle: async () => ({ ok: false, txHash: hashA,
+        chainId: "demos", payer, payee: sellerDid, blockNumber: 41, txRefKind: "demos" }) });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/indeterminate/);
+      const before = await store.load("job-1");
+      const beforeKv = structuredClone([...kv]);
+      let recoveries = 0;
+      const resumed = await makeDeps(store, { kv, resumeSettlement: async (req): Promise<SettleResult> => {
+        recoveries += 1;
+        expect(req.priorAttempts).toEqual([{ txHash: hashA, chainId: "demos", ok: false }]);
+        if (reply === "absence") return { ok: false, txHash: "", chainId: "demos", payer, payee: sellerDid };
+        return reply === "success"
+          ? { ok: true, txHash: hashB, chainId: "demos", payer, payee: sellerDid, blockNumber: 42,
+            txRefKind: "demos", finality: { model: "bft-final" } }
+          : { ok: false, txHash: hashB, chainId: "demos", payer, payee: sellerDid, blockNumber: 42,
+            txRefKind: "demos", errorClass: "permanent", failureProof: { kind: "demos-failed-record",
+              txHash: hashB, payer, payee, nonce: 10, blockNumber: 42, amountOs: "1000000000" } };
+      } });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/not the retained transfer; a native transfer is never replaced/);
+      expect(recoveries).toBe(1);
+      expect(await store.load("job-1")).toEqual(before);
+      expect([...kv]).toEqual(beforeKv);
+    },
+  );
+
+  test("a permanent failure saved over a native success is refused when the rail re-reads success", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+      supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    const txHash = "cd".repeat(32);
+    const payer = "ab".repeat(32);
+    const success: SettleResult = { ok: true, txHash, chainId: "demos", payer, payee: sellerDid,
+      blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
+    const first = await makeDeps(store, { kv, settle: async () => success,
+      anchor: async (name, value) => {
+        if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor unavailable");
+        kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
+      },
+    });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("anchor unavailable");
+    // A self-consistent failure record appended by a store writer is the newest entry.
+    const loaded = await store.load("job-1");
+    if (loaded.status !== "ok") throw new Error("missing session");
+    const { finalityModel: _model, ...binding } =
+      loaded.record.checkpoints.find((cp) => cp.stage === "outcome")!.data!;
+    await expect(store.transition({ jobId: "job-1", expectedRevision: loaded.record.revision,
+      phase: "failed", now: 1780000000001, checkpoint: { key: "settle:0", stage: "outcome", data: {
+        ...binding, ok: false, errorClass: "permanent", failureProofJson: JSON.stringify({
+          kind: "demos-failed-record", txHash, payer, payee: sellerDid.split(":").at(-1)!,
+          nonce: 9, blockNumber: 42, amountOs: "1000000000",
+        }),
+      } } })).resolves.toMatchObject({ ok: true });
+    const before = await store.load("job-1");
+    let audits = 0;
+    const resumed = await makeDeps(store, { kv, resumeSettlement: async () => { audits += 1; return success; } });
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/failure proof conflicts with the rail re-read/);
+    }
+    expect(audits).toBe(2);
+    expect(await store.load("job-1")).toEqual(before);
+    expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
   });
 
   test("a transaction-bearing ok:false is durably recorded until reconciliation proves a terminal result", async () => {
@@ -1616,24 +1823,29 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
   });
 
   test.each([
-    { field: "txHash", value: "0xhidden-conflict" },
-    { field: "networkFeeOs", value: "2" },
-  ])("rejects conflicting $field hidden below the newest checkpoint", async ({ field, value }) => {
+    { field: "txHash", value: "0xhidden-conflict", native: false },
+    { field: "networkFeeOs", value: "2", native: true },
+  ])("rejects conflicting $field hidden below the newest checkpoint", async ({ field, value, native }) => {
     const base = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();
+    if (native) {
+      kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+        supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    }
+    const sessionTerms = native
+      ? { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } }
+      : terms;
     let submits = 0;
     const interrupted = await makeDeps(base, {
       kv,
       settle: async (req) => {
         submits += 1;
-        return {
-          ok: true,
-          txHash: "0xlatest-paid",
-          chainId: "eip155:84532",
-          payer: "0xbuyer",
-          payee: req.expectedPayee,
-          networkFeeOs: "1",
-        };
+        return native
+          ? { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
+            payee: req.expectedPayee, blockNumber: 42, txRefKind: "demos",
+            finality: { model: "bft-final" }, networkFeeOs: "1" }
+          : { ok: true, txHash: "0xlatest-paid", chainId: "eip155:84532", payer: "0xbuyer",
+            payee: req.expectedPayee };
       },
       anchor: async (name, value) => {
         if (name === sessionAnchorName.evidence("job-1")) {
@@ -1644,7 +1856,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     });
     await expect(
-      runSessionCore(interrupted.listingRef, terms, interrupted.deps),
+      runSessionCore(interrupted.listingRef, sessionTerms, interrupted.deps),
     ).rejects.toThrow(/stop after durable outcome/);
 
     const conflictingHistoryStore: NonNullable<SessionDeps["sessionStore"]> = {
@@ -1667,7 +1879,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     };
     const resumed = await makeDeps(conflictingHistoryStore, { kv });
     await expect(
-      runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"),
+      runSessionCore(resumed.listingRef, sessionTerms, resumed.deps, "job-1"),
     ).rejects.toThrow(/conflicting entries/);
     expect(submits).toBe(1);
     expect(resumed.settleCalls.n).toBe(0);
