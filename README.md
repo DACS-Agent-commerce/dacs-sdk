@@ -630,13 +630,22 @@ log lost its record. It requires both `settlementStore.readOutcome` and
 recovery must therefore implement the optional `readOutcome` method. For an
 audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plus
 `txHash`, the retained hash in canonical form (64 lower-case hex digits, no
-`0x`; the node treats any other form as not found). The reconciler must load the
-original prepared-transfer journal, check that its signed nonce and tuple match
-that exact hash, and throw when the journal is missing or conflicting. It must
-never return `null` for a hash it cannot tie to the journal. A payment that the
-bridge, its rail log or the session already recorded as successful is never
-reported unpaid: a reconciliation that contradicts it is refused rather than
-returned as a permanent failure (DACS-4 §9.5.1 PC-7).
+`0x`). `getTxByHash` matches that stored form exactly and answers any other form
+as not found; `getTransactionStatus` lower-cases hex but rejects a `0x` prefix,
+so a reader that mixes them can see `included` with no record. The reconciler
+must load the original prepared-transfer journal entry for that hash, bind the
+node's record to it, and return the entry as `preparedTransfer`. The SDK refuses
+the audit unless that entry names the retained hash, the same payer, payee, OS
+amount and network, and a `recovery` tuple equal to this rail, job and phase;
+for a permanent failure its nonce must also be the proof's nonce. So another
+job's transfer of the same amount to the same payee is never counted for this
+one. The reconciler must throw when the journal is missing or conflicting, and
+never return `null` for a hash it cannot tie to the journal. A restart
+reconciliation without history may return the entry too; it is checked the same
+way and never persisted. A payment that the bridge, its rail log or the session
+already recorded as successful is never reported unpaid: a reconciliation that
+contradicts it is refused rather than returned as a permanent failure (DACS-4
+§9.5.1 PC-7).
 
 Every pay-DEM settlement request must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
