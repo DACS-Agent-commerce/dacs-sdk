@@ -1,7 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
@@ -30,14 +29,16 @@ function world(path = "/dacs/v1/payments") {
   const signed = (payload: unknown, signer: ReturnType<typeof party>, domain: string) => ({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString("base64url") });
   const open = (payload = request) => wire.openWireEnvelope(header(signed(payload, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request)), "request", context);
   const artifact = { jobId: request.jobId, listingRef: PIN, parties: [{ role: "buyer", primaryClaim: buyer.claim }, { role: "seller", primaryClaim: seller.claim }], terms: { deadline: NOW + 60_000 } };
-  const delegated = () => {
+  const delegated = (payload = request) => {
     const delegation = signed({ version: "1", kind: "seller-session-delegation", buyer: buyer.claim, seller: seller.claim,
       sessionPublicKey: session.key, listingPin: PIN, jobId: request.jobId, notBefore: NOW - 1000, expiresAt: NOW + 60_000,
       profile: binding.profile }, buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation);
-    return wire.openWireEnvelope(header({ ...signed(request, session, wire.DACS_SELLER_HTTP_DOMAINS.request), delegation }), "request", { ...context, requireDelegation: true });
+    return wire.openWireEnvelope(header({ ...signed(payload, session, wire.DACS_SELLER_HTTP_DOMAINS.request), delegation }), "request", { ...context, requireDelegation: true });
   };
+  /** The buyer-signed (undelegated) request header. */
+  const direct = () => header(signed(request, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request));
   const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW };
-  return { buyer, seller, request, open, delegated, artifact, check, context, signed };
+  return { buyer, seller, request, open, delegated, direct, artifact, check, context, signed };
 }
 
 describe("effect request replay reservations", () => {
@@ -101,6 +102,25 @@ describe("exchange and delegation scope bindings", () => {
     expect(reserveRequest).not.toHaveBeenCalled();
   });
 
+  // A host may require the delegation at one entry point only: each must refuse a buyer-signed request on its own.
+  it("openWireEnvelope alone refuses a buyer-signed request when it requires a delegation", () => {
+    const x = world();
+    expect(wire.openWireEnvelope(x.direct(), "request", x.context).delegation).toBeNull();
+    expect(() => wire.openWireEnvelope(x.direct(), "request", { ...x.context, requireDelegation: true }))
+      .toThrowError(expect.objectContaining({ code: "peer_delegation_required", status: 401 }));
+  });
+
+  it("checkWireRequest alone refuses a buyer-signed request when it requires a delegation, before reservation", () => {
+    const x = world(), reserveRequest = vi.fn(() => true);
+    expect(() => wire.checkWireRequest(x.open(), { ...x.check, requireDelegation: true, reserveRequest }))
+      .toThrowError(expect.objectContaining({ code: "peer_delegation_required", status: 401 }));
+    expect(reserveRequest).not.toHaveBeenCalled();
+    // Controls: the same request without the requirement, and a delegated one with it, each reserve once.
+    expect(wire.checkWireRequest(x.open(), { ...x.check, reserveRequest }).readbackOnly).toBe(false);
+    expect(wire.checkWireRequest(x.delegated(), { ...x.check, requireDelegation: true, artifacts: [x.artifact], reserveRequest }).readbackOnly).toBe(false);
+    expect(reserveRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("refuses a delegation another wallet signed, under a request naming the buyer", () => {
     const x = world(), wallet = party(), session = party();
     const delegation = x.signed({ version: "1", kind: "seller-session-delegation", buyer: wallet.claim, seller: x.seller.claim,
@@ -141,19 +161,62 @@ describe("delegated Agreement context", () => {
     expect(reserveRequest).not.toHaveBeenCalled();
   });
 
-  it("leaves the agreementHash comparison to the host, as the guide states", () => {
-    // docs/dacs-seller-http-v1.md "Host duty": the wire binds job, Listing, parties and deadline only.
+  it("leaves the agreementHash comparison to the host", () => {
+    // The wire binds job, Listing, parties and deadline only (the guide's "Host duty"). Follow-up: a required
+    // host-retained {jobId, agreementHash} on effect routes, refused on mismatch before reservation; this case then flips.
     const x = world(), other = { ...x.request, agreementHash: "b".repeat(64), nonce: "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA" };
     const opened = x.open(other);
     expect(wire.checkWireRequest(opened, { ...x.check, artifacts: [x.artifact], reserveRequest: () => true }).readbackOnly).toBe(false);
     expect(opened.payload.agreementHash).toBe("b".repeat(64));
-    const guide = readFileSync(new URL("../../docs/dacs-seller-http-v1.md", import.meta.url), "utf8").replace(/\s+/g, " ");
-    expect(guide).toContain("Host duty: `checkWireRequest` does not compare the signed `agreementHash` with any Agreement");
   });
 
-  it("finds each party by role, not by position", () => {
+  it.each([
+    ["seller first", (b: unknown, s: unknown) => [s, b]],
+    ["a null entry first", (b: unknown, s: unknown) => [null, b, s]],
+  ])("finds each party by role, not by position (%s)", (_name, parties) => {
     const x = world(), [b, s] = x.artifact.parties;
-    expect(wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: [s, b] }], reserveRequest: () => true }).readbackOnly).toBe(false);
+    expect(wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], reserveRequest: () => true }).readbackOnly).toBe(false);
+  });
+
+  it("refuses a retained Agreement without terms with its own code, before reservation", () => {
+    const x = world(), reserveRequest = vi.fn(() => true), { terms: _terms, ...withoutTerms } = x.artifact;
+    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [withoutTerms], reserveRequest }))
+      .toThrowError(expect.objectContaining({ code: "peer_delegation_deadline", status: 409 }));
+    expect(reserveRequest).not.toHaveBeenCalled();
+  });
+
+  it("accepts a delegated request that expires exactly when its delegation does", () => {
+    // world()'s delegation expires at NOW + 60 000; a request outliving it is refused (request/delegated-outlives-delegation).
+    const x = world(), reserveRequest = vi.fn(() => true), artifacts = [x.artifact];
+    expect(wire.checkWireRequest(x.delegated({ ...x.request, expiresAt: NOW + 60_000 }), { ...x.check, artifacts, reserveRequest }).readbackOnly).toBe(false);
+    expect(reserveRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("body admission refuses JSON that is not an object", () => {
+  it.each(["null", "[]", "1", '"text"', "true"])("%s, at the seller, the buyer and the response signer", async (text) => {
+    const x = world(), bytes = Buffer.from(text), sign = vi.fn(x.seller.sign);
+    expect(() => wire.admitWireRequestBody(bytes)).toThrowError(expect.objectContaining({ code: "bad_request", status: 400 }));
+    expect(() => wire.admitWireResponseBody(bytes)).toThrowError(expect.objectContaining({ code: "response_json_rejected", status: 502, detail: "NOT-AN-OBJECT" }));
+    await expect(wire.signWireResponse(x.request, 200, text, { ...x.context, signer: { claim: x.seller.claim, sign }, now: NOW }))
+      .rejects.toMatchObject({ code: "outgoing_body_rejected", status: 500, detail: "NOT-AN-OBJECT" });
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it("refuses a correctly signed non-object request body before reservation", () => {
+    const x = world(), reserveRequest = vi.fn(() => true);
+    expect(() => wire.checkWireRequest(x.open({ ...x.request, bodyHash: sha256Hex("[]") }), { ...x.check, rawBody: Buffer.from("[]"), reserveRequest }))
+      .toThrowError(expect.objectContaining({ code: "bad_request", status: 400 }));
+    expect(reserveRequest).not.toHaveBeenCalled();
+  });
+
+  it("names an outgoing admission failure as the signer's own, with zero signatures", async () => {
+    const x = world(), sign = vi.fn(x.seller.sign), context = { ...x.context, signer: { claim: x.seller.claim, sign }, now: NOW };
+    await expect(wire.signWireResponse(x.request, 200, '{"a":1,"a":1}', context))
+      .rejects.toMatchObject({ code: "outgoing_body_rejected", status: 500, detail: "DUPLICATE-MEMBER" });
+    expect(sign).not.toHaveBeenCalled();
+    expect(typeof await wire.signWireResponse(x.request, 200, "{}", context)).toBe("string");
+    expect(sign).toHaveBeenCalledTimes(1);
   });
 });
 

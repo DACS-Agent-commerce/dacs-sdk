@@ -181,7 +181,8 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
         : input.checkSubject === "copy" ? { ...opened } : opened;
       const { readbackOnly } = wire.checkWireRequest(subject, { reserveRequest: () => true, artifacts: agreementFixture(opened),
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
-        method: input.method ?? "POST", path: input.path, rawBody, now: file.now, requireDelegation: input.requireDelegation,
+        method: input.method ?? "POST", path: input.path, rawBody, now: file.now,
+        requireDelegation: Object.hasOwn(input, "checkRequireDelegation") ? input.checkRequireDelegation : input.requireDelegation,
         binding: input.checkSubject === "other-binding" ? bind(own) : binding, local: input.checkLocal ?? own,
         ...(input.maxLifetimeMs === undefined ? {} : { maxLifetimeMs: input.maxLifetimeMs }), ...(input.artifacts === undefined ? {} : { artifacts: input.artifacts }),
         ...keptAtCheck(input),
@@ -311,6 +312,8 @@ describe("dacs-seller-http/v1 vectors", () => {
       // The seller's kept tuple at each of its entry points, and the generic signer's.
       "request/open-purchase-profile-other-revision", "request/open-purchase-profile-omitted",
       "request/check-purchase-profile-other-revision", "request/check-purchase-profile-omitted",
+      // The seller's required delegation at each of its entry points.
+      "request/open-delegation-required", "request/check-delegation-required",
       "signing/response-purchase-profile-missing", "signing/response-purchase-profile-other-revision", "signing/response-new-purchase",
       "signing/envelope-purchase-profile-missing", "signing/envelope-purchase-profile-other-revision", "signing/envelope-request-purchase-profile-none",
     ]) expect(ids).toContain(required);

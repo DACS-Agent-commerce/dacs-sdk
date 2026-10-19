@@ -190,6 +190,11 @@ const vectors = [
   R("request/path-mismatch", "request path binding", { header: req({ ...request, path: "/dacs/v1/agreements/state" }), path: "/dacs/v1/payments" }, no("peer_request_mismatch")),
   R("request/method-mismatch", "request method binding", { header: req(request), method: "GET" }, no("peer_request_mismatch")),
   R("request/delegation-required", "delegation required", { header: req(request), requireDelegation: true }, no("peer_delegation_required")),
+  // The seller requires a delegation when it opens the request and again in checkWireRequest. `checkRequireDelegation`,
+  // when present, is given to checkWireRequest instead; each of these requires it at one entry point only, so only that
+  // one can refuse the buyer-signed request.
+  R("request/open-delegation-required", "delegation required (open)", { header: req(request), requireDelegation: true, checkRequireDelegation: false }, no("peer_delegation_required")),
+  R("request/check-delegation-required", "delegation required (check)", { header: req(request), requireDelegation: false, checkRequireDelegation: true }, no("peer_delegation_required")),
   R("request/valid-delegated-with-agreement", null, { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [agreement] }, ok),
   R("request/delegated-agreement-mismatch", "delegated request matches the retained Agreement", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [{ ...agreement, jobId: OTHER_JOB_ID }] }, no("peer_delegation_agreement_mismatch")),
   R("request/delegated-agreement-buyer-party-mismatch", "delegated request matches the retained Agreement's buyer", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [{ ...agreement, parties: [{ role: "buyer", primaryClaim: other.claim }, agreement.parties[1]] }] }, no("peer_delegation_agreement_mismatch")),

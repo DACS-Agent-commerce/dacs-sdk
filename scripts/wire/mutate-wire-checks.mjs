@@ -87,7 +87,12 @@ const MUTANTS = [
   M("body hash", "wire/envelope.ts", " || request.bodyHash !== sha256Hex(rawBody)", "", ["request/body-hash-mismatch"]),
   M("request path binding", "wire/envelope.ts", "request.path !== c.path", "false", ["request/path-mismatch"]),
   M("request method binding", "wire/envelope.ts", "request.method !== c.method", "false", ["request/method-mismatch"]),
+  // A required delegation: the seller checks it when it opens a request and again in checkWireRequest. As for the
+  // kept tuple, the both-sites mutant shows the vector given the flag at both is caught, and each single-site vector,
+  // given the flag at one entry point only, shows that site is needed.
   M("delegation required (both sites)", "wire/envelope.ts", [['if (requireDelegation && !delegated) fail("peer_delegation_required");', ""], ['if (c.requireDelegation && !delegation) fail("peer_delegation_required");', ""]], null, ["request/delegation-required"]),
+  M("delegation required (open)", "wire/envelope.ts", 'if (requireDelegation && !delegated) fail("peer_delegation_required");', "", ["request/open-delegation-required"]),
+  M("delegation required (check)", "wire/envelope.ts", 'if (c.requireDelegation && !delegation) fail("peer_delegation_required");', "", ["request/check-delegation-required"]),
   M("delegated request ends by delegation expiry", "wire/envelope.ts", 'if (request.expiresAt > delegation.payload.expiresAt) fail("peer_delegation_expired", 408);', "", ["request/delegated-outlives-delegation"]),
   M("delegated request matches the retained Agreement", "wire/envelope.ts", ' fail("peer_delegation_agreement_mismatch", 409);', " void 0;", ["request/delegated-agreement-mismatch"]),
   M("delegated request matches the retained Agreement's buyer", "wire/envelope.ts", 'parties.find((party) => party?.role === "buyer")?.primaryClaim !== request.buyer', "false", ["request/delegated-agreement-buyer-party-mismatch"]),
