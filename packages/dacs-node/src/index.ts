@@ -59,6 +59,7 @@ export * from "./publicFetch.js";
 export * from "./release.js";
 export * from "./liveEffects.js";
 export * from "./liveCommerceGraph.js";
+export * from "./sessionProfileGate.js";
 export * from "./livePayDemCommerceGraph.js";
 export * from "./livePayDemCommerceAssembly.js";
 export * from "./liveCommerceAssembly.js";

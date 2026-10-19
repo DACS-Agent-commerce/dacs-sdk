@@ -41,10 +41,26 @@ tuple required by its completed-session admission. At that pin PROFILE.md lists
 the tuple as the unreleased JID-1 corrective candidate, which is not an
 admissible live profile until the Standard records a coordinated release. Until
 then every session profile admission is refused, whatever the deployment
-authority returns, so the native DEM and x402 live paths, BundleBinding
-resolution, Demos publication and both completion gates take no effect at this
-pin (`DACS_STANDARD_PROFILE_STATUS` is `"unreleased-candidate"`). When the
-release is cut, the pin and that status move to it together. Orders and
+authority returns (`DACS_STANDARD_PROFILE_STATUS` is `"unreleased-candidate"`).
+The four live factories refuse to build without an admission authority, and
+every live action they build is admitted first. BundleBinding resolution, Demos
+publication and `verifyFixedPricePayDemAuditCompletion` require admission too.
+So the native DEM and x402 live paths take no effect at this pin. The exported
+`verifyCompletedTwoSidedSession` and `verifyFixedPriceX402AuditCompletion` gates
+admit only when their caller supplies `authenticateSessionProfile`. A caller that
+leaves it out gets no profile admission from them, and an unreleased profile does
+not stop them returning `audit-complete`. A host that calls them directly must
+pass its own admission.
+
+`createDacsSessionProfileGatedCommerceGraphV1` builds a live graph only when
+`dacsLiveSessionProfileAvailabilityV1` reports admission is possible. Otherwise
+the role service starts with `commerce: blocked` and names the reason:
+`session-profile-unreleased`, or `session-profile-admission-unconfigured`.
+Generated projects use it with `createDacsFileSessionProfileAdmissionV1`, which
+re-reads the operator's statement in `DACS_SESSION_PROFILE_ADMISSION_FILE`
+(`releasePin`, `profileStatus`, `moduleVersions`) for every action and binds it
+to the configured buyer and seller authorities. When the release is cut, the
+pin and that status move to it together. Orders and
 databases bound to the historical
 `965df755aba4ff392f1fb37a93d287242b177ba4` revision are refused;
 there is no automatic migration or relabelling of signed evidence. Retain the
