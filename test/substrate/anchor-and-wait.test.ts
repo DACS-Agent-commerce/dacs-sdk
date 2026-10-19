@@ -1827,6 +1827,165 @@ describe("DemosAdapter.anchorAndWait", () => {
     await expect(adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!))).rejects.toBeInstanceOf(SubstrateError);
   });
 
+  // The history fallback's rules, one node reply each, on a provenance-free
+  // (node2-shaped) read. Every case changes its verdict when its rule is removed.
+  async function provenanceFreeHistory(name: string) {
+    const fixture = await createThenIdenticalUpdate(name);
+    const { adapter, raw, created, updated, receipt } = fixture;
+    const read = raw.storagePrograms.read.getMockImplementation();
+    raw.storagePrograms.read = vi.fn(async (address: string) => {
+      const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } =
+        await read(address);
+      return rest;
+    });
+    const txCreate = await raw.getTxByHash(created.txRef);
+    const txUpdate = await raw.getTxByHash(updated.txRef);
+    const verifiers = [
+      () => adapter.verifyDemosWriteEvidence(created.demosEvidence!),
+      () => adapter.verifyDemosAnchorReceipt(receipt(created.demosEvidence!)),
+      () => adapter.verifyDemosWriteEvidence(updated.demosEvidence!),
+      () => adapter.verifyDemosAnchorReceipt(receipt(updated.demosEvidence!)),
+    ];
+    const lookup = {
+      logicalAddress: updated.demosEvidence!.logicalName,
+      nativeAddress: created.address,
+      contentHash: updated.demosEvidence!.nativeRead.valueHash,
+      writer: `did:demos:agent:${fixture.wallet.replace(/^0x/, "")}`,
+    };
+    /** [create write proof, create receipt, update write proof, update receipt] */
+    const verdicts = async () => {
+      const results: boolean[] = [];
+      for (const verify of verifiers) results.push(await verify());
+      return results;
+    };
+    /** Every public read path, the receipt resolver included, refuses with `message`. */
+    const expectIndeterminate = async (message: string) => {
+      for (const verify of [...verifiers, () => adapter.resolveDemosAnchorReceipt(lookup)]) {
+        await expect(verify()).rejects.toMatchObject({ name: "SubstrateError", message });
+      }
+    };
+    const withPayload = (row: any, hash: string, payload: Record<string, unknown>) => ({
+      ...row, hash,
+      content: { ...row.content, data: ["storageProgram", { ...row.content.data[1], ...payload }] },
+    });
+    const delegatedWrite = (hash: string) => ({
+      ...txUpdate, hash,
+      content: { ...txUpdate.content, from: `0x${"cd".repeat(32)}`, nonce: 0 },
+    });
+    return {
+      ...fixture, txCreate, txUpdate, verdicts, expectIndeterminate, withPayload, delegatedWrite,
+    };
+  }
+
+  it("takes the latest native mutation from block order, not history order", async () => {
+    const { raw, created, updated, txCreate, txUpdate, verdicts, delegatedWrite } =
+      await provenanceFreeHistory("proof-history-block-order");
+    const delegated = delegatedWrite("tx-block-order-delegated");
+    // Timestamp order puts the owner's update first; only the block says which ran last.
+    serveStorageHistory(raw, [txUpdate, delegated, txCreate]);
+    const block = raw.getBlockByNumber.getMockImplementation();
+    const executeInOrder = (order: string[]) =>
+      raw.getBlockByNumber.mockImplementation(async (blockNumber: number) => {
+        const served = await block(blockNumber);
+        return blockNumber !== 42 ? served
+          : { ...served, content: { ...served.content, ordered_transactions: order } };
+      });
+    executeInOrder([created.txRef, updated.txRef, delegated.hash]);
+    await expect(verdicts()).resolves.toEqual([true, true, false, false]);
+    executeInOrder([created.txRef, delegated.hash, updated.txRef]);
+    await expect(verdicts()).resolves.toEqual([true, true, true, true]);
+  });
+
+  it.each(["create", "update"])("keeps a history that repeats the %s row indeterminate", async (repeated) => {
+    const { raw, txCreate, txUpdate, expectIndeterminate } =
+      await provenanceFreeHistory(`proof-history-repeated-${repeated}`);
+    serveStorageHistory(raw, [txUpdate, txCreate, repeated === "create" ? txCreate : txUpdate]);
+    await expectIndeterminate("Demos receipt history has inconsistent create or duplicate provenance");
+  });
+
+  it.each(["in place of", "beside"])("keeps a create row another sender signed %s the owner's indeterminate", async (placement) => {
+    const { raw, txCreate, txUpdate, expectIndeterminate } =
+      await provenanceFreeHistory(`proof-history-foreign-create-${placement.replace(/ /g, "-")}`);
+    const foreign = { ...txCreate, content: { ...txCreate.content, from: `0x${"ef".repeat(32)}` } };
+    serveStorageHistory(raw, placement === "in place of" ? [txUpdate, foreign]
+      : [txUpdate, txCreate, { ...foreign, hash: "tx-foreign-create" }]);
+    await expectIndeterminate("Demos receipt history has inconsistent create or duplicate provenance");
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["data", { data: { value: 2 } }],
+    ["metadata", { metadata: { note: "not the native metadata" } }],
+    ["non-object data", { data: "value" }],
+  ])("keeps a history whose newest write does not bind the native %s indeterminate", async (_kind, payload) => {
+    const { raw, txCreate, txUpdate, expectIndeterminate, withPayload, verdicts } =
+      await provenanceFreeHistory("proof-history-unbound-value");
+    // The native read lags this newer write (or the history lags the read).
+    serveStorageHistory(raw, [withPayload(txUpdate, "tx-unbound-write", payload), txUpdate, txCreate]);
+    await expectIndeterminate("Demos receipt history does not bind the native value");
+    serveStorageHistory(raw, [txUpdate, txCreate]);
+    await expect(verdicts()).resolves.toEqual([true, true, true, true]);
+  });
+
+  // History pages are 100 rows with a one-row lookahead after a short page.
+  // Failed rows sit inside canonical history on node2 and are skipped.
+  const failedHistoryRow = (row: any, index: number) => ({
+    ...row, hash: `tx-failed-${index}`, status: "failed",
+    content: { ...row.content, nonce: 1_000 + index },
+  });
+
+  it("pages a long native-address history without skipping a row", async () => {
+    const { raw, txCreate, txUpdate, verdicts, delegatedWrite } =
+      await provenanceFreeHistory("proof-history-pages");
+    const delegated = delegatedWrite("tx-paged-delegated");
+    const failed = (from: number, count: number) =>
+      Array.from({ length: count }, (_, offset) => failedHistoryRow(txUpdate, from + offset));
+    // The superseding write is the first row of the second page.
+    const rows = [...failed(0, 100), delegated, ...failed(100, 47), txUpdate, txCreate];
+    expect(rows).toHaveLength(150);
+    serveStorageHistory(raw, rows);
+    await expect(verdicts()).resolves.toEqual([true, true, false, false]);
+    expect(raw.getTransactionHistory.mock.calls.slice(0, 3).map((call: any[]) => call[2]))
+      .toEqual([{ start: 0, limit: 100 }, { start: 100, limit: 100 }, { start: 150, limit: 1 }]);
+    serveStorageHistory(raw, rows.filter((row) => row !== delegated));
+    await expect(verdicts()).resolves.toEqual([true, true, true, true]);
+  });
+
+  it.each<[string, string, (rows: any[]) => (start: number, limit: number) => any[]]>([
+    ["caps its pages below the requested limit", "Demos receipt history page is incomplete",
+      (rows) => (start, limit) => rows.slice(start, start + Math.min(limit, 60))],
+    ["ignores the requested limit", "Demos receipt history page is malformed",
+      (rows) => (start) => rows.slice(start)],
+  ])("keeps a history from a node that %s indeterminate", async (_node, message, serve) => {
+    const { raw, txCreate, txUpdate, expectIndeterminate } =
+      await provenanceFreeHistory("proof-history-page-shape");
+    const rows = [
+      ...Array.from({ length: 148 }, (_, index) => failedHistoryRow(txUpdate, index)),
+      txUpdate,
+      txCreate,
+    ];
+    serveStorageHistory(raw, rows);
+    const page = serve(rows);
+    raw.getTransactionHistory = vi.fn(async (
+      _address: string, _type: string, options: { start: number; limit: number },
+    ) => page(options.start, options.limit));
+    await expectIndeterminate(message);
+  });
+
+  it("keeps a history past the verification cap indeterminate", async () => {
+    const { raw, txCreate, txUpdate, expectIndeterminate } =
+      await provenanceFreeHistory("proof-history-cap");
+    // 100 pages of 100 rows, and one more row behind them.
+    const rows = [
+      txUpdate,
+      txCreate,
+      ...Array.from({ length: 9_999 }, (_, index) => failedHistoryRow(txUpdate, index)),
+    ];
+    serveStorageHistory(raw, rows);
+    await expectIndeterminate("Demos receipt history exceeds the verification cap");
+    expect(raw.getTransactionHistory).not.toHaveBeenCalledWith(
+      expect.anything(), "storageProgram", { start: 10_000, limit: 100 });
+  });
+
   it("keeps a same-value write arriving during native readback indeterminate", async () => {
     const { adapter, raw, created, updated, receipt } =
       await createThenIdenticalUpdate("proof-history-race");
