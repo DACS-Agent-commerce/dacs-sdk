@@ -4,6 +4,8 @@ export { startSellerHost } from './host.mjs';
 export { createSellerAgent, SellerAgentError } from './dacs/seller-agent.mjs';
 export { createSellerHttpHandler, createSellerAgentClient } from './dacs/seller-http.mjs';
 export { createSellerTransportStore, createSellerTransportServerAuth, createSellerTransportClientAuth } from './dacs/seller-transport-auth.mjs';
-export { buildUnsignedIdentityBundle, attachIdentityPresentation, buildListingDraft, listingSigningMessage, attachListingSignature, validateListing } from './dacs/listing.mjs';
+export { buildUnsignedIdentityBundle, attachIdentityPresentation, buildListingDraft, listingSigningMessage, attachListingSignature } from './dacs/listing.mjs';
+// The Listing reader resolves its rail from the steward-signed railAuthority.
+export { validateSellerListing as validateListing } from './dacs/rail-authority.mjs';
 export { agreementInput, listingPin, contributionVerifier } from './dacs/purchase-protocol.mjs';
 export { createOperatorBuyerAccess } from './devnet-demo/buyer-access.mjs';

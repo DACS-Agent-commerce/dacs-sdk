@@ -6,8 +6,9 @@
 // file reaches this package) and the native capabilities, which are required:
 // the host never builds a fixture substrate, and it starts only with the whole
 // chain to delivery (native payment evidence, the DEM delivery context, whose
-// Vet references the Agreement carries, and native DEM delivery), so it never
-// commits an Agreement it cannot settle. It does not mount the context route,
+// Vet references the Agreement carries, and native DEM delivery) and the
+// steward-signed rail authority each session pins, so it never commits an
+// Agreement it cannot settle. It does not mount the context route,
 // whose challenge issuance limits are still open (ADMISSION.md).
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -18,7 +19,7 @@ import { createSellerTransportServerAuth, createSellerTransportStore } from './d
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer', 'observeDemosTransfer',
-  'nativePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery']);
+  'nativePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority']);
 const OPTIONAL = Object.freeze(['deliveryEvidenceEnabled', 'host', 'port', 'now']);
 const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
@@ -40,7 +41,7 @@ export async function startSellerHost(options) {
   const missing = REQUIRED.filter((key) => options[key] == null);
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
-    nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, deliveryEvidenceEnabled = false,
+    nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, deliveryEvidenceEnabled = false,
     host = '127.0.0.1', port = 0, now = () => Date.now() } = options;
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
@@ -54,7 +55,7 @@ export async function startSellerHost(options) {
   const release = () => { for (const close of opened.splice(0).reverse()) { try { close(); } catch { /* keep releasing */ } } };
   try {
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
-      agreementAnchor, nativeArtifactAnchor: artifactAnchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, deliveryEvidenceEnabled });
+      agreementAnchor, nativeArtifactAnchor: artifactAnchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, deliveryEvidenceEnabled });
     opened.push(() => agent.close());
     const transport = join(dataDirectory, 'transport');
     mkdirSync(transport, { recursive: true, mode: 0o700 });

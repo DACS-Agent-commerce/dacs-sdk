@@ -54,13 +54,21 @@ const identityFor = (party, presentedAt) => {
 };
 
 const sellerKey = key(), buyerKey = key(), now = Date.now();
+// A TEST rail steward and its signed demos-native:DEM definition (PA-1, in-code):
+// the host selects the rail only from this authority.
+const steward = generateKeyPairSync('ed25519'), stewardPublicKey = steward.publicKey.export({ format: 'jwk' }).x;
+const stewardClaim = `did:demos:agent:${Buffer.from(stewardPublicKey, 'base64url').toString('hex')}`;
+const unsignedRail = { railVersion: 1, railId: 'demos-native:DEM', railType: 'demos-native', asset: { kind: 'native-dem', symbol: 'DEM', decimals: 9 }, network: { kind: 'demos' },
+  phaseHandler: 'pay-dem', parameters: {}, availability: 'live', governance: { proposedBy: stewardClaim, acceptedAt: 1, anchoring: 'in-code' } };
+const railAuthority = { rail: { ...unsignedRail, signature: { algorithm: 'ed25519', signer: stewardClaim,
+  value: sign(null, Buffer.from(`dacs-rail:v1:${core.contentHash(unsignedRail)}`, 'ascii'), steward.privateKey).toString('base64url') } }, stewardClaim, stewardPublicKey, railRegistryVersion: 1, production: false };
 const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Installed seller', publicEndpoint: 'https://seller.invalid/agent',
   listingId: 'installed-report', listingVersion: 1, title: 'Installed package report', description: 'A report served by the installed seller package.',
   category: 'services.market-report', tags: ['installed'], priceDem: '2.5', notBefore: now - 60000 });
 const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft)));
 const pin = seller.listingPin(listing);
 out.sellerClaim = sellerKey.claim;
-assert.equal((await seller.validateListing(listing, { now: () => now, revocationSurfaces: [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: now }], readMarker: async () => null })).disposition, 'verified');
+assert.equal((await seller.validateListing(listing, { now: () => now, revocationSurfaces: [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: now }], readMarker: async () => null, railAuthority })).disposition, 'verified');
 
 // Operator capabilities. Negotiation needs only the Vet context, so every other
 // one records and refuses if it is reached.
@@ -87,6 +95,7 @@ const capabilities = () => ({
   artifactAnchor: { writer: sellerKey.claim, source: 'installed-package/artifacts', publish: refuse('artifactAnchor.publish'), readRetained: refuse('artifactAnchor.readRetained'), verifyReceipt: refuse('artifactAnchor.verifyReceipt') },
   deliverableProducer: () => { reached.push('deliverableProducer'); throw new Error('deliverableProducer is not reached while negotiating'); },
   observeDemosTransfer: refuse('observeDemosTransfer'),
+  railAuthority,
 });
 const dataDirectory = second ?? realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-host-')));
 const signer = { claim: sellerKey.claim, sign: sellerKey.sign };
@@ -100,9 +109,11 @@ if (second !== null) {
 }
 const { agreementAnchor: _omitted, ...withoutReadback } = capabilities();
 const { nativeDemDelivery: _undelivered, ...withoutDelivery } = capabilities();
+const { railAuthority: _unrailed, ...withoutRail } = capabilities();
 out.refusedConfigurations = {
   missingAgreementAnchor: await refusal({ signer, listing, dataDirectory, ...withoutReadback }),
   missingDelivery: await refusal({ signer, listing, dataDirectory, ...withoutDelivery }),
+  missingRailAuthority: await refusal({ signer, listing, dataDirectory, ...withoutRail }),
   publicInterface: await refusal({ signer, listing, dataDirectory, ...capabilities(), host: '0.0.0.0' }),
   unknownOption: await refusal({ signer, listing, dataDirectory, ...capabilities(), anchors: { read: async () => null, write: async () => null } }),
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),

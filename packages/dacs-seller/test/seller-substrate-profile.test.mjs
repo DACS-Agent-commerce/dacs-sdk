@@ -1,6 +1,7 @@
 // The seller agent chooses its substrate once and fails closed: a host that
 // forgets a native capability is refused at construction, never served by the
-// simulated fixture substrate. No module hooks; real Listing and signer.
+// simulated fixture substrate, and the simulated fixture profile is only ever
+// an explicit opt-in. No module hooks; real Listing and signer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
@@ -8,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { canonicalize, DACS_STANDARD_PIN } from '@kynesyslabs/dacs';
 import * as seller from '../src/index.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
+import { railSteward } from './helpers/rail-authority-fixture.mjs';
 
 function sellerWorld() {
   const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex');
@@ -24,6 +26,7 @@ function sellerWorld() {
     agreementAnchor: { source: 'profile/agreement-readback', readAgreement: unreachable },
     artifacts: { nativeArtifactAnchor: { writer: party.claim, publish: unreachable, readRetained: unreachable, verifyReceipt: unreachable }, deliverableProducer: () => null },
     anchors: { read: unreachable, write: unreachable },
+    railAuthority: railSteward().railAuthority(),
   };
 }
 
@@ -45,9 +48,20 @@ test('the native profile takes no fixture substrate', async () => {
   await assert.rejects(seller.createSellerAgent({ ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts, anchors: w.anchors }), { name: 'TypeError', message: /takes no fixture substrate/ });
 });
 
+test('the simulated fixture profile is only an explicit opt-in, and the native profile is never simulated', async () => {
+  const w = sellerWorld();
+  for (const simulatedFixture of [undefined, false]) {
+    await assert.rejects(seller.createSellerAgent({ ...w.base, anchors: w.anchors, simulatedFixture }), { name: 'TypeError', message: /simulated fixture profile.*needs simulatedFixture: true/ });
+  }
+  await assert.rejects(seller.createSellerAgent({ ...w.base, anchors: w.anchors, simulatedFixture: 'yes' }), { name: 'TypeError', message: /simulatedFixture must be true or false/ });
+  await assert.rejects(seller.createSellerAgent({ ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority, simulatedFixture: true }), { name: 'TypeError', message: /native seller profile is not the simulated fixture profile/ });
+  await assert.rejects(seller.createSellerAgent({ ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts }), { name: 'TypeError', message: /native seller profile needs railAuthority/ });
+  await assert.rejects(seller.validateListing(w.base.listing, { now: () => Date.now(), revocationSurfaces: [], readMarker: async () => null }), { name: 'TypeError', message: /needs an authenticated railAuthority, or simulatedFixture: true/ });
+});
+
 test('each complete profile constructs', async () => {
   const w = sellerWorld();
-  for (const options of [{ agreementAnchor: w.agreementAnchor, ...w.artifacts }, { anchors: w.anchors }]) {
+  for (const options of [{ agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority }, { anchors: w.anchors, simulatedFixture: true }]) {
     const agent = await seller.createSellerAgent({ ...w.base, ...options });
     assert.equal(agent.claim, w.base.signer.claim);
     agent.close();

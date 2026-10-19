@@ -27,13 +27,17 @@ const host = await startSellerHost({
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer(...): payment evidence anchoring and readback
   demDeliveryContext,    // createDemDeliveryContext(...): the Vet context the Agreement derives from
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
+  railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
+                         // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
 });
 // host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
 ```
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
-build the signed Listing; a wallet signs the returned messages. The other root
+build the signed Listing; a wallet signs the returned messages.
+`validateListing` reads a Listing through the core SDK and resolves its rail
+from a `railAuthority` (or, for tests only, `simulatedFixture: true`). The other root
 exports are the parts the host composes, for operators who compose their own:
 `createSellerAgent`, `createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerTransportServerAuth` and the buyer side `createSellerAgentClient`
@@ -45,6 +49,10 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 - It fails closed on configuration: unknown options, a missing capability, a
   non-loopback host, a relative, shared or symlinked data directory, or a
   signer that does not control the Listing are refused before anything starts.
+  The private stores also check every ancestor of the data directory: each must
+  be owned by root or by this user and not be group- or world-writable, so the
+  host does not start where `/` belongs to another user (for example some
+  rootless containers or sandboxes).
   One live process owns a data directory (`seller-state.lock`): a second host,
   in this process or another, is refused; the lock of a process that is
   provably gone is taken over, and any doubt refuses until it is removed by hand.
@@ -55,7 +63,20 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   uncertain one.
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
-  fixture fallback (`fixture_substrate_disabled`).
+  fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
+  the fixture substrate (`anchors`) only with `simulatedFixture: true`: that
+  test profile signs over not-performed Vet references and an unsigned
+  in-code rail, and is not covered by PROFILE.json.
+- It selects its rail only from `railAuthority` (DACS-4 9.4.3-9.4.4, DACS-1
+  LRR-6): the complete `demos-native:DEM` RailDefinition signed by the steward
+  key the operator gives, with `governance.anchoring: "in-code"` (PA-1). The
+  core SDK checks the signature and the availability. A new session is refused
+  (`rail_unavailable`) unless the rail is `live`: `disabled`, `failed`, gated
+  (this package runs no operator preflight) and `mocked` rails are not
+  selected. Each session pins the exact signed definition before its Agreement
+  is signed, and commitment and payment intake read the rail from that pin
+  only, so a later revision does not change a session in flight, and a pin the
+  configured steward did not sign is refused.
 - It starts only with the whole chain to delivery: native payment evidence,
   the DEM delivery context and native DEM delivery. The agent signs an
   Agreement only over the Vet references the context gives
@@ -66,6 +87,10 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   Agreement it cannot settle or claims a payment it cannot deliver for. These
   capabilities accept only `TEST-` authorities and a loopback fixture node
   (below), so the host does not start against a real node.
+- It signs no completed DACS-5 bundle (`bundle_finalization_unavailable`):
+  the ST-11 finalizer, which needs finalized and independently resolved Vet,
+  commitment, settlement and bundle records, is not part of this package.
+  The session ends at delivery.
 - It does not mount the Vet and Agreement context route: its challenge
   issuance limits are not settled (`ADMISSION.md`).
 - The devnet source transport, wallet custody and the wallet journal are not

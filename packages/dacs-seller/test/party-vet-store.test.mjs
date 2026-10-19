@@ -3,7 +3,7 @@
 // integrity checks. Local files only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -67,11 +67,23 @@ test('a row changed outside the store, or a file of another format, fails closed
   const reopened = openPartyVetStore({ path }); t.after(() => reopened.close());
   await assert.rejects(reopened.read('k'), code('journal-integrity'));
   await assert.rejects(reopened.update('k', () => ({ v: 3 })), code('journal-integrity'));
-  const other = join(dir, 'other.sqlite'), odb = new DatabaseSync(other); odb.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES (\'format\', \'something-else\')'); odb.close();
+  // Created private first: SQLite would create it 0666 & ~umask (0644 on CI).
+  const other = join(dir, 'other.sqlite'); writeFileSync(other, '', { mode: 0o600 });
+  const odb = new DatabaseSync(other); odb.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES (\'format\', \'something-else\')'); odb.close();
   assert.throws(() => openPartyVetStore({ path: other }), code('journal-integrity'));
   const junk = join(dir, 'junk.sqlite'); writeFileSync(junk, 'not a database', { mode: 0o600 });
   assert.throws(() => openPartyVetStore({ path: junk }), code('journal-integrity'));
   assert.throws(() => openPartyVetStore({ path: 'relative.sqlite' }), code('journal-invalid'));
+});
+
+test('a group- or world-accessible store file is refused before it is read, whatever the umask', (t) => {
+  const dir = dirFor(t);
+  for (const mode of [0o640, 0o604, 0o644, 0o660]) {
+    const path = join(dir, `shared-${mode.toString(8)}.sqlite`);
+    const store = openPartyVetStore({ path }); store.close();
+    chmodSync(path, mode);
+    assert.throws(() => openPartyVetStore({ path }), (error) => error.code === 'journal-invalid' && /private regular file/.test(error.message), `mode ${mode.toString(8)}`);
+  }
 });
 
 test('two instances on one file (two processes): every change is one atomic read and write', async (t) => {

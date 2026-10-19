@@ -38,28 +38,31 @@ import * as core from '@kynesyslabs/dacs';
 import * as local from './helpers/local-anchor-fixture.mjs';
 const HASH='a'.repeat(64),jobId=JOBS[0];
 const payment=w=>({jobId,txHash:HASH,payerPayingKey:w.buyer.claim});
-const signedWrite=(w,address,artifact,signer=w.buyer)=>w.anchors.write({logicalAddress:address,artifact,writer:signer.claim,writerSignature:local.signAnchorWrite(signer.sign,address,core.contentHash(artifact))});
-async function complete(w){
- const request=await w.agent.bundleRequest({jobId}),session=w.store.loadSession(jobId);
- const facts=w.protocol.bundleSession({agreement:session.agreement,agreementRef:session.agreementRef,commitmentRef:local.fixtureRef(session.commitment.logicalAddress,core.contentHash(session.commitment.record)),payment:session.payment.ref,delivery:session.payment.deliveryRef,observed:{txHash:HASH,blockNumber:8},finalisedAt:request.finalisedAt});
- const plan=await w.protocol.bundleSigningPlan(facts),buyerSignature=w.buyer.sign(plan.payload).toString('base64url');
- assert.equal((await w.agent.countersign({jobId,buyerSignature})).status,'seller-copy-anchored');
- const {copies,problems}=await w.protocol.assembleBundleCopies(facts,{buyer:buyerSignature,seller:request.sellerSignature});assert.deepEqual(problems,[]);
- return {request,copies};
-}
-test('seller caller commits, accepts verified payment, delivers, exchanges authenticated copies and recovers without another write',async()=>{
+const NO_ST11={code:'bundle_finalization_unavailable',status:503};
+// DACS-5 ST-11 / CORE SR2-9: the seller signs no completed bundle while the
+// finalizer that resolves and finalizes every required record is not wired.
+test('seller caller commits, accepts verified payment and delivers, but signs no completed bundle, before or after a restart',async()=>{
  const w=await agentFixture({lifecycle:true});
  try{
   assert.equal((await w.agent.commit({jobId})).status,'committed');
   assert.equal(w.store.loadSession(jobId).commitment.committedAt,1800000001000,'CA-8 uses receipt block time, not record/local time');
   assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');
-  const {copies}=await complete(w);
-  assert.equal((await w.agent.confirmBuyerCopy({jobId})).status,'rejected');assert.equal(w.agent.stageOf(jobId),'seller-copy-anchored');
-  await signedWrite(w,w.protocol.bundleAddress(jobId,'buyer'),copies.buyerCopy);
-  assert.equal((await w.agent.confirmBuyerCopy({jobId})).status,'verified');assert.equal(w.agent.stageOf(jobId),'copies-exchanged');
-  const writes=w.anchors.writes.length;await w.reopen();
-  assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');
-  assert.equal((await w.agent.confirmBuyerCopy({jobId})).status,'verified');assert.equal(w.anchors.writes.length,writes);
+  const writes=w.anchors.writes.length;
+  const unsigned=()=>{const session=w.store.loadSession(jobId);assert.equal(session.finalisedAt,undefined);assert.equal(session.bundleHash,undefined);assert.equal(session.sellerBundleSignature,undefined);assert.equal(session.sellerCopy,undefined);};
+  for(let round=0;round<2;round++){
+   await assert.rejects(w.agent.bundleRequest({jobId}),NO_ST11);
+   await assert.rejects(w.agent.countersign({jobId,buyerSignature:'fixture'}),{code:'no_bundle_request'});
+   await assert.rejects(w.agent.confirmBuyerCopy({jobId}),{code:'no_seller_copy'});
+   const agreementHash=w.store.loadSession(jobId).agreementHash;
+   for(const path of ['/dacs/v1/bundles/request','/dacs/v1/bundles/countersignature']){
+    const body=path.endsWith('request')?{jobId}:{jobId,buyerSignature:'fixture'},rawBody=Buffer.from(JSON.stringify(body));
+    const request={method:'POST',path,jobId,buyer:w.buyer.claim,seller:w.seller.claim,listingPin:w.pin,agreementHash,bodyHash:core.sha256Hex(rawBody)};
+    assert.deepEqual(await w.agent.reconcileTransport({request,body,rawBody}),{disposition:'indeterminate',reason:'bundle_finalization_unavailable'},path);
+   }
+   unsigned();assert.equal(w.anchors.writes.length,writes,'no bundle copy is anchored');
+   await w.reopen();
+   assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');assert.equal(w.anchors.writes.length,writes);
+  }
  }finally{w.close();}
 });
 for(const [name,change] of [
@@ -83,23 +86,6 @@ test('seller caller requires a finalized valid commitment receipt and its author
  }
  const w=await agentFixture({lifecycle:true});try{w.anchors.controls.timestamp=1800000000000-70000;await assert.rejects(w.agent.commit({jobId}),{code:'commitment_failed'});}finally{w.close();}
 });
-test('seller caller never completes for a changed, divergent or invalidly signed counterparty copy',async()=>{
- const w=await agentFixture({lifecycle:true});
- try{await w.agent.commit({jobId});await w.agent.submitPayment(payment(w));const {copies}=await complete(w),address=w.protocol.bundleAddress(jobId,'buyer');
-  for(const [index,mutate] of [copy=>({...copy,finalisedAt:copy.finalisedAt+1}),copy=>({...copy,phaseSummary:copy.phaseSummary.map(p=>p.index===3?{...p,outcome:'fail',errorClass:'counterparty'}:p)}),copy=>({...copy,anchoredByRole:'seller'}),copy=>({...copy,signatures:copy.signatures.slice(0,1)})].entries()){
-   const copy=mutate(structuredClone(copies.buyerCopy));
-   if(index<2){
-    const payload=core.signedBytes(core.ARTIFACT_SEPARATORS.FaultAttestationBundle,core.attestationBundleHash(copy));
-    copy.signatures=[w.buyer,w.seller].map(key=>({party:key.claim,algorithm:'ed25519',value:key.sign(payload).toString('base64url')}));
-    assert.equal((await core.verifyBundleCopy(copy,'buyer',w.protocol.ed25519Deps)).valid,true,'wrong scope has independently valid signatures');
-   }
-   w.anchors.rows.delete(address);await signedWrite(w,address,copy);
-   assert.equal((await w.agent.confirmBuyerCopy({jobId})).status,'rejected');assert.equal(w.agent.stageOf(jobId),'seller-copy-anchored');
-  }
-
- }finally{w.close();}
-});
-
 test('retained payment response requires exact evidence address, reference and delivery hash readback',async()=>{
  const w=await agentFixture({lifecycle:true});
  try{

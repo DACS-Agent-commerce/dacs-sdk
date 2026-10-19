@@ -65,10 +65,11 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
   './native-dem-delivery-consumer.mjs':Object.fromEntries(['nativeDemDeliveryConfig','submitNativeDemDelivery','reconcileNativeDemDelivery','readNativeDemDelivery','verifyNativeDemDeliveryReceipt','isProvenUnsignedAbsence'].map(n=>[n,n==='nativeDemDeliveryConfig'?()=>null:forbidden])),
   './purchase-protocol.mjs':protocol,
   './seller-proposal-time.mjs':await import('../../src/dacs/seller-proposal-time.mjs'),
+  './rail-authority.mjs':await import('../../src/dacs/rail-authority.mjs'),
  };
  const module=new vm.SourceTextModule(readFileSync(new URL('../../src/dacs/seller-agent.mjs',import.meta.url),'utf8'));
  await module.link(async spec=>{const values=modules[spec];if(!values)throw new Error('missing isolated host capability '+spec);return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value] of Object.entries(values))this.setExport(key,value);});});await module.evaluate();
- const create=()=>module.namespace.createSellerAgent({signer:seller,listing,anchors,observeDemosTransfer:lifecycle?async hash=>controls.observation??({status:'included',txHash:hash,payer:buyer.claim.slice(16),payee:seller.claim.slice(16),amountOs:'2500000000',blockNumber:8,includedAt:T+2000}):forbidden,durableDirectory:dir,commitOnSignature:early,now:()=>T+2000});
+ const create=()=>module.namespace.createSellerAgent({signer:seller,listing,anchors,observeDemosTransfer:lifecycle?async hash=>controls.observation??({status:'included',txHash:hash,payer:buyer.claim.slice(16),payee:seller.claim.slice(16),amountOs:'2500000000',blockNumber:8,includedAt:T+2000}):forbidden,durableDirectory:dir,commitOnSignature:early,now:()=>T+2000,simulatedFixture:true});
  let agent=await create();
  const negotiate=async(jobId,{anchor=true}={})=>{
   const buyerIdentityBundle=bundleFor(buyer),input=lifecycleProtocol.agreementInput({jobId,listing,buyerBundle:buyerIdentityBundle,generatedAt:T}),draft=core.deriveFixedPriceAgreement(input),plan=core.createFixedPriceAgreementSigningPlan(draft);

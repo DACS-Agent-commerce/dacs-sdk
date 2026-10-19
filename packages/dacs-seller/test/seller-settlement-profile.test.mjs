@@ -1,6 +1,8 @@
 // The native seller profile signs an Agreement only with the operator's
-// authenticated Vet context, and commits or takes payment only with the whole
-// chain to delivery; the standalone host starts only with that chain. No
+// authenticated Vet context and over a rail its steward-signed rail authority
+// makes selectable, pinned into the session first, and commits or takes
+// payment only with the whole chain to delivery and that pin; the standalone
+// host starts only with that chain and the rail authority. No
 // module hooks; real Listing, signers and agent. Every capability records the
 // call and refuses, so a refused step is shown to have reached nothing.
 import test from 'node:test';
@@ -14,6 +16,7 @@ import * as seller from '../src/index.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
+import { railSteward } from './helpers/rail-authority-fixture.mjs';
 
 function key() {
   const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
@@ -27,7 +30,7 @@ const identityFor = (party, presentedAt) => {
 };
 
 function world(t) {
-  const sellerKey = key(), buyerKey = key(), now = Date.now(), reached = [];
+  const sellerKey = key(), buyerKey = key(), now = Date.now(), reached = [], steward = railSteward();
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'settlement-profile', listingVersion: 1, title: 'Settlement profile report', description: 'Settlement profile vectors.',
     category: 'services.market-report', tags: ['profile'], priceDem: '2.5', notBefore: now - 60000 });
@@ -50,6 +53,7 @@ function world(t) {
     nativeArtifactAnchor: { writer: sellerKey.claim, publish: refuse('publish'), readRetained: refuse('readRetained'), verifyReceipt: refuse('verifyReceipt') },
     deliverableProducer: () => { reached.push('deliverableProducer'); throw new Error('not reached'); },
     observeDemosTransfer: refuse('observeDemosTransfer'),
+    railAuthority: steward.railAuthority(),
   };
   const chain = {
     nativePaymentEvidence: () => createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: refuse('anchorEvidence'), fetchImpl: refuse('fetch') }),
@@ -65,7 +69,7 @@ function world(t) {
     return { proposal, transportIdentity, buyerIdentityBundle: buyerBundle };
   };
   const payment = { jobId, txHash: 'a'.repeat(64), payerPayingKey: buyerKey.claim };
-  return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer };
+  return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward };
 }
 const refused = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status }; } };
 const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
@@ -119,11 +123,81 @@ test('a Vet context that names the not-performed Vet references is not signed', 
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
+const complete = (w, extra = {}) => ({ ...w.capabilities, nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext(),
+  nativeDemDelivery: w.chain.nativeDemDelivery(), ...extra });
+
+test('without the steward-signed rail authority the native profile is refused before any state is opened', async (t) => {
+  const w = world(t), durableDirectory = w.dir();
+  for (const railAuthority of [undefined, null]) {
+    await assert.rejects(seller.createSellerAgent(complete(w, { durableDirectory, railAuthority })), { name: 'TypeError', message: /native seller profile needs railAuthority/ });
+  }
+  assert.deepEqual(readdirSync(durableDirectory), [], 'no durable state is created');
+  assert.deepEqual(w.reached, []);
+});
+
+for (const [name, authority] of [
+  ['disabled', { changes: { availability: 'disabled' } }],
+  ['failed', { changes: { availability: 'failed' } }],
+  ['operator-gated without preflight', { changes: { availability: 'operator_gated' } }],
+  ['mocked in production', { changes: { availability: 'mocked' }, authority: { production: true } }],
+  ['mocked, which payment intake cannot settle', { changes: { availability: 'mocked' } }],
+]) test(`a new session does not select a ${name} rail: no Agreement is signed`, async (t) => {
+  const w = world(t);
+  const agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), railAuthority: w.steward.railAuthority(authority) }));
+  t.after(() => agent.close());
+  assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.vetted))), { code: 'rail_unavailable', status: 503 });
+  assert.equal(agent.stageOf(w.jobId), null, 'no session, pin or contribution is kept');
+  assert.deepEqual(w.reached, []);
+});
+
+test('a rail authority that is not the steward-signed demos-native:DEM PA-1 definition is refused at construction', async (t) => {
+  const w = world(t), other = railSteward();
+  const forged = w.steward.railAuthority(); forged.rail.availability = 'live'; forged.rail.parameters = { changed: true };
+  const unsigned = w.steward.railAuthority(); delete unsigned.rail.signature;
+  for (const [railAuthority, message] of [
+    [forged, /not a RailDefinition signed by the steward \(signature-invalid\)/],
+    [unsigned, /signed by the steward \(signature-missing\)/],
+    [{ ...w.steward.railAuthority(), stewardClaim: other.stewardClaim, stewardPublicKey: other.stewardPublicKey }, /signed by the steward/],
+    [w.steward.railAuthority({ changes: { railVersion: 2 } }), /not demos-native:DEM version 1 on pay-dem/],
+    [w.steward.railAuthority({ changes: { governance: { proposedBy: w.steward.stewardClaim, acceptedAt: 1, anchoring: 'single-signer' } } }), /PA-1 in-code definition/],
+    [{ ...w.steward.railAuthority(), production: 'yes' }, /local operator policy/],
+    [{ ...w.steward.railAuthority(), extra: 1 }, /railAuthority must be exactly/],
+  ]) await assert.rejects(seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), railAuthority })), { name: 'TypeError', message });
+  await assert.rejects(seller.createSellerAgent({ signer: w.signer, listing: w.listing, observeDemosTransfer: async () => null, anchors: { read: async () => null, write: async () => null }, simulatedFixture: true, railAuthority: w.steward.railAuthority() }),
+    { name: 'TypeError', message: /simulated fixture profile takes no railAuthority/ });
+  assert.deepEqual(w.reached, []);
+});
+
+test('an in-flight session keeps its pinned rail across a restart; a pin the steward did not sign is refused before any read', async (t) => {
+  const w = world(t), durableDirectory = w.dir();
+  const first = await seller.createSellerAgent(complete(w, { durableDirectory }));
+  assert.equal((await first.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
+  const pinned = first.durableSessionOf(w.jobId).railPin;
+  assert.equal(pinned.basis, 'pa1-in-code');
+  assert.equal(pinned.rail.availability, 'live');
+  first.close();
+  // The steward's later revision disables the rail: new sessions may not select
+  // it, the pinned one continues (RAV-R2) and reaches the Agreement readback.
+  const disabled = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  assert.notEqual((await refused(() => disabled.commit({ jobId: w.jobId })))?.code, 'rail_unavailable');
+  assert.ok(w.reached.includes('readAgreement'), 'the in-flight session got past the rail gate');
+  assert.deepEqual(disabled.durableSessionOf(w.jobId).railPin, pinned, 'the pin is not rewritten');
+  disabled.close();
+  w.reached.length = 0;
+  // Another steward key does not authenticate the retained pin.
+  const other = railSteward();
+  const foreign = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: other.railAuthority() }));
+  t.after(() => foreign.close());
+  assert.deepEqual(await refused(() => foreign.commit({ jobId: w.jobId })), { code: 'rail_unavailable', status: 503 });
+  assert.deepEqual(await refused(() => foreign.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), { code: 'rail_unavailable', status: 503 });
+  assert.deepEqual(w.reached, [], 'no Agreement read, publication or transfer observation');
+});
+
 test('the standalone host refuses to start without the whole chain to delivery', async (t) => {
   const w = world(t);
   const { nativeArtifactAnchor: artifactAnchor, ...rest } = w.capabilities;
   const { now: _now, ...required } = rest;
-  for (const missing of ['nativePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery']) {
+  for (const missing of ['nativePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority']) {
     const dataDirectory = w.dir();
     const options = { ...required, artifactAnchor, dataDirectory, nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
     delete options[missing];

@@ -45,7 +45,8 @@ import {
 } from '@kynesyslabs/dacs';
 import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
 import { join } from 'node:path';
-import { validateListing, verifyComponent, DEM_RAIL } from './listing.mjs';
+import { verifyComponent, DEM_RAIL } from './listing.mjs';
+import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
@@ -118,17 +119,24 @@ export function buildReport({ agreement, listing, settlementId }) {
 // other native capability needs both, and that profile takes no `anchors`: a
 // remaining fixture read or write refuses (fixture_substrate_disabled). The
 // simulated fixture substrate is used only when it is passed as `anchors` with
-// no native capability.
+// no native capability and `simulatedFixture: true`: that profile signs over
+// the not-performed Vet references and the unsigned in-code rail, so it is
+// never chosen by default.
 // The native profile signs an Agreement only with the operator's authenticated
 // Vet context (`demDeliveryContext`), never the synthetic not-performed Vet
-// references, and commits or takes payment only with the whole chain to
-// delivery (`nativePaymentEvidence`, `demDeliveryContext`, `nativeDemDelivery`):
-// a commitment it could not settle would make the buyer pay for nothing.
+// references, and only over a rail its steward-signed `railAuthority` makes
+// selectable, pinned into the session first (rail-authority.mjs). It commits
+// or takes payment only with the whole chain to delivery
+// (`nativePaymentEvidence`, `demDeliveryContext`, `nativeDemDelivery`) and the
+// pinned rail: a commitment it could not settle would make the buyer pay for
+// nothing. No profile signs a completed DACS-5 bundle (the ST-11 finalizer is
+// not wired; bundle_finalization_unavailable).
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null }) {
+export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, simulatedFixture = false }) {
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
+  if (typeof simulatedFixture !== 'boolean') throw new TypeError('simulatedFixture must be true or false');
   if (signatureBuyer !== null && !/^did:demos:agent:[0-9a-f]{64}$/.test(signatureBuyer)) throw new TypeError('signatureBuyer must be an admitted buyer claim or null');
   if (signatureCommitmentReady !== null && typeof signatureCommitmentReady !== 'function') throw new TypeError('signatureCommitmentReady must be a function or null');
   if (commitOnSignature && !durableDirectory) throw new TypeError('commitment on signature requires durable seller state');
@@ -163,6 +171,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (nativeProfile && (agreementAnchor === null || nativeArtifactAnchor === null)) throw new TypeError('the native seller profile needs both agreementAnchor and nativeArtifactAnchor; it never falls back to the fixture substrate');
   if (nativeProfile && anchors != null) throw new TypeError('the native seller profile takes no fixture substrate (anchors)');
   if (!nativeProfile && (typeof anchors?.read !== 'function' || typeof anchors.write !== 'function')) throw new TypeError('a seller agent needs agreementAnchor and nativeArtifactAnchor, or an explicit fixture substrate (anchors)');
+  if (nativeProfile && simulatedFixture) throw new TypeError('the native seller profile is not the simulated fixture profile');
+  if (!nativeProfile && !simulatedFixture) throw new TypeError('the fixture substrate (anchors) is the simulated fixture profile: it signs over not-performed Vet references and an unsigned rail, and needs simulatedFixture: true');
+  const rail = railAuthorityConfig(railAuthority);
+  if (rail && !nativeProfile) throw new TypeError('the simulated fixture profile takes no railAuthority; it uses only the simulated fixture rail');
+  if (nativeProfile && !rail) throw new TypeError(`the native seller profile needs railAuthority: it selects ${DEM_RAIL.railId} only from its steward-signed definition`);
   if (nativeProfile) anchors = NATIVE_PROFILE_FIXTURE;
   const settlementChain = nativeEvidence !== null && deliveryContext !== null && nativeDelivery !== null;
   // Checked before any session, signature, read or write.
@@ -171,6 +184,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   };
   const assertSettlementChain = () => {
     if (nativeProfile && !settlementChain) throw new SellerAgentError('settlement_profile_unavailable', 'the native seller profile commits and takes payment only with native payment evidence, the DEM delivery context and native DEM delivery', 503);
+  };
+  // RAV-R1..R5 against the session's own pin (a new session's pin before it
+  // is retained). Fixture sessions carry none and use the simulated rail.
+  const assertRailPin = (railPin, sessionState) => {
+    if (!nativeProfile) return;
+    const verdict = rail.evaluate(railPin, sessionState);
+    if (verdict.decision !== 'pass') throw new SellerAgentError('rail_unavailable', `the ${sessionState === 'new' ? 'selected' : 'pinned'} ${DEM_RAIL.railId} rail is not usable: ${verdict.decision} (${verdict.reason})`, 503);
   };
   const pin = listingPin(listing);
   if (durableDirectory && suppliedReceiptStore) throw new Error('durable seller recovery owns the pinned filesystem receipt store');
@@ -181,10 +201,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // Historical admission captured once, atomically with the Listing bytes it
   // validated; payment intake replays exactly this result (never live state).
   const admittedAt = retainedAdmission?.admittedAt ?? now();
-  const validation = retainedAdmission?.validation ?? await validateListing(listing, {
+  const validation = retainedAdmission?.validation ?? await validateSellerListing(listing, {
     now: () => admittedAt,
     revocationSurfaces: [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: admittedAt }],
     readMarker: async () => null,
+    railAuthority: rail,
+    simulatedFixture,
   });
   if (validation.disposition !== 'verified') throw new Error(`own Listing does not verify: ${validation.reason}`);
   durable?.retainContext({ admittedAt, validation });
@@ -302,7 +324,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
     const existing = sessions.get(jobId);
     if (existing && existing.buyerBundleHash !== identityBundleHash(buyerIdentityBundle)) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
-    if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed' });
+    // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
+    // signed definition pinned before the Agreement is signed; a retried
+    // proposal keeps its pin.
+    const railPin = nativeProfile ? (existing ? existing.railPin : rail?.pin()) : undefined;
+    assertRailPin(railPin, existing ? 'in-flight' : 'new');
+    if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
     const session = sessions.get(jobId);
     persist(session);
     const progress = await respondToFixedPriceAgreementProposalDurable(
@@ -421,6 +448,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertSettlementChain();
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
+    assertRailPin(session.railPin, 'in-flight');
     const early = signatureAgreement !== undefined;
     if (early && !commitOnSignature) throw new SellerAgentError('signature_commitment_disabled', 'commitment on signature is disabled');
     if (early && signatureBuyer !== null && session.buyerBundle.presentedBy !== signatureBuyer) throw new SellerAgentError('signature_buyer_not_admitted', 'buyer is not admitted to early commitment');
@@ -548,22 +576,36 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   // ---- DACS-4: payment claim -> SDK intake -> payment evidence ----
-  const intakeDeps = {
+  // The native rail is the job's own pinned signed definition (RAV-R5), never
+  // the current configuration; the fixture profile uses its simulated rail.
+  const pinnedRail = (jobId) => {
+    if (!nativeProfile) return { disposition: 'verified', rail: structuredClone(DEM_RAIL_DEFINITION), railRegistryVersion: RAIL_REGISTRY_VERSION };
+    const railPin = sessions.get(jobId)?.railPin;
+    const verdict = rail.evaluate(railPin, 'in-flight');
+    if (verdict.decision !== 'pass') return { disposition: verdict.decision === 'fail' ? 'rejected' : 'indeterminate', reason: `pinned rail ${verdict.decision} (${verdict.reason})` };
+    return { disposition: 'verified', rail: intakeRailDefinition(railPin), railRegistryVersion: railPin.railRegistryVersion };
+  };
+  const intakeDepsFor = (paymentJobId) => ({
     resolveCommittedAgreement: async (jobId) => {
       const session = sessions.get(jobId);
-      if (!session?.commitment) return { disposition: 'rejected', reason: 'no finalized commitment for this job' };
+      if (jobId !== paymentJobId || !session?.commitment) return { disposition: 'rejected', reason: 'no finalized commitment for this job' };
+      const railed = pinnedRail(jobId);
+      if (railed.disposition !== 'verified') return { disposition: railed.disposition, reason: railed.reason };
       const c = session.commitment;
       return {
         disposition: 'verified',
         agreement: structuredClone(session.agreement),
         agreementHash: c.agreementHash,
         commitment: { finality: 'finalized', ref: c.logicalAddress, contentHash: contentHash(c.record), jobId, agreementHash: c.agreementHash, listingRef: { ...session.agreement.listingRef }, committedAt: c.committedAt, signer: c.record.signature.signer },
-        railRegistryVersion: RAIL_REGISTRY_VERSION,
+        railRegistryVersion: railed.railRegistryVersion,
       };
     },
     resolveListingAtCommit: async (listingRef) => (canonicalize(listingRef) === canonicalize(pin) ? { rawListing: structuredClone(listing), validation: structuredClone(validation) } : { rawListing: {}, validation: { disposition: 'rejected', reason: 'unknown-listing' } }),
-    resolveRail: async ({ ref, railRegistryVersion }) =>
-      ref?.railId === DEM_RAIL.railId && railRegistryVersion === RAIL_REGISTRY_VERSION ? { disposition: 'verified', rail: structuredClone(DEM_RAIL_DEFINITION), railRegistryVersion } : { disposition: 'rejected', reason: 'unknown rail' },
+    resolveRail: async ({ ref, railRegistryVersion }) => {
+      const railed = pinnedRail(paymentJobId);
+      if (railed.disposition !== 'verified') return railed;
+      return ref?.railId === railed.rail.railId && railRegistryVersion === railed.railRegistryVersion ? railed : { disposition: 'rejected', reason: 'unknown rail' };
+    },
     resolveIdentityBundle: async (bundleHash) => {
       if (bundleHash === identityBundleHash(sellerBundle)) return { disposition: 'verified', bundle: structuredClone(sellerBundle) };
       for (const session of sessions.values()) {
@@ -580,7 +622,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     verifyX402ReceiptExtensions: () => ({ disposition: 'fail', reason: 'x402 is not supported by this agent' }),
     classifyX402SettlementChain: () => ({ disposition: 'unsupported', reason: 'x402 is not supported by this agent' }),
     receiptStore,
-  };
+  });
 
   async function anchorOnce(logicalAddress, artifact) {
     if(artifact.jobId)assertSettlementCredit(artifact.jobId);
@@ -653,7 +695,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         startedAt: session.startedAt,
         lastUpdatedAt: session.lastUpdatedAt,
         recipeRegistryVersion: 1,
-        railRegistryVersion: RAIL_REGISTRY_VERSION,
+        railRegistryVersion: session.railPin.railRegistryVersion,
       },
       artifacts: {
         agreementCommitment: commitmentRef,
@@ -903,6 +945,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertSettlementChain();
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
+    assertRailPin(session.railPin, 'in-flight');
     if (requestedEvidence === NATIVE_PAYMENT_EVIDENCE || session.nativeEvidenceWork) return submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence });
     // The fixture intake below claims the transfer, then anchors through the
     // fixture substrate, which the native profile does not have.
@@ -915,7 +958,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (durable) await commit({ jobId }); // fresh authenticated commitment readback
     const terms = agreementTerms(session.agreement);
     if (session.paymentWork && (session.paymentWork.txHash !== String(txHash).toLowerCase() || session.paymentWork.payerPayingKey !== payerPayingKey)) throw new SellerAgentError('seller_payment_work_conflict', 'a different verified claim is retained for this job', 503);
-    const intake = session.paymentWork?.intake ?? await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash } }, intakeDeps);
+    const intake = session.paymentWork?.intake ?? await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash } }, intakeDepsFor(jobId));
     if ([...settlementJobs].some(([id,claims]) => claims.has(jobId) && !hasSettlementCredit(id,jobId))) return { status: 'indeterminate', reason: 'settlement-collision' };
     if (intake.disposition !== 'verified' || (intake.fulfilment !== 'claim' && intake.fulfilment !== 'already-claimed')) {
       return { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason };
@@ -1162,7 +1205,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       await commit({ jobId }, { readbackOnly: true });
       const terms = agreementTerms(session.agreement);
       step = 'payment-intake';
-      const intake = await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash: hash } }, { ...intakeDeps, observeDemosTransfer: nativeEvidence.observeDemosTransfer });
+      const intake = await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash: hash } }, { ...intakeDepsFor(jobId), observeDemosTransfer: nativeEvidence.observeDemosTransfer });
       if ([...settlementJobs].some(([id,claims]) => claims.has(jobId) && !hasSettlementCredit(id,jobId))) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
       if (intake.disposition !== 'verified' || !['claim', 'already-claimed'].includes(intake.fulfilment)) return { answer: { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason } };
       step = 'settlement-binding';
@@ -1230,6 +1273,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   // ---- DACS-5: completed two-sided bundle ----
+  // DACS-5 §10.3.1 ST-11 and CORE §5.1 SR2-9: a completed bundle is signed
+  // only after every required record (both Vet records, the commitment, the
+  // settlement evidence and the bundle copy itself) has a finalized receipt
+  // and resolves independently. That finalizer is not wired here, so no
+  // profile signs, countersigns or anchors a completed bundle.
+  const refuseBundleFinalization = () => {
+    throw new SellerAgentError('bundle_finalization_unavailable', 'the seller signs no completed DACS-5 bundle: the ST-11 finalizer (finalized, independently resolved Vet, commitment, settlement and bundle records) is not available', 503);
+  };
   function sessionFacts(session) {
     return bundleSession({
       agreement: session.agreement,
@@ -1246,6 +1297,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     if (!session.payment) throw new SellerAgentError('not_delivered', 'nothing was delivered for this job');
+    refuseBundleFinalization();
     session.finalisedAt ??= Math.max(now(), session.payment.deliveredAt);
     persist(session);
     const facts = sessionFacts(session);
@@ -1260,6 +1312,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     if (!session.bundleHash) throw new SellerAgentError('no_bundle_request', 'request the bundle first');
+    refuseBundleFinalization();
     const facts = sessionFacts(session);
     const { copies, problems } = await assembleBundleCopies(facts, { buyer: buyerSignature, seller: session.sellerBundleSignature });
     if (problems.length) throw new SellerAgentError('bundle_invalid', problems.join('; '));
@@ -1448,8 +1501,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               session.paymentWork.payerPayingKey !== request.buyer) return held('seller_payment_context_mismatch');
           return present(await payment());
         }
-        case '/dacs/v1/bundles/request': return present(await bundle());
-        case '/dacs/v1/bundles/countersignature': return present(await sellerCopy(body.buyerSignature));
+        case '/dacs/v1/bundles/request':
+        case '/dacs/v1/bundles/countersignature':
+          return held('bundle_finalization_unavailable');
         case '/dacs/v1/bundles/buyer-copy': {
           await sellerCopy(session.countersignatureWork?.buyerSignature);
           const record = await anchors.read(bundleAddress(request.jobId, 'buyer'));

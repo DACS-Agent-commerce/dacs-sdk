@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "9c966393c61f67b4c16feafcc9ae069c12644e03fa2a1d3a881fdc2c545e776e",
+      "sha256": "1cd10266ae1fb07fc64eef6636c8fc51fe06bb6704375e3ae9a0f3745c566136",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -136,7 +136,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/seller-agent-isolated-fixture.mjs",
       "originalSha256": null,
-      "sha256": "2f0d9893e07662fa1fff95a85894f08c2781a115f95674038ecd187fd92d528f",
+      "sha256": "6f9f062e4ba46537a74f70f35b820d73c15458079e3156c72326eca112a60e06",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -148,7 +148,7 @@
     {
       "path": "packages/dacs-seller/test/seller-lifecycle-gates.test.mjs",
       "originalSha256": null,
-      "sha256": "22839cb489f09c25061957fcaeb97d14b31bdb73488243cb1a14e1710e5fb8fc",
+      "sha256": "88ce79691b366e16e9f372241970a33e51716859a969755ea4e53c54bf6d1f0a",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -304,13 +304,13 @@
     {
       "path": "packages/dacs-seller/src/host.mjs",
       "originalSha256": null,
-      "sha256": "ef998a84a578e1c899d4315593d70f135f0b2ed3a664996ee885b38fce140244",
+      "sha256": "dea6620e22b1945c45e9e71021fda25b9cbb3652ab6dbc537ee39a74aebdf87a",
       "reason": "Seller run time: standalone host and public entry (README.md)."
     },
     {
       "path": "packages/dacs-seller/src/index.mjs",
       "originalSha256": null,
-      "sha256": "50a90c89d28f607d4cf779596734f5fcc6b50f8b889f795a1689b247387b8ba3",
+      "sha256": "114977d96c228b268a7d41f55aa423232ae1ee9a5a611f99b273e70dd87c55fe",
       "reason": "Seller run time: standalone host and public entry (README.md)."
     },
     {
@@ -358,31 +358,31 @@
     {
       "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
       "originalSha256": null,
-      "sha256": "f763e3e35a53ff1c7a1cd375d44f7f6ff6433dac9d134a7457dbd89069d0da45",
+      "sha256": "8689c23c47256fe6554e3a3eed0ee17e79c2d75b525ee01b06ceb495c003c831",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/installed-package.test.mjs",
       "originalSha256": null,
-      "sha256": "c60dc04b58731b21226c32c07f5fb749fd5c0de3b103ca888d8c8682b4c56c3e",
+      "sha256": "05e3235ceb9fc2d209198c07880214760c78aa66f0c920903e14c2c7e2fe47d9",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-http-roundtrip.test.mjs",
       "originalSha256": null,
-      "sha256": "2ca4cda147d8d9149e4cf3c3ac806dad1a4c77454233ab42e8315203ddded01d",
+      "sha256": "ee96dab284cb2d737da63aed762f3775ef900b06b1b361fdfdfad6e212c66f35",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-substrate-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "bbaf1f7ee6f5b3206efd62f2a8f831a8707cb3867411710491080420fd9510af",
+      "sha256": "b81490ed9b0462ee1082295d5540375ca000822689d6e1a44f4e5127d7209801",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "a5ec4015490bbfe54213d94df7c08b4a057444eeb0875d46339793326c7d7a43",
+      "sha256": "b210bd2ddd9bdd139fd898ec7685415e783790dbca436f83cee6079e2c6fa6f0",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -390,6 +390,24 @@
       "originalSha256": "15d4a25b5d572b3fdb342c415c35743936f5a74bd11036276fbd585df20987e3",
       "sha256": "c61e795a16042e09cc364405fc19d74b261550575144b3799954197a3cdb58f3",
       "reason": "Secret-scan marker on the refused-credentials URL test vector; the vector itself is unchanged."
+    },
+    {
+      "path": "packages/dacs-seller/test/party-vet-store.test.mjs",
+      "originalSha256": "e1d362a7d4106658e24c6fbcd1fa65d1f5c3fba20e8d14e2a8847664b4cb4699",
+      "sha256": "0bfedc39c3604e304f0b17c02d52963faa8f3fb6158d89ea715db808854a35d9",
+      "reason": "Party Vet store coverage independent of the umask: format checks on a private file and the private-file refusal itself."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/rail-authority.mjs",
+      "originalSha256": null,
+      "sha256": "cfbf870c9b938a6689a5cf2ec8384787e444ccfae34ea180747fceb57ca7db8e",
+      "reason": "Seller rail authority: steward-signed demos-native:DEM definition pinned per session (DACS-4 RAV-R1..R5, DACS-1 LRR-6)."
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/rail-authority-fixture.mjs",
+      "originalSha256": null,
+      "sha256": "28b27254f7e9618dae6863e79e3eb439b16760f76f58aae4d075dccb13f8dae5",
+      "reason": "Seller rail authority coverage: TEST steward and signed DEM rail definition."
     }
   ]
 }

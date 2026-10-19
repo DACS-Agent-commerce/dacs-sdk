@@ -39,7 +39,7 @@ async function world(t) {
   let server, store;
   const start = async () => {
     const agent = await seller.createSellerAgent({ signer, listing, observeDemosTransfer: refuse('observeDemosTransfer'), buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
-      anchors: { read: refuse('anchors.read'), write: refuse('anchors.write') } });
+      anchors: { read: refuse('anchors.read'), write: refuse('anchors.write') }, simulatedFixture: true });
     store = seller.createSellerTransportStore({ path: join(dir, 'transport.sqlite') });
     server = createServer(seller.createSellerHttpHandler(agent, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store }) }));
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
