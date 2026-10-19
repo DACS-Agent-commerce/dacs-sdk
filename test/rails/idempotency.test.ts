@@ -120,6 +120,19 @@ describe("settlement idempotency store (#43)", () => {
     expect(await store.once(KEY, binding(), async () => ok("0xretry"))).toEqual(ok("0xretry"));
   });
 
+  test.each([undefined, null])("a clean exception with reason %s rejects with the not-invoked error", async (reason) => {
+    const store = createIdempotencyStore();
+    let failure: SettlementNotInvokedError | undefined;
+    const outcome = store.once(KEY, binding(), async () => {
+      failure = new SettlementNotInvokedError({ ok: false, txHash: "", chainId: "eip155:84532", payer: "0xpayer", payee: "0xpayee" }, reason);
+      throw failure;
+    });
+    await expect(outcome).rejects.toBeInstanceOf(SettlementNotInvokedError);
+    await expect(outcome).rejects.toBe(failure);
+    // The attempt was still released, so a retry submits once.
+    expect(await store.once(KEY, binding(), async () => ok("0xretry"))).toEqual(ok("0xretry"));
+  });
+
   test("an invalid clean exception cannot release a hash-bearing attempt", async () => {
     const store = createIdempotencyStore();
     await expect(store.once(KEY, binding(), async () => {

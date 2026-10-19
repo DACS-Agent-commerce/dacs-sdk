@@ -85,7 +85,10 @@ export interface SettlementNotInvokedResult {
   result: Readonly<SettleResult>;
 }
 
-/** Release a proven clean attempt, then reject every coalesced caller. */
+/**
+ * Release a proven clean attempt, then reject every coalesced caller with
+ * `reason`, or with this error when `reason` is undefined or null.
+ */
 export class SettlementNotInvokedError extends DacsError {
   constructor(
     readonly result: Readonly<SettleResult>,
@@ -1003,7 +1006,8 @@ export function createIdempotencyStore(
             throw new DacsError(`settlement ${key} clean attempt release is ${released}`);
           }
         }
-        if (cleanFailure) throw cleanFailure.reason;
+        // A rail may carry no underlying reason; never reject with undefined.
+        if (cleanFailure) throw cleanFailure.reason ?? cleanFailure;
         return captureBoundResult(
           result as SettleResult,
           capturedBinding,
