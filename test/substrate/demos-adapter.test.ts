@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
+import type { Demos } from "@kynesyslabs/demosdk/websdk";
 
 // DemosAdapter lives on the substrate subpath, not the top-level barrel (the
 // barrel stays demosdk-free for plain-Node-ESM consumers — #1/F1).
@@ -441,8 +442,14 @@ describe("DemosAdapter", () => {
   });
 
   it("accepts network and address info shapes without an index signature (#339)", async () => {
-    // demosdk 4.0.18 returns concrete interfaces like these, with no index
-    // signature. `npm run typecheck` checks the assignments below.
+    // demosdk's own methods: `any` under the locked 4.0.16 (its declarations
+    // do not resolve with NodeNext), concrete under 4.0.18, which CI also
+    // typechecks against.
+    const real: Pick<DemosRawClient, "getNetworkInfo" | "getAddressInfo"> =
+      {} as Pick<Demos, "getNetworkInfo" | "getAddressInfo">;
+    void real;
+    // Interfaces shaped like 4.0.18's, with no index signature, so this
+    // assignment is checked even while the installed SDK types are `any`.
     interface StubForkStatus {
       activationHeight: number | null;
       activated: boolean;
