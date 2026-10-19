@@ -250,6 +250,7 @@ async function fixture() {
     observed: {
       status: "included",
       execution: "executed",
+      nonce: 7,
       txHash: TX_HASH,
       blockNumber: BLOCK_NUMBER,
       payer: BUYER_HEX,

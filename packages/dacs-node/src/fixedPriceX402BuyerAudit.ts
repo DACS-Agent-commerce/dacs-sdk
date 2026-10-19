@@ -833,13 +833,14 @@ export function createDacsFixedPriceBuyerAuditV1(
           "revalidateSettlement"
         ] = async () => {
           const fresh = await options.observeDemosTransfer(event.txHash);
-          if (fresh.status !== "included" || fresh.execution !== "executed") {
+          if (fresh.status !== "included") {
             return fresh.status === "failed" || fresh.status === "invalid"
               ? { disposition: "fail" as const,
                   reason: "buyer-audit-native-settlement-failed" }
               : { disposition: "indeterminate" as const,
                   reason: "buyer-audit-native-revalidation-unavailable" };
           }
+          // A conflicting transfer fails whether or not it executed.
           if (fresh.txHash !== event.txHash || fresh.blockNumber !== event.blockNumber ||
               fresh.includedAt !== paymentEvidence.observedAt ||
               fresh.includedAt < committedAt ||
@@ -848,6 +849,10 @@ export function createDacsFixedPriceBuyerAuditV1(
               fresh.amountOs !== expectedAmountOs) {
             return { disposition: "fail" as const,
               reason: "buyer-audit-native-settlement-conflict" };
+          }
+          if (fresh.execution !== "executed") {
+            return { disposition: "indeterminate" as const,
+              reason: "buyer-audit-native-revalidation-unavailable" };
           }
           return {
             disposition: "pass" as const,

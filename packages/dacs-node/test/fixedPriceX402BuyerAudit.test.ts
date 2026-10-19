@@ -964,6 +964,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     const observation = {
       status: "included" as const,
       execution: "executed" as const,
+      nonce: 7,
       txHash: f.event.txHash,
       blockNumber: f.event.blockNumber,
       payer: Buffer.from(BUYER_KEY).toString("hex"),
@@ -1004,7 +1005,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     const authenticated = {
       envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
     } as never;
-    const { execution: _execution, ...includedOnly } = observation;
+    const { execution: _execution, nonce: _nonce, ...includedOnly } = observation;
     const unexecuted = { ...includedOnly, status, ...(execution === undefined ? {} : { execution }) };
     if (stage === "initial") {
       observeDemosTransfer.mockResolvedValueOnce(unexecuted as never);
@@ -1049,6 +1050,16 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
         expect(result).toEqual({ disposition: "indeterminate",
           reason: "native settlement: buyer-audit-native-revalidation-unavailable" });
         expect(result).not.toHaveProperty("value");
+      }
+      if (status === "included") {
+        // A conflicting transfer fails whether or not it attests execution.
+        observeDemosTransfer.mockResolvedValueOnce(
+          { ...unexecuted, payee: "0".repeat(64) } as never,
+        );
+        await expect(verifyFinalizedSessionSettlement(
+          material.input.settlementContext, material.input.settlement, provider, "recovery",
+        )).resolves.toEqual({ disposition: "rejected",
+          reason: "native settlement: buyer-audit-native-settlement-conflict" });
       }
       expect(adapter.sign).not.toHaveBeenCalled();
       expect(context.demos.signComponent).not.toHaveBeenCalled();

@@ -273,6 +273,7 @@ function fixture(receiptStore: SellerReceiptStore) {
       observeDemosTransfer: async () => ({
         status: "included" as const,
         execution: "executed" as const,
+        nonce: 7,
         txHash: TX_HASH,
         payer: PAYER,
         payee: PAYEE,

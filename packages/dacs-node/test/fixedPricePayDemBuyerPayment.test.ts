@@ -123,9 +123,33 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
   });
 
   it.each([
+    ["hash", { txHash: "c".repeat(64) }],
+    ["payer", { payer: "d".repeat(64) }],
+    ["payee", { payee: "e".repeat(64) }],
+    ["amount", { amountOs: "1" }],
+  ] as const)("raises a conflicting %s before asking for execution evidence", async (_label, conflict) => {
+    const observe = vi.fn(async () => ({
+      status: "included" as const,
+      txHash: prepared.txHash,
+      payer: payment.payer,
+      payee: payment.payee,
+      amountOs: payment.amountOs,
+      blockNumber: 42,
+      includedAt: 1_000,
+      ...conflict,
+    }));
+    const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(observe);
+
+    await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
+      status: "operator-action",
+      reasonCode: "pay-dem-chain-observation-conflict",
+    });
+  });
+
+  it.each([
     ["confirmed", "7", "completed"],
     ["confirmed", "8", "operator-action"],
-    ["confirmed", undefined, "operator-action"],
+    ["confirmed", undefined, "indeterminate"],
     ["included", "7", "indeterminate"],
     ["finalized", "7", "indeterminate"],
     ["failed", "7", "operator-action"],
@@ -172,9 +196,10 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
       } });
     } else {
       expect(result).not.toHaveProperty("settlement");
-      expect(result).toHaveProperty("reasonCode", status === "indeterminate"
-        ? "pay-dem-chain-execution-unconfirmed" : nonce === "8"
-          ? "pay-dem-chain-observation-conflict" : "pay-dem-prepared-transfer-invalid");
+      expect(result).toHaveProperty("reasonCode", nonce === undefined
+        ? "pay-dem-prepared-transfer-pending" : status === "indeterminate"
+          ? "pay-dem-chain-execution-unconfirmed" : nonce === "8"
+            ? "pay-dem-chain-observation-conflict" : "pay-dem-prepared-transfer-invalid");
     }
   });
 

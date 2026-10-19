@@ -247,23 +247,39 @@ export type DestinationBindingResolution =
 export type DemosTransferObservation =
   | { status: "pending" | "not-found" | "unavailable"; reason?: string }
   | { status: "failed" | "invalid"; reason?: string }
-  | {
-      status: "included";
-      /**
-       * Attest successful execution only after reading a `confirmed` record
-       * bound to this hash, nonce, block, payer, payee and amount. Inclusion
-       * alone is insufficient. Required before delivery or payment recovery accounting.
-       */
-      execution?: "executed";
-      /** Validated record nonce; required for buyer prepared-transfer recovery. */
-      nonce?: number;
-      txHash: string;
-      payer: string;
-      payee: string;
-      amountOs: string;
-      blockNumber: number;
-      includedAt: number;
-    };
+  | DemosExecutedTransferObservation
+  | DemosIncludedTransferObservation;
+
+interface DemosTransferInclusionFacts {
+  status: "included";
+  txHash: string;
+  payer: string;
+  payee: string;
+  amountOs: string;
+  blockNumber: number;
+  includedAt: number;
+}
+
+/**
+ * The only observation that permits delivery, payment evidence or payment
+ * recovery accounting. Attest execution only after reading a `confirmed`
+ * transaction record bound to this hash, block, payer, payee and amount.
+ */
+export interface DemosExecutedTransferObservation extends DemosTransferInclusionFacts {
+  execution: "executed";
+  /** The confirmed record's signed nonce, as a safe non-negative integer. */
+  nonce: number;
+}
+
+/**
+ * Inclusion without execution evidence. A node's `included` status is reported
+ * for a transaction whose record `failed` too, so every consumer holds this
+ * observation as not yet settled.
+ */
+export interface DemosIncludedTransferObservation extends DemosTransferInclusionFacts {
+  execution?: undefined;
+  nonce?: undefined;
+}
 
 export type X402SessionBinding =
   | { kind: "eip3009"; nonce: string }
@@ -1373,7 +1389,12 @@ function isDemosTransferObservationValue(
     return hasOnlyKeys(value, ["status", "reason"]) &&
       (value.reason === undefined || typeof value.reason === "string");
   }
-  return value.status === "included" && value.execution === "executed" && hasExactKeys(value, [
+  if (value.status !== "included") return false;
+  // Exactly the executed attestation with its record nonce, or exactly the
+  // inclusion-only shape. A partial or explicitly undefined attestation is
+  // malformed rather than either one.
+  const executed = value.execution === "executed";
+  return hasExactKeys(value, [
     "status",
     "txHash",
     "payer",
@@ -1381,10 +1402,9 @@ function isDemosTransferObservationValue(
     "amountOs",
     "blockNumber",
     "includedAt",
-    "execution",
-    ...(Object.prototype.hasOwnProperty.call(value, "nonce") ? ["nonce"] : []),
+    ...(executed ? ["execution", "nonce"] : []),
   ]) &&
-    (value.nonce === undefined || isSafeUint(value.nonce)) &&
+    (!executed || isSafeUint(value.nonce)) &&
     typeof value.txHash === "string" &&
     typeof value.payer === "string" &&
     typeof value.payee === "string" &&
@@ -2595,6 +2615,9 @@ export async function verifySellerPaymentIntake(
       return reject("payment-before-finalized-commitment");
     }
     if (observed.includedAt > agreement.terms.deadline) return reject("payment-after-deadline");
+    // Conflicts above reject even without execution evidence; a matching
+    // inclusion stays held until a confirmed record attests execution.
+    if (observed.execution !== "executed") return indeterminate("demos-execution-unconfirmed");
     const settlementId = canonicalSellerSettlementId({ kind: "demos", txHash: observed.txHash });
     if (!settlementId) return verifierError("malformed-settlement-identity");
     const evidenceInput: SellerPaymentEvidenceInput = {

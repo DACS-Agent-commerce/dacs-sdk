@@ -14,6 +14,8 @@ const INCLUDED_STATE = "included";
 // included transaction `confirmed` (and future clients may use `finalized`).
 // These labels are accepted only while the independent status and confirmed
 // block checks below establish inclusion; the body label is never sufficient.
+// Inclusion is not execution: only a literal `confirmed` record with a valid
+// signed nonce yields `execution: "executed"`.
 const INCLUDED_TRANSACTION_BODY_STATES = new Set([
   "included",
   "confirmed",
@@ -234,6 +236,8 @@ function invalid(reason: string): DemosTransferObservation {
  * The transaction status, transaction body, and confirmed block must agree on
  * one hash and block height. The consensus block timestamp is authoritative;
  * the transaction's caller-selected timestamp is never used for deadlines.
+ * The result attests execution, with the record nonce, only for a literal
+ * `confirmed` transaction record; other inclusion labels are inclusion-only.
  */
 export async function observePayDemTransferCore(
   txHash: string,
@@ -407,17 +411,8 @@ export async function observePayDemTransferCore(
     return invalid("confirmed block timestamp is malformed");
   }
 
-  const nonce = recordNonce(content.nonce);
-  if (transaction.status === "confirmed" && nonce === null) {
-    return invalid("confirmed transaction has no valid signed nonce");
-  }
-
-  return {
-    status: "included",
-    // Only the confirmed transaction record proves execution. The other
-    // accepted inclusion labels retain their legacy observation shape.
-    ...(transaction.status === "confirmed" && nonce !== null
-      ? { execution: "executed" as const, nonce } : {}),
+  const included = {
+    status: "included" as const,
     txHash: requestedHash,
     payer,
     payee,
@@ -425,6 +420,20 @@ export async function observePayDemTransferCore(
     blockNumber: statusBlockNumber,
     includedAt,
   };
+  // Only the literal confirmed transaction record proves execution. The other
+  // accepted inclusion labels yield an inclusion-only observation, which every
+  // consumer holds as unsettled.
+  if (transaction.status !== "confirmed") return included;
+  const nonce = recordNonce(content.nonce);
+  if (nonce === null) {
+    // The record says the transfer executed, so this is not proof of an
+    // invalid transfer; it stays retryable without an execution attestation.
+    return {
+      status: "unavailable",
+      reason: "confirmed transaction record has no valid signed nonce",
+    };
+  }
+  return { ...included, execution: "executed", nonce };
 }
 
 function validTimeout(value: number | undefined): number {

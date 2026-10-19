@@ -1538,6 +1538,8 @@ export {
   type AddressResolution,
   type DestinationBindingResolution,
   type DemosTransferObservation,
+  type DemosExecutedTransferObservation,
+  type DemosIncludedTransferObservation,
   type X402SessionBinding,
   type X402TransferObservation,
   type SellerReceiptClaim,

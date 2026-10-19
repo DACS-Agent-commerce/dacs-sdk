@@ -119,6 +119,7 @@ describe("native DEM seller payment evidence composition", () => {
     const observeDemosTransfer = vi.fn(async () => ({
       status: "included" as const,
       execution: "executed" as const,
+      nonce: 7,
       txHash: TX_HASH,
       payer: BUYER_KEY,
       payee: SELLER_KEY,
@@ -201,6 +202,7 @@ describe("native DEM seller payment evidence composition", () => {
       observeDemosTransfer: async () => ({
         status: "included",
         execution: "executed",
+        nonce: 7,
         txHash: TX_HASH,
         payer: "ff".repeat(32),
         payee: SELLER_KEY,

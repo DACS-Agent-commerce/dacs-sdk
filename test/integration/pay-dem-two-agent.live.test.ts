@@ -121,6 +121,7 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
     // facts immediately before its only broadcast. Neither record is removed,
     // including when settlement is ambiguous.
     requireCondition(LIVE_ENV.LIVE_PAY_DEM_CONFIRM === "1", "spend-not-confirmed");
+    let signedNonce: number | undefined;
     const { marker, result: settlement } = await executePayDemFundedRun(
       {
         directory: LIVE_ENV.LIVE_PAY_DEM_MARKER_DIR!,
@@ -137,7 +138,12 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
           secret: buyerSecret,
           network: "demos",
           maxTotalDebitOs,
-          journalPreparedTransfer,
+          // Journal first, unchanged; then remember the signed nonce that the
+          // execution attestation must carry.
+          journalPreparedTransfer: async (prepared) => {
+            await journalPreparedTransfer(prepared);
+            signedNonce = prepared.nonce;
+          },
         });
         requireCondition(
           rail.address.replace(/^0x/i, "").toLowerCase() ===
@@ -173,8 +179,11 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
 
     const observer = createPayDemSellerObserver({ rpc });
     const first = await observer.observeDemosTransfer(settlement.txHash);
+    expect(signedNonce).toEqual(expect.any(Number));
     expect(first).toMatchObject({
       status: "included",
+      execution: "executed",
+      nonce: signedNonce,
       payer: buyerAddress.replace(/^0x/i, "").toLowerCase(),
       payee: sellerAddress.replace(/^0x/i, "").toLowerCase(),
       amountOs: amountText,

@@ -15,6 +15,8 @@ import {
   verifySellerPaymentIntake,
   x402Eip3009Nonce,
   type CommittedAgreementResolution,
+  type DemosExecutedTransferObservation,
+  type DemosIncludedTransferObservation,
   type DemosTransferObservation,
   type SellerFulfilmentHandoff,
   type SellerFulfilmentHandoffV2,
@@ -328,6 +330,7 @@ function makeContext(
   const demosObservation: DemosTransferObservation = {
     status: "included",
     execution: "executed",
+    nonce: 7,
     txHash: DEMOS_TX,
     payer: "aa".repeat(32),
     payee: "bb".repeat(32),
@@ -816,7 +819,7 @@ describe("verifySellerPaymentIntake", () => {
     });
   });
 
-  it.each([null, "7", -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1])(
+  it.each([undefined, null, "7", -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1])(
     "rejects a malformed supplied record nonce %j before fulfilment", async (nonce) => {
       const ctx = makeContext("pay-dem");
       ctx.demosObservation = { ...ctx.demosObservation, nonce } as never;
@@ -842,17 +845,56 @@ describe("verifySellerPaymentIntake", () => {
     },
   );
 
-  it("refuses a field-free included observation before claiming delivery", async () => {
+  it.each(["execution", "nonce"])(
+    "refuses a partial attestation without %s before claiming delivery", async (key) => {
+      const ctx = makeContext("pay-dem");
+      const store = ctx.deps.receiptStore;
+      const claim = vi.fn(store.claim.bind(store));
+      ctx.deps.receiptStore = { ...store, claim };
+      delete (ctx.demosObservation as unknown as Record<string, unknown>)[key];
+      const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+      expect(result).toMatchObject({
+        disposition: "error", reason: "demos-observation-invalid-result", fulfilment: "none",
+      });
+      expect(result.evidenceInput).toBeUndefined();
+      expect(claim).not.toHaveBeenCalled();
+    },
+  );
+
+  it("holds an inclusion-only observation as unsettled before claiming delivery", async () => {
     const ctx = makeContext("pay-dem");
     const store = ctx.deps.receiptStore;
     const claim = vi.fn(store.claim.bind(store));
     ctx.deps.receiptStore = { ...store, claim };
-    delete (ctx.demosObservation as { execution?: string }).execution;
+    const { execution: _execution, nonce: _nonce, ...includedOnly } =
+      ctx.demosObservation as DemosExecutedTransferObservation;
+    ctx.demosObservation = includedOnly satisfies DemosIncludedTransferObservation;
     const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
-    expect(result).toMatchObject({ disposition: "error", fulfilment: "none" });
-    expect(result.evidenceInput).toBeUndefined();
+    expect(result).toEqual({
+      disposition: "indeterminate", reason: "demos-execution-unconfirmed", fulfilment: "none",
+    });
     expect(claim).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["payer", { payer: "cc".repeat(32) }, "demos-transfer-party-or-identity-mismatch"],
+    ["amount", { amountOs: "1" }, "payment-amount-mismatch"],
+  ] as const)(
+    "rejects an inclusion-only observation with a conflicting %s",
+    async (_label, conflict, reason) => {
+      const ctx = makeContext("pay-dem");
+      const store = ctx.deps.receiptStore;
+      const claim = vi.fn(store.claim.bind(store));
+      ctx.deps.receiptStore = { ...store, claim };
+      const { execution: _execution, nonce: _nonce, ...includedOnly } =
+        ctx.demosObservation as DemosExecutedTransferObservation;
+      ctx.demosObservation = { ...includedOnly, ...conflict };
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toEqual({
+        disposition: "rejected", reason, fulfilment: "none",
+      });
+      expect(claim).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     {

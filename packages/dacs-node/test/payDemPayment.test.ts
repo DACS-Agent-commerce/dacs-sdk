@@ -1798,6 +1798,7 @@ describe("native DEM buyer payment track", () => {
     const observeDemosTransfer = vi.fn(async () => ({
       status: "included" as const,
       execution: "executed" as const,
+      nonce: 7,
       txHash: TX_HASH,
       payer: PAYER,
       payee: PAYEE,

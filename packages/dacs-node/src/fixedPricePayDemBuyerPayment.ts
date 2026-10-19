@@ -216,9 +216,10 @@ export function createDacsFixedPricePayDemBuyerPaymentV1(
  * Reconcile only the exact signed hash retained before broadcast. A missing
  * prepared checkpoint requires operator recovery because actor-local backups
  * can roll back independently of the wallet authority and the Demos chain.
- * An included observation must attest `execution: "executed"` after checking
- * the bound confirmed transaction record, including the retained signed nonce;
- * otherwise the payment stays held.
+ * An included observation that conflicts with the payment needs an operator.
+ * A matching one must attest `execution: "executed"` after checking the bound
+ * confirmed transaction record, including the retained signed nonce; otherwise
+ * the payment stays held.
  */
 export function createDacsFixedPricePayDemBuyerReconciliationV1(
   observeDemosTransfer: (txHash: string) => Promise<DemosTransferObservation>,
@@ -245,20 +246,24 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
         reasonCode: "pay-dem-chain-observation-unavailable" });
     }
     if (observation.status === "included") {
-      if (observation.execution !== "executed") {
-        return Object.freeze({ status: "indeterminate" as const,
-          reasonCode: "pay-dem-chain-execution-unconfirmed" });
-      }
-      if (typeof observation.nonce !== "number" ||
-          !Number.isSafeInteger(observation.nonce) || observation.nonce < 0 ||
-          Object.is(observation.nonce, -0) || observation.nonce !== prepared.nonce ||
-          observation.txHash !== prepared.txHash ||
+      // A conflicting transfer needs an operator whether or not it executed.
+      if (observation.txHash !== prepared.txHash ||
           observation.payer !== payment.payer || observation.payee !== payment.payee ||
           observation.amountOs !== payment.amountOs ||
           prepared.confirmedTotalDebitOs === undefined ||
           !INTEGER_RE.test(prepared.confirmedTotalDebitOs) ||
           BigInt(prepared.confirmedTotalDebitOs) < BigInt(payment.amountOs) ||
           BigInt(prepared.confirmedTotalDebitOs) > BigInt(payment.maxTotalDebitOs)) {
+        return Object.freeze({ status: "operator-action" as const,
+          reasonCode: "pay-dem-chain-observation-conflict" });
+      }
+      if (observation.execution !== "executed") {
+        return Object.freeze({ status: "indeterminate" as const,
+          reasonCode: "pay-dem-chain-execution-unconfirmed" });
+      }
+      if (typeof observation.nonce !== "number" ||
+          !Number.isSafeInteger(observation.nonce) || observation.nonce < 0 ||
+          Object.is(observation.nonce, -0) || observation.nonce !== prepared.nonce) {
         return Object.freeze({ status: "operator-action" as const,
           reasonCode: "pay-dem-chain-observation-conflict" });
       }
