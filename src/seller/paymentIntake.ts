@@ -274,11 +274,25 @@ export interface DemosExecutedTransferObservation extends DemosTransferInclusion
 /**
  * Inclusion without execution evidence. A node's `included` status is reported
  * for a transaction whose record `failed` too, so every consumer holds this
- * observation as not yet settled.
+ * observation as not yet settled. Omit both `execution` and `nonce`: a present
+ * key whose value is `undefined` is a malformed result, not this shape.
  */
 export interface DemosIncludedTransferObservation extends DemosTransferInclusionFacts {
   execution?: undefined;
   nonce?: undefined;
+}
+
+/**
+ * The one rule for an execution attestation: status `included`, the literal
+ * `execution: "executed"` and the record's signed `nonce` as a safe
+ * non-negative integer. Every consumer that delivers, issues payment evidence
+ * or accounts a payment requires this; any other `included` shape is held.
+ */
+export function isDemosExecutedTransferObservation(
+  observation: Readonly<DemosTransferObservation>,
+): observation is DemosExecutedTransferObservation {
+  return isRecord(observation) && observation.status === "included" &&
+    observation.execution === "executed" && isSafeUint(observation.nonce);
 }
 
 export type X402SessionBinding =
@@ -2617,7 +2631,9 @@ export async function verifySellerPaymentIntake(
     if (observed.includedAt > agreement.terms.deadline) return reject("payment-after-deadline");
     // Conflicts above reject even without execution evidence; a matching
     // inclusion stays held until a confirmed record attests execution.
-    if (observed.execution !== "executed") return indeterminate("demos-execution-unconfirmed");
+    if (!isDemosExecutedTransferObservation(observed)) {
+      return indeterminate("demos-execution-unconfirmed");
+    }
     const settlementId = canonicalSellerSettlementId({ kind: "demos", txHash: observed.txHash });
     if (!settlementId) return verifierError("malformed-settlement-identity");
     const evidenceInput: SellerPaymentEvidenceInput = {

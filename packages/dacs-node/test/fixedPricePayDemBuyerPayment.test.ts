@@ -62,12 +62,12 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
     expect(observe).not.toHaveBeenCalled();
   });
 
-  it("recovers only the exact executed transfer", async () => {
+  it.each([prepared.nonce, 0])("recovers only the exact executed transfer with signed nonce %d", async (nonce) => {
     const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(
       vi.fn(async () => ({
         status: "included" as const,
         execution: "executed" as const,
-        nonce: prepared.nonce,
+        nonce,
         txHash: prepared.txHash,
         payer: payment.payer,
         payee: payment.payee,
@@ -76,10 +76,12 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
         includedAt: 1_000,
       })),
     );
-    await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual({
+    const exact = { ...prepared, nonce };
+    await expect(reconcile({ payment, prepared: exact, fence } as never)).resolves.toEqual({
       status: "completed",
       settlement: {
         execution: "executed",
+        nonce,
         ok: true,
         txHash: prepared.txHash,
         chainId: "demos",
@@ -185,6 +187,8 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
     expect(result.status).toBe(status);
     if (status === "completed") {
       expect(result).toMatchObject({ settlement: {
+        execution: "executed",
+        nonce: 7,
         ok: true,
         txHash: prepared.txHash,
         payer: payment.payer,

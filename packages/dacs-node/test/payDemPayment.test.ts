@@ -1236,7 +1236,7 @@ describe("native DEM buyer payment track", () => {
   });
 
   it.each([
-    ["executed", { execution: "executed" }],
+    ["executed", { execution: "executed", nonce: 9 }],
     ["missing", {}],
     ["undefined", { execution: undefined }],
     ["failed", { execution: "failed" }],
@@ -1354,8 +1354,9 @@ describe("native DEM buyer payment track", () => {
     if (!("execution" in attestation) || attestation.execution !== "executed") {
       expect(publishNotice).not.toHaveBeenCalled();
       expect(walletReconcile).not.toHaveBeenCalled();
-      expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
-        .toMatchObject({ state: "indeterminate" });
+      expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+        state: "indeterminate", reasonCode: "pay-dem-chain-execution-unconfirmed",
+      });
       return;
     }
     expect(walletReconcile).toHaveBeenCalledTimes(1);
@@ -1377,6 +1378,106 @@ describe("native DEM buyer payment track", () => {
       .not.toHaveProperty("execution");
     expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "final", outcome: "success" });
+  });
+
+  it.each([
+    ["another transaction hash", true, { txHash: "ab".repeat(32), nonce: 9 },
+      "pay-dem-chain-observation-conflict"],
+    ["a missing nonce", true, {}, "pay-dem-chain-observation-conflict"],
+    ["another nonce", true, { nonce: 10 }, "pay-dem-chain-observation-conflict"],
+    ["a string nonce", true, { nonce: "9" }, "pay-dem-chain-observation-conflict"],
+    ["no prepared checkpoint", false, { nonce: 9 },
+      "pay-dem-prepared-transfer-checkpoint-missing"],
+  ] as const)("refuses a custom executed reconciliation with %s before accounting", async (
+    _label, journal, binding, reasonCode,
+  ) => {
+    const databasePath = join(root(), "buyer.sqlite");
+    const first = await open(databasePath);
+    putDacsLiveOrderInputV1({ database: first, order: ORDER, application: {} });
+    const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      database: first,
+      workerId: "buyer-dem-before-restart",
+      rail: {
+        address: PAYER,
+        async settle(input) {
+          if (journal) {
+            await input.journalPreparedTransfer!({
+              txHash: TX_HASH, nonce: 9, payer: PAYER, payee: PAYEE,
+              amountOs: AUTHORITY.amountOs, network: "demos",
+              maxTotalDebitOs: AUTHORITY.maxTotalDebitOs, recovery: input.recovery!,
+            });
+          }
+          throw new Error("process lost before the transfer result");
+        },
+      },
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
+      publishNotice: vi.fn(),
+      retryDelayMs: 1,
+    });
+    const initial = createFixedPricePayDemBuyerCoordinator({
+      store: first.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-before-restart",
+      operations: { agreement: success, payment: firstPayment },
+    });
+    await initial.startOrder(ORDER);
+    await initial.runPending({ limit: 2 });
+    expect((await initial.getOrderStatus(JOB_ID))?.tracks.payment?.state)
+      .toBe("indeterminate");
+    first.checkpoint();
+    first.close();
+    databases.splice(databases.indexOf(first), 1);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const restarted = await open(databasePath);
+    const settle: PayDemRail["settle"] = vi.fn(async () => {
+      throw new Error("settle must not run during reconciliation");
+    });
+    // A custom reconciler reports a real executed transfer with the same
+    // parties and amount; only the prepared hash and nonce tell it apart.
+    const reconcile = vi.fn(async () => ({
+      status: "completed" as const,
+      settlement: {
+        execution: "executed" as const,
+        ok: true,
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: PAYEE,
+        finality: { model: "bft-final" as const },
+        blockNumber: 43,
+        txRefKind: "demos" as const,
+        amountOs: AUTHORITY.amountOs,
+        networkFeeOs: "1000000000",
+        ...binding,
+      },
+    }));
+    const publishNotice = vi.fn();
+    const baseRecoveryWallet = createPermissiveTestWalletSpendAuthorityV1();
+    const walletReconcile = vi.fn(baseRecoveryWallet.reconcile);
+    const resumed = createFixedPricePayDemBuyerCoordinator({
+      store: restarted.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-after-restart",
+      operations: { payment: createDacsPayDemBuyerPaymentTrackV1({
+        walletSpendAuthority: { ...baseRecoveryWallet, reconcile: walletReconcile },
+        database: restarted,
+        workerId: "buyer-dem-after-restart",
+        rail: { address: PAYER, settle },
+        resolveAuthority: () => AUTHORITY,
+        reconcile: reconcile as never,
+        publishNotice,
+        retryDelayMs: 1,
+      }) },
+    });
+    await resumed.runPending({ limit: 1 });
+
+    expect(settle).not.toHaveBeenCalled();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(walletReconcile).not.toHaveBeenCalled();
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
+      .toMatchObject({ state: "operator-action", reasonCode });
   });
 
   it("holds wallet budget when an older actor checkpoint is restored after transfer", async () => {
@@ -1586,6 +1687,31 @@ describe("native DEM buyer payment track", () => {
     expect(await wallet.inspect()).toEqual(before);
     expect(before).toMatchObject({ activeEffects: 1,
       assets: [{ cumulativeSettledDebit: "0", reservedWorstCaseDebit: payment.maxTotalDebitOs }] });
+  });
+
+  it.each([
+    ["transaction hash", { txHash: "ab".repeat(32) }],
+    ["payer", { payer: "cd".repeat(32) }],
+    ["payee", { payee: "ef".repeat(32) }],
+    ["amount", { amountOs: "1" }],
+  ] as const)("holds wallet accounting for an executed transfer with another %s", async (_label, conflict) => {
+    const payment = recoveryPayment();
+    const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+      database: recoveryEvidenceDatabase(payment, true),
+      observeDemosTransfer: async () => ({
+        status: "included", execution: "executed", nonce: 7, txHash: TX_HASH,
+        payer: PAYER, payee: PAYEE, amountOs: payment.amountOs, blockNumber: 42,
+        includedAt: 1_780_000_000_000, ...conflict,
+      }),
+    });
+    await expect(authenticateRecovery(recoveryReservation(payment), {
+      disposition: "settled", evidenceHash: TX_HASH,
+      debits: [
+        { asset: "DEM", purpose: "service", amount: payment.amountOs },
+        { asset: "DEM", purpose: "network-fee", amount:
+          (BigInt(payment.maxTotalDebitOs) - BigInt(payment.amountOs)).toString() },
+      ],
+    })).resolves.toBe(false);
   });
 
   it.each([

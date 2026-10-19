@@ -519,6 +519,16 @@ describe("fixed-price native DEM buyer payment-evidence verification", () => {
     expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, null, -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1, "7"])(
+    "holds seller evidence whose execution attestation has nonce %s", async (nonce) => {
+      const f = await fixture();
+      if (nonce === undefined) delete f.state.observed.nonce;
+      else f.state.observed.nonce = nonce;
+      await expect(f.verify()).resolves.toMatchObject({ disposition: "indeterminate" });
+      expect(mocks.verifySettlementEvidence).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects payment evidence authored by the buyer before observing settlement", async () => {
     const f = await fixture();
     const buyerAuthored = signComponent(

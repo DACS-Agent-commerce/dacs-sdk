@@ -1,6 +1,7 @@
 import {
   getAuthenticatedRailProvenance,
   isAuthenticatedRailDefinition,
+  isDemosExecutedTransferObservation,
   type AuthenticatedRailDefinition,
   type DemosTransferObservation,
 } from "@kynesyslabs/dacs";
@@ -261,9 +262,8 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
         return Object.freeze({ status: "indeterminate" as const,
           reasonCode: "pay-dem-chain-execution-unconfirmed" });
       }
-      if (typeof observation.nonce !== "number" ||
-          !Number.isSafeInteger(observation.nonce) || observation.nonce < 0 ||
-          Object.is(observation.nonce, -0) || observation.nonce !== prepared.nonce) {
+      if (!isDemosExecutedTransferObservation(observation) ||
+          observation.nonce !== prepared.nonce) {
         return Object.freeze({ status: "operator-action" as const,
           reasonCode: "pay-dem-chain-observation-conflict" });
       }
@@ -271,6 +271,7 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
         status: "completed" as const,
         settlement: Object.freeze({
           execution: "executed" as const,
+          nonce: observation.nonce,
           ok: true,
           txHash: observation.txHash,
           chainId: "demos",

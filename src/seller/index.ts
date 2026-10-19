@@ -79,6 +79,7 @@ export {
 export {
   verifySellerPaymentIntake,
   canonicalSellerSettlementId,
+  isDemosExecutedTransferObservation,
   createInMemorySellerReceiptStore,
   isSellerFulfilmentHandoff,
   sellerFulfilmentCandidateHash,

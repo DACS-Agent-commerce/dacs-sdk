@@ -1,6 +1,7 @@
 import {
   baseUnits,
   encodeAddressSegment,
+  isDemosExecutedTransferObservation,
   type SettlementEvidence,
   type SellerPaymentIntakeDeps,
   type SellerSessionSettlementPublicationDeps,
@@ -682,7 +683,7 @@ export function createDacsFixedPricePayDemSellerPaymentEvidenceV1(
             } catch {
               amountOs = undefined;
             }
-            if (observed.status !== "included" || observed.execution !== "executed" ||
+            if (!isDemosExecutedTransferObservation(observed) ||
                 buyerKey === null || sellerKey === null ||
                 amountOs === undefined || observed.txHash !== identity.txHash ||
                 observed.blockNumber !== identity.blockNumber ||

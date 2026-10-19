@@ -170,13 +170,18 @@ describe("native DEM seller payment evidence composition", () => {
 
   it.each([
     ...[undefined, "confirmed", "failed", true, null].map((execution) => ({
-      status: "included", execution,
+      status: "included", execution, nonce: undefined as unknown,
     })),
-    { status: "pending", execution: "executed" },
-  ])("does not issue native proof with status $status and execution $execution", async ({ status, execution }) => {
+    // The execution marker without the record's signed nonce is no attestation.
+    ...[undefined, null, -1, -0, 7.5, "7"].map((nonce) => ({
+      status: "included", execution: "executed", nonce: nonce as unknown,
+    })),
+    { status: "pending", execution: "executed", nonce: 7 as unknown },
+  ])("does not issue native proof with status $status, execution $execution and nonce $nonce", async ({ status, execution, nonce }) => {
     const observation = { status, txHash: TX_HASH, payer: BUYER_KEY,
       payee: SELLER_KEY, amountOs: "1250000000", blockNumber: 123, includedAt: 100,
-      ...(execution === undefined ? {} : { execution }) };
+      ...(execution === undefined ? {} : { execution }),
+      ...(nonce === undefined ? {} : { nonce }) };
     const composed = createDacsFixedPricePayDemSellerPaymentEvidenceV1({
       context: { role: "seller", authority: SELLER, peerAuthority: BUYER,
         demos: { adapter: {} } } as never,

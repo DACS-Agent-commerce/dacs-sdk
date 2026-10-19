@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import {
   combineWalletSpendEffectFenceV1,
+  isDemosExecutedTransferObservation,
   settlementKey,
   type PayDemPreparedTransfer,
   type PayDemRail,
@@ -151,7 +152,8 @@ export interface DacsPayDemPaymentNoticeV1 {
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | {
       status: "completed";
-      settlement: Readonly<PayDemReconciledSettlement>;
+      /** `nonce` is the confirmed record's signed nonce. */
+      settlement: Readonly<PayDemReconciledSettlement & { nonce: number }>;
     }
   | { status: "absent"; absenceProofHash: string }
   | { status: "indeterminate"; reasonCode: string; retryAt?: number }
@@ -174,10 +176,13 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * prepared hash shows the transfer executed. A status-index `included`
    * alone is not execution: a node reports it for a transaction whose record
    * `failed` (#338). Every completed settlement must attest
-   * `execution: "executed"` after checking a bound confirmed record. The track
-   * checks and removes that attestation before storing the settlement or
-   * publishing its notice. Missing or other execution evidence stays
-   * indeterminate without changing wallet accounting or publishing a notice.
+   * `execution: "executed"` with the record's signed `nonce` after checking a
+   * bound confirmed record. The track checks and removes both before storing
+   * the settlement or publishing its notice. Missing or other execution
+   * evidence stays indeterminate without changing wallet accounting or
+   * publishing a notice. An executed settlement without a prepared checkpoint,
+   * or whose hash or nonce differs from the prepared transfer's, needs an
+   * operator.
    */
   reconcile(input: Readonly<{
     payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
@@ -475,9 +480,7 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
         return false;
       }
       const chain = await observeDemosTransfer(prepared.txHash);
-      if (chain.status !== "included" || chain.execution !== "executed" ||
-          typeof chain.nonce !== "number" || !Number.isSafeInteger(chain.nonce) ||
-          chain.nonce < 0 || Object.is(chain.nonce, -0) || chain.nonce !== prepared.nonce ||
+      if (!isDemosExecutedTransferObservation(chain) || chain.nonce !== prepared.nonce ||
           chain.txHash !== prepared.txHash ||
           chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
           chain.amountOs !== payment.amountOs) {
@@ -721,6 +724,7 @@ export function loadDacsPayDemBuyerPaymentForOrderV1(
 function captureChainReconciliation(
   value: unknown,
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+  prepared: Readonly<PayDemPreparedTransfer> | undefined,
 ): Readonly<DacsLiveEffectReconciliationV1<DacsPayDemBuyerPaymentResultV1>> {
   if (!plainObject(value) || typeof value.status !== "string") {
     throw new DacsPayDemBuyerPaymentError("pay-dem-reconciliation-invalid");
@@ -734,9 +738,21 @@ function captureChainReconciliation(
       return Object.freeze({ status: "indeterminate",
         reasonCode: "pay-dem-chain-execution-unconfirmed" });
     }
+    // The attestation accounts only the exact transfer signed before
+    // broadcast, whoever supplied the reconcile callback. The prepared nonce
+    // is a canonical safe integer, so Object.is also refuses -0 and non-numbers.
+    if (prepared === undefined) {
+      return Object.freeze({ status: "operator-action",
+        reasonCode: "pay-dem-prepared-transfer-checkpoint-missing" });
+    }
+    if (raw.txHash !== prepared.txHash || !Object.is(raw.nonce, prepared.nonce)) {
+      return Object.freeze({ status: "operator-action",
+        reasonCode: "pay-dem-chain-observation-conflict" });
+    }
     const settlement = { ...raw };
     delete settlement.amountOs;
     delete settlement.execution;
+    delete settlement.nonce;
     return Object.freeze({
       status: "completed",
       result: result(captureSettlement(settlement, payment)),
@@ -939,7 +955,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           ...(prepared === undefined ? {} : { prepared }),
           fence,
         });
-        const captured = captureChainReconciliation(reconciled, payment);
+        const captured = captureChainReconciliation(reconciled, payment, prepared);
         const reservation = walletReservation(payment);
         if (captured.status === "completed") {
           try {

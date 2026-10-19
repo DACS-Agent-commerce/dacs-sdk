@@ -8,6 +8,7 @@ import { identityBundleHash } from "../../src/identity/index.js";
 import {
   canonicalSellerSettlementId,
   createInMemorySellerReceiptStore,
+  isDemosExecutedTransferObservation,
   isValidSellerReceiptClaim,
   isSellerFulfilmentHandoff,
   sellerFulfilmentCandidateHash,
@@ -733,6 +734,36 @@ function fulfilmentHandoff(
   };
 }
 
+describe("isDemosExecutedTransferObservation", () => {
+  const facts = {
+    status: "included" as const, txHash: "ab".repeat(32), payer: "aa".repeat(32),
+    payee: "bb".repeat(32), amountOs: "1", blockNumber: 42, includedAt: 1_000,
+  };
+
+  it.each([0, 7, Number.MAX_SAFE_INTEGER])("accepts the executed attestation with nonce %d", (nonce) => {
+    expect(isDemosExecutedTransferObservation({ ...facts, execution: "executed", nonce }))
+      .toBe(true);
+  });
+
+  it.each([
+    ["inclusion only", { ...facts }],
+    ["missing nonce", { ...facts, execution: "executed" }],
+    ["negative zero nonce", { ...facts, execution: "executed", nonce: -0 }],
+    ["negative nonce", { ...facts, execution: "executed", nonce: -1 }],
+    ["fractional nonce", { ...facts, execution: "executed", nonce: 7.5 }],
+    ["unsafe nonce", { ...facts, execution: "executed", nonce: Number.MAX_SAFE_INTEGER + 1 }],
+    ["NaN nonce", { ...facts, execution: "executed", nonce: NaN }],
+    ["string nonce", { ...facts, execution: "executed", nonce: "7" }],
+    ["bigint nonce", { ...facts, execution: "executed", nonce: 7n }],
+    ["record label", { ...facts, execution: "confirmed", nonce: 7 }],
+    ["pending status", { status: "pending", execution: "executed", nonce: 7 }],
+    ["null", null],
+    ["array", [{ ...facts, execution: "executed", nonce: 7 }]],
+  ])("refuses %s", (_label, value) => {
+    expect(isDemosExecutedTransferObservation(value as never)).toBe(false);
+  });
+});
+
 describe("SellerFulfilmentHandoff runtime guard", () => {
   it.each([
     "paymentPhaseIndex",
@@ -842,6 +873,22 @@ describe("verifySellerPaymentIntake", () => {
         fulfilment: "none",
       });
       expect(result.evidenceInput).toBeUndefined();
+    },
+  );
+
+  it.each(["finalized", "settled", "confirmed"])(
+    "rejects an attested observation with unknown status %s before claiming delivery",
+    async (status) => {
+      const ctx = makeContext("pay-dem");
+      const store = ctx.deps.receiptStore;
+      const claim = vi.fn(store.claim.bind(store));
+      ctx.deps.receiptStore = { ...store, claim };
+      ctx.demosObservation = { ...ctx.demosObservation, status } as never;
+      const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+      expect(result).toMatchObject({
+        disposition: "error", reason: "demos-observation-invalid-result", fulfilment: "none",
+      });
+      expect(claim).not.toHaveBeenCalled();
     },
   );
 

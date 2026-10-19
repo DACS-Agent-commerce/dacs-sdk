@@ -1495,6 +1495,7 @@ export {
   observePayDemTransferCore,
   verifySellerPaymentIntake,
   canonicalSellerSettlementId,
+  isDemosExecutedTransferObservation,
   createInMemorySellerReceiptStore,
   SELLER_RECEIPT_STORE_VERSION,
   createFsSellerReceiptStore,
