@@ -125,9 +125,6 @@ export function serializeDomainClaimArtifact(input: DomainClaimProducerInput): s
   const exact = (value: unknown, keys: string[]): value is Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value) &&
     Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-  const required = (value: unknown, keys: string[]): value is Record<string, unknown> =>
-    value !== null && typeof value === "object" && !Array.isArray(value) &&
-    keys.every((key) => Object.hasOwn(value, key));
   if (!exact(captured, ["producerVersion", "bundleVersion", "subject", "claims", "presentedByClaimIndex", "presentedAt"]) ||
       captured.producerVersion !== "dacs1-domain-v1" || captured.bundleVersion !== "1" ||
       typeof captured.subject !== "string" || !Array.isArray(captured.claims) ||
@@ -152,11 +149,14 @@ export function serializeDomainClaimArtifact(input: DomainClaimProducerInput): s
     const hex = (value: unknown): boolean => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
     const natural = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
     const host = ref.slice("domain:".length);
-    if (!required(metadata, ["demosGcrDomain"]) ||
-        !required(native, ["context", "hostname", "account", "proofUrl", "sourceTransaction", "recordedAt"]) ||
+    // DCR-6 metadata has an exact shape at every level. Readers compare
+    // demosGcrDomain with the authenticated GCR record, so an extra native or
+    // sourceTransaction member would sign a presentation no reader verifies.
+    if (!exact(metadata, ["demosGcrDomain"]) ||
+        !exact(native, ["context", "hostname", "account", "proofUrl", "sourceTransaction", "recordedAt"]) ||
         native.context !== "web2.domain" || native.hostname !== host || !hex(native.account) ||
         native.proofUrl !== `https://${host}/.well-known/demos-cci.txt` || !natural(native.recordedAt) ||
-        !required(tx, ["txHash", "blockNumber"]) || !hex(tx.txHash) || !natural(tx.blockNumber)) {
+        !exact(tx, ["txHash", "blockNumber"]) || !hex(tx.txHash) || !natural(tx.blockNumber)) {
       throw new DacsError("invalid persistent Demos domain metadata");
     }
     const output = { ref, metadata };

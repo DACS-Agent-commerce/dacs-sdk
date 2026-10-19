@@ -73,8 +73,9 @@ Domain ClaimReferences use a strict trust boundary. Native Demos
 `web2.domain` records may be converted to the current lower-case ASCII
 `domain:` producer form with `domainClaimReferenceFromNativeHostname()`.
 `serializeDomainClaimArtifact()` emits the complete unsigned canonical domain
-presentation, validates persistent native metadata, and deduplicates domain
-claims before signing. A
+presentation, requires the exact DCR-6 `demosGcrDomain` metadata shape (no
+additional members at any level), and deduplicates domain claims before
+signing. A
 signed current `domain:` reference is never repaired during reading. Historical
 `web2:domain:` aliases are read by `readAuthenticatedDomainClaims()` and the
 Vet consumers after authenticating the original presentation. They derive a

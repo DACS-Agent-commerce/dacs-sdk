@@ -185,6 +185,9 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
           [...new Set(nativeHosts)].map((hostname) => `domain:${hostname}`),
         );
         expect(emitted.presentedBy).toBe(`domain:${nativeHosts[vector.producerInput.presentedByClaimIndex]}`);
+        if (vector.want?.semanticClaims) {
+          expect([...new Set(emitted.claims.map((claim) => claim.ref))]).toEqual(vector.want.semanticClaims);
+        }
         return;
       }
       const verdict = await verifyDemosGcrDomainClaims(vector.artifact.unsigned, {
@@ -282,15 +285,38 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
     }
   });
 
-  test("preserves additive canonical JSON metadata at every extensible level", () => {
+  test.each([
+    ["a member beside demosGcrDomain", (m: Record<string, unknown>) => { m["extra"] = { note: "x" }; }],
+    ["an extra native member", (m: Record<string, unknown>) => {
+      (m["demosGcrDomain"] as Record<string, unknown>)["proofBody"] = "not-persistent-evidence";
+    }],
+    ["an extra source transaction member", (m: Record<string, unknown>) => {
+      const native = m["demosGcrDomain"] as Record<string, unknown>;
+      (native["sourceTransaction"] as Record<string, unknown>)["transactionIndex"] = 0;
+    }],
+  ] as const)("producer rejects %s in persistent metadata", (_name, change) => {
     const input = structuredClone(fixture.vectors.find((v) => v.name === "canonical-production")!.producerInput!);
-    input.claims[0]!.metadata.extra = { enabled: true, note: "retained" };
-    const native = input.claims[0]!.metadata.demosGcrDomain as Record<string, unknown>;
-    native.extraNative = [1, "two"];
-    (native.sourceTransaction as Record<string, unknown>).extraSource = "retained";
-    const emitted = serializeDomainClaimArtifact(input);
-    expect(JSON.parse(emitted).claims[0].metadata).toEqual(input.claims[0]!.metadata);
+    expect(() => serializeDomainClaimArtifact(structuredClone(input))).not.toThrow();
+    change(input.claims[0]!.metadata);
+    expect(() => serializeDomainClaimArtifact(input)).toThrow(/invalid persistent Demos domain metadata/);
+  });
+
+  test("producer output verifies through the GCR reader against the native record", async () => {
+    const vector = fixture.vectors.find((v) => v.name === "canonical-production")!;
+    const emitted = serializeDomainClaimArtifact(structuredClone(vector.producerInput!));
     expect(emitted).toBe(canonicalize(JSON.parse(emitted)));
+    // The emitted bytes are the corpus bytes, so the corpus signature authenticates them.
+    expect(Buffer.from(emitted, "utf8").toString("hex")).toBe(vector.artifact.canonicalHex);
+    const verdict = await verifyDemosGcrDomainClaims(JSON.parse(emitted) as DomainClaimArtifactLike, {
+      authenticateArtifact: authenticate(vector.artifact),
+      requiredMethod: vector.requiredMethod,
+      recipeDefaultMaxAgeSec: vector.recipeDefaultMaxAgeSec,
+      evaluatedAt: vector.evaluatedAt,
+      resolveGcr: () => resolution(vector),
+    });
+    expect(verdict.verdict).toBe("pass");
+    expect(verdict.semanticClaims).toEqual(vector.want?.semanticClaims);
+    expect(verdict.data?.demosGcrDomain).toEqual(vector.authoritativeGcr);
   });
 
   test("rejects only a wrong reported query-time fetchedAt after a passing control", async () => {
