@@ -874,7 +874,7 @@ describe("agreement and Vet terminal are mutually exclusive for each role", () =
             "DacsAgreementTransportRuntimeError",
             "loadDacsSellerAgreementVetProductionForOrderV1",
         ]));
-    });
+    }, 30_000); // imports the whole package root
 
     it("does not hand a terminal-committed seller job to the agreement even when the host says the proposal is ready", async () => {
         const donor = await memoryAgreementHarness("x402");
