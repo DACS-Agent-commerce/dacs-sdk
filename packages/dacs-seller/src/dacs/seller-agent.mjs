@@ -82,6 +82,10 @@ export class SellerAgentError extends Error {
   }
 }
 
+// What the native profile reads and writes instead of a fixture substrate.
+const fixtureDisabled = async () => { throw new SellerAgentError('fixture_substrate_disabled', 'the native seller profile has no fixture substrate', 503); };
+const NATIVE_PROFILE_FIXTURE = Object.freeze({ read: fixtureDisabled, write: fixtureDisabled });
+
 import { proposalTimeProblem } from './seller-proposal-time.mjs';
 export { proposalTimeProblem } from './seller-proposal-time.mjs';
 const FINALISED_SKEW_MS = 5 * 60 * 1000;
@@ -107,11 +111,14 @@ export function buildReport({ agreement, listing, settlementId }) {
   };
 }
 
-// `agreementAnchor` (optional, programmatic operator capability; see
-// seller-sr2-agreement-consumer.mjs) makes commit read the buyer's Agreement as
-// its native Demos SR-2 storage CREATE, authenticated by the SR-2 adapter.
-// Without it the fixture-substrate Agreement write is read exactly as before.
-// The FinalityCommitmentRecord is anchored on `anchors` in both cases.
+// The substrate is chosen once, never by fallback. `agreementAnchor` and
+// `nativeArtifactAnchor` (programmatic operator capabilities) together select
+// the native profile: commit reads the buyer's Agreement as its native Demos
+// SR-2 storage CREATE and publishes the FinalityCommitmentRecord natively. Any
+// other native capability needs both, and that profile takes no `anchors`: a
+// remaining fixture read or write refuses (fixture_substrate_disabled). The
+// simulated fixture substrate is used only when it is passed as `anchors` with
+// no native capability.
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
@@ -147,6 +154,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (deliveryContext && (!nativeEvidence || !durableDirectory)) throw new TypeError('DEM delivery context requires the durable native evidence profile');
   if (nativeDelivery && !deliveryContext) throw new TypeError('native DEM delivery requires the authenticated DEM delivery context');
   if(typeof deliveryEvidenceEnabled!=='boolean'||(deliveryEvidenceEnabled&&(!nativeArtifactAnchor||!nativeDelivery)))throw new TypeError('delivery evidence publication requires the explicit native demo delivery profile');
+  const nativeProfile = agreementAnchor !== null || nativeArtifactAnchor !== null || nativeEvidence !== null || deliveryContext !== null || nativeDelivery !== null;
+  if (nativeProfile && (agreementAnchor === null || nativeArtifactAnchor === null)) throw new TypeError('the native seller profile needs both agreementAnchor and nativeArtifactAnchor; it never falls back to the fixture substrate');
+  if (nativeProfile && anchors != null) throw new TypeError('the native seller profile takes no fixture substrate (anchors)');
+  if (!nativeProfile && (typeof anchors?.read !== 'function' || typeof anchors.write !== 'function')) throw new TypeError('a seller agent needs agreementAnchor and nativeArtifactAnchor, or an explicit fixture substrate (anchors)');
+  if (nativeProfile) anchors = NATIVE_PROFILE_FIXTURE;
   const pin = listingPin(listing);
   if (durableDirectory && suppliedReceiptStore) throw new Error('durable seller recovery owns the pinned filesystem receipt store');
   const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin }) : null;

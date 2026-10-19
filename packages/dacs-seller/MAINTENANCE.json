@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "9a0ba22482f9d6e0fde467fd5943cdfe8aa23ceec5def81dcaf2ad531062a6df",
+      "sha256": "d77204f778652886648f232b30386ffb9778e948036119823f2ad3ee0a5a5f78",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -302,6 +302,18 @@
       "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
     },
     {
+      "path": "packages/dacs-seller/src/host.mjs",
+      "originalSha256": null,
+      "sha256": "a1a21cda4e7cdb3b2b63298fa3fc101b80196287446406e02e990ac394a8eff7",
+      "reason": "Seller run time: standalone host and public entry (README.md)."
+    },
+    {
+      "path": "packages/dacs-seller/src/index.mjs",
+      "originalSha256": null,
+      "sha256": "50a90c89d28f607d4cf779596734f5fcc6b50f8b889f795a1689b247387b8ba3",
+      "reason": "Seller run time: standalone host and public entry (README.md)."
+    },
+    {
       "path": "packages/dacs-seller/src/mcp/seller-content.mjs",
       "originalSha256": null,
       "sha256": "397b6159334c29b68da44ac930cf2e69a8b6be1cb8ad2514edad109faf9885ee",
@@ -342,6 +354,36 @@
       "originalSha256": null,
       "sha256": "0d144cfd2370bcc40452208579d6f09d11dc3b549fa6eee81c32cbf358eefc74",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
+      "originalSha256": null,
+      "sha256": "d423f71a9cc2a240b6f1a573a75b900dd653fddca62f9ef2f1b182250eb53038",
+      "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
+    },
+    {
+      "path": "packages/dacs-seller/test/installed-package.test.mjs",
+      "originalSha256": null,
+      "sha256": "826eb3bf9113efbfefbc13060c9a1c5661b8820f6413a05bbfb7515398aaf0ea",
+      "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-http-roundtrip.test.mjs",
+      "originalSha256": null,
+      "sha256": "4015421262b88dd7585775df56aacf661a207bd787037aae53ae2cffbb818de7",
+      "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-substrate-profile.test.mjs",
+      "originalSha256": null,
+      "sha256": "3e9e9db2280749c3623349a8b9554f3535a32a10d72c5f98144d1dbf1fb429b8",
+      "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
+    },
+    {
+      "path": "packages/dacs-seller/test/dacs-seller-transport.test.mjs",
+      "originalSha256": "15d4a25b5d572b3fdb342c415c35743936f5a74bd11036276fbd585df20987e3",
+      "sha256": "c61e795a16042e09cc364405fc19d74b261550575144b3799954197a3cdb58f3",
+      "reason": "Secret-scan marker on the refused-credentials URL test vector; the vector itself is unchanged."
     }
   ]
 }

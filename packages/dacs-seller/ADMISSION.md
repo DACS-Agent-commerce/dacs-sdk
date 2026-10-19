@@ -8,8 +8,10 @@ qualified live deployment; unsupported qualification stays blocked.
 
 The kit has one purchase source: the seller agent's durable sessions. It has
 one Vet/context mode: the authenticated context route. There is no app database
-resolver or context switch. D12 will wire these modules into the seller host;
-D1 supplies the shared imports still recorded in IMPORT-CUT-MAP.md.
+resolver or context switch. The package's run-time imports are present
+(RUNTIME-PORTS.json). The standalone host (README.md) does not mount the
+context route; a host that mounts it must wire these modules as described here,
+including the open items below.
 
 A signed context request proves who asked and binds the job, Listing, bundle,
 terms and request bytes. It does not prove that a buyer has not cancelled its
@@ -131,8 +133,8 @@ Native CREATE preparation requires the source capability's
 one durable atomic lane across nonce reads, reservations and wallet outcomes for
 **every** writer of that wallet, including writers with separate journals. A
 source without this capability refuses new CREATEs with `nonce_lane_unavailable`.
-The standalone snapshot supplies no host implementation or deployment
-qualification for this contract. Retained recovery rechecks deployment
+This package supplies no wallet nonce lane and no deployment qualification
+for this contract; the operator's wallet must. Retained recovery rechecks deployment
 qualification and permits at most one unchanged resend per original transaction;
 an uncertain resend remains held for authenticated readback.
 Definitively rejected CREATEs remain rejected during retained reads and retries,

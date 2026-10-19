@@ -13,7 +13,10 @@ const files = [
   'd5-recovery.test.mjs', 'canonical-job-boundaries.test.mjs', 'bilateral-vet.test.mjs', 'party-vet-store.test.mjs',
   'seller-raw-json.test.mjs', 'devnet-storage-write-recovery.test.mjs',
   'settlement-collisions.test.mjs', 'seller-lifecycle-gates.test.mjs', 'provenance-checkout.test.mjs',
+  'demos-claims.test.mjs', 'seller-substrate-profile.test.mjs', 'seller-http-roundtrip.test.mjs', 'installed-package.test.mjs',
 ];
+// Packing and installing the core and seller tarballs needs more time.
+const timeouts: Record<string, number> = {'installed-package.test.mjs': 420000};
 const [major=0,minor=0]=process.versions.node.split('.').map(Number);
 const supported=major>22 || (major===22 && minor>=15);
 if(process.env.DACS_REQUIRE_SELLER_TESTS==='1' && !supported)
@@ -23,6 +26,6 @@ const artifacts=mkdtempSync(join(tmpdir(),'seller-standalone-'));
 process.stderr.write(`seller TAP artifacts: ${artifacts}\n`);
 describe.skipIf(!supported).sequential('standalone seller conformance gates',()=>{
   for(const file of files)it(file,()=>{
-    try { const output=execFileSync(process.execPath,['--experimental-vm-modules','--disable-warning=ExperimentalWarning','--test','--test-concurrency=1',fileURLToPath(new URL(`../../packages/dacs-seller/test/${file}`,import.meta.url))],{encoding:'utf8',timeout:90000,maxBuffer:8*1024*1024}); writeFileSync(join(artifacts,file+'.tap'),output); } catch(error) { const failure=error as {stdout?:string;stderr?:string}; writeFileSync(join(artifacts,file+'.tap'),`${failure.stdout??''}\n${failure.stderr??''}`); throw new Error(`${file}\n${failure.stdout??''}\n${failure.stderr??''}`); }
-  },100000);
+    try { const output=execFileSync(process.execPath,['--experimental-vm-modules','--disable-warning=ExperimentalWarning','--test','--test-concurrency=1',fileURLToPath(new URL(`../../packages/dacs-seller/test/${file}`,import.meta.url))],{encoding:'utf8',timeout:timeouts[file]??90000,maxBuffer:8*1024*1024}); writeFileSync(join(artifacts,file+'.tap'),output); } catch(error) { const failure=error as {stdout?:string;stderr?:string}; writeFileSync(join(artifacts,file+'.tap'),`${failure.stdout??''}\n${failure.stderr??''}`); throw new Error(`${file}\n${failure.stdout??''}\n${failure.stderr??''}`); }
+  },(timeouts[file]??90000)+10000);
 });

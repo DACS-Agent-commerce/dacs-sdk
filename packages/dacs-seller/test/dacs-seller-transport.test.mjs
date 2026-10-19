@@ -308,7 +308,7 @@ test('body bytes, response bytes, slow bodies, concurrency, rate and durable cap
 
 test('public endpoints, URL credentials and a store reused for another peer are refused', async (t) => {
   const w = await world(t);
-  for (const url of ['https://seller.example', 'http://127.0.0.1@outside.example', 'http://buyer:secret@127.0.0.1', `${w.url}?query=1`, `${w.url}#fragment`]) assert.throws(() => createSellerAgentClient({ url, authentication: w.auth }));
+  for (const url of ['https://seller.example', 'http://127.0.0.1@outside.example', 'http://buyer:secret@127.0.0.1', `${w.url}?query=1`, `${w.url}#fragment`]) assert.throws(() => createSellerAgentClient({ url, authentication: w.auth })); // trufflehog:ignore -- refused-credentials URL vector, not a credential
   assert.throws(() => createSellerTransportServerAuth({ sellerSigner: signer(createEphemeralWallet()), listingPin: w.agent.listingPin, store: w.store }));
 });
 

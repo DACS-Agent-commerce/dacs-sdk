@@ -1,6 +1,8 @@
 # Import-cut map: `@kynesyslabs/dacs-seller`, step 1
 
-This map goes with the verbatim copy (`feat(seller): verbatim copy, no changes`). Step 1 edits no copied file, so every import listed here still points where it pointed inside `http-mcp`, and the copied code does not load in the package yet. D1 and the other deltas resolve the cuts; each delta commit is then listed in `DELTA-MAP.md` with file:line and its reason.
+**Status.** This is the step-1 record. The run-time cuts are resolved: `RUNTIME-PORTS.json` lists the plugin pieces ported from `15fdf23` and how; new SDK code replaces the wallet helpers. Every module in the package manifest loads without test hooks (`test/installed-package.test.mjs`); `README.md` names the three operator-side sources that are not shipped. The copied tests keep their step-1 cuts.
+
+At step 1, this map went with the verbatim copy (`feat(seller): verbatim copy, no changes`). Step 1 edits no copied file, so every import listed here still points where it pointed inside `http-mcp`, and the copied code does not load in the package yet. D1 and the other deltas resolve the cuts; each delta commit is then listed in `DELTA-MAP.md` with file:line and its reason.
 
 The tables in §6 are generated from the copied files and `PROVENANCE.json`:
 

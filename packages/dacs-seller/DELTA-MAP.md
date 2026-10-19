@@ -94,7 +94,7 @@ The mechanical scan in `scripts/superseded-tests.mjs` compares frozen exports wi
 <!-- BEGIN GENERATED: scripts/delta-map.mjs -->
 | D5 file:line | Change and reason | Named commits |
 | --- | --- | --- |
-| `src/dacs/seller-agent.mjs:294`<br>`src/dacs/seller-agent.mjs:1478` | Expose seller-owned durable sessions and bind proposal freshness to admitted context. | port, fix |
+| `src/dacs/seller-agent.mjs:306`<br>`src/dacs/seller-agent.mjs:1490` | Expose seller-owned durable sessions and bind proposal freshness to admitted context. | port, fix |
 | `src/dacs/seller-context-route.mjs:128`<br>`src/dacs/seller-context-route.mjs:140`<br>`src/dacs/seller-context-route.mjs:151`<br>`src/dacs/seller-context-route.mjs:184`<br>`src/dacs/seller-context-route.mjs:201` | Require seller-issued one-use context presentations after dry admission; carry Vet fault classes to clients and return definite closed-access challenge refusals. | port, fix, vet-retention |
 | `src/dacs/seller-http.mjs:61`<br>`src/dacs/seller-http.mjs:123`<br>`src/dacs/seller-http.mjs:153` | Mount bounded authenticated challenge/context routes and retain definite post-write Vet refusals without releasing start accounting. | port, fix |
 | `src/dacs/seller-proposal-time.mjs:7` | Factor the exact-admission proposal-time rule into a local helper so it can run before D1 without replacing the agent. | fix |
@@ -135,9 +135,9 @@ The mechanical scan in `scripts/superseded-tests.mjs` compares frozen exports wi
 | `test/seller-policy-state-lock.test.mjs:45` | Port the frozen PR test/harness without adapting the plugin host. | port |
 | `ADMISSION.md:1` | D5 admission contract. | port, verify, fix, vet-retention, context-capacity, capacity-lookup |
 | `DELTA-MAP.md:69` | Generated import/delta accounting and immutable step-1 plus named-delta verification. | port, verify, fix, evidence, vet-retention, context-capacity, test-inventory, capacity-lookup, commitment-inventory, vet-inventory |
-| `IMPORT-CUT-MAP.md:12` | Generated import/delta accounting and immutable step-1 plus named-delta verification. | port, fix, vet-retention |
+| `IMPORT-CUT-MAP.md:14` | Generated import/delta accounting and immutable step-1 plus named-delta verification. | port, fix, vet-retention |
 | `PROVENANCE.json:1` | Generated import/delta accounting and immutable step-1 plus named-delta verification. | port, verify, fix, evidence, vet-retention, context-capacity, test-inventory, capacity-lookup, vet-inventory |
-| `REVIEW-NOTES.md:74` | D5 source-review dispositions and remaining qualification work. | verify, fix, evidence, vet-retention, context-capacity, test-inventory, commitment-inventory, vet-inventory |
+| `REVIEW-NOTES.md:77` | D5 source-review dispositions and remaining qualification work. | verify, fix, evidence, vet-retention, context-capacity, test-inventory, commitment-inventory, vet-inventory |
 | `scripts/check-provenance.mjs:9` | Generated import/delta accounting and immutable step-1 plus named-delta verification. | port, verify, test-inventory |
 | `scripts/check-step1-provenance.mjs:25` | Generated import/delta accounting and immutable step-1 plus named-delta verification. | port |
 | `scripts/delta-map.mjs:8` | Generated import/delta accounting and immutable step-1 plus named-delta verification. | port, fix, evidence |
@@ -187,7 +187,7 @@ The mechanical scan in `scripts/superseded-tests.mjs` compares frozen exports wi
 | `port-sources/pr59-ffef873/http-mcp/test/seller-policy-delivery-evidence.test.mjs` | `http-mcp/test/seller-policy-delivery-evidence.test.mjs @ ffef873a58a1e71f3a91ae159d92a549992c3857` | `f3744f643cb7079083e111dbc1f0a308e0268383` | redacted for publication; original source pin retained | `f3744f643cb7079083e111dbc1f0a308e0268383` | `test/seller-policy-delivery-evidence.test.mjs:1-983 ← 1-983` |
 | `port-sources/pr59-ffef873/http-mcp/test/server-hosting.test.mjs` | `http-mcp/test/server-hosting.test.mjs @ ffef873a58a1e71f3a91ae159d92a549992c3857` | `bc3b03c20cfe64494b75aebee5d8f342197ee059` | redacted for publication; original source pin retained | `bc3b03c20cfe64494b75aebee5d8f342197ee059` | — |
 | `src/dacs/commit-on-signature.mjs` | `http-mcp/src/dacs/commit-on-signature.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `dd1189037c9492e0bd1d707fc23300d03b230b49` | unchanged | `3f3d1e00902f00f582e5b83896dc089083d39bc9` | — |
-| `src/dacs/seller-agent.mjs` | `http-mcp/src/dacs/seller-agent.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `4bc4e5060612b2fcc0773cb1133501f6ca073325` | changed by D5 | `9d732d8d2fc96ce6b583ba9c1b46dc5dad5ecbc9` | — |
+| `src/dacs/seller-agent.mjs` | `http-mcp/src/dacs/seller-agent.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `4bc4e5060612b2fcc0773cb1133501f6ca073325` | changed by D5 | `afec5a25add3d0b88d2eec08b300ae64b7c6ee60` | — |
 | `src/dacs/seller-durable-state.mjs` | `http-mcp/src/dacs/seller-durable-state.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `b1eea6d6e411e501cc7241e0c70afc7990a4f351` | unchanged | `fb210f81159f230d21ffed85fe1aca787ed29aa6` | — |
 | `src/dacs/seller-http.mjs` | `http-mcp/src/dacs/seller-http.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `99adafc3b1a03de973f5d0e3aa86cd6e433e7ac3` | changed by D5 | `5747b1c0dfdd8c3d838ffed11b2ec7734afc1635` | — |
 | `src/dacs/seller-transport-auth.mjs` | `http-mcp/src/dacs/seller-transport-auth.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `d417bf3eef2936bd56875dc7d5344e39cd4785f4` | changed by D5 | `94a0fe91605744f584e41edd00d7d2512b95a36f` | — |
@@ -232,7 +232,7 @@ The mechanical scan in `scripts/superseded-tests.mjs` compares frozen exports wi
 | `test/dacs-loopback-fixture.test.mjs` | `http-mcp/test/dacs-loopback-fixture.test.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `d47c5a17f6967ad61f38198ca5a0adfc93b2c7fe` | unchanged | `d47c5a17f6967ad61f38198ca5a0adfc93b2c7fe` | — |
 | `test/dacs-purchase.test.mjs` | `http-mcp/test/dacs-purchase.test.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `ab836aa9a6e2ac3b676bb5aaf4368006392ab278` | unchanged | `ab836aa9a6e2ac3b676bb5aaf4368006392ab278` | — |
 | `test/dacs-seller-recovery.test.mjs` | `http-mcp/test/dacs-seller-recovery.test.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `062bd123a7081d36c48aee6b958299a7b9ba2599` | unchanged | `062bd123a7081d36c48aee6b958299a7b9ba2599` | — |
-| `test/dacs-seller-transport.test.mjs` | `http-mcp/test/dacs-seller-transport.test.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `9a65731deee638b944283dae0b6379a87d682573` | redacted for publication; original source pin retained | `9a65731deee638b944283dae0b6379a87d682573` | — |
+| `test/dacs-seller-transport.test.mjs` | `http-mcp/test/dacs-seller-transport.test.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `9a65731deee638b944283dae0b6379a87d682573` | redacted for publication; original source pin retained | `fe1ad28684fa7c032a00374806b74d27b8477c7d` | — |
 | `test/devnet-buyer-access-prefixed.test.mjs` | `http-mcp/test/devnet-buyer-access-prefixed.test.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `23bfb2cd91a8502cf1a02cb7bf16a90343ac6fdf` | redacted for publication; original source pin retained | `23bfb2cd91a8502cf1a02cb7bf16a90343ac6fdf` | — |
 | `test/devnet-demo-anchor-recovery.test.mjs` | `http-mcp/test/devnet-demo-anchor-recovery.test.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `a99e514f1d168ea1b315a9496bb1ce5f68ec918c` | unchanged | `a99e514f1d168ea1b315a9496bb1ce5f68ec918c` | — |
 | `test/devnet-live-composition-app.test.mjs` | `http-mcp/test/devnet-live-composition-app.test.mjs @ 82bf8c4dabb2332a72f618f6cc29950e48d6feb6` | `fa21c5fb1c20a5a4a7e5a8776f6579b5cde8c5ca` | unchanged | `fa21c5fb1c20a5a4a7e5a8776f6579b5cde8c5ca` | — |

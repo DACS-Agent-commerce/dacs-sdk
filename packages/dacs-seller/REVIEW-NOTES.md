@@ -3,14 +3,17 @@ ADMISSION.md. The dispositions below record the frozen source port and are
 historical; they do not authorize exceptions or describe current protocol
 qualification. Bilateral session presentations and independent buyer Vet
 authority are now required by the standalone context adapter. Native writes
-require independently verified deployment qualification.
+require independently verified deployment qualification. The package itself
+loads without test hooks and runs as a standalone host (README.md); the copied
+plugin tests named below still need the operator host and the operator wallet
+modules, which this package does not contain.
 
 # D5 review dispositions
 
 Inputs: the reviews of the two frozen source heads.
 The frozen inputs are #58 `786aa1d` and #59 `ffef873`. Earlier records are
 reconciled against the later fix report, rather than treated as new findings.
-There is no completed code sweep at either frozen head. Publication was approved on 2026-10-18. Deployment and full-profile acceptance remain unverified.
+There is no completed code sweep at either frozen head. Publication of these source copies in this repository was approved on 2026-10-18; that is not an npm release or a deployment. Deployment and full-profile acceptance remain unverified.
 
 | Finding still relevant at the frozen heads | D5 disposition | Evidence / remaining owner |
 | --- | --- | --- |
@@ -19,7 +22,7 @@ There is no completed code sweep at either frozen head. Publication was approved
 | #58 / #59 deployed node has unrecorded changes or no reproducible build pin | Not a result that offline D5 can verify or fix | No node contacted; D2/D12 and qualification must establish the actual deployment identity. Not claimed resolved |
 | #58 older F2 hosting preflight setting inventory | Not applicable: no hosting preflight is ported | Hosting tests excluded |
 | #58 older F3 held manual approval cut at shutdown | The reservation remains held and counted; no automatic release is introduced | D12 owns host shutdown and operator release. A8 tests restart retention of unresolved issuance; the full shutdown combination remains unrun |
-| #58 older F4 TTY descriptors | Frozen fix ported | operator-approval-closing.test.mjs includes stderr TTY; execution awaits D1's stop-request module |
+| #58 older F4 TTY descriptors | Frozen fix ported | operator-approval-closing.test.mjs includes stderr TTY; execution needs the operator custody helper, which is not shipped (README.md) |
 | #58 older F5 journal-busy close and state lock after CLI shutdown | Host integration remains unrun; no CLI is ported | D12 must close all writers before releasing the process-lifetime state lock; S3 tests refusal beside a live holder |
 | #59 verifier-issued presentation nonce / bilateral challenges | Buyer context binding fixed; bilateral qualification remains blocked S-15/G2 | B22–B25/B27–B28/B30 execute seller-issued scope/job-bound challenges, lifetime, consumption on attempt, retention, and issuance limits. D11/S-15 must integrate buyer preparation; no bilateral qualification is claimed |
 | #59 evaluated seller signs its own Vet | Fixed in the standalone provider | The buyer signs the seller CVR; strict signer, decision and independent receipt checks run before context publication and during recovery. Host qualification remains unsupported. |
@@ -96,7 +99,7 @@ Non-pass Vet handling is also replaced: a strictly authenticated CVR whose overa
 
 The mechanical scan in `scripts/superseded-tests.mjs` compares frozen exports with current exports and scans every copied test/helper for removed names, `DACS_SELLER_CONTEXT`, app source selection, `application.db`, simple sellerApproval objects without a local explicit seller source (including variable-valued modes), and approval assertions in files naming FinalityCommitmentRecord, PartyVet or CompositeVerificationRecord. Artifact names and assertions may be on separate lines; these are review candidates requiring semantic reading. Every candidate has a reviewed disposition; an unclassified new candidate fails the check. Database references used only by the buyer/host harness are flagged separately for D12; they are not seller policy inputs. The generated scan supplements this semantic table, including the pre-payment expectations that require source reading.
 
-Executable evidence is wired through test/seller/standalone.test.ts and npm run seller:test, including party-vet-store.test.mjs (seven tests). T1–T25 cover retention, canonical direct-store admission and matching body jobs, capacity, indexed cleanup, issuance exhaustion and retained-request validation after restart; B38–B41 cover signed malformed job IDs, presentedAt independence, direct route/client admission and canonical cross-job nonce consumption. The current native selection also exercises bilateral Vet authority, exact CREATE policy content guards, native deployment/nonce recovery, public delivery and settlement/lifecycle gates. The remaining copied entrypoints require missing host imports and are not counted as executed coverage. Sessionless retention, zero-start hourly issuance and host policy-ledger coordination remain open as described in ADMISSION.md.
+Executable evidence is wired through test/seller/standalone.test.ts and npm run seller:test, including party-vet-store.test.mjs (seven tests). T1–T25 cover retention, canonical direct-store admission and matching body jobs, capacity, indexed cleanup, issuance exhaustion and retained-request validation after restart; B38–B41 cover signed malformed job IDs, presentedAt independence, direct route/client admission and canonical cross-job nonce consumption. The current native selection also exercises bilateral Vet authority, exact CREATE policy content guards, native deployment/nonce recovery, public delivery and settlement/lifecycle gates. These vectors use the package's own claim decoding, Listing signature verification, stop flag and session lifetime limit; test/helpers/d5-isolated-dependencies.mjs names the collaborators they still isolate. Hook-free coverage: installed-package.test.mjs packs and installs the package outside the repository, imports every shipped module and serves one Listing from the standalone host; seller-http-roundtrip.test.mjs negotiates over the authenticated transport with real verification; seller-substrate-profile.test.mjs and demos-claims.test.mjs cover the substrate gate and the claim and signature contract. The remaining copied entrypoints need the operator host or operator wallet modules and are not counted as executed coverage. Sessionless retention, zero-start hourly issuance and host policy-ledger coordination remain open as described in ADMISSION.md.
 
 <!-- BEGIN COPIED-TEST SCAN: scripts/superseded-tests.mjs -->
 Removed exports: `SELLER_CONTEXT_MODES`, `appHeldEvidenceJobs`, `appPurchaseResolver`.
