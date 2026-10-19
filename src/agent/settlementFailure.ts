@@ -21,11 +21,24 @@ export interface DemosFailedRecordProof {
   amountOs: string;
 }
 
+const RESULT_KEYS = new Set([
+  "ok", "txHash", "chainId", "payer", "payee", "errorClass", "failureProof",
+  "blockNumber", "txRefKind", "finality", "txRef", "finalityObservedAt",
+  "x402Receipt",
+]);
+const REQUIRED_RESULT_KEYS = [
+  "ok", "txHash", "chainId", "payer", "payee", "errorClass", "failureProof",
+  "blockNumber", "txRefKind",
+];
+
 /**
  * Validate owned, canonical result data after the caller's snapshot boundary.
  * Both bindings are required: the proof must carry exactly `amountOs`, and the
  * result's chainId must be exactly `expectedNetwork`. Anything unknown, missing
- * or non-canonical returns false.
+ * or non-canonical returns false and never throws: `ok` must be exactly
+ * `false`, the result and the proof may carry only their declared keys, the
+ * keys this check requires must be owned, and payer/payee must be unpadded
+ * strings that resolve to Demos keys.
  */
 export function hasDefinitiveDemosFailure(
   result: {
@@ -37,10 +50,16 @@ export function hasDefinitiveDemosFailure(
   amountOs: string,
   expectedNetwork: string,
 ): boolean {
+  if (result === null || typeof result !== "object" || Array.isArray(result) ||
+      Object.keys(result).some((key) => !RESULT_KEYS.has(key)) ||
+      !REQUIRED_RESULT_KEYS.every((key) => Object.prototype.hasOwnProperty.call(result, key)) ||
+      typeof result.txHash !== "string" ||
+      typeof result.payer !== "string" || result.payer.trim() !== result.payer ||
+      typeof result.payee !== "string" || result.payee.trim() !== result.payee) return false;
   const proof = result.failureProof;
   const payer = demosAddressFromClaim(result.payer) ?? normalizeDemosNativeAddress(result.payer);
   const payee = demosAddressFromClaim(result.payee) ?? normalizeDemosNativeAddress(result.payee);
-  if (result.ok || result.errorClass !== "permanent" ||
+  if (result.ok !== false || result.errorClass !== "permanent" ||
       typeof result.chainId !== "string" || result.chainId.length === 0 ||
       result.chainId.trim() !== result.chainId ||
       result.chainId.normalize("NFC") !== result.chainId ||

@@ -27,6 +27,17 @@ interface NodeRecord {
 }
 
 interface Fixture {
+  source: {
+    reportedVersion: string;
+    reportedCommit: string;
+    sourcePin: string;
+    versionEnvelope: { version: string; commit: string };
+    networkInfoEnvelope: {
+      response: {
+        nodeVersion: { version: string; commit: string; branch: string; dirty: boolean };
+      };
+    };
+  };
   getTxByHash: Record<string, { result: number; response: NodeRecord }>;
   getTransactionStatus: Record<
     string,
@@ -105,6 +116,21 @@ function withProof(patch: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe("node2 failed-record fixture", () => {
+  it("records one reported build identity and claims no source pin for a dirty build", () => {
+    const { source } = fixture;
+    const { nodeVersion } = source.networkInfoEnvelope.response;
+    const commit = "61b8e75aa8db5e408c49e1c3a89db4d673f45578";
+    expect(nodeVersion).toMatchObject({ commit, branch: "stabilisation", dirty: true });
+    expect(source.versionEnvelope).toEqual({
+      version: source.reportedVersion,
+      commit: `<${nodeVersion.branch}>${commit}`,
+    });
+    expect(source.reportedCommit).toBe(`kynesyslabs/node ${nodeVersion.branch}@${commit}`);
+    // A recapture from a clean build records its commit as the pin and updates
+    // this test; while the build is dirty the fixture must say it has none.
+    expect(source.sourcePin).toMatch(/^none: node2 reports a dirty build/);
+  });
+
   it("records the encodings the proof is projected from", () => {
     const { content } = failedRecord;
     expect(failedRecord.status).toBe("failed");
@@ -159,7 +185,9 @@ describe("hasDefinitiveDemosFailure", () => {
     expect(hasDefinitiveDemosFailure(failedResult())).toBe(false);
   });
 
-  it("is not carried by SettleResult, whose session boundary rejects it", () => {
+  // Type-level only. runSession.test.ts pins the runtime rejection of a rail
+  // result carrying failureProof or errorClass at the session boundary.
+  it("is not a SettleResult field", () => {
     const result: SettleResult = {
       ok: false,
       txHash: PROOF.txHash,
@@ -200,6 +228,10 @@ describe("hasDefinitiveDemosFailure", () => {
 
   it.each([
     ["ok result", { ok: true }],
+    ["undefined ok", { ok: undefined }],
+    ["null ok", { ok: null }],
+    ["zero ok", { ok: 0 }],
+    ["string ok", { ok: "false" }],
     ["missing errorClass", { errorClass: undefined }],
     ["transient errorClass", { errorClass: "transient" }],
     ["substrate errorClass", { errorClass: "substrate" }],
@@ -207,9 +239,19 @@ describe("hasDefinitiveDemosFailure", () => {
     ["uppercase txHash", { txHash: FAILED.toUpperCase(), ...withProof({ txHash: FAILED.toUpperCase() }) }],
     ["0x txHash", { txHash: `0x${FAILED}`, ...withProof({ txHash: `0x${FAILED}` }) }],
     ["63-char txHash", { txHash: FAILED.slice(1), ...withProof({ txHash: FAILED.slice(1) }) }],
+    ["65-char txHash", { txHash: `${FAILED}0`, ...withProof({ txHash: `${FAILED}0` }) }],
     ["non-Demos payer", { payer: `did:ethr:0x${PROOF.payer}` }],
     ["non-Demos payee", { payee: `cci-xm:evm:mainnet:0x${PROOF.payee}` }],
     ["unparseable payee", { payee: "nobody" }],
+    ["unparseable payer with null proof payer", { payer: "nobody", ...withProof({ payer: null }) }],
+    ["unparseable payee with null proof payee", { payee: "nobody", ...withProof({ payee: null }) }],
+    ["undefined payer", { payer: undefined }],
+    ["undefined payee", { payee: undefined }],
+    ["numeric payer", { payer: 5 }],
+    ["numeric payee", { payee: 5 }],
+    ["padded payer", { payer: ` ${PROOF.payer}\n` }],
+    ["padded payee", { payee: ` 0x${PROOF.payee}` }],
+    ["unknown result key", { status: "failed" }],
     ["x402 txRefKind", { txRefKind: "x402" }],
     ["missing txRefKind", { txRefKind: undefined }],
     ["finality present", { finality: "bft-final" }],
@@ -266,6 +308,43 @@ describe("hasDefinitiveDemosFailure", () => {
   it("refuses the bound amount when it is not canonical", () => {
     expect(check(withProof({ amountOs: `0${AMOUNT}` }), `0${AMOUNT}`)).toBe(false);
     expect(check(withProof({ amountOs: "0" }), "0")).toBe(false);
+    expect(check(withProof({ amountOs: `${AMOUNT}.5` }), `${AMOUNT}.5`)).toBe(false);
+  });
+
+  it("refuses a numeric amount even when an untyped caller binds the same number", () => {
+    const amount = Number(AMOUNT) as unknown as string;
+    expect(check(withProof({ amountOs: amount }), amount)).toBe(false);
+  });
+
+  it("refuses a String-object txHash even when the proof repeats the same object", () => {
+    const txHash = new String(FAILED);
+    expect(check({ txHash, ...withProof({ txHash }) })).toBe(false);
+  });
+
+  it.each([
+    "ok", "txHash", "chainId", "payer", "payee", "errorClass", "failureProof",
+    "blockNumber", "txRefKind",
+  ])("refuses a result whose %s is inherited, not owned", (key) => {
+    const own: Record<string, unknown> = failedResult();
+    const inherited = own[key];
+    delete own[key];
+    const result = Object.assign(Object.create({ [key]: inherited }), own) as Result;
+    expect(hasDefinitiveDemosFailure(result, AMOUNT, NETWORK)).toBe(false);
+  });
+
+  it("refuses a result without an ok key", () => {
+    const result: Record<string, unknown> = failedResult();
+    delete result.ok;
+    expect(hasDefinitiveDemosFailure(result as Result, AMOUNT, NETWORK)).toBe(false);
+  });
+
+  it("refuses a result that is not a plain object, without throwing", () => {
+    const fields = failedResult();
+    const asArray = Object.assign([], fields);
+    const asFunction = Object.assign(() => undefined, fields);
+    for (const result of [null, undefined, "result", 5, asArray, asFunction]) {
+      expect(hasDefinitiveDemosFailure(result as unknown as Result, AMOUNT, NETWORK)).toBe(false);
+    }
   });
 
   it.each(Object.keys(PROOF))("refuses a proof missing %s", (key) => {
