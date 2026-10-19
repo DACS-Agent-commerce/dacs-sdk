@@ -6,6 +6,8 @@
     "read": "2026-10-15, read-only nodeCall; raw JSON-RPC envelopes as served",
     "note": "demosdk's getTxByHash resolves the envelope's response member (nodeCall unwraps response.data.response).",
     "buildMetadataRead": "2026-10-18, read-only; reported commit is not an exact deployed-source pin because nodeVersion.dirty is true",
+    "versionNote": "GET /version reports 0.9.9 RC and getNetworkInfo nodeVersion reports 0.9.8 for the same dirty build; these are recorded responses, not a source pin",
+    "failedStatusRead": "2026-10-19, read-only getTransactionStatus for the failed hash: the node reports a stored failed transaction as included",
     "versionEnvelope": {
       "version": "0.9.9 RC",
       "commit": "<stabilisation>61b8e75aa8db5e408c49e1c3a89db4d673f45578"
@@ -199,6 +201,15 @@
       "response": {
         "state": "included",
         "blockNumber": 498447
+      },
+      "extra": "",
+      "require_reply": false
+    },
+    "85b8fcdcee48822742a39e1b9877f5e2f8dde36430e8e486e3a8b0c9a7744cbd": {
+      "result": 200,
+      "response": {
+        "state": "included",
+        "blockNumber": 480877
       },
       "extra": "",
       "require_reply": false

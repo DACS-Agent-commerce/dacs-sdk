@@ -1,9 +1,4 @@
 import { types as nodeTypes } from "node:util";
-export type { DemosFailedRecordProof } from "./settlementFailure.js";
-import {
-  hasDefinitiveDemosFailure,
-  type DemosFailedRecordProof,
-} from "./settlementFailure.js";
 
 import {
   canonicalize,
@@ -159,9 +154,6 @@ export interface SettlementRecoveryAttempt {
 
 export interface SettleResult {
   ok: boolean;
-  /** Permanent only with a bound terminal-failure proof; never permits rebroadcast. */
-  errorClass?: "permanent";
-  failureProof?: DemosFailedRecordProof;
   txHash: string;
   chainId: string;
   payer: string;
