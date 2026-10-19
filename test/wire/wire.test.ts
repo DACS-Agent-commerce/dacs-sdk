@@ -66,7 +66,7 @@ describe("signing domains", () => {
     const register = JSON.parse(readFileSync(new URL("../../conformance/tp1-register.json", import.meta.url), "utf8"));
     const g12 = register.rows.find((row: { id: string }) => row.id === "G12");
     expect(g12.evidence).toEqual([
-      { repo: "DACS-Standard", commit: "d45c0a2", path: "spec/CORE.md", lines: "478" },
+      { repo: "DACS-Standard", commit: "d45c0a2", path: "spec/CORE.md", lines: "487" },
       { repo: "DACS-Standard", commit: "d45c0a2", path: "spec/CORE.md", lines: "590" },
     ]);
     expect(g12.summary).toContain("SIG-4");

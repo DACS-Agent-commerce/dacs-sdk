@@ -1,6 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { agreementFixture } from "./agreementFixture.js";
+import { agreementFixture, retainedFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -133,8 +133,9 @@ describe("wire Listing pins and producer bounds", () => {
     const x = world();
     const oversized = { payload: x.delegation, signature: "A".repeat(4000) };
     await refuses(() => w.signWireEnvelope(x.request, { ...x.context, signer: x.buyer }, oversized), "peer_envelope_too_large");
-    // Each pin and the endpoint are valid individually; the whole document exceeds 16 KiB in UTF-8.
-    const discovery = { ...x.discovery, publicEndpoint: ENDPOINT + "/" + "\u0001".repeat(2000), listings: Array.from({ length: 32 }, (_, i) => ({ ...PIN, listingId: "x".repeat(126) + String(i).padStart(2, "0") })) };
+    // Each pin and the endpoint are valid individually; the whole document exceeds 16 KiB in UTF-8. The endpoint's
+    // interior control characters are escaped by canonical JSON; it ends with an ordinary character, as a trailing one is refused.
+    const discovery = { ...x.discovery, publicEndpoint: ENDPOINT + "/" + "\u0001".repeat(2000) + "x", listings: Array.from({ length: 32 }, (_, i) => ({ ...PIN, listingId: "x".repeat(126) + String(i).padStart(2, "0") })) };
     await refuses(() => w.signDiscoveryDocument(discovery, x.seller, x.binding, LOCAL), "discovery_too_large");
     expect(x.buyer.calls + x.seller.calls).toBe(0);
   });
@@ -337,7 +338,7 @@ describe("request and response byte budgets and the discovery Listing count", ()
     for (const n of [maxRequestBodyBytes, maxRequestBodyBytes + 1]) {
       const text = body(n);
       const opened = w.openWireEnvelope(header(signed({ ...x.request, bodyHash: sha(text) }, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context);
-      const check = () => w.checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
+      const check = () => w.checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
       if (n === maxRequestBodyBytes) expect(Object.keys(check().body)).toEqual(["p"]);
       else await expect(Promise.resolve().then(() => { check(); effects++; })).rejects.toMatchObject({ code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" });
     }
@@ -406,7 +407,7 @@ describe("expired session authority at every seller route", () => {
     const request = { ...x.request, path: route.path };
     const h = header({ ...signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.session), delegation });
     const opened = w.openWireEnvelope(h, "request", { ...x.context, requireDelegation: true });
-    const check = () => w.checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true });
+    const check = () => w.checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true });
     let effects = 0;
     if (route.effect === "effect") await refuses(() => { check(); effects++; }, "peer_delegation_expired");
     else expect(check()).toMatchObject({ readbackOnly: true, body: {} });

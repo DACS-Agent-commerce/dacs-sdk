@@ -3,7 +3,7 @@ import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import * as wire from "../../src/wire/index.js";
-import { contentHash } from "../../src/canonical/index.js";
+import { canonicalize, contentHash } from "../../src/canonical/index.js";
 import { verifyArtifact } from "../../src/crypto/index.js";
 import { isListingEnvelope } from "../../src/artifacts/validators.js";
 
@@ -167,11 +167,29 @@ it("supplies an immutable source scope and refuses decisions that disappear afte
 });
 
 describe("public endpoint rule: absolute HTTPS, no credentials, query or fragment", () => {
+  const repaired = ["https:seller.eligibility.invalid", "https:/seller.eligibility.invalid", "https:\\\\seller.eligibility.invalid",
+    "https:///seller.eligibility.invalid", "https://seller.eligibility.invalid\\dacs", " https://seller.eligibility.invalid",
+    "https://seller.eligibility.invalid ", "https://seller.eli\tgibility.invalid", "https://seller.eligibility.invalid\n",
+    "https://seller.eli\rgibility.invalid/dacs", "https://seller.eligibility.invalid/\u0000", "HTTPS://seller.eligibility.invalid"];
   const refused = ["http://seller.eligibility.invalid", "https://user:pass@seller.eligibility.invalid", "https://user@seller.eligibility.invalid",
     "https://:pass@seller.eligibility.invalid", "https://seller.eligibility.invalid?q=1", "https://seller.eligibility.invalid/?",
-    "https://seller.eligibility.invalid#f", "https://seller.eligibility.invalid/#", "not a url", "", `https://seller.eligibility.invalid/${"a".repeat(2048)}`, 42];
+    "https://seller.eligibility.invalid#f", "https://seller.eligibility.invalid/#", "not a url", "", `https://seller.eligibility.invalid/${"a".repeat(2048)}`, 42,
+    // Spellings the URL parser repairs into an absolute URL, but a browser resolves against its own page, or rewrites.
+    ...repaired];
   it.each(refused)("isPublicEndpoint refuses %j", (value) => expect(wire.isPublicEndpoint(value)).toBe(false));
   it("accepts an absolute HTTPS endpoint", () => expect(wire.isPublicEndpoint("https://seller.eligibility.invalid/dacs")).toBe(true));
+
+  it.each(repaired)("refuses a received, correctly signed discovery document whose endpoint is %j", async (publicEndpoint) => {
+    const w = await world();
+    const payload = { format: "dacs-seller-discovery/v1", profile: w.binding.profile, seller: w.seller.claim, publicEndpoint,
+      transport: ["dacs-seller-http/v1"], listings: [w.listing.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: NOW, expiresAt: NOW + 60_000 };
+    const signature = Buffer.from(w.seller.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.discovery + canonicalize(payload)))).toString("base64url");
+    let reads = 0;
+    expect(() => wire.verifyEndpointProof(Buffer.from(canonicalize({ payload, signature })), { listing: { ...w.listing, publicEndpoint: "https://seller.eligibility.invalid" },
+      binding: w.binding, local: w.local, now: NOW, readListingEligibility: () => { reads++; return w.eligibility; } }))
+      .toThrowError(expect.objectContaining({ code: "discovery_invalid" }));
+    expect([reads, w.buyer.calls]).toEqual([0, 0]);
+  });
 
   it.each(refused.filter((v): v is string => typeof v === "string" && v.length < 2048))("refuses %j as the verified Listing's endpoint and as a discovery endpoint, before any signature", async (publicEndpoint) => {
     const w = await world(), sellerCalls = w.seller.calls;

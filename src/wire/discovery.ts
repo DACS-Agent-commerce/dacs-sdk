@@ -41,9 +41,17 @@ const MAX_LISTINGS = 32;
 /** Clock skew tolerated on issuedAt. */
 const ISSUED_SKEW_MS = 60_000;
 
-/** An absolute HTTPS URL with no credentials, query or fragment. Compared byte for byte, never normalized. */
+/**
+ * An absolute HTTPS URL with no credentials, query or fragment. Compared byte
+ * for byte, never normalized. Before parsing, the literal `https://` and an
+ * authority are required, and every spelling the URL parser rewrites is
+ * refused: a backslash, a tab or line break anywhere, and a trailing space or
+ * control character. Otherwise the parser repairs spellings such as
+ * `https:host` or `https:\\host` that a browser resolves against its own page.
+ */
 export function isPublicEndpoint(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 2048) return false;
+  if (!/^https:\/\/[^/\\]/.test(value) || /[\\\t\n\r]/.test(value) || value.charCodeAt(value.length - 1) <= 0x20) return false;
   try {
     const url = new URL(value);
     return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash && !value.includes("#") && !value.includes("?");
@@ -187,13 +195,14 @@ export function verifyEndpointProof(bytes: Uint8Array, options: { listing: Verif
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
   if (hasKeys(p, FIELDS)) assertPeerProfile(p.profile, binding as Tp1Binding, 502);
   if (!payloadValid(p)) fail("discovery_invalid", 502);
-  assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   if (!hasKeys(listing, ["seller", "publicEndpoint", "listingPin"]) || !isClaim(listing.seller) ||
       !isPublicEndpoint(listing.publicEndpoint) || !isListingPin(listing.listingPin)) fail("wire_input_invalid", 500);
   if (p.seller !== listing.seller) fail("discovery_signer_wrong", 502);
   if (!verifyEd25519(discoverySigningBytes(p), envelopeSignatureBytes(document.signature, "discovery_signature_invalid"), claimKey(p.seller))) {
     fail("discovery_signature_invalid", 502);
   }
+  // The trusted reader is asked only about the verified Listing's seller, once its signature verified.
+  assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   if (p.publicEndpoint !== listing.publicEndpoint) fail("discovery_endpoint_mismatch", 502);
   if (!p.listings.some((pin) => sameCanonical(pin, listing.listingPin))) fail("discovery_listing_missing", 502);
   if (!sameCanonical(p.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 502);

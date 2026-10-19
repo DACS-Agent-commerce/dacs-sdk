@@ -179,7 +179,9 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
       // checkSubject: what reaches checkWireRequest instead of the opened envelope.
       const subject = input.checkSubject === "decoded-header" ? JSON.parse(rawBodyText(input.header))
         : input.checkSubject === "copy" ? { ...opened } : opened;
-      const { readbackOnly } = wire.checkWireRequest(subject, { reserveRequest: () => true, artifacts: agreementFixture(opened),
+      // retained: the job and Agreement hash the seller host kept (the file's job); a vector may give another, or "omitted".
+      const retained = input.retained === "omitted" ? undefined : input.retained ?? { jobId: file.job.jobId, agreementHash: file.job.agreementHash };
+      const { readbackOnly } = wire.checkWireRequest(subject, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained,
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
         method: input.method ?? "POST", path: input.path, rawBody, now: file.now,
         requireDelegation: Object.hasOwn(input, "checkRequireDelegation") ? input.checkRequireDelegation : input.requireDelegation,
@@ -291,6 +293,9 @@ describe("dacs-seller-http/v1 vectors", () => {
       "request/path-mismatch", "request/method-mismatch", "request/delegated-buyer-mismatch",
       "request/delegated-agreement-buyer-party-mismatch", "request/delegated-agreement-seller-party-mismatch",
       "request/valid-delegated-agreement-parties-reordered",
+      // The job and Agreement hash the seller host retained, compared on every request.
+      "request/retained-agreement-hash-mismatch", "request/retained-job-mismatch", "request/retained-agreement-omitted",
+      "request/delegated-retained-agreement-hash-mismatch",
       "binding/record-proxy-changes-between-reads", "binding/record-accessor-changes-between-reads",
       "binding/local-proxy-changes-between-reads", "delegation/payload-changes-between-reads",
       "signing/envelope-payload-changes-between-reads", "signing/delegation-payload-changes-between-reads",

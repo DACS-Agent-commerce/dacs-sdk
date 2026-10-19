@@ -1021,6 +1021,102 @@
       }
     },
     {
+      "id": "request/retained-agreement-hash-mismatch",
+      "kind": "request",
+      "check": "retained Agreement hash",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6YTc0YzZiOTZiODRhMTYzZTljOWQ3M2MyODViOThlMTI5YmEwNjdkMmU0ZTE0ZDgxYmNkNDVkNjhiNjU5MmUxNyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiI5ZDA1YTQ2ODM1ZTE2OTc4OGMyZTgyZWY4MDI3NWQxMGQ2ZWQyMjI2ZDMwMjg5MjBmY2YzMjI5NzM4NjQ0ZjNjIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6NGUyMDA2YmVlMDAzODdiMDY2MWMzYmI5MDg0MDdmOTU0MWI2NGVlMzk1YWU4MDQ3M2Q0MTE5YjhlMTU2ZGFlMiIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Ii1jR0FHT2ZwWmd4NWZ2ZWFZaUg2RkR6RkpNbVNld0c0enNlNjkzMl9ZdjdYTlY4MjYzRlF0bDllRW5iZEd3YUNFT213TnF0ZGpNYnlHQUQ4cDdPLUNRIn0",
+        "retained": {
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "agreementHash": "7a1e6f6ba190f9f2bc82859619a149030e9e85cdcfbd33026ab3c7a43ed28ba9"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_agreement_mismatch"
+      }
+    },
+    {
+      "id": "request/retained-job-mismatch",
+      "kind": "request",
+      "check": "retained job",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6YTc0YzZiOTZiODRhMTYzZTljOWQ3M2MyODViOThlMTI5YmEwNjdkMmU0ZTE0ZDgxYmNkNDVkNjhiNjU5MmUxNyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiI5ZDA1YTQ2ODM1ZTE2OTc4OGMyZTgyZWY4MDI3NWQxMGQ2ZWQyMjI2ZDMwMjg5MjBmY2YzMjI5NzM4NjQ0ZjNjIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6NGUyMDA2YmVlMDAzODdiMDY2MWMzYmI5MDg0MDdmOTU0MWI2NGVlMzk1YWU4MDQ3M2Q0MTE5YjhlMTU2ZGFlMiIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Ii1jR0FHT2ZwWmd4NWZ2ZWFZaUg2RkR6RkpNbVNld0c0enNlNjkzMl9ZdjdYTlY4MjYzRlF0bDllRW5iZEd3YUNFT213TnF0ZGpNYnlHQUQ4cDdPLUNRIn0",
+        "retained": {
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4J",
+          "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_job_mismatch"
+      }
+    },
+    {
+      "id": "request/retained-agreement-omitted",
+      "kind": "request",
+      "check": "retained Agreement required",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6YTc0YzZiOTZiODRhMTYzZTljOWQ3M2MyODViOThlMTI5YmEwNjdkMmU0ZTE0ZDgxYmNkNDVkNjhiNjU5MmUxNyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiI5ZDA1YTQ2ODM1ZTE2OTc4OGMyZTgyZWY4MDI3NWQxMGQ2ZWQyMjI2ZDMwMjg5MjBmY2YzMjI5NzM4NjQ0ZjNjIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6NGUyMDA2YmVlMDAzODdiMDY2MWMzYmI5MDg0MDdmOTU0MWI2NGVlMzk1YWU4MDQ3M2Q0MTE5YjhlMTU2ZGFlMiIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Ii1jR0FHT2ZwWmd4NWZ2ZWFZaUg2RkR6RkpNbVNld0c0enNlNjkzMl9ZdjdYTlY4MjYzRlF0bDllRW5iZEd3YUNFT213TnF0ZGpNYnlHQUQ4cDdPLUNRIn0",
+        "retained": "omitted"
+      },
+      "expect": {
+        "ok": false,
+        "code": "seller_retained_agreement_required"
+      }
+    },
+    {
+      "id": "request/delegated-retained-agreement-hash-mismatch",
+      "kind": "request",
+      "check": "retained Agreement hash",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": true,
+        "header": "eyJkZWxlZ2F0aW9uIjp7InBheWxvYWQiOnsiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6YTc0YzZiOTZiODRhMTYzZTljOWQ3M2MyODViOThlMTI5YmEwNjdkMmU0ZTE0ZDgxYmNkNDVkNjhiNjU5MmUxNyIsImV4cGlyZXNBdCI6MTc5MTk4MjgwMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJzZWxsZXItc2Vzc2lvbi1kZWxlZ2F0aW9uIiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm5vdEJlZm9yZSI6MTc5MTk3OTE5OTAwMCwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiI5ZDA1YTQ2ODM1ZTE2OTc4OGMyZTgyZWY4MDI3NWQxMGQ2ZWQyMjI2ZDMwMjg5MjBmY2YzMjI5NzM4NjQ0ZjNjIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6NGUyMDA2YmVlMDAzODdiMDY2MWMzYmI5MDg0MDdmOTU0MWI2NGVlMzk1YWU4MDQ3M2Q0MTE5YjhlMTU2ZGFlMiIsInNlc3Npb25QdWJsaWNLZXkiOiI5MWYyNGFhMjBlOGEyNTQzY2JiMjE1NmM2ZTIzNzA5OTIyYjIwN2Y3YmZlMjkzMDcyZmNiMzMxNjZhYThkMWI2IiwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoiMHhmZWJjNGY2MTEzZTU1NGIzNTRlOWIwMTU1ZDMyYzM3NjIwMjFhNjgxZmY2MmUwZWNkNDY4NTEzZDhlYWFmOGU5MjA3ZDhmMmZiZDE4NDIzMjQ3ODEwYzIyNjdlNmVkYmIyMGJkYWE3YTZlNTFlYTEzNDI4N2Q5N2Y0OTBlNDUwOSJ9LCJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6YTc0YzZiOTZiODRhMTYzZTljOWQ3M2MyODViOThlMTI5YmEwNjdkMmU0ZTE0ZDgxYmNkNDVkNjhiNjU5MmUxNyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkZ4WVZGQk1TRVJBUERnME1Dd29KQ0FjR0JRUURBZ0VBIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiI5ZDA1YTQ2ODM1ZTE2OTc4OGMyZTgyZWY4MDI3NWQxMGQ2ZWQyMjI2ZDMwMjg5MjBmY2YzMjI5NzM4NjQ0ZjNjIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6NGUyMDA2YmVlMDAzODdiMDY2MWMzYmI5MDg0MDdmOTU0MWI2NGVlMzk1YWU4MDQ3M2Q0MTE5YjhlMTU2ZGFlMiIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6IkdhMFVlcTdkUlNFUk5YTXZmLVpsY0ktcUpmcU9meWhLNEI4OXdKc2RtUDQzQjc4RS1wZDRpb2RuYWxOQWdkU3BkMVVPQk9UeHZOUWZueXJBdVlaY0F3In0",
+        "artifacts": [
+          {
+            "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+            "listingRef": {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            },
+            "parties": [
+              {
+                "role": "buyer",
+                "primaryClaim": "did:demos:agent:a74c6b96b84a163e9c9d73c285b98e129ba067d2e4e14d81bcd45d68b6592e17"
+              },
+              {
+                "role": "seller",
+                "primaryClaim": "did:demos:agent:4e2006bee00387b0661c3bb908407f9541b64ee395ae80473d4119b8e156dae2"
+              }
+            ],
+            "terms": {
+              "deadline": 1791986400000
+            }
+          }
+        ],
+        "retained": {
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "agreementHash": "7a1e6f6ba190f9f2bc82859619a149030e9e85cdcfbd33026ab3c7a43ed28ba9"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_agreement_mismatch"
+      }
+    },
+    {
       "id": "request/delegated-agreement-buyer-party-mismatch",
       "kind": "request",
       "check": "delegated request matches the retained Agreement's buyer",

@@ -1,6 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
@@ -37,8 +38,10 @@ function world(path = "/dacs/v1/payments") {
   };
   /** The buyer-signed (undelegated) request header. */
   const direct = () => header(signed(request, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request));
-  const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW };
-  return { buyer, seller, request, open, delegated, direct, artifact, check, context, signed };
+  /** What the seller host retained for the job: its own record, not read from the request. */
+  const retained = { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64) };
+  const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained };
+  return { buyer, seller, request, open, delegated, direct, artifact, check, context, signed, retained };
 }
 
 describe("effect request replay reservations", () => {
@@ -54,8 +57,8 @@ describe("effect request replay reservations", () => {
     expect(wire.checkWireRequest(x.open(), check)).toEqual({ body: {}, readbackOnly: false });
     expect(reserveRequest).toHaveBeenCalledWith(expect.objectContaining({ requestHash: wire.wireRequestHash(x.request), expiresAt: x.request.expiresAt }));
     expect(() => wire.checkWireRequest(x.open(), check)).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
-    // A new validator opening the same request uses the host's same journal.
-    expect(() => wire.checkWireRequest(x.open({ ...x.request, agreementHash: "b".repeat(64) }), { ...check, reserveRequest: ({ key }) => !journal.has(key) })).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
+    // A new validator opening another request under the same nonce uses the host's same journal.
+    expect(() => wire.checkWireRequest(x.open({ ...x.request, expiresAt: NOW + 20_000 }), { ...check, reserveRequest: ({ key }) => !journal.has(key) })).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
     expect(wire.checkWireRequest(x.open({ ...x.request, nonce: "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA" }), check).readbackOnly).toBe(false);
   });
 
@@ -83,6 +86,19 @@ describe("effect request replay reservations", () => {
     });
     expect(() => wire.checkWireRequest(x.delegated(), check)).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
     expect(reserveRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("names the host journal's restart and concurrent-worker tests as the gate for any effect", () => {
+    // The wire has no journal; its effect verdict counts only once the composed host's journal is qualified.
+    const text = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+    const gate = JSON.parse(text("conformance/tp1-register.json")).qualification
+      .filter((q: { subject: string }) => q.subject.startsWith("consumer: seller host request reservation journal"));
+    expect(gate).toHaveLength(1);
+    expect(gate[0].result).toBe("not checked");
+    expect(gate[0].subject).toContain("authorizes no effect until restart and concurrent-worker tests pass");
+    const guide = text("docs/dacs-seller-http-v1.md").replace(/\s+/g, " ");
+    expect(guide).toContain("authorizes no effect until the composed host's journal passes restart and concurrent-worker tests");
+    expect(guide).not.toContain("Host duty");
   });
 
   it.each([undefined, null, 1, "true", Promise.resolve(true)])("a reservation result of %s never grants an effect", (result) => {
@@ -161,13 +177,13 @@ describe("delegated Agreement context", () => {
     expect(reserveRequest).not.toHaveBeenCalled();
   });
 
-  it("leaves the agreementHash comparison to the host", () => {
-    // The wire binds job, Listing, parties and deadline only (the guide's "Host duty"). Follow-up: a required
-    // host-retained {jobId, agreementHash} on effect routes, refused on mismatch before reservation; this case then flips.
-    const x = world(), other = { ...x.request, agreementHash: "b".repeat(64), nonce: "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA" };
-    const opened = x.open(other);
-    expect(wire.checkWireRequest(opened, { ...x.check, artifacts: [x.artifact], reserveRequest: () => true }).readbackOnly).toBe(false);
-    expect(opened.payload.agreementHash).toBe("b".repeat(64));
+  it("accepts a delegated request expiring exactly at its delegation only when it names the retained Agreement", () => {
+    const x = world(), reserveRequest = vi.fn(() => true), artifacts = [x.artifact];
+    const signed = { ...x.request, expiresAt: NOW + 60_000 };
+    expect(() => wire.checkWireRequest(x.delegated({ ...signed, agreementHash: "b".repeat(64) }), { ...x.check, artifacts, reserveRequest }))
+      .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
+    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(wire.checkWireRequest(x.delegated(signed), { ...x.check, artifacts, reserveRequest }).readbackOnly).toBe(false);
   });
 
   it.each([
@@ -190,6 +206,75 @@ describe("delegated Agreement context", () => {
     const x = world(), reserveRequest = vi.fn(() => true), artifacts = [x.artifact];
     expect(wire.checkWireRequest(x.delegated({ ...x.request, expiresAt: NOW + 60_000 }), { ...x.check, artifacts, reserveRequest }).readbackOnly).toBe(false);
     expect(reserveRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the job and Agreement the host retained", () => {
+  const OTHER_JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4J";
+  const effects = ["/dacs/v1/payments", "/dacs/v1/commitments"];
+
+  it.each(effects)("%s: a correctly signed direct request naming another Agreement or job makes no reservation", (path) => {
+    const x = world(path), reserveRequest = vi.fn(() => true), check = { ...x.check, reserveRequest };
+    expect(() => wire.checkWireRequest(x.open({ ...x.request, agreementHash: "b".repeat(64) }), check))
+      .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
+    expect(() => wire.checkWireRequest(x.open({ ...x.request, jobId: OTHER_JOB }), check))
+      .toThrowError(expect.objectContaining({ code: "peer_job_mismatch", status: 409 }));
+    // The host's record is what is compared: the same signed request is refused under another retained hash.
+    expect(() => wire.checkWireRequest(x.open(), { ...check, retained: { ...x.retained, agreementHash: "b".repeat(64) } }))
+      .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
+    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(wire.checkWireRequest(x.open(), check)).toEqual({ body: {}, readbackOnly: false });
+    expect(reserveRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(effects)("%s: a delegated request naming another Agreement or job makes no reservation", (path) => {
+    const x = world(path), reserveRequest = vi.fn(() => true), check = { ...x.check, artifacts: [x.artifact], reserveRequest };
+    expect(() => wire.checkWireRequest(x.delegated({ ...x.request, agreementHash: "b".repeat(64) }), check))
+      .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
+    expect(() => wire.checkWireRequest(x.delegated({ ...x.request, jobId: OTHER_JOB }), check))
+      .toThrowError(expect.objectContaining({ code: "peer_job_mismatch", status: 409 }));
+    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(wire.checkWireRequest(x.delegated(), check).readbackOnly).toBe(false);
+    expect(reserveRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"])("%s: read routes compare it too, including expired-delegation readback", (path) => {
+    const x = world(path), later = { ...x.check, artifacts: [x.artifact], now: NOW + 60_000 };
+    expect(() => wire.checkWireRequest(x.open({ ...x.request, agreementHash: "b".repeat(64) }), x.check))
+      .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch" }));
+    const readback = { ...x.request, expiresAt: NOW + 90_000 };
+    expect(() => wire.checkWireRequest(x.delegated({ ...readback, agreementHash: "b".repeat(64) }), later))
+      .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch" }));
+    expect(wire.checkWireRequest(x.delegated(readback), later).readbackOnly).toBe(true);
+  });
+
+  it.each([
+    ["omitted", undefined],
+    ["null", null],
+    ["empty", {}],
+    ["without agreementHash", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H" }],
+    ["with an extra member", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), listingId: "report" }],
+    ["with an uppercase hash", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "A".repeat(64) }],
+    ["with a non-canonical job id", { jobId: "01k7fz8q9w3v5t2r1n0m8k6j4h", agreementHash: "a".repeat(64) }],
+    ["a string", "a".repeat(64)],
+  ])("refuses a retained Agreement %s, on effect and read routes, before reservation", (_name, retained) => {
+    for (const path of [...effects, "/dacs/v1/agreements/state"]) {
+      const x = world(path), reserveRequest = vi.fn(() => true);
+      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: retained as never, reserveRequest }))
+        .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
+      expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [x.artifact], retained: retained as never, reserveRequest }))
+        .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
+      expect(reserveRequest).not.toHaveBeenCalled();
+    }
+  });
+
+  it("reads the retained Agreement once, as data", () => {
+    const x = world(), reserveRequest = vi.fn(() => true);
+    let reads = 0;
+    const retained = { jobId: x.retained.jobId, get agreementHash() { return ++reads === 1 ? x.retained.agreementHash : "b".repeat(64); } };
+    expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained, reserveRequest }))
+      .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
+    expect(reserveRequest).not.toHaveBeenCalled();
   });
 });
 

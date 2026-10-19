@@ -2,7 +2,7 @@
   "profile": "dacs-testnet-tp1",
   "revision": "TP-1",
   "status": "proposed; composition qualification pending",
-  "nature": "Seed register written with the SDK's wire design draft. Rows L1-L4 and G1-G9 are a seed, not an exhaustive finding, and G10-G11 record further gaps; a composition review completes and classifies them and fills the qualification matrix.",
+  "nature": "Seed register written with the SDK's wire design draft. Rows L1-L4 and G1-G9 are a seed, not an exhaustive finding, and G10-G12 record further gaps; a composition review completes and classifies them and fills the qualification matrix.",
   "evidenceNote": "An evidence entry {repo, commit, path, lines} cites a public repository at that commit. An entry {source, provenance} cites the buyer plugins' implementation, which is not public: the claim is taken from it and not yet independently checked (composition checks qualify it), and its exact coordinates are kept in private review material under the opaque provenance ID. pinnedBy names files in this repository, at the same revision as this register, that pin the SDK's own side of a row.",
   "base": {
     "repo": "DACS-Standard",
@@ -254,7 +254,7 @@
       "id": "G12", "kind": "gap",
       "summary": "The wire signing domains dacs-seller-http:v1:{request,response,delegation,discovery}: are not in CORE §B.7's closed registry and do not take the dacs-x- form SIG-4 gives a kind outside it; the SDK treats them as transport-message signatures, not artifact kinds, and the Standard has not ruled on that.",
       "evidence": [
-        { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "478" },
+        { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "487" },
         { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "590" }
       ],
       "tp1": "SDK transport domains; no wire domain equals a registered signature domain or hash-domain tag, and none is a prefix of one in either direction (test/wire/wire.test.ts).",
@@ -309,6 +309,13 @@
       "rows": [],
       "pinnedBy": ["src/wire/profile.ts", "test/wire/wire.test.ts"],
       "evidence": [ { "source": "plugin implementation (not public)", "provenance": "prov-08" } ]
+    },
+    {
+      "subject": "consumer: seller host request reservation journal for checkWireRequest's reserveRequest: atomic across workers, retained across restarts until expiresAt, never released after a failed or ambiguous effect; a checked effect request authorizes no effect until restart and concurrent-worker tests pass",
+      "result": "not checked",
+      "rows": [],
+      "pinnedBy": ["src/wire/envelope.ts", "test/wire/launchReview.test.ts"],
+      "evidence": []
     }
   ]
 }

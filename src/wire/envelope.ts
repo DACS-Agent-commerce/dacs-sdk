@@ -191,12 +191,13 @@ export function openWireEnvelope<K extends WireKind>(header: unknown, kind: K, o
   if (!payloadShape(p, kind)) fail("peer_envelope_invalid");
   if (requireDelegation && !delegated) fail("peer_delegation_required");
   const payload = p as unknown as Extract<WirePayload, { kind: K }>;
-  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   const actor = kind === "request" ? payload.buyer : payload.seller;
   if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");
   const delegation = delegated ? verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer }) : null;
   const key = delegation?.sessionPublicKey ?? claimKey(actor);
   if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
+  // The trusted reader is asked about these participants and this job only once a signature authenticates them.
+  assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   const normalizedDelegation = delegated ? {
     payload: (envelope.delegation as SellerSessionDelegation).payload,
     signature: walletSignatureBytes((envelope.delegation as SellerSessionDelegation).signature).toString("base64url"),
@@ -231,11 +232,17 @@ export interface RequestCheck {
   purchaseProfile: Tp1WireProfile | null;
   requireDelegation?: boolean;
   /**
+   * Required on every signed route: the job and Agreement hash the host
+   * retained before this request (for an initial proposal, the admitted
+   * draft's hash; for the context route, the exact context-scope hash). Both
+   * must equal the signed jobId and agreementHash exactly, before any
+   * delegation scope, reservation or return. Omitted or malformed is refused.
+   */
+  retained: WireRetainedAgreement;
+  /**
    * The host's proposal draft and/or retained Agreement. At least one is
-   * required for delegated requests. Only their job, Listing, parties and
-   * deadline are compared: the request's agreementHash (and, for a direct
-   * request, its jobId) is the host's to compare with the hash it retained
-   * for the job before any effect.
+   * required for delegated requests; their job, Listing, parties and deadline
+   * bound the delegation.
    */
   artifacts?: readonly unknown[];
   /**
@@ -244,8 +251,17 @@ export interface RequestCheck {
    * Share the journal across workers/restarts and retain the reservation until
    * expiresAt. A failed/ambiguous effect must not release it. This synchronous
    * hook must finish its durable write before returning; promises are refused.
+   * The wire has no journal: a checked effect request authorizes no effect
+   * until the host's journal passes restart and concurrent-worker tests (a TP-1
+   * composition qualification entry).
    */
   reserveRequest?: (reservation: WireRequestReservation) => boolean;
+}
+
+/** What the seller host retained for a job: never taken from the request it is compared with. */
+export interface WireRetainedAgreement {
+  jobId: string;
+  agreementHash: string;
 }
 
 export interface WireRequestReservation {
@@ -262,7 +278,7 @@ export function messageLifetime(override: unknown, code: string): number {
   return ms;
 }
 
-const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "artifacts", "reserveRequest"] as const;
+const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "reserveRequest"] as const;
 
 function reserveEffectRequest(request: WireRequestPayload, reserve: RequestCheck["reserveRequest"]): void {
   if (isReadRoute(request.path)) return;
@@ -290,15 +306,17 @@ export interface CheckedWireRequest {
  * (the plugin's server-side request checks, without its body checks). It takes only the
  * value openWireEnvelope returned, under the same binding, and the seller's
  * current connection: a payload or delegation the caller assembled is refused.
- * The check is read once (ownedFields), and its Listing pin, artifacts and body
- * bytes copied once. The tuple kept for the job is compared first, then the
- * exchange. The received body bytes are admitted (CF-5) before their hash is
+ * The check is read once (ownedFields), and its Listing pin, retained
+ * Agreement, artifacts and body bytes copied once. The tuple kept for the job
+ * is compared first, then the exchange, then the job and Agreement the host
+ * retained. The received body bytes are admitted (CF-5) before their hash is
  * compared, and the admitted body is returned.
  */
 export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): CheckedWireRequest {
   const c = ownedFields(check, CHECK_FIELDS) as unknown as RequestCheck;
   assertTp1Binding(c.binding, c.local);
   const listingPin = ownedConfig(c.listingPin, "wire_input_invalid") as ListingPin;
+  const retained = c.retained === undefined ? undefined : ownedConfig(c.retained, "seller_retained_agreement_required") as JsonRecord;
   const artifacts = (c.artifacts === undefined ? [] : ownedArtifact(c.artifacts, "wire_input_invalid", 500)) as unknown[];
   if (!Array.isArray(artifacts)) fail("wire_input_invalid", 500);
   const rawBody = ownedBytes(c.rawBody);
@@ -314,6 +332,12 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   const body = admitWireRequestBody(rawBody);
   if (request.method !== c.method || request.path !== c.path || request.bodyHash !== sha256Hex(rawBody)) fail("peer_request_mismatch");
   if (!sameCanonical(request.listingPin, listingPin)) fail("peer_listing_mismatch", 409);
+  // A correctly signed request naming another job or Agreement never reaches the delegation scope, a reservation or a handler.
+  if (!hasKeys(retained, ["jobId", "agreementHash"]) || !isCanonicalJobId(retained.jobId) || !isHash(retained.agreementHash)) {
+    fail("seller_retained_agreement_required", 500);
+  }
+  if (request.jobId !== retained.jobId) fail("peer_job_mismatch", 409);
+  if (request.agreementHash !== retained.agreementHash) fail("peer_agreement_mismatch", 409);
   if (c.requireDelegation && !delegation) fail("peer_delegation_required");
   if (!delegation) {
     reserveEffectRequest(request, c.reserveRequest);

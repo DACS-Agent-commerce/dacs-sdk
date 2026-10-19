@@ -113,8 +113,9 @@ export function verifySellerSessionDelegation(supplied: unknown, scope: Delegati
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
   if (hasKeys(p, FIELDS)) assertPeerProfile(p.profile, binding as Tp1Binding);
   const bytes = payloadBytes(p);
-  assertTp1Authority(binding as Tp1Binding, local, [p.buyer, p.seller], p.jobId);
   if (!verifyEd25519(bytes, walletSignatureBytes(delegation.signature), claimKey(p.buyer))) fail("peer_delegation_signature_invalid");
+  // The trusted reader is asked only about a delegation the buyer's wallet signed.
+  assertTp1Authority(binding as Tp1Binding, local, [p.buyer, p.seller], p.jobId);
   if ((buyer !== undefined && p.buyer !== buyer) || (seller !== undefined && p.seller !== seller) ||
       (listingPin !== undefined && !sameCanonical(p.listingPin, listingPin)) || (jobId !== undefined && p.jobId !== jobId)) {
     fail("peer_delegation_mismatch", 409);

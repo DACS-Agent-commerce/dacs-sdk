@@ -70,7 +70,7 @@ async function boundaries(x: ReturnType<typeof world>) {
     ["discovery signer", () => wire.signDiscoveryDocument(discoveryPayload, x.seller, x.binding, local)],
     ["request open", () => wire.openWireEnvelope(requestHeader, "request", context)],
     ["retained request admission", () => wire.checkWireRequest(opened, { ...context, seller: x.seller.claim,
-      listingPin: x.request.listingPin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now,
+      retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash }, listingPin: x.request.listingPin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now,
       reserveRequest: () => { reservations++; return true; } })],
     ["delegation verifier", () => wire.verifySellerSessionDelegation(delegation, { ...context, jobId, time: now })],
     ["response verifier", () => wire.verifyWireResponse(x.request, { ...context, header: response, status: 200, body: Buffer.from("{}"), now })],
@@ -215,4 +215,63 @@ describe("independent TP-1 authorization context", () => {
       await expect(Promise.resolve().then(invoke)).rejects.toMatchObject({ code: "tp1_connection_unverified" });
       expect(x.buyer.calls + x.seller.calls).toBe(1);
     });
+});
+
+describe("the trusted reader is asked about participants only after a signature authenticates them", () => {
+  // A reader that throws for every participant/session read, as a reader for an unknown session may.
+  function guarded() {
+    const x = world(), participantReads: wire.Tp1AuthorityScope[] = [];
+    let allow = false;
+    const readAuthority = (scope: wire.Tp1AuthorityScope) => {
+      if (scope.sessionId !== null) {
+        participantReads.push(scope);
+        if (!allow) throw new Error(`reader: no session ${scope.sessionId}`);
+      }
+      return x.options.readAuthority(scope);
+    };
+    const binding = wire.bindTp1Profile({ ...x.options, readAuthority });
+    const context = { binding, local, purchaseProfile: binding.profile };
+    return { x, binding, context, participantReads, allow() { allow = true; } };
+  }
+  const forged = "A".repeat(86);
+  const header = (value: unknown) => Buffer.from(canonicalize(value)).toString("base64url");
+
+  it("a request header with a bad signature and made-up participants makes zero participant reads", () => {
+    const g = guarded(), stranger = party(), other = party();
+    const payload = { ...g.x.request, buyer: stranger.claim, seller: other.claim };
+    expect(() => wire.openWireEnvelope(header({ payload, signature: forged }), "request", g.context))
+      .toThrowError(expect.objectContaining({ code: "peer_signature_invalid" }));
+    expect(g.participantReads).toEqual([]);
+    // Control: the genuine request is checked against the reader once its signature verifies.
+    g.allow();
+    const genuine = header({ payload: g.x.request, signature: g.x.buyer.sign(wire.wireEnvelopeSigningBytes(g.x.request)).toString("base64url") });
+    expect(wire.openWireEnvelope(genuine, "request", g.context).payload.jobId).toBe(jobId);
+    expect(g.participantReads.map((s) => [s.sessionId, s.participants])).toEqual([[jobId, [g.x.buyer.claim, g.x.seller.claim]]]);
+  });
+
+  it("a delegation with a bad wallet signature makes zero participant reads, alone and inside a request header", () => {
+    const g = guarded(), session = party();
+    const delegation = { payload: { version: "1", kind: "seller-session-delegation", buyer: g.x.buyer.claim, seller: g.x.seller.claim,
+      sessionPublicKey: session.claim.slice(-64), listingPin: g.x.request.listingPin, jobId, notBefore: now - 1000, expiresAt: now + 60_000,
+      profile: g.binding.profile }, signature: forged };
+    expect(() => wire.verifySellerSessionDelegation(delegation, { binding: g.binding, local, jobId, time: now }))
+      .toThrowError(expect.objectContaining({ code: "peer_delegation_signature_invalid" }));
+    const signed = { payload: g.x.request, signature: session.sign(wire.wireEnvelopeSigningBytes(g.x.request)).toString("base64url"), delegation };
+    expect(() => wire.openWireEnvelope(header(signed), "request", { ...g.context, requireDelegation: true }))
+      .toThrowError(expect.objectContaining({ code: "peer_delegation_signature_invalid" }));
+    expect(g.participantReads).toEqual([]);
+  });
+
+  it("a discovery document with a bad signature makes zero participant and eligibility reads", () => {
+    const g = guarded();
+    const publicEndpoint = "https://seller.authority.invalid";
+    const payload = { format: "dacs-seller-discovery/v1", profile: g.binding.profile, seller: g.x.seller.claim, publicEndpoint,
+      transport: ["dacs-seller-http/v1"], listings: [g.x.request.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + 60_000 };
+    let eligibilityReads = 0;
+    expect(() => wire.verifyEndpointProof(Buffer.from(canonicalize({ payload, signature: forged })), { ...g.context, now,
+      listing: { seller: g.x.seller.claim, publicEndpoint, listingPin: g.x.request.listingPin },
+      readListingEligibility: (scope) => { eligibilityReads++; return readFixtureListingEligibility(scope); } }))
+      .toThrowError(expect.objectContaining({ code: "discovery_signature_invalid" }));
+    expect([g.participantReads.length, eligibilityReads]).toEqual([0, 0]);
+  });
 });

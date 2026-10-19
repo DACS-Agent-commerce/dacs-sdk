@@ -95,6 +95,10 @@ const MUTANTS = [
   M("delegation required (check)", "wire/envelope.ts", 'if (c.requireDelegation && !delegation) fail("peer_delegation_required");', "", ["request/check-delegation-required"]),
   M("delegated request ends by delegation expiry", "wire/envelope.ts", 'if (request.expiresAt > delegation.payload.expiresAt) fail("peer_delegation_expired", 408);', "", ["request/delegated-outlives-delegation"]),
   M("delegated request matches the retained Agreement", "wire/envelope.ts", ' fail("peer_delegation_agreement_mismatch", 409);', " void 0;", ["request/delegated-agreement-mismatch"]),
+  // The host's retained job and Agreement hash: each comparison removed, and a missing record replaced by the request's own values.
+  M("retained Agreement hash", "wire/envelope.ts", 'if (request.agreementHash !== retained.agreementHash) fail("peer_agreement_mismatch", 409);', "", ["request/retained-agreement-hash-mismatch", "request/delegated-retained-agreement-hash-mismatch"]),
+  M("retained job", "wire/envelope.ts", 'if (request.jobId !== retained.jobId) fail("peer_job_mismatch", 409);', "", ["request/retained-job-mismatch"]),
+  M("retained Agreement required", "wire/envelope.ts", "c.retained === undefined ? undefined :", "c.retained === undefined ? { jobId: envelope?.payload?.jobId, agreementHash: envelope?.payload?.agreementHash } as JsonRecord :", ["request/retained-agreement-omitted"]),
   M("delegated request matches the retained Agreement's buyer", "wire/envelope.ts", 'parties.find((party) => party?.role === "buyer")?.primaryClaim !== request.buyer', "false", ["request/delegated-agreement-buyer-party-mismatch"]),
   M("delegated request matches the retained Agreement's seller", "wire/envelope.ts", 'parties.find((party) => party?.role === "seller")?.primaryClaim !== request.seller', "false", ["request/delegated-agreement-seller-party-mismatch"]),
   M("retained Agreement parties found by role", "wire/envelope.ts", 'party?.role === "buyer"', "true", ["request/valid-delegated-agreement-parties-reordered"]),
