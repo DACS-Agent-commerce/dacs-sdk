@@ -85,10 +85,11 @@ for (const [name, model] of NOT_PUBLIC) {
   });
 }
 
-// DACS-1 LRR-3, in the same admission reasons: the accepted rail is the exact
-// (railId, railVersion) pair the client implements.
+// DACS-1 LRR-3 / LRR-6, in the same admission reasons: a present railVersion
+// is the exact version the client implements; an absent one is the latest,
+// which is that same version.
 for (const [name, rails, refused] of [['version 1', [{ railId: 'demos-native:DEM', railVersion: 1 }], false], ['another version', [{ railId: 'demos-native:DEM', railVersion: 2 }], true],
-  ['no version', [{ railId: 'demos-native:DEM' }], true], ['text version', [{ railId: 'demos-native:DEM', railVersion: '1' }], true]]) {
+  ['no version', [{ railId: 'demos-native:DEM' }], false], ['text version', [{ railId: 'demos-native:DEM', railVersion: '1' }], true], ['null version', [{ railId: 'demos-native:DEM', railVersion: null }], true]]) {
   test(`LRR-3: an accepted DEM rail with ${name} is ${refused ? 'refused' : 'admitted'} by rail version`, () => {
     const reasons = purchaseSupport({ ...listingWith('public'), acceptedRails: rails }).reasons;
     assert.equal(reasons.includes('listing does not accept demos-native:DEM version 1'), refused);

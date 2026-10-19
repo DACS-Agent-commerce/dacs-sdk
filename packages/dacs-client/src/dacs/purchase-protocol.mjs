@@ -51,7 +51,7 @@ import {
   verifySettlementEvidence,
   ARTIFACT_SEPARATORS,
 } from '@kynesyslabs/dacs';
-import { DEM_RAIL, DEM_DECIMALS, verifyComponent, utf8, deliverableAccessProblem } from './listing.mjs';
+import { DEM_RAIL, DEM_DECIMALS, verifyComponent, utf8, deliverableAccessProblem, demPriceProblem } from './listing.mjs';
 import { addressForClaim, claimForAddress } from '../signatures.mjs';
 import { verifyFixtureReceipt, verifyFixtureRecord } from '../seams/seller-integration-not-wired.mjs';
 import { canonicalSignature } from '../signatures.mjs';
@@ -144,6 +144,9 @@ export function protocolSupport(listing) {
   const access = deliverableAccessProblem(listing);
   if (access) reasons.push(access);
   if (listing?.pricing?.kind !== 'fixed' || listing?.pricing?.price?.currency !== 'DEM') reasons.push('pricing is not fixed DEM');
+  // The seller takes no session whose payment it could not verify (listing.mjs).
+  const price = demPriceProblem(listing);
+  if (price) reasons.push(price);
   return { supported: reasons.length === 0, reasons, phases: { commit: 1, payment: 2, delivery: 3 } };
 }
 

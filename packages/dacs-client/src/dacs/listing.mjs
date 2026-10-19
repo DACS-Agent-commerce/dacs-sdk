@@ -21,7 +21,7 @@ import {
   VERSION as DACS_SDK_VERSION,
 } from '@kynesyslabs/dacs';
 import { addressForClaim, claimForAddress, decodeSignature } from '../signatures.mjs';
-import { OS_INTEGER } from './chain.mjs';
+import { OS_INTEGER, OS_VERIFIABLE_MAX } from './chain.mjs';
 
 export const DEM_RAIL = Object.freeze({ railId: 'demos-native:DEM', railVersion: 1 });
 export const DEM_DECIMALS = 9;
@@ -86,10 +86,24 @@ export function normalizeDemAmount(value) {
   const amount = canonicalizeDecimal(String(value));
   const os = baseUnits(amount, DEM_DECIMALS);
   // No balance has more OS digits (chain.mjs), so a longer price could never be
-  // paid; rejecting it here keeps it out of every listing, purchase and result.
+  // paid.
   if (!OS_INTEGER.test(os)) throw new Error('price is longer than any Demos balance');
   if (BigInt(os) <= 0n) throw new Error('price must be positive');
+  // A payment above OS_VERIFIABLE_MAX could be sent but never read back
+  // (chain.mjs). Rejecting it here keeps it out of every listing draft, buyer
+  // purchase (purchaseSupport) and seller session (protocolSupport).
+  if (BigInt(os) > OS_VERIFIABLE_MAX) throw Object.assign(new Error(`price exceeds ${OS_VERIFIABLE_MAX} OS, the largest payment a Demos transaction read can verify`), { code: 'price_unverifiable' });
   return { amount, amountOs: os };
+}
+
+// Why a Listing's price is not a payable and verifiable DEM amount, or null.
+export function demPriceProblem(listing) {
+  try {
+    normalizeDemAmount(listing?.pricing?.price?.amount);
+    return null;
+  } catch (error) {
+    return error?.code === 'price_unverifiable' ? error.message : 'price amount is not a positive DEM decimal';
+  }
 }
 
 export function buildListingDraft({
@@ -195,15 +209,14 @@ export function purchaseSupport(listing) {
   if (access) reasons.push(access);
   if (listing?.pricing?.kind !== 'fixed') reasons.push('pricing is not fixed-price');
   if (listing?.pricing?.price?.currency !== 'DEM') reasons.push('price currency is not DEM');
-  let amount = null;
-  try {
-    amount = normalizeDemAmount(listing?.pricing?.price?.amount);
-  } catch {
-    reasons.push('price amount is not a positive DEM decimal');
-  }
+  const priceProblem = demPriceProblem(listing);
+  if (priceProblem) reasons.push(priceProblem);
+  const amount = priceProblem ? null : normalizeDemAmount(listing.pricing.price.amount);
   const rails = Array.isArray(listing?.acceptedRails) ? listing.acceptedRails : [];
-  // DACS-1 LRR-3: the accepted rail is the exact (railId, railVersion) pair.
-  if (!rails.some((rail) => rail?.railId === DEM_RAIL.railId && rail?.railVersion === DEM_RAIL.railVersion)) reasons.push(`listing does not accept demos-native:DEM version ${DEM_RAIL.railVersion}`);
+  // DACS-1 LRR-3 / LRR-6: a present railVersion must be exactly the version
+  // this client implements; an absent one means the latest version, which in
+  // the client's in-code PA-1 resolution (validateListing) is that same one.
+  if (!rails.some((rail) => rail?.railId === DEM_RAIL.railId && (rail?.railVersion === undefined || rail.railVersion === DEM_RAIL.railVersion))) reasons.push(`listing does not accept demos-native:DEM version ${DEM_RAIL.railVersion}`);
   const pipeline = Array.isArray(listing?.pipeline) ? listing.pipeline : [];
   if (!pipeline.some((phase) => phase?.kind === 'pay-dem' && phase?.parameters?.rail === DEM_RAIL.railId)) reasons.push('pipeline has no pay-dem phase on demos-native:DEM');
   if (pipeline.some((phase) => /^negotiate-/.test(phase?.kind ?? '') && phase.kind !== 'negotiate-fixed-price')) reasons.push('negotiation is not fixed-price');

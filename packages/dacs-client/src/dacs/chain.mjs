@@ -22,9 +22,14 @@ const isRecord = (value) => value !== null && typeof value === 'object' && !Arra
 const DEM_DECIMALS = 9;
 const OS_PER_DEM = 1_000_000_000n;
 // The most digits an exact OS amount read from the node may have (enough for
-// 2^256 - 1). Listing prices (listing.mjs normalizeDemAmount) and the model
-// copy (seller-content.mjs) are bounded by these same two rules.
+// 2^256 - 1). Balances are read up to this length.
 export const OS_DIGITS_MAX = 78;
+// The largest payment this client can verify. A Demos node projects a
+// transaction's content.amount as a JSON number (node2: "amount":2400000000000),
+// and every RPC answer passes CF-5 admission (util/http.mjs), which refuses a
+// number above 2^53 - 1. A larger price could be paid but never verified, so
+// listing prices (listing.mjs normalizeDemAmount) stop here.
+export const OS_VERIFIABLE_MAX = BigInt(Number.MAX_SAFE_INTEGER);
 // A canonical OS integer of at most OS_DIGITS_MAX digits.
 export const OS_INTEGER = new RegExp(`^(?:0|[1-9][0-9]{0,${OS_DIGITS_MAX - 1}})$`);
 // A canonical DEM decimal whose exact OS amount fits OS_DIGITS_MAX digits.
@@ -146,11 +151,13 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
         expectedOrigin: origin,
       });
     } catch (error) {
-      if (error.kind === 'not-found') return { status: 'absent' };
+      // CORE §5.1: the node's 404 carries no authenticated absence proof, so
+      // a non-observation is indeterminate, never absent.
+      if (error.kind === 'not-found') return { status: 'indeterminate', reason: 'the node did not return this storage program; not-found is not proof of absence' };
       throw error;
     }
     if (body?.success !== true || !body.data || typeof body.data !== 'object' || Array.isArray(body.data)) {
-      return { status: 'absent' };
+      return { status: 'indeterminate', reason: 'the node returned no storage program data' };
     }
     return {
       status: 'found',

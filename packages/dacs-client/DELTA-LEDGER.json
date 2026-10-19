@@ -1163,6 +1163,47 @@
           "after": "a90c09c6855bf640d1c1ae01251d66b783c36ee1"
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "c0eada136abb9f298c2ab37551b731afbbb2bd3f",
+          "after": "ba97147f77c17de62b3a769c61f830a793f1a449"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/listing.mjs",
+          "before": "496faea3012f79a204e43a519710cf58772ea16f",
+          "after": "1241256345f2f48584566926616d89ec43e7e831"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "af44c69720a05c3ec1c5f38df93a7ce0860548fd",
+          "after": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b"
+        },
+        {
+          "path": "packages/dacs-client/test/delivery-access-model.test.mjs",
+          "before": "8c00d7bc5cfcb9e1a59f0ce5c1b0a4e5e9fb5f2e",
+          "after": "478a2e3976a84f76d8d5afc0cc480e7674c8d32d"
+        },
+        {
+          "path": "packages/dacs-client/test/delivery-evidence-gate.test.mjs",
+          "before": null,
+          "after": "14d7f1261fe9abe495e3da20d975221d051adfc7"
+        },
+        {
+          "path": "packages/dacs-client/test/price-bound.test.mjs",
+          "before": null,
+          "after": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
+        },
+        {
+          "path": "packages/dacs-client/test/storage-read-nonobservation.test.mjs",
+          "before": null,
+          "after": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
+        }
+      ]
     }
   ]
 }
