@@ -53,19 +53,17 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
       const first = fixture(reconcile);
       const restarted = fixture(reconcile);
       for (const f of [first, first, restarted]) {
-        const pending = f.settle(request([prior(false), prior(ok)]));
-        if (ok && outcome === "failed") {
-          // PC-7: a success the session recorded is never reported unpaid.
-          await expect(pending).rejects.toThrow(/contradicted an authenticated successful outcome/);
-        } else {
-          const result = await pending;
-          expect(result).toMatchObject({ ok: outcome === "executed", txHash, payee: payeeClaim });
-          expect(result).not.toHaveProperty("execution");
-          expect(result).not.toHaveProperty("amountOs");
-          expect(Object.isFrozen(result)).toBe(true);
-          if (result.ok) expect(Object.isFrozen(result.finality)).toBe(true);
-          else expect(result).not.toHaveProperty("finality");
-        }
+        // History ok=true is the session's claim under audit: a bound failed
+        // record for the retained hash is still a permanent failure (DEM-4).
+        const result = await f.settle(request([prior(false), prior(ok)]));
+        expect(result).toMatchObject(outcome === "executed"
+          ? { ok: true, txHash, payee: payeeClaim }
+          : { ok: false, errorClass: "permanent", failureProof: failed().failureProof, txHash, payee: payeeClaim });
+        expect(result).not.toHaveProperty("execution");
+        expect(result).not.toHaveProperty("amountOs");
+        expect(Object.isFrozen(result)).toBe(true);
+        if (result.ok) expect(Object.isFrozen(result.finality)).toBe(true);
+        else expect(result).not.toHaveProperty("finality");
         expect(f.once).not.toHaveBeenCalled();
         expect(f.submit).not.toHaveBeenCalled();
       }
@@ -233,9 +231,10 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
   });
 });
 
-// DACS-4 §9.5.1 PC-7: once the rail, its log or the session recorded a final
-// payment, a later observation may fail to confirm it but can never report it
-// unpaid. Every read path refuses the demotion and keeps the recorded success.
+// DACS-4 §9.5.1 PC-7: once the rail or its log recorded a final payment, a
+// later observation may fail to confirm it but can never report it unpaid.
+// Every read path refuses the demotion and keeps the recorded success. The
+// session's history is the claim an audit checks, not such a record.
 describe("pay-dem never reports a recorded success as a permanent failure", () => {
   const key = "pay-dem:retained-native:0";
   const binding: SettlementBinding = {
@@ -246,19 +245,24 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
   const { amountOs: _amount, execution: _execution, ...storedSuccess } = executed();
   const demoted = /contradicted an authenticated successful outcome/;
 
-  test("refuses a failed reconciliation of a session-recorded success, even after history is omitted", async () => {
+  test("reports a bound failure for a session-claimed success and keeps it after history is omitted", async () => {
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
     const f = fixture(reconcile);
     const { priorAttempts: _history, ...withoutHistory } = request();
+    // A rail before the execution gate saved inclusion alone as success; the
+    // bound failed record for that hash proves it never settled (DEM-4).
     for (const req of [request([prior(true)]), request([prior(false)]), withoutHistory]) {
-      await expect(f.settle(req)).rejects.toThrow(demoted);
+      await expect(f.settle(req)).resolves.toMatchObject({ ok: false, errorClass: "permanent", txHash,
+        payee: payeeClaim, failureProof: failed().failureProof });
     }
     expect(reconcile).toHaveBeenCalledTimes(3);
     expect(f.once).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
-    // A prior non-success may still become a success after finality.
+    // The proven failure is terminal for this bridge: a later success read contradicts it.
     reconcile.mockImplementation(async () => executed());
-    await expect(f.settle(request([prior(false)]))).resolves.toMatchObject({ ok: true, txHash });
+    await expect(f.settle(request([prior(true)]))).rejects.toThrow(/contradicted a permanent failed-record outcome/);
+    expect(reconcile).toHaveBeenCalledTimes(4);
+    expect(f.submit).not.toHaveBeenCalled();
   });
 
   test.each([false, true])("keeps a durable success on restart (history=%s)", async (withHistory) => {

@@ -634,9 +634,12 @@ audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plu
 original prepared-transfer journal, check that its signed nonce and tuple match
 that exact hash, and throw when the journal is missing or conflicting. It must
 never return `null` for a hash it cannot tie to the journal. A payment that the
-bridge, its rail log or the session already recorded as successful is never
-reported unpaid: a reconciliation that contradicts it is refused rather than
-returned as a permanent failure (DACS-4 §9.5.1 PC-7).
+bridge or its rail log already recorded as successful is never reported unpaid:
+a reconciliation that contradicts it is refused rather than returned as a
+permanent failure (DACS-4 §9.5.1 PC-7). A success in the session's
+`priorAttempts` is the claim the audit checks, not evidence for it: a bound
+failed record for the retained hash is returned as a permanent failure (see the
+resume paragraph below).
 
 Every pay-DEM settlement request must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
