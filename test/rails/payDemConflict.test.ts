@@ -29,8 +29,8 @@ const failed = (txHash = hashB) => ({
     nonce: 9, blockNumber: 42, amountOs: "1000000000" },
 });
 
-const history = (txHash = hashB): SettleRequest => ({
-  ...request, priorAttempts: [{ txHash, chainId: "demos", ok: true }],
+const history = (txHash = hashB, ok = true): SettleRequest => ({
+  ...request, priorAttempts: [{ txHash, chainId: "demos", ok }],
 });
 const binding: SettlementBinding = {
   bindingVersion: "1", railId: "pay-dem", jobId: request.jobId, phaseIndex: 0,
@@ -79,6 +79,9 @@ describe("pay-dem retained identity conflict quarantine", () => {
     "rejects conflicting history without claims or outcome writes (restart=$restart, paid=$paid)",
     async ({ restart, paid }) => {
       const log = createInMemorySettlementLog();
+      // A store binds the log's methods when created: spy first, then clear.
+      const claimIntent = vi.spyOn(log, "claimIntent");
+      const putOutcome = vi.spyOn(log, "putOutcome");
       const store = createIdempotencyStore(log);
       const submit = vi.fn<PayDemRail["settle"]>(async () => {
         if (paid) return freshSuccess();
@@ -89,8 +92,10 @@ describe("pay-dem retained identity conflict quarantine", () => {
       const rail = { address: payer, settle: submit };
       const settle = payDemSettle(rail, {}, { store, reconcile });
       await settle(request);
-      const claimIntent = vi.spyOn(log, "claimIntent");
-      const putOutcome = vi.spyOn(log, "putOutcome");
+      expect(claimIntent).toHaveBeenCalledTimes(1);
+      expect(putOutcome).toHaveBeenCalledTimes(1);
+      claimIntent.mockClear();
+      putOutcome.mockClear();
       const resumed = restart ? payDemSettle(rail, {}, { store: createIdempotencyStore(log), reconcile }) : settle;
       await expect(resumed(history())).rejects.toThrow(/conflicts with the rail outcome/);
       await expect(resumed(history())).rejects.toThrow(/different.*transaction|conflicts/);
@@ -102,7 +107,7 @@ describe("pay-dem retained identity conflict quarantine", () => {
         .resolves.toEqual(stored(paid ? executed() : failed(hashA)));
       // Correct history still audits A. A conflict never clears its identity.
       reconcile.mockImplementation(async () => paid ? executed() : failed(hashA));
-      await expect(resumed(history(hashA))).resolves.toMatchObject({ txHash: hashA, ok: paid });
+      await expect(resumed(history(hashA, paid))).resolves.toMatchObject({ txHash: hashA, ok: paid });
       await expect(resumed(request)).resolves.toMatchObject({ txHash: hashA, ok: paid });
       expect(claimIntent).not.toHaveBeenCalled();
       expect(putOutcome).not.toHaveBeenCalled();
@@ -121,21 +126,39 @@ describe("pay-dem retained identity conflict quarantine", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  test.each(["success", "nonce", "block"])("cannot replace a permanent proof with %s", async (change) => {
+  test.each([
+    ["success", /contradicted a permanent failed-record/],
+    ["nonce", /contradicted a permanent failed-record/],
+    ["block", /block conflicts/],
+  ])("cannot replace a permanent proof with %s", async (change, message) => {
     const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
     const store = createIdempotencyStore(log);
     await store.once("pay-dem:conflicting-native:0", binding, async () => stored(failed(hashA)));
+    putOutcome.mockClear();
     const reply = change === "success" ? executed() : {
       ...failed(hashA), ...(change === "block" ? { blockNumber: 43 } : {}),
       failureProof: { ...failed(hashA).failureProof, ...(change === "block" ? { blockNumber: 43 } : { nonce: 10 }) },
     };
     const submit = vi.fn();
     const reconcile = vi.fn(async () => reply);
-    const putOutcome = vi.spyOn(log, "putOutcome");
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
-    await expect(settle(history(hashA))).rejects.toThrow(/permanent failed-record|block conflicts/);
+    await expect(settle(history(hashA, false))).rejects.toThrow(message);
     expect(putOutcome).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  test("cannot move a durable success to another block", async () => {
+    const log = createInMemorySettlementLog();
+    const store = createIdempotencyStore(log);
+    await store.once("pay-dem:conflicting-native:0", binding, async () => stored(executed()));
+    const submit = vi.fn();
+    const reconcile = vi.fn(async () => ({ ...executed(), blockNumber: 43 }));
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    await expect(settle(history(hashA))).rejects.toThrow(/block conflicts/);
+    expect(submit).not.toHaveBeenCalled();
+    await expect(store.readOutcome!("pay-dem:conflicting-native:0", binding))
+      .resolves.toEqual(stored(executed()));
   });
 
   test("rejects another hash retained only in an indeterminate in-process result", async () => {
@@ -189,13 +212,22 @@ describe("pay-dem retained identity conflict quarantine", () => {
       .resolves.toMatchObject({ txHash: hashA, ok: true });
   });
 
-  test.each(["missing", "undefined", "malformed", "indeterminate", "throws"])("fails closed for a %s outcome lookup", async (mode) => {
+  test.each([
+    ["missing", /requires read-only outcome lookup/],
+    ["undefined", /must be stable canonical settlement data/],
+    ["malformed", /malformed pay-dem settlement shape/],
+    ["indeterminate", /read-only rail outcome is not definitive/],
+    ["throws", undefined],
+  ])("fails closed for a %s outcome lookup", async (mode, message) => {
     const cause = new Error("lookup timed out");
     const once = vi.fn();
     const readOutcome = vi.fn(async () => {
       if (mode === "throws") throw cause;
       if (mode === "undefined") return undefined;
-      if (mode === "indeterminate") return { ...stored(executed()), ok: false, finality: undefined };
+      if (mode === "indeterminate") {
+        const { finality: _finality, ...outcome } = stored(executed());
+        return { ...outcome, ok: false };
+      }
       return {};
     });
     const store = { once, ...(mode === "missing" ? {} : { readOutcome }) };
@@ -203,11 +235,69 @@ describe("pay-dem retained identity conflict quarantine", () => {
     const submit = vi.fn();
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: store as never, reconcile });
     for (const req of [history(), request]) {
-      if (mode === "throws") await expect(settle(req)).rejects.toBe(cause);
-      else await expect(settle(req)).rejects.toThrow();
+      if (message === undefined) await expect(settle(req)).rejects.toBe(cause);
+      else await expect(settle(req)).rejects.toThrow(message);
     }
     expect(reconcile).not.toHaveBeenCalled();
     expect(once).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+});
+
+// A store whose readOutcome does not wait for its own in-flight once (unlike
+// createIdempotencyStore) exposes the bridge's own per-key serialization.
+describe("pay-dem serializes calls for one settlement key", () => {
+  const unwaitingStore = () => {
+    let recorded: SettleResult | null = null;
+    return {
+      once: vi.fn(async (_key: string, _binding: unknown, run: () => Promise<SettleResult>) => {
+        recorded = await run();
+        return recorded;
+      }),
+      readOutcome: vi.fn(async () => recorded),
+    };
+  };
+
+  test("a conflicting audit waits for a delayed submit even when the store would not", async () => {
+    let finish!: () => void;
+    let started!: () => void;
+    const submitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const submit = vi.fn(async () => { started(); await gate; return freshSuccess(); });
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
+    const store = unwaitingStore();
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: store as never, reconcile });
+    const fresh = settle(request);
+    await submitted;
+    const audit = expect(settle(history())).rejects.toThrow(/conflicts with the rail outcome/);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(store.readOutcome).not.toHaveBeenCalled();
+    finish();
+    await expect(fresh).resolves.toMatchObject({ txHash: hashA, ok: true });
+    await audit;
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  test("a failed earlier audit does not reject the call queued behind it", async () => {
+    const cause = new Error("journal read timed out");
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const reconcile = vi.fn<PayDemSettlementReconcile>()
+      .mockImplementationOnce(async () => { await gate; throw cause; })
+      .mockImplementation(async () => executed());
+    const submit = vi.fn();
+    const store = unwaitingStore();
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: store as never, reconcile });
+    const first = expect(settle(history(hashA, false))).rejects.toBe(cause);
+    const second = settle(history(hashA, false));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    finish();
+    await first;
+    await expect(second).resolves.toMatchObject({ ok: true, txHash: hashA });
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(store.once).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });
 });
