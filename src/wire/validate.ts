@@ -170,12 +170,6 @@ export interface WireSigner {
   sign(bytes: Uint8Array): Uint8Array | string | Promise<Uint8Array | string>;
 }
 
-export function assertSigner(signer: unknown): asserts signer is WireSigner {
-  if (!isRecord(signer) || !isClaim(signer.claim) || typeof signer.sign !== "function") {
-    throw new TypeError("a separate Demos Ed25519 signing callback is required");
-  }
-}
-
 function assertNfc(value: unknown): void {
   if (typeof value === "string") {
     if (value.normalize("NFC") !== value) throw new RawJsonAdmissionError("profile", "WIRE-NON-NFC-STRING");

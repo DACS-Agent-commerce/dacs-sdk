@@ -172,6 +172,35 @@ describe("independent TP-1 authorization context", () => {
     expect(binding.authorityDigest).not.toBe(x.binding.authorityDigest);
     expect(() => wire.assertTp1Binding(binding, other)).not.toThrow();
   });
+  // The actor's own connection, before any authority read or signature: an https-only endpoint with no
+  // credentials, query or fragment, given exactly as its normalized href, and identifier-shaped transport and connection.
+  it.each([
+    ["an http endpoint", { endpoint: "http://unverified.example/" }],
+    ["user and password", { endpoint: "https://u:p@unverified.example/" }],
+    ["a user only", { endpoint: "https://u@unverified.example/" }],
+    ["a password only", { endpoint: "https://:p@unverified.example/" }],
+    ["a query", { endpoint: "https://unverified.example/?q" }],
+    ["a fragment", { endpoint: "https://unverified.example/#f" }],
+    ["a non-normalized href", { endpoint: "https://UNVERIFIED.example" }],
+    ["an endpoint that is not a URL", { endpoint: "unverified.example" }],
+    ["an endpoint that is not a string", { endpoint: 443 }],
+    ["an empty transport authority", { transportAuthority: "" }],
+    ["a transport authority that is not an identifier", { transportAuthority: " test" }],
+    ["an empty connection id", { connectionId: "" }],
+    ["a connection id that is not an identifier", { connectionId: " x" }],
+    ["an extra member", { region: "eu" }],
+  ])("refuses an own connection with %s before reading authority or signing", async (_name, change) => {
+    const x = world(), entries = await boundaries(x);
+    const invalid = { ...local, ...change };
+    let reads = 0;
+    const readAuthority = (scope: wire.Tp1AuthorityScope) => { reads++; return x.options.readAuthority(scope); };
+    expect(() => wire.bindTp1Profile({ ...x.options, local: invalid, readAuthority })).toThrowError(expect.objectContaining({ code: "tp1_local_binding_invalid" }));
+    expect(reads).toBe(0);
+    expect(() => wire.assertTp1Binding(x.binding, invalid)).toThrowError(expect.objectContaining({ code: "tp1_local_binding_invalid" }));
+    await expect(Promise.resolve().then(() => wire.signSellerSessionDelegation(entries.delegationPayload, x.buyer, x.binding, invalid))).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    await expect(Promise.resolve().then(() => wire.signWireEnvelope(x.request, { ...entries.signing, local: invalid }))).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    expect(x.buyer.calls + x.seller.calls).toBe(0);
+  });
   it.each(["request", "response", "delegation", "discovery"])(
     "does not return a %s after authority is revoked while awaiting its signature", async (kind) => {
       const x = world(), entries = await boundaries(x);
