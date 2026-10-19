@@ -811,16 +811,24 @@ response bytes match `contentHash`, while `receiptTransactionRef` is the native
 hash is never mislabeled as a Storage Program locator, and the raw Stripe body
 (which can include provider secrets) is never published as public DACS content.
 
-DAHR supports textual responses (`text/*`, JSON, XML, and `+json`/`+xml`
-media types) with UTF-8 bytes. Binary or missing content types, explicit
-non-UTF-8 charsets, ambiguous content-type parameters, and non-round-tripping
-text are rejected. The pinned node hashes decoded UTF-8 text, so DAHR also
-rejects every U+FFFD replacement character, including a literal U+FFFD: its
-origin cannot be distinguished from a lossy decode. Byte-exact delivery is
-unavailable for these responses. At the pinned Demos node `61b8e75`,
-broadcasting a DAHR POST repeats the request without its body or authorization.
-Use only idempotent or read-only POST endpoints, and spell the request header
-`Content-Type` with that casing for the node's request handling.
+DAHR supports textual responses (`text/*`, JSON, XML, `+json`/`+xml`,
+`application/csv`, `application/x-ndjson`, `application/yaml` and
+`application/javascript` media types) with UTF-8 bytes. Binary or missing
+content types, explicit non-UTF-8 charsets, ambiguous content-type parameters,
+and non-round-tripping text are rejected. The pinned node hashes decoded UTF-8
+text, so DAHR also rejects every U+FFFD replacement character, including a
+literal U+FFFD: its origin cannot be distinguished from a lossy decode.
+Byte-exact delivery is unavailable for these responses. At the pinned Demos
+node `61b8e75`, broadcasting a DAHR POST repeats the request without its body
+or authorization. Use only idempotent or read-only POST endpoints, and spell
+the request header `Content-Type` with that casing for the node's request
+handling.
+Like the native-transfer check, DAHR inclusion trusts the configured Demos RPC's
+confirmed-block view: the adapter checks the transaction hash and status and
+that the confirmed block at that number orders it and carries validation data,
+but it does not verify validator signatures. `methodEvidence` retains that
+transaction and block; applications requiring an independent validator-quorum
+proof must verify it themselves.
 
 The opt-in live test is
 `test/integration/ap2-stripe-dahr.live.test.ts`. It requires an isolated Demos
@@ -969,7 +977,10 @@ metadata is self-reported; the observed node2 build reports uncommitted changes
 and therefore warns. A different, unreported,
 or uncommitted build, or another package name or version, reports
 `warn`, which does not change the exit code: the RPC verdict was not verified
-against that node source.
+against that node source. A reported name, version or commit that differs from
+the verified value and contains part of the RPC URL or wallet secret is
+reported as `null` and named in `withheld`; the verified values are public, so
+they are always shown.
 
 demosdk's `connect()` and node calls set no request timeout and cannot be
 cancelled, so the default adapter sends the same read-only requests through
@@ -1037,7 +1048,7 @@ offline mode, which makes no connections, writes, or payments.
 | `config.{rpc,wallet}-file.owner` | pass, fail, skip (symlink, or no user ID) | `ownerUid`, `currentUid` |
 | `substrate.adapter-load` | pass, fail | none |
 | `rpc.reachable` | pass, warn (injected adapter without `getLastBlockNumber`), fail (including no `GET` or height answer within 5 s), skip | `rpc` (redacted) unless skipped; `lastBlockNumber` on pass |
-| `rpc.node-revision` | pass, warn (including no answer within 5 s), skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`name`, `commit`, `version`, `dirty`, or `null`) |
+| `rpc.node-revision` | pass, warn (including no answer within 5 s), skip (injected adapter without `getNetworkInfo`); only after `rpc.reachable` passes | `verified`; `reported` (`name`, `commit`, `version`, `dirty`, or `null`); `withheld` (field names, only when a field was withheld) |
 | `wallet.identity` | pass, skip | `address` |
 | `wallet.balance`, `wallet.nonce`, `storage.binding-resolution`, `anchor.completion`, `cost.estimate` | blocked | none |
 | `rail.availability` | warn, fail, skip | `rail`, `known`, or `availability` |

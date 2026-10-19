@@ -463,6 +463,40 @@ describe("dacs doctor", () => {
       },
     );
 
+    it.each([
+      ["a path segment inside the package name", "https://rpc.example/demos", undefined],
+      ["short path segments inside the commit and version", "https://rpc.example/v/8", undefined],
+      ["the verified commit as the path", `https://rpc.example/${VERIFIED_DEMOS_NODE_REVISION}`, undefined],
+      ["a wallet secret inside the version", "https://rpc.example", "0.9"],
+    ])("passes a verified clean build whose public fields contain %s", async (_label, rpc, walletSecret) => {
+      const report = await runDoctor({ rpc, walletSecret, adapterFactory: () => ({
+        connect: async () => {}, getAddress: () => "unused", getLastBlockNumber: async () => 7,
+        getNetworkInfo: build({ ...verified, dirty: false }),
+      }) });
+      expect(report.checks.find((c) => c.id === "rpc.node-revision")).toEqual({
+        id: "rpc.node-revision", status: "pass", summary: "Node reports the verified build revision",
+        data: { verified: VERIFIED_DEMOS_NODE_REVISION, reported: { ...verified, dirty: false } },
+      });
+    });
+
+    it("names each withheld field that differs from the verified build", async () => {
+      const report = await runDoctor({ rpc: "https://rpc.example/demos", adapterFactory: () => ({
+        connect: async () => {}, getAddress: () => "unused", getLastBlockNumber: async () => 7,
+        getNetworkInfo: build({ ...verified, name: "demos-fork", version: "0.9.9", dirty: false }),
+      }) });
+      expect(report.checks.find((c) => c.id === "rpc.node-revision")).toEqual({
+        id: "rpc.node-revision", status: "warn",
+        summary: "Node reports the verified revision under another package name or version",
+        detail: `the verified build is ${NAME} 0.9.8`, remediation,
+        data: {
+          verified: VERIFIED_DEMOS_NODE_REVISION,
+          reported: { ...verified, name: null, version: "0.9.9", dirty: false },
+          withheld: ["name"],
+        },
+      });
+      expect(JSON.stringify(report)).not.toContain("demos-fork");
+    });
+
     it("pins the verified node package to kynesyslabs/node at the verified revision", () => {
       expect(VERIFIED_DEMOS_NODE_PACKAGE).toEqual({ name: NAME, version: "0.9.8" });
     });

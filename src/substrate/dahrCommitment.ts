@@ -27,7 +27,7 @@ function headersHash(headers: unknown): string | null {
 
 function isUtf8ContentType(value: string): boolean {
   const [mediaType, ...parameters] = value.split(";");
-  if (!/^(?:text\/[a-z0-9!#$&^_.+-]+|application\/(?:json|xml)|[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+\+(?:json|xml))$/.test(mediaType!.trim().toLowerCase())) {
+  if (!/^(?:text\/[a-z0-9!#$&^_.+-]+|application\/(?:json|xml|csv|x-ndjson|yaml|javascript)|[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+\+(?:json|xml))$/.test(mediaType!.trim().toLowerCase())) {
     return false;
   }
   const names = new Set<string>();

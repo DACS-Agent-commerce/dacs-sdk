@@ -204,7 +204,11 @@ export interface ProxyFetchResult {
   /** sha256 of the node-decoded UTF-8 text committed by the SR-3 binding. */
   responseHash: string;
   responseHeadersHash?: string;
-  /** Canonical native evidence retained for repeatable commitment checks. */
+  /**
+   * Canonical native evidence retained for repeatable commitment checks. The
+   * Demos adapter takes the block from its configured RPC and does not verify
+   * its validator signatures; verify them here when that RPC is not trusted.
+   */
   methodEvidence?: {
     kind: "demos-web2-request";
     transaction: Record<string, unknown>;

@@ -3988,6 +3988,8 @@ export class DemosAdapter implements SubstrateAdapter {
    * one included `web2Request` transaction commits to the request and response
    * hash, and `anchorTxRef` identifies that on-chain commitment. This does not
    * claim a validator body-signature stronger than the current Demos binding.
+   * Inclusion trusts the configured RPC's confirmed-block view, as the
+   * native-transfer check does: block validator signatures are not verified.
    */
   async proxyFetch(req: ProxyFetchRequest): Promise<ProxyFetchResult> {
     if (!this.connected) {

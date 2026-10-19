@@ -306,7 +306,9 @@ async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null, 
   if (!getNetworkInfo) {
     return check(RPC_NODE_REVISION, "skip", "The adapter cannot read the node build revision");
   }
+  const { name, version } = VERIFIED_DEMOS_NODE_PACKAGE;
   let reported: ReportedNodeBuild | null = null;
+  const withheld: Array<"name" | "version" | "commit"> = [];
   let timedOut = false;
   try {
     const answer = await withDeadline((signal) => getNetworkInfo(signal));
@@ -314,16 +316,22 @@ async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null, 
     else {
       reported = reportedNodeBuild(answer);
       if (reported) {
+        // The verified values are public constants of this SDK, so echoing one
+        // reveals nothing even when an RPC path segment or secret occurs in it.
+        const verified = { name, version, commit: pinned };
         for (const field of ["name", "version", "commit"] as const) {
           const value = reported[field];
-          if (value !== null && sanitizeText(value, secrets) !== value) reported[field] = null;
+          if (value !== null && value !== verified[field] && sanitizeText(value, secrets) !== value) {
+            reported[field] = null;
+            withheld.push(field);
+          }
         }
       }
     }
   } catch {
     // Untrusted transport failures are reported as an unknown build.
   }
-  const data = { verified: pinned, reported };
+  const data = { verified: pinned, reported, ...(withheld.length > 0 ? { withheld } : {}) };
   if (timedOut) {
     return check(RPC_NODE_REVISION, "warn", "Node did not report its build revision in time", {
       data, detail: timedOutDetail("getNetworkInfo"), remediation,
@@ -339,7 +347,6 @@ async function nodeRevisionCheck(adapter: DoctorAdapter, pinned: string | null, 
       data, remediation,
     });
   }
-  const { name, version } = VERIFIED_DEMOS_NODE_PACKAGE;
   if (reported.name !== name || reported.version !== version) {
     return check(RPC_NODE_REVISION, "warn", "Node reports the verified revision under another package name or version", {
       data, detail: `the verified build is ${name} ${version}`, remediation,

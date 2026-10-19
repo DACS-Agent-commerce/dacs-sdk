@@ -488,6 +488,8 @@ describe("DemosAdapter", () => {
       "text/plain", "TEXT/CSV; charset=utf-8", 'text/plain; CHARSET="UTF-8"',
       "text/csv; header=present; charset=utf-8", "application/json",
       "application/problem+json", "application/xml", "application/atom+xml",
+      "application/csv", "Application/CSV; charset=utf-8", "application/x-ndjson",
+      "application/yaml", "application/javascript; charset=UTF-8",
     ])("accepts committed textual content type %s", async (contentType) => {
       const headers = { "Content-Type": contentType };
       const responseHeadersHash = sha256Hex(`content-type:${contentType}`);
@@ -549,6 +551,9 @@ describe("DemosAdapter", () => {
       { "content-type": "image/png" },
       { "content-type": "application/pdf" },
       { "content-type": "application/json-invalid" },
+      { "content-type": "application/csvx" },
+      { "content-type": "application/csv; charset=iso-8859-1" },
+      { "content-type": "application/yaml; charset=utf-16" },
       { "content-type": "" },
       {},
       { "content-type": ["text/plain", "image/png"] },
