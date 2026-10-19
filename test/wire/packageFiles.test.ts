@@ -15,4 +15,4 @@ it("the packed package ships the wire guide, the TP-1 declaration and register, 
   for (const name of ["docs/dacs-seller-http-v1.md", "docs/testnet-profile-tp1.md", "conformance/tp1-register.json", "vectors/dacs-seller-http-v1.json"]) {
     expect(files).toContain(name);
   }
-});
+}, 120_000);

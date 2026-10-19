@@ -106,7 +106,7 @@ seller and client packages still need to supply and qualify this integration.
 ## What changes next
 
 Planned later revisions of the declaration are TP-1.1, TP-1.2 and TP-1.3. TP-1.4 is the
-candidate re-pinned to the Standard's released v0.5 if v0.6 cannot be released
+candidate re-pinned to the Standard's v0.5 once it is released (its latest release is v0.4) if v0.6 cannot be released
 by 2026-11-19. Each is recorded in the declaration and the register, names the
 Standard revision it follows and the shortfalls still open, and keeps the
 label for every open one.

@@ -66,7 +66,7 @@ node2 was rebuilt after this capture: a read-only `getNetworkInfo` on
 when they were captured, not necessarily the one running now.
 Observed: genesis availability with string zero, block one's predecessor,
 missing-transaction RPC refusal, and missing status `unknown`. Inferred from
-[`chainTransactions.ts` at that source commit](https://github.com/kynesyslabs/node/blob/61b8e75aa8db5e408c49e1c3a89db4d673f45578/src/libs/blockchain/chainTransactions.ts#L96-L112):
+[`chainTransactions.ts` at that source commit](https://github.com/kynesyslabs/node/blob/61b8e75aa8db5e408c49e1c3a89db4d673f45578/src/libs/blockchain/chainTransactions.ts#L96-L109):
 a stored transaction is labelled `included` without checking execution.
 The same handler's comment (lines 93-94) says execution failures are not
 recorded and surface as `unknown`; it does not establish that failed
@@ -172,7 +172,7 @@ A seed, not an exhaustive finding: a composition review completes the register.
 | G9 | Delivery SettlementEvidence, required at the base by DACS-4 §9.6.1 (`spec/DACS-4-SETTLE.md:831-839` at `d45c0a2`); the seller to be moved into the SDK defaults `deliveryEvidenceEnabled` to false (taken from the plugin implementation; not yet independently checked) | Until a composition review shows it is produced and verified: "Delivery evidence not produced in TP-1"; delivery-phase conformance is not claimed | The composition check result: enabled if produced and verified; otherwise current DeliveryEvidence support in the SDK |
 | G10 | **Current behaviour:** if a failed `pay-dem` transfer is reported as `included`, it is returned as success at this branch's base (L2), so the purchase proceeds as if paid. The base says a transfer that reaches terminal `failed` did not settle and classes it `permanent` (`spec/DACS-4-SETTLE.md:816-821` at `d45c0a2`). **Intended, pending the separate SDK change (L2) and composition qualification:** once that change makes such a transfer not ok, the SDK holds it as unresolved, because `SettleResult` carries no failure class and the settlement runner refuses terminal failure evidence for any not-ok result with a transaction hash (dacs-sdk `3904d70` `src/agent/runSessionCore.ts:155-186`, `:4213-4221`): nothing is broadcast a second time and the purchase stays settling. That fails closed, but it is not the base's `permanent` classification, and TP-1 does not present it as an implemented protection until an effect-path test proves it | Intended, pending the SDK's executed-payment check and composition qualification: "Payment failed on Demos testnet · purchase held as unresolved; the payment is not sent again". Until then a failed payment reported as included is counted as paid and this label is not shown | The SDK's executed-payment check and an effect-path test of the hold; then a failure class on settlement results, so that a definitive failed transfer is recorded as `permanent` |
 | G11 | The wire accepts only canonical lowercase `did:demos:agent` claims; uppercase `DID:` is refused rather than resolved, unlike the base's reader rule (`spec/DACS-1-IDENTIFY.md:170-177` at `d45c0a2`). Request, delegation and discovery receiver refusals are pinned in `test/wire/admission.test.ts` | "TP-1 wire requires lowercase DID claims" | Reader support for every DID spelling required by the base |
-| G12 | The wire signing domains `dacs-seller-http:v1:{request,response,delegation,discovery}:` are not in CORE §B.7's closed registry (`spec/CORE.md:478` at `d45c0a2`) and do not take the `dacs-x-` form SIG-4 gives a kind outside it (`spec/CORE.md:590`). The SDK treats them as transport-message signatures, not artifact kinds; no wire domain equals a registered signature domain or hash-domain tag, or is a prefix of one in either direction (`test/wire/wire.test.ts`). The Standard has not ruled on this | declaration only | A Standard ruling: rename to `dacs-x-seller-http:v1:{…}:` and regenerate the vectors and the revision-adapted fixture, or register the transport domains |
+| G12 | The wire signing domains `dacs-seller-http:v1:{request,response,delegation,discovery}:` are not in CORE §B.7's closed registry (`spec/CORE.md:487` at `d45c0a2`) and do not take the `dacs-x-` form SIG-4 gives a kind outside it (`spec/CORE.md:590`). The SDK treats them as transport-message signatures, not artifact kinds; no wire domain equals a registered signature domain or hash-domain tag, or is a prefix of one in either direction (`test/wire/wire.test.ts`). The Standard has not ruled on this | declaration only | A Standard ruling: rename to `dacs-x-seller-http:v1:{…}:` and regenerate the vectors and the revision-adapted fixture, or register the transport domains |
 
 ## Blocked
 
@@ -188,7 +188,7 @@ A seed, not an exhaustive finding: a composition review completes the register.
 ## Revisions
 
 Later revisions (TP-1.1, TP-1.2, TP-1.3, and
-TP-1.4, the candidate re-pinned to the released v0.5 if v0.6 cannot be released
+TP-1.4, the candidate re-pinned to v0.5 once the Standard releases it (its latest release tag is v0.4) if v0.6 cannot be released
 by 2026-11-19) are recorded in this declaration and the register. Each names its
 base and its open L and G rows and keeps the TP-1 labels for every open row.
 Each also has its own `revision` value in the signed tuple. Until an SDK
