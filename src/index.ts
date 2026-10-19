@@ -1462,6 +1462,7 @@ export {
   type PayDemRailConfig,
   type PayDemPreparedTransfer,
   type PayDemSettlementRecoveryContext,
+  type PayDemSettlementAuditContext,
   type PayDemReconciledSettlement,
   type PayDemReconciledFailure,
   type PayDemSettlementReconcile,
