@@ -1468,9 +1468,11 @@ export type X402FinalityPolicyResolution =
   | { disposition: "rejected" | "indeterminate" | "error"; reason: string };
 
 /**
- * DACS-4 §9.5.x pay-x402 block depth from the authenticated rail policy: the
- * optional `rail.parameters.finalityBlocks`, else 12 on Ethereum mainnet, else
- * 1 on a chain the classifier admits as an L2. One resolver serves seller
+ * pay-x402 block depth from the authenticated rail policy: the optional
+ * `rail.parameters.finalityBlocks`, else 12 on Ethereum mainnet, else 1 on a
+ * chain the classifier admits as an L2. DACS-4 states these defaults for
+ * pay-evm-erc20 (§9.5.2 step 6); pay-x402 settles the same ERC-20 transfer, so
+ * they apply by analogy (its §9.14 row names no depth). One resolver serves seller
  * intake and the buyer's evidence and audit checks, so they cannot disagree
  * about what an absent parameter means.
  */

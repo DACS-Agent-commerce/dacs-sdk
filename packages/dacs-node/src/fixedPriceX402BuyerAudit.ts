@@ -433,7 +433,8 @@ export function createDacsFixedPriceBuyerAuditV1(
     );
   }
   // The pay-x402 depth from the authenticated rail policy; the rail parameter
-  // is optional (DACS-4 phase card), as it is for the seller's intake.
+  // is optional, with the DACS-4 §9.5.2 step 6 defaults applied by analogy, as
+  // it is for the seller's intake.
   const x402FinalityBlocks = async (): Promise<number> => {
     const finality = await resolveDacsX402FinalityBlocksV1(rail);
     if (finality.disposition !== "resolved") {

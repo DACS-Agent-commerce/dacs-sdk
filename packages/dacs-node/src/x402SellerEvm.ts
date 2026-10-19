@@ -281,8 +281,9 @@ export function classifyDacsAuthenticatedX402ChainV1(
 /**
  * The pay-x402 block depth of an authenticated rail, by the same resolver the
  * SDK's seller payment intake uses. `finalityBlocks` is optional in the rail
- * parameters (DACS-4 phase card); defaults exist only for Ethereum mainnet
- * and registered L2 chains.
+ * parameters; its 12/1 defaults follow DACS-4 §9.5.2 step 6 (pay-evm-erc20),
+ * applied to pay-x402 by analogy, and exist only for Ethereum mainnet and
+ * registered L2 chains.
  */
 export function resolveDacsX402FinalityBlocksV1(
   rail: Readonly<AuthenticatedRailDefinition>,

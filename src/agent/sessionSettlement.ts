@@ -199,6 +199,10 @@ export interface SessionSettlementVerificationProvider {
    * projection) so an ambiguous transaction never becomes a successful
    * binding. Current event/instruction refs are also checked locally against
    * the returned `settlementId` before this verifier grants authority.
+   * The verifier compares only a present finality echo with the pin; it never
+   * counts confirmations itself, so the adapter MUST enforce
+   * `context.rail.finality` (for block depth, the pinned `finalityBlocks`) on
+   * the native truth it re-observes, echo or not.
    */
   revalidateSettlement: (input: {
     mode: "initial" | "recovery";
@@ -601,7 +605,8 @@ function finalityMatchesPolicy(
   if (finality.model !== policy.model) return false;
   if (policy.model === "block-depth") {
     // DACS-4 §9.7: the echo is optional; when present it must be the
-    // authenticated rail pin, and when absent that pin still applies.
+    // authenticated rail pin. When absent the pin still applies, and
+    // `revalidateSettlement` is what enforces it.
     return finality.model === "block-depth" &&
       (finality.finalityBlocks === undefined ||
         finality.finalityBlocks === policy.finalityBlocks);

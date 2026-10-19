@@ -475,6 +475,20 @@ describe("seller x402 observer default depth without finalityBlocks", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  // The export is public: a non-x402 or non-ERC-20 rail is refused before any
+  // default, even one whose chain and depth would otherwise resolve.
+  it.each<[string, (rail: ReturnType<typeof railWithoutDepth>) => object]>([
+    ["pay-evm-erc20 rail", (value) => ({ ...value, railType: "evm-erc20" })],
+    ["native asset", (value) => ({ ...value, asset: { ...value.asset, kind: "native" } })],
+  ])("refuses a %s in the x402 finality resolver", async (_case, mutate) => {
+    const candidate = Object.freeze({ ...mutate(railWithoutDepth(1)),
+      parameters: { authorization: "eip-3009", finalityBlocks: 3 } });
+    dependencies.provenance.set(candidate as never, Object.freeze({ registryVersion: 1 }));
+    await expect(resolveDacsX402FinalityBlocksV1(candidate as never)).resolves.toEqual({
+      disposition: "error", reason: "x402-finality-rail-invalid",
+    });
+  });
+
   it.each([137, 43_114, 56])("honors an explicit depth on non-L2 chain %i", async (chainId) => {
     const candidate = Object.freeze({ ...railWithoutDepth(chainId),
       parameters: { authorization: "eip-3009", finalityBlocks: 3 } });
