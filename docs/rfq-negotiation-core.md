@@ -275,34 +275,43 @@ restart boundary.
 
 ## Carrying RFQ packets over Demos L2PS
 
-`createUnverifiedDemosL2psRfqTransport()` adapts a structurally compatible demosdk
-`L2PSMessagingPeer` to the durable lifecycle transport. It encrypts canonical
-packet bytes with fresh-nonce AES-256-GCM, binds the sender peer, recipient
-peer, and exact packet hash as authenticated data, and uses the packet ID as
-the Demos message deduplication hash. The Demos subnet UID and the
-ClaimReference/peer-key mapping are checked during history recovery; the
-mapping is checked only for being reciprocal (below).
+Two constructors adapt a structurally compatible demosdk `L2PSMessagingPeer`
+to the durable lifecycle transport. Both encrypt canonical packet bytes with
+fresh-nonce AES-256-GCM, bind the sender peer, recipient peer, and exact
+packet hash as authenticated data, and use the packet ID as the Demos message
+deduplication hash. The Demos subnet UID is checked during history recovery.
+They differ in who answers for the member binding and the node:
+
+- `openDemosL2psRfqTransport()` checks them itself (see "The checked
+  transport" below). Use it.
+- `createUnverifiedDemosL2psRfqTransport()` takes the host's word. Its
+  `peerForClaim` and `claimForPeer` callbacks are the claim-to-messaging-key
+  binding, and it checks only that the two agree. It checks neither the
+  node's build nor that the recipient registers on the same node. It is for
+  a host with its own verified binding profile, such as one for members whose
+  claims are not `did:demos:agent` keys.
 
 This is a low-level transport primitive, not by itself a conforming DACS-3
 SR-4 channel. It does not provide:
 
-- the §8.3.2 membership binding. `peerForClaim` and `claimForPeer` are that
-  binding, and the transport cannot tell a true one from a reciprocal pair of
-  wrong answers. The host MUST derive both from verified membership evidence:
-  each member's anchored, CCI-signed "L2PS subnet X membership = CCI Y"
-  attestation (demosdk 4.0.16 ships `l2ps.binding.createMembershipBinding`,
-  `verifyMembershipBinding` and `resolveMember`), together with an
-  authenticated binding of that member to the messaging key it registers.
-  `resolveMember(channelId, subnetMemberId, rpcUrl)` maps a subnet member ID
-  to a claim, not to a messaging key, so the second binding is the host's.
-  Those demosdk helpers accept only `demos:` claims: `createMembershipBinding`
-  refuses any other ClaimReference scheme and `verifyMembershipBinding`
-  answers false for one. A member whose primary claim uses another DACS-1
-  scheme needs a host binding profile for that scheme; until the host has
-  one, it cannot bind that member and MUST NOT start the transport for it.
-  Never fill either callback from an unauthenticated directory. The
-  transport checks only that the two callbacks agree, so a reciprocal pair
-  of wrong answers routes the RFQ to the wrong messaging key.
+- the whole §8.3.2 membership binding. The checked transport binds each
+  member's claim to the messaging key its frames are routed to and accepted
+  from (below), but it does not check the anchored, CCI-signed "L2PS subnet X
+  membership = CCI Y" attestation (demosdk 4.0.16 ships
+  `l2ps.binding.createMembershipBinding`, `verifyMembershipBinding` and
+  `resolveMember`). Those helpers accept only demosdk's own `demos:` claims,
+  which are not a DACS-1 scheme: `createMembershipBinding` refuses any other
+  ClaimReference scheme and `verifyMembershipBinding` answers false for one.
+  With the unverified transport, the host MUST derive both callbacks from
+  verified membership evidence, including an authenticated binding of each
+  member to the messaging key it registers; `resolveMember(channelId,
+  subnetMemberId, rpcUrl)` maps a subnet member ID to a claim, not to a
+  messaging key. A member whose primary claim uses another DACS-1 scheme
+  needs a host binding profile for that scheme; until the host has one, it
+  cannot bind that member and MUST NOT start the transport for it. Never fill
+  either callback from an unauthenticated directory: a reciprocal pair of
+  wrong answers routes the RFQ to the wrong messaging key, where any holder
+  of `sharedKey` can read it.
 - the §8.3.4 member acknowledgement. An acknowledgement here is the node's
   statement that it stored the frame (below), not a receipt from the other
   member. The member waiting on a reply detects a silent or censored channel
@@ -329,16 +338,83 @@ the subnet key is held by anyone besides the two channel members, such as
 other subnet members or nodes that take part in the subnet, use a key that
 only the two members hold.
 
+### The checked transport
+
+`openDemosL2psRfqTransport()` resolves only once all of these hold. Otherwise
+it throws `DemosL2psRfqDeploymentError` or `DemosL2psRfqPeerChannelError`,
+each with a `code`, before any peer call:
+
+- Every member is a parameter-free DACS-1 §6.3.1 `did:demos:agent:<key>`
+  claim, and its messaging key is that claim's own Ed25519 key, the key the
+  SDK's agents already sign with. Node `61b8e75` registers a key only after it
+  verifies an Ed25519 signature by that key over
+  `register:{publicKey}:{timestamp}` (`L2PSMessagingServer.ts:154-170`), so
+  only the claim's holder can register under it and receive what is routed
+  there. There are no `peerForClaim`, `claimForPeer` or `localPeerKey`
+  options to get wrong. `localClaim` must be such a claim (`local-claim`). A packet for a
+  counterparty claim that is not one is refused before anything is sealed
+  (`rejected` when it was never sent), and an inbound frame is accepted only
+  from the key of its packet's sender claim.
+- The peer exposes `config.serverUrl`, `config.publicKey` and
+  `config.l2psUid` as own data properties, as demosdk 4.0.16 does, and has
+  `requestPublicKey()`. The URL must pass the channel rule below; there is no
+  `peerChannel` statement, so a peer that hides its URL is refused
+  (`unstated`). The peer must register the local claim's key (`peer-key`) on
+  `l2psUid` (`subnet`).
+- `nodeInfo()` returns the node's `getNetworkInfo` response, and it reports
+  `nodeVersion.commit` `61b8e75aa8db5e408c49e1c3a89db4d673f45578` with
+  `nodeVersion.dirty` `false` (`node-build`). A read that throws or exceeds
+  `operationTimeoutMs` is `node-unavailable`. With demosdk, pass
+  `() => demos.nodeCall("getNetworkInfo")`: it reads the node on every call,
+  and it returns a failed call as a value, which fails the check.
+  `demos.getNetworkInfo()` keeps its first answer for the instance's lifetime.
+
+Once open, the checked transport also checks:
+
+- before every send, that the node answers `request_public_key` with the
+  recipient's key (`L2PSMessagingServer.ts:373-396`), that is, that the
+  recipient is registered on that node under the same subnet. Node `61b8e75`
+  acknowledges a send to any other key as `queued` and relays nothing between
+  nodes (below), so without this check two members on different nodes would
+  see every send acknowledged and none delivered. Otherwise `publish` answers
+  `indeterminate` with "Demos L2PS RFQ recipient is not registered on this
+  messaging node", or "Demos L2PS RFQ recipient registration check failed"
+  when the node gives no answer, and nothing is written to the send outbox
+  or sent. The packet stays retryable: `resumeOutbox()` sends it once the
+  recipient has registered on that node, and the RFQ-4 timeout ends a job
+  whose counterparty never does. A recipient that disconnects between the
+  check and the send is queued on that node and receives the frame when it
+  registers there again.
+- before every resend, that `nodeInfo()` still reports that clean build: a
+  resend's safety rests on that node's unique message hash (below).
+  Otherwise `publish` answers `indeterminate` with "Demos L2PS RFQ node did
+  not confirm the reviewed clean build; nothing is resent". A first send
+  does not read the node again.
+- that a resend goes through the node that took the frame. Each send outbox
+  entry records, as `node`, the URL its frame was handed to, without
+  credentials, query or fragment. Dedup and history are per node database,
+  so absence anywhere else never authorizes a resend: the entry stays
+  `indeterminate` with "Demos L2PS RFQ packet was sent through another
+  messaging node" (our frame in that history still acknowledges) until the
+  transport is opened on the original URL again. The unverified transport
+  binds no node, so it never resends such an entry either, and the checked
+  one never resends an entry the unverified one wrote.
+
+It cannot check whether TLS certificate checks are on, or that `nodeInfo`
+reads the node behind the peer's URL: the messaging protocol carries no node
+identity, and the node's report is its own unsigned statement. What the node
+says stays unsigned too (the acknowledgement authority, below), and the
+installed demosdk files are the host's to check (below).
+
 ```ts
-const transport = createUnverifiedDemosL2psRfqTransport({
-  // A demosdk peer whose serverUrl is wss:// (or ws:// to 127.0.0.1 or [::1]).
+const transport = await openDemosL2psRfqTransport({
+  // Connected and registered; serverUrl wss:// (or ws:// to 127.0.0.1 or
+  // [::1]), publicKey the local claim's key, l2psUid as below.
   peer: connectedAndRegisteredL2psMessagingPeer,
   codec: createDemosL2psRfqAesGcmCodec({ sharedKey: subnetKey }),
   l2psUid,
-  localClaim: buyerClaim,
-  localPeerKey: buyerPeerKey,
-  peerForClaim,
-  claimForPeer,
+  localClaim: buyerClaim, // did:demos:agent:<the peer's publicKey>
+  nodeInfo: () => demos.nodeCall("getNetworkInfo"), // the peer's node
   onError: recordChannelFailure,
   outboxStore: authenticatedRoleLocalSendOutbox,
   sendAbsenceGraceMs: 60_000,
@@ -358,6 +434,11 @@ transport.start((packet) => buyerRfq.receive(packet));
 await transport.resumeInbound(sellerClaim);
 await buyerRfq.resumeOutbox(jobId);
 ```
+
+`createUnverifiedDemosL2psRfqTransport()` is synchronous and takes the same
+options without `nodeInfo`, plus `localPeerKey`, `peerForClaim`,
+`claimForPeer` and an optional `peerChannel` (below). Of the checks above it
+applies only the channel rule.
 
 A Demos `submitted` or offline `queued` response acknowledges the exact packet.
 The accepted payloads are exactly `{ messageHash, l2psStatus: "submitted" }`
@@ -390,13 +471,15 @@ history and reconcile. Both members MUST register on the same messaging node
 `message_queued`, which acknowledges the packet, and delivers queued rows only
 to a peer that later registers on that node (`L2PSMessagingServer.ts:259-294,
 429-465`); nothing relays between nodes. If each member used a node of its
-own, every send would be acknowledged and none delivered. Node `61b8e75` itself
+own, every send would be acknowledged and none delivered. The checked
+transport refuses such a send before it is made (above); with the unverified
+transport, keeping both members on one node is the host's job. Node `61b8e75` itself
 serves plain WebSocket (`Bun.serve` with no TLS options,
 `L2PSMessagingServer.ts:51-69`), so a remote node needs a TLS-terminating
 proxy in front of it. Plain `ws://` is acceptable only to a loopback IP
 literal: `127.0.0.0/8` or `[::1]`.
 
-The transport checks this when it is constructed. demosdk 4.0.16 declares the
+Both constructors check this when they build the transport. demosdk 4.0.16 declares the
 peer's configuration `private` (`L2PSMessagingPeer.d.ts:28-29`), but that only
 binds the compiler: at runtime `config` is an own data property, and
 `config.serverUrl` is the URL the peer dials on every connect and reconnect
@@ -414,14 +497,16 @@ runs, and no prototype is consulted. It then applies one rule:
 - Anything else is refused: another scheme, a string that does not parse, or
   a `serverUrl` that is readable but is not a string.
 
-A peer that does not expose a readable `config.serverUrl`, such as a host
-wrapper, must state its channel with `peerChannel: "wss"` or
+The checked transport refuses a peer that does not expose a readable
+`config.serverUrl`. For the unverified transport, such a peer, for example a
+host wrapper, must state its channel with `peerChannel: "wss"` or
 `peerChannel: "loopback"`. `"loopback"` means plain `ws://` to `127.0.0.0/8`
 or `[::1]`, and it is the only way to allow plain WebSocket for such a peer.
 Without a readable URL or `peerChannel`, construction fails. When the URL is
 readable, it decides, and a `peerChannel` that does not match it is refused.
 If a later demosdk 4.x moves the field, a demosdk peer counts as hiding its
-URL, and construction fails until the host sets `peerChannel`.
+URL: the checked transport then refuses it, and the unverified one until the
+host sets `peerChannel`.
 
 Every refusal throws `DemosL2psRfqPeerChannelError`, whose `code` is
 `unstated`, `malformed`, `insecure` or `mismatch`. Its message never repeats
@@ -464,7 +549,8 @@ refused compare. The entry type is not exported; a host store can name it as
 `Parameters<DemosL2psRfqTransportOptions["outboxStore"]["save"]>[1]`.
 The entry binds the packet ID,
 peers, subnet and codec, and contains only the encrypted envelope, send state,
-generation and attempt end time; it stores no shared key. The exact `to`, encrypted
+generation, attempt end time and, for the checked transport, the node URL
+without credentials, query or fragment; it stores no shared key. The exact `to`, encrypted
 ciphertext/nonce/optional ephemeral key, and message hash are saved before
 calling `peer.send()`, and retries reuse them. The demosdk sends that payload
 unchanged (`L2PSMessagingPeer.js:119-124`); it still creates a fresh outer
@@ -626,7 +712,9 @@ The limits of this evidence:
 - Dedup and history are per node database. Reconcile and resend must reach
   the same node, or nodes that share its database. Another node's history
   cannot prove absence there, and that node would accept a resend as a new
-  message.
+  message. The checked transport binds each send outbox entry to its node URL
+  and never resends it through another (above); with the unverified
+  transport this is the host's job.
 - A `failed` history row for the packet blocks every resend, permanently.
 - Nothing bounds when a timed-out send lands.
 - Node `61b8e75` refuses a sender's message once 200 of its offline messages
@@ -642,23 +730,29 @@ The limits of this evidence:
   `indeterminate` and never resend, but such a packet is not recovered until
   the node pages by timestamp and row ID.
 - All of this describes node `61b8e75`; recheck it when the node changes.
-  The transport has no node version handshake. Before deploying, check that
-  the node's `getNetworkInfo` reports commit
+  The node's `getNetworkInfo` must report commit
   `61b8e75aa8db5e408c49e1c3a89db4d673f45578` and `dirty: false` (demosdk's
-  `NetworkInfo` type omits that `nodeVersion` field, so read it untyped),
-  and that the installed demosdk's `build/instant_messaging/L2PSMessagingPeer.js`
-  and `l2ps_types.d.ts` have SHA-256 `997e6275122abbd738e2817c6396db60cba72e5859b8c0830b9b942a746c75be`
-  and `974b1abe8ad57d3eecc0f91c489b0491a44f31ae36b6e54da4e231343b75d0f2`, as
-  in 4.0.16 through 4.0.18. The SDK's own tests check those two hashes
-  against the locked demosdk.
+  `NetworkInfo` type omits that `nodeVersion` field, so read it untyped).
   A node that reports `dirty: true`, or another commit, fails that check even
   when the commit matches: its storage, dedup and history behaviour is not
-  the reviewed source. Run these checks in the consuming host at startup,
-  not only in this repository's tests; the transport performs neither.
-  Against a node that fails them, the absence-then-resend evidence above
-  does not hold. On 2026-10-18 the public testnet node `node2.demos.sh`
-  reported commit `61b8e75…` with `dirty: true`, so it fails this check,
-  and that evidence is unconfirmed there.
+  the reviewed source, and the absence-then-resend evidence above does not
+  hold against it. The checked transport makes this check itself, at open
+  and before every resend (above). The unverified transport makes none, so
+  with it run the check in the consuming host at startup. On 2026-10-18 and
+  again on 2026-10-19 the public testnet node `node2.demos.sh` reported
+  commit `61b8e75…` with `dirty: true`, so it fails this check: the checked
+  transport does not open against it, and the evidence is unconfirmed there.
+  Separately, check in the host that the installed demosdk's
+  `build/instant_messaging/L2PSMessagingPeer.js` and `l2ps_types.d.ts` have
+  SHA-256 `997e6275122abbd738e2817c6396db60cba72e5859b8c0830b9b942a746c75be`
+  and `974b1abe8ad57d3eecc0f91c489b0491a44f31ae36b6e54da4e231343b75d0f2`, as
+  in 4.0.16 through 4.0.18. Neither constructor can: they take a peer
+  object, not the file it came from. The SDK's own tests check those two
+  hashes against the locked demosdk. A demosdk that moves the URL field or
+  changes a reply shape fails closed (construction refused, or the send
+  `indeterminate`); other changes, such as to its send queue, are why the
+  host checks the files. Single storage of a resend rests on the node's
+  dedup, not on demosdk.
   The duplicate handling above keys on the node's exact "Duplicate message"
   text.
 
@@ -699,13 +793,17 @@ Settle it first or seed a conservative `sending` marker through the host store.
 | Crash before end write, or detected clock rollback | One full grace from first recovery observation |
 | Exact history match, or a stored acknowledgement, at any time | 0; acknowledge immediately |
 | Paginated/failed history, a node duplicate refusal without our frame in history, a stored frame that does not open, or an unavailable outbox | Unbounded; stay indeterminate |
+| Checked transport: the recipient is not registered on the node | Nothing is sent until it is |
+| Checked transport: the entry went through another node URL, or the node does not report the clean build | Until the transport is on that URL and the node reports that build |
 
 The hold itself adds at most the configured grace; the host's next
 `resumeOutbox()` cadence adds its polling interval. With the default 20-second
 operation limit, a successful single-page absence check and retry dispatch can
 also spend up to 120 seconds on outbox read, history, retry outbox read,
 opening the stored frame, the retry's own history read and the pre-send write:
-at most 180 seconds plus the polling interval after a known send end. This transport-only calculation excludes host lifecycle storage, the retry's
+at most 180 seconds plus the polling interval after a known send end. The
+checked transport also reads the node build and asks about the recipient,
+up to 40 seconds more: at most 220 seconds. This transport-only calculation excludes host lifecycle storage, the retry's
 own send/acknowledgement wait and end write.
 There is no finite whole-call bound for paginated history (a follow-up),
 persistence failures, repeated failures or scheduling stalls. The paginated
@@ -971,7 +1069,9 @@ encrypted publisher.
 The low-level Demos L2PS transport adapter (above) has landed. The SDK supplies
 it with the complete transport-neutral, durable buyer/seller RFQ lifecycle,
 agreement/commitment and transcript-policy core, but not a complete live
-`negotiate-rfq` phase handler. Still deferred: a normative channel-signature
-profile (DACS-Standard#349 must resolve the current signature-framing conflict
-first), authenticated §8.3.2 membership binding inside the SDK, §8.3.4 member
-acknowledgements, and constructing the demosdk peer.
+`negotiate-rfq` phase handler. `openDemosL2psRfqTransport()` binds each
+`did:demos:agent` member's claim to its messaging key and checks the node.
+Still deferred: a normative channel-signature profile (DACS-Standard#349 must
+resolve the current signature-framing conflict first), the subnet-membership
+half of the §8.3.2 binding and bindings for other claim schemes, §8.3.4
+member acknowledgements, and constructing the demosdk peer.

@@ -47,7 +47,7 @@ and readers must use `ComponentSignedArtifact`,
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
-| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` · `createUnverifiedDemosL2psRfqTransport` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core, with a Demos L2PS transport adapter |
+| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` · `openDemosL2psRfqTransport` · `createUnverifiedDemosL2psRfqTransport` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core, with a Demos L2PS transport adapter |
 | **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -135,8 +135,11 @@ co-signatures, finalized SR-2 commitment, complete private-transcript
 reverification, fail-closed Listing disclosure policy, and a low-level
 AES-GCM packet transport over Demos L2PS messaging with outbound and inbound
 history recovery. It does not invent the still-undefined DACS signature or
-encrypted-transcript publication wires, and the host supplies the demosdk
-messaging peer and the verified claim/peer-key membership mapping; see the
+encrypted-transcript publication wires. The host supplies the demosdk
+messaging peer; `openDemosL2psRfqTransport()` routes each `did:demos:agent`
+member to its own key and checks the node build and same-node registration,
+while `createUnverifiedDemosL2psRfqTransport()` takes the host's verified
+claim/peer-key mapping and node instead. See the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary
 and the upstream dependencies.
 

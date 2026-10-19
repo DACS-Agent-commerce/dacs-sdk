@@ -30,7 +30,9 @@ import {
   createDurableRfqLifecycleClient,
   createInMemoryDurableRfqLifecycleStore,
   DacsError,
+  DemosL2psRfqDeploymentError,
   DemosL2psRfqPeerChannelError,
+  openDemosL2psRfqTransport,
   rfqLifecyclePacketId,
   TransientError,
   type AttestationRef,
@@ -41,6 +43,8 @@ import {
   type DemosL2psRfqPeerLike,
   type DemosL2psRfqStoredMessage,
   type DemosL2psRfqTransportOptions,
+  type DemosL2psRfqVerifiedPeerLike,
+  type DemosL2psRfqVerifiedTransportOptions,
   type DemosL2psRfqWireCodec,
   type DurableRfqLifecycleRole,
   type DurableRfqLifecycleTransport,
@@ -122,14 +126,14 @@ const seller = {
   vetRecordRef: vetRef("stor:seller-l2ps-rfq-vet"),
 };
 
-function listing(): Listing {
+function listing(sellerClaim = SELLER): Listing {
   return {
     dacsVersion: "1",
     listingVersion: 3,
     listingId: "demos-l2ps-rfq-listing",
     requiredCapabilities: ["SR-2", "SR-4"],
     seller: {
-      identity: identity(SELLER),
+      identity: identity(sellerClaim),
       displayName: "Demos L2PS RFQ seller",
       publicEndpoint: "https://seller.example/dacs",
     },
@@ -160,14 +164,14 @@ function listing(): Listing {
     validity: { notBefore: NOW - 10_000, notAfter: NOW + 1_000_000 },
     signature: {
       algorithm: "ed25519",
-      signer: SELLER,
+      signer: sellerClaim,
       value: Buffer.alloc(64, 7).toString("base64url"),
     },
   };
 }
 
-function openInput() {
-  const value = listing();
+function openInput(buyerClaim = BUYER, sellerClaim = SELLER) {
+  const value = listing(sellerClaim);
   return {
     jobId: JOB_ID,
     verifiedListing: {
@@ -179,8 +183,12 @@ function openInput() {
         contentHash: contentHash(value as unknown as Record<string, unknown>),
       },
     },
-    buyer,
-    seller,
+    buyer: buyerClaim === BUYER
+      ? buyer
+      : { identityBundle: identity(buyerClaim), vetRecordRef: vetRef("stor:buyer-l2ps-rfq-vet") },
+    seller: sellerClaim === SELLER
+      ? seller
+      : { identityBundle: identity(sellerClaim), vetRecordRef: vetRef("stor:seller-l2ps-rfq-vet") },
     channelId: CHANNEL_ID,
   };
 }
@@ -223,6 +231,12 @@ class FakeL2psHub {
    * L2PSMessagingServer.ts:267-269).
    */
   nodeDedup = false;
+  /**
+   * Keys registered on this node, each with its own Ed25519 proof
+   * (L2PSMessagingServer.ts:154-192); request_public_key answers only for
+   * these (:373-396). Only checkedPeer() registers a key here.
+   */
+  readonly registered = new Set<string>();
 
   peer(localPeer: string): DemosL2psRfqPeerLike {
     return {
@@ -320,8 +334,8 @@ function clientOptions(
   role: DurableRfqLifecycleRole,
   transport: DurableRfqLifecycleTransport<string>,
   reservation: ReturnType<typeof durableReservation>,
+  claim = role === "buyer" ? BUYER : SELLER,
 ) {
-  const claim = role === "buyer" ? BUYER : SELLER;
   return {
     role,
     store: createInMemoryDurableRfqLifecycleStore<string>(),
@@ -5143,6 +5157,22 @@ describe("Demos L2PS RFQ membership mapping the transport cannot check", () => {
     expect(sent.hub.messages.filter((message) => message.from === SELLER_PEER)).toHaveLength(0);
     transport.stop();
   });
+
+  test("when the wrong key holds the members' shared key, the unverified transport discloses the offer to it", async () => {
+    // Why openDemosL2psRfqTransport takes no mapping: here the third key is,
+    // say, another subnet member that holds the same sharedKey.
+    const misrouted = await buyerWithSentOffer({
+      extra: {
+        peerForClaim: (claim) => (claim === SELLER ? THIRD_PEER : peerForClaim(claim)),
+        claimForPeer: (peer) => (peer === THIRD_PEER ? SELLER : peer === SELLER_PEER ? undefined : claimForPeer(peer)),
+      },
+    });
+    expect(misrouted.own).toMatchObject({ from: BUYER_PEER, to: THIRD_PEER });
+    const opened = await misrouted.baseCodec.open(misrouted.own.encrypted, {
+      messageHash: misrouted.packet.packetId, fromPeer: BUYER_PEER, toPeer: THIRD_PEER,
+    });
+    expect(new TextDecoder().decode(opened)).toBe(canonicalize(misrouted.packet as never));
+  });
 });
 
 describe("Demos L2PS RFQ documented transport checks", () => {
@@ -5235,5 +5265,455 @@ describe("Demos L2PS RFQ documented transport checks", () => {
     // After stop() a new consumer may start.
     expect(() => fixture.transport.start(second)).not.toThrow();
     fixture.transport.stop();
+  });
+});
+
+describe("Demos L2PS RFQ checked transport", () => {
+  const BUYER_AGENT = `did:demos:agent:${BUYER_PEER}`;
+  const SELLER_AGENT = `did:demos:agent:${SELLER_PEER}`;
+  const OFFER = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
+  const NODE_A = "wss://node-a.example:3006";
+  const NODE_B = "wss://node-b.example:3006";
+  const UNREGISTERED = "Demos L2PS RFQ recipient is not registered on this messaging node";
+  const CHECK_FAILED = "Demos L2PS RFQ recipient registration check failed";
+  const UNBOUND = "Demos L2PS RFQ recipient claim is not a did:demos:agent key";
+  const NODE_UNCONFIRMED = "Demos L2PS RFQ node did not confirm the reviewed clean build; nothing is resent";
+  // node2.demos.sh's read-only getNetworkInfo response on 2026-10-19, but clean.
+  const CLEAN_NODE = {
+    forks: { osDenomination: { activationHeight: 0, activated: true, currentHeight: 563_388 } },
+    nodeVersion: {
+      name: "demos-node-software",
+      version: "0.9.8",
+      commit: "61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+      commitShort: "61b8e75",
+      commitMessage: "verify anchor peer pairing signature",
+      branch: "stabilisation",
+      dirty: false,
+      builtAt: "2026-10-18T15:59:30Z",
+    },
+  };
+  // What node2 actually reported: the reviewed commit, built dirty.
+  const NODE2 = { ...CLEAN_NODE, nodeVersion: { ...CLEAN_NODE.nodeVersion, dirty: true } };
+
+  /** A demosdk-shaped peer for `key`, dialing `node`; registered on `hub` unless told not to. */
+  function checkedPeer(hub: FakeL2psHub, key: string, node = NODE_A, register = true) {
+    if (register) hub.registered.add(key);
+    return Object.assign(hub.peer(key), {
+      config: { serverUrl: node, publicKey: key, l2psUid: L2PS_UID, signFn: () => "00" },
+      requestPublicKey: vi.fn(async (target: string): Promise<string | null> =>
+        (hub.registered.has(target) ? target : null)),
+    });
+  }
+
+  function checkedOptions(
+    peer: DemosL2psRfqVerifiedPeerLike,
+    extra: Partial<DemosL2psRfqVerifiedTransportOptions> = {},
+  ): DemosL2psRfqVerifiedTransportOptions {
+    return {
+      peer,
+      codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
+      l2psUid: L2PS_UID,
+      localClaim: BUYER_AGENT,
+      onError: vi.fn(),
+      outboxStore: memorySendOutbox(),
+      nodeInfo: () => structuredClone(CLEAN_NODE),
+      ...extra,
+    };
+  }
+
+  async function openError(options: DemosL2psRfqVerifiedTransportOptions): Promise<unknown> {
+    try {
+      await openDemosL2psRfqTransport(options);
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  function agentClient(
+    role: DurableRfqLifecycleRole,
+    transport: DurableRfqLifecycleTransport<string>,
+    reservation: ReturnType<typeof durableReservation>,
+    extra: {
+      clock?: { now: number };
+      store?: ReturnType<typeof createInMemoryDurableRfqLifecycleStore<string>>;
+    } = {},
+  ) {
+    const { clock, store } = extra;
+    return createDurableRfqLifecycleClient({
+      ...clientOptions(role, transport, reservation, role === "buyer" ? BUYER_AGENT : SELLER_AGENT),
+      ...(clock === undefined ? {} : { nowMs: () => clock.now }),
+      ...(store === undefined ? {} : { store }),
+    });
+  }
+
+  test("opens over demosdk's own peer when it registers the claim's key on a clean node", async () => {
+    const peer = await demosPeer({
+      serverUrl: NODE_A,
+      // Any accepted key form: compared in the node's canonical form.
+      publicKey: `0x${BUYER_PEER.toUpperCase()}`,
+      l2psUid: L2PS_UID,
+      signFn: () => "00",
+    }) as DemosL2psRfqVerifiedPeerLike;
+    const nodeInfo = vi.fn(() => structuredClone(CLEAN_NODE));
+    const transport = await openDemosL2psRfqTransport<string>(checkedOptions(peer, { nodeInfo }));
+    expect(typeof transport.publish).toBe("function");
+    expect(nodeInfo).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    { name: "node2's build, which reports dirty: true", info: () => structuredClone(NODE2), code: "node-build" },
+    {
+      name: "another commit",
+      info: () => ({ ...CLEAN_NODE, nodeVersion: { ...CLEAN_NODE.nodeVersion, commit: "0".repeat(40) } }),
+      code: "node-build",
+    },
+    {
+      name: "only the short commit",
+      info: () => ({ ...CLEAN_NODE, nodeVersion: { ...CLEAN_NODE.nodeVersion, commit: "61b8e75" } }),
+      code: "node-build",
+    },
+    {
+      name: "no dirty flag",
+      info: () => ({ nodeVersion: { commit: CLEAN_NODE.nodeVersion.commit } }),
+      code: "node-build",
+    },
+    {
+      name: "a string dirty flag",
+      info: () => ({ nodeVersion: { ...CLEAN_NODE.nodeVersion, dirty: "false" } }),
+      code: "node-build",
+    },
+    {
+      name: "no nodeVersion, as demosdk's NetworkInfo type has it",
+      info: () => ({ forks: CLEAN_NODE.forks }),
+      code: "node-build",
+    },
+    {
+      name: "the value demos.nodeCall returns on failure",
+      info: () => ({ result: 500, response: {}, require_reply: false, extra: null }),
+      code: "node-build",
+    },
+    {
+      name: "a nodeVersion getter, which never runs",
+      info: () => Object.defineProperty({}, "nodeVersion", { enumerable: true, get: () => CLEAN_NODE.nodeVersion }),
+      code: "node-build",
+    },
+    {
+      name: "a read that throws",
+      info: () => {
+        throw new Error("rpc unavailable");
+      },
+      code: "node-unavailable",
+    },
+    { name: "a read that never settles", info: () => new Promise<never>(() => undefined), code: "node-unavailable" },
+  ])("refuses to open on $name, before any peer call", async ({ info, code }) => {
+    const hub = new FakeL2psHub();
+    const peer = checkedPeer(hub, BUYER_PEER);
+    const error = await openError(checkedOptions(peer, { nodeInfo: info, operationTimeoutMs: 50 }));
+    expect(error).toBeInstanceOf(DemosL2psRfqDeploymentError);
+    expect(error).toMatchObject({ name: "DemosL2psRfqDeploymentError", code });
+    expect(peer.requestPublicKey).not.toHaveBeenCalled();
+    expect(hub.sends).toBe(0);
+  });
+
+  const hostAnswers = {
+    peerForClaim: () => THIRD_PEER,
+    claimForPeer: () => SELLER_AGENT,
+    localPeerKey: BUYER_PEER,
+    peerChannel: "wss",
+  } as const;
+
+  test.each([
+    {
+      name: "a local claim that is not did:demos:agent",
+      options: (hub: FakeL2psHub) => checkedOptions(checkedPeer(hub, BUYER_PEER), { localClaim: BUYER }),
+      error: { name: "DemosL2psRfqDeploymentError", code: "local-claim" },
+    },
+    {
+      name: "a did:demos:agent claim with an upper-case key",
+      options: (hub: FakeL2psHub) => checkedOptions(checkedPeer(hub, BUYER_PEER), {
+        localClaim: `did:demos:agent:${BUYER_PEER.toUpperCase()}`,
+      }),
+      error: { name: "DemosL2psRfqDeploymentError", code: "local-claim" },
+    },
+    {
+      name: "a peer that registers another key",
+      options: (hub: FakeL2psHub) => {
+        const peer = checkedPeer(hub, BUYER_PEER);
+        peer.config.publicKey = THIRD_PEER;
+        return checkedOptions(peer);
+      },
+      error: { name: "DemosL2psRfqDeploymentError", code: "peer-key" },
+    },
+    {
+      name: "a peer that registers on another subnet",
+      options: (hub: FakeL2psHub) => {
+        const peer = checkedPeer(hub, BUYER_PEER);
+        peer.config.l2psUid = `${L2PS_UID}-other`;
+        return checkedOptions(peer);
+      },
+      error: { name: "DemosL2psRfqDeploymentError", code: "subnet" },
+    },
+    {
+      name: "a peer that hides its URL",
+      options: (hub: FakeL2psHub) => checkedOptions(Object.assign(hub.peer(BUYER_PEER), {
+        requestPublicKey: async () => null,
+      })),
+      error: { name: "DemosL2psRfqPeerChannelError", code: "unstated" },
+    },
+    {
+      name: "plain ws:// to a remote node",
+      options: (hub: FakeL2psHub) => checkedOptions(checkedPeer(hub, BUYER_PEER, "ws://node-a.example:3006")),
+      error: { name: "DemosL2psRfqPeerChannelError", code: "insecure" },
+    },
+    {
+      name: "a peer without requestPublicKey",
+      options: (hub: FakeL2psHub) => checkedOptions(Object.assign(hub.peer(BUYER_PEER), {
+        config: { serverUrl: NODE_A, publicKey: BUYER_PEER, l2psUid: L2PS_UID },
+      }) as unknown as DemosL2psRfqVerifiedPeerLike),
+      error: { message: "Demos L2PS RFQ transport capabilities are malformed or unsafe" },
+    },
+    ...(Object.keys(hostAnswers) as (keyof typeof hostAnswers)[]).map((key) => ({
+      name: `a host ${key} option`,
+      options: (hub: FakeL2psHub) => ({
+        ...checkedOptions(checkedPeer(hub, BUYER_PEER)),
+        [key]: hostAnswers[key],
+      }) as DemosL2psRfqVerifiedTransportOptions,
+      error: { message: "Demos L2PS RFQ transport options are malformed or unsafe" },
+    })),
+  ])("refuses $name, before reading the node", async ({ options, error }) => {
+    const nodeInfo = vi.fn(() => structuredClone(CLEAN_NODE));
+    await expect(openError({ ...options(new FakeL2psHub()), nodeInfo })).resolves.toMatchObject(error);
+    expect(nodeInfo).not.toHaveBeenCalled();
+  });
+
+  test("on two isolated nodes nothing is sent or acknowledged, and the waiting buyer records the RFQ-4 timeout", async () => {
+    // The unverified transport acknowledges this offer and never delivers it
+    // (see "node storage is not member acknowledgement").
+    const buyerNode = new FakeL2psHub();
+    const sellerNode = new FakeL2psHub();
+    const clock = { now: NOW };
+    const reservation = durableReservation();
+    const buyerPeer = checkedPeer(buyerNode, BUYER_PEER, NODE_A);
+    const buyerOutbox = memorySendOutbox();
+    const buyerTransport = await openDemosL2psRfqTransport<string>(checkedOptions(buyerPeer, {
+      outboxStore: buyerOutbox,
+    }));
+    const sellerTransport = await openDemosL2psRfqTransport<string>(checkedOptions(
+      checkedPeer(sellerNode, SELLER_PEER, NODE_B), { localClaim: SELLER_AGENT },
+    ));
+    const buyerClient = agentClient("buyer", buyerTransport, reservation, { clock });
+    const sellerClient = agentClient("seller", sellerTransport, reservation, { clock });
+    const received = vi.fn((packet: RfqLifecyclePacket<string>) => sellerClient.receive(packet));
+    sellerTransport.start(received);
+    await buyerClient.open(openInput(BUYER_AGENT, SELLER_AGENT));
+    await sellerClient.open(openInput(BUYER_AGENT, SELLER_AGENT));
+
+    await expect(buyerClient.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({
+      status: "indeterminate", reason: UNREGISTERED,
+    });
+    expect(buyerPeer.requestPublicKey).toHaveBeenCalledWith(SELLER_PEER);
+    expect(buyerNode.sends).toBe(0);
+    expect(buyerNode.messages).toEqual([]);
+    // Nothing was handed to the peer, so nothing is stored as sent or acknowledged.
+    const status = await buyerClient.getStatus(JOB_ID);
+    const packet = status.status === "ok" ? status.record.outbox[0]?.packet : undefined;
+    if (packet === undefined) throw new Error("no outbox packet");
+    expect(await buyerOutbox.load(packet.packetId)).toBeUndefined();
+    // Each retry asks the node again; the seller never registers there.
+    await expect(buyerClient.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "indeterminate", reason: UNREGISTERED,
+    });
+    expect(buyerNode.sends).toBe(0);
+    await expect(sellerTransport.resumeInbound(BUYER_AGENT)).resolves.toEqual({
+      status: "complete", delivered: 0, ignored: 0, skipped: [],
+    });
+    expect(received).not.toHaveBeenCalled();
+
+    clock.now = NOW + 10_001;
+    await expect(buyerClient.sendAbort(JOB_ID)).resolves.toMatchObject({
+      status: "rejected", reason: "RFQ turn timeout elapsed (RFQ-4)",
+    });
+    await expect(buyerClient.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "rejected" });
+    expect(buyerNode.sends).toBe(0);
+    sellerTransport.stop();
+  });
+
+  test("only the claim's own key receives: a third key holding the shared key gets nothing", async () => {
+    const hub = new FakeL2psHub();
+    const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+    const reservation = durableReservation();
+    // Another agent on the same node and subnet holds the members' shared key.
+    const thirdInbox = vi.fn();
+    checkedPeer(hub, THIRD_PEER).onMessage(thirdInbox);
+    const buyerTransport = await openDemosL2psRfqTransport<string>(checkedOptions(checkedPeer(hub, BUYER_PEER), { codec }));
+    const buyerClient = agentClient("buyer", buyerTransport, reservation);
+    await buyerClient.open(openInput(BUYER_AGENT, SELLER_AGENT));
+    // The seller has not registered its claim's key yet, so nothing is sent at all.
+    await expect(buyerClient.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({
+      status: "indeterminate", reason: UNREGISTERED,
+    });
+    expect(hub.sends).toBe(0);
+
+    const sellerErrors: Error[] = [];
+    const sellerTransport = await openDemosL2psRfqTransport<string>(checkedOptions(checkedPeer(hub, SELLER_PEER), {
+      codec, localClaim: SELLER_AGENT, onError: (error) => sellerErrors.push(error),
+    }));
+    const sellerClient = agentClient("seller", sellerTransport, reservation);
+    await sellerClient.open(openInput(BUYER_AGENT, SELLER_AGENT));
+    const received = vi.fn((packet: RfqLifecyclePacket<string>) => sellerClient.receive(packet));
+    sellerTransport.start(received);
+    // Once it has, the retry goes to that key only.
+    await expect(buyerClient.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    await sellerTransport.drain();
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(hub.messages).toMatchObject([{ from: BUYER_PEER, to: SELLER_PEER, status: "delivered" }]);
+    expect(thirdInbox).not.toHaveBeenCalled();
+
+    // The third key replays the frame, then seals the buyer's packet for its
+    // own route: its claim is not the packet's sender, so both are refused.
+    const packet = received.mock.calls[0]![0];
+    const forged = await codec.seal(
+      new TextEncoder().encode(canonicalize(packet as never)),
+      { messageHash: packet.packetId, fromPeer: THIRD_PEER, toPeer: SELLER_PEER },
+    );
+    for (const encrypted of [structuredClone(hub.messages[0]!.encrypted), forged]) {
+      for (const handler of hub.handlers.get(SELLER_PEER) ?? []) {
+        handler({ from: THIRD_PEER, encrypted, messageHash: packet.packetId });
+      }
+      await sellerTransport.drain();
+    }
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(sellerErrors.map((error) => error.message)).toEqual([
+      "Demos L2PS AES-GCM RFQ authentication failed",
+      "Demos L2PS RFQ plaintext does not bind its peer route",
+    ]);
+    sellerTransport.stop();
+  });
+
+  test.each([
+    { name: "answers null", answer: async (): Promise<string | null> => null, reason: UNREGISTERED },
+    { name: "answers another key", answer: async (): Promise<string | null> => THIRD_PEER, reason: UNREGISTERED },
+    {
+      name: "throws, as demosdk does before registration",
+      answer: async (): Promise<string | null> => {
+        throw new Error("Not registered. Call connect() first.");
+      },
+      reason: CHECK_FAILED,
+    },
+    { name: "never answers", answer: () => new Promise<string | null>(() => undefined), reason: CHECK_FAILED },
+  ])("when the node $name for the recipient, nothing is sent", async ({ answer, reason }) => {
+    const hub = new FakeL2psHub();
+    checkedPeer(hub, SELLER_PEER);
+    const peer = checkedPeer(hub, BUYER_PEER);
+    peer.requestPublicKey = vi.fn(answer);
+    const transport = await openDemosL2psRfqTransport<string>(checkedOptions(peer, { operationTimeoutMs: 50 }));
+    const client = agentClient("buyer", transport, durableReservation());
+    await client.open(openInput(BUYER_AGENT, SELLER_AGENT));
+    await expect(client.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "indeterminate", reason });
+    expect(hub.sends).toBe(0);
+  });
+
+  test("a counterparty claim that is not did:demos:agent is refused before anything is sealed or sent", async () => {
+    const hub = new FakeL2psHub();
+    const seal = vi.fn();
+    const peer = checkedPeer(hub, BUYER_PEER);
+    const transport = await openDemosL2psRfqTransport<string>(checkedOptions(peer, {
+      codec: { codecId: "demos-l2ps-aes-256-gcm:v1", seal, open: vi.fn() },
+    }));
+    const client = agentClient("buyer", transport, durableReservation());
+    await client.open(openInput(BUYER_AGENT, SELLER));
+    await expect(client.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "rejected", reason: UNBOUND });
+    expect(seal).not.toHaveBeenCalled();
+    expect(peer.requestPublicKey).not.toHaveBeenCalled();
+    expect(hub.sends).toBe(0);
+    transport.start(vi.fn());
+    await expect(transport.resumeInbound(SELLER)).resolves.toMatchObject({ status: "indeterminate", reason: UNBOUND });
+    transport.stop();
+  });
+
+  test("a resend after the grace waits until the node reports the reviewed clean build again", async () => {
+    const hub = new FakeL2psHub();
+    let ticks = 0;
+    let node: object = CLEAN_NODE;
+    const nodeInfo = vi.fn(() => structuredClone(node));
+    checkedPeer(hub, SELLER_PEER);
+    const peer = checkedPeer(hub, BUYER_PEER);
+    const submissions: DemosL2psRfqEncryptedMessage[] = [];
+    const send = peer.send;
+    let dropFirst = true;
+    peer.send = async (to, encrypted, messageHash) => {
+      submissions.push(structuredClone(encrypted));
+      if (dropFirst) {
+        dropFirst = false;
+        throw new Error("socket closed before the node read the frame");
+      }
+      return send(to, encrypted, messageHash);
+    };
+    const transport = await openDemosL2psRfqTransport<string>(checkedOptions(peer, {
+      nodeInfo, monotonicNowMs: () => ticks,
+    }));
+    const client = agentClient("buyer", transport, durableReservation());
+    await client.open(openInput(BUYER_AGENT, SELLER_AGENT));
+    await expect(client.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "indeterminate" });
+    expect(hub.messages).toEqual([]);
+    // Read at open; a first send needs no second read.
+    expect(nodeInfo).toHaveBeenCalledTimes(1);
+
+    ticks = 60_000;
+    // History proves absence, but the node now reports node2's dirty build.
+    node = NODE2;
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "indeterminate", reason: NODE_UNCONFIRMED,
+    });
+    expect(submissions).toHaveLength(1);
+    node = CLEAN_NODE;
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1]).toEqual(submissions[0]);
+    expect(hub.messages).toHaveLength(1);
+    expect(nodeInfo).toHaveBeenCalledTimes(3);
+  });
+
+  test("a frame handed to one node is never resent through another, and its entry stores no credentials", async () => {
+    const hub = new FakeL2psHub();
+    let ticks = 0;
+    const outboxStore = memorySendOutbox();
+    const store = createInMemoryDurableRfqLifecycleStore<string>();
+    const reservation = durableReservation();
+    const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+    checkedPeer(hub, SELLER_PEER);
+    async function buyerOn(serverUrl: string, send?: DemosL2psRfqPeerLike["send"]) {
+      const peer = checkedPeer(hub, BUYER_PEER, serverUrl);
+      if (send !== undefined) peer.send = send;
+      const transport = await openDemosL2psRfqTransport<string>(checkedOptions(peer, {
+        codec, outboxStore, monotonicNowMs: () => ticks,
+      }));
+      return agentClient("buyer", transport, reservation, { store });
+    }
+    const first = await buyerOn("wss://operator:secret@node-a.example:3006/im?token=abc#x", async () => {
+      throw new Error("socket closed");
+    });
+    await first.open(openInput(BUYER_AGENT, SELLER_AGENT));
+    await expect(first.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "indeterminate" });
+    const status = await first.getStatus(JOB_ID);
+    const packet = status.status === "ok" ? status.record.outbox[0]?.packet : undefined;
+    if (packet === undefined) throw new Error("no outbox packet");
+    const entry = await outboxStore.load(packet.packetId) as Record<string, unknown>;
+    expect(entry).toMatchObject({ state: "indeterminate", node: "wss://node-a.example:3006/im" });
+    expect(JSON.stringify(entry)).not.toMatch(/operator|secret|token/);
+
+    // After a restart against another node, its empty history proves nothing.
+    ticks = 600_000;
+    const elsewhere = await buyerOn(NODE_B);
+    await expect(elsewhere.resumeOutbox(JOB_ID)).resolves.toMatchObject({
+      status: "indeterminate", reason: "Demos L2PS RFQ packet was sent through another messaging node",
+    });
+    expect(hub.sends).toBe(0);
+    // Back on the node that took the frame, absence there authorizes the resend.
+    const back = await buyerOn("wss://node-a.example:3006/im");
+    await expect(back.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    expect(hub.sends).toBe(1);
+    expect(hub.messages[0]?.encrypted).toEqual(entry.encrypted);
   });
 });

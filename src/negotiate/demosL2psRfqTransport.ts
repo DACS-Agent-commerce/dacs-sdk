@@ -9,6 +9,7 @@ import { types as nodeTypes } from "node:util";
 import { canonicalize } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError, TransientError } from "../errors.js";
+import { canonicalDemosAgentPublicKey, demosAgentClaimRef } from "../identity/demos.js";
 import {
   parseRfqLifecyclePacket,
   type DurableRfqLifecycleResult,
@@ -75,6 +76,22 @@ const DUPLICATE_REASON =
 const STORED_FRAME_REASON =
   "Demos L2PS RFQ stored send frame does not open to this packet";
 const SEND_UNKNOWN_REASON = "Demos L2PS RFQ send outcome is unknown";
+/**
+ * The node commit whose messaging source the acknowledgement, dedup and
+ * history evidence in docs/rfq-negotiation-core.md was read from.
+ */
+const REVIEWED_NODE_COMMIT = "61b8e75aa8db5e408c49e1c3a89db4d673f45578";
+const DEMOS_AGENT_KEY = /^[0-9a-f]{64}$/;
+const UNBOUND_CLAIM_REASON =
+  "Demos L2PS RFQ recipient claim is not a did:demos:agent key";
+const UNREGISTERED_REASON =
+  "Demos L2PS RFQ recipient is not registered on this messaging node";
+const REGISTRATION_CHECK_REASON =
+  "Demos L2PS RFQ recipient registration check failed";
+const NODE_BUILD_REASON =
+  "Demos L2PS RFQ node did not confirm the reviewed clean build; nothing is resent";
+const OTHER_NODE_REASON =
+  "Demos L2PS RFQ packet was sent through another messaging node";
 const MAX_SEND_ERROR_CHARS = 200;
 const CONSUMER_TIMEOUT_MESSAGE = "Demos L2PS RFQ consumer timed out";
 const HISTORY_STATUSES = new Set<DemosL2psRfqMessageStatus>([
@@ -123,6 +140,28 @@ export class DemosL2psRfqPeerChannelError extends DacsError {
   constructor(readonly code: keyof typeof PEER_CHANNEL_MESSAGES) {
     super(PEER_CHANNEL_MESSAGES[code]);
     this.name = "DemosL2psRfqPeerChannelError";
+  }
+}
+
+const DEPLOYMENT_MESSAGES = {
+  "local-claim":
+    "Demos L2PS RFQ localClaim must be a parameter-free did:demos:agent ClaimReference",
+  "peer-key":
+    "Demos L2PS RFQ peer must register the local claim's own key as config.publicKey",
+  subnet: "Demos L2PS RFQ peer must register on l2psUid as config.l2psUid",
+  "node-unavailable": "Demos L2PS RFQ node build could not be read",
+  "node-build":
+    `Demos L2PS RFQ node must report commit ${REVIEWED_NODE_COMMIT} with dirty: false`,
+} as const;
+
+/**
+ * openDemosL2psRfqTransport() refused its deployment. The message never
+ * repeats a peer value or the node's answer.
+ */
+export class DemosL2psRfqDeploymentError extends DacsError {
+  constructor(readonly code: keyof typeof DEPLOYMENT_MESSAGES) {
+    super(DEPLOYMENT_MESSAGES[code]);
+    this.name = "DemosL2psRfqDeploymentError";
   }
 }
 
@@ -243,6 +282,11 @@ type SendOutboxEntry = {
   /** 1 for the first committed entry, then +1 per committed save. */
   generation: number;
   attemptEndedAtMs?: number;
+  /**
+   * Checked transport only: the messaging node URL the frame was handed to,
+   * without credentials, query or fragment. Absent for the unverified one.
+   */
+  node?: string;
 };
 
 export interface DemosL2psRfqTransportOptions {
@@ -351,6 +395,45 @@ export interface DemosL2psRfqTransportOptions {
    * out or stop() retires its generation; a later result is ignored.
    */
   consumerTimeoutMs?: number;
+}
+
+/** The demosdk 4.x L2PSMessagingPeer surface the checked transport uses. */
+export interface DemosL2psRfqVerifiedPeerLike extends DemosL2psRfqPeerLike {
+  /**
+   * The node's answer for a key registered on that server under the same
+   * subnet, or null (node 61b8e75 L2PSMessagingServer.ts:373-396).
+   */
+  requestPublicKey(targetId: string): Promise<string | null>;
+}
+
+export interface DemosL2psRfqVerifiedTransportOptions
+  extends Omit<
+    DemosL2psRfqTransportOptions,
+    "peer" | "peerChannel" | "localClaim" | "localPeerKey" | "peerForClaim" | "claimForPeer"
+  > {
+  /**
+   * A connected, registered demosdk peer. It must expose, as own data
+   * properties the way demosdk 4.0.16 does, config.serverUrl (wss://, or
+   * ws:// to a loopback IP literal), config.publicKey (the local claim's
+   * key) and config.l2psUid (this l2psUid). A wrapper that hides them is
+   * refused: there is no peerChannel statement here.
+   */
+  peer: DemosL2psRfqVerifiedPeerLike;
+  /**
+   * The local member's parameter-free DACS-1 §6.3.1 claim,
+   * did:demos:agent:<64 lower-case hex>. That key is its messaging key;
+   * every remote member must be such a claim too.
+   */
+  localClaim: string;
+  /**
+   * The node's getNetworkInfo response, read from the node behind the
+   * peer's URL each time it is called: for demosdk, () =>
+   * demos.nodeCall("getNetworkInfo"), not demos.getNetworkInfo(), which
+   * caches. It must report nodeVersion.commit
+   * 61b8e75aa8db5e408c49e1c3a89db4d673f45578 with nodeVersion.dirty false.
+   * Called at open and before every resend, under operationTimeoutMs.
+   */
+  nodeInfo(): Promise<unknown> | unknown;
 }
 
 export interface DemosL2psRfqTransport<TSignature = unknown>
@@ -1092,7 +1175,22 @@ function checkPeerChannel(peer: object, stated: unknown): void {
   }
 }
 
-function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
+/** Optional settings both constructors accept. */
+const TRANSPORT_TUNING_KEYS = [
+  "historyPageSize",
+  "historyMaxPages",
+  "inboundRecoveryMaxBytes",
+  "operationTimeoutMs",
+  "consumerTimeoutMs",
+  "sendAbsenceGraceMs",
+  "monotonicNowMs",
+] as const;
+
+/**
+ * Host callbacks run with `receiver` as `this`: the host's own options
+ * object, also when the checked constructor passes a copy as `value`.
+ */
+function captureTransportOptions(value: DemosL2psRfqTransportOptions, receiver: object = value) {
   if (
     !isRecord(value) ||
     !exactKeys(
@@ -1108,7 +1206,7 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
         "onError",
         "outboxStore",
       ],
-      ["peerChannel", "historyPageSize", "historyMaxPages", "inboundRecoveryMaxBytes", "operationTimeoutMs", "consumerTimeoutMs", "sendAbsenceGraceMs", "monotonicNowMs"],
+      ["peerChannel", ...TRANSPORT_TUNING_KEYS],
     )
   ) {
     throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
@@ -1196,7 +1294,7 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
     load: (packetId: string) => Reflect.apply(load, store, [packetId]) as unknown,
     save: (packetId: string, entry: Readonly<SendOutboxEntry>, expectedGeneration: number) =>
       Reflect.apply(save, store, [packetId, entry, expectedGeneration]) as Promise<boolean> | boolean,
-    monotonicNowMs: () => Reflect.apply(clock, value, []) as number,
+    monotonicNowMs: () => Reflect.apply(clock, receiver, []) as number,
     codecId,
     sendAbsenceGraceMs: positiveInteger(
       descriptors.sendAbsenceGraceMs?.value,
@@ -1223,11 +1321,11 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
     l2psUid: canonicalString(descriptors.l2psUid?.value, "L2PS UID"),
     localClaim: canonicalString(descriptors.localClaim?.value, "localClaim"),
     localPeerKey: capturePeerKey(descriptors.localPeerKey?.value, "localPeerKey"),
-    peerForClaim: (claim: string) => Reflect.apply(peerForClaim, value, [claim]) as
+    peerForClaim: (claim: string) => Reflect.apply(peerForClaim, receiver, [claim]) as
       ReturnType<DemosL2psRfqTransportOptions["peerForClaim"]>,
-    claimForPeer: (peerKey: string) => Reflect.apply(claimForPeer, value, [peerKey]) as
+    claimForPeer: (peerKey: string) => Reflect.apply(claimForPeer, receiver, [peerKey]) as
       ReturnType<DemosL2psRfqTransportOptions["claimForPeer"]>,
-    onError: (error: Error) => Reflect.apply(onError, value, [error]) as void,
+    onError: (error: Error) => Reflect.apply(onError, receiver, [error]) as void,
     historyPageSize: positiveInteger(
       descriptors.historyPageSize?.value,
       DEFAULT_HISTORY_PAGE_SIZE,
@@ -1261,8 +1359,153 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
   });
 }
 
+type CapturedTransportOptions = ReturnType<typeof captureTransportOptions>;
+
+/** What the checked constructor adds to a transport. */
+type NodeGuard = Readonly<{
+  /** The peer's node URL, without credentials, query or fragment. */
+  node: string;
+  requestPublicKey(peerKey: string): unknown;
+  nodeInfo(): unknown;
+}>;
+
 /**
- * Adapt demosdk L2PSMessagingPeer to the durable RFQ outbox contract.
+ * The messaging key of a DACS-1 §6.3.1 Demos agent claim: the claim's own
+ * Ed25519 key, in the node's canonical form. Only the exact parameter-free
+ * claim binds, so the key maps back to the same claim bytes.
+ */
+function demosAgentPeerKey(claim: unknown): string | undefined {
+  const key = canonicalDemosAgentPublicKey(claim);
+  if (key === null) return undefined;
+  const hex = Buffer.from(key).toString("hex");
+  return demosAgentClaimRef(hex) === claim ? hex : undefined;
+}
+
+/**
+ * A getNetworkInfo response reporting the reviewed node commit, built clean.
+ * Only own data properties are read; anything else is not that build.
+ */
+function reviewedNodeBuild(info: unknown): boolean {
+  if (typeof info !== "object" || info === null) return false;
+  const version = ownData(info, "nodeVersion")?.value;
+  return typeof version === "object" && version !== null &&
+    ownData(version, "commit")?.value === REVIEWED_NODE_COMMIT &&
+    ownData(version, "dirty")?.value === false;
+}
+
+const VERIFIED_OPTION_KEYS = [
+  "peer",
+  "codec",
+  "l2psUid",
+  "localClaim",
+  "onError",
+  "outboxStore",
+  "nodeInfo",
+] as const;
+
+function captureVerifiedOptions(value: DemosL2psRfqVerifiedTransportOptions): {
+  captured: CapturedTransportOptions;
+  guard: NodeGuard;
+} {
+  if (!isRecord(value) || !exactKeys(value, VERIFIED_OPTION_KEYS, TRANSPORT_TUNING_KEYS)) {
+    throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
+  }
+  const fields: JsonRecord = {};
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = descriptors[key as keyof typeof descriptors];
+    if (
+      typeof key !== "string" ||
+      descriptor === undefined ||
+      !descriptor.enumerable ||
+      !("value" in descriptor) ||
+      descriptor.value === undefined
+    ) {
+      throw new DacsError(
+        "Demos L2PS RFQ transport options must use enumerable data properties",
+      );
+    }
+    fields[key] = descriptor.value;
+  }
+  const { nodeInfo, ...rest } = fields;
+  const { peer, localClaim } = rest;
+  const l2psUid = canonicalString(rest.l2psUid, "L2PS UID");
+  const localPeerKey = demosAgentPeerKey(localClaim);
+  if (localPeerKey === undefined) throw new DemosL2psRfqDeploymentError("local-claim");
+  if (
+    peer === null ||
+    typeof peer !== "object" ||
+    nodeTypes.isProxy(peer) ||
+    typeof nodeInfo !== "function" ||
+    nodeTypes.isProxy(nodeInfo)
+  ) {
+    throw new DacsError("Demos L2PS RFQ transport options are malformed or unsafe");
+  }
+  // The URL rule with no peerChannel statement to fall back on, before any
+  // other peer property is read. It leaves config an own data record.
+  checkPeerChannel(peer, undefined);
+  const config = ownData(peer, "config")?.value as object;
+  const serverUrl = ownData(config, "serverUrl")?.value as string;
+  if (!isPeerKey(ownData(config, "publicKey")?.value, localPeerKey)) {
+    throw new DemosL2psRfqDeploymentError("peer-key");
+  }
+  if (ownData(config, "l2psUid")?.value !== l2psUid) {
+    throw new DemosL2psRfqDeploymentError("subnet");
+  }
+  const requestPublicKey = (peer as DemosL2psRfqVerifiedPeerLike).requestPublicKey;
+  if (typeof requestPublicKey !== "function" || nodeTypes.isProxy(requestPublicKey)) {
+    throw new DacsError("Demos L2PS RFQ transport capabilities are malformed or unsafe");
+  }
+  const url = new URL(serverUrl);
+  const captured = captureTransportOptions({
+    ...rest,
+    localPeerKey,
+    peerForClaim: demosAgentPeerKey,
+    claimForPeer: (peerKey: string) =>
+      DEMOS_AGENT_KEY.test(peerKey) ? demosAgentClaimRef(peerKey) : undefined,
+  } as unknown as DemosL2psRfqTransportOptions, value);
+  return {
+    captured,
+    guard: Object.freeze({
+      node: `${url.protocol}//${url.host}${url.pathname}`,
+      requestPublicKey: (peerKey: string) =>
+        Reflect.apply(requestPublicKey, peer, [peerKey]) as unknown,
+      nodeInfo: () => Reflect.apply(nodeInfo, value, []) as unknown,
+    }),
+  };
+}
+
+/** The operation's result, or an OperationTimeoutError once timeoutMs passes. */
+async function withTimeout<T>(
+  operation: () => Promise<T> | T,
+  label: string,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new OperationTimeoutError(`${label} timed out`)),
+          timeoutMs,
+        );
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * Adapt demosdk L2PSMessagingPeer to the durable RFQ outbox contract,
+ * UNVERIFIED: the host vouches for the member binding and the node. The
+ * transport checks only that peerForClaim and claimForPeer agree, so a
+ * reciprocal pair of wrong answers routes the RFQ to another messaging key,
+ * and it checks neither the node's build nor that the recipient registers on
+ * the same node. Use openDemosL2psRfqTransport(), which checks both, unless
+ * the host has its own verified binding profile (docs/rfq-negotiation-core.md).
  *
  * No message signature bytes are invented here: the lifecycle supplies the
  * already-signed packet and verifies it on receipt. Acknowledgement means the
@@ -1280,7 +1523,55 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
 export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
   options: DemosL2psRfqTransportOptions,
 ): DemosL2psRfqTransport<TSignature> {
-  const captured = captureTransportOptions(options);
+  return transportFrom<TSignature>(captureTransportOptions(options), undefined);
+}
+
+/**
+ * Open the checked Demos L2PS RFQ transport. Unlike
+ * createUnverifiedDemosL2psRfqTransport(), it takes no host mapping and
+ * checks, before it returns and again where safety depends on them:
+ *
+ * - the member binding: every member is a DACS-1 §6.3.1 did:demos:agent
+ *   claim, and its messaging key is that claim's own Ed25519 key. Node
+ *   61b8e75 registers a key only with an Ed25519 proof made by it
+ *   (L2PSMessagingServer.ts:154-170), so only the claim's holder receives
+ *   the frames routed to it;
+ * - the local peer: it dials a readable wss:// (or loopback ws://) URL and
+ *   registers the local claim's key on l2psUid;
+ * - the node: nodeInfo() reports commit 61b8e75 with dirty: false, at open
+ *   and again before every resend, whose safety rests on that node's unique
+ *   message hash; every send outbox entry is bound to the node URL it was
+ *   sent through, and absence on another node never authorizes a resend;
+ * - the recipient: before every send, the node confirms the recipient's key
+ *   is registered there on the same subnet, so a frame is never queued on a
+ *   node the recipient does not use.
+ *
+ * A refused option throws DemosL2psRfqDeploymentError or
+ * DemosL2psRfqPeerChannelError (both with a `code`). A send it refuses never
+ * reaches the peer and stays indeterminate, except a counterparty claim it
+ * can never route, which is rejected while never sent. What the transport still
+ * cannot check (TLS certificate checks, and that nodeInfo reads the node
+ * behind the peer's URL) is in docs/rfq-negotiation-core.md.
+ */
+export async function openDemosL2psRfqTransport<TSignature = unknown>(
+  options: DemosL2psRfqVerifiedTransportOptions,
+): Promise<DemosL2psRfqTransport<TSignature>> {
+  const { captured, guard } = captureVerifiedOptions(options);
+  let info: unknown;
+  try {
+    info = await withTimeout(() => guard.nodeInfo(), "Demos L2PS RFQ node build check",
+      captured.operationTimeoutMs);
+  } catch {
+    throw new DemosL2psRfqDeploymentError("node-unavailable");
+  }
+  if (!reviewedNodeBuild(info)) throw new DemosL2psRfqDeploymentError("node-build");
+  return transportFrom<TSignature>(captured, guard);
+}
+
+function transportFrom<TSignature>(
+  captured: CapturedTransportOptions,
+  guard: NodeGuard | undefined,
+): DemosL2psRfqTransport<TSignature> {
   type Consumer = Parameters<DemosL2psRfqTransport<TSignature>["start"]>[0];
   let started = false;
   let onPacket: Consumer | undefined;
@@ -1319,26 +1610,12 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
     }
   }
 
-  async function bounded<T>(
+  function bounded<T>(
     operation: () => Promise<T> | T,
     label: string,
     timeoutMs = captured.operationTimeoutMs,
   ): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        Promise.resolve().then(operation),
-        new Promise<T>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new OperationTimeoutError(`${label} timed out`)),
-            timeoutMs,
-          );
-          timer.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
+    return withTimeout(operation, label, timeoutMs);
   }
 
   /**
@@ -1348,6 +1625,11 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
    * whose claim is another one.
    */
   function remotePeer(claim: string): string {
+    // The checked transport derives every key from its claim, so a claim
+    // without one is a wrong answer, never one that may come later.
+    if (guard !== undefined && demosAgentPeerKey(claim) === undefined) {
+      throw new DacsError(UNBOUND_CLAIM_REASON);
+    }
     let value: string | undefined;
     try {
       value = captured.peerForClaim(claim);
@@ -1450,14 +1732,15 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
     if (value === undefined) return undefined;
     const label = "Demos L2PS RFQ send outbox entry";
     const fields = admittedFields(value,
-      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state", "generation", "attemptEndedAtMs"], label);
+      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state", "generation", "attemptEndedAtMs", "node"], label);
     admitEncrypted(fields.encrypted);
-    for (const key of ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "state", "generation"]) {
+    for (const key of ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "state", "generation", "node"]) {
       admittedChars(fields[key], MAX_CANONICAL_STRING_CHARS, label);
     }
     value = ownedJson(value, label);
     if (!isRecord(value) || !exactKeys(value,
-      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state", "generation"], ["attemptEndedAtMs"]) ||
+      ["packetId", "fromPeer", "toPeer", "l2psUid", "codecId", "encrypted", "state", "generation"], ["attemptEndedAtMs", "node"]) ||
+      (value.node !== undefined && typeof value.node !== "string") ||
       !Number.isSafeInteger(value.generation) || (value.generation as number) < 1 ||
       value.packetId !== routed.packet.packetId ||
       value.fromPeer !== captured.localPeerKey || value.toPeer !== routed.recipientPeer ||
@@ -1477,6 +1760,10 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
     if (entry.state === "acknowledged") return { disposition: "acknowledged" };
     // The node holds this hash, so absence can never be proven: no resend.
     if (entry.state === "duplicate") return { disposition: "indeterminate", reason: DUPLICATE_REASON };
+    // Dedup and history are per node database: this node's history cannot
+    // prove absence on the node that took the frame, and would store a
+    // resend as a new message. An unverified transport binds no node.
+    if (entry.node !== guard?.node) return { disposition: "indeterminate", reason: OTHER_NODE_REASON };
     try {
       const now = monotonicNow();
       // A crash before the outcome write has no known end time. Start the
@@ -1492,6 +1779,47 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
     } catch {
       return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
     }
+  }
+
+  /**
+   * Checked transport only: before a resend, whose safety rests on node
+   * 61b8e75's unique message hash, the node must still report that build,
+   * clean. An unreadable answer counts as not confirmed.
+   */
+  async function nodeRefusal(): Promise<{ disposition: "indeterminate"; reason: string } | undefined> {
+    if (guard === undefined) return undefined;
+    try {
+      if (reviewedNodeBuild(await bounded(() => guard.nodeInfo(), "Demos L2PS RFQ node build check"))) {
+        return undefined;
+      }
+    } catch {
+      // Not confirmed.
+    }
+    return { disposition: "indeterminate", reason: NODE_BUILD_REASON };
+  }
+
+  /**
+   * Checked transport only: before any send, the node must confirm the
+   * recipient's key is registered on it under this subnet. Node 61b8e75
+   * queues a frame for any other key and relays nothing between nodes, so
+   * without this a recipient on another node gets an acknowledged frame it
+   * never receives. Nothing is sent or stored on refusal, so the packet stays
+   * retryable (reconcile answers absent for it).
+   */
+  async function routeRefusal(
+    recipientPeer: string,
+  ): Promise<{ disposition: "indeterminate"; reason: string } | undefined> {
+    if (guard === undefined) return undefined;
+    let registered: unknown;
+    try {
+      registered = await bounded(() => guard.requestPublicKey(recipientPeer),
+        "Demos L2PS RFQ recipient registration check");
+    } catch {
+      return { disposition: "indeterminate", reason: REGISTRATION_CHECK_REASON };
+    }
+    return isPeerKey(registered, recipientPeer)
+      ? undefined
+      : { disposition: "indeterminate", reason: UNREGISTERED_REASON };
   }
 
   /**
@@ -2070,6 +2398,10 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
         // caller did not reconcile first.
         const found = await historyDisposition(routed, absence);
         if (found.disposition !== "absent") return found;
+        // A late first send may still land, so only the node's unique
+        // message hash keeps this resend from being stored twice.
+        const unverified = await nodeRefusal();
+        if (unverified !== undefined) return unverified;
       } else {
         const prepared = await sealPacket(routed);
         entry = {
@@ -2082,6 +2414,7 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
           state: "sending",
           // Not stored yet: the first save commits only if no entry exists.
           generation: 0,
+          ...(guard === undefined ? {} : { node: guard.node }),
         };
       }
     } catch (cause) {
@@ -2091,6 +2424,8 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
         reason: errorFrom(cause, "Demos L2PS RFQ packet encryption or outbox failed").message,
       };
     }
+    const unrouted = await routeRefusal(routed.recipientPeer);
+    if (unrouted !== undefined) return unrouted;
     // Persist the exact submitted payload and a crash marker BEFORE calling
     // the peer. Retries reuse ciphertext, nonce and optional ephemeral key.
     // A new frame commits only where no entry exists, and every later save
