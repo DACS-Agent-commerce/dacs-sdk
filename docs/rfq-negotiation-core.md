@@ -347,8 +347,9 @@ each with a `code`, before any peer call:
 - Every member is a parameter-free DACS-1 §6.3.1 `did:demos:agent:<key>`
   claim, and its messaging key is that claim's own Ed25519 key, the key the
   SDK's agents already sign with. Node `61b8e75` registers a key only after it
-  verifies an Ed25519 signature by that key over
-  `register:{publicKey}:{timestamp}` (`L2PSMessagingServer.ts:154-170`), so
+  verifies a signature by that key over `register:{publicKey}:{timestamp}`,
+  under the node's configured signing algorithm, Ed25519 by default
+  (`L2PSMessagingServer.ts:154-170`), so
   only the claim's holder can register under it and receive what is routed
   there. There are no `peerForClaim`, `claimForPeer` or `localPeerKey`
   options to get wrong. `localClaim` must be such a claim (`local-claim`). A packet for a
@@ -359,8 +360,17 @@ each with a `code`, before any peer call:
   `config.l2psUid` as own data properties, as demosdk 4.0.16 does, and has
   `requestPublicKey()`. The URL must pass the channel rule below; there is no
   `peerChannel` statement, so a peer that hides its URL is refused
-  (`unstated`). The peer must register the local claim's key (`peer-key`) on
-  `l2psUid` (`subnet`).
+  (`unstated`). The URL names its node by scheme, host, port and path only:
+  credentials, a query or a fragment, even an empty `?` or `#`, are refused
+  (`node-url`), because the exact URL is the node's identity (below). The peer
+  must register the local claim's key (`peer-key`) on `l2psUid` (`subnet`).
+- The peer can never dial, or register as, anything else. demosdk 4.0.16
+  keeps the caller's `config` object in a writable property and reads
+  `serverUrl`, `publicKey` and `l2psUid` from it again on every reconnect
+  (`L2PSMessagingPeer.js:37,223,292-299`), so a host that kept the object, or
+  replaced `peer.config`, could move an open transport to another node. The
+  checked transport requires `config` to be frozen and the peer's own `config`
+  property to be neither writable nor configurable (`mutable-peer`).
 - `nodeInfo()` returns the node's `getNetworkInfo` response, and it reports
   `nodeVersion.commit` `61b8e75aa8db5e408c49e1c3a89db4d673f45578` with
   `nodeVersion.dirty` `false` (`node-build`). A read that throws or exceeds
@@ -391,26 +401,34 @@ Once open, the checked transport also checks:
   not confirm the reviewed clean build; nothing is resent". A first send
   does not read the node again.
 - that a resend goes through the node that took the frame. Each send outbox
-  entry records, as `node`, the URL its frame was handed to, without
-  credentials, query or fragment. Dedup and history are per node database,
-  so absence anywhere else never authorizes a resend: the entry stays
+  entry records, as `node`, the exact URL its frame was handed to (in WHATWG
+  serialization, so `WSS://Host:443/p` and `wss://host/p` are one node, and
+  `wss://host/a` and `wss://host/b` are two). Dedup and history are per node
+  database, so absence anywhere else never authorizes a resend: the entry stays
   `indeterminate` with "Demos L2PS RFQ packet was sent through another
   messaging node" (our frame in that history still acknowledges) until the
   transport is opened on the original URL again. The unverified transport
   binds no node, so it never resends such an entry either, and the checked
   one never resends an entry the unverified one wrote.
 
-It cannot check whether TLS certificate checks are on, or that `nodeInfo`
-reads the node behind the peer's URL: the messaging protocol carries no node
-identity, and the node's report is its own unsigned statement. What the node
+It cannot check whether TLS certificate checks are on, that `nodeInfo`
+reads the node behind the peer's URL, or that one URL always reaches the same
+node database: the messaging protocol carries no node identity, and the
+node's report is its own unsigned statement. The host MUST NOT put a URL in
+front of more than one node database (DNS or load-balancer failover between
+nodes that do not share it); give each node its own URL. What the node
 says stays unsigned too (the acknowledgement authority, below), and the
 installed demosdk files are the host's to check (below).
 
 ```ts
+// serverUrl wss:// (or ws:// to 127.0.0.1 or [::1]) with no credentials,
+// query or fragment; publicKey the local claim's key; l2psUid as below.
+const peer = new L2PSMessagingPeer(Object.freeze({ serverUrl, publicKey, l2psUid, signFn }));
+Object.defineProperty(peer, "config", { writable: false, configurable: false });
+await peer.connect();
+
 const transport = await openDemosL2psRfqTransport({
-  // Connected and registered; serverUrl wss:// (or ws:// to 127.0.0.1 or
-  // [::1]), publicKey the local claim's key, l2psUid as below.
-  peer: connectedAndRegisteredL2psMessagingPeer,
+  peer,
   codec: createDemosL2psRfqAesGcmCodec({ sharedKey: subnetKey }),
   l2psUid,
   localClaim: buyerClaim, // did:demos:agent:<the peer's publicKey>
@@ -438,7 +456,8 @@ await buyerRfq.resumeOutbox(jobId);
 `createUnverifiedDemosL2psRfqTransport()` is synchronous and takes the same
 options without `nodeInfo`, plus `localPeerKey`, `peerForClaim`,
 `claimForPeer` and an optional `peerChannel` (below). Of the checks above it
-applies only the channel rule.
+applies only the channel rule, once, at construction; it accepts a peer whose
+config can still change.
 
 A Demos `submitted` or offline `queued` response acknowledges the exact packet.
 The accepted payloads are exactly `{ messageHash, l2psStatus: "submitted" }`
@@ -512,8 +531,9 @@ Every refusal throws `DemosL2psRfqPeerChannelError`, whose `code` is
 `unstated`, `malformed`, `insecure` or `mismatch`. Its message never repeats
 the URL, which may carry credentials.
 
-The check has limits. It runs once, at construction, so a URL changed later is
-not rechecked. It cannot see whether TLS certificate checks were turned off,
+The check has limits. It runs once, at construction, so for the unverified
+transport a URL changed later is not rechecked; the checked transport refuses
+a peer whose URL can change (above). It cannot see whether TLS certificate checks were turned off,
 and `peerChannel` is only the host's statement. Above all, TLS authenticates
 the channel to the node, not what the node says: an acknowledgement stays the
 node's unsigned statement. A node-signed receipt that the transport could
@@ -549,8 +569,9 @@ refused compare. The entry type is not exported; a host store can name it as
 `Parameters<DemosL2psRfqTransportOptions["outboxStore"]["save"]>[1]`.
 The entry binds the packet ID,
 peers, subnet and codec, and contains only the encrypted envelope, send state,
-generation, attempt end time and, for the checked transport, the node URL
-without credentials, query or fragment; it stores no shared key. The exact `to`, encrypted
+generation, attempt end time and, for the checked transport, the exact node
+URL, which never carries credentials, a query or a fragment (the transport
+refuses such a URL); it stores no shared key. The exact `to`, encrypted
 ciphertext/nonce/optional ephemeral key, and message hash are saved before
 calling `peer.send()`, and retries reuse them. The demosdk sends that payload
 unchanged (`L2PSMessagingPeer.js:119-124`); it still creates a fresh outer
@@ -712,9 +733,10 @@ The limits of this evidence:
 - Dedup and history are per node database. Reconcile and resend must reach
   the same node, or nodes that share its database. Another node's history
   cannot prove absence there, and that node would accept a resend as a new
-  message. The checked transport binds each send outbox entry to its node URL
-  and never resends it through another (above); with the unverified
-  transport this is the host's job.
+  message. The checked transport binds each send outbox entry to its exact
+  node URL, keeps its peer on that URL, and never resends the entry through
+  another (above). It cannot see a URL that reaches different databases at
+  different times; with the unverified transport all of this is the host's job.
 - A `failed` history row for the packet blocks every resend, permanently.
 - Nothing bounds when a timed-out send lands.
 - Node `61b8e75` refuses a sender's message once 200 of its offline messages

@@ -149,6 +149,10 @@ const DEPLOYMENT_MESSAGES = {
   "peer-key":
     "Demos L2PS RFQ peer must register the local claim's own key as config.publicKey",
   subnet: "Demos L2PS RFQ peer must register on l2psUid as config.l2psUid",
+  "node-url":
+    "Demos L2PS RFQ peer URL must name its node by scheme, host, port and path only: no credentials, query or fragment",
+  "mutable-peer":
+    "Demos L2PS RFQ peer config must be frozen, and the peer's config property neither writable nor configurable",
   "node-unavailable": "Demos L2PS RFQ node build could not be read",
   "node-build":
     `Demos L2PS RFQ node must report commit ${REVIEWED_NODE_COMMIT} with dirty: false`,
@@ -283,8 +287,9 @@ type SendOutboxEntry = {
   generation: number;
   attemptEndedAtMs?: number;
   /**
-   * Checked transport only: the messaging node URL the frame was handed to,
-   * without credentials, query or fragment. Absent for the unverified one.
+   * Checked transport only: the exact messaging node URL the frame was handed
+   * to, which has no credentials, query or fragment (open refuses a URL with
+   * any). Absent for the unverified one.
    */
   node?: string;
 };
@@ -304,9 +309,9 @@ export interface DemosL2psRfqTransportOptions {
    *
    * demosdk 4.0.16 declares the peer's config private, but at runtime the URL
    * it dials is the own data property config.serverUrl. That is not public
-   * API. At construction the transport reads it through own data descriptors
-   * only (no getter runs, no prototype is consulted) and refuses anything but
-   * wss:// or ws:// to 127.0.0.0/8 or [::1] with a
+   * API. At construction, and only then, the transport reads it through own
+   * data descriptors (no getter runs, no prototype is consulted) and refuses
+   * anything but wss:// or ws:// to 127.0.0.0/8 or [::1] with a
    * DemosL2psRfqPeerChannelError; a readable value that is not a URL string
    * is refused too. A peer without a readable config.serverUrl, such as a
    * wrapper, must state its channel in `peerChannel`.
@@ -417,6 +422,14 @@ export interface DemosL2psRfqVerifiedTransportOptions
    * ws:// to a loopback IP literal), config.publicKey (the local claim's
    * key) and config.l2psUid (this l2psUid). A wrapper that hides them is
    * refused: there is no peerChannel statement here.
+   *
+   * The peer reads all three again on every reconnect, so they must not
+   * change after open: config must be frozen, and the peer's own config
+   * property neither writable nor configurable. Build the peer from
+   * Object.freeze({ ... }) and then call Object.defineProperty(peer,
+   * "config", { writable: false, configurable: false }). The URL names one
+   * node by scheme, host, port and path only; credentials, a query or a
+   * fragment are refused. One URL must always reach the same node database.
    */
   peer: DemosL2psRfqVerifiedPeerLike;
   /**
@@ -1363,7 +1376,7 @@ type CapturedTransportOptions = ReturnType<typeof captureTransportOptions>;
 
 /** What the checked constructor adds to a transport. */
 type NodeGuard = Readonly<{
-  /** The peer's node URL, without credentials, query or fragment. */
+  /** The peer's exact node URL, which has no credentials, query or fragment. */
   node: string;
   requestPublicKey(peerKey: string): unknown;
   nodeInfo(): unknown;
@@ -1446,6 +1459,20 @@ function captureVerifiedOptions(value: DemosL2psRfqVerifiedTransportOptions): {
   checkPeerChannel(peer, undefined);
   const config = ownData(peer, "config")?.value as object;
   const serverUrl = ownData(config, "serverUrl")?.value as string;
+  // The exact URL is the node's identity, kept in every send outbox entry.
+  // Any other part could route to another node under the same tag, or put a
+  // secret in the outbox, so it is refused rather than dropped.
+  const url = new URL(serverUrl);
+  const node = `${url.protocol}//${url.host}${url.pathname}`;
+  if (url.href !== node) throw new DemosL2psRfqDeploymentError("node-url");
+  // demosdk 4.0.16 reads this.config.serverUrl, publicKey and l2psUid again on
+  // every reconnect (L2PSMessagingPeer.js:223,292,298-299). Locked, they stay
+  // the node, key and subnet checked here for the peer's whole life.
+  const configProperty = Object.getOwnPropertyDescriptor(peer, "config");
+  if (configProperty?.writable !== false || configProperty.configurable !== false ||
+      !Object.isFrozen(config)) {
+    throw new DemosL2psRfqDeploymentError("mutable-peer");
+  }
   if (!isPeerKey(ownData(config, "publicKey")?.value, localPeerKey)) {
     throw new DemosL2psRfqDeploymentError("peer-key");
   }
@@ -1456,7 +1483,6 @@ function captureVerifiedOptions(value: DemosL2psRfqVerifiedTransportOptions): {
   if (typeof requestPublicKey !== "function" || nodeTypes.isProxy(requestPublicKey)) {
     throw new DacsError("Demos L2PS RFQ transport capabilities are malformed or unsafe");
   }
-  const url = new URL(serverUrl);
   const captured = captureTransportOptions({
     ...rest,
     localPeerKey,
@@ -1467,7 +1493,7 @@ function captureVerifiedOptions(value: DemosL2psRfqVerifiedTransportOptions): {
   return {
     captured,
     guard: Object.freeze({
-      node: `${url.protocol}//${url.host}${url.pathname}`,
+      node,
       requestPublicKey: (peerKey: string) =>
         Reflect.apply(requestPublicKey, peer, [peerKey]) as unknown,
       nodeInfo: () => Reflect.apply(nodeInfo, value, []) as unknown,
@@ -1513,8 +1539,9 @@ async function withTimeout<T>(
  * contains an exact decryptable packet; both come, unsigned, from the peer's
  * node, which the host must trust. That is node storage, not the DACS-3
  * §8.3.4 member acknowledgement. Construction refuses a peer whose channel
- * is not wss:// or loopback ws:// (see the `peer` option). Absence is returned
- * for a packet with no send outbox entry, which never reached the peer, and
+ * is not wss:// or loopback ws:// (see the `peer` option); it reads the URL
+ * once, so a later change to the peer's config is not checked. Absence is
+ * returned for a packet with no send outbox entry, which never reached the peer, and
  * otherwise only from a fully exhausted first history page; ambiguous
  * pagination never authorizes redrive, and publish reads history itself
  * before a resend. No frame exceeds node 61b8e75's ciphertext limit; a
@@ -1533,15 +1560,16 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
  *
  * - the member binding: every member is a DACS-1 §6.3.1 did:demos:agent
  *   claim, and its messaging key is that claim's own Ed25519 key. Node
- *   61b8e75 registers a key only with an Ed25519 proof made by it
- *   (L2PSMessagingServer.ts:154-170), so only the claim's holder receives
- *   the frames routed to it;
+ *   61b8e75 registers a key only with a proof made by it under the node's
+ *   signing algorithm, Ed25519 by default (L2PSMessagingServer.ts:154-170),
+ *   so only the claim's holder receives the frames routed to it;
  * - the local peer: it dials a readable wss:// (or loopback ws://) URL and
- *   registers the local claim's key on l2psUid;
+ *   registers the local claim's key on l2psUid, and its config is locked so
+ *   no reconnect dials or registers anything else;
  * - the node: nodeInfo() reports commit 61b8e75 with dirty: false, at open
  *   and again before every resend, whose safety rests on that node's unique
- *   message hash; every send outbox entry is bound to the node URL it was
- *   sent through, and absence on another node never authorizes a resend;
+ *   message hash; every send outbox entry is bound to the exact node URL it
+ *   was sent through, and absence on another node never authorizes a resend;
  * - the recipient: before every send, the node confirms the recipient's key
  *   is registered there on the same subnet, so a frame is never queued on a
  *   node the recipient does not use.
@@ -1550,8 +1578,9 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
  * DemosL2psRfqPeerChannelError (both with a `code`). A send it refuses never
  * reaches the peer and stays indeterminate, except a counterparty claim it
  * can never route, which is rejected while never sent. What the transport still
- * cannot check (TLS certificate checks, and that nodeInfo reads the node
- * behind the peer's URL) is in docs/rfq-negotiation-core.md.
+ * cannot check (TLS certificate checks, that nodeInfo reads the node behind
+ * the peer's URL, and that the URL always reaches one node database) is in
+ * docs/rfq-negotiation-core.md.
  */
 export async function openDemosL2psRfqTransport<TSignature = unknown>(
   options: DemosL2psRfqVerifiedTransportOptions,

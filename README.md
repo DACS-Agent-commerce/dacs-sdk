@@ -137,7 +137,10 @@ AES-GCM packet transport over Demos L2PS messaging with outbound and inbound
 history recovery. It does not invent the still-undefined DACS signature or
 encrypted-transcript publication wires. The host supplies the demosdk
 messaging peer; `openDemosL2psRfqTransport()` routes each `did:demos:agent`
-member to its own key and checks the node build and same-node registration,
+member to its own key, requires a peer locked to one exact node URL, and
+checks the node build and that the recipient is registered (online) on that
+node before each send, so an offline counterparty holds the send until it
+returns or the RFQ times out,
 while `createUnverifiedDemosL2psRfqTransport()` takes the host's verified
 claim/peer-key mapping and node instead. See the
 [RFQ negotiation core guide](./docs/rfq-negotiation-core.md) for that boundary

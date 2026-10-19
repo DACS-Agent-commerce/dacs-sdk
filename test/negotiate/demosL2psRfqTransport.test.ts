@@ -232,7 +232,7 @@ class FakeL2psHub {
    */
   nodeDedup = false;
   /**
-   * Keys registered on this node, each with its own Ed25519 proof
+   * Keys registered on this node, each with its own signed proof
    * (L2PSMessagingServer.ts:154-192); request_public_key answers only for
    * these (:373-396). Only checkedPeer() registers a key here.
    */
@@ -5274,6 +5274,10 @@ describe("Demos L2PS RFQ checked transport", () => {
   const OFFER = { rfqProposalVersion: "1" as const, price: { amount: "9", currency: "USDC" } };
   const NODE_A = "wss://node-a.example:3006";
   const NODE_B = "wss://node-b.example:3006";
+  // Two nodes behind one gateway host, told apart only by path.
+  const GATEWAY_A = "wss://gateway.example/node-a";
+  const GATEWAY_B = "wss://gateway.example/node-b";
+  const OTHER_NODE = "Demos L2PS RFQ packet was sent through another messaging node";
   const UNREGISTERED = "Demos L2PS RFQ recipient is not registered on this messaging node";
   const CHECK_FAILED = "Demos L2PS RFQ recipient registration check failed";
   const UNBOUND = "Demos L2PS RFQ recipient claim is not a did:demos:agent key";
@@ -5295,14 +5299,29 @@ describe("Demos L2PS RFQ checked transport", () => {
   // What node2 actually reported: the reviewed commit, built dirty.
   const NODE2 = { ...CLEAN_NODE, nodeVersion: { ...CLEAN_NODE.nodeVersion, dirty: true } };
 
-  /** A demosdk-shaped peer for `key`, dialing `node`; registered on `hub` unless told not to. */
-  function checkedPeer(hub: FakeL2psHub, key: string, node = NODE_A, register = true) {
-    if (register) hub.registered.add(key);
+  /** What openDemosL2psRfqTransport requires: a frozen config the peer can never replace. */
+  function lockConfig<T extends object>(peer: T): T {
+    Object.freeze((peer as { config: object }).config);
+    Object.defineProperty(peer, "config", { writable: false, configurable: false });
+    return peer;
+  }
+
+  /** A demosdk-shaped peer for `key`, dialing `node`, with its config not locked yet. */
+  function unlockedPeer(hub: FakeL2psHub, key: string, node = NODE_A, config: object = {}) {
     return Object.assign(hub.peer(key), {
-      config: { serverUrl: node, publicKey: key, l2psUid: L2PS_UID, signFn: () => "00" },
+      config: { serverUrl: node, publicKey: key, l2psUid: L2PS_UID, signFn: () => "00", ...config },
       requestPublicKey: vi.fn(async (target: string): Promise<string | null> =>
         (hub.registered.has(target) ? target : null)),
     });
+  }
+
+  /**
+   * A demosdk-shaped peer for `key`, dialing `node`, with its config locked;
+   * registered on `hub` unless told not to.
+   */
+  function checkedPeer(hub: FakeL2psHub, key: string, node = NODE_A, register = true, config: object = {}) {
+    if (register) hub.registered.add(key);
+    return lockConfig(unlockedPeer(hub, key, node, config));
   }
 
   function checkedOptions(
@@ -5348,17 +5367,34 @@ describe("Demos L2PS RFQ checked transport", () => {
   }
 
   test("opens over demosdk's own peer when it registers the claim's key on a clean node", async () => {
-    const peer = await demosPeer({
+    const config = {
       serverUrl: NODE_A,
       // Any accepted key form: compared in the node's canonical form.
       publicKey: `0x${BUYER_PEER.toUpperCase()}`,
       l2psUid: L2PS_UID,
       signFn: () => "00",
-    }) as DemosL2psRfqVerifiedPeerLike;
+    };
     const nodeInfo = vi.fn(() => structuredClone(CLEAN_NODE));
+    // As demosdk builds it, the peer keeps the caller's object in a writable
+    // property and dials this.config.serverUrl again on every reconnect.
+    const asBuilt = await demosPeer({ ...config }) as DemosL2psRfqVerifiedPeerLike;
+    await expect(openError(checkedOptions(asBuilt, { nodeInfo }))).resolves.toMatchObject({
+      name: "DemosL2psRfqDeploymentError", code: "mutable-peer",
+    });
+    const frozenOnly = await demosPeer(Object.freeze({ ...config })) as DemosL2psRfqVerifiedPeerLike;
+    await expect(openError(checkedOptions(frozenOnly, { nodeInfo }))).resolves.toMatchObject({
+      name: "DemosL2psRfqDeploymentError", code: "mutable-peer",
+    });
+    expect(nodeInfo).not.toHaveBeenCalled();
+
+    const peer = lockConfig(await demosPeer({ ...config }) as DemosL2psRfqVerifiedPeerLike);
     const transport = await openDemosL2psRfqTransport<string>(checkedOptions(peer, { nodeInfo }));
     expect(typeof transport.publish).toBe("function");
     expect(nodeInfo).toHaveBeenCalledTimes(1);
+    const locked = peer as unknown as { config: { serverUrl: string } };
+    expect(() => { locked.config.serverUrl = NODE_B; }).toThrow(TypeError);
+    expect(() => { locked.config = { serverUrl: NODE_B }; }).toThrow(TypeError);
+    expect(locked.config.serverUrl).toBe(NODE_A);
   });
 
   test.each([
@@ -5438,21 +5474,66 @@ describe("Demos L2PS RFQ checked transport", () => {
     },
     {
       name: "a peer that registers another key",
-      options: (hub: FakeL2psHub) => {
-        const peer = checkedPeer(hub, BUYER_PEER);
-        peer.config.publicKey = THIRD_PEER;
-        return checkedOptions(peer);
-      },
+      options: (hub: FakeL2psHub) =>
+        checkedOptions(checkedPeer(hub, BUYER_PEER, NODE_A, true, { publicKey: THIRD_PEER })),
       error: { name: "DemosL2psRfqDeploymentError", code: "peer-key" },
     },
     {
       name: "a peer that registers on another subnet",
+      options: (hub: FakeL2psHub) =>
+        checkedOptions(checkedPeer(hub, BUYER_PEER, NODE_A, true, { l2psUid: `${L2PS_UID}-other` })),
+      error: { name: "DemosL2psRfqDeploymentError", code: "subnet" },
+    },
+    // Each would let two routes share one node tag, or put a secret in the outbox.
+    ...[
+      ["credentials", "wss://operator:pw@node-a.example:3006/im"],
+      ["a user name only", "wss://operator@node-a.example:3006/im"],
+      ["a query", "wss://gateway.example/im?node=a"],
+      ["an empty query", "wss://gateway.example/im?"],
+      ["a fragment", "wss://gateway.example/im#a"],
+      ["an empty fragment", "wss://gateway.example/im#"],
+    ].map(([part, url]) => ({
+      name: `a URL with ${part}`,
+      options: (hub: FakeL2psHub) => checkedOptions(checkedPeer(hub, BUYER_PEER, url)),
+      error: { name: "DemosL2psRfqDeploymentError", code: "node-url" },
+    })),
+    {
+      name: "a config that is not frozen",
       options: (hub: FakeL2psHub) => {
-        const peer = checkedPeer(hub, BUYER_PEER);
-        peer.config.l2psUid = `${L2PS_UID}-other`;
+        const peer = unlockedPeer(hub, BUYER_PEER);
+        Object.defineProperty(peer, "config", { writable: false, configurable: false });
         return checkedOptions(peer);
       },
-      error: { name: "DemosL2psRfqDeploymentError", code: "subnet" },
+      error: { name: "DemosL2psRfqDeploymentError", code: "mutable-peer" },
+    },
+    {
+      name: "a frozen config the peer can still replace",
+      options: (hub: FakeL2psHub) => {
+        const peer = unlockedPeer(hub, BUYER_PEER);
+        Object.freeze(peer.config);
+        return checkedOptions(peer);
+      },
+      error: { name: "DemosL2psRfqDeploymentError", code: "mutable-peer" },
+    },
+    {
+      name: "a read-only config property that can still be redefined",
+      options: (hub: FakeL2psHub) => {
+        const peer = unlockedPeer(hub, BUYER_PEER);
+        Object.freeze(peer.config);
+        Object.defineProperty(peer, "config", { writable: false });
+        return checkedOptions(peer);
+      },
+      error: { name: "DemosL2psRfqDeploymentError", code: "mutable-peer" },
+    },
+    {
+      name: "a sealed config, whose values can still change",
+      options: (hub: FakeL2psHub) => {
+        const peer = unlockedPeer(hub, BUYER_PEER);
+        Object.seal(peer.config);
+        Object.defineProperty(peer, "config", { writable: false, configurable: false });
+        return checkedOptions(peer);
+      },
+      error: { name: "DemosL2psRfqDeploymentError", code: "mutable-peer" },
     },
     {
       name: "a peer that hides its URL",
@@ -5468,9 +5549,9 @@ describe("Demos L2PS RFQ checked transport", () => {
     },
     {
       name: "a peer without requestPublicKey",
-      options: (hub: FakeL2psHub) => checkedOptions(Object.assign(hub.peer(BUYER_PEER), {
+      options: (hub: FakeL2psHub) => checkedOptions(lockConfig(Object.assign(hub.peer(BUYER_PEER), {
         config: { serverUrl: NODE_A, publicKey: BUYER_PEER, l2psUid: L2PS_UID },
-      }) as unknown as DemosL2psRfqVerifiedPeerLike),
+      })) as unknown as DemosL2psRfqVerifiedPeerLike),
       error: { message: "Demos L2PS RFQ transport capabilities are malformed or unsafe" },
     },
     ...(Object.keys(hostAnswers) as (keyof typeof hostAnswers)[]).map((key) => ({
@@ -5483,8 +5564,13 @@ describe("Demos L2PS RFQ checked transport", () => {
     })),
   ])("refuses $name, before reading the node", async ({ options, error }) => {
     const nodeInfo = vi.fn(() => structuredClone(CLEAN_NODE));
-    await expect(openError({ ...options(new FakeL2psHub()), nodeInfo })).resolves.toMatchObject(error);
+    const hub = new FakeL2psHub();
+    const refused = await openError({ ...options(hub), nodeInfo });
+    expect(refused).toMatchObject(error);
+    // The message never repeats a peer value such as the URL.
+    expect((refused as Error).message).not.toMatch(/operator|gateway|node-a\.example/);
     expect(nodeInfo).not.toHaveBeenCalled();
+    expect(hub.sends).toBe(0);
   });
 
   test("on two isolated nodes nothing is sent or acknowledged, and the waiting buyer records the RFQ-4 timeout", async () => {
@@ -5675,15 +5761,28 @@ describe("Demos L2PS RFQ checked transport", () => {
     expect(nodeInfo).toHaveBeenCalledTimes(3);
   });
 
-  test("a frame handed to one node is never resent through another, and its entry stores no credentials", async () => {
-    const hub = new FakeL2psHub();
+  /**
+   * Two isolated nodes, each with its own database, behind one gateway host
+   * and told apart by path. The seller is registered on both, so only the
+   * node tag keeps a frame from being resent through the other one.
+   */
+  function gatewayNodes() {
+    const nodes = new Map([[GATEWAY_A, new FakeL2psHub()], [GATEWAY_B, new FakeL2psHub()]]);
+    for (const hub of nodes.values()) {
+      hub.nodeDedup = true;
+      hub.registered.add(SELLER_PEER);
+    }
+    return { nodes, nodeA: nodes.get(GATEWAY_A)!, nodeB: nodes.get(GATEWAY_B)! };
+  }
+
+  test("a frame handed to one node is never resent through another; the tag is the exact URL", async () => {
+    const { nodeA, nodeB } = gatewayNodes();
     let ticks = 0;
     const outboxStore = memorySendOutbox();
     const store = createInMemoryDurableRfqLifecycleStore<string>();
     const reservation = durableReservation();
     const codec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
-    checkedPeer(hub, SELLER_PEER);
-    async function buyerOn(serverUrl: string, send?: DemosL2psRfqPeerLike["send"]) {
+    async function buyerOn(serverUrl: string, hub: FakeL2psHub, send?: DemosL2psRfqPeerLike["send"]) {
       const peer = checkedPeer(hub, BUYER_PEER, serverUrl);
       if (send !== undefined) peer.send = send;
       const transport = await openDemosL2psRfqTransport<string>(checkedOptions(peer, {
@@ -5691,7 +5790,7 @@ describe("Demos L2PS RFQ checked transport", () => {
       }));
       return agentClient("buyer", transport, reservation, { store });
     }
-    const first = await buyerOn("wss://operator:secret@node-a.example:3006/im?token=abc#x", async () => {
+    const first = await buyerOn(GATEWAY_A, nodeA, async () => {
       throw new Error("socket closed");
     });
     await first.open(openInput(BUYER_AGENT, SELLER_AGENT));
@@ -5700,20 +5799,63 @@ describe("Demos L2PS RFQ checked transport", () => {
     const packet = status.status === "ok" ? status.record.outbox[0]?.packet : undefined;
     if (packet === undefined) throw new Error("no outbox packet");
     const entry = await outboxStore.load(packet.packetId) as Record<string, unknown>;
-    expect(entry).toMatchObject({ state: "indeterminate", node: "wss://node-a.example:3006/im" });
-    expect(JSON.stringify(entry)).not.toMatch(/operator|secret|token/);
+    expect(entry).toMatchObject({ state: "indeterminate", node: GATEWAY_A });
 
-    // After a restart against another node, its empty history proves nothing.
+    // After a restart on the other path, that node's empty history proves nothing.
     ticks = 600_000;
-    const elsewhere = await buyerOn(NODE_B);
+    const elsewhere = await buyerOn(GATEWAY_B, nodeB);
     await expect(elsewhere.resumeOutbox(JOB_ID)).resolves.toMatchObject({
-      status: "indeterminate", reason: "Demos L2PS RFQ packet was sent through another messaging node",
+      status: "indeterminate", reason: OTHER_NODE,
     });
-    expect(hub.sends).toBe(0);
-    // Back on the node that took the frame, absence there authorizes the resend.
-    const back = await buyerOn("wss://node-a.example:3006/im");
+    expect(nodeA.sends + nodeB.sends).toBe(0);
+    // The same URL spelled otherwise is the same node: absence there authorizes the resend.
+    const back = await buyerOn("WSS://Gateway.Example:443/node-a", nodeA);
     await expect(back.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
-    expect(hub.sends).toBe(1);
-    expect(hub.messages[0]?.encrypted).toEqual(entry.encrypted);
+    expect(nodeA.sends).toBe(1);
+    expect(nodeB.sends).toBe(0);
+    expect(nodeA.messages[0]?.encrypted).toEqual(entry.encrypted);
+  });
+
+  test("an open peer cannot be moved to another node, so a frame one node took is never stored on another", async () => {
+    const { nodes, nodeA, nodeB } = gatewayNodes();
+    const config = { serverUrl: GATEWAY_A, publicKey: BUYER_PEER, l2psUid: L2PS_UID, signFn: () => "00" };
+    // Like demosdk 4.0.16, which dials this.config.serverUrl again on every
+    // reconnect: each call goes to whatever node the config names now.
+    const live = () => nodes.get(config.serverUrl)!;
+    const peer = {
+      config,
+      send: (...args: Parameters<DemosL2psRfqPeerLike["send"]>) => live().peer(BUYER_PEER).send(...args),
+      history: (...args: Parameters<DemosL2psRfqPeerLike["history"]>) =>
+        live().peer(BUYER_PEER).history(...args),
+      onMessage: (handler: DemosL2psRfqMessageHandler) => live().peer(BUYER_PEER).onMessage(handler),
+      requestPublicKey: async (target: string) => (live().registered.has(target) ? target : null),
+    };
+    const nodeInfo = vi.fn(() => structuredClone(CLEAN_NODE));
+    let ticks = 0;
+    const options = checkedOptions(peer, { nodeInfo, monotonicNowMs: () => ticks });
+    // A host that keeps the config object could fail it over after open.
+    await expect(openError(options)).resolves.toMatchObject({ code: "mutable-peer" });
+    expect(nodeInfo).not.toHaveBeenCalled();
+
+    lockConfig(peer);
+    const transport = await openDemosL2psRfqTransport<string>(options);
+    const client = agentClient("buyer", transport, durableReservation());
+    await client.open(openInput(BUYER_AGENT, SELLER_AGENT));
+    // Node A stores the frame; its reply is lost.
+    nodeA.loseNextResponse = true;
+    await expect(client.sendOffer(JOB_ID, OFFER)).resolves.toMatchObject({ status: "indeterminate" });
+    expect(nodeA.messages).toHaveLength(1);
+
+    const moved = peer as { config: { serverUrl: string } };
+    expect(() => { moved.config.serverUrl = GATEWAY_B; }).toThrow(TypeError);
+    expect(() => { moved.config = { ...config, serverUrl: GATEWAY_B }; }).toThrow(TypeError);
+    expect(() => Object.defineProperty(peer, "config", { value: { ...config, serverUrl: GATEWAY_B } }))
+      .toThrow(TypeError);
+    // After the grace, reconcile still reads node A, which holds the frame.
+    ticks = 600_000;
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    expect(nodeA.sends).toBe(1);
+    expect(nodeB.sends).toBe(0);
+    expect(nodeB.messages).toEqual([]);
   });
 });
