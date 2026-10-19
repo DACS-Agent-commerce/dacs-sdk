@@ -1011,6 +1011,79 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     ).resolves.toMatchObject({ outcome: "completed" });
   });
 
+  describe("a pay-dem permanent failed-record result (#338)", () => {
+    const FAILED_HASH = "85".repeat(32);
+    const PAYER_HEX = "ab".repeat(32);
+    const payeeHex = sellerDid.slice("did:demos:agent:".length);
+    const failedRecord = (
+      payee: string,
+      proof: Record<string, unknown> = {},
+    ): SettleResult => ({
+      ok: false,
+      txHash: FAILED_HASH,
+      chainId: "demos",
+      payer: PAYER_HEX,
+      payee,
+      errorClass: "permanent",
+      blockNumber: 480877,
+      txRefKind: "demos",
+      failureProof: {
+        kind: "demos-failed-record",
+        txHash: FAILED_HASH,
+        nonce: 9,
+        blockNumber: 480877,
+        payer: PAYER_HEX,
+        payee: payeeHex,
+        amountOs: "9500000000",
+        ...proof,
+      } as SettleResult["failureProof"],
+    });
+    const outcomes = async (store: ReturnType<typeof createInMemorySessionStore>) => {
+      const loaded = await store.load("job-1");
+      return loaded.status === "ok"
+        ? loaded.record.checkpoints.filter((checkpoint) => checkpoint.stage === "outcome")
+        : [];
+    };
+
+    test("binds the hash and records the outcome on fresh settlement and recovery", async () => {
+      const store = createInMemorySessionStore();
+      const kv = new Map<string, Record<string, unknown>>();
+      const first = await makeDeps(store, {
+        kv,
+        settle: async (req) => failedRecord(req.expectedPayee),
+      });
+      await expect(runSessionCore(first.listingRef, terms, first.deps))
+        .rejects.toThrow(/remains indeterminate/);
+      expect(await outcomes(store)).toMatchObject([
+        { data: { outcomeSource: "rail-result", ok: false, txHash: FAILED_HASH } },
+      ]);
+      await expect(store.bindHash({ hash: FAILED_HASH, jobId: "other", kind: "transaction" }))
+        .resolves.toEqual({ ok: false, boundTo: "job-1" });
+
+      const resumed = await makeDeps(store, {
+        kv,
+        resumeSettlement: async (req) => failedRecord(req.expectedPayee),
+      });
+      await expect(runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"))
+        .rejects.toThrow(/remains indeterminate/);
+      expect(await outcomes(store)).toHaveLength(1);
+    });
+
+    test.each([
+      ["another amount", { amountOs: "" }],
+      ["another transaction", { txHash: "34".repeat(32) }],
+      ["another payee", { payee: "ef".repeat(32) }],
+    ])("refuses a failed-record proof with %s as malformed", async (_case, proof) => {
+      const store = createInMemorySessionStore();
+      const first = await makeDeps(store, {
+        settle: async (req) => failedRecord(req.expectedPayee, proof),
+      });
+      await expect(runSessionCore(first.listingRef, terms, first.deps))
+        .rejects.toThrow(/malformed terminal-failure proof/);
+      expect(await outcomes(store)).toHaveLength(0);
+    });
+  });
+
   test("persists a safely resubmitted transaction when reconciliation returns a new tx", async () => {
     const store = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();

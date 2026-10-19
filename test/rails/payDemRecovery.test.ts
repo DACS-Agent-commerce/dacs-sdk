@@ -271,7 +271,9 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
     const { priorAttempts: _history, ...withoutHistory } = request();
-    await expect(settle(withHistory ? request([prior(false)]) : withoutHistory)).rejects.toThrow(demoted);
+    // Without history the restart path compares the durable outcome itself.
+    await expect(settle(withHistory ? request([prior(false)]) : withoutHistory))
+      .rejects.toThrow(withHistory ? demoted : /contradicts the authoritative reconciled outcome/);
     expect(putOutcome).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
     expect(claimIntent).toHaveBeenCalledTimes(withHistory ? 0 : 1);

@@ -941,6 +941,8 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
   const result = snapshot as Record<string, unknown>;
   const allowed = new Set([
     "ok",
+    "errorClass",
+    "failureProof",
     "txHash",
     "chainId",
     "payer",
@@ -976,6 +978,18 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
         result.txRefKind.trim() !== result.txRefKind))
   ) {
     throw new CounterpartyError(`${label} returned a malformed result`);
+  }
+  // A native DEM rail reports a terminal failed record as a permanent class
+  // with its bound proof. Accept only that exact pair; the session still
+  // treats it as a transaction-bearing non-success, so the hash is bound and
+  // the intent stays held.
+  if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
+      !hasDefinitiveDemosFailure(
+        result as unknown as SettleResult,
+        undefined,
+        result.chainId as string,
+      )) {
+    throw new CounterpartyError(`${label} returned a malformed terminal-failure proof`);
   }
   const parsedFinality = parseSettlementFinalityParameters(result.finality);
   if (result.finality !== undefined) {

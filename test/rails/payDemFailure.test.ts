@@ -121,7 +121,7 @@ describe("terminal failed Demos record", () => {
         execution: "executed", amountOs: proof.amountOs, blockNumber: 42,
         finality: { model: "bft-final" }, txRefKind: "demos" }),
     });
-    await expect(restarted(request)).rejects.toThrow(/contradicted a permanent/);
+    await expect(restarted(request)).rejects.toThrow(/contradicts the authoritative reconciled outcome/);
     expect(submit).toHaveBeenCalledTimes(1);
   });
 

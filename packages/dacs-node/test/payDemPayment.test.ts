@@ -644,6 +644,97 @@ describe("native DEM buyer payment track", () => {
     });
   });
 
+  it.each([
+    ["no execution attestation", {}],
+    ["an inclusion attestation", { execution: "included" }],
+    ["a boolean execution attestation", { execution: true }],
+  ])("holds a fresh rail success with %s without settling or notice (#338)", async (
+    _case,
+    execution,
+  ) => {
+    const database = await open(join(root(), "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    const publishNotice = vi.fn();
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER,
+      chainId: "demos",
+      asset: "DEM",
+      maximumConcurrentEffects: 1,
+    });
+    let broadcasts = 0;
+    const rail = markDacsSdkPreparedPayDemRailV1<PayDemRail>({
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 7,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        broadcasts += 1;
+        // An otherwise valid success from a rail that observed inclusion only.
+        return {
+          ok: true,
+          txHash: TX_HASH,
+          chainId: "demos",
+          payer: PAYER,
+          payee: PAYEE,
+          finality: { model: "bft-final" },
+          blockNumber: 42,
+          txRefKind: "demos",
+          networkFeeOs: "1000000000",
+          ...execution,
+        } as unknown as Awaited<ReturnType<PayDemRail["settle"]>>;
+      },
+    });
+    const reconcile = vi.fn(() => ({
+      status: "indeterminate" as const,
+      reasonCode: "not-yet",
+    }));
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database,
+      workerId: "buyer-dem-unexecuted",
+      rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile,
+      publishNotice,
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-unexecuted",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+      .toMatchObject({
+        state: "indeterminate",
+        reasonCode: "pay-dem-settlement-ambiguous",
+      });
+    expect(broadcasts).toBe(1);
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 1,
+      assets: [{ cumulativeSettledDebit: "0" }],
+    });
+
+    // A later pass reconciles the retained effect; it never broadcasts again.
+    await coordinator.runPending({ limit: 2 });
+    expect(broadcasts).toBe(1);
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      assets: [{ cumulativeSettledDebit: "0" }],
+    });
+  });
+
   it("composes the generated Demos wrapper through the wallet pre-broadcast boundary", async () => {
     const directory = root();
     const database = await open(join(directory, "buyer.sqlite"));

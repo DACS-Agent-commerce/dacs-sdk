@@ -304,6 +304,16 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     ["a record without a status", recordReturning((record) => {
       delete (record as Record<string, unknown>).status;
     })],
+    // Execution is the literal record status `confirmed`, nothing near it.
+    ["an included record", recordReturning((record) => {
+      record.status = "included";
+    })],
+    ["a finalized record", recordReturning((record) => {
+      record.status = "finalized";
+    })],
+    ["a Confirmed record", recordReturning((record) => {
+      record.status = "Confirmed";
+    })],
     ["a record for another hash", recordReturning((record) => {
       record.hash = "34".repeat(32);
     })],
@@ -647,6 +657,14 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
       async () => "Transaction not found"],
     ["a pending record", "transaction record has no terminal execution status",
       async () => ({ ...executedRecord(), status: "pending" })],
+    ["an included record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "included" })],
+    ["a finalized record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "finalized" })],
+    ["a Confirmed record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "Confirmed" })],
+    ["a FAILED record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "FAILED" })],
     ["a rejected read", "transaction record read failed",
       async () => {
         throw new Error("socket hang up");

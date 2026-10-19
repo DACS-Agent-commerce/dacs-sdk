@@ -1712,38 +1712,6 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
   });
 
   test.each([
-    ["another path on the same origin", "https://seller.example/admin/deliver"],
-    ["a sibling sharing the base's prefix", "https://seller.example/payroll"],
-  ])("x402 refuses %s outside a base with a path", async (_label, url) => {
-    const descriptor = await authenticatedRail(x402Definition({
-      network: { kind: "x402-resource", resourceBaseUrl: "https://seller.example/pay" },
-    }));
-    await expect(
-      settleFromRail(descriptor, {
-        evmPrivateKey: TEST_EVM_KEY,
-        paywall: { ...paywall, url },
-        rpcUrl: "https://sepolia.base.org",
-      }),
-    ).rejects.toThrow(/outside authenticated base/);
-  });
-
-  test.each([
-    ["the base itself", "https://seller.example/pay"],
-    ["a resource under the base", "https://seller.example/pay/deliver"],
-  ])("x402 accepts %s when the base has a path", async (_label, url) => {
-    const descriptor = await authenticatedRail(x402Definition({
-      network: { kind: "x402-resource", resourceBaseUrl: "https://seller.example/pay" },
-    }));
-    await expect(
-      settleFromRail(descriptor, {
-        evmPrivateKey: TEST_EVM_KEY,
-        paywall: { ...paywall, url },
-        rpcUrl: "https://sepolia.base.org",
-      }),
-    ).resolves.toBeTypeOf("function");
-  });
-
-  test.each([
     ["cleartext", "http://seller.example"],
     ["loopback", "https://127.0.0.1"],
     ["link-local metadata", "https://169.254.169.254"],

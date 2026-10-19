@@ -2,7 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
-import { baseUnits } from "../canonical/index.js";
+import { baseUnits, canonicalize } from "../canonical/index.js";
 import {
   snapshotCanonicalJsonRead,
   snapshotWireJsonRead,
@@ -727,7 +727,8 @@ export async function payDemSettleCore(
     chainId,
     payer,
     payee: recipient,
-    // The confirmed execution is BFT-final at this inclusion block on Demos.
+    // §9.5.9: Demos inclusion is BFT-final, so the confirmed execution is
+    // final at this inclusion block; the `demos` txRef carries that block.
     finality: { model: "bft-final" },
     blockNumber: blockNumber as number,
     txRefKind: "demos",
@@ -1254,9 +1255,11 @@ type ObservedDemosExecution =
  * does not bind the prepared transfer, is indeterminate at once. Like the
  * status poll, this never retries or duplicates the broadcast.
  *
- * Node semantics this relies on, verified against kynesyslabs/node
- * `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578` (what node2 reports
- * at `GET /version`) and `stabilisation@52e2e569`:
+ * Node semantics this relies on, verified against the kynesyslabs/node sources
+ * `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578` and
+ * `stabilisation@52e2e569`. node2 reports 61b8e75 at `GET /version`, but its
+ * `getNetworkInfo` marks that build `dirty`, so the deployed bytes are not
+ * pinned to that commit; only the served shape below is recorded:
  * - `getTransactionStatus` reports `included` for every stored row, failed ones
  *   included, and never produces `failed` (`src/libs/blockchain/chainTypes.ts`
  *   `TxStatus`, `chainTransactions.ts` `getTransactionStatus`);
@@ -1270,7 +1273,8 @@ type ObservedDemosExecution =
  * - not-found is `{result: 400, response: "error"}` at 61b8e75 and
  *   `{result: 404, response: null}` at 52e2e569; both are polled.
  * The default branch (`testnet`) has no `getTransactionStatus`. The recorded
- * node2 records in `test/fixtures/demos-node2-records.json` pin this shape.
+ * node2 records in `test/fixtures/demos-node2-records.json` pin this shape,
+ * and any other shape is indeterminate; see `docs/pay-dem-execution.md`.
  *
  * @internal Exported for tests; terminal failed-record proof is issued only
  * after these binding checks. Not re-exported from the rails
@@ -1827,10 +1831,27 @@ function sameRecoveryContext(
     left.amountOs === right.amountOs;
 }
 
+function sameFailureProof(left: SettleResult, right: SettleResult): boolean {
+  return left.failureProof === undefined || right.failureProof === undefined
+    ? left.failureProof === right.failureProof
+    : canonicalize(left.failureProof) === canonicalize(right.failureProof);
+}
+
+/**
+ * Whether two results for the same transaction and block report the same
+ * outcome: success, or failure under the same canonical proof. Fee accounting
+ * and other presentation fields are not part of a failed record's identity.
+ */
+function sameSettledOutcome(left: SettleResult, right: SettleResult): boolean {
+  return left.ok === right.ok &&
+    left.errorClass === right.errorClass &&
+    sameFailureProof(left, right);
+}
+
 function samePayDemResult(left: SettleResult, right: SettleResult): boolean {
   return left.ok === right.ok &&
     left.errorClass === right.errorClass &&
-    JSON.stringify(left.failureProof) === JSON.stringify(right.failureProof) &&
+    sameFailureProof(left, right) &&
     left.txHash === right.txHash &&
     left.chainId === right.chainId &&
     left.payer === right.payer &&
@@ -2475,12 +2496,6 @@ export function payDemSettle(
           );
         }
         const reconciled = capturePayDemReconciliation(recovered, context);
-        // Neither the cached outcome nor another writer's cached failure may
-        // demote a success this bridge already authenticated.
-        assertPayDemSuccessKept(captured.ok || known?.result.ok === true, reconciled);
-        if (captured.errorClass === "permanent" && !samePayDemResult(captured, reconciled)) {
-          throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
-        }
         if (
           reconciled.txHash !== captured.txHash ||
           reconciled.blockNumber !== captured.blockNumber
@@ -2489,6 +2504,17 @@ export function payDemSettle(
             "pay-dem durable outcome does not match the authoritative reconciled transaction",
           );
         }
+        // The same transaction recorded as executed in one place and failed in
+        // the other (or failed under another proof) is a contradiction, not a
+        // reason to prefer the reconciliation over the durable outcome.
+        if (!sameSettledOutcome(reconciled, captured)) {
+          throw new DacsError(
+            "pay-dem durable outcome contradicts the authoritative reconciled outcome; refusing reuse or rebroadcast",
+          );
+        }
+        // Another writer's cached failure may not demote a success this bridge
+        // already authenticated, even when the reconciliation agrees with it.
+        assertPayDemSuccessKept(known?.result.ok === true, reconciled);
         authenticatedResults.set(key, { context, result: reconciled });
         captured = reconciled;
       }

@@ -298,6 +298,82 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     });
   });
 
+  describe("failed-record proof binding (#338)", () => {
+    const failedProof = (override: Record<string, unknown> = {}) => ({
+      kind: "demos-failed-record",
+      txHash: TX_HASH,
+      nonce: 9,
+      blockNumber: 7,
+      payer: PAYER,
+      payee: RECIPIENT,
+      amountOs: "1500000000",
+      ...override,
+    });
+    const failedClient = (
+      failureProof: unknown,
+      override: Record<string, unknown> = {},
+    ) => fakeClient({
+      result: {
+        ok: false,
+        state: "failed",
+        hash: TX_HASH,
+        blockNumber: 7,
+        failureProof,
+        ...override,
+      } as unknown as DemosTransferResult,
+    });
+
+    test("a client's bound failed record is a permanent failure", async () => {
+      await expect(payDemSettleCore(params(), failedClient(failedProof()))).resolves.toEqual({
+        ok: false,
+        txHash: TX_HASH,
+        chainId: "demos:testnet",
+        payer: PAYER,
+        payee: RECIPIENT,
+        errorClass: "permanent",
+        failureProof: failedProof(),
+        blockNumber: 7,
+        txRefKind: "demos",
+      });
+    });
+
+    test.each([
+      ["another amount", failedProof({ amountOs: "1" })],
+      ["another transaction", failedProof({ txHash: OTHER_TX_HASH })],
+      ["another block", failedProof({ blockNumber: 8 })],
+      ["another payer", failedProof({ payer: "ef".repeat(32) })],
+      ["another payee", failedProof({ payee: "ef".repeat(32) })],
+      ["a string nonce", failedProof({ nonce: "9" })],
+      ["an extra key", { ...failedProof(), extra: 1 }],
+      ["another kind", failedProof({ kind: "demos-included" })],
+      ["no proof", undefined],
+    ])("a failed record with %s is not permanent", async (_case, failureProof) => {
+      await expect(payDemSettleCore(params(), failedClient(failureProof))).resolves.toEqual({
+        ok: false,
+        txHash: TX_HASH,
+        chainId: "demos:testnet",
+        payer: PAYER,
+        payee: RECIPIENT,
+      });
+    });
+
+    test.each([
+      ["an indeterminate state", { state: "indeterminate" }],
+      ["an included state", { state: "included" }],
+      ["no ok flag", { ok: undefined }],
+      ["another result block", { blockNumber: 8 }],
+    ])("a bound proof with %s is not permanent", async (_case, override) => {
+      await expect(payDemSettleCore(params(), failedClient(failedProof(), override)))
+        .resolves.toEqual({
+          ok: false,
+          txHash: TX_HASH,
+          chainId: "demos:testnet",
+          payer: PAYER,
+          payee: RECIPIENT,
+        });
+    });
+  });
+
   test("a poll that timed out (nonterminal) → ok:false, no evidence", async () => {
     const client = fakeClient({ result: { ok: false, state: "timeout", hash: TX_HASH } });
     const res = await payDemSettleCore(params(), client);
@@ -1025,6 +1101,249 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(rail.settle).not.toHaveBeenCalled();
     expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  describe("terminal-failure proof binding (#338)", () => {
+    const AMOUNT_OS = "5000000000";
+    const failureProof = (override: Record<string, unknown> = {}) => ({
+      kind: "demos-failed-record",
+      txHash: TX_HASH,
+      nonce: 9,
+      blockNumber: 4242,
+      payer: PAYER,
+      payee: SELLER_HEX,
+      amountOs: AMOUNT_OS,
+      ...override,
+    });
+    const failure = (override: Record<string, unknown> = {}) => ({
+      ok: false,
+      txHash: TX_HASH,
+      chainId: "demos",
+      payer: PAYER,
+      payee: SELLER_HEX,
+      errorClass: "permanent",
+      failureProof: failureProof(),
+      blockNumber: 4242,
+      txRefKind: "demos",
+      ...override,
+    });
+    const success = (context: PayDemSettlementRecoveryContext) => ({
+      ok: true,
+      txHash: TX_HASH,
+      chainId: context.network,
+      payer: context.payer,
+      payee: context.payee,
+      finality: { model: "bft-final" as const },
+      blockNumber: 4242,
+      txRefKind: "demos",
+      amountOs: context.amountOs,
+      execution: "executed" as const,
+    });
+    const NON_BINDING: Array<[string, Record<string, unknown>]> = [
+      ["another amount", { failureProof: failureProof({ amountOs: "1" }) }],
+      ["another transaction", { failureProof: failureProof({ txHash: OTHER_TX_HASH }) }],
+      ["another block", { failureProof: failureProof({ blockNumber: 1 }) }],
+      ["another payee", { failureProof: failureProof({ payee: OTHER_HEX }) }],
+      ["an extra proof key", { failureProof: { ...failureProof(), extra: 1 } }],
+      ["a permanent class without proof", { failureProof: undefined }],
+    ];
+    const withoutUndefined = (value: Record<string, unknown>) =>
+      Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+
+    test("persists a rail's bound failed record and reuses it without a second transfer", async () => {
+      const log = createInMemorySettlementLog();
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      const rail: PayDemRail = {
+        address: PAYER,
+        settle: vi.fn(async () => failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>),
+      };
+      const settle = payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+      });
+      const first = await settle(req());
+      expect(first).toEqual({ ...failure(), payee: SELLER_HEX });
+      await expect(settle(req())).resolves.toEqual(first);
+      expect(rail.settle).toHaveBeenCalledTimes(1);
+      expect(putOutcome).toHaveBeenCalledTimes(1);
+    });
+
+    test.each(NON_BINDING)("refuses a rail failure proof with %s and holds the intent", async (
+      _case,
+      override,
+    ) => {
+      const log = createInMemorySettlementLog();
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      const rail: PayDemRail = {
+        address: PAYER,
+        settle: vi.fn(async () => withoutUndefined(failure(override)) as unknown as
+          Awaited<ReturnType<PayDemRail["settle"]>>),
+      };
+      const settle = payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+      });
+      await expect(settle(req())).rejects.toThrow(/invalid terminal-failure proof/);
+      await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
+      expect(rail.settle).toHaveBeenCalledTimes(1);
+      expect(putOutcome).not.toHaveBeenCalled();
+    });
+
+    test.each(["executed", "included"])(
+      "refuses a rail failure that also attests execution %s",
+      async (execution) => {
+        const log = createInMemorySettlementLog();
+        const putOutcome = vi.spyOn(log, "putOutcome");
+        const rail = {
+          address: PAYER,
+          settle: vi.fn(async () => ({ ...failure(), execution })),
+        } as unknown as PayDemRail;
+        await expect(payDemSettle(rail, { network: "demos" }, {
+          store: createIdempotencyStore(log),
+        })(req())).rejects.toThrow(/must not attest successful execution/);
+        expect(putOutcome).not.toHaveBeenCalled();
+      },
+    );
+
+    test("persists a held intent's bound reconciled failure and reuses it", async () => {
+      const log = createInMemorySettlementLog();
+      const request = req({ rail: "demos-native:DEM", jobId: "job-failed", phaseIndex: 7 });
+      await seedExpiredIntent(log, request);
+      const rail: PayDemRail = {
+        address: PAYER,
+        settle: vi.fn(async () => {
+          throw new Error("must not rebroadcast");
+        }),
+      };
+      const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+        ...failure(),
+        amountOs: context.amountOs,
+      }));
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      const settle = payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+        reconcile: reconcile as unknown as PayDemSettlementReconcile,
+      });
+      const first = await settle(request);
+      expect(first).toEqual({ ...failure(), payee: SELLER_HEX });
+      await expect(settle(request)).resolves.toEqual(first);
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(putOutcome).toHaveBeenCalledTimes(1);
+      expect(rail.settle).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ...NON_BINDING.map(([name, override]): [string, Record<string, unknown>, RegExp] =>
+        [name, override, /invalid terminal-failure proof/]),
+      ["an execution attestation", { execution: "executed" },
+        /permanent failure must not attest successful execution/],
+      ["an inclusion attestation", { execution: "included" },
+        /permanent failure must not attest successful execution/],
+    ])("refuses a held intent's reconciled failure with %s, without rebroadcast", async (
+      _case,
+      override,
+      pattern,
+    ) => {
+      const log = createInMemorySettlementLog();
+      const request = req({ rail: "demos-native:DEM", jobId: "job-failed-bad", phaseIndex: 8 });
+      await seedExpiredIntent(log, request);
+      const rail: PayDemRail = {
+        address: PAYER,
+        settle: vi.fn(async () => {
+          throw new Error("must not rebroadcast");
+        }),
+      };
+      const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) =>
+        withoutUndefined({ ...failure(override), amountOs: context.amountOs }));
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      await expect(payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+        reconcile: reconcile as unknown as PayDemSettlementReconcile,
+      })(request)).rejects.toThrow(pattern);
+      expect(rail.settle).not.toHaveBeenCalled();
+      expect(putOutcome).not.toHaveBeenCalled();
+    });
+
+    test("refuses a restarted durable success that reconciliation reports failed", async () => {
+      const store = createIdempotencyStore(createInMemorySettlementLog());
+      const client = fakeClient();
+      let transfers = 0;
+      const rail: PayDemRail = {
+        address: PAYER,
+        settle: async (params) => {
+          transfers += 1;
+          return payDemSettleCore(params, client);
+        },
+      };
+      await expect(payDemSettle(rail, { network: "demos" }, { store })(req()))
+        .resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: 4242 });
+      const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+        ...failure(),
+        amountOs: context.amountOs,
+      }));
+      await expect(payDemSettle(rail, { network: "demos" }, {
+        store,
+        reconcile: reconcile as unknown as PayDemSettlementReconcile,
+      })(req())).rejects.toThrow(/contradicts the authoritative reconciled outcome/);
+      expect(transfers).toBe(1);
+    });
+
+    test("refuses a restarted durable failure that reconciliation reports executed", async () => {
+      const store = createIdempotencyStore(createInMemorySettlementLog());
+      let transfers = 0;
+      const rail: PayDemRail = {
+        address: PAYER,
+        settle: async () => {
+          transfers += 1;
+          return failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>;
+        },
+      };
+      await expect(payDemSettle(rail, { network: "demos" }, { store })(req()))
+        .resolves.toMatchObject({ ok: false, errorClass: "permanent" });
+      await expect(payDemSettle(rail, { network: "demos" }, {
+        store,
+        reconcile: vi.fn(async (context: PayDemSettlementRecoveryContext) => success(context)),
+      })(req())).rejects.toThrow(/contradicts the authoritative reconciled outcome/);
+      expect(transfers).toBe(1);
+    });
+
+    test("refuses a restarted durable failure whose reconciled proof names another nonce", async () => {
+      const store = createIdempotencyStore(createInMemorySettlementLog());
+      const rail: PayDemRail = {
+        address: PAYER,
+        settle: async () => failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>,
+      };
+      await payDemSettle(rail, { network: "demos" }, { store })(req());
+      const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+        ...failure({ failureProof: failureProof({ nonce: 10 }) }),
+        amountOs: context.amountOs,
+      }));
+      await expect(payDemSettle(rail, { network: "demos" }, {
+        store,
+        reconcile: reconcile as unknown as PayDemSettlementReconcile,
+      })(req())).rejects.toThrow(/contradicts the authoritative reconciled outcome/);
+    });
+
+    test("reuses a restarted durable failure that reconciliation confirms", async () => {
+      const store = createIdempotencyStore(createInMemorySettlementLog());
+      let transfers = 0;
+      const rail: PayDemRail = {
+        address: PAYER,
+        settle: async () => {
+          transfers += 1;
+          return failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>;
+        },
+      };
+      const first = await payDemSettle(rail, { network: "demos" }, { store })(req());
+      const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+        ...failure(),
+        amountOs: context.amountOs,
+      }));
+      await expect(payDemSettle(rail, { network: "demos" }, {
+        store,
+        reconcile: reconcile as unknown as PayDemSettlementReconcile,
+      })(req())).resolves.toEqual(first);
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(transfers).toBe(1);
+    });
   });
 
   test("a cached success cannot be reused under changed amount terms", async () => {
