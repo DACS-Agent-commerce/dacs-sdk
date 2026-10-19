@@ -173,6 +173,13 @@ below):
    empty list or only null entries fails with `peer_delegation_agreement_required`.
    For an initial proposal, the host supplies the admitted proposal draft; it
    must not substitute request-derived scope for its retained Agreement.
+   **Host duty: `checkWireRequest` does not compare the signed `agreementHash`
+   with any Agreement, nor, for a direct (non-delegated) request, the signed
+   `jobId`.** Before acting on an effect route, the seller host must compare
+   both with what it retained for that job (the retained Agreement's hash; for
+   an initial proposal, the admitted draft's; for the context route, the exact
+   context-scope hash) and refuse a mismatch. A correctly signed request naming
+   another Agreement is otherwise returned as checked.
 3. Before returning a checked body on an effect route, `checkWireRequest`
    requires `reserveRequest`. The host must atomically and durably claim its
    `key` (SHA-256 of canonical `{buyer, seller, profile, nonce}`) across workers
@@ -234,7 +241,7 @@ under `dacs-seller-http:v1:discovery:`.
 | `listings` | 1-32 Listing pins served here |
 | `capabilities` | exactly `TP1_CAPABILITIES` (listed below) |
 | `ready` | whether the seller accepts new purchases |
-| `issuedAt`, `expiresAt` | Unix ms, at most 10 minutes apart |
+| `issuedAt`, `expiresAt` | Unix ms, at most 10 minutes apart; `issuedAt` may be at most 60 s after the verifier's clock |
 
 The **endpoint proof** is this document checked against the verified Listing
 (`verifyEndpointProof`): the signer must be the Listing's seller, the
@@ -524,6 +531,8 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 | `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype) |
 | `discovery_*` | discovery document and endpoint proof |
+| `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
+| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`; no request is signed |
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
 
 ## Vectors, fixtures and checks

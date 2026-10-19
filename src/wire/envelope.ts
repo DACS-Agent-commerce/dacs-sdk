@@ -225,7 +225,13 @@ export interface RequestCheck {
    */
   purchaseProfile: Tp1WireProfile | null;
   requireDelegation?: boolean;
-  /** The host's proposal draft and/or retained Agreement. At least one is required for delegated requests. */
+  /**
+   * The host's proposal draft and/or retained Agreement. At least one is
+   * required for delegated requests. Only their job, Listing, parties and
+   * deadline are compared: the request's agreementHash (and, for a direct
+   * request, its jobId) is the host's to compare with the hash it retained
+   * for the job before any effect.
+   */
   artifacts?: readonly unknown[];
   /**
    * Required for effect routes. Atomically and durably reserve this key before

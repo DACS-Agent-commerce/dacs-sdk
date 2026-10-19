@@ -77,6 +77,9 @@ describe("authenticated Listing eligibility before purchase signing", () => {
     ["impure module", { service: { kind: "pure-synchronous-text-module", configured: true, pure: false, deterministic: true, synchronous: true } }],
     ["nondeterministic module", { service: { kind: "pure-synchronous-text-module", configured: true, pure: true, deterministic: false, synchronous: true } }],
     ["asynchronous module", { service: { kind: "pure-synchronous-text-module", configured: true, pure: true, deterministic: true, synchronous: false } }],
+    ["module of another kind", { service: { kind: "llm-module", configured: true, pure: true, deterministic: true, synchronous: true } }],
+    ["module with an extra member", { service: { kind: "pure-synchronous-text-module", configured: true, pure: true, deterministic: true, synchronous: true, network: true } }],
+    ["fixed text with an extra member", { service: { kind: "fixed-text", source: "remote" } }],
     ["oversized output", { output: { ...wire.TP1_CAPABILITIES.output, maxCharacters: 16385 } }],
     ["asynchronous output", { output: { ...wire.TP1_CAPABILITIES.output, synchronous: false } }],
   ])("refuses an authenticated %s Listing despite matching seller-signed discovery", async (_name, change) => {
@@ -161,4 +164,24 @@ it("supplies an immutable source scope and refuses decisions that disappear afte
   current = null;
   await expect(wire.signWireRequest({ ...w.request, endpointProof })).rejects.toMatchObject({ code: "listing_unsupported" });
   expect(w.buyer.calls).toBe(0);
+});
+
+describe("public endpoint rule: absolute HTTPS, no credentials, query or fragment", () => {
+  const refused = ["http://seller.eligibility.invalid", "https://user:pass@seller.eligibility.invalid", "https://user@seller.eligibility.invalid",
+    "https://:pass@seller.eligibility.invalid", "https://seller.eligibility.invalid?q=1", "https://seller.eligibility.invalid/?",
+    "https://seller.eligibility.invalid#f", "https://seller.eligibility.invalid/#", "not a url", "", `https://seller.eligibility.invalid/${"a".repeat(2048)}`, 42];
+  it.each(refused)("isPublicEndpoint refuses %j", (value) => expect(wire.isPublicEndpoint(value)).toBe(false));
+  it("accepts an absolute HTTPS endpoint", () => expect(wire.isPublicEndpoint("https://seller.eligibility.invalid/dacs")).toBe(true));
+
+  it.each(refused.filter((v): v is string => typeof v === "string" && v.length < 2048))("refuses %j as the verified Listing's endpoint and as a discovery endpoint, before any signature", async (publicEndpoint) => {
+    const w = await world(), sellerCalls = w.seller.calls;
+    expect(() => wire.verifyEndpointProof(w.document, { listing: { ...w.listing, publicEndpoint }, binding: w.binding, local: w.local, now: NOW, readListingEligibility: w.readListingEligibility }))
+      .toThrowError(expect.objectContaining({ code: "wire_input_invalid" }));
+    await expect(wire.signDiscoveryDocument({
+      format: "dacs-seller-discovery/v1", profile: w.binding.profile, seller: w.seller.claim, publicEndpoint,
+      transport: ["dacs-seller-http/v1"], listings: [w.listing.listingPin], capabilities: wire.TP1_CAPABILITIES,
+      ready: true, issuedAt: NOW, expiresAt: NOW + 60_000,
+    }, w.seller, w.binding, w.local)).rejects.toMatchObject({ code: "discovery_invalid" });
+    expect([w.seller.calls - sellerCalls, w.buyer.calls]).toEqual([0, 0]);
+  });
 });

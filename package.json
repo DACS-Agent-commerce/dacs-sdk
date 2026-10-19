@@ -108,7 +108,7 @@
     "conformance/tp1-node-observations/missing-status.json",
     "conformance/tp1-node-observations/missing-tx.json",
     "conformance/tp1-node-observations/network.json",
-
+    "vectors/dacs-seller-http-v1.json",
     "docs/dacs-seller-http-v1.md",
     "SECURITY.md",
     "LICENSE"

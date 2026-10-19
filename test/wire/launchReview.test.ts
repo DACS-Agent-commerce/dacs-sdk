@@ -1,6 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
@@ -138,6 +139,16 @@ describe("delegated Agreement context", () => {
     expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], reserveRequest }))
       .toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
     expect(reserveRequest).not.toHaveBeenCalled();
+  });
+
+  it("leaves the agreementHash comparison to the host, as the guide states", () => {
+    // docs/dacs-seller-http-v1.md "Host duty": the wire binds job, Listing, parties and deadline only.
+    const x = world(), other = { ...x.request, agreementHash: "b".repeat(64), nonce: "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA" };
+    const opened = x.open(other);
+    expect(wire.checkWireRequest(opened, { ...x.check, artifacts: [x.artifact], reserveRequest: () => true }).readbackOnly).toBe(false);
+    expect(opened.payload.agreementHash).toBe("b".repeat(64));
+    const guide = readFileSync(new URL("../../docs/dacs-seller-http-v1.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    expect(guide).toContain("Host duty: `checkWireRequest` does not compare the signed `agreementHash` with any Agreement");
   });
 
   it("finds each party by role, not by position", () => {
