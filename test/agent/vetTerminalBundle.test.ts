@@ -248,11 +248,32 @@ describe("terminal Vet bundle preparation", () => {
       expect(createTerminalBundlePlan(result.authority, { kind: "co-signed" }).copies
         .map(({ role, outcome }) => [role, outcome]))
         .toEqual([["buyer", "failed-counterparty"], ["seller", "failed-perm"]]);
+      // Without the proven parse cause the VPC-4 default applies: the verifier's fault.
       await expect(prepareVetTerminalBundle(candidate, authentication()))
-        .resolves.toMatchObject({ status: "indeterminate" });
+        .resolves.toMatchObject({ status: "terminal", faultedParty: "buyer" });
+      // A cause bound to another production is malformed authority: refuse it.
       await expect(prepareVetTerminalBundle(candidate, authentication({ status: "valid",
         cause: { ...cause, recordHash: "00".repeat(32) } })))
         .resolves.toMatchObject({ status: "indeterminate" });
+    });
+
+  // DACS-2 VPC-4: `permanent` is the default and needs no cause provenance.
+  test.each(["error", "indeterminate"] as const)(
+    "ends an authenticated %s decision without a cause as the verifier's permanent failure", async (decision) => {
+      const candidate = input(decision);
+      const result = await prepareVetTerminalBundle(candidate, authentication({ status: "valid" }));
+      expect(result).toMatchObject({
+        status: "terminal",
+        state: "vet-failed",
+        faultedParty: "buyer",
+        sessionRecord: { state: "vet-failed", phaseResults: [{ result: { ok: false, errorClass: "permanent" } }] },
+        authority: { terminalClass: "failure", faultedParty: "buyer",
+          terminalPhase: { kind: "vet-credentials", state: "failed", errorClass: "permanent" } },
+      });
+      if (result.status !== "terminal") throw new Error();
+      const plan = createTerminalBundlePlan(result.authority, { kind: "co-signed" });
+      expect(Object.fromEntries(plan.copies.map((entry) => [entry.role, entry.outcome])))
+        .toEqual({ buyer: "failed-perm", seller: "failed-counterparty" });
     });
 
   test("passes an authenticated passing record without producing terminal state", async () => {

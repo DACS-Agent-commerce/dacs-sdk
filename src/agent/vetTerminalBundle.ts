@@ -5,8 +5,9 @@
  * finalized `VetProduction`, asks a caller-supplied verifier to authenticate that production,
  * and converts a non-pass decision into the data-only authority consumed by the role-local
  * terminal-bundle coordinator. Per DACS-2 VPC-4, `fail` is the evaluated party's fault
- * (`counterparty`); `indeterminate` and `error` require independently authenticated cause
- * provenance before fault attribution. DACS-5 ST-2 ends authenticated failures at `vet-failed`.
+ * (`counterparty`); `indeterminate` and `error` are `permanent` (the verifier's fault) unless
+ * the authenticator proves a sole, session-bound counterparty presentation parse cause.
+ * DACS-5 ST-2 ends authenticated failures at `vet-failed`.
  */
 import { types as nodeTypes } from "node:util";
 
@@ -115,7 +116,8 @@ export interface PrepareVetTerminalBundleDeps {
    * finalized CVR anchor/readback. For error/indeterminate, also independently
    * verify the complete cause closure, including counterparty-supplied bytes,
    * their declared parser format and every oneOf alternative. Return `cause`
-   * only if the sole proximate cause is established and session-bound. Never
+   * only if the sole proximate cause is established and session-bound; without
+   * it an authenticated error/indeterminate ends as `permanent`. Never
    * project a sender-selected errorClass. Returning `valid` is a trust boundary.
    */
   authenticateProduction(input: Readonly<{
@@ -411,14 +413,18 @@ export async function prepareVetTerminalBundle(
     throw new DacsError("authenticated Vet record carries an unsupported decision");
   }
   // Only the independent authenticator may establish proximate cause. The
-  // sender's production and errorClass never supply fault authority.
+  // sender's production and errorClass never supply fault authority. VPC-4's
+  // default for indeterminate/error is `permanent` (the verifier's own fault),
+  // which needs no cause; only a proven sole counterparty parse cause moves it.
+  // A cause that is present but bound to another production is malformed
+  // authority, not an absent one, so it stays indeterminate.
   const cause = authentication.cause;
-  if (record.overallDecision !== "fail" && (cause === undefined ||
-      cause.jobId !== input.jobId || cause.recordHash !== input.production.recordRef.contentHash ||
+  if (record.overallDecision !== "fail" && cause !== undefined && (
+    cause.jobId !== input.jobId || cause.recordHash !== input.production.recordRef.contentHash ||
       cause.evaluatedIdentityHash !== identityBundleHash(evaluated.identityBundle) ||
       cause.verifierIdentityHash !== identityBundleHash(verifier.identityBundle))) {
     return deepFreeze({ status: "indeterminate",
-      reason: "Vet cause authentication is missing or not bound to this production" });
+      reason: "Vet cause authentication is not bound to this production" });
   }
   const permanent = record.overallDecision !== "fail" &&
     cause?.kind !== "counterparty-presentation-parse";
