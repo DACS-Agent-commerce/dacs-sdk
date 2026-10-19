@@ -620,8 +620,25 @@ non-final observation must throw. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory
-recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
-must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
+recovery fails closed and never authorizes a broadcast.
+
+A recovery request that carries `priorAttempts` (as `runSession` sends for a
+session holding a transaction-bearing outcome) is a read-only audit of that
+retained transaction: it never claims a submit generation, even when the rail
+log lost its record. It requires both `settlementStore.readOutcome` and
+`reconcile` and fails closed without either; a durable `SettlementLog` used for
+recovery must therefore implement the optional `readOutcome` method. For an
+audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plus
+`txHash`, the retained hash in canonical form (64 lower-case hex digits, no
+`0x`; the node treats any other form as not found). The reconciler must load the
+original prepared-transfer journal, check that its signed nonce and tuple match
+that exact hash, and throw when the journal is missing or conflicting. It must
+never return `null` for a hash it cannot tie to the journal. A payment that the
+bridge, its rail log or the session already recorded as successful is never
+reported unpaid: a reconciliation that contradicts it is refused rather than
+returned as a permanent failure (DACS-4 §9.5.1 PC-7).
+
+Every pay-DEM settlement request must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and
 must not be described as restart-safe.

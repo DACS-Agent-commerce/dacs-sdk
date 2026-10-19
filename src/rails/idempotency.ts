@@ -119,7 +119,11 @@ export type SettlementOutcomeWrite =
   | { status: "stale" | "conflict" };
 
 export interface SettlementLog {
-  /** Read an immutable outcome without acquiring a lease or changing a generation. */
+  /**
+   * Read an immutable outcome without acquiring a lease or changing a generation.
+   * Optional for fresh settlement, but the store's `readOutcome` refuses without
+   * it, so pay-dem recovery carrying `priorAttempts` fails closed on such a log.
+   */
   readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
   claimIntent(input: Readonly<{
@@ -190,7 +194,8 @@ export interface SettlementReplayAuthorization {
 export interface SettlementIdempotencyStore {
   /**
    * Read and validate a recorded outcome under these exact terms, without
-   * claiming an intent. Required for native retained-transaction audits.
+   * claiming an intent. Required for native retained-transaction audits:
+   * `payDemSettle` refuses a request carrying `priorAttempts` without it.
    * `null` means no recorded outcome, never permission to submit again.
    */
   readOutcome?(
