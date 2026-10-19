@@ -459,7 +459,12 @@ seller's signed BundleBindings (its Demos binding program plus any configured
 `bundleBindingDiscovery` surfaces: a DACS-1 §6.3.5 well-known index or §6.3.6
 catalog), resolves them as a DACS-5 BB-6 candidate set (at most 8 fetches per
 signer, collapse, fully-signed precedence) and reads the copy at the bound
-native address. A side that no surface binds yet, whose candidates all fail
+native address. Parties match by CORE B.1 CF-3 identity (scheme and
+identifier), so advisory ClaimReference parameters on the admitted holder, the
+binding signer or the copy never make the same key another party. A binding's
+optional `anchorTx` must equal the raw Demos transaction hash of the copy's
+anchor receipt (`transactionRef.value`), not a `demos-testnet:`-prefixed form;
+a binding with another spelling is inert. A side that no surface binds yet, whose candidates all fail
 validation, or that equivocates is `indeterminate` (BB-7, BB-8), never absent.
 Non-observation alone never gates completion; unresolved BB-6 candidate sets
 remain indeterminate. A completion that was read and failed authentication needs

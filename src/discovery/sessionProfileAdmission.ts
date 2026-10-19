@@ -5,6 +5,13 @@ import { isCanonicalClaimReference, sameCanonicalClaimIdentity } from "../identi
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import { DACS_STANDARD_PIN } from "../version.js";
 
+/**
+ * CORE §11.1.2 module tuple at `DACS_STANDARD_PIN`. At that pin PROFILE.md
+ * lists this tuple as the unreleased JID-1 corrective candidate, which is not
+ * an admissible live profile until a coordinated release records its tag or
+ * merge commit. Live deployment waits on that release; move the pin to the
+ * release identifier when it is cut.
+ */
 export const COMPLETED_SESSION_MODULE_VERSIONS = Object.freeze({
   core: "0.3", dacs1: "0.7", dacs2: "0.6", dacs3: "0.5", dacs4: "0.8", dacs5: "0.5",
 } as const);
