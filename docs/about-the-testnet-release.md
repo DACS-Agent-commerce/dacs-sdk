@@ -95,8 +95,8 @@ release is meant to show the label in the last column. Labels marked
 | G10 | If a failed payment is reported as included, the buyer rail counts it as paid (L2). Once the SDK's check lands, the release is meant to keep such a purchase open as unresolved and not send the payment again. That is the safe outcome, but it is not yet the final failure record the Standard asks for, and no test has shown it yet | Intended, pending the SDK's executed-payment check and composition qualification: "Payment failed on Demos testnet · purchase held as unresolved; the payment is not sent again". Until then a failed payment reported as included is counted as paid and this label is not shown |
 | G11 | The wire requires canonical lowercase DID claims and refuses uppercase `DID:` even though the base's reader rule recognizes it | "TP-1 wire requires lowercase DID claims" |
 
-Four more differences (G2, G3, G4 and G6) are about how sessions, vetting
-records, profile checks and exact-bytes checks work inside the protocol. They
+Five more differences (G2, G3, G4, G6 and G12) are about how sessions, vetting
+records, profile checks, exact-bytes checks and wire signing domains work inside the protocol. They
 are written down in the declaration and have no on-screen label.
 The wire library checks profile authority through a trusted local integration:
 the active connection must serve the approved chain, and authenticated

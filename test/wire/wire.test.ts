@@ -50,11 +50,33 @@ describe("signing domains", () => {
     const wire = Object.values(DACS_SELLER_HTTP_DOMAINS);
     expect(wire).toEqual(["dacs-seller-http:v1:request:", "dacs-seller-http:v1:response:", "dacs-seller-http:v1:delegation:", "dacs-seller-http:v1:discovery:"]);
     expect(new Set(wire).size).toBe(4);
+    // The Standard's signature domains and its hash-domain tags (CORE §B.7; the tags are not signature domains).
+    const standardDomains = [...SIGNATURE_DOMAIN_SEPARATORS, ...COMPOSITE_DOMAIN_SEPARATORS, "dacs-sealed-bid:v1:", "dacs-sb3:v1:", "dacs-ap2-idem:v1:"];
+    expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(30);
     for (const domain of wire) {
-      expect([...SIGNATURE_DOMAIN_SEPARATORS, ...COMPOSITE_DOMAIN_SEPARATORS]).not.toContain(domain);
-      for (const standard of [...SIGNATURE_DOMAIN_SEPARATORS, ...COMPOSITE_DOMAIN_SEPARATORS]) expect(domain.startsWith(standard)).toBe(false);
+      expect(standardDomains).not.toContain(domain);
+      for (const standard of standardDomains) {
+        expect(domain.startsWith(standard), `${standard} prefixes ${domain}`).toBe(false);
+        expect(standard.startsWith(domain), `${domain} prefixes ${standard}`).toBe(false);
+      }
       expect(domain.startsWith("dacs-chatgpt-plugin:")).toBe(false);
     }
+  });
+  it("are declared as a SIG-4 question for the Standard (G12), not as registered or dacs-x- domains", () => {
+    const register = JSON.parse(readFileSync(new URL("../../conformance/tp1-register.json", import.meta.url), "utf8"));
+    const g12 = register.rows.find((row: { id: string }) => row.id === "G12");
+    expect(g12.evidence).toEqual([
+      { repo: "DACS-Standard", commit: "d45c0a2", path: "spec/CORE.md", lines: "478" },
+      { repo: "DACS-Standard", commit: "d45c0a2", path: "spec/CORE.md", lines: "590" },
+    ]);
+    expect(g12.summary).toContain("SIG-4");
+    expect(g12.status).toBe("open");
+    for (const domain of Object.values(DACS_SELLER_HTTP_DOMAINS)) {
+      expect(domain.startsWith("dacs-x-")).toBe(false);
+      expect(g12.summary).toContain("dacs-seller-http:v1:{request,response,delegation,discovery}:");
+    }
+    expect(readFileSync(new URL("../../docs/dacs-seller-http-v1.md", import.meta.url), "utf8")).toContain("records it as G12");
+    expect(readFileSync(new URL("../../docs/testnet-profile-tp1.md", import.meta.url), "utf8")).toContain("| G12 |");
   });
 });
 
@@ -111,11 +133,12 @@ describe("TESTNET_PROFILE_TP1", () => {
 });
 
 describe("conformance/tp1-register.json", () => {
-  it("is the proposed TP-1 seed: L1-L4 and G1-G11, the declaration and base of TESTNET_PROFILE_TP1", () => {
+  it("is the proposed TP-1 seed: L1-L4 and G1-G12, the declaration and base of TESTNET_PROFILE_TP1", () => {
     const register = JSON.parse(readFileSync(new URL("../../conformance/tp1-register.json", import.meta.url), "utf8"));
     expect(register.profile).toBe(TESTNET_PROFILE_TP1.id);
     expect(register.revision).toBe(TESTNET_PROFILE_TP1.revision);
     expect(register.identityBinding.tuple).toEqual({ id: TESTNET_PROFILE_TP1.id, revision: TESTNET_PROFILE_TP1.revision, base: TESTNET_PROFILE_TP1.base.commit });
+    expect(register.tuple).toEqual(TESTNET_PROFILE_TP1.tuple);
     expect(register.identityBinding.rule).toBe(TESTNET_PROFILE_TP1.identityBinding.rule);
     expect(register.identityBinding.status).toBe(TESTNET_PROFILE_TP1.identityBinding.status);
     expect(register.status).toBe("proposed; composition qualification pending");
@@ -142,7 +165,7 @@ describe("conformance/tp1-register.json", () => {
     expect(register.network.canonicalDigest).toBe(TESTNET_PROFILE_TP1.network.approvedIdentityRecordDigests[0]);
     expect(register.network.composition).toContain("broadcast refusal is not checked");
     expect(register.base).toEqual({ repo: "DACS-Standard", commit: TESTNET_PROFILE_TP1.base.commit, status: "proposed reference revision; composition qualification pending" });
-    expect(register.rows.map((row: { id: string }) => row.id)).toEqual(["L1", "L2", "L3", "L4", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11"]);
+    expect(register.rows.map((row: { id: string }) => row.id)).toEqual(["L1", "L2", "L3", "L4", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12"]);
     // Evidence is public ({repo, commit, path, lines} in a public repository) or
     // a private {source, provenance} reference; pinnedBy names files in this repository.
     const evidenceOk = (e: Record<string, unknown>) => {

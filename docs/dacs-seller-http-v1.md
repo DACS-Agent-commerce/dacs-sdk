@@ -99,8 +99,14 @@ Listings, bundles, Agreements, settlement evidence and the rest. A wire
 signature authenticates one transport message between two parties and is
 never a DACS artifact signature: it does not authorize an identity
 presentation, a storage write, an Agreement or a payment. No wire domain is a
-Standard domain or a prefix of one, and the Standard does not standardise this
-transport yet. Making it normative is a separate proposal to the Standard
+Standard signature domain or hash-domain tag (`dacs-sealed-bid:v1:`,
+`dacs-sb3:v1:`, `dacs-ap2-idem:v1:`), and none is a prefix of one or has one
+as its prefix. The Standard does not standardise this transport yet. CORE
+SIG-4 (`spec/CORE.md:590` at `d45c0a2`) gives an artifact kind outside the
+registry the form `dacs-x-<kind>:v<version>:`. These domains do not take
+that form, because the SDK reads SIG-4 as covering artifact kinds, not
+transport messages. The Standard has not ruled on this, and the register
+records it as G12. Making it normative is a separate proposal to the Standard
 until the Standard adopts it, this document is the SDK's own
 description. There is no compatibility arm for the old plugin domains.
 
@@ -283,7 +289,10 @@ modules only; the existing bounded report envelope
 `text/plain; charset=utf-8`, at most 16,384 characters, synchronous:
 `TP1_CAPABILITIES` in `src/wire/profile.ts`; that the plugins' producer accepts
 only this is taken from the plugin implementation); no buyer request input. A
-document stating anything else is refused.
+document stating anything else is refused. `FP-DEM` and the delivery channel
+name `demos-storage` are SDK labels, not Standard identifiers. The Standard
+calls this delivery phase `deliver-storage-program`
+(`spec/DACS-4-SETTLE.md:831` at `d45c0a2`).
 
 ## The TP-1 profile member and identity gate
 

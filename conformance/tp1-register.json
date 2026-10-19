@@ -249,13 +249,28 @@
       "closedBy": "Reader support for every DID spelling required by the base",
       "blocksPublication": false,
       "status": "open"
+    },
+    {
+      "id": "G12", "kind": "gap",
+      "summary": "The wire signing domains dacs-seller-http:v1:{request,response,delegation,discovery}: are not in CORE §B.7's closed registry and do not take the dacs-x- form SIG-4 gives a kind outside it; the SDK treats them as transport-message signatures, not artifact kinds, and the Standard has not ruled on that.",
+      "evidence": [
+        { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "478" },
+        { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "590" }
+      ],
+      "tp1": "SDK transport domains; no wire domain equals a registered signature domain or hash-domain tag, and none is a prefix of one in either direction (test/wire/wire.test.ts).",
+      "classification": null,
+      "label": "declaration only",
+      "pinnedBy": ["src/wire/routes.ts", "test/wire/wire.test.ts"],
+      "closedBy": "A Standard ruling on transport signatures: either rename the domains to dacs-x-seller-http:v1:{request,response,delegation,discovery}: and regenerate the vectors and the revision-adapted fixture, or register them",
+      "blocksPublication": false,
+      "status": "open"
     }
   ],
   "qualification": [
     {
       "subject": "domain: dacs-seller-http:v1:{request,response,delegation,discovery}: new SDK wire domains, outside CORE §B.7's signature domain registry",
       "result": "not checked",
-      "rows": ["G4"],
+      "rows": ["G4", "G12"],
       "evidence": [ { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "470-521" } ]
     },
     {

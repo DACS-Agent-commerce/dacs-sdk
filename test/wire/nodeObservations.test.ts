@@ -22,6 +22,7 @@ describe("pinned read-only node observations", () => {
       builtAt: manifest.builtAt,
     });
     expect(version.dirty).toBe(true);
+    expect(manifest.format).toBe("dacs-node-read-observations/v1");
     expect(manifest.deploymentArtifactDigest).toBeNull();
     expect(manifest.deploymentOverlay).toBeNull();
     expect(manifest.executionFailedTransaction.observed).toBe(false);
