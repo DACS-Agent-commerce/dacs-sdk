@@ -119,6 +119,11 @@ export function buildReport({ agreement, listing, settlementId }) {
 // remaining fixture read or write refuses (fixture_substrate_disabled). The
 // simulated fixture substrate is used only when it is passed as `anchors` with
 // no native capability.
+// The native profile signs an Agreement only with the operator's authenticated
+// Vet context (`demDeliveryContext`), never the synthetic not-performed Vet
+// references, and commits or takes payment only with the whole chain to
+// delivery (`nativePaymentEvidence`, `demDeliveryContext`, `nativeDemDelivery`):
+// a commitment it could not settle would make the buyer pay for nothing.
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
@@ -159,6 +164,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (nativeProfile && anchors != null) throw new TypeError('the native seller profile takes no fixture substrate (anchors)');
   if (!nativeProfile && (typeof anchors?.read !== 'function' || typeof anchors.write !== 'function')) throw new TypeError('a seller agent needs agreementAnchor and nativeArtifactAnchor, or an explicit fixture substrate (anchors)');
   if (nativeProfile) anchors = NATIVE_PROFILE_FIXTURE;
+  const settlementChain = nativeEvidence !== null && deliveryContext !== null && nativeDelivery !== null;
+  // Checked before any session, signature, read or write.
+  const assertVetContext = () => {
+    if (nativeProfile && !deliveryContext) throw new SellerAgentError('vet_context_required', 'the native seller profile signs an Agreement only with the authenticated Vet context (demDeliveryContext)', 503);
+  };
+  const assertSettlementChain = () => {
+    if (nativeProfile && !settlementChain) throw new SellerAgentError('settlement_profile_unavailable', 'the native seller profile commits and takes payment only with native payment evidence, the DEM delivery context and native DEM delivery', 503);
+  };
   const pin = listingPin(listing);
   if (durableDirectory && suppliedReceiptStore) throw new Error('durable seller recovery owns the pinned filesystem receipt store');
   const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin }) : null;
@@ -283,6 +296,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   async function receiveProposal({ proposal, transportIdentity, buyerIdentityBundle }) {
     const jobId = transportIdentity?.jobId;
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+    assertVetContext();
     assertBuyer(buyerIdentityBundle?.presentedBy,jobId,{proposal:true});
     authenticateBuyerBundle(buyerIdentityBundle);
     if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
@@ -312,6 +326,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             const resolved = retained ?? await resolveDemDeliverySellerContext(deliveryContext, { jobId, listing, buyerBundle: session.buyerBundle, generatedAt });
             if (resolved.disposition !== 'present') return { disposition: resolved.disposition, reason: resolved.reason };
             if (retained && (retained.input.generatedAt !== generatedAt || retained.input.jobId !== jobId)) return { disposition: 'rejected', reason: 'retained DEM delivery Agreement context differs' };
+            // A context reference over the not-performed marker names no Vet record.
+            const notPerformed = agreementInput({ jobId, listing, buyerBundle: session.buyerBundle, generatedAt });
+            if (['buyer', 'seller'].some((role) => resolved.input[role].vetRecordRef.contentHash === notPerformed[role].vetRecordRef.contentHash)) {
+              return { disposition: 'rejected', reason: 'the Vet context names the not-performed Vet references' };
+            }
             session.demDeliveryContext = structuredClone(resolved);
             persist(session);
             return { disposition: 'present', value: structuredClone(resolved.input) };
@@ -399,6 +418,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // `readbackOnly` is internal (never an HTTP body field): a retained
   // commitment is authenticated again, but an absent one is never published.
   async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement } = {}) {
+    assertSettlementChain();
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     const early = signatureAgreement !== undefined;
@@ -880,9 +900,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   async function submitPayment({ jobId, txHash, payerPayingKey, nativePaymentEvidence: requestedEvidence }) {
+    assertSettlementChain();
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     if (requestedEvidence === NATIVE_PAYMENT_EVIDENCE || session.nativeEvidenceWork) return submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence });
+    // The fixture intake below claims the transfer, then anchors through the
+    // fixture substrate, which the native profile does not have.
+    if (nativeProfile) throw new SellerAgentError('native_evidence_required', 'the native seller profile takes payment only as native payment evidence', 409);
     if (session.payment) {
       if (session.payment.txHash !== String(txHash).toLowerCase()) throw new SellerAgentError('payment_already_recorded', 'this job already has a verified payment', 409);
       return publicPayment(session);

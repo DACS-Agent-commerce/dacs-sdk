@@ -4,7 +4,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { canonicalize, DACS_STANDARD_PIN } from '@kynesyslabs/dacs';
 import * as seller from '../src/index.mjs';
+import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 
 function sellerWorld() {
   const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex');
@@ -49,4 +52,10 @@ test('each complete profile constructs', async () => {
     assert.equal(agent.claim, w.base.signer.claim);
     agent.close();
   }
+});
+
+test('PROFILE.json names the Standard pin and the seller requirement the run time uses', () => {
+  const profile = JSON.parse(readFileSync(new URL('../PROFILE.json', import.meta.url), 'utf8'));
+  assert.equal(profile.standardRevision, DACS_STANDARD_PIN);
+  assert.equal(canonicalize(profile.sellerRequirement), canonicalize(SELLER_REQUIREMENT));
 });

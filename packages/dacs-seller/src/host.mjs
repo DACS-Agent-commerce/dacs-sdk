@@ -4,8 +4,11 @@
 // The host only composes package modules. The operator supplies the signer
 // (a synchronous { claim, sign(bytes) } over its own custody; no key or key
 // file reaches this package) and the native capabilities, which are required:
-// the host never builds a fixture substrate. It does not mount the context
-// route, whose challenge issuance limits are still open (ADMISSION.md).
+// the host never builds a fixture substrate, and it starts only with the whole
+// chain to delivery (native payment evidence, the DEM delivery context, whose
+// Vet references the Agreement carries, and native DEM delivery), so it never
+// commits an Agreement it cannot settle. It does not mount the context route,
+// whose challenge issuance limits are still open (ADMISSION.md).
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
@@ -14,8 +17,9 @@ import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 
-const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer', 'observeDemosTransfer']);
-const OPTIONAL = Object.freeze(['nativePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'deliveryEvidenceEnabled', 'host', 'port', 'now']);
+const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer', 'observeDemosTransfer',
+  'nativePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery']);
+const OPTIONAL = Object.freeze(['deliveryEvidenceEnabled', 'host', 'port', 'now']);
 const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });
@@ -36,7 +40,7 @@ export async function startSellerHost(options) {
   const missing = REQUIRED.filter((key) => options[key] == null);
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
-    nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, deliveryEvidenceEnabled = false,
+    nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, deliveryEvidenceEnabled = false,
     host = '127.0.0.1', port = 0, now = () => Date.now() } = options;
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');

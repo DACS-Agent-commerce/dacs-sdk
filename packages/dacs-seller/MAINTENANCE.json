@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "d77204f778652886648f232b30386ffb9778e948036119823f2ad3ee0a5a5f78",
+      "sha256": "9c966393c61f67b4c16feafcc9ae069c12644e03fa2a1d3a881fdc2c545e776e",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -34,7 +34,7 @@
     {
       "path": "packages/dacs-seller/src/devnet-demo/agreement-context.mjs",
       "originalSha256": "ce56ddcb8659ecc66ade10dbbf21b14a466c11bbd390a42324b4e67d3a7e4d66",
-      "sha256": "c046e0bb18584710d55a78aca13bba927e68d0d762e24c1cd14d3f80c52dda2d",
+      "sha256": "65eeadf247dff6051ca288bd27bf55aef7998a6e916323dd59122744a89002d0",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -238,7 +238,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/demos-claims.mjs",
       "originalSha256": null,
-      "sha256": "c04f5eed57b905e7fd16dae2efadbb0a1517299c5764b2f8ba58fe8da303b4e2",
+      "sha256": "3e384cea9f846b5dafb80c2945db95930cc71a9b1d26003ae699a7516f890418",
       "reason": "Seller run time: SDK code in place of an excluded plugin wallet module (README.md)."
     },
     {
@@ -304,7 +304,7 @@
     {
       "path": "packages/dacs-seller/src/host.mjs",
       "originalSha256": null,
-      "sha256": "a1a21cda4e7cdb3b2b63298fa3fc101b80196287446406e02e990ac394a8eff7",
+      "sha256": "ef998a84a578e1c899d4315593d70f135f0b2ed3a664996ee885b38fce140244",
       "reason": "Seller run time: standalone host and public entry (README.md)."
     },
     {
@@ -352,31 +352,37 @@
     {
       "path": "packages/dacs-seller/test/demos-claims.test.mjs",
       "originalSha256": null,
-      "sha256": "0d144cfd2370bcc40452208579d6f09d11dc3b549fa6eee81c32cbf358eefc74",
+      "sha256": "f3c7daf027817a0fad0b0e0f4eb7c83255bbc763b23ead99c6b1a0a21e3bd470",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
       "originalSha256": null,
-      "sha256": "d423f71a9cc2a240b6f1a573a75b900dd653fddca62f9ef2f1b182250eb53038",
+      "sha256": "f763e3e35a53ff1c7a1cd375d44f7f6ff6433dac9d134a7457dbd89069d0da45",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/installed-package.test.mjs",
       "originalSha256": null,
-      "sha256": "826eb3bf9113efbfefbc13060c9a1c5661b8820f6413a05bbfb7515398aaf0ea",
+      "sha256": "c60dc04b58731b21226c32c07f5fb749fd5c0de3b103ca888d8c8682b4c56c3e",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-http-roundtrip.test.mjs",
       "originalSha256": null,
-      "sha256": "4015421262b88dd7585775df56aacf661a207bd787037aae53ae2cffbb818de7",
+      "sha256": "2ca4cda147d8d9149e4cf3c3ac806dad1a4c77454233ab42e8315203ddded01d",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-substrate-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "3e9e9db2280749c3623349a8b9554f3535a32a10d72c5f98144d1dbf1fb429b8",
+      "sha256": "bbaf1f7ee6f5b3206efd62f2a8f831a8707cb3867411710491080420fd9510af",
+      "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
+      "originalSha256": null,
+      "sha256": "a5ec4015490bbfe54213d94df7c08b4a057444eeb0875d46339793326c7d7a43",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {

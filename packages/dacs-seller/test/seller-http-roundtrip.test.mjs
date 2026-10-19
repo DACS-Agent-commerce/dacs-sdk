@@ -2,6 +2,9 @@
 // no module hooks and no substituted verification: Listing, identity,
 // transport and contribution signatures are checked by the package's modules.
 // The agent keeps its sessions in memory here; the host test covers durable state.
+// Negotiation reads and writes no substrate, so the agent runs on a fixture
+// substrate that refuses every call: the native profile negotiates only with the
+// operator's Vet context (seller-settlement-profile.test.mjs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign, verify } from 'node:crypto';
@@ -36,9 +39,7 @@ async function world(t) {
   let server, store;
   const start = async () => {
     const agent = await seller.createSellerAgent({ signer, listing, observeDemosTransfer: refuse('observeDemosTransfer'), buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
-      agreementAnchor: { source: 'roundtrip/agreement-readback', readAgreement: refuse('readAgreement') },
-      nativeArtifactAnchor: { writer: sellerKey.claim, publish: refuse('publish'), readRetained: refuse('readRetained'), verifyReceipt: refuse('verifyReceipt') },
-      deliverableProducer: () => { reached.push('deliverableProducer'); throw new Error('not reached'); } });
+      anchors: { read: refuse('anchors.read'), write: refuse('anchors.write') } });
     store = seller.createSellerTransportStore({ path: join(dir, 'transport.sqlite') });
     server = createServer(seller.createSellerHttpHandler(agent, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store }) }));
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

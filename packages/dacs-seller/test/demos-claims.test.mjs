@@ -16,8 +16,8 @@ test('claims and addresses convert both ways; claim key digits must be lower-cas
   const hex = keyHex(), claim = `did:demos:agent:${hex}`;
   assert.equal(claimForAddress(`0X${hex.toUpperCase()}`), claim);
   assert.equal(addressForClaim(claim), `0x${hex}`);
-  assert.equal(addressForClaim(`DID:Demos:Agent:${hex}`), `0x${hex}`, 'the prefix is matched without case');
-  for (const value of [`did:demos:agent:${hex.toUpperCase()}`, `did:demos:agent:0x${hex}`, `did:demos:agent:${hex}0`, `did:demos:other:${hex}`, `${claim}\n`, undefined, {}]) {
+  assert.equal(addressForClaim(`DID:demos:agent:${hex}`), `0x${hex}`, 'the did scheme is matched without case');
+  for (const value of [`DID:Demos:Agent:${hex}`, `did:DEMOS:AGENT:${hex}`, `did:demos:Agent:${hex}`, `did:demos:agent:${hex.toUpperCase()}`, `did:demos:agent:0x${hex}`, `did:demos:agent:${hex}0`, `did:demos:other:${hex}`, `${claim}\n`, undefined, {}]) {
     assert.throws(() => addressForClaim(value), DemosClaimFormatError);
   }
 });

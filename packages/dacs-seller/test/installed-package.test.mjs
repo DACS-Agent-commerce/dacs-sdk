@@ -71,6 +71,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.deepEqual(out.subpath, { artifactAnchor: 'function', contextRoute: 'function' }, 'kit modules resolve by package subpath');
 
   assert.match(out.refusedConfigurations.missingAgreementAnchor, /^TypeError: .*agreementAnchor/);
+  assert.match(out.refusedConfigurations.missingDelivery, /^TypeError: .*requires nativeDemDelivery$/, 'the host starts only with the whole chain to delivery');
   assert.match(out.refusedConfigurations.publicInterface, /^TypeError: .*loopback/);
   assert.match(out.refusedConfigurations.unknownOption, /^TypeError: .*anchors/);
   assert.match(out.refusedConfigurations.relativeDirectory, /^TypeError: .*dataDirectory/);
@@ -85,10 +86,13 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.equal(out.stateSameContribution, true);
   assert.deepEqual(out.refusals.otherListingPin, { name: 'SellerRefusedError', code: 'peer_listing_mismatch', status: 409 });
   assert.deepEqual(out.refusals.unsigned, { status: 401, body: { error: 'peer_envelope_invalid', message: 'peer_envelope_invalid' } });
+  assert.notEqual(out.refusals.unvettedProposal.disposition, 'complete', 'a proposal over synthetic Vet references is not signed');
+  assert.equal(out.refusals.unvettedProposal.contribution, null);
   assert.deepEqual(out.refusals.contextChallenge, { status: 404, body: { error: 'not_found' } });
   for (const attempt of [out.refusals.secondHostSameDirectory, out.refusals.secondProcessSameDirectory]) {
     assert.match(attempt, /^Error: seller state directory is in use by another live operator process/, 'one live host owns the state');
   }
   assert.deepEqual(out.restart, { stateSameContribution: true, repeatSameContribution: true });
-  assert.deepEqual(out.reached, [], 'negotiation reached no operator capability');
+  assert.deepEqual(out.reached, [], 'negotiation reached no operator capability but the Vet context');
+  assert.deepEqual(out.vetContextJobs, ['vetted', 'unvetted'], 'every proposal takes its Agreement input from the Vet context');
 });

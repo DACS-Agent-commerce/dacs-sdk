@@ -29,7 +29,7 @@ const LEGACY_REASON=`${LEGACY_PARTY_VET_STATE}: this purchase was started by an 
 const CONTEXT_TIMES=16;
 // This context profile supports an explicitly empty buyer requirement on
 // sellers. It is independent of the Listing's requirements on buyers.
-const SELLER_REQUIREMENT=Object.freeze({requirementVersion:'1',required:Object.freeze([]),preferredPresentation:'any'});
+export const SELLER_REQUIREMENT=Object.freeze({requirementVersion:'1',required:Object.freeze([]),preferredPresentation:'any'});
 
 // The writer causes a purchase's attempt note may name: a fixed code and its
 // public text. The raw cause (lower-layer text that can carry node, wallet or

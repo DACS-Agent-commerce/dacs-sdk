@@ -12,6 +12,9 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as core from '@kynesyslabs/dacs';
 import * as seller from '@kynesyslabs/dacs-seller';
+import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs';
+import { createNativeDemDeliveryCapability } from '@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs';
+import { createNativePaymentEvidenceConsumer } from '@kynesyslabs/dacs-seller/src/dacs/native-payment-evidence-consumer.mjs';
 
 const require = createRequire(import.meta.url);
 const packageRoot = dirname(require.resolve('@kynesyslabs/dacs-seller/package.json'));
@@ -59,11 +62,26 @@ const pin = seller.listingPin(listing);
 out.sellerClaim = sellerKey.claim;
 assert.equal((await seller.validateListing(listing, { now: () => now, revocationSurfaces: [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: now }], readMarker: async () => null })).disposition, 'verified');
 
-// Operator capabilities. Negotiation needs none of them, so each one records
-// and refuses if it is reached.
+// Operator capabilities. Negotiation needs only the Vet context, so every other
+// one records and refuses if it is reached.
 const reached = [];
 const refuse = (name) => async () => { reached.push(name); throw new Error(`${name} is not reached while negotiating`); };
+const buyerBundle = identityFor(buyerKey, now);
+// The operator's Vet context: orchestrator-signed references at the canonical
+// composite addresses, the Agreement derivation input both parties use.
+const vetRef = (jobId, party) => ({ anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) },
+  contentHash: core.sha256Hex(`installed-vet:${jobId}:${party}`), signer: sellerKey.claim });
+const vettedInput = (jobId) => {
+  const input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
+  return { ...input, buyer: { ...input.buyer, vetRecordRef: vetRef(jobId, buyerKey.claim) }, seller: { ...input.seller, vetRecordRef: vetRef(jobId, sellerKey.claim) } };
+};
+const vetContextCalls = [];
 const capabilities = () => ({
+  nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: refuse('nativePaymentEvidence.anchorEvidence'), fetchImpl: refuse('nativePaymentEvidence.fetch') }),
+  demDeliveryContext: createDemDeliveryContext({ authority: 'TEST-installed-package', resolveBuyer: refuse('demDeliveryContext.resolveBuyer'),
+    resolveSeller: async ({ jobId }) => { vetContextCalls.push(jobId); return { disposition: 'present', value: { input: vettedInput(jobId), vetRequirements: [] } }; } }),
+  nativeDemDelivery: createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', submit: refuse('nativeDemDelivery.submit'), reconcile: refuse('nativeDemDelivery.reconcile'),
+    read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt') }),
   buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
   agreementAnchor: { source: 'installed-package/agreement-readback', readAgreement: refuse('agreementAnchor.readAgreement') },
   artifactAnchor: { writer: sellerKey.claim, source: 'installed-package/artifacts', publish: refuse('artifactAnchor.publish'), readRetained: refuse('artifactAnchor.readRetained'), verifyReceipt: refuse('artifactAnchor.verifyReceipt') },
@@ -81,25 +99,30 @@ if (second !== null) {
   process.exit(0);
 }
 const { agreementAnchor: _omitted, ...withoutReadback } = capabilities();
+const { nativeDemDelivery: _undelivered, ...withoutDelivery } = capabilities();
 out.refusedConfigurations = {
   missingAgreementAnchor: await refusal({ signer, listing, dataDirectory, ...withoutReadback }),
+  missingDelivery: await refusal({ signer, listing, dataDirectory, ...withoutDelivery }),
   publicInterface: await refusal({ signer, listing, dataDirectory, ...capabilities(), host: '0.0.0.0' }),
   unknownOption: await refusal({ signer, listing, dataDirectory, ...capabilities(), anchors: { read: async () => null, write: async () => null } }),
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
   otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
 };
 
-// The buyer derives the Agreement independently and signs its contribution.
+// The buyer derives the Agreement from the vetted input and signs its contribution.
+const proposalFor = async (input) => {
+  const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(input));
+  const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
+  const material = { proposalVersion: '1', plan, buyerContribution };
+  const proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
+  return { plan, buyerContribution, proposal, transportIdentity: { jobId: input.jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash } };
+};
 const jobId = core.generateCanonicalJobId();
-const buyerBundle = identityFor(buyerKey, now);
-const agreementDraft = core.deriveFixedPriceAgreement(seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now }));
-const plan = core.createFixedPriceAgreementSigningPlan(agreementDraft);
-const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
-const material = { proposalVersion: '1', plan, buyerContribution };
-const proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
-const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
-const clientFor = (url, listingPin = pin) => seller.createSellerAgentClient({ url, authentication: seller.createSellerTransportClientAuth({
-  buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin, agreementHash: plan.agreementHash }) }) });
+const { plan, buyerContribution, proposal, transportIdentity } = await proposalFor(vettedInput(jobId));
+// The same buyer on another job, over the synthetic not-performed Vet references.
+const unvetted = await proposalFor(seller.agreementInput({ jobId: core.generateCanonicalJobId(), listing, buyerBundle, generatedAt: now }));
+const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: seller.createSellerTransportClientAuth({
+  buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin, agreementHash }) }) });
 // Independent of the package: node:crypto against the seller's own key.
 const independentVerifier = ({ party, algorithm, value, signedBytes }) => {
   if (algorithm !== 'ed25519' || party !== sellerKey.claim && party !== buyerKey.claim) return 'invalid';
@@ -124,6 +147,8 @@ out.stateSameContribution = core.canonicalize(state.contribution) === core.canon
 out.refusals = {
   otherListingPin: await refusedCode(() => clientFor(host.url, { ...pin, contentHash: '0'.repeat(64) }).propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle })),
   unsigned: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/proposals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) }); return { status: response.status, body: await response.json() }; })(),
+  unvettedProposal: await (async () => { try { const answer = await clientFor(host.url, pin, unvetted.plan.agreementHash).propose({ proposal: unvetted.proposal, transportIdentity: unvetted.transportIdentity, buyerIdentityBundle: buyerBundle });
+    return { disposition: answer.disposition ?? null, contribution: answer.contribution ?? null }; } catch (error) { return { name: error.name, code: error.code ?? null, contribution: null }; } })(),
   contextChallenge: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/context/challenge`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); return { status: response.status, body: await response.json() }; })(),
   secondHostSameDirectory: await refusal({ signer, listing, dataDirectory, ...capabilities() }),
   secondProcessSameDirectory: JSON.parse(spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--second', dataDirectory], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: 60000 }).stdout.trim().split('\n').at(-1)).secondProcess,
@@ -143,5 +168,6 @@ await host.close();
   process.exitCode = 1;
 }
 out.reached = reached;
+out.vetContextJobs = [...new Set(vetContextCalls)].map((id) => id === jobId ? 'vetted' : id === unvetted.transportIdentity.jobId ? 'unvetted' : 'other');
 rmSync(dataDirectory, { recursive: true, force: true });
 process.stdout.write(`${JSON.stringify(out)}\n`);

@@ -9,7 +9,9 @@
 //    prefixes, or as base64url behind them.
 import { ed25519Verify, publicKeyFromRaw } from '@kynesyslabs/dacs';
 
-const CLAIM_PREFIX = /^did:demos:agent:/i;
+// Only the `did` scheme is read without case; `demos:agent:` is case-sensitive
+// (DACS-1 §6.3.1).
+const CLAIM_PREFIX = /^[dD][iI][dD]:demos:agent:/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const BASE64URL_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 
