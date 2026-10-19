@@ -620,13 +620,15 @@ amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
 `PayDemSettlementRecoveryContext` and returns one of three outcomes: an exact
 `PayDemReconciledSettlement` (including the observed `amountOs` and
-`execution: "executed"` after authenticating the confirmed record); a bound
+`execution: "executed"` after authenticating the confirmed record and its
+`gcr_edits` debiting the payer and crediting the payee that amount); a bound
 `PayDemReconciledFailure` with `ok: false`, `errorClass: "permanent"`, the exact
 `amountOs` and `failureProof` after authenticating a terminal failed record; or
 `null` only when authoritative observation proves no transfer for that tuple
 landed. Each terminal record must bind the retained hash, signed nonce,
 inclusion block, payer, payee and OS amount. Status-index `included` alone is
-not enough (#338). Unproven, non-final or conflicting observations must throw.
+not enough (#338), and neither is a `confirmed` record with absent or empty
+`gcr_edits`, which the node applies as a no-op. Unproven, non-final or conflicting observations must throw.
 Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated

@@ -12,6 +12,17 @@ the node's transaction record for the retained signed hash with
 - binds the signed hash and nonce; and
 - binds the prepared payer, payee and amount.
 
+A `confirmed` record says only that the node applied the transaction's own
+`content.gcr_edits`. The node applies a native transaction whose `gcr_edits`
+are absent or empty as a successful no-op and still records it `confirmed`, so
+a matching status and send body do not by themselves show that value moved.
+The rail does not parse the record's `gcr_edits`. It relies on the transaction
+it signed: demosdk's `sign` derives the edits (payer debit, payee credit, fee
+and nonce) from the send body and hashes them into the signed hash, so a
+`confirmed` record for that hash is the node's statement that it applied those
+edits. A client that does not sign this way must check the edits itself; see
+[Custom native clients](#custom-native-clients).
+
 A `failed` record that binds the same facts is a failed transfer. A
 `confirmed` or `failed` record for the signed hash whose nonce, block, payer,
 payee or amount does not match, or a read that stalls, is indeterminate at
@@ -76,7 +87,11 @@ remain independent. An empty log never grants another submission during audit.
 Custom `PayDemRail` implementations return `PayDemRailResult`. A successful
 fresh result must carry `execution: "executed"`, attesting that the rail read
 the transaction record and checked literal `confirmed` status, signed hash,
-nonce, inclusion block, payer, payee and amount. Status-index inclusion alone
+nonce, inclusion block, payer, payee and amount, and that the record's
+`content.gcr_edits` move that amount: a `balance` `remove` of the amount from
+the payer and a `balance` `add` of the amount to the payee. A `confirmed`
+record with absent, empty or other edits moved no value, and the rail must
+leave `execution` out. Status-index inclusion alone
 must return a not-ok result retaining the hash. Both `payDemSettle` and the
 dacs-node buyer payment track refuse a fresh success without this literal
 attestation before completing settlement, recording wallet debits or publishing
@@ -90,7 +105,8 @@ when the client's result has `ok: true`, `state: "included"`, a block number
 and `execution: "executed"`. `execution: "executed"` is the client's statement
 that it read the node's transaction record and that record shows the prepared
 transfer executed at that block, as described above. `createPayDemRail` sets
-it only after that check. A client that observed only the status index must
+it only after the record checks at the top of this guide, for a transaction it
+signed with demosdk. A client that observed only the status index must
 leave it out. Its `included` result then returns `ok: false` with no finality,
 so the intent stays held and nothing is resubmitted. This includes a client
 written before #338, when `included` alone meant success.
@@ -98,8 +114,9 @@ written before #338, when `included` alone meant success.
 The same rule applies to the `reconcile` capability that `payDemSettle` uses
 after a restart. A `PayDemSettlementReconcile` returns a settlement only after
 it reads the node's transaction record for the hash and finds it `confirmed`
-at the inclusion block for the payer, payee and amount, and the settlement
-must carry `execution: "executed"`. A bound `failed` record may instead return
+at the inclusion block for the payer, payee and amount, with `gcr_edits` that
+debit the payer and credit the payee that amount, and the settlement must
+carry `execution: "executed"`. A bound `failed` record may instead return
 `ok: false`, `errorClass: "permanent"`, the exact requested `amountOs`, and the
 same `failureProof` described above. An indeterminate observation must throw.
 `payDemSettle` refuses a successful reconciliation without the execution
@@ -112,11 +129,13 @@ The dacs-node fixed-price buyer reconciler also requires an included
 `DemosTransferObservation` to carry `execution: "executed"`. The default
 observer sets it only after the transaction record is `confirmed` and its
 hash, nonce, block, payer, payee and amount have been checked against the
-confirmed block and native send payload. It carries the validated record nonce
+confirmed block and native send payload. Like the rail, it does not parse the
+record's `gcr_edits`. It carries the validated record nonce
 as a safe non-negative integer `nonce`. The buyer reconciler requires that value
 to equal the retained prepared transfer's signed nonce before returning
 `completed`; missing or conflicting nonces require operator recovery. Custom
-observers must supply the same checked nonce.
+observers must supply the same checked nonce, and must check the record's
+`gcr_edits` as described for custom clients.
 Missing or other execution evidence returns `indeterminate` with
 `pay-dem-chain-execution-unconfirmed`, keeping the payment held. The
 reconciler forwards the attestation with its `completed` settlement. The host
@@ -132,7 +151,8 @@ service and fee accounting unchanged.
 
 The mapping was verified against kynesyslabs/node
 `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578`, the commit node2
-(`0.9.9 RC`) reports at `GET /version`, and against `stabilisation@52e2e569`:
+(`0.9.9 RC`) reports at `GET /version`, and against
+`stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308`:
 
 | Behaviour | Source |
 |---|---|
@@ -140,6 +160,7 @@ The mapping was verified against kynesyslabs/node
 | A transaction record's `status` is `confirmed`, `failed` or `pending`. | `src/utilities/constants.ts` (`TRANSACTION_STATUS`) |
 | `content.nonce` is a pg `bigint` column and is served as a decimal string. `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it; the rail accepts both. | `src/model/entities/Transactions.ts`, `src/libs/blockchain/transaction.ts` (`fromEntityToWireNumber`) |
 | `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. demosdk resolves the `response` member, and both are polled. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
+| A transaction whose `content.gcr_edits` are absent or empty is applied as a successful no-op, and a successfully applied transaction is recorded `confirmed`. Mempool admission of a received native transaction re-derives its edits from the body and refuses a mismatch; apply repeats that check only for a non-empty edit list. | `src/libs/blockchain/gcr/handleGCR.ts` (`applyTransaction`), `src/libs/consensus/v2/PoRBFT.ts`, `src/libs/blockchain/mempool.ts` (`receive`) at 61b8e75 |
 
 The `testnet` snapshot at `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` has no
 `getTransactionStatus` and records every
@@ -164,31 +185,41 @@ deployment as compatible.
   block. An implementation that follows the text literally reports a failed
   payment as settled. The Standard needs a revision that defines Demos
   `included` this way, and a vector that pairs an `included` status with a
-  `failed` record. Standard PR #432 must merge before the SDK pin can move. The superseded
-  10-vector draft and its candidate runner are deferred; the alignment change
-  must pin the merged revision and run its complete 158-vector corpus.
-- **Failure class.** A bound terminal failed record now preserves `permanent`
-  through the rail result, durable outcome and session resume. The proof is
-  an authenticated node observation under the rail's existing trust model;
-  malformed or mismatched proof cannot close a session. Failure evidence omits
-  settlement finality. This does not release wallet reservations automatically:
-  a failed transaction can have fee effects that require separate accounting.
+  `failed` record. Standard PR #432 must merge before the SDK pin can move. The
+  superseded 10-vector draft and its candidate runner are deferred. The
+  alignment change must pin the merged revision and run every vector of the
+  `pay-dem-execution-v0.1` and `settlement-finality-verification` sets at that
+  revision, each identified by its `count` and `hash` there; it must not assume
+  a count from an unmerged revision.
+- **Indeterminate result class.** PC-4 requires every not-ok outcome to carry
+  an `errorClass`, and §9.5.9 maps node or RPC unavailability to `substrate`.
+  An indeterminate pay-dem result is `ok: false` with no `errorClass`. The
+  session saves it as unresolved recovery history, throws, and keeps the
+  intent held. It records no terminal failure and authorizes no replacement
+  payment.
+
+A bound terminal failed record maps to `permanent`, as §9.5.9's failure modes
+require for a transaction that reaches terminal `failed` on-chain. The SDK
+takes `failed` from the transaction record, because the status index never
+reports it, and preserves `permanent` through the rail result, durable
+outcome and session resume. The proof is an authenticated node observation
+under the rail's existing trust model; malformed or mismatched proof cannot
+close a session. Failure evidence omits settlement finality. This does not
+release wallet reservations automatically: a failed transaction can have fee
+effects that require separate accounting.
 
 ## Liveness
 
 Inside one status or record read, demosdk's transport retries a connection
-error or an HTTP 502–504 up to four times. For these reads it backs off 250,
-500, 1 000 and 2 000 ms. A retry waits up to 8 seconds only when the node
-sends `Retry-After` (demosdk 4.0.16 and 4.0.18 `_doPost`). So one transient
-error adds about 250 ms. Five fast failures, such as a refused connection or a
-quick 502, end the read in about 3.75 seconds with an error result, and the
-rail polls again. A read outlasts the 5 second `statusRequestTimeoutMs`
-default only in these cases:
-
-- all four retries, whose backoffs add 3.75 seconds, plus the requests' own
-  time pass it;
-- the node sends a `Retry-After` of 5 seconds or more;
-- one response is slow.
-
-The read then counts as stalled, and the settlement is indeterminate and held.
-This delays settlement and never causes a second broadcast.
+error (`ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT` or `ENOTFOUND`) or an HTTP
+502–504 up to four times; other errors are not retried. Before retry *n* it
+waits 250·2^(n−1) ms (250, 500, 1 000 and 2 000 ms), or, when the node sends
+`Retry-After`, that wait capped at 8 seconds instead (demosdk 4.0.16 and
+4.0.18 `_doPost`). So one transient error adds about 250 ms, and five fast
+failures, such as a refused connection or a quick 502, end the read in about
+3.75 seconds with an error result, and the rail polls again. A read outlasts
+the 5 second `statusRequestTimeoutMs` default when its waits and the requests'
+own time add up to 5 seconds or more: for example all four backoffs plus slow
+requests, one `Retry-After` of 5 seconds, two of 3 seconds, or one slow
+response. The read then counts as stalled, and the settlement is indeterminate
+and held. This delays settlement and never causes a second broadcast.

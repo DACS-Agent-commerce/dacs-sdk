@@ -83,7 +83,9 @@ recovery. The reconciliation callback receives that immutable tuple and repeats
 the chain-observed OS amount in its result; a missing, non-final or contradictory
 observation must throw. A successful result must carry `execution: "executed"`,
 set only after the node's transaction record for the hash reads `confirmed` at
-the inclusion block. A bound `failed` record may instead return `ok: false`,
+the inclusion block and its `gcr_edits` debit the payer and credit the payee the
+exact OS amount; a `confirmed` record with absent or empty edits moved no value.
+A bound `failed` record may instead return `ok: false`,
 `errorClass: "permanent"` and the exact `demos-failed-record` proof described in
 the execution guide; it must omit successful execution and finality.
 `payDemSettle` keeps an intent held unless reconciliation authenticates one of
