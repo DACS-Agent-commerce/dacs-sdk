@@ -256,15 +256,21 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
     expect(sellerCounting.calls).toBe(1);
   });
 
-  it("a lifetime override above 60 s is refused before any check passes or any signature is made", async () => {
+  it("a window above 60 s, or an answer lifetime above 30 s, is refused before any check passes or any signature is made", async () => {
     const w = world();
     const signer = { claim: w.seller.claim, calls: 0, sign(b: Uint8Array) { signer.calls += 1; return w.seller.sign(b); } };
     const text = `{"jobId":"${JOB}"}`;
-    const { payload, header } = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: AGREEMENT, profile: w.buyerBinding.profile }, now: NOW, lifetimeMs: 60_000 });
+    const { payload, header } = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: AGREEMENT, profile: w.buyerBinding.profile }, now: NOW, lifetimeMs: 30_000 });
     const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile });
     for (const maxLifetimeMs of [120_000, 60_001, 0, 1.5, -1]) {
       expect(await code(() => checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, maxLifetimeMs }))).toBe("seller_configuration_invalid");
-      expect(await code(() => signWireResponse(payload, 200, "{}", { signer, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile, maxLifetimeMs }))).toBe("seller_configuration_invalid");
+    }
+    for (const lifetimeMs of [120_000, 60_000, 30_001, 0, 1.5, -1]) {
+      expect(await code(() => signWireResponse(payload, 200, "{}", { signer, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile, lifetimeMs }))).toBe("seller_configuration_invalid");
+    }
+    // The acceptance window is never an answer's lifetime: naming it on the answer is refused, even at a valid value.
+    for (const maxLifetimeMs of [60_000, 30_000]) {
+      expect(await code(() => signWireResponse(payload, 200, "{}", { signer, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile, maxLifetimeMs } as never))).toBe("seller_configuration_invalid");
     }
     expect(signer.calls).toBe(0);
     // 60 s itself stays allowed, as in the plugin.
@@ -318,7 +324,7 @@ describe("the buyer's delegated session signer (signWireRequest)", () => {
   });
 
   it.each([
-    ["a zero lifetime", { lifetimeMs: 0 }], ["a lifetime over 60 s", { lifetimeMs: 60_001 }], ["a fractional lifetime", { lifetimeMs: 1.5 }],
+    ["a zero lifetime", { lifetimeMs: 0 }], ["a lifetime over 60 s", { lifetimeMs: 60_001 }], ["a lifetime over 30 s", { lifetimeMs: 30_001 }], ["a fractional lifetime", { lifetimeMs: 1.5 }],
     ["an invalid seller", { seller: "did:demos:agent:not-a-key" }],
   ])("refuses %s as a TypeError, with zero signatures", async (_name, change) => {
     const w = world(), session = counted(w.session), delegation = await delegated(w, NOW - 1000, NOW + 3_600_000);

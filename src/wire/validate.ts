@@ -10,7 +10,19 @@ import { canonicalize } from "../canonical/jcs.js";
 import { admitRawJson, RawJsonAdmissionError } from "../canonical/rawJson.js";
 import { snapshotCanonicalJsonConfig, snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { publicKeyFromRaw, ed25519Verify } from "../crypto/ed25519.js";
-import { DacsError } from "../errors.js";
+import { DacsError, type FaultCategory } from "../errors.js";
+
+/**
+ * Who a refusal blames follows its status: 500 is this host's own
+ * configuration or input (`permanent`), 503 a state that may clear
+ * (`transient`, such as `seller_not_ready`), and every other status the peer
+ * (`counterparty`, including 502 for a seller's malformed answer).
+ */
+export function wireFaultCategory(status: number): FaultCategory {
+  if (status === 500) return "permanent";
+  if (status === 503) return "transient";
+  return "counterparty";
+}
 
 /** Wire refusal: `code` is stable, `status` is the HTTP status a seller answers with. */
 export class WireError extends DacsError {
@@ -19,7 +31,7 @@ export class WireError extends DacsError {
     readonly status: number = 401,
     readonly detail?: string,
   ) {
-    super(detail === undefined ? code : `${code}: ${detail}`, { category: "counterparty" });
+    super(detail === undefined ? code : `${code}: ${detail}`, { category: wireFaultCategory(status) });
     this.name = "WireError";
   }
 }

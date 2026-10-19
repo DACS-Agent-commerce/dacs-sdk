@@ -4,7 +4,9 @@
 // response verification. Changes (D6): the request and response carry the TP-1 `profile` and are
 // signed only under a current TP-1 binding and the tuple the signer kept for
 // the purchase; the response is checked against the buyer's own binding. The
-// 60 s lifetime bound is unchanged, and an override above it is refused.
+// receiver's 60 s window is unchanged; a signer gives at most 30 s
+// (maxSignedLifetimeMs), so a 30 s clock difference either way still passes,
+// and a lifetime above that is refused.
 // D7: both signers admit their outgoing body with the
 // receiver's CF-5 profile, and the buyer admits the exact received response
 // bytes before hashing them. Every caller-built request, options object, job
@@ -29,21 +31,26 @@ import {
  * The seller signs its answer bound to the request hash, status and exact body
  * text. Nothing is signed unless `purchaseProfile`, the tuple the seller kept
  * for the job, is exactly the binding's, or `null` when it keeps none (a new
- * purchase); it is checked before anything else is read. The request is copied
+ * purchase); it is checked before anything else is read. The answer expires
+ * `lifetimeMs` (default and most 30 s) after the seller's clock, inside the
+ * buyer's 60 s window even when the seller's clock runs up to 30 s ahead.
+ * `maxLifetimeMs` (checkWireRequest's window) is refused here. The request is copied
  * once: the response fields, the request hash and the signer check all come
  * from that copy.
  */
-export async function signWireResponse(supplied: WireRequestPayload, status: number, text: string, ctx: EnvelopeSigningContext & { now: number; maxLifetimeMs?: number }): Promise<string> {
-  const { signer, binding, local, purchaseProfile, now, maxLifetimeMs: override } = ownedFields(ctx, ["signer", "binding", "local", "purchaseProfile", "now", "maxLifetimeMs"]) as Partial<EnvelopeSigningContext & { now: number; maxLifetimeMs: number }>;
+export async function signWireResponse(supplied: WireRequestPayload, status: number, text: string, ctx: EnvelopeSigningContext & { now: number; lifetimeMs?: number }): Promise<string> {
+  const { signer, binding, local, purchaseProfile, now, lifetimeMs: override, maxLifetimeMs: window } = ownedFields(ctx, ["signer", "binding", "local", "purchaseProfile", "now", "lifetimeMs", "maxLifetimeMs"]) as Partial<EnvelopeSigningContext & { now: number; lifetimeMs: number; maxLifetimeMs: unknown }>;
   assertTp1Binding(binding, local);
   if (purchaseProfile !== null) assertPurchaseProfile(purchaseProfile, binding, 500);
   const request = ownedArtifact(supplied, "peer_envelope_invalid", 500) as WireRequestPayload;
   const requestHash = wireRequestHash(request);
-  const maxLifetimeMs = messageLifetime(override, "seller_configuration_invalid");
+  // maxLifetimeMs is checkWireRequest's acceptance window, never an answer's lifetime: a context that names it is refused.
+  if (window !== undefined) fail("seller_configuration_invalid", 500);
+  const lifetimeMs = messageLifetime(override, "seller_configuration_invalid", DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs);
   if (Buffer.byteLength(text) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) fail("peer_response_too_large", 503);
   const bytes = admitOutgoingBody(text, DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes);
   const payload: WireResponsePayload = {
-    ...request, kind: "response", bodyHash: sha256Hex(bytes), expiresAt: (now as number) + maxLifetimeMs,
+    ...request, kind: "response", bodyHash: sha256Hex(bytes), expiresAt: (now as number) + lifetimeMs,
     requestHash, status,
   };
   if ((signer as WireSigner).claim !== request.seller) fail("peer_signer_wrong", 500);
@@ -94,8 +101,8 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   assertPurchaseProfile(job?.profile, binding, 500);
   if (!isCanonicalJobId(input.jobId)) fail("peer_envelope_invalid", 500);
   const claim = signer.claim;
-  const lifetimeMs = input.lifetimeMs ?? 30_000;
-  if (!isClaim(input.seller) || !isUint(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs) {
+  const lifetimeMs = input.lifetimeMs ?? DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs;
+  if (!isClaim(input.seller) || !isUint(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs) {
     throw new TypeError("buyer transport configuration is invalid");
   }
   if (Buffer.byteLength(input.text) > DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes) fail("body_too_large", 413);

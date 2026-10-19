@@ -64,6 +64,7 @@ const delegationPayload = { version: "1", kind: "seller-session-delegation", buy
 const del = (p, { signer = buyer.signer, domain = D.delegation } = {}) => ({ payload: p, signature: `0x${Buffer.from(signer.sign(Buffer.from(`${domain}${canonicalize(p)}`, "utf8"))).toString("hex")}` });
 const delegation = del(delegationPayload);
 const delegated = { ...request, nonce: Buffer.from(NONCE, "base64url").reverse().toString("base64url") };
+// expiresAt is 60 s after NOW: a seller whose clock runs 30 s (maxClockSkewMs) ahead, signing its 30 s answer; the buyer's 60 s window admits it.
 const response = { ...request, kind: "response", bodyHash: sha256Hex(RESPONSE_TEXT), expiresAt: NOW + 60_000, requestHash: sha256Hex(canonicalize(request)), status: 200 };
 const resp = (p, { signer = seller.signer, domain = D.response } = {}) => headerOf({ payload: p, signature: signedText(domain, p, signer) });
 // A seller answer signed by the buyer-delegated session key and carrying the buyer's valid delegation of that key:
@@ -212,6 +213,9 @@ const vectors = [
   R("request/delegated-retained-agreement-hash-mismatch", "retained Agreement hash", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [agreement], retained: { jobId: JOB_ID, agreementHash: sha256Hex("other-agreement") } }, no("peer_agreement_mismatch")),
   R("request/delegated-agreement-buyer-party-mismatch", "delegated request matches the retained Agreement's buyer", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [{ ...agreement, parties: [{ role: "buyer", primaryClaim: other.claim }, agreement.parties[1]] }] }, no("peer_delegation_agreement_mismatch")),
   R("request/delegated-agreement-seller-party-mismatch", "delegated request matches the retained Agreement's seller", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [{ ...agreement, parties: [agreement.parties[0], { role: "seller", primaryClaim: other.claim }] }] }, no("peer_delegation_agreement_mismatch")),
+  // A direct request is bound to the same host artifacts: another buyer's request for this job and hash is refused.
+  R("request/direct-agreement-buyer-party-mismatch", "direct request matches the retained Agreement's parties", { header: req(request), artifacts: [{ ...agreement, parties: [{ role: "buyer", primaryClaim: other.claim }, agreement.parties[1]] }] }, no("peer_agreement_party_mismatch")),
+  R("request/direct-agreement-seller-party-mismatch", "direct request matches the retained Agreement's parties", { header: req(request), artifacts: [{ ...agreement, parties: [agreement.parties[0], { role: "seller", primaryClaim: other.claim }] }] }, no("peer_agreement_party_mismatch")),
   R("request/valid-delegated-agreement-parties-reordered", null, { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [{ ...agreement, parties: [agreement.parties[1], agreement.parties[0]] }] }, ok),
   // A delegation another wallet signed, carried under a request naming the vector buyer: its signature verifies under that wallet's key.
   R("request/delegated-buyer-mismatch", "delegation scope (buyer)", { header: req(delegated, { signer: session.signer, delegation: del({ ...delegationPayload, buyer: other.claim }, { signer: other.signer }) }), requireDelegation: true }, no("peer_delegation_mismatch")),

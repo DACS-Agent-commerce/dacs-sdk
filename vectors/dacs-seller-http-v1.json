@@ -1222,6 +1222,82 @@
       }
     },
     {
+      "id": "request/direct-agreement-buyer-party-mismatch",
+      "kind": "request",
+      "check": "direct request matches the retained Agreement's parties",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im8zU3Z2RUthWndSbktfUDZFS0djNVVXMmVtMGhIcHRiU2V3eU9FLURMYU5xVC1Dcks4Q3VDSnJ5WWl2UlhBUVFBZWlLekR5R0NSanhYVlNTUTF1bUJ3In0",
+        "artifacts": [
+          {
+            "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+            "listingRef": {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            },
+            "parties": [
+              {
+                "role": "buyer",
+                "primaryClaim": "did:demos:agent:beeb8ef18b01e61db0861b47935b10f459dfd04f3e13540d0b53cbe8160a0dd6"
+              },
+              {
+                "role": "seller",
+                "primaryClaim": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61"
+              }
+            ],
+            "terms": {
+              "deadline": 1791986400000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_agreement_party_mismatch"
+      }
+    },
+    {
+      "id": "request/direct-agreement-seller-party-mismatch",
+      "kind": "request",
+      "check": "direct request matches the retained Agreement's parties",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im8zU3Z2RUthWndSbktfUDZFS0djNVVXMmVtMGhIcHRiU2V3eU9FLURMYU5xVC1Dcks4Q3VDSnJ5WWl2UlhBUVFBZWlLekR5R0NSanhYVlNTUTF1bUJ3In0",
+        "artifacts": [
+          {
+            "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+            "listingRef": {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            },
+            "parties": [
+              {
+                "role": "buyer",
+                "primaryClaim": "did:demos:agent:9537e9c17284fdd2bf1e0e9f3b0e398580d32d21bbd86512ec95bac4df1bfb2b"
+              },
+              {
+                "role": "seller",
+                "primaryClaim": "did:demos:agent:beeb8ef18b01e61db0861b47935b10f459dfd04f3e13540d0b53cbe8160a0dd6"
+              }
+            ],
+            "terms": {
+              "deadline": 1791986400000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_agreement_party_mismatch"
+      }
+    },
+    {
       "id": "request/valid-delegated-agreement-parties-reordered",
       "kind": "request",
       "check": null,

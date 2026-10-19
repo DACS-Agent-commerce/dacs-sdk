@@ -22,6 +22,18 @@ it("a wire refusal blames the counterparty, with its stable code and status", ()
   expect(new WireError("peer_signature_invalid").message).toBe("peer_signature_invalid");
 });
 
+// A host's own setup fault (500) or a state that may clear (503) never blames the peer.
+it.each([
+  ["seller_replay_guard_required", 500, "permanent"], ["seller_retained_agreement_required", 500, "permanent"],
+  ["tp1_binding_required", 500, "permanent"], ["seller_not_ready", 503, "transient"], ["peer_response_too_large", 503, "transient"],
+  ["peer_signature_invalid", 401, "counterparty"], ["bad_json", 400, "counterparty"], ["peer_expired", 408, "counterparty"],
+  ["peer_request_replayed", 409, "counterparty"], ["peer_agreement_party_mismatch", 409, "counterparty"], ["discovery_invalid", 502, "counterparty"],
+] as const)("%s (%i) is blamed as %s", (code, status, category) => {
+  const refusal = new WireError(code, status);
+  expect(refusal.category).toBe(category);
+  expect(faultCategory(refusal)).toBe(category);
+});
+
 describe("dacs-seller-http/v1 routes and limits", () => {
   it("keeps the plugin's seven routes and adds commit-on-signature, the context route and discovery", () => {
     expect(DACS_SELLER_HTTP_ROUTES.map((r) => `${r.method} ${r.path}${r.option ? ` [${r.option}]` : ""}`)).toEqual([
@@ -50,7 +62,9 @@ describe("dacs-seller-http/v1 routes and limits", () => {
   });
 
   it("keeps today's limits: 64 KiB request, 512 KiB response, 60 s messages, 24 h delegations", () => {
-    expect(DACS_SELLER_HTTP_LIMITS).toMatchObject({ maxRequestBodyBytes: 65536, maxResponseBodyBytes: 524288, maxMessageLifetimeMs: 60000, maxDelegationLifetimeMs: 86400000 });
+    expect(DACS_SELLER_HTTP_LIMITS).toMatchObject({ maxRequestBodyBytes: 65536, maxResponseBodyBytes: 524288, maxMessageLifetimeMs: 60000, maxClockSkewMs: 30000, maxSignedLifetimeMs: 30000, maxDelegationLifetimeMs: 86400000 });
+    // A signer's longest lifetime plus the skew allowance is exactly the receiver's window.
+    expect(DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs).toBe(DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs);
   });
 });
 

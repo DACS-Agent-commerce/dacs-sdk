@@ -83,6 +83,7 @@ describe("effect request replay reservations", () => {
     expect(reserveRequest).toHaveBeenCalledWith({
       key: sha256Hex(canonicalize({ buyer: x.buyer.claim, seller: x.seller.claim, profile: x.request.profile, nonce: x.request.nonce })),
       requestHash: wire.wireRequestHash(x.request), expiresAt: x.request.expiresAt,
+      retainUntil: x.request.expiresAt + wire.DACS_SELLER_HTTP_LIMITS.maxClockSkewMs,
     });
     expect(() => wire.checkWireRequest(x.delegated(), check)).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
     expect(reserveRequest).toHaveBeenCalledTimes(2);

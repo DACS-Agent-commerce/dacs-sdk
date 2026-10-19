@@ -81,8 +81,20 @@ export const isReadRoute = (path: string): boolean =>
 export const DACS_SELLER_HTTP_LIMITS = Object.freeze({
   maxRequestBodyBytes: 64 * 1024,
   maxResponseBodyBytes: 512 * 1024,
-  /** Longest signed request or response lifetime (expiresAt - now). */
+  /** Widest window a receiver accepts: expiresAt at most this after its own clock. */
   maxMessageLifetimeMs: 60_000,
+  /**
+   * Clock difference tolerated between two parties (signer and receiver, a
+   * worker and its journal). Every rule below that compares one party's
+   * timestamp with another party's clock leaves this much room.
+   */
+  maxClockSkewMs: 30_000,
+  /**
+   * Longest lifetime a signer gives a request or response (expiresAt - its
+   * own now): the receiver's window less the skew, so a signer clock up to
+   * maxClockSkewMs ahead of or behind the receiver's still passes.
+   */
+  maxSignedLifetimeMs: 30_000,
   /** Longest base64url envelope header (the plugin's limit). */
   maxHeaderLength: 4096,
   /** Longest seller session delegation (the plugin's limit). */

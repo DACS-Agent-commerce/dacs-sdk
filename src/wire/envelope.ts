@@ -240,17 +240,19 @@ export interface RequestCheck {
    */
   retained: WireRetainedAgreement;
   /**
-   * The host's proposal draft and/or retained Agreement. At least one is
-   * required for delegated requests; their job, Listing, parties and deadline
-   * bound the delegation.
+   * The host's proposal draft and/or retained Agreement. On every request,
+   * each one given must name the signed job, Listing, buyer and seller. At
+   * least one is required for delegated requests, and their deadline bounds
+   * the delegation.
    */
   artifacts?: readonly unknown[];
   /**
    * Required for effect routes. Atomically and durably reserve this key before
    * returning true; return false if already reserved, even for the same hash.
    * Share the journal across workers/restarts and retain the reservation until
-   * expiresAt; from then on (now >= expiresAt) the request is refused as
-   * expired before this hook runs. A failed/ambiguous effect must not release it. This synchronous
+   * retainUntil (expiresAt + maxClockSkewMs) by the journal's clock: a worker
+   * refuses the request as expired from expiresAt by its own clock, and its
+   * clock may lag the journal's. A failed/ambiguous effect must not release it. This synchronous
    * hook must finish its durable write before returning; promises are refused.
    * The wire has no journal: a checked effect request authorizes no effect
    * until the host's journal passes restart and concurrent-worker tests (a TP-1
@@ -270,12 +272,22 @@ export interface WireRequestReservation {
   readonly key: string;
   readonly requestHash: string;
   readonly expiresAt: number;
+  /**
+   * expiresAt + maxClockSkewMs: the journal keeps the key until this instant
+   * by its own clock, so a worker whose clock is up to maxClockSkewMs behind
+   * the journal's, and still accepts the request, finds it reserved.
+   */
+  readonly retainUntil: number;
 }
 
-/** A lifetime override must be an integer from 1 to 60 000 ms, as the plugin's own configuration check requires. */
-export function messageLifetime(override: unknown, code: string): number {
-  const ms = override ?? DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs;
-  if (!isUint(ms) || ms < 1 || ms > DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs) fail(code, 500);
+/**
+ * An override must be an integer from 1 to `max` ms, as the plugin's own
+ * configuration check requires; omitted, it is `max`. A receiver's window
+ * allows up to maxMessageLifetimeMs, a signer's lifetime up to maxSignedLifetimeMs.
+ */
+export function messageLifetime(override: unknown, code: string, max: number = DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs): number {
+  const ms = override ?? max;
+  if (!isUint(ms) || ms < 1 || ms > max) fail(code, 500);
   return ms;
 }
 
@@ -286,7 +298,8 @@ function reserveEffectRequest(request: WireRequestPayload, reserve: RequestCheck
   if (typeof reserve !== "function") fail("seller_replay_guard_required", 500);
   const { buyer, seller, profile, nonce } = request;
   const reservation = deepFreeze({ key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })),
-    requestHash: wireRequestHash(request), expiresAt: request.expiresAt });
+    requestHash: wireRequestHash(request), expiresAt: request.expiresAt,
+    retainUntil: request.expiresAt + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs });
   const result = reserve(reservation);
   if (result === false) fail("peer_request_replayed", 409);
   if (result !== true) fail("seller_replay_guard_invalid", 500);
@@ -340,16 +353,22 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   if (request.jobId !== retained.jobId) fail("peer_job_mismatch", 409);
   if (request.agreementHash !== retained.agreementHash) fail("peer_agreement_mismatch", 409);
   if (c.requireDelegation && !delegation) fail("peer_delegation_required");
+  // Every host artifact given binds the signed job, Listing and both parties, on a direct request as on a delegated one.
+  const retainedArtifacts = artifacts.filter((a) => a != null) as JsonRecord[];
+  for (const artifact of retainedArtifacts) {
+    const parties = Array.isArray(artifact.parties) ? (artifact.parties as JsonRecord[]) : [];
+    if (artifact.jobId !== request.jobId || !sameCanonical(artifact.listingRef ?? null, listingPin) ||
+        parties.find((party) => party?.role === "buyer")?.primaryClaim !== request.buyer ||
+        parties.find((party) => party?.role === "seller")?.primaryClaim !== request.seller) {
+      fail(delegation ? "peer_delegation_agreement_mismatch" : "peer_agreement_party_mismatch", 409);
+    }
+  }
   if (!delegation) {
     reserveEffectRequest(request, c.reserveRequest);
     return { body, readbackOnly: false };
   }
-  if (!artifacts.some((artifact) => artifact != null)) fail("peer_delegation_agreement_required", 409);
-  for (const artifact of artifacts.filter((a) => a != null) as JsonRecord[]) {
-    const parties = Array.isArray(artifact.parties) ? (artifact.parties as JsonRecord[]) : [];
-    if (artifact.jobId !== request.jobId || !sameCanonical(artifact.listingRef ?? null, listingPin) ||
-        parties.find((party) => party?.role === "buyer")?.primaryClaim !== request.buyer ||
-        parties.find((party) => party?.role === "seller")?.primaryClaim !== request.seller) fail("peer_delegation_agreement_mismatch", 409);
+  if (retainedArtifacts.length === 0) fail("peer_delegation_agreement_required", 409);
+  for (const artifact of retainedArtifacts) {
     const deadline = (artifact.terms as JsonRecord | undefined)?.deadline;
     if (!isUint(deadline)) fail("peer_delegation_deadline", 409);
     verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, deadline: deadline as number });

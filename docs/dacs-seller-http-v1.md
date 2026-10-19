@@ -75,7 +75,9 @@ route (`findDacsSellerHttpRoute`).
 |---|---|
 | Request body | 64 KiB |
 | Response body | 512 KiB |
-| Signed request or response lifetime (`expiresAt - now`) | at most 60 s; an override (`maxLifetimeMs`) must be an integer from 1 to 60,000 ms or the call fails with `seller_configuration_invalid`, as the plugin's configuration check does |
+| Receiver's window (`expiresAt - now` by the receiver's clock) | at most 60 s, as in the plugin; the seller's override (`checkWireRequest`'s `maxLifetimeMs`) must be an integer from 1 to 60,000 ms or the call fails with `seller_configuration_invalid`. The buyer's window for answers is 60 s. A seller window below the buyer's request lifetime plus the clock difference refuses honest requests |
+| Signer's lifetime (`expiresAt - now` by the signer's clock) | **new:** at most 30 s (`maxSignedLifetimeMs`), default 30 s, for requests (`signWireRequest`'s `lifetimeMs`; above it is a `TypeError`) and answers (`signWireResponse`'s `lifetimeMs`; above it, or a `maxLifetimeMs` given to `signWireResponse`, fails with `seller_configuration_invalid`) |
+| Clock difference tolerated (`maxClockSkewMs`) | **new:** 30 s. A signer's 30 s lifetime inside a receiver's 60 s window passes with the signer's clock up to 30 s ahead of or behind the receiver's (less transit time); a buyer backdates a delegation's `notBefore` by 30 s; a reservation is kept until `retainUntil` (`expiresAt` + 30 s). The plugin signed 60 s answers into a 60 s window, so any seller clock lead refused every answer after the seller had acted |
 | Envelope header | at most 4,096 base64url characters |
 | Seller session delegation | at most 24 h (`expiresAt - notBefore`) |
 | Discovery document | at most 16 KiB, valid at most 10 minutes (new) |
@@ -133,11 +135,12 @@ Request payload, exact fields:
 | `listingPin` | `{listingId (1–128 URL-safe ASCII characters: [A-Za-z0-9._~-]), version (positive integer), contentHash (64 hex)}` |
 | `agreementHash` | 64 hex: the Agreement's hash; for the context route, the hash of the exact context scope |
 | `nonce` | canonical base64url, 22-86 characters |
-| `expiresAt` | Unix ms; the seller requires `now < expiresAt <= now + 60 s` |
+| `expiresAt` | Unix ms; the buyer signs at most 30 s after its own clock, and the seller requires `now < expiresAt <= now + 60 s` by its clock |
 | `profile` | **new (D6):** `{id, revision, base, chainIdentity, pinVersion}`, see below |
 
 A response payload is the request payload with `kind: "response"`, `bodyHash`
-of the exact response body bytes, its own `expiresAt` (at most 60 s), and two more
+of the exact response body bytes, its own `expiresAt` (at most 30 s after the seller's clock; the buyer accepts
+`now < expiresAt <= now + 60 s` by its clock), and two more
 fields: `requestHash` (sha256 of the canonical request payload, profile
 included) and `status` (the HTTP status, 200-599). The seller signs every
 answer, refusals included, with its Listing key; the buyer verifies it against
@@ -188,14 +191,27 @@ below):
    Every request, on every signed route, direct or delegated, requires
    `retained: {jobId, agreementHash}`: what the seller host retained for that
    job before this request (the retained Agreement's hash; for an initial
-   proposal, the hash of the draft it admitted from the same body bytes with
-   `admitWireRequestBody`; for the context route, the exact context-scope hash).
-   It is read once, as data, and never taken from the request. A missing or
+   proposal, see below; for the context route, the exact context-scope hash).
+   It is read once, as data, and never taken from the request's envelope.
+   An initial proposal has no earlier retained state: the host admits the
+   body bytes with `admitWireRequestBody`, validates the draft Agreement in it
+   against its own Listing and offer, and then retains that draft's `jobId`
+   and its Agreement hash (`contentHash` over the unsigned draft, as the SDK's
+   fixed-price exchange computes it; computed by the host,
+   never read from the envelope). For that route the comparison proves only
+   that the signed envelope and the admitted body name the same draft; the
+   draft itself goes in `artifacts`. A missing or
    malformed record fails with `seller_retained_agreement_required` (500); a
    signed `jobId` or `agreementHash` that differs fails with `peer_job_mismatch`
    or `peer_agreement_mismatch` (409). Both refusals come before the delegation
    scope, the reservation callback and any returned body, so a correctly signed
    request naming another job or Agreement never reaches a handler.
+   Every artifact given in `artifacts`, on a direct request as on a delegated
+   one, must name the signed `jobId`, Listing pin, buyer and seller (parties
+   found by role); otherwise a direct request fails with
+   `peer_agreement_party_mismatch` (409) before the reservation. Hosts pass
+   the retained Agreement (or the admitted draft) on every route: without
+   it, only the trusted authority reader binds the buyer of a direct request.
    Delegated requests also require at least one host-owned proposal draft or
    retained Agreement in `artifacts`; omission, an empty list or only null
    entries fails with `peer_delegation_agreement_required`. For an initial
@@ -204,12 +220,13 @@ below):
 3. Before returning a checked body on an effect route, `checkWireRequest`
    requires `reserveRequest`. The host must atomically and durably claim its
    `key` (SHA-256 of canonical `{buyer, seller, profile, nonce}`) across workers
-   and restarts, retain `requestHash` and `expiresAt`, and return `true` only
+   and restarts, retain `requestHash`, `expiresAt` and `retainUntil`, and return `true` only
    after the new reservation commits. It returns `false` for an already claimed
    key, including an identical retry (`peer_request_replayed`, HTTP 409). Keep
-   the reservation until `expiresAt`: from that instant (`now >= expiresAt`)
-   the request itself is refused as `peer_expired` before any reservation, so
-   a journal may drop the key then. Never release it after an ambiguous or
+   the reservation until `retainUntil` (`expiresAt` + 30 s) by the journal's
+   own clock. A worker refuses the request as `peer_expired` from `expiresAt`
+   by its clock, and its clock may lag the journal's; the journal may drop the
+   key at `retainUntil` only when every worker's clock is within 30 s of it. Never release it after an ambiguous or
    failed effect. Recovery uses declared read routes. Missing hooks fail with
    `seller_replay_guard_required`; non-boolean results, including promises, fail
    with `seller_replay_guard_invalid`. The hook is synchronous and must finish
@@ -246,7 +263,9 @@ The buyer's wallet signs, under `dacs-seller-http:v1:delegation:`:
 `{version: "1", kind: "seller-session-delegation", buyer, sessionPublicKey, seller, listingPin, jobId, notBefore, expiresAt, profile}`
 
 with `notBefore < expiresAt`, a lifetime of at most 24 h, and the new `profile`
-member. The delegation lets that session key authenticate transport toward
+member. A verifier refuses it before `notBefore` by its own clock, as the
+plugin does, so a buyer sets `notBefore` at least 30 s (`maxClockSkewMs`)
+before its own clock; a refusal comes before any seller effect. The delegation lets that session key authenticate transport toward
 that seller, Listing and job until expiry; it never authorizes an identity
 presentation, a storage write, an Agreement or a payment. Wallet signatures are
 accepted as the 64 raw bytes, or as a string of hex or canonical base64url,
@@ -574,6 +593,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 | `seller_replay_guard_required`, `seller_replay_guard_invalid` (500) | an effect route checked without `reserveRequest`, or with one that returned anything but `true` or `false` |
 | `peer_request_replayed` (409) | the host's journal already holds the request's reservation key |
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
+| `peer_agreement_party_mismatch` (409) | a direct request whose host-owned Agreement context names another job, Listing or party |
 | `peer_envelope_too_large` (500), `peer_response_too_large` (503), `body_too_large` (413) | a signer given a header, response body or request body over the limits; nothing is signed |
 | `peer_signer_wrong` | a response signed by someone other than the expected seller, or a signer whose claim is not the answer's seller |
 
@@ -635,7 +655,7 @@ The plugin capture does not contain the codes in the rows above from
   Each negative names the check that refuses it, and
   `test/wire/vectors.test.ts` checks that each received revision vector is
   correctly signed by its party, so only the profile gate can refuse it.
-  `scripts/wire/mutate-wire-checks.mjs` defines 100 named-check replay plans.
+  `scripts/wire/mutate-wire-checks.mjs` defines 104 named-check replay plans.
   Its `--check` mode verifies all source targets and vector IDs without
   applying mutations or running tests. Request producer fixtures use the
   selected `DACS_WIRE_IMPL` for signing, discovery and proof verification.
