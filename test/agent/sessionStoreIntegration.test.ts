@@ -1170,7 +1170,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         store: railStore,
         reconcile: async (context) => {
           reconciliations += 1;
-          expect(context.txHash).toBe(txHash);
+          // Only the audit member of the context union carries the retained hash.
+          expect("txHash" in context ? context.txHash : undefined).toBe(txHash);
           if (!journalAvailable) throw missingJournal;
           return { ...failure, ok: false, errorClass: "permanent",
             amountOs: "1000000000", failureProof: failure.failureProof! };
