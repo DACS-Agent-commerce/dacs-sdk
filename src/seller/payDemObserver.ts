@@ -10,8 +10,9 @@ const OS_PER_DEM = 1_000_000_000n;
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const INCLUDED_STATE = "included";
 // `getTransactionStatus` exposes the normative Demos inclusion state. The
-// transaction projection returned by `getTxByHash` can label that same
-// included transaction `confirmed` (and future clients may use `finalized`).
+// transaction projection returned by `getTxByHash` labels an executed record
+// `confirmed`; the pinned node (61b8e75) writes only `confirmed`, `failed` and
+// `pending`, so `included` and `finalized` come only from other clients.
 // These labels are accepted only while the independent status and confirmed
 // block checks below establish inclusion; the body label is never sufficient.
 // Inclusion is not execution: only a literal `confirmed` record with a valid

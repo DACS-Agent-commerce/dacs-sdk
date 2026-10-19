@@ -557,14 +557,20 @@ reports `included` for every stored transaction, including one whose record
 `failed`. Execution needs the transaction record's literal `confirmed` label
 and a valid signed nonce; only then does the observer return
 `execution: "executed"` with that `nonce`. An `included` or `finalized` record
-label yields an inclusion-only observation (no `execution`), which the seller
+label (the pinned node writes only `confirmed`, `failed` and `pending`
+records) yields an inclusion-only observation (no `execution`). The seller
 intake, seller payment evidence, buyer payment recovery, wallet accounting and
-buyer audit all refuse to treat as settled. A `confirmed` record without a
-valid nonce is reported as `unavailable` and retried. A `failed` record, or any
-contradiction between the status, record, and block, is `invalid`. RPC time
-and decoded JSON size are bounded (15 seconds and 64 MiB by default, both
-configurable), including the potentially larger confirmed-block response. The native-send payload disambiguates the denomination
-fork:
+buyer audit all apply one rule, `isDemosExecutedTransferObservation`: only
+`execution: "executed"` with a safe non-negative integer `nonce` counts as
+settled, and anything else is held. A `confirmed` record without a valid nonce
+is reported as `unavailable` and retried. A `failed` record, or a status,
+record and block that disagree on the hash, the block number or the block's
+transaction list, is `invalid`. The record label is the only execution
+evidence read: the observer does not read the block's applied-transaction
+list (`attrs.gcrAppliedTxs`). RPC time and decoded JSON size are bounded (15
+seconds and 64 MiB by default, both configurable), including the potentially
+larger confirmed-block response. The native-send payload disambiguates the
+denomination fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
 are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
@@ -574,16 +580,23 @@ RPC's confirmed-block view; applications requiring an independent
 validator-quorum proof must inject a stronger `observeDemosTransfer` provider.
 A custom provider must return the same shapes: `execution: "executed"` together
 with the record's signed `nonce` (a safe non-negative integer) only after it
-has checked that the transfer executed, or the inclusion-only shape without
-either field. The seller intake treats any other `included` shape as a malformed
-result. The buyer's `reconcile` option for pay-DEM recovery
+has checked that the transfer executed, or the inclusion-only shape with both
+fields omitted (a present key set to `undefined` is malformed). The seller
+intake treats any other `included` shape as a malformed result. During the
+buyer audit, a matching observation without that attestation leaves the
+seller's countersignature request pending to be retried, while a conflicting
+one rejects it. The buyer's `reconcile` option for pay-DEM recovery
 (`createDacsFixedPricePayDemBuyerReconciliationV1` builds one from such a
 provider) follows the same rule: an observation whose hash, parties or amount
 conflict with the prepared transfer needs an operator, whether or not it
 attests execution; a matching one without `execution: "executed"` keeps wallet
 accounting and the payment notice held; and an executed one completes only
 when its `nonce` equals the prepared signed nonce (otherwise it needs an
-operator).
+operator). A custom `reconcile` callback's completed settlement carries
+`execution: "executed"` and that `nonce`. The payment track checks it against
+the prepared checkpoint itself: without a checkpoint, or with another
+`txHash` or `nonce`, the payment needs an operator, and no wallet accounting or
+notice happens.
 
 The funded boundary test is disabled by default. It requires two independent
 Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), an
