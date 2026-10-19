@@ -215,7 +215,10 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
   test.each([
     REQUEST_KEY,
     "com.example:price-quote:v1",
-    "dacs.example:request:v2",
+    // Only `dacs` and its dotted children are reserved.
+    "dacs-standard:request:v1",
+    "dacsx:request:v1",
+    "example.dacs:request:v1",
     "acme:prices:v10",
     "acme:prices:v100",
     "a1:b2:v1",
@@ -341,6 +344,9 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
       "acme:prior-payment-disposition-ref:v1",
       "acme:additional-terms:v1",
       "dacs:request:v1",
+      "dacs.core:request:v1",
+      "dacs.example:request:v2",
+      "dacs.a-b.c:request:v1",
     ])("refuses reserved namespaced key %s", (key) => {
       expect(
         () => deriveFixedPriceAgreement(withTerms(build(), {

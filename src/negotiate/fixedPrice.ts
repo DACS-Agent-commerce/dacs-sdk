@@ -71,7 +71,10 @@ export interface FixedPriceAgreementInput {
   selectedRail?: PaymentRailRef;
   /** Required only for `commit-payee-bound-agreement`. */
   payoutBindings?: PayoutBinding[];
-  /** Required exactly when the pinned Listing uses metered pricing. */
+  /**
+   * Required exactly when the pinned Listing uses metered pricing. Carries
+   * exactly `quantity` and `unit`; any other member is refused.
+   */
   meteredQuantity?: MeteredQuantityInput;
   /**
    * DACS-3 §8.5 `terms.additionalTerms`, carried as its canonical snapshot
@@ -365,12 +368,14 @@ const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
  *   reader can recognise a key it does not support, and a new version is a new
  *   key rather than a silent change. CF-1 does not normalise member names, so
  *   case or non-ASCII freedom would allow byte-different spellings of one key.
- * - The `dacs` namespace is reserved by this SDK, and a `<name>` that
- *   spells a top-level §8.5 term member (ignoring hyphens) is refused, so an
- *   entry cannot reuse that exact member name. This is a name check only:
- *   other names and nested members may still restate a price, rail, or
- *   deadline, so consumers must never flatten `additionalTerms` or read
- *   Standard meaning from it.
+ * - The `dacs` namespace and every dotted namespace under it (`dacs.<...>`)
+ *   are reserved by this SDK; other labels such as `dacs-plugin` or `dacsx`
+ *   are ordinary namespaces. A `<name>` that spells a top-level §8.5 term
+ *   member (ignoring hyphens) is refused, so an entry cannot reuse that exact
+ *   member name. This is a name check only: other names and nested members
+ *   may still restate a price, rail, or deadline, so consumers must never
+ *   flatten `additionalTerms` or read a §8.5 term (price, rail, deadline,
+ *   payout, deliverable, Vet result) from it.
  * - An empty record is refused: `{}` and omission would be two byte-different
  *   Agreements with the same meaning.
  * - Every number is a safe integer, as in the signing plan, durable exchange,
@@ -378,8 +383,10 @@ const railEquals = (a: PaymentRailRef, b: PaymentRailRef): boolean =>
  * - The canonical UTF-8 form is capped at 8 KiB, a local limit kept small
  *   for its own sake: the terms ride inside every anchored SR-2 Agreement and
  *   are re-sent at each exchange step. It is well inside the Storage Program
- *   limit (128 KB in the pinned Standard; 1 MiB enforced by demosdk 4.0.16)
- *   and half of the 16 KiB DACS-1 LR-2 Listing cap.
+ *   limit (128 KB in the pinned Standard; 1 MiB enforced by Demos node
+ *   ac8f45f02fc9c25082ce9b83595c2e3916b49c5a, which demosdk 4.0.16 checks only
+ *   through its opt-in `StorageProgram.validateSize`) and half of the 16 KiB
+ *   DACS-1 LR-2 Listing cap.
  * - U+0000 is refused in every string and member name. Demos node
  *   ac8f45f02fc9c25082ce9b83595c2e3916b49c5a stores anchored data as PostgreSQL
  *   `jsonb`, which rejects it, so an Agreement carrying it could be co-signed
@@ -470,6 +477,7 @@ function requireAdditionalTerms(value: unknown): Record<string, unknown> {
     }
     if (
       match[1] === RESERVED_ADDITIONAL_TERMS_NAMESPACE ||
+      match[1]!.startsWith(`${RESERVED_ADDITIONAL_TERMS_NAMESPACE}.`) ||
       AGREEMENT_TERM_MEMBERS.has(match[2]!.replace(/-/g, ""))
     ) {
       throw new DacsError(
@@ -611,9 +619,10 @@ function requirePayoutBindings(
  * DACS-3 §8.4.1/§8.5 pure derivation. No transport, anchor, payment, or private
  * repository dependency is involved. Caller-selected price/delivery never enter
  * this boundary: every signed term is derived from the exact pinned Listing.
- * The one caller-supplied term, `additionalTerms`, is copied as its canonical
- * snapshot after the producer profile above and cannot alter any
- * Listing-derived term.
+ * Two terms come from the caller: a metered `meteredQuantity` (exactly
+ * `quantity` and `unit`, priced from the Listing), and `additionalTerms`,
+ * copied as its canonical snapshot after the producer profile above. Neither
+ * can alter a term derived from the Listing.
  */
 export function deriveFixedPriceAgreement(
   callerInput: FixedPriceAgreementInput,
@@ -679,6 +688,18 @@ export function deriveFixedPriceAgreement(
     if (input.meteredQuantity === undefined) {
       throw new DacsError(
         "missing-metered-quantity: metered agreement requires meteredQuantity",
+      );
+    }
+    // DACS-3 §8.5 types the term as exactly `{ quantity, unit }`. Refuse any
+    // other member so neither party co-signs data carried inside it.
+    const offeredQuantity: unknown = input.meteredQuantity;
+    if (
+      offeredQuantity !== null &&
+      typeof offeredQuantity === "object" &&
+      Object.keys(offeredQuantity).some((key) => key !== "quantity" && key !== "unit")
+    ) {
+      throw new DacsError(
+        "non-canonical-metered-quantity: meteredQuantity carries only quantity and unit",
       );
     }
     meteredQuantity = { ...input.meteredQuantity };

@@ -83,6 +83,26 @@ describe("metered price input guards", () => {
   });
 });
 
+describe("metered quantity carriage", () => {
+  test("derives exactly quantity and unit and refuses any other member", () => {
+    const metered = FIXTURES["metered"]!();
+    expect(deriveFixedPriceAgreement(metered).terms.meteredQuantity)
+      .toEqual({ quantity: "4", unit: "request" });
+    for (const extra of [
+      { note: "x" },
+      { price: { amount: "0", currency: "USDC" } },
+      { "acme:x:v1": true },
+    ]) {
+      expect(() => deriveFixedPriceAgreement({
+        ...metered,
+        meteredQuantity: { ...metered.meteredQuantity!, ...extra },
+      }), JSON.stringify(extra)).toThrow(
+        /^non-canonical-metered-quantity: meteredQuantity carries only quantity and unit$/,
+      );
+    }
+  });
+});
+
 describe("negotiable band decimal expansion", () => {
   const pricing = (): NegotiablePricing => ({
     kind: "negotiable", bandCenter: { amount: "1000000000", currency: "USDC" },

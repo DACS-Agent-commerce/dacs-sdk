@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1100,6 +1100,150 @@ describe("seller responder with fixed-price additionalTerms", () => {
       }
     });
   });
+
+  describe.each(variants)("%s: the resolver example in docs/fixed-price-agreement.md", (
+    _name,
+    jobId,
+    payeeBound,
+  ) => {
+    // Seller-owned schema: a fresh copy of exactly the admitted fields, or
+    // undefined. It never throws, whatever JSON the buyer sent.
+    const admitPublicServiceRequest = (value: unknown) => {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+      const offered = value as Record<string, unknown>;
+      const fields = ["type", "serviceId", "version", "input"] as const;
+      if (
+        Object.keys(offered).length !== fields.length ||
+        !fields.every((field) => typeof offered[field] === "string") ||
+        offered.type !== "public-data"
+      ) {
+        return undefined;
+      }
+      return Object.fromEntries(fields.map((field) => [field, offered[field]]));
+    };
+
+    // The documented resolver, line for line, over this harness's context.
+    function documentedResolver(
+      h: Awaited<ReturnType<typeof harness>>,
+      sellerContext: FixedPriceAgreementInput,
+    ): DurableSellerFixedPriceAgreementDurability["resolveAuthenticatedAgreementContext"] {
+      const authenticatedSellerContext = async () => structuredClone(sellerContext);
+      return async (query) => {
+        h.state.calls.context += 1;
+        if (query.queryVersion !== "1") {
+          return { disposition: "rejected", reason: "unsupported query version" };
+        }
+        const context = await authenticatedSellerContext();
+        const offered = query.candidateDraft.terms.additionalTerms;
+        if (offered === undefined) return { disposition: "present", value: context };
+        if (Object.keys(offered).length !== 1 || !Object.hasOwn(offered, REQUEST_KEY)) {
+          return { disposition: "rejected", reason: "unsupported additional terms" };
+        }
+        const entry: unknown = offered[REQUEST_KEY];
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+          return { disposition: "rejected", reason: "request fails seller policy" };
+        }
+        const request = admitPublicServiceRequest(
+          (entry as { request?: unknown }).request,
+        );
+        if (request === undefined) {
+          return { disposition: "rejected", reason: "request fails seller policy" };
+        }
+        return {
+          disposition: "present",
+          value: {
+            ...context,
+            additionalTerms: {
+              [REQUEST_KEY]: { request, requestHash: sha256Hex(canonicalize(request)) },
+            },
+          },
+        };
+      };
+    }
+
+    async function respondWithDocumentedResolver(buyerTerms: Record<string, unknown>) {
+      const context = agreementContext(jobId, payeeBound);
+      const request = await requestForDraft(
+        deriveFixedPriceAgreement(withTerms(context, buyerTerms)),
+      );
+      const h = await harness({ context, request });
+      h.durability.resolveAuthenticatedAgreementContext = documentedResolver(h, context);
+      const result = await respondToFixedPriceAgreementProposalDurable(
+        h.request.input,
+        h.durability,
+      );
+      return { h, result };
+    }
+
+    test("an admitted request is rebuilt and co-signed", async () => {
+      const { h, result } = await respondWithDocumentedResolver(terms);
+      expect(result.disposition).toBe("complete");
+      expect(h.state.calls.signature).toBe(1);
+      expect(h.state.calls.publication).toBe(1);
+    });
+
+    test.each([
+      ["an extra member", { [REQUEST_KEY]: { ...terms[REQUEST_KEY], note: "x" } }],
+      ["a different requestHash", {
+        [REQUEST_KEY]: { request, requestHash: "0".repeat(64) },
+      }],
+    ] as const)("a buyer entry with %s: rejected before any signature", async (
+      _case,
+      buyerTerms,
+    ) => {
+      const { h, result } = await respondWithDocumentedResolver(buyerTerms);
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        stage: "context",
+        reason: "proposal plan differs from the independently derived seller agreement",
+      });
+      expect(h.state.calls.verifyBuyer).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+      expect(h.state.calls.publication).toBe(0);
+    });
+
+    test.each([
+      ["null", null],
+      ["an array", [terms[REQUEST_KEY]]],
+      ["a string", "request"],
+      ["a number", 7],
+      ["a boolean", true],
+      ["an object without a request", { requestHash: terms[REQUEST_KEY].requestHash }],
+      ["a null request", { request: null, requestHash: terms[REQUEST_KEY].requestHash }],
+      ["an array request", { request: [request], requestHash: terms[REQUEST_KEY].requestHash }],
+    ] as const)("a buyer entry that is %s: rejected, not indeterminate, before any signature", async (
+      _case,
+      entry,
+    ) => {
+      // The producer admits each of these: only the top level must be a record.
+      const { h, result } = await respondWithDocumentedResolver({ [REQUEST_KEY]: entry });
+      expect(result).toMatchObject({
+        disposition: "rejected",
+        stage: "context",
+        reason: "request fails seller policy",
+      });
+      expect(h.state.calls.context).toBe(1);
+      expect(h.state.calls.verifyBuyer).toBe(0);
+      expect(h.state.calls.signature).toBe(0);
+      expect(h.state.calls.publication).toBe(0);
+    });
+  });
+
+  test("the docs example keeps the entry checks the copy above runs", async () => {
+    const docs = await readFile(
+      new URL("../../docs/fixed-price-agreement.md", import.meta.url),
+      "utf8",
+    );
+    for (const line of [
+      "if (Object.keys(offered).length !== 1 || !Object.hasOwn(offered, REQUEST_KEY)) {",
+      "const entry: unknown = offered[REQUEST_KEY];",
+      'if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {',
+      "(entry as { request?: unknown }).request,",
+      "[REQUEST_KEY]: { request, requestHash: sha256Hex(canonicalize(request)) },",
+    ]) {
+      expect(docs, line).toContain(line);
+    }
+  });
 });
 
 describe("seller responder with metered fixed-price contexts", () => {
@@ -1268,6 +1412,7 @@ describe("seller responder with metered fixed-price contexts", () => {
         ["null", null, "non-canonical-metered-quantity"],
         ["missing unit", { quantity: "4" }, "metered-unit-mismatch"],
         ["other unit", { quantity: "4", unit: "byte" }, "metered-unit-mismatch"],
+        ["extra member", { ...quantity("4"), note: "x" }, "non-canonical-metered-quantity"],
       ] as const) {
         expectRefusedBeforeEffects(
           await respondTo(buyerDraft, meteredContext(jobId, payeeBound, malformed)),
@@ -1318,6 +1463,38 @@ describe("seller responder with metered fixed-price contexts", () => {
         "rejected",
         new RegExp(`^${DERIVATION}metered-unit-mismatch`),
         "copied unit",
+      );
+    });
+
+    test("a resolver copying the buyer's quantity cannot co-sign an extra member", async () => {
+      // The buyer hand-crafts a draft whose quantity carries extra data. The
+      // Agreement reader admits it, so the plan is well formed.
+      const crafted = deriveFixedPriceAgreement(
+        meteredContext(jobId, payeeBound, quantity("4")),
+      );
+      crafted.terms.meteredQuantity = { ...quantity("4"), note: "x" } as never;
+      const request = await requestForDraft(crafted);
+      const h = await harness({ context: meteredContext(jobId, payeeBound), request });
+      h.durability.resolveAuthenticatedAgreementContext = (query) => {
+        h.state.calls.context += 1;
+        return {
+          disposition: "present" as const,
+          value: meteredContext(
+            jobId,
+            payeeBound,
+            structuredClone(query.candidateDraft.terms.meteredQuantity),
+          ),
+        };
+      };
+      const result = await respondToFixedPriceAgreementProposalDurable(
+        h.request.input,
+        h.durability,
+      );
+      expectRefusedBeforeEffects(
+        { h, result },
+        "rejected",
+        new RegExp(`^${DERIVATION}non-canonical-metered-quantity: meteredQuantity carries only quantity and unit$`),
+        "copied extra member",
       );
     });
   });

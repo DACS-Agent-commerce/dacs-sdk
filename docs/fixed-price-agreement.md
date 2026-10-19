@@ -54,23 +54,25 @@ an entry cannot reuse an exact top-level §8.5 term member name:
 
 | Rule | Limit | Why |
 | --- | --- | --- |
-| Value | An exact JSON record (`isExactJsonRecord`) after the canonical snapshot: no arrays, `null`, `undefined`, functions, `NaN`/infinities, `-0`, unsafe integers, BigInt, accessors, proxies, cycles, symbols, lone surrogates, or non-plain prototypes. Every number, at any depth, must be a safe integer: `4.5`, `0.1`, `1e21`, and `2**53` are refused; carry decimals as strings | The bytes must be the JSON both parties hash (CORE §B.2). CORE's number rule allows fractions, but the signing plan, durable exchange, and seller responder carry only safe integers, so a fraction would sign locally and then fail to exchange |
+| Value | Top level: an exact JSON record (`isExactJsonRecord`) after the canonical snapshot, never an array or `null`. Inside it, entries and nested members may be any JSON value, including arrays and `null`. At any depth, refused: `undefined`, functions, `NaN`/infinities, `-0`, BigInt, accessors, proxies, cycles, symbols, lone surrogates, non-plain prototypes, and every number that is not a safe integer (`4.5`, `0.1`, `1e21`, and `2**53` are refused; carry decimals as strings) | The bytes must be the JSON both parties hash (CORE §B.2). CORE's number rule allows fractions, but the signing plan, durable exchange, and seller responder carry only safe integers, so a fraction would sign locally and then fail to exchange |
 | Empty record | Refused | `{}` and omission would be two byte-different Agreements with the same meaning |
 | Top-level key | `<namespace>:<name>:v<n>`, at most 128 characters: namespace `[a-z0-9]+([.-][a-z0-9]+)*`, name `[a-z0-9]+(-[a-z0-9]+)*`, version a positive integer without leading zeros | Independent extensions cannot collide; a reader can recognise a key it does not support; a new version is a new key, never a silent change. CF-1 does not normalise member names, so case or non-ASCII freedom would allow byte-different spellings of one visible key |
-| Shadowing | Namespace `dacs` is reserved by this SDK (the Standard defines no namespaces). A name that spells a §8.5 term member once hyphens are removed (`deliverable`, `price`, `metered-quantity`, `rail`, `deadline`, `price-anchor`, `fee-schedule`, `payout-bindings`, `prior-payment-disposition-ref`, `additional-terms`) is refused | An entry cannot reuse an exact top-level §8.5 term member name. This is a name check only; see below |
-| Size | Canonical UTF-8 form at most 8,192 bytes | A local limit: the terms ride inside every anchored SR-2 Agreement and are re-sent at each exchange step. It is well inside the Storage Program limit (128 KB soft limit in the pinned Standard; 1 MiB enforced by `@kynesyslabs/demosdk` 4.0.16 and by Demos node `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`) and half of the 16 KiB DACS-1 LR-2 Listing cap |
+| Shadowing | Namespace `dacs`, and every dotted namespace under it (`dacs.<...>`), is reserved by this SDK (the Standard defines no namespaces); other labels such as `dacs-chatgpt-plugin` or `dacsx` are ordinary namespaces. A name that spells a §8.5 term member once hyphens are removed (`deliverable`, `price`, `metered-quantity`, `rail`, `deadline`, `price-anchor`, `fee-schedule`, `payout-bindings`, `prior-payment-disposition-ref`, `additional-terms`) is refused | An entry cannot reuse an exact top-level §8.5 term member name. This is a name check only; see below |
+| Size | Canonical UTF-8 form at most 8,192 bytes | A local limit: the terms ride inside every anchored SR-2 Agreement and are re-sent at each exchange step. It is well inside the Storage Program limit (128 KB soft limit in the pinned Standard; 1 MiB enforced by Demos node `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a`, which `@kynesyslabs/demosdk` 4.0.16 checks only through its opt-in `StorageProgram.validateSize`; its `createStorageProgram` does not call it) and half of the 16 KiB DACS-1 LR-2 Listing cap |
 | Depth | At most 8 container levels, counting the record itself | Independent readers recurse a bounded amount, well inside the 128-level canonical-form cap |
 | Member names | `__proto__`, `constructor`, and `prototype` are refused at any depth | Inert as JSON, but they rebind prototypes in a consumer that merges entries by assignment |
 | U+0000 | Refused in every string value and member name, at any depth | Demos node `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` stores anchored data in a PostgreSQL `jsonb` column, which rejects U+0000, so such an Agreement could be co-signed but never anchored |
 
-**Consumers must never read Standard meaning from `additionalTerms`.** The
-shadowing rule compares names only. An entry such as
-`acme:payment-details:v1` may still contain `price`, `rail`, or `deadline`
-members, and free text may describe anything. The Agreement's price, rail,
-deadline, payout, deliverable, and Vet result are the §8.5 members outside
-`additionalTerms`, and nothing else. Never flatten or merge `additionalTerms`
-into those terms, and show each entry under its full namespaced key, apart
-from the Standard terms, in any user interface or model prompt.
+**Consumers must never read a §8.5 term from `additionalTerms`.** The
+Agreement's price, rail, deadline, payout, deliverable, and Vet result are the
+§8.5 members outside `additionalTerms`, and nothing else. The shadowing rule
+compares names only. An entry such as `acme:payment-details:v1` may still
+contain `price`, `rail`, or `deadline` members, and free text may describe
+anything. The Standard itself puts pattern-specific data there (DACS-3 lets
+an RFQ or sealed-envelope Agreement carry `competitiveContext` in it), but
+never one of those terms. Never flatten or merge `additionalTerms` into the
+§8.5 terms, and show each entry under its full key, apart from the Standard
+terms, in any user interface or model prompt.
 
 Example:
 
@@ -108,13 +110,18 @@ resolveAuthenticatedAgreementContext: async (query) => {
   const context = await authenticatedSellerContext(query);
   const offered = query.candidateDraft.terms.additionalTerms;
   if (offered === undefined) return { disposition: "present", value: context };
-  if (Object.keys(offered).length !== 1 || !(REQUEST_KEY in offered)) {
+  if (Object.keys(offered).length !== 1 || !Object.hasOwn(offered, REQUEST_KEY)) {
     return { disposition: "rejected", reason: "unsupported additional terms" };
   }
+  // Buyer data: the entry may be any JSON value, including null or an array.
+  const entry: unknown = offered[REQUEST_KEY];
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    return { disposition: "rejected", reason: "request fails seller policy" };
+  }
   // Seller-owned schema and limits; returns a fresh value holding only the
-  // admitted fields, or undefined.
+  // admitted fields, or undefined. It never throws on buyer data.
   const request = admitPublicServiceRequest(
-    (offered[REQUEST_KEY] as { request?: unknown }).request,
+    (entry as { request?: unknown }).request,
   );
   if (request === undefined) {
     return { disposition: "rejected", reason: "request fails seller policy" };
@@ -134,11 +141,16 @@ resolveAuthenticatedAgreementContext: async (query) => {
 
 If the buyer's entry carried an extra field or a different `requestHash`, the
 rebuilt entry differs and the exact plan comparison rejects the proposal.
+The producer requires only the top level of `additionalTerms` to be a record,
+so check the shape of every buyer value before reading a member of it. A
+resolver that throws makes the proposal `indeterminate` (retryable), not
+`rejected`.
 
 A metered context carries `meteredQuantity` the same way. The responder admits
 it into the context and hands it to `deriveFixedPriceAgreement`, which applies
 its usual rules (required exactly for metered Listings, canonical whole-unit
-quantity, unit equal to the Listing's). The resolver must decide the quantity
+quantity, unit equal to the Listing's, and exactly the `quantity` and `unit`
+members, so no other data rides inside it). The resolver must decide the quantity
 from seller policy; any difference from the buyer's quantity rejects the
 proposal at the `context` stage before any signature.
 
