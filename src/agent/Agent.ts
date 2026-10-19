@@ -428,7 +428,10 @@ export interface RunSessionOptions {
   >;
   /**
    * Resume an interrupted session by passing the prior run's jobId. Anchored
-   * artifacts are reused. Crash-safe no-repayment across processes additionally
+   * artifacts are reused, except that a saved native DEM payment outcome
+   * (success or permanent failure, checkpoint or anchored evidence) is re-read
+   * through `resumeSettlement` before it is reported again, also when re-running
+   * a completed session. Crash-safe no-repayment across processes additionally
    * requires both `sessionStore` and a durable/idempotent `resumeSettlement`
    * implementation; a job id alone cannot prove what happened after a lost rail
    * response. Omit for a new session.
@@ -438,8 +441,10 @@ export interface RunSessionOptions {
   sessionStore?: import("./sessionStore.js").SessionStore;
   /**
    * Reconcile a previously claimed payment whose durable session record still
-   * has only an intent or ambiguous outcome. Must use the same rail idempotency
-   * key and reconcile every ordered `req.priorAttempts` entry before returning.
+   * has only an intent or ambiguous outcome, and re-read every saved native DEM
+   * outcome read-only (see `SessionDeps.resumeSettlement`). Must use the same
+   * rail idempotency key and reconcile every ordered `req.priorAttempts` entry
+   * before returning; a native transfer is never replaced by another hash.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**

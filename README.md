@@ -651,6 +651,18 @@ pinned. No-repayment across a whole-process crash additionally requires a durabl
 alone cannot prove whether a lost rail response moved value. The legacy native-ref
 input remains available for callers with a separate trusted pin.
 
+A saved native DEM outcome is not reused on trust. Every resume, including a
+re-run of a completed session, calls `resumeSettlement` once as a read-only audit
+of the retained transaction hash: a success is kept only when the rail re-reads
+a `confirmed` record with the same block, parties and any saved fee, and a
+permanent failure only when it returns the identical failure proof. Absence, an
+indeterminate read, another hash or any mismatch fails closed without paying
+again. Wire `payDemSettle` with a `reconcile` that checks the node record
+against the retained prepared-transfer journal (signed nonce included). This
+treats an `included` transaction whose record `failed` as unpaid, which is
+stricter than the pinned DACS-4 §9.5.9 text and follows the open DACS-Standard
+#432 candidate rules.
+
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write
 authority is absent. Its top-level `ref` exists only on a `published` or
