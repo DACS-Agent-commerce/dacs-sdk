@@ -65,9 +65,50 @@ describe("effect request replay reservations", () => {
     expect(wire.checkWireRequest(read.open(), read.check).readbackOnly).toBe(false);
   });
 
+  it("reserves a live delegated effect request once and refuses its replay", () => {
+    const x = world(), journal = new Set<string>();
+    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [x.artifact] })).toThrowError(expect.objectContaining({ code: "seller_replay_guard_required" }));
+    const reserveRequest = vi.fn(({ key }: { key: string }) => {
+      if (journal.has(key)) return false;
+      journal.add(key); return true;
+    });
+    const check = { ...x.check, artifacts: [x.artifact], reserveRequest };
+    expect(wire.checkWireRequest(x.delegated(), check)).toEqual({ body: {}, readbackOnly: false });
+    expect(reserveRequest).toHaveBeenCalledTimes(1);
+    expect(reserveRequest).toHaveBeenCalledWith({
+      key: sha256Hex(canonicalize({ buyer: x.buyer.claim, seller: x.seller.claim, profile: x.request.profile, nonce: x.request.nonce })),
+      requestHash: wire.wireRequestHash(x.request), expiresAt: x.request.expiresAt,
+    });
+    expect(() => wire.checkWireRequest(x.delegated(), check)).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
+    expect(reserveRequest).toHaveBeenCalledTimes(2);
+  });
+
   it.each([undefined, null, 1, "true", Promise.resolve(true)])("a reservation result of %s never grants an effect", (result) => {
     const x = world();
     expect(() => wire.checkWireRequest(x.open(), { ...x.check, reserveRequest: (() => result) as never })).toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid" }));
+  });
+});
+
+describe("exchange and delegation scope bindings", () => {
+  it.each([
+    ["path", { path: "/dacs/v1/payments" }],
+    ["method", { method: "GET" }],
+  ])("refuses a request signed for another %s before reservation", (_name, change) => {
+    const x = world("/dacs/v1/agreements/state"), reserveRequest = vi.fn(() => true);
+    expect(wire.checkWireRequest(x.open(), { ...x.check, reserveRequest }).readbackOnly).toBe(false);
+    expect(() => wire.checkWireRequest(x.open(), { ...x.check, ...change, reserveRequest })).toThrowError(expect.objectContaining({ code: "peer_request_mismatch" }));
+    expect(reserveRequest).not.toHaveBeenCalled();
+  });
+
+  it("refuses a delegation another wallet signed, under a request naming the buyer", () => {
+    const x = world(), wallet = party(), session = party();
+    const delegation = x.signed({ version: "1", kind: "seller-session-delegation", buyer: wallet.claim, seller: x.seller.claim,
+      sessionPublicKey: session.key, listingPin: PIN, jobId: x.request.jobId, notBefore: NOW - 1000, expiresAt: NOW + 60_000,
+      profile: x.request.profile }, wallet, wire.DACS_SELLER_HTTP_DOMAINS.delegation);
+    const signed = header({ ...x.signed(x.request, session, wire.DACS_SELLER_HTTP_DOMAINS.request), delegation });
+    expect(() => wire.openWireEnvelope(signed, "request", { ...x.context, requireDelegation: true })).toThrowError(expect.objectContaining({ code: "peer_delegation_mismatch" }));
+    expect(() => wire.verifySellerSessionDelegation(delegation, { binding: x.context.binding, local: LOCAL, buyer: x.buyer.claim })).toThrowError(expect.objectContaining({ code: "peer_delegation_mismatch" }));
+    expect(wire.verifySellerSessionDelegation(delegation, { binding: x.context.binding, local: LOCAL, buyer: wallet.claim }).buyer).toBe(wallet.claim);
   });
 });
 
@@ -84,6 +125,24 @@ describe("delegated Agreement context", () => {
     expect(() => wire.checkWireRequest(opened, { ...x.check, artifacts: [{ ...x.artifact, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4J" }], reserveRequest })).toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
     expect(reserveRequest).not.toHaveBeenCalled();
     expect(wire.checkWireRequest(opened, { ...x.check, artifacts: [x.artifact], reserveRequest }).readbackOnly).toBe(false);
+  });
+
+  it.each([
+    ["another buyer", (b: unknown, s: unknown) => [{ role: "buyer", primaryClaim: party().claim }, s]],
+    ["another seller", (b: unknown) => [b, { role: "seller", primaryClaim: party().claim }]],
+    ["no buyer party", (_b: unknown, s: unknown) => [s]],
+    ["no seller party", (b: unknown) => [b]],
+    ["the parties' roles swapped", (b: any, s: any) => [{ ...b, role: "seller" }, { ...s, role: "buyer" }]],
+  ])("refuses a retained Agreement naming %s before reservation", (_name, parties) => {
+    const x = world(), reserveRequest = vi.fn(() => true), [b, s] = x.artifact.parties;
+    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], reserveRequest }))
+      .toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
+    expect(reserveRequest).not.toHaveBeenCalled();
+  });
+
+  it("finds each party by role, not by position", () => {
+    const x = world(), [b, s] = x.artifact.parties;
+    expect(wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: [s, b] }], reserveRequest: () => true }).readbackOnly).toBe(false);
   });
 });
 

@@ -134,6 +134,9 @@ describe("independent TP-1 authorization context", () => {
     ["wrong session", (d: any) => ({ ...d, sessionId: "another-job" })],
     ["missing participant", (d: any) => ({ ...d, participants: [] })],
     ["duplicate participant", (d: any) => ({ ...d, participants: d.participants.map(() => d.participants[0]) })],
+    // Appended entries keep every expected participant: only the count refuses them.
+    ["extra participant", (d: any) => ({ ...d, participants: [...d.participants, d.participants[0]] })],
+    ["extra conflicting participant", (d: any) => ({ ...d, participants: [...d.participants, { ...d.participants[0], profile: { ...d.participants[0].profile, base: "b".repeat(40) } }] })],
     ["wrong identity", (d: any) => ({ ...d, participants: d.participants.map((p: any) => ({ ...p, claim: "did:demos:agent:" + "b".repeat(64) })) })],
     ["wrong specification pin", (d: any) => ({ ...d, participants: d.participants.map((p: any) => ({ ...p, profile: { ...p.profile, base: "b".repeat(40) } })) })],
     ["missing module", (d: any) => ({ ...d, participants: d.participants.map((p: any) => { const modules = { ...p.modules }; delete modules.CORE; return { ...p, modules }; }) })],

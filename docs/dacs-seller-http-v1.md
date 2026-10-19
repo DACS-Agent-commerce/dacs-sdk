@@ -528,7 +528,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 
 ## Vectors, fixtures and checks
 
-- `vectors/dacs-seller-http-v1.json` (177 vectors, from
+- `vectors/dacs-seller-http-v1.json` (184 vectors, from
   `scripts/wire/generate-wire-vectors.mjs`): valid and invalid envelopes,
   expired and wrong-scope delegations, wrong domain, wrong and missing profile,
   the profile tuple (a correctly signed message, request, response, delegation
@@ -542,8 +542,11 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
   envelope signer, where `null` signs an answer to a new purchase but no
   request; and the exact tuple, kept and for a new purchase),
   mismatched endpoint proof, response binding (principal, identity, request
-  hash, status, body, expiry, lifetime), the delegated request's Agreement
-  checks, an overlong lifetime override, the identity gate (the SDK's own
+  hash, status, body, expiry, lifetime), the request's method and path
+  binding, the delegation's buyer, seller, Listing and job scope (including a
+  delegation another wallet signed under a request naming the buyer), the
+  delegated request's Agreement checks (job, Listing, the buyer and seller
+  parties found by role, deadline), an overlong lifetime override, the identity gate (the SDK's own
   approval list, a caller's own list, and the tests' replacement list), and
   CF-5 raw-input negatives named explicitly for the header, the request body,
   the response body and the discovery document (duplicate keys, malformed
@@ -571,7 +574,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
   Each negative names the check that refuses it, and
   `test/wire/vectors.test.ts` checks that each received revision vector is
   correctly signed by its party, so only the profile gate can refuse it.
-  `scripts/wire/mutate-wire-checks.mjs` defines 89 named-check replay plans.
+  `scripts/wire/mutate-wire-checks.mjs` defines 95 named-check replay plans.
   Its `--check` mode verifies all source targets and vector IDs without
   applying mutations or running tests. Request producer fixtures use the
   selected `DACS_WIRE_IMPL` for signing, discovery and proof verification.

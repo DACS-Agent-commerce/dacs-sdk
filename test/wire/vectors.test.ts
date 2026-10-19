@@ -181,7 +181,7 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
         : input.checkSubject === "copy" ? { ...opened } : opened;
       const { readbackOnly } = wire.checkWireRequest(subject, { reserveRequest: () => true, artifacts: agreementFixture(opened),
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
-        method: "POST", path: input.path, rawBody, now: file.now, requireDelegation: input.requireDelegation,
+        method: input.method ?? "POST", path: input.path, rawBody, now: file.now, requireDelegation: input.requireDelegation,
         binding: input.checkSubject === "other-binding" ? bind(own) : binding, local: input.checkLocal ?? own,
         ...(input.maxLifetimeMs === undefined ? {} : { maxLifetimeMs: input.maxLifetimeMs }), ...(input.artifacts === undefined ? {} : { artifacts: input.artifacts }),
         ...keptAtCheck(input),
@@ -262,13 +262,14 @@ async function outcome(v: Vector): Promise<Record<string, unknown>> {
 
 describe("dacs-seller-http/v1 vectors", () => {
   it("cover every acceptance class and name the check each negative targets", () => {
+    expect(file.format).toBe("dacs-seller-http-v1-vectors/1");
     const ids = vectors.map((v) => v.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const v of vectors) expect(v.expect.ok || typeof v.check === "string").toBe(true);
     for (const required of [
       "signing/request-listing-x402", "signing/request-listing-metered", "signing/request-listing-input",
       "request/old-domain", "request/profile-missing", "request/profile-wrong-chain", "delegation/expired",
-      "delegation/wrong-seller-scope", "discovery/endpoint-mismatch", "request/cf5-body-duplicate-member",
+      "delegation/wrong-seller-scope", "delegation/wrong-buyer-scope", "discovery/endpoint-mismatch", "request/cf5-body-duplicate-member",
       "request/cf5-body-malformed-utf8", "request/cf5-body-non-nfc", "request/cf5-body-invalid-number",
       "response/cf5-duplicate-member", "response/cf5-malformed-utf8", "response/cf5-non-nfc", "response/cf5-invalid-number",
       "request/lifetime-override-over-60s", "binding/record-missing", "binding/pin-missing", "binding/fixture-identity",
@@ -280,6 +281,10 @@ describe("dacs-seller-http/v1 vectors", () => {
       "request/local-binding-changed", "request/local-binding-changed-before-check", "delegation/local-binding-changed",
       "response/local-binding-changed", "discovery/local-binding-changed",
       "request/check-unopened-envelope", "request/check-copied-envelope", "request/check-other-binding",
+      // The seller's exchange, delegation-scope and retained-Agreement party bindings.
+      "request/path-mismatch", "request/method-mismatch", "request/delegated-buyer-mismatch",
+      "request/delegated-agreement-buyer-party-mismatch", "request/delegated-agreement-seller-party-mismatch",
+      "request/valid-delegated-agreement-parties-reordered",
       "binding/record-proxy-changes-between-reads", "binding/record-accessor-changes-between-reads",
       "binding/local-proxy-changes-between-reads", "delegation/payload-changes-between-reads",
       "signing/envelope-payload-changes-between-reads", "signing/delegation-payload-changes-between-reads",
