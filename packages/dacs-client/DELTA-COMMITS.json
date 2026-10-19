@@ -561,5 +561,19 @@
       "packages/dacs-client/scripts/check-hold.mjs",
       "packages/dacs-client/scripts/delta-provenance.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 pin broadcast-once and executed-only paths in runnable tests",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/test/native-broadcast-once.test.mjs",
+      "packages/dacs-client/test/purchase-executed-only.test.mjs"
+    ]
   }
 ]

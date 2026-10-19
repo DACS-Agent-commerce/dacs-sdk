@@ -1096,6 +1096,22 @@
           "after": null
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 pin broadcast-once and executed-only paths in runnable tests",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+          "before": null,
+          "after": "11022bfb06418a3c8d2946f1173cb75e0a2dfb0f"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": null,
+          "after": "ef154b67bd608e4a163a136b9ecd1e32e3f6f7d9"
+        }
+      ]
     }
   ]
 }

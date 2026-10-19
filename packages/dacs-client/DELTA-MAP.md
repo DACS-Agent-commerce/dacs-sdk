@@ -164,6 +164,8 @@ Every executable package test is discovered and run once with its registered cou
 
 The explicit JSON maximum and transaction-comparison export are required by retained RPC/Directory and native authentication callers. Their bounded opt-in behavior is unchanged. Unrelated lockfile funding/deprecation metadata is restored to the merge-base values; the remaining lockfile diff registers the private workspace only.
 
+Launch review coverage: the broadcast-once, no-resend and executed-only paths now have executable tests; no source file changes. `test/native-broadcast-once.test.mjs` runs the retained native transport, embedded wallet and durable journal in one process against a scripted TEST node, with a TEST stand-in for the injected SDK class that signs with a real Ed25519 key. One broadcast is sent per signed transfer. An accepted, lost or refused answer keeps the lane readback-only, also after a restart, and the source refuses a fresh lease or a replayed broadcast. Readback reports a transfer included only when the transaction is confirmed, sits in its confirmed block and executed the original signed content. `test/purchase-executed-only.test.mjs` settles a purchase only on a confirmed canonical body with the requested hash and observed block that agrees with any source readback. A failed, pending, unconfirmed or mismatched body, or an observation that is not yet included, settles nothing, records no consumed nonce and keeps the hash for readback. A settlement remains a single-node observation, not finality.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -386,6 +388,9 @@ The explicit JSON maximum and transaction-comparison export are required by reta
 | | `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/wallet-extension-probe.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/wallet-write-batch.test.mjs` (deleted) | deleted |
+| D16 | delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/native-broadcast-once.test.mjs:1` | 11022bfb06418a3c8d2946f1173cb75e0a2dfb0f |
+| | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | ef154b67bd608e4a163a136b9ecd1e32e3f6f7d9 |
 
 ## Complete commit and file inventory
 
@@ -878,6 +883,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/HOLD.json:1` |
 | test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/test/native-broadcast-once.test.mjs:1` |
+| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
 
 ## Original moved files
 
