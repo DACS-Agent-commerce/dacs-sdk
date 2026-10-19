@@ -185,3 +185,41 @@ test('readback reports included only for a confirmed transaction in its confirme
  assert.equal((await w.lane()).stage,'observed');
  assert.deepEqual(w.node.broadcasts,[hash]);
 });
+
+// node2 projects an executed body (getTxByHash for native send cbabec31...,
+// block 563635): nonce and timestamp as decimal text, root amount and fees as
+// OS numbers, and every GCR edit carrying the transaction hash. That is the
+// same executed content; any other change to it is not.
+const os=v=>typeof v==='string'&&/^(0|[1-9][0-9]*)$/.test(v)?Number(v):v;
+const node2Projection=(tx,nonce=String(tx.content.nonce))=>({...tx,ed25519_signature:null,attrs:{reference_block:0},content:{...tx.content,nonce,
+ timestamp:String(tx.content.timestamp),amount:os(tx.content.amount),
+ transaction_fee:Object.fromEntries(Object.entries(tx.content.transaction_fee).map(([key,value])=>[key,os(value)])),
+ gcr_edits:tx.content.gcr_edits.map(edit=>({...edit,txhash:edit.txhash===''?tx.hash:edit.txhash}))}});
+test('readback accepts the node2 projection of the original executed content, and only that projection',async t=>{
+ const w=await world(t),sent=await w.send();
+ assert.equal(sent.success,true,JSON.stringify(sent));
+ const hash=sent.data.hash,read=()=>w.transport().binding({phase:'readback',address:w.address,hash});
+ for(const [name,view] of Object.entries({
+  'non-canonical nonce text':tx=>node2Projection(tx,'0'+tx.content.nonce),
+  'nonce text of another nonce':tx=>node2Projection(tx,String(tx.content.nonce+1)),
+  'changed projected amount':tx=>({...node2Projection(tx),content:{...node2Projection(tx).content,amount:os(tx.content.amount)+1}}),
+ })){
+  w.node.view={tx:view,block:same};
+  await assert.rejects(read(),{code:'readback_unverified'},name);
+  assert.equal((await w.lane()).stage,'broadcast-accepted',name);
+ }
+ w.node.view={tx:node2Projection,block:same};
+ const projected=w.node.view.tx({...structuredClone(w.node.applied.get(hash)),status:'confirmed',blockNumber:1});
+ // Every projection allowance is exercised: each of these fields differs in form from the signed content.
+ const signed=w.node.applied.get(hash).content;
+ assert.equal(typeof signed.nonce,'number');assert.equal(typeof projected.content.nonce,'string');
+ assert.equal(typeof signed.timestamp,'number');assert.equal(typeof projected.content.timestamp,'string');
+ assert.equal(typeof signed.amount,'string');assert.equal(typeof projected.content.amount,'number');
+ for(const key of ['network_fee','rpc_fee','additional_fee']){assert.equal(typeof signed.transaction_fee[key],'string',key);assert.equal(typeof projected.content.transaction_fee[key],'number',key);}
+ assert.ok(signed.gcr_edits.length>0&&signed.gcr_edits.every(edit=>edit.txhash===''));
+ assert.ok(projected.content.gcr_edits.every(edit=>edit.txhash===hash));
+ const included=await read();
+ assert.equal(included.disposition,'included');assert.equal(included.receipt.hash,hash);assert.equal(included.receipt.blockNumber,1);
+ assert.equal((await w.lane()).stage,'observed');
+ assert.deepEqual(w.node.broadcasts,[hash]);
+});

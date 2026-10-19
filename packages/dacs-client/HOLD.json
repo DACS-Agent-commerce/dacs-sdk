@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "697491373f842b966cc7ca61437d52d93f2efbc8"
+        "blob": "2cf5f696b106f2d5c728002583315daf13e1c8a9"
       },
       "DELTA-LEDGER.json": {
-        "blob": "e6fb0b672af7b5d343756ba8fed05814c7b5e6e9"
+        "blob": "991689ff6eabc0bc5832f5309b2c9b1469445a37"
       },
       "DELTA-MAP.md": {
-        "blob": "0c98b4414b312cd1839682fb9c28ba8a5b7f4709"
+        "blob": "e9b06a05e88ac8a72e5ab10773601ac47911fb73"
       },
       "DELTA-NOTES.md": {
-        "blob": "343f6103174ed145164ecc5d426f4b9a6e1c954e"
+        "blob": "5fa568ef7c5f154c4820bbfc834a560fc404f826"
       },
       "HOLD.json": {
         "control": "record"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "d388bc1aef228cc626aa8656b9ecf1ae217022d2"
+        "blob": "1cf3318573e5438a37bec7c004d16a1e6fc24e4b"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1097,7 +1097,7 @@
         "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
       },
       "src/dacs/chain.mjs": {
-        "blob": "f9b1cc2e87c4d9fa94d517ad7687623272634aef"
+        "blob": "c0eada136abb9f298c2ab37551b731afbbb2bd3f"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
@@ -1112,7 +1112,7 @@
         "blob": "e5bd883b4b7fc16842bc6425c8952139c6e36a16"
       },
       "src/dacs/dem-delivery-consumer.mjs": {
-        "blob": "bc94796472c3c44d3f640a5ef1c2dfd0086e535c"
+        "blob": "597a1a6205e46cfb4e1a1a44b768ace3239f0843"
       },
       "src/dacs/dem-delivery-context-consumer.mjs": {
         "blob": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7"
@@ -1127,7 +1127,7 @@
         "blob": "c91e7f4769c14fa8b8306ef38647c65230cce881"
       },
       "src/dacs/listing.mjs": {
-        "blob": "7a7ab901f9be0ecc076be8db645be0f61313ce18"
+        "blob": "496faea3012f79a204e43a519710cf58772ea16f"
       },
       "src/dacs/native-agreement-payment-consumer.mjs": {
         "blob": "9a0967034f9bad78b2c03836343926dce0a537f6"
@@ -1145,7 +1145,7 @@
         "blob": "479bd5b726f9e0752ca1618212e174330b800af0"
       },
       "src/dacs/purchase-protocol.mjs": {
-        "blob": "2b97f69a1c3642c5374f0e6e5eaa339771c5482a"
+        "blob": "af44c69720a05c3ec1c5f38df93a7ce0860548fd"
       },
       "src/dacs/seller-agent.mjs": {
         "blob": "64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b"
@@ -1211,7 +1211,7 @@
         "blob": "e57dba177ef9a6ae96f696d2f6b1aa4fc9ceabec"
       },
       "src/purchases.mjs": {
-        "blob": "79de3d54bc07c27f51c1758f81c61719c0d77595"
+        "blob": "30b6914f51a037b698d9a71d5e6cecc0629e4a8b"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1247,7 +1247,7 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "218571c937066a1d0b01908d2fe1eb86d40144af"
+        "blob": "54bead46b8880560f26cacda3d10f6024e24596d"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
@@ -1257,6 +1257,9 @@
       },
       "test/commitment-contradiction-classifier.test.mjs": {
         "blob": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
+      },
+      "test/delivery-access-model.test.mjs": {
+        "blob": "8c00d7bc5cfcb9e1a59f0ce5c1b0a4e5e9fb5f2e"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
@@ -1562,13 +1565,13 @@
         "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"
       },
       "test/native-broadcast-once.test.mjs": {
-        "blob": "11022bfb06418a3c8d2946f1173cb75e0a2dfb0f"
+        "blob": "8b5be5a52eb1ddbc3ddd415a88845ce331c5c77d"
       },
       "test/native-stage-help.test.mjs": {
         "blob": "fd8943b54a6e03026a28eafeaa992de1d66d2fdc"
       },
       "test/purchase-executed-only.test.mjs": {
-        "blob": "ef154b67bd608e4a163a136b9ecd1e32e3f6f7d9"
+        "blob": "a90c09c6855bf640d1c1ae01251d66b783c36ee1"
       },
       "test/purchase-integrity.test.mjs": {
         "blob": "80fe7f93a5306cbe4392ac1529b1f9789b050504"

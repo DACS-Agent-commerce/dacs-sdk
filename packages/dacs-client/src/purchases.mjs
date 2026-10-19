@@ -36,6 +36,7 @@ import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
 import { transaction, isUniqueViolation } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
 import { OutboundError } from './util/http.mjs';
+import { nodeProjectedNonce } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
 import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView } from './dacs/protocol-purchases.mjs';
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
@@ -680,6 +681,14 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       return false;
     }
   };
+  const readableAddress = (value) => {
+    try {
+      normalizeDemosAddress(value);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   // A reported hash is a pointer. It can only close the purchase (settled,
   // mismatched or failed) once the configured RPC, still reporting the bound
@@ -889,13 +898,18 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         return { operation, verification: { outcome: 'transaction_unconfirmed', ...result } };
       }
       const content = body?.content ?? {};
-      // The normalizing SDK-wire node serializes integer nonce as decimal text.
-      // Only this explicitly prepared native consumer accepts that wire form;
-      // no coercion of whitespace, fractions, signs, exponents or unsafe values.
-      const nativeNonce = usesNativeAgreementPayment(operation) && typeof content.nonce === 'string' && /^(0|[1-9][0-9]*)$/.test(content.nonce) ? Number(content.nonce) : content.nonce;
-      result.txNonce = Number.isSafeInteger(nativeNonce) ? nativeNonce : null;
+      // The node projects the integer nonce as decimal text on every path
+      // (nodeProjectedNonce). A nonce or payer this check cannot read is node
+      // data, not a contradiction: the hash, status and nonce slot stay as they
+      // were. Only a readable, different payer or nonce rejects the pointer.
+      result.txNonce = nodeProjectedNonce(content.nonce);
       const txPayer = content.from_ed25519_address ?? content.from;
       const walletSigned = same(content.from, t.buyer.wallet);
+      if (result.txNonce === null || !readableAddress(txPayer)) {
+        result.rejectedReason = result.txNonce === null ? 'canonical transaction nonce is missing or unreadable' : 'canonical transaction payer is missing or unreadable';
+        recordUnverified(result);
+        return { operation, verification: { outcome: 'transaction_unconfirmed', ...result } };
+      }
       if (!same(txPayer, t.buyer.wallet) || result.txNonce !== coords.expectedNonce) {
         result.rejectedReason = !same(txPayer, t.buyer.wallet) ? 'payer is not the approved buyer wallet' : 'transaction nonce is not the pre-saved expected nonce';
         recordUnverified(result);

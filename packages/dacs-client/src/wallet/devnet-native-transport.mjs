@@ -10,7 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { fetchBoundedJson } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
-import { createDemosChainReader, nonceFromNode } from '../dacs/chain.mjs';
+import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
 import { ARTIFACT_SEPARATORS, canonicalize, contentHash, isCompositeVerificationRecord, isFinalityCommitmentRecord, isListing, isSettlementEvidence, paymentEvidenceAddress, signedBytes } from '@kynesyslabs/dacs';
 
@@ -283,7 +283,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const transferOf = (content) => {
     if (content?.type !== 'native') return null;
     const args = Array.isArray(content.data) && content.data[0] === 'native' && Array.isArray(content.data[1]?.args) && content.data[1].args.length === 2 ? content.data[1].args : null;
-    const nonce = Number.isSafeInteger(content.nonce) ? content.nonce : typeof content.nonce === 'string' && /^(0|[1-9][0-9]*)$/.test(content.nonce) && Number.isSafeInteger(Number(content.nonce)) ? Number(content.nonce) : null;
+    const nonce = nodeProjectedNonce(content.nonce);
     const to = nativeAddress(content.to);
     return { payer:nativeAddress(content.from_ed25519_address === undefined ? content.from : content.from_ed25519_address),nonce,
       to:to !== null && args && nativeAddress(args[0]) === to ? to : null,amountOs:args ? settledAmountOs(content.amount,args[1]) : null };

@@ -1112,6 +1112,57 @@
           "after": "ef154b67bd608e4a163a136b9ecd1e32e3f6f7d9"
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2)",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "f9b1cc2e87c4d9fa94d517ad7687623272634aef",
+          "after": "c0eada136abb9f298c2ab37551b731afbbb2bd3f"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-consumer.mjs",
+          "before": "bc94796472c3c44d3f640a5ef1c2dfd0086e535c",
+          "after": "597a1a6205e46cfb4e1a1a44b768ace3239f0843"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/listing.mjs",
+          "before": "7a7ab901f9be0ecc076be8db645be0f61313ce18",
+          "after": "496faea3012f79a204e43a519710cf58772ea16f"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "2b97f69a1c3642c5374f0e6e5eaa339771c5482a",
+          "after": "af44c69720a05c3ec1c5f38df93a7ce0860548fd"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "79de3d54bc07c27f51c1758f81c61719c0d77595",
+          "after": "30b6914f51a037b698d9a71d5e6cecc0629e4a8b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "218571c937066a1d0b01908d2fe1eb86d40144af",
+          "after": "54bead46b8880560f26cacda3d10f6024e24596d"
+        },
+        {
+          "path": "packages/dacs-client/test/delivery-access-model.test.mjs",
+          "before": null,
+          "after": "8c00d7bc5cfcb9e1a59f0ce5c1b0a4e5e9fb5f2e"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+          "before": "11022bfb06418a3c8d2946f1173cb75e0a2dfb0f",
+          "after": "8b5be5a52eb1ddbc3ddd415a88845ce331c5c77d"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "ef154b67bd608e4a163a136b9ecd1e32e3f6f7d9",
+          "after": "a90c09c6855bf640d1c1ae01251d66b783c36ee1"
+        }
+      ]
     }
   ]
 }

@@ -172,10 +172,27 @@ export async function validateListing(listing, { now, revocationSurfaces, readMa
   });
 }
 
+// The Listing's declared deliverable access model. Absent means public (as
+// the SDK fulfilment reader); any other value, including an unknown one, is
+// returned as declared and treated as non-public.
+export function deliverableAccessModel(listing) {
+  const deliverable = listing?.offering?.deliverable;
+  return deliverable?.accessModel === undefined ? 'public' : deliverable.accessModel;
+}
+
+// This client writes and reads only public storage programs, so it can never
+// satisfy a declared non-public deliverable (DACS-4 §9.6.1 DV-2).
+export function deliverableAccessProblem(listing) {
+  const model = deliverableAccessModel(listing);
+  return model === 'public' ? null : `deliverable accessModel ${typeof model === 'string' ? model.slice(0, 64) : 'is malformed and'} is not public; this client reads only public deliverables (DACS-4 §9.6.1 DV-2)`;
+}
+
 // v0.1 transacts only fixed-price native DEM listings. Anything else stays
 // discoverable but is reported as unsupported for purchase.
 export function purchaseSupport(listing) {
   const reasons = ['rail availability is not authenticated; purchase actions are held'];
+  const access = deliverableAccessProblem(listing);
+  if (access) reasons.push(access);
   if (listing?.pricing?.kind !== 'fixed') reasons.push('pricing is not fixed-price');
   if (listing?.pricing?.price?.currency !== 'DEM') reasons.push('price currency is not DEM');
   let amount = null;
@@ -185,7 +202,8 @@ export function purchaseSupport(listing) {
     reasons.push('price amount is not a positive DEM decimal');
   }
   const rails = Array.isArray(listing?.acceptedRails) ? listing.acceptedRails : [];
-  if (!rails.some((rail) => rail?.railId === DEM_RAIL.railId)) reasons.push('listing does not accept demos-native:DEM');
+  // DACS-1 LRR-3: the accepted rail is the exact (railId, railVersion) pair.
+  if (!rails.some((rail) => rail?.railId === DEM_RAIL.railId && rail?.railVersion === DEM_RAIL.railVersion)) reasons.push(`listing does not accept demos-native:DEM version ${DEM_RAIL.railVersion}`);
   const pipeline = Array.isArray(listing?.pipeline) ? listing.pipeline : [];
   if (!pipeline.some((phase) => phase?.kind === 'pay-dem' && phase?.parameters?.rail === DEM_RAIL.railId)) reasons.push('pipeline has no pay-dem phase on demos-native:DEM');
   if (pipeline.some((phase) => /^negotiate-/.test(phase?.kind ?? '') && phase.kind !== 'negotiate-fixed-price')) reasons.push('negotiation is not fixed-price');

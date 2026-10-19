@@ -7,6 +7,7 @@ import { nativeDemDeliveryConfig, readNativeDemDelivery } from './native-dem-del
 import { isDevnetPurchasedReport } from '../devnet-demo/deliverable.mjs';
 import { isDemosSr2Contradiction } from './demos-sr2-adapter.mjs';
 import { signedCreateFor } from './buyer-chain-readback.mjs';
+import { deliverableAccessModel } from './listing.mjs';
 
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const same = (left, right) => { try { return canonicalize(left) === canonicalize(right); } catch { return false; } };
@@ -50,6 +51,14 @@ export async function readDemDeliveryReady({ anchors, nativeDemDelivery = null, 
     && report.settlementId===answer.settlementId && same(report.listing,listingPin(listing));
   if (contentHash(report) !== delivery.contentHash || !(native?sameNativeReceipt(record.receipt,delivery.anchorReceipt):same(record.receipt, delivery.anchorReceipt)) || !reportShape) {
     return { disposition: 'rejected', reason: 'canonical deliverable bytes differ from the bound SDK delivery-ready result', ...(chain?{authenticated:true}:{}) };
+  }
+  // DACS-4 §9.6.1 DV-2: this readback resolves the Deliverable as public. A
+  // Listing that declares any other access model (or an unknown one) is a
+  // confidentiality downgrade: indeterminate, never delivery-ready or delivered.
+  const declaredAccess = deliverableAccessModel(listing);
+  if (declaredAccess !== 'public') {
+    return { disposition: 'indeterminate', flag: 'confidentiality-downgrade',
+      reason: `declared ${typeof declaredAccess === 'string' ? declaredAccess.slice(0, 64) : 'non-public'} deliverable resolved as public (DACS-4 §9.6.1 DV-2 confidentiality downgrade)` };
   }
   // The Deliverable above is verified on its own fresh readback. Delivery
   // evidence is a separate, later seller write: until it reads back and

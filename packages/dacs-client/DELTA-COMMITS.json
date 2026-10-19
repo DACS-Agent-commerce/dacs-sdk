@@ -575,5 +575,26 @@
       "packages/dacs-client/test/native-broadcast-once.test.mjs",
       "packages/dacs-client/test/purchase-executed-only.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2)",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/chain.mjs",
+      "packages/dacs-client/src/dacs/dem-delivery-consumer.mjs",
+      "packages/dacs-client/src/dacs/listing.mjs",
+      "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "packages/dacs-client/test/delivery-access-model.test.mjs",
+      "packages/dacs-client/test/native-broadcast-once.test.mjs",
+      "packages/dacs-client/test/purchase-executed-only.test.mjs"
+    ]
   }
 ]

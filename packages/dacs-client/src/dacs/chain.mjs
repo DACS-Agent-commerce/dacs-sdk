@@ -37,6 +37,15 @@ export function nonceFromNode(response) {
   return value;
 }
 
+// A transaction body's content.nonce as the node projects it: a safe
+// non-negative JSON integer, or its canonical decimal text (node2 serves
+// "nonce":"198"). No whitespace, sign, fraction, exponent, leading zero or
+// unsafe value is coerced; anything else is null (unreadable, not different).
+export function nodeProjectedNonce(value) {
+  const nonce = typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) ? Number(value) : value;
+  return Number.isSafeInteger(nonce) && nonce >= 0 && !Object.is(nonce, -0) ? nonce : null;
+}
+
 // An account balance as the node carries it, converted exactly to OS, or null.
 // os-string (post denomination fork): integer OS as a canonical decimal string
 // (live Node2 2026-10-08: "2481500000000") or a safe non-negative JSON integer.

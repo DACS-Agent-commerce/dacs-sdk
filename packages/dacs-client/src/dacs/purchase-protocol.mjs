@@ -51,7 +51,7 @@ import {
   verifySettlementEvidence,
   ARTIFACT_SEPARATORS,
 } from '@kynesyslabs/dacs';
-import { DEM_RAIL, DEM_DECIMALS, verifyComponent, utf8 } from './listing.mjs';
+import { DEM_RAIL, DEM_DECIMALS, verifyComponent, utf8, deliverableAccessProblem } from './listing.mjs';
 import { addressForClaim, claimForAddress } from '../signatures.mjs';
 import { verifyFixtureReceipt, verifyFixtureRecord } from '../seams/seller-integration-not-wired.mjs';
 import { canonicalSignature } from '../signatures.mjs';
@@ -141,6 +141,8 @@ export function protocolSupport(listing) {
   const pay = listing?.pipeline?.[2];
   if (pay?.kind === 'pay-dem' && pay.parameters?.rail !== DEM_RAIL.railId) reasons.push('pay-dem phase is not on demos-native:DEM');
   if (listing?.offering?.deliverable?.kind !== 'storage-program') reasons.push('deliverable is not a storage-program');
+  const access = deliverableAccessProblem(listing);
+  if (access) reasons.push(access);
   if (listing?.pricing?.kind !== 'fixed' || listing?.pricing?.price?.currency !== 'DEM') reasons.push('pricing is not fixed DEM');
   return { supported: reasons.length === 0, reasons, phases: { commit: 1, payment: 2, delivery: 3 } };
 }
