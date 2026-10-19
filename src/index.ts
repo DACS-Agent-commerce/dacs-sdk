@@ -785,7 +785,7 @@ export {
   type ClaimQualificationAuthentication,
   type ClaimQualificationDeps,
   type ClaimQualificationEvaluation,
-  // DACS-2 §7.4.1 ParserSpec — signed recipe content rules (the source change) + the engine seam.
+  // DACS-2 §7.4.1 ParserSpec — signed recipe content rules (#49) + the engine seam.
   evaluateParserSpec,
   defaultParserEngine,
   defaultParserEngineCapabilities,
