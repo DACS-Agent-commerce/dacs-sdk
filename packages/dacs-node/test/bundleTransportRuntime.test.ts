@@ -347,4 +347,48 @@ describe("bundle signature HTTP transport", () => {
       reasonCode: "bundle-signature-request-unverified",
     });
   });
+
+  it.each([
+    ["buyer-audit-native-finality-invalid", "rejected"],
+    ["buyer-audit-native-execution-unconfirmed", "pending"],
+  ] as const)("maps native DEM audit reason %s to a %s request", async (reasonCode, outcome) => {
+    const buyerDatabase = await open("buyer");
+    const error = Object.assign(new Error(reasonCode), { reasonCode });
+    const runtime = createDacsBuyerBundleTransportRuntimeV1({
+      context: {
+        role: "buyer",
+        authority: BUYER,
+        peerAuthority: SELLER,
+        database: buyerDatabase,
+        sendMessage: vi.fn(),
+      } as unknown as DacsLiveRoleOperationContextV1,
+      resolveVerification: async () => { throw error; },
+      resolveSellerFinalization: async () => ({
+        disposition: "absent",
+        reason: "seller-finalization-pending",
+      }),
+    });
+    const handled = runtime.handleMessage(authenticated(
+      "bundle-signature-request",
+      {
+        bundleContentHash: "d".repeat(64),
+        signedScope: { jobId: JOB_ID },
+        signedBytes: Buffer.from([1, 2, 3]).toString("base64url"),
+        requiredCounterSigners: [BUYER],
+      },
+      SELLER,
+      BUYER,
+    ), { role: "buyer" } as DacsLiveRoleInboundOperationContextV1);
+    if (outcome === "rejected") {
+      await expect(handled).resolves.toEqual({
+        disposition: "rejected",
+        reasonCode: "bundle-signature-request-unverified",
+      });
+    } else {
+      // Throwing leaves the inbox reservation pending for a retry; an
+      // unconfirmed execution is not a stored rejection of the request.
+      await expect(handled).rejects.toBe(error);
+    }
+    expect(verifyRequest).not.toHaveBeenCalled();
+  });
 });

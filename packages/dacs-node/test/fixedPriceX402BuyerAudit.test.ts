@@ -898,11 +898,17 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
   });
 
   it.each([
-    { stage: "valid", execution: "executed", status: "included" },
-    ...["initial", "revalidation"].flatMap((stage) =>
-      [undefined, "confirmed", "failed", true, null].map((execution) => ({ stage, execution, status: "included" }))),
-    ...["initial", "revalidation"].map((stage) => ({ stage, execution: "executed", status: "pending" })),
-  ])("requires executed native DEM at $stage with status $status and attestation $execution", async ({ stage, execution, status }) => {
+    { stage: "valid", execution: "executed", nonce: 7, status: "included" },
+    ...["initial", "revalidation"].flatMap((stage) => [
+      ...[undefined, "confirmed", "failed", true, null].map((execution) =>
+        ({ stage, execution, nonce: undefined, status: "included" })),
+      // The execution marker without the record's signed nonce is no attestation.
+      ...[undefined, -1, 7.5, "7"].map((nonce) =>
+        ({ stage, execution: "executed", nonce, status: "included" })),
+    ]),
+    ...["initial", "revalidation"].map((stage) =>
+      ({ stage, execution: "executed", nonce: 7, status: "pending" })),
+  ])("requires executed native DEM at $stage with status $status, attestation $execution and nonce $nonce", async ({ stage, execution, nonce, status }) => {
     const f = await payDemFixture();
     const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-buyer-audit-"));
     roots.push(root);
@@ -1006,12 +1012,32 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
     } as never;
     const { execution: _execution, nonce: _nonce, ...includedOnly } = observation;
-    const unexecuted = { ...includedOnly, status, ...(execution === undefined ? {} : { execution }) };
+    const unexecuted = { ...includedOnly, status,
+      ...(execution === undefined ? {} : { execution }),
+      ...(nonce === undefined ? {} : { nonce }) };
     if (stage === "initial") {
+      // A matching inclusion without an attestation is not proof that the
+      // request is invalid. Its reason is not a terminal inbox rejection (see
+      // bundleTransportRuntime.test.ts), so the seller's request is retried.
       observeDemosTransfer.mockResolvedValueOnce(unexecuted as never);
       await expect(audit.bundleTransport.resolveVerification({
         authenticated, request: f.preliminaryRequest as never,
-      })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+      })).rejects.toMatchObject({ reasonCode: status === "included"
+        ? "buyer-audit-native-execution-unconfirmed"
+        : "buyer-audit-native-finality-invalid" });
+      if (status === "included") {
+        // A conflicting transfer still rejects whether or not it executed.
+        observeDemosTransfer.mockResolvedValueOnce(
+          { ...unexecuted, payee: "0".repeat(64) } as never,
+        );
+        await expect(audit.bundleTransport.resolveVerification({
+          authenticated, request: f.preliminaryRequest as never,
+        })).rejects.toMatchObject({ reasonCode: "buyer-audit-native-finality-invalid" });
+        // The retried request verifies once the attestation arrives.
+        await expect(audit.bundleTransport.resolveVerification({
+          authenticated, request: f.preliminaryRequest as never,
+        })).resolves.toHaveProperty("input");
+      }
       expect(adapter.sign).not.toHaveBeenCalled();
       expect(context.demos.signComponent).not.toHaveBeenCalled();
       expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
