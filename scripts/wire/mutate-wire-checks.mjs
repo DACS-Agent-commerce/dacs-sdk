@@ -79,7 +79,7 @@ const MUTANTS = [
   ], ["response/kept-request-revision-missing"]),
   M("envelope signature", "wire/envelope.ts", 'if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");', "", ["request/wrong-signer", "response/other-signer"]),
   M("exact request fields", "wire/envelope.ts", "(kind === \"request\" || kind === \"response\") && hasKeys(p, kind === \"response\" ? RESPONSE_FIELDS : REQUEST_FIELDS) &&", "(kind === \"request\" || kind === \"response\") && typeof p === \"object\" && p !== null &&", ["request/extra-field"]),
-  M("request expiry", "wire/envelope.ts", "request.expiresAt <= c.now || ", "", ["request/expired"]),
+  M("request expiry", "wire/envelope.ts", "request.expiresAt <= c.now || ", "", ["request/expired", "request/expires-at-now"]),
   M("request lifetime", "wire/envelope.ts", " || request.expiresAt > c.now + maxLifetimeMs", "", ["request/lifetime-over-60s"]),
   M("lifetime override bound", "wire/envelope.ts", " || ms > DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs", "", ["request/lifetime-override-over-60s"]),
   M("listing pin", "wire/envelope.ts", 'if (!sameCanonical(request.listingPin, listingPin)) fail("peer_listing_mismatch", 409);', "", ["request/wrong-listing"]),

@@ -44,10 +44,13 @@ const ISSUED_SKEW_MS = 60_000;
 /**
  * An absolute HTTPS URL with no credentials, query or fragment. Compared byte
  * for byte, never normalized. Before parsing, the literal `https://` and an
- * authority are required, and every spelling the URL parser rewrites is
- * refused: a backslash, a tab or line break anywhere, and a trailing space or
- * control character. Otherwise the parser repairs spellings such as
- * `https:host` or `https:\\host` that a browser resolves against its own page.
+ * authority are required, and the spellings the URL parser would repair into
+ * another URL are refused: a backslash, a tab or line break anywhere, and a
+ * trailing space or control character. Otherwise the parser repairs spellings
+ * such as `https:host` or `https:\\host` that a browser resolves against its
+ * own page. Spellings it only normalizes (letter case, a default port, dot
+ * segments, percent-encoding) are accepted as written; byte equality with the
+ * Listing's endpoint is what binds them.
  */
 export function isPublicEndpoint(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 2048) return false;

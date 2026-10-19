@@ -174,10 +174,25 @@ describe("public endpoint rule: absolute HTTPS, no credentials, query or fragmen
   const refused = ["http://seller.eligibility.invalid", "https://user:pass@seller.eligibility.invalid", "https://user@seller.eligibility.invalid",
     "https://:pass@seller.eligibility.invalid", "https://seller.eligibility.invalid?q=1", "https://seller.eligibility.invalid/?",
     "https://seller.eligibility.invalid#f", "https://seller.eligibility.invalid/#", "not a url", "", `https://seller.eligibility.invalid/${"a".repeat(2048)}`, 42,
+    // Past the literal-prefix check, but no URL at all.
+    "https:// x",
+    // One character over the 2,048 limit.
+    `https://seller.eligibility.invalid/${"a".repeat(2048 - 35 + 1)}`,
     // Spellings the URL parser repairs into an absolute URL, but a browser resolves against its own page, or rewrites.
     ...repaired];
   it.each(refused)("isPublicEndpoint refuses %j", (value) => expect(wire.isPublicEndpoint(value)).toBe(false));
   it("accepts an absolute HTTPS endpoint", () => expect(wire.isPublicEndpoint("https://seller.eligibility.invalid/dacs")).toBe(true));
+  it("accepts an endpoint of exactly 2,048 characters", () => {
+    const endpoint = `https://seller.eligibility.invalid/${"a".repeat(2048 - 35)}`;
+    expect(endpoint).toHaveLength(2048);
+    expect(wire.isPublicEndpoint(endpoint)).toBe(true);
+  });
+  // Spellings the parser only normalizes are kept as written: byte equality with the Listing binds them (admission.test.ts).
+  it.each(["https://SELLER.eligibility.invalid/dacs", "https://seller.eligibility.invalid:443/dacs", "https://seller.eligibility.invalid/a/../dacs", "https://seller.eligibility.invalid/café"])(
+    "accepts %j as written", (value) => {
+      expect(new URL(value).href).not.toBe(value);
+      expect(wire.isPublicEndpoint(value)).toBe(true);
+    });
 
   it.each(repaired)("refuses a received, correctly signed discovery document whose endpoint is %j", async (publicEndpoint) => {
     const w = await world();

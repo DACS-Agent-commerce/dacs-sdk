@@ -249,7 +249,8 @@ export interface RequestCheck {
    * Required for effect routes. Atomically and durably reserve this key before
    * returning true; return false if already reserved, even for the same hash.
    * Share the journal across workers/restarts and retain the reservation until
-   * expiresAt. A failed/ambiguous effect must not release it. This synchronous
+   * expiresAt; from then on (now >= expiresAt) the request is refused as
+   * expired before this hook runs. A failed/ambiguous effect must not release it. This synchronous
    * hook must finish its durable write before returning; promises are refused.
    * The wire has no journal: a checked effect request authorizes no effect
    * until the host's journal passes restart and concurrent-worker tests (a TP-1

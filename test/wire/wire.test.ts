@@ -7,11 +7,20 @@ import { COMPOSITE_DOMAIN_SEPARATORS, SIGNATURE_DOMAIN_SEPARATORS } from "../../
 import {
   DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES,
   findDacsSellerHttpRoute, isReadRoute, TESTNET_PROFILE_TP1, TP1_CAPABILITIES, TP1_DECLARATION, TP1_APPROVED_IDENTITY_RECORD,
-  TP1_PROFILE_REVISIONS, TP1_WIRE_PROFILE_KEYS,
+  TP1_PROFILE_REVISIONS, TP1_WIRE_PROFILE_KEYS, WireError,
 } from "../../src/wire/index.js";
 import * as wireExports from "../../src/wire/index.js";
 import * as approvalModule from "../../src/wire/approval.js";
 import * as profileModule from "../../src/wire/profile.js";
+import { faultCategory } from "../../src/errors.js";
+
+it("a wire refusal blames the counterparty, with its stable code and status", () => {
+  const refusal = new WireError("peer_expired", 408, "detail");
+  expect(refusal.category).toBe("counterparty");
+  expect(faultCategory(refusal)).toBe("counterparty");
+  expect([refusal.name, refusal.code, refusal.status, refusal.message]).toEqual(["WireError", "peer_expired", 408, "peer_expired: detail"]);
+  expect(new WireError("peer_signature_invalid").message).toBe("peer_signature_invalid");
+});
 
 describe("dacs-seller-http/v1 routes and limits", () => {
   it("keeps the plugin's seven routes and adds commit-on-signature, the context route and discovery", () => {

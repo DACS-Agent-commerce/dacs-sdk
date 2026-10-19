@@ -168,6 +168,13 @@ describe("endpoint proof purchase gate", () => {
     await w.signWireEnvelope(x.request, { ...x.context, signer: x.buyer, endpointProof: p, publicEndpoint: ENDPOINT, now: NOW });
     expect(x.buyer.calls).toBe(2);
   });
+  it("binds an endpoint the URL parser would normalize by its exact bytes, never by its parsed form", async () => {
+    const x = world(), written = "https://SELLER.admission.invalid:443/a/../b", parsed = new URL(written).href;
+    expect(parsed).toBe("https://seller.admission.invalid/b");
+    const { bytes, proof: p } = await proof(x, { publicEndpoint: written });
+    expect(p.payload.publicEndpoint).toBe(written);
+    await refuses(() => w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: parsed, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_endpoint_mismatch");
+  });
   it("preserves the verified Listing endpoint bytes: NFC never matches NFD", async () => {
     const x = world(), nfc = ENDPOINT + "/caf\u00e9", nfd = ENDPOINT + "/cafe\u0301";
     const { bytes } = await proof(x, { publicEndpoint: nfc });

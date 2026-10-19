@@ -101,6 +101,30 @@ describe("effect request replay reservations", () => {
     expect(guide).not.toContain("Host duty");
   });
 
+  // The seller refuses a request from the instant now === expiresAt, so a journal that drops each key at its
+  // expiresAt (TTL semantics) never sees the replay that would otherwise land in that millisecond.
+  it.each(["direct", "delegated"] as const)("a %s replay at exactly expiresAt is expired, not re-reserved, under a journal that drops keys at expiresAt", (mode) => {
+    const x = world(), journal = new Map<string, number>();
+    let clock = NOW;
+    const reserveRequest = vi.fn(({ key, expiresAt }: wire.WireRequestReservation) => {
+      for (const [held, until] of journal) if (until <= clock) journal.delete(held);
+      if (journal.has(key)) return false;
+      journal.set(key, expiresAt); return true;
+    });
+    const at = (now: number) => ({ ...x.check, now, reserveRequest, ...(mode === "delegated" ? { artifacts: [x.artifact] } : {}) });
+    const opened = () => (mode === "delegated" ? x.delegated() : x.open());
+    expect(wire.checkWireRequest(opened(), at(clock))).toEqual({ body: {}, readbackOnly: false });
+    expect(reserveRequest).toHaveBeenCalledTimes(1);
+    clock = x.request.expiresAt - 1;
+    expect(() => wire.checkWireRequest(opened(), at(clock))).toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
+    expect(reserveRequest).toHaveBeenCalledTimes(2);
+    clock = x.request.expiresAt;
+    expect(() => wire.checkWireRequest(opened(), at(clock))).toThrowError(expect.objectContaining({ code: "peer_expired", status: 408 }));
+    expect(reserveRequest).toHaveBeenCalledTimes(2);
+    // At that instant the journal drops every key it holds, so it alone would accept the replay: the expiry check refuses it.
+    expect([...journal.values()].every((until) => until <= clock)).toBe(true);
+  });
+
   it.each([undefined, null, 1, "true", Promise.resolve(true)])("a reservation result of %s never grants an effect", (result) => {
     const x = world();
     expect(() => wire.checkWireRequest(x.open(), { ...x.check, reserveRequest: (() => result) as never })).toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid" }));
@@ -327,4 +351,64 @@ it("wallet base64url signatures round-trip after wallet prefix removal", () => {
   expect(Buffer.from(alias, "base64url")).toEqual(Buffer.from(signature, "base64url"));
   expect(walletSignatureBytes(`0x${signature}`)).toEqual(Buffer.from(signature, "base64url"));
   expect(() => walletSignatureBytes(`0x${alias}`)).toThrowError(expect.objectContaining({ code: "peer_delegation_signature_invalid" }));
+});
+
+describe("wallet signatures on the delegation path", () => {
+  const delegationFor = (x: ReturnType<typeof world>, wallet: ReturnType<typeof party>, notBefore = NOW - 1000): wire.SellerSessionDelegationPayload => ({
+    version: "1", kind: "seller-session-delegation", buyer: wallet.claim, seller: x.seller.claim, sessionPublicKey: party().key,
+    listingPin: PIN, jobId: x.request.jobId, notBefore, expiresAt: NOW + 60_000, profile: x.context.binding.profile,
+  });
+  const verifyAt = (x: ReturnType<typeof world>, delegation: unknown, buyer: string) => wire.verifySellerSessionDelegation(delegation,
+    { binding: x.context.binding, local: LOCAL, buyer, seller: x.seller.claim, listingPin: PIN, jobId: x.request.jobId, time: NOW });
+
+  // Every form the guide names: raw bytes, hex with zero, one or two 0x/0X prefixes, surrounding whitespace, base64url.
+  const forms: [string, (raw: Buffer) => Uint8Array | string, boolean][] = [
+    ["raw bytes", (raw) => new Uint8Array(raw), false],
+    ["hex", (raw) => raw.toString("hex"), false],
+    ["uppercase hex", (raw) => raw.toString("hex").toUpperCase(), false],
+    ["0x hex", (raw) => `0x${raw.toString("hex")}`, false],
+    ["0x0x hex", (raw) => `0x0x${raw.toString("hex")}`, false],
+    ["padded 0X0x hex", (raw) => ` 0X0x${raw.toString("hex")}\n`, false],
+    ["base64url", (raw) => raw.toString("base64url"), false],
+    ["padded base64url", (raw) => `\t${raw.toString("base64url")} `, false],
+    ["base64url from an async wallet", (raw) => raw.toString("base64url"), true],
+  ];
+  it.each(forms)("a wallet returning %s signs a delegation the seller accepts, re-emitted as canonical base64url", async (_name, form, async) => {
+    const x = world(), wallet = party(), payload = delegationFor(x, wallet);
+    let raw: Buffer | undefined;
+    const sign = vi.fn((bytes: Uint8Array) => {
+      raw = wallet.sign(bytes);
+      return async ? Promise.resolve(form(raw)) : form(raw);
+    });
+    const delegation = await wire.signSellerSessionDelegation(payload, { claim: wallet.claim, sign }, x.context.binding, LOCAL);
+    expect(sign).toHaveBeenCalledTimes(1);
+    expect(sign).toHaveBeenCalledWith(wire.sellerSessionDelegationSigningBytes(payload, x.context.binding, LOCAL));
+    expect(delegation.signature).toBe(raw!.toString("base64url"));
+    expect(verifyAt(x, delegation, wallet.claim)).toEqual(payload);
+  });
+
+  it("decodes repeated prefixes and surrounding whitespace to the raw bytes", () => {
+    const raw = party().sign(Buffer.from("wallet encoding")), hex = raw.toString("hex");
+    expect(walletSignatureBytes(`0x0x${hex}`)).toEqual(raw);
+    expect(walletSignatureBytes(` ${hex}\n`)).toEqual(raw);
+    expect(walletSignatureBytes(`0X0x0X${hex.toUpperCase()}`)).toEqual(raw);
+    expect(() => walletSignatureBytes(`0x0x${hex.slice(2)}`)).toThrowError(expect.objectContaining({ code: "peer_delegation_signature_invalid" }));
+    expect(() => walletSignatureBytes(raw)).toThrowError(expect.objectContaining({ code: "peer_delegation_signature_invalid" }));
+  });
+
+  // About one canonical base64url signature in 2,048 begins with "0x" or "0X": it is read as written, never stripped.
+  it("keeps a canonical base64url wallet signature that begins with 0x", async () => {
+    const x = world(), wallet = party();
+    let payload: wire.SellerSessionDelegationPayload | undefined, raw: Buffer | undefined;
+    for (let offset = 0; offset < 200_000 && raw === undefined; offset += 1) {
+      const candidate = delegationFor(x, wallet, NOW - 1000 - offset);
+      const signature = wallet.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(candidate)));
+      if (/^0x/i.test(signature.toString("base64url"))) { payload = candidate; raw = signature; }
+    }
+    expect(raw).toBeDefined();
+    expect(walletSignatureBytes(raw!.toString("base64url"))).toEqual(raw);
+    const delegation = await wire.signSellerSessionDelegation(payload!, { claim: wallet.claim, sign: () => raw!.toString("base64url") }, x.context.binding, LOCAL);
+    expect(delegation.signature).toBe(raw!.toString("base64url"));
+    expect(verifyAt(x, delegation, wallet.claim)).toEqual(payload);
+  });
 });

@@ -207,7 +207,9 @@ below):
    and restarts, retain `requestHash` and `expiresAt`, and return `true` only
    after the new reservation commits. It returns `false` for an already claimed
    key, including an identical retry (`peer_request_replayed`, HTTP 409). Keep
-   the reservation until `expiresAt`; never release it after an ambiguous or
+   the reservation until `expiresAt`: from that instant (`now >= expiresAt`)
+   the request itself is refused as `peer_expired` before any reservation, so
+   a journal may drop the key then. Never release it after an ambiguous or
    failed effect. Recovery uses declared read routes. Missing hooks fail with
    `seller_replay_guard_required`; non-boolean results, including promises, fail
    with `seller_replay_guard_invalid`. The hook is synchronous and must finish
@@ -247,8 +249,11 @@ with `notBefore < expiresAt`, a lifetime of at most 24 h, and the new `profile`
 member. The delegation lets that session key authenticate transport toward
 that seller, Listing and job until expiry; it never authorizes an identity
 presentation, a storage write, an Agreement or a payment. Wallet signatures are
-accepted as hex (with one or more `0x` or `0X` prefixes) or canonical base64url,
-after surrounding whitespace is trimmed, as the plugin's `decodeSignature` does. Producing the bytes to sign
+accepted as the 64 raw bytes, or as a string of hex or canonical base64url,
+after surrounding whitespace is trimmed and any leading `0x` or `0X` prefixes
+(one or more) are removed, as the plugin's `decodeSignature` does; a canonical
+base64url signature that itself begins with `0x` is read as written. The
+delegation always carries the canonical base64url form. Producing the bytes to sign
 (`sellerSessionDelegationSigningBytes`) already requires the wallet side's TP-1
 binding, so a wallet with no approved identity is never asked to sign.
 
@@ -263,7 +268,7 @@ under `dacs-seller-http:v1:discovery:`.
 | `format` | `"dacs-seller-discovery/v1"` |
 | `profile` | the TP-1 profile member |
 | `seller` | the seller claim |
-| `publicEndpoint` | absolute HTTPS URL starting with the literal `https://` and an authority, no credentials, query or fragment; no backslash, tab or line break, and no trailing space or control character (spellings the URL parser would rewrite) |
+| `publicEndpoint` | absolute HTTPS URL starting with the literal `https://` and an authority, no credentials, query or fragment; no backslash, tab or line break, and no trailing space or control character (spellings the URL parser would repair into another URL). Other spellings the parser normalizes (letter case, a default port, dot segments, percent-encoding) are kept as written and compared byte for byte, so a Listing must name the endpoint exactly as the document does |
 | `transport` | `["dacs-seller-http/v1"]` |
 | `listings` | 1-32 Listing pins served here |
 | `capabilities` | exactly `TP1_CAPABILITIES` (listed below) |
@@ -577,7 +582,7 @@ The plugin capture does not contain the codes in the rows above from
 
 ## Vectors, fixtures and checks
 
-- `vectors/dacs-seller-http-v1.json` (193 vectors, from
+- `vectors/dacs-seller-http-v1.json` (195 vectors, from
   `scripts/wire/generate-wire-vectors.mjs`): valid and invalid envelopes,
   expired and wrong-scope delegations, wrong domain, wrong and missing profile,
   the profile tuple (a correctly signed message, request, response, delegation
@@ -601,7 +606,8 @@ The plugin capture does not contain the codes in the rows above from
   delegated request's Agreement checks (job, Listing, the buyer and seller
   parties found by role, deadline), the host's retained job and Agreement hash
   (another hash for a direct and a delegated request, another job, none
-  given), an overlong lifetime override, the identity gate (the SDK's own
+  given), a missing envelope header, a request expiring exactly at the
+  seller's clock, an overlong lifetime override, the identity gate (the SDK's own
   approval list, a caller's own list, and the tests' replacement list), and
   CF-5 raw-input negatives named explicitly for the header, the request body,
   the response body and the discovery document (duplicate keys, malformed

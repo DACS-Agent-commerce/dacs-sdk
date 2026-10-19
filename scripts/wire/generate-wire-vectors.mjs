@@ -149,6 +149,8 @@ const vectors = [
   R("request/valid-delegated", null, { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true }, ok),
   R("request/valid-noncanonical-header", null, { header: reorderedHeader }, ok),
   R("request/expired-delegation-readback-only", "expired delegation cannot start an effect", { header: req({ ...delegated, expiresAt: NOW + 30_000 }, { signer: session.signer, delegation: del({ ...delegationPayload, notBefore: NOW - 2 * HOUR, expiresAt: NOW - 1 }) }), requireDelegation: true }, no("peer_delegation_expired")),
+  // No envelope header member at all: refused as an invalid envelope, never a crash.
+  R("request/header-missing", "envelope header gate", {}, no("peer_envelope_invalid")),
   R("request/old-domain", "request signature domain", { header: req(request, { domain: OLD.request }) }, no("peer_signature_invalid")),
   R("request/response-domain", "request signature domain", { header: req(request, { domain: D.response }) }, no("peer_signature_invalid")),
   R("request/profile-missing", "profile present", { header: req(requestWithoutProfile, { domain: D.request }) }, no("tp1_profile_missing")),
@@ -184,6 +186,8 @@ const vectors = [
   R("request/wrong-signer", "request signature key", { header: req(request, { signer: other.signer }) }, no("peer_signature_invalid")),
   R("request/extra-field", "exact request fields", { header: headerOf({ payload: { ...request, extra: "x" }, signature: signedText(D.request, { ...request, extra: "x" }, buyer.signer) }) }, no("peer_envelope_invalid")),
   R("request/expired", "request expiry", { header: req({ ...request, expiresAt: NOW - 1 }) }, no("peer_expired")),
+  // Expired from the instant now === expiresAt, so a journal may drop the reservation then.
+  R("request/expires-at-now", "request expiry", { header: req({ ...request, expiresAt: NOW }) }, no("peer_expired")),
   R("request/lifetime-over-60s", "request lifetime", { header: req({ ...request, expiresAt: NOW + 60_001 }) }, no("peer_expired")),
   R("request/lifetime-override-over-60s", "lifetime override bound", { header: req({ ...request, expiresAt: NOW + 120_000 }), maxLifetimeMs: 120_000 }, no("seller_configuration_invalid")),
   R("request/wrong-listing", "listing pin", { header: req(request), server: { listingPin: OTHER_PIN } }, no("peer_listing_mismatch")),
