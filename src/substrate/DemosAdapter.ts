@@ -1244,6 +1244,9 @@ export class DemosAdapter implements SubstrateAdapter {
     // CORE §5.1 keeps it from demoting the receipt, so retry it. A storage
     // read without the program, or a block without its validation data, is a
     // node that has not caught up, not a record that contradicts the receipt.
+    // A reply without a record's identifying fields (a transaction's hash, a
+    // block's hash and number), such as `{ "error": "not found" }` from an
+    // unpinned node build, is no record either.
     const transactionResult = observations[0];
     const blockResult = observations[1];
     const nativeResult = observations[2];
@@ -1255,7 +1258,9 @@ export class DemosAdapter implements SubstrateAdapter {
       ? blockResult.response
       : blockResult;
     if (observations.some(demosObservationUnanswered) || !isRecord(transaction) ||
-        !isRecord(block) || block.validation_data === undefined ||
+        typeof transaction.hash !== "string" || !isRecord(block) ||
+        typeof block.hash !== "string" || block.number === undefined ||
+        block.number === null || block.validation_data === undefined ||
         !isRecord(nativeResult) || nativeResult.success !== true) {
       throw new IndeterminateSubstrateError("Demos anchor receipt observation unavailable");
     }

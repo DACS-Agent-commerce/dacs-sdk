@@ -1269,6 +1269,17 @@ describe("DemosAdapter.anchorAndWait", () => {
     const block = await raw.getBlockByNumber(Number(receipt.blockRef!.height));
     raw.getBlockByNumber.mockResolvedValueOnce({ ...block, validation_data: undefined });
     await unanswered();
+    // A record-shaped reply without the record's identifying fields (another
+    // node build's not-found body) is no record of the receipt's subject.
+    const transactionRecord = await raw.getTxByHash(receipt.transactionRef.value);
+    for (const reply of [{ error: "not found" }, { status: "confirmed" }, { ...transactionRecord, hash: undefined }]) {
+      raw.getTxByHash.mockResolvedValueOnce(reply);
+      await unanswered();
+    }
+    for (const reply of [{ error: "not found" }, { ...block, hash: undefined }, { ...block, number: undefined }]) {
+      raw.getBlockByNumber.mockResolvedValueOnce(reply);
+      await unanswered();
+    }
     // Answered: a fetched transaction, block or program that contradicts the
     // receipt, while every other read of it answers. (An unanswered read of
     // the same receipt keeps the whole verification indeterminate.)
