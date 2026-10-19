@@ -54,13 +54,15 @@ export function railAuthorityConfig(value) {
     railRegistryVersion,
     // A fresh copy of the exact signed definition, for a new session's pin.
     pin: () => structuredClone(pin),
-    // RAV-R1..R5 over a retained pin: the signed bytes, the pin digest and the
-    // pinned availability. A disabled, failed, gated (no operator preflight
-    // here) or production mocked rail is refused; so is a non-production
-    // mocked one, which the SDK payment intake cannot settle, so that no
-    // Agreement is signed for a payment the seller would then refuse.
+    // RAV-R1..R5 over a retained pin: the configured steward's signature over
+    // the exact pinned bytes, the pin digest and the pinned availability. A
+    // disabled, failed, gated (no operator preflight here) or production
+    // mocked rail is refused; so is a non-production mocked one, which the SDK
+    // payment intake cannot settle, so that no Agreement is signed for a
+    // payment the seller would then refuse. A pin keeps the registry version
+    // it was taken under (RAV-R2): the current one only makes new pins.
     evaluate: (retained, sessionState) => {
-      if (retained?.basis !== RAIL_AUTHORITY_BASIS || retained.railRegistryVersion !== railRegistryVersion || !/^[0-9a-f]{64}$/.test(retained.digest ?? '')) {
+      if (retained?.basis !== RAIL_AUTHORITY_BASIS || !Number.isSafeInteger(retained.railRegistryVersion) || retained.railRegistryVersion <= 0 || !/^[0-9a-f]{64}$/.test(retained.digest ?? '')) {
         return { decision: 'indeterminate', reason: 'pin-unavailable' };
       }
       const result = evaluateRailAvailabilitySelection(retained.rail, authority(retained.digest, sessionState));

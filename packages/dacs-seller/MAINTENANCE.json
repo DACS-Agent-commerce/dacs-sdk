@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "1cd10266ae1fb07fc64eef6636c8fc51fe06bb6704375e3ae9a0f3745c566136",
+      "sha256": "1462af04de23e0fab65668ba48cbdaec5857cfc69ad682e8494d64ee7ff47bef",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -22,7 +22,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-http.mjs",
       "originalSha256": "5b306bb8da34a8d2ace2d179d3e51daf64ca7a24072970eb3044e1456b91ead9",
-      "sha256": "9f0cd0fe9e28cc08b5aca8e8a95c9f59c8279e857a6c002e9446c75aa51a70f3",
+      "sha256": "18e67724bd21380d0fd591958459e600cca2a59cd88234d38943128f6eb069b5",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -148,7 +148,7 @@
     {
       "path": "packages/dacs-seller/test/seller-lifecycle-gates.test.mjs",
       "originalSha256": null,
-      "sha256": "88ce79691b366e16e9f372241970a33e51716859a969755ea4e53c54bf6d1f0a",
+      "sha256": "2ea6db723f33b971107d2e4adf4e7e49b4bfbd6d2295d95d4df2729be973f492",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -382,7 +382,7 @@
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "b210bd2ddd9bdd139fd898ec7685415e783790dbca436f83cee6079e2c6fa6f0",
+      "sha256": "2f1f61e6bd6685a8e91c12ad168209a5ba2e69c60a92876db5821f80fdb2fb25",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -400,7 +400,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/rail-authority.mjs",
       "originalSha256": null,
-      "sha256": "cfbf870c9b938a6689a5cf2ec8384787e444ccfae34ea180747fceb57ca7db8e",
+      "sha256": "2fc63863a689facf9320eac628d41d70dc10662f8293af6574d35b7bed91ec37",
       "reason": "Seller rail authority: steward-signed demos-native:DEM definition pinned per session (DACS-4 RAV-R1..R5, DACS-1 LRR-6)."
     },
     {

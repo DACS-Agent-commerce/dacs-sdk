@@ -75,8 +75,19 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   (this package runs no operator preflight) and `mocked` rails are not
   selected. Each session pins the exact signed definition before its Agreement
   is signed, and commitment and payment intake read the rail from that pin
-  only, so a later revision does not change a session in flight, and a pin the
-  configured steward did not sign is refused.
+  only. A pin is in flight from the seller's Agreement signature on: a later
+  revision (a disabled rail or a new `railRegistryVersion`) does not change
+  it, and the session keeps the registry version it pinned. A proposal the
+  seller has not signed (a rejected one, for example) has no session yet, and
+  its retry selects the rail again under the current authority. A pin the
+  configured steward did not sign is refused, so a rotated steward key refuses
+  sessions pinned under the old one until that key is configured again.
+- The profile gates (`vet_context_required`, `settlement_profile_unavailable`,
+  `rail_unavailable`, `native_evidence_required`,
+  `bundle_finalization_unavailable`) refuse before any read, write, signature
+  or send, and the transport answers them as definite refusals that keep no
+  effect in the journal: once the operator completes the configuration, the
+  same request runs.
 - It starts only with the whole chain to delivery: native payment evidence,
   the DEM delivery context and native DEM delivery. The agent signs an
   Agreement only over the Vet references the context gives
@@ -87,10 +98,11 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   Agreement it cannot settle or claims a payment it cannot deliver for. These
   capabilities accept only `TEST-` authorities and a loopback fixture node
   (below), so the host does not start against a real node.
-- It signs no completed DACS-5 bundle (`bundle_finalization_unavailable`):
-  the ST-11 finalizer, which needs finalized and independently resolved Vet,
-  commitment, settlement and bundle records, is not part of this package.
-  The session ends at delivery.
+- It signs no completed DACS-5 bundle (`bundle_finalization_unavailable`
+  from both the bundle request and the countersignature, after the delivery
+  check): the ST-11 finalizer, which needs finalized and independently
+  resolved Vet, commitment, settlement and bundle records, is not part of this
+  package. The session ends at delivery.
 - It does not mount the Vet and Agreement context route: its challenge
   issuance limits are not settled (`ADMISSION.md`).
 - The devnet source transport, wallet custody and the wallet journal are not

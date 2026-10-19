@@ -11,11 +11,13 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
 import * as seller from '../src/index.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
+import { SELLER_PRE_EFFECT_REFUSALS } from '../src/dacs/seller-http.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 
 function key() {
@@ -69,7 +71,7 @@ function world(t) {
     return { proposal, transportIdentity, buyerIdentityBundle: buyerBundle };
   };
   const payment = { jobId, txHash: 'a'.repeat(64), payerPayingKey: buyerKey.claim };
-  return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward };
+  return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward, buyerKey };
 }
 const refused = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status }; } };
 const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
@@ -205,4 +207,172 @@ test('the standalone host refuses to start without the whole chain to delivery',
     assert.deepEqual(readdirSync(dataDirectory), [], `nothing is opened without ${missing}`);
   }
   assert.deepEqual(w.reached, []);
+});
+
+// ---- The pinned native rail through payment intake, and the HTTP journal ----
+// A scripted native chain: the seller's commitment CREATE is retained as
+// finalized, the buyer's Agreement reads back once it is anchored, and the
+// transfer observation (native payment evidence) counts each fetch and fails.
+const clone = (value) => JSON.parse(JSON.stringify(value));
+const notReached = (name) => async () => { throw new Error(`${name} is not reached`); };
+function nativeChain(w) {
+  const TX = 'a1'.repeat(32), BLOCK = 'b2'.repeat(32), seen = { publish: 0, fetch: 0 }, retained = { stored: null, agreement: null };
+  const nativeArtifactAnchor = {
+    writer: w.signer.claim,
+    publish: async ({ logicalAddress, artifact }) => {
+      seen.publish++;
+      const receipt = { receiptVersion: '1', substrate: 'TEST-offline-demos-sr2', finalityProfile: 'TEST-one-node-not-finality', logicalAddress,
+        nativeAddress: `TEST-native-${core.sha256Hex(logicalAddress).slice(0, 16)}`, contentHash: core.contentHash(artifact), transactionRef: { kind: 'demos-tx', value: TX },
+        writer: w.signer.claim, nonce: '7', state: 'finalized', observationDisposition: 'established', observedAt: Date.now() + 1000,
+        evidence: { kind: 'demos-tx', value: TX }, blockRef: { id: BLOCK, height: '9', timestamp: Date.now() + 1000 } };
+      retained.stored = { artifact: clone(artifact), receipt, txRef: { kind: 'demos', txHash: TX, blockNumber: 9 }, signedProjection: { TEST: 'projection' } };
+      return { status: 'present', ...clone(retained.stored) };
+    },
+    readRetained: async () => (retained.stored ? { status: 'present', ...clone(retained.stored) } : { status: 'absent', reason: 'TEST nothing retained' }),
+    verifyReceipt: async () => 'valid',
+  };
+  const agreementAnchor = { source: 'TEST-agreement',
+    readAgreement: async ({ logicalAddress }) => (retained.agreement
+      ? { disposition: 'present', artifact: clone(retained.agreement), ref: { anchor: { kind: 'storage-program', locator: logicalAddress }, contentHash: core.contentHash(retained.agreement) },
+        native: { source: 'TEST-agreement', evidenceMode: 'TEST-scripted', nativeAddress: 'TEST-native-agreement', txRef: { kind: 'demos', txHash: 'c3'.repeat(32), blockNumber: 8 } } }
+      : { disposition: 'absent', reason: 'TEST not anchored' }) };
+  const nativePaymentEvidence = createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: notReached('anchorEvidence'),
+    fetchImpl: async () => { seen.fetch++; throw new Error('TEST transfer observation is not answered'); } });
+  const options = (railAuthority, durableDirectory) => ({ ...w.capabilities, nativeArtifactAnchor, agreementAnchor, durableDirectory, railAuthority, nativePaymentEvidence,
+    demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() });
+  // The buyer finalizes the Agreement from both contributions and anchors it.
+  const anchorAgreement = async (session) => {
+    retained.agreement = await core.finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], seller.contributionVerifier);
+  };
+  return { seen, options, anchorAgreement };
+}
+const nativeClaim = (w) => ({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+
+test('a committed native session takes its payment claim to the transfer observation under its pinned rail, also after a restart with a later registry version or a disabled revision', async (t) => {
+  for (const later of [{ authority: { railRegistryVersion: 2 } }, { changes: { availability: 'disabled' }, authority: { railRegistryVersion: 2 } }]) {
+    const w = world(t), chain = nativeChain(w), durableDirectory = w.dir();
+    const first = await seller.createSellerAgent(chain.options(w.steward.railAuthority(), durableDirectory));
+    assert.equal((await first.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
+    await chain.anchorAgreement(first.durableSessionOf(w.jobId));
+    assert.equal((await first.commit({ jobId: w.jobId })).status, 'committed');
+    const pinned = first.durableSessionOf(w.jobId).railPin;
+    first.close();
+    // The operator moves to registry version 2. RAV-R2: the session keeps the
+    // definition it pinned at session start, registry version 1.
+    const agent = await seller.createSellerAgent(chain.options(w.steward.railAuthority(later), durableDirectory));
+    t.after(() => agent.close());
+    assert.deepEqual(agent.durableSessionOf(w.jobId).railPin, pinned, 'the pin, its registry version included, is not rewritten');
+    assert.equal(pinned.railRegistryVersion, 1);
+    assert.equal((await agent.commit({ jobId: w.jobId })).status, 'committed', 'commitment readback under the pinned rail');
+    assert.notEqual((await refused(() => agent.submitPayment(nativeClaim(w))))?.code, 'rail_unavailable');
+    assert.ok(chain.seen.fetch > 0, 'payment intake accepted the pinned rail and reached the transfer observation');
+    assert.equal(chain.seen.publish, 1, 'one commitment CREATE');
+  }
+});
+
+test('a proposal the seller did not sign leaves no in-flight pin: its retry selects again under the current rail authority', async (t) => {
+  const w = world(t), durableDirectory = w.dir();
+  // The first proposal is rejected (its Vet context names the not-performed references): nothing is signed.
+  const first = await seller.createSellerAgent(complete(w, { durableDirectory, demDeliveryContext: w.chain.demDeliveryContext(w.synthetic) }));
+  assert.equal((await first.receiveProposal(await w.proposalFor(w.synthetic))).disposition, 'rejected');
+  assert.equal(first.durableSessionOf(w.jobId)?.sellerContribution, undefined);
+  first.close();
+  // The steward disables the rail and keeps the registry version. The retry is a new session: no Agreement is signed.
+  const disabled = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  assert.deepEqual(await refused(async () => disabled.receiveProposal(await w.proposalFor(w.vetted))), { code: 'rail_unavailable', status: 503 });
+  assert.equal(disabled.durableSessionOf(w.jobId)?.sellerContribution, undefined, 'no seller contribution');
+  disabled.close();
+  // Under a live rail the same retry is signed, and its pin is the current definition.
+  const live = w.steward.railAuthority();
+  const relive = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: live }));
+  const signed = await relive.receiveProposal(await w.proposalFor(w.vetted));
+  assert.equal(signed.disposition, 'complete');
+  const session = relive.durableSessionOf(w.jobId);
+  assert.equal(session.railPinSigned, true);
+  assert.deepEqual(session.railPin.rail, live.rail);
+  relive.close();
+  // Once signed, the pin is in flight: the signed proposal again under a disabled revision answers the same contribution.
+  const after = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  t.after(() => after.close());
+  const again = await after.receiveProposal(await w.proposalFor(w.vetted));
+  assert.equal(again.disposition, 'complete');
+  assert.deepEqual(again.contribution, signed.contribution);
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+// The buyer's authenticated transport, the real journal and handler, in process.
+function inProcessFetch(handle, last) {
+  return async (url, init) => {
+    const req = Readable.from([Buffer.from(init.body)]);
+    Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
+    const res = { destroyed: false, writableEnded: false, headersSent: false, status: 0, headers: {}, text: '',
+      writeHead(status, headers) { this.status = status; this.headers = headers; this.headersSent = true; },
+      end(text) { this.text = String(text); this.writableEnded = true; } };
+    await handle(req, res);
+    last.status = res.status; last.answer = JSON.parse(res.text);
+    return new Response(res.text, { status: res.status, headers: res.headers });
+  };
+}
+// `gate` maps an agent method to a refusal code it throws once, before calling the agent.
+async function httpSeller(t, w, { gate = {} } = {}) {
+  const chain = nativeChain(w), durableDirectory = w.dir(), peerDirectory = w.dir(), last = {};
+  const build = (railAuthority) => seller.createSellerAgent(chain.options(railAuthority, durableDirectory));
+  let agent = await build(w.steward.railAuthority());
+  const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite') });
+  t.after(() => { try { agent.close(); } catch { /* closed by a restart */ } store.close(); });
+  const pin = seller.listingPin(w.listing);
+  const gated = (name) => (body) => {
+    const code = gate[name];
+    if (code) { delete gate[name]; throw new seller.SellerAgentError(code, `TEST ${code}`, code === 'native_evidence_required' ? 409 : 503); }
+    return agent[name](body);
+  };
+  const facade = { claim: w.signer.claim, listingPin: pin, reconcileTransport: (input) => agent.reconcileTransport(input), agreementState: (identity) => agent.agreementState(identity),
+    receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
+  const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
+  const proposal = await w.proposalFor(w.vetted);
+  const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
+    authentication: seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer.claim,
+      resolveJob: () => ({ listingPin: pin, agreementHash: proposal.proposal.plan.agreementHash }) }) });
+  const restart = async (railAuthority) => { agent.close(); agent = await build(railAuthority); };
+  return { chain, client, proposal, last, restart, get agent() { return agent; } };
+}
+const answered = async (work) => { try { await work(); } catch { /* the answer is read from the wire */ } };
+
+test('over HTTP a rail refusal of a payment claim has no effect: the same claim reaches payment intake once the authority is restored', async (t) => {
+  const w = world(t), h = await httpSeller(t, w);
+  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
+  await h.chain.anchorAgreement(h.agent.durableSessionOf(w.jobId));
+  assert.equal((await h.client.commit(w.jobId)).status, 'committed');
+  const authority = w.steward.railAuthority();
+  // Another steward key does not authenticate the session's pin.
+  await h.restart(railSteward().railAuthority());
+  await answered(() => h.client.submitPayment(nativeClaim(w)));
+  assert.deepEqual([h.last.status, h.last.answer.error], [503, 'rail_unavailable']);
+  assert.equal(h.chain.seen.fetch, 0);
+  await h.restart(authority);
+  await answered(() => h.client.submitPayment(nativeClaim(w)));
+  assert.notEqual(h.last.answer.error, 'operation_uncertain', 'the refused claim was not journaled as an uncertain effect');
+  assert.ok(h.chain.seen.fetch > 0, 'the same claim reached the transfer observation');
+});
+
+test('over HTTP a rail refusal of a proposal has no effect: the same proposal is signed once the rail is live again', async (t) => {
+  const w = world(t), h = await httpSeller(t, w);
+  await h.restart(w.steward.railAuthority({ changes: { availability: 'disabled' } }));
+  await answered(() => h.client.propose(h.proposal));
+  assert.deepEqual([h.last.status, h.last.answer.error], [503, 'rail_unavailable']);
+  await h.restart(w.steward.railAuthority());
+  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
+  assert.equal(h.agent.durableSessionOf(w.jobId).railPinSigned, true);
+});
+
+// Every gate the agent raises before any read, write, signature or send, and its status.
+const PRE_EFFECT_GATES = [['vet_context_required', 503], ['settlement_profile_unavailable', 503], ['rail_unavailable', 503], ['native_evidence_required', 409], ['bundle_finalization_unavailable', 503]];
+test('the HTTP journal answers every pre-effect gate refusal as definite and keeps no effect, so the same request runs again', async (t) => {
+  assert.deepEqual([...SELLER_PRE_EFFECT_REFUSALS].sort(), PRE_EFFECT_GATES.map(([code]) => code).sort());
+  for (const [code, status] of PRE_EFFECT_GATES) {
+    const w = world(t), h = await httpSeller(t, w, { gate: { receiveProposal: code } });
+    await answered(() => h.client.propose(h.proposal));
+    assert.deepEqual([h.last.status, h.last.answer.error], [status, code], code);
+    assert.equal((await h.client.propose(h.proposal)).disposition, 'complete', `${code}: the same proposal runs once the gate opens`);
+  }
 });

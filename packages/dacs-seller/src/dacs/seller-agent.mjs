@@ -178,7 +178,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (nativeProfile && !rail) throw new TypeError(`the native seller profile needs railAuthority: it selects ${DEM_RAIL.railId} only from its steward-signed definition`);
   if (nativeProfile) anchors = NATIVE_PROFILE_FIXTURE;
   const settlementChain = nativeEvidence !== null && deliveryContext !== null && nativeDelivery !== null;
-  // Checked before any session, signature, read or write.
+  // Checked before any session, signature, read or write. These profile gates
+  // (and native_evidence_required, bundle_finalization_unavailable) are
+  // seller-http.mjs SELLER_PRE_EFFECT_REFUSALS: definite no-effect refusals.
   const assertVetContext = () => {
     if (nativeProfile && !deliveryContext) throw new SellerAgentError('vet_context_required', 'the native seller profile signs an Agreement only with the authenticated Vet context (demDeliveryContext)', 503);
   };
@@ -325,15 +327,25 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const existing = sessions.get(jobId);
     if (existing && existing.buyerBundleHash !== identityBundleHash(buyerIdentityBundle)) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
-    // signed definition pinned before the Agreement is signed; a retried
-    // proposal keeps its pin.
-    const railPin = nativeProfile ? (existing ? existing.railPin : rail?.pin()) : undefined;
-    assertRailPin(railPin, existing ? 'in-flight' : 'new');
+    // signed definition pinned before the Agreement is signed. The pin is in
+    // flight only from the seller's signature (railPinSigned, saved before
+    // it): until then every attempt, a retry after a rejection or a crash
+    // included, selects again under the current authority as a new session.
+    // The Agreement names only the rail id and version, so a new pin never
+    // changes what is signed.
+    const inFlight = existing?.railPinSigned === true;
+    const railPin = nativeProfile ? (inFlight ? existing.railPin : rail.pin()) : undefined;
+    assertRailPin(railPin, inFlight ? 'in-flight' : 'new');
     if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
+    else if (railPin && !inFlight) existing.railPin = railPin;
     const session = sessions.get(jobId);
     persist(session);
+    const signUnderPin = (bytes) => {
+      if (session.railPin && session.railPinSigned !== true) { session.railPinSigned = true; persist(session); }
+      return sign(bytes);
+    };
     const progress = await respondToFixedPriceAgreementProposalDurable(
-      { proposal, transportIdentity, seller: { party: claim, algorithm: 'ed25519', sign: (bytes) => sign(bytes) } },
+      { proposal, transportIdentity, seller: { party: claim, algorithm: 'ed25519', sign: signUnderPin } },
       {
         store,
         workerId: 'seller-agent',
@@ -1311,8 +1323,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   async function countersign({ jobId, buyerSignature }) {
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
-    if (!session.bundleHash) throw new SellerAgentError('no_bundle_request', 'request the bundle first');
     refuseBundleFinalization();
+    if (!session.bundleHash) throw new SellerAgentError('no_bundle_request', 'request the bundle first');
     const facts = sessionFacts(session);
     const { copies, problems } = await assembleBundleCopies(facts, { buyer: buyerSignature, seller: session.sellerBundleSignature });
     if (problems.length) throw new SellerAgentError('bundle_invalid', problems.join('; '));

@@ -13,9 +13,15 @@ import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HE
 const MAX_BODY = 64 * 1024;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 export const loopbackSocket = (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
-// These seller-agent errors occur before an external effect. In particular,
-// commitment_failed is deliberately absent: a write may have happened.
-const NO_EFFECT_ERRORS = new Set(['buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy']);
+// The seller agent's profile gates, each thrown only before any read, write,
+// signature or send of its operation. They are definite refusals that keep no
+// effect in the journal, so a request refused while the operator's
+// configuration was incomplete runs once it is complete. A new gate goes here.
+export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required', 'settlement_profile_unavailable', 'rail_unavailable', 'native_evidence_required', 'bundle_finalization_unavailable']);
+// These seller-agent errors occur before an external effect. Any other error
+// may follow an effect and stays uncertain; in particular, commitment_failed
+// is deliberately absent: a write may have happened.
+const NO_EFFECT_ERRORS = new Set(['buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', ...SELLER_PRE_EFFECT_REFUSALS]);
 
 const ROUTES = {
   '/dacs/v1/agreements/proposals': (agent, body) => agent.receiveProposal(body),

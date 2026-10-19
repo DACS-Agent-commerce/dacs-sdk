@@ -51,7 +51,7 @@ test('seller caller commits, accepts verified payment and delivers, but signs no
   const unsigned=()=>{const session=w.store.loadSession(jobId);assert.equal(session.finalisedAt,undefined);assert.equal(session.bundleHash,undefined);assert.equal(session.sellerBundleSignature,undefined);assert.equal(session.sellerCopy,undefined);};
   for(let round=0;round<2;round++){
    await assert.rejects(w.agent.bundleRequest({jobId}),NO_ST11);
-   await assert.rejects(w.agent.countersign({jobId,buyerSignature:'fixture'}),{code:'no_bundle_request'});
+   await assert.rejects(w.agent.countersign({jobId,buyerSignature:'fixture'}),NO_ST11);
    await assert.rejects(w.agent.confirmBuyerCopy({jobId}),{code:'no_seller_copy'});
    const agreementHash=w.store.loadSession(jobId).agreementHash;
    for(const path of ['/dacs/v1/bundles/request','/dacs/v1/bundles/countersignature']){
