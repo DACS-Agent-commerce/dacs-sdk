@@ -252,9 +252,13 @@ describe("terminal Vet bundle preparation", () => {
       await expect(prepareVetTerminalBundle(candidate, authentication()))
         .resolves.toMatchObject({ status: "terminal", faultedParty: "buyer" });
       // A cause bound to another production is malformed authority: refuse it.
-      await expect(prepareVetTerminalBundle(candidate, authentication({ status: "valid",
-        cause: { ...cause, recordHash: "00".repeat(32) } })))
-        .resolves.toMatchObject({ status: "indeterminate" });
+      const otherJob = candidate.jobId.slice(0, -1) + (candidate.jobId.endsWith("F") ? "G" : "F");
+      for (const misbound of [{ recordHash: "00".repeat(32) }, { jobId: otherJob },
+        { evaluatedIdentityHash: cause.verifierIdentityHash }, { verifierIdentityHash: cause.evaluatedIdentityHash }]) {
+        await expect(prepareVetTerminalBundle(candidate, authentication({ status: "valid",
+          cause: { ...cause, ...misbound } })))
+          .resolves.toMatchObject({ status: "indeterminate", reason: "Vet cause authentication is not bound to this production" });
+      }
     });
 
   // DACS-2 VPC-4: `permanent` is the default and needs no cause provenance.

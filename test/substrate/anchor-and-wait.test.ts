@@ -1276,7 +1276,8 @@ describe("DemosAdapter.anchorAndWait", () => {
       raw.getTxByHash.mockResolvedValueOnce(reply);
       await unanswered();
     }
-    for (const reply of [{ error: "not found" }, { ...block, hash: undefined }, { ...block, number: undefined }]) {
+    for (const reply of [{ error: "not found" }, { ...block, hash: undefined }, { ...block, number: undefined },
+      { ...block, number: null }]) {
       raw.getBlockByNumber.mockResolvedValueOnce(reply);
       await unanswered();
     }

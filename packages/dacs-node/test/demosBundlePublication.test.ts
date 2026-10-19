@@ -612,14 +612,18 @@ describe("BundleBinding discovery surfaces (DACS-1 §6.3.5, §6.3.6)", () => {
     await expect(none.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
       .resolves.toEqual([]);
 
-    for (const block of [{ indexUrl: goodBlock.indexUrl }, { ...goodBlock, indexHash: "sha256-xyz" }]) {
+    for (const block of [{ indexUrl: goodBlock.indexUrl }, { ...goodBlock, indexHash: "sha256-xyz" }, "block",
+      { ...goodBlock, indexHash: goodBlock.indexHash.toUpperCase() }, { ...goodBlock, indexHash: `x${goodBlock.indexHash}` },
+      { ...goodBlock, indexHash: `${goodBlock.indexHash}0` }, { ...goodBlock, indexHash: [goodBlock.indexHash] }]) {
       const malformed = createWellKnownBundleBindingSurfaceV1({ endpoint: "https://seller.example",
         readJson: reader({ "https://seller.example/.well-known/agent.json": card(block) }) });
       await expect(malformed.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
         .rejects.toThrow(/malformed/);
     }
-    expect(() => createWellKnownBundleBindingSurfaceV1({ endpoint: "http://seller.example",
-      readJson: ok })).toThrow(/https/);
+    for (const endpoint of ["http://seller.example", "https://a@seller.example", "https://:b@seller.example"]) {
+      expect(() => createWellKnownBundleBindingSurfaceV1({ endpoint, readJson: ok }))
+        .toThrow(/credential-free https URL/);
+    }
   });
 
   it("reads a catalog's bundles endpoint for the job", async () => {

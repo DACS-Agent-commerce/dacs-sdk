@@ -89,7 +89,8 @@ export function createCatalogBundleBindingSurfaceV1(options: Readonly<{
 }>): Readonly<DacsBundleBindingDiscoverySurfaceV1> {
   const base = httpsUrl(options.catalogUrl);
   if (base.pathname !== "/" || base.search !== "" || base.hash !== "") {
-    throw new TypeError("catalogUrl must be an origin without a path, query or fragment");
+    throw new TypeError(
+      "catalogUrl must be an origin without a path, query or fragment, not the catalog's listings URL");
   }
   const readJson = options.readJson;
   if (typeof readJson !== "function") throw new TypeError("readJson is required");
