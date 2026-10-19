@@ -275,7 +275,7 @@ restart boundary.
 
 ## Carrying RFQ packets over Demos L2PS
 
-`createDemosL2psRfqTransport()` adapts a structurally compatible demosdk
+`createUnverifiedDemosL2psRfqTransport()` adapts a structurally compatible demosdk
 `L2PSMessagingPeer` to the durable lifecycle transport. It encrypts canonical
 packet bytes with fresh-nonce AES-256-GCM, binds the sender peer, recipient
 peer, and exact packet hash as authenticated data, and uses the packet ID as
@@ -330,7 +330,7 @@ other subnet members or nodes that take part in the subnet, use a key that
 only the two members hold.
 
 ```ts
-const transport = createDemosL2psRfqTransport({
+const transport = createUnverifiedDemosL2psRfqTransport({
   // A demosdk peer whose serverUrl is wss:// (or ws:// to 127.0.0.1 or [::1]).
   peer: connectedAndRegisteredL2psMessagingPeer,
   codec: createDemosL2psRfqAesGcmCodec({ sharedKey: subnetKey }),

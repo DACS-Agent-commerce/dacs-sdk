@@ -1275,7 +1275,7 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
  * authorizes redrive. No frame exceeds node 61b8e75's ciphertext limit; a
  * larger packet is rejected before the send outbox is written.
  */
-export function createDemosL2psRfqTransport<TSignature = unknown>(
+export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
   options: DemosL2psRfqTransportOptions,
 ): DemosL2psRfqTransport<TSignature> {
   const captured = captureTransportOptions(options);

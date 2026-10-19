@@ -26,7 +26,7 @@ import {
   canonicalize,
   contentHash,
   createDemosL2psRfqAesGcmCodec,
-  createDemosL2psRfqTransport,
+  createUnverifiedDemosL2psRfqTransport,
   createDurableRfqLifecycleClient,
   createInMemoryDurableRfqLifecycleStore,
   DacsError,
@@ -352,7 +352,7 @@ async function buyerWithSentOffer(options: {
   const sharedKey = randomBytes(32);
   const baseCodec = createDemosL2psRfqAesGcmCodec({ sharedKey });
   const basePeer = hub.peer(BUYER_PEER);
-  const transport = createDemosL2psRfqTransport<string>({
+  const transport = createUnverifiedDemosL2psRfqTransport<string>({
     peer: options.history === undefined
       ? basePeer
       : { ...basePeer, history: options.history(basePeer.history) },
@@ -399,7 +399,7 @@ async function inboundReceiver(options: {
   const sent = await buyerWithSentOffer();
   const errors: Error[] = [];
   const sellerPeer = sent.hub.peer(SELLER_PEER);
-  const transport = createDemosL2psRfqTransport<string>({
+  const transport = createUnverifiedDemosL2psRfqTransport<string>({
     peer: options.history === undefined
       ? sellerPeer
       : { ...sellerPeer, history: options.history(sellerPeer.history) },
@@ -568,7 +568,7 @@ async function delayedSendFixture(options: {
   };
   function makeTransport() {
     const current = codec;
-    return createDemosL2psRfqTransport<string>({
+    return createUnverifiedDemosL2psRfqTransport<string>({
       peer,
       codec: { codecId: current.codecId, open(encrypted, context) {
         if (openFault === "throw") throw new Error("codec temporarily unavailable");
@@ -716,7 +716,7 @@ function channelOptions(peer: DemosL2psRfqPeerLike, peerChannel?: unknown): Demo
 /** The construction error, or undefined when the transport was built. */
 function constructionError(options: DemosL2psRfqTransportOptions): unknown {
   try {
-    createDemosL2psRfqTransport(options);
+    createUnverifiedDemosL2psRfqTransport(options);
     return undefined;
   } catch (error) {
     return error;
@@ -975,7 +975,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     const base = createDemosL2psRfqAesGcmCodec({ sharedKey });
     let seals = 0;
     // A fresh outbox, so neither publish finds a stored frame.
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: {
         codecId: base.codecId,
@@ -1084,7 +1084,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     let ticks = 0;
     const make = (localClaim: string, localPeerKey: string) => {
       const base = hub.peer(nodeKey(localPeerKey));
-      return createDemosL2psRfqTransport<string>({
+      return createUnverifiedDemosL2psRfqTransport<string>({
         peer: {
           ...base,
           send: (to, encrypted, messageHash) => base.send(nodeKey(to), encrypted, messageHash),
@@ -1134,7 +1134,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     const mixedPeerForClaim = (claim: string) =>
       claim === BUYER ? `0x${"AA".repeat(32)}` : claim === SELLER ? `0X${"Bb".repeat(32)}` : undefined;
     const errors: Error[] = [];
-    const make = (localClaim: string, localPeerKey: string) => createDemosL2psRfqTransport<string>({
+    const make = (localClaim: string, localPeerKey: string) => createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(localPeerKey),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
@@ -1172,7 +1172,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     // The old `save(): void` contract: the write lands but confirms nothing.
     const entries = new Map<string, unknown>();
     let saves = 0;
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
@@ -1243,7 +1243,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       { messageHash: packet.packetId, fromPeer: THIRD_PEER, toPeer: SELLER_PEER },
     );
     const errors: Error[] = [];
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(SELLER_PEER),
       codec: baseCodec,
       l2psUid: L2PS_UID,
@@ -1283,7 +1283,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     let historyReads = 0;
     const expectedGenerations: number[] = [];
     const store = memorySendOutbox();
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: {
         ...base,
         async send(to, encrypted, messageHash) {
@@ -1399,20 +1399,20 @@ describe("Demos L2PS durable RFQ transport", () => {
       onError: vi.fn(),
     };
     for (const localPeerKey of ["b".repeat(64), `0x${"B".repeat(64)}`, "b".repeat(130)]) {
-      expect(() => createDemosL2psRfqTransport({ ...base, localPeerKey })).not.toThrow();
+      expect(() => createUnverifiedDemosL2psRfqTransport({ ...base, localPeerKey })).not.toThrow();
     }
     for (const localPeerKey of [
       "b".repeat(63), `0x${"b".repeat(63)}`, "b".repeat(40), "0x",
       // The whole key is hex, not only a 64-digit run at either end.
       `z${"b".repeat(64)}`, `${"b".repeat(64)}z`,
     ]) {
-      expect(() => createDemosL2psRfqTransport({ ...base, localPeerKey }))
+      expect(() => createUnverifiedDemosL2psRfqTransport({ ...base, localPeerKey }))
         .toThrow("localPeerKey must be a hex public key");
     }
     // A mapped recipient key meets the same floor, before any seal or send.
     const sent = await buyerWithSentOffer();
     const short = "b".repeat(63);
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: sent.hub.peer(BUYER_PEER),
       codec: sent.baseCodec,
       l2psUid: L2PS_UID,
@@ -1733,16 +1733,16 @@ describe("Demos L2PS durable RFQ transport", () => {
       onError: vi.fn(),
     };
     for (const consumerTimeoutMs of [1, 30_000, 600_000]) {
-      expect(() => createDemosL2psRfqTransport({ ...base, consumerTimeoutMs })).not.toThrow();
+      expect(() => createUnverifiedDemosL2psRfqTransport({ ...base, consumerTimeoutMs })).not.toThrow();
     }
     for (const consumerTimeoutMs of [0, -1, 1.5, 600_001, Number.NaN, "1000"]) {
-      expect(() => createDemosL2psRfqTransport({ ...base, consumerTimeoutMs: consumerTimeoutMs as number }))
+      expect(() => createUnverifiedDemosL2psRfqTransport({ ...base, consumerTimeoutMs: consumerTimeoutMs as number }))
         .toThrow("consumerTimeoutMs must be a positive safe integer at most 600000");
     }
     const read = vi.fn(() => 1_000);
     const getter = { ...base } as DemosL2psRfqTransportOptions;
     Object.defineProperty(getter, "consumerTimeoutMs", { enumerable: true, get: read });
-    expect(() => createDemosL2psRfqTransport(getter))
+    expect(() => createUnverifiedDemosL2psRfqTransport(getter))
       .toThrow("Demos L2PS RFQ transport options must use enumerable data properties");
     expect(read).not.toHaveBeenCalled();
   });
@@ -1924,7 +1924,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       const history = fixture.hub.peer(SELLER_PEER).history;
       // Simulate each page request costing 10 ms. The second request spends the
       // remaining budget, so its frame must never reach the codec.
-      const transport = createDemosL2psRfqTransport<string>({
+      const transport = createUnverifiedDemosL2psRfqTransport<string>({
         peer: { ...fixture.hub.peer(SELLER_PEER), history: async (peer, options) => {
           vi.advanceTimersByTime(10);
           return history(peer, options);
@@ -2059,7 +2059,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     const sharedKey = randomBytes(32);
     const buyerErrors = vi.fn();
     const sellerErrors = vi.fn();
-    const buyerTransport = createDemosL2psRfqTransport<string>({
+    const buyerTransport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
@@ -2071,7 +2071,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       claimForPeer,
       onError: buyerErrors,
     });
-    const sellerTransport = createDemosL2psRfqTransport<string>({
+    const sellerTransport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
@@ -2143,7 +2143,7 @@ describe("Demos L2PS durable RFQ transport", () => {
   test("replays an inbound packet from Demos history after the receiver restarts", async () => {
     const hub = new FakeL2psHub();
     const sharedKey = randomBytes(32);
-    const buyerTransport = createDemosL2psRfqTransport<string>({
+    const buyerTransport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
@@ -2156,7 +2156,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       onError: vi.fn(),
     });
     const sellerErrors = vi.fn();
-    const sellerTransport = createDemosL2psRfqTransport<string>({
+    const sellerTransport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
@@ -2211,7 +2211,7 @@ describe("Demos L2PS durable RFQ transport", () => {
 
   test("never redrives when history binds the packet hash to unreadable ciphertext", async () => {
     const hub = new FakeL2psHub();
-    const buyerTransport = createDemosL2psRfqTransport<string>({
+    const buyerTransport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
@@ -2268,7 +2268,7 @@ describe("Demos L2PS durable RFQ transport", () => {
         return baseCodec.open(encrypted, context);
       },
     };
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec,
       l2psUid: L2PS_UID,
@@ -2299,7 +2299,7 @@ describe("Demos L2PS durable RFQ transport", () => {
   test("keeps a transient peer-mapping failure retryable", async () => {
     const hub = new FakeL2psHub();
     let failMapping = true;
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
@@ -2335,7 +2335,7 @@ describe("Demos L2PS durable RFQ transport", () => {
 
   test("rejects a malformed encrypted frame before peer send", async () => {
     const hub = new FakeL2psHub();
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: {
         codecId: "malformed-frame-test",
@@ -2424,7 +2424,7 @@ describe("Demos L2PS durable RFQ transport", () => {
         errors.push(error);
       },
     };
-    const transport = createDemosL2psRfqTransport<string>(options);
+    const transport = createUnverifiedDemosL2psRfqTransport<string>(options);
     peer.send = async () => { throw new Error("swapped send"); };
     peer.history = async () => { throw new Error("swapped history"); };
     peer.onMessage = () => { throw new Error("swapped onMessage"); };
@@ -2476,7 +2476,7 @@ describe("Demos L2PS durable RFQ transport", () => {
         return baseCodec.open(encrypted, context);
       },
     };
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec,
       l2psUid: L2PS_UID,
@@ -2517,7 +2517,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     let ticks = 0;
     const hub = new FakeL2psHub();
     const sharedKey = randomBytes(32);
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
@@ -2578,7 +2578,7 @@ describe("Demos L2PS durable RFQ transport", () => {
   test("separates a subnet mismatch from a definite packet-hash conflict", async () => {
     const hub = new FakeL2psHub();
     const sharedKey = randomBytes(32);
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
       l2psUid: L2PS_UID,
@@ -2634,7 +2634,7 @@ describe("Demos L2PS durable RFQ transport", () => {
       },
       onMessage() {},
     };
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer,
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
@@ -2669,7 +2669,7 @@ describe("Demos L2PS durable RFQ transport", () => {
   test("refuses an oversized live payload before the canonical snapshot", async () => {
     const hub = new FakeL2psHub();
     const errors: Error[] = [];
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
@@ -2788,7 +2788,7 @@ describe("Demos L2PS durable RFQ transport", () => {
     const send = hub.peer(BUYER_PEER).send;
     let ticks = 0;
     let bloated = true;
-    const bloatedTransport = createDemosL2psRfqTransport<string>({
+    const bloatedTransport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: {
         ...hub.peer(BUYER_PEER),
         async send(to, encrypted, messageHash) {
@@ -3002,10 +3002,10 @@ describe("Demos L2PS durable RFQ transport", () => {
       claimForPeer,
       onError: vi.fn(),
     });
-    const buyerTransport = createDemosL2psRfqTransport<string>(
+    const buyerTransport = createUnverifiedDemosL2psRfqTransport<string>(
       options(BUYER, BUYER_PEER, hub.peer(BUYER_PEER)),
     );
-    const sellerTransport = createDemosL2psRfqTransport<string>(
+    const sellerTransport = createUnverifiedDemosL2psRfqTransport<string>(
       options(SELLER, SELLER_PEER, sellerPeer),
     );
     const reservation = durableReservation();
@@ -3246,7 +3246,7 @@ describe("Demos L2PS RFQ final review fixes", () => {
     mapping: Pick<DemosL2psRfqTransportOptions, "peerForClaim" | "claimForPeer">,
     outboxStore = memorySendOutbox(),
   ) {
-    return createDemosL2psRfqTransport<string>({
+    return createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(BUYER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
@@ -3347,7 +3347,7 @@ describe("Demos L2PS RFQ final review fixes", () => {
       ["a bare string", unknown],
     ] as const) {
       const base = hub.peer(BUYER_PEER);
-      const transport = createDemosL2psRfqTransport<string>({
+      const transport = createUnverifiedDemosL2psRfqTransport<string>({
         peer: { ...base, async send() { throw refusal; } },
         codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
         l2psUid: L2PS_UID,
@@ -3528,7 +3528,7 @@ describe("Demos L2PS RFQ final re-review fixes", () => {
     const hub = new FakeL2psHub();
     const sharedKey = randomBytes(32);
     const transportFor = (localClaim: string, localPeerKey: string) =>
-      createDemosL2psRfqTransport<string>({
+      createUnverifiedDemosL2psRfqTransport<string>({
         peer: hub.peer(localPeerKey),
         codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
         l2psUid: L2PS_UID,
@@ -3645,7 +3645,7 @@ describe("Demos L2PS RFQ buyer retry after a stale agreement key", () => {
       seller: createInMemoryDurableRfqLifecycleStore<string>(),
     };
     const transportFor = (role: DurableRfqLifecycleRole) =>
-      createDemosL2psRfqTransport<string>({
+      createUnverifiedDemosL2psRfqTransport<string>({
         peer: hub.peer(role === "buyer" ? BUYER_PEER : SELLER_PEER),
         codec: createDemosL2psRfqAesGcmCodec({ sharedKey }),
         l2psUid: L2PS_UID,
@@ -3786,7 +3786,7 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
   ) {
     const errors: Error[] = [];
     const outboxStore = memorySendOutbox();
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: hub.peer(role === "buyer" ? BUYER_PEER : SELLER_PEER),
       codec: createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) }),
       l2psUid: L2PS_UID,
@@ -3804,7 +3804,7 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
 
   /** A second buyer transport over the receiver fixture's hub and key. */
   function buyerReconcile(fixture: Awaited<ReturnType<typeof inboundReceiver>>) {
-    return createDemosL2psRfqTransport<string>({
+    return createUnverifiedDemosL2psRfqTransport<string>({
       peer: fixture.hub.peer(BUYER_PEER),
       codec: fixture.baseCodec,
       l2psUid: L2PS_UID,
@@ -3938,7 +3938,7 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
       { name: "messages that are not an array", page: (own: DemosL2psRfqStoredMessage) => ({ messages: { 0: own }, hasMore: false }) },
     ])("a page with $name is refused", async ({ page }) => {
       const fixture = await buyerWithSentOffer();
-      const transport = createDemosL2psRfqTransport<string>({
+      const transport = createUnverifiedDemosL2psRfqTransport<string>({
         peer: { ...fixture.hub.peer(BUYER_PEER), history: async () => page(fixture.own) as never },
         codec: fixture.baseCodec,
         l2psUid: L2PS_UID,
@@ -4421,7 +4421,7 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
     function plainReceiver(localClaim: string, localPeerKey: string) {
       const hub = new FakeL2psHub();
       const errors: Error[] = [];
-      const transport = createDemosL2psRfqTransport<string>({
+      const transport = createUnverifiedDemosL2psRfqTransport<string>({
         peer: hub.peer(localPeerKey),
         codec: plainCodec,
         l2psUid: L2PS_UID,
@@ -5011,7 +5011,7 @@ describe("Demos L2PS RFQ membership mapping the transport cannot check", () => {
     const sent = await buyerWithSentOffer();
     const clock = { now: NOW };
     const errors: Error[] = [];
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: sent.hub.peer(SELLER_PEER),
       codec: sent.baseCodec,
       l2psUid: L2PS_UID,
@@ -5067,7 +5067,7 @@ describe("Demos L2PS RFQ documented transport checks", () => {
   /** A buyer transport on the hub of a sent offer, with its codec and mapping overridable. */
   async function buyerRoute(extra: Partial<DemosL2psRfqTransportOptions>) {
     const sent = await buyerWithSentOffer();
-    const transport = createDemosL2psRfqTransport<string>({
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: sent.hub.peer(BUYER_PEER),
       codec: sent.baseCodec,
       l2psUid: L2PS_UID,

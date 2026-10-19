@@ -116,7 +116,7 @@ export {
 } from "./negotiate/durableRfqLifecycleStoreFs.js";
 export {
   createDemosL2psRfqAesGcmCodec,
-  createDemosL2psRfqTransport,
+  createUnverifiedDemosL2psRfqTransport,
   DemosL2psRfqPeerChannelError,
   type DemosL2psRfqEncryptedMessage,
   type DemosL2psRfqIncomingPayload,
