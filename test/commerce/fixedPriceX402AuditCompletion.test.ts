@@ -1455,6 +1455,17 @@ describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over ope
     expect(verifySellerClosure).not.toHaveBeenCalled();
   });
 
+  it.each(["buyer", "seller"] as const)("refuses a %s audit reference that is not its copy's address", async (role) => {
+    const gate = await gateWithAudit(rail, (fx) => ({
+      buyer: auditSuccess(role === "buyer" ? "native:elsewhere" : fx.buyerNative),
+      seller: auditSuccess(role === "seller" ? "native:elsewhere" : fx.sellerNative),
+    }));
+    const status = role === "buyer" ? gate.buyerStatus : gate.sellerStatus;
+    expect(status.tracks.audit).toMatchObject({ state: "final", outcome: "success", reference: "native:elsewhere" });
+    await expect(gate.verify()).rejects.toThrow(/both operational audit tracks to reference their exact bundle/);
+    expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+
   it("refuses when both audit tracks are final failures on the exact bundles", async () => {
     const gate = await gateWithAudit(rail, (fx) => ({
       buyer: { payment: paymentFailure("buyer"), audit: auditFailure(fx.buyerNative) },
@@ -1744,5 +1755,72 @@ describe.each(["pay-x402", "pay-dem"] as const)("%s audit-complete gate over ope
     expect(gate.buyerStatus.tracks.audit?.outcome).not.toBe(gate.sellerStatus.tracks.audit?.outcome);
     await expect(gate.verify()).rejects.toThrow(/outcomes contradict|both operational audit tracks/);
     expect(verifySellerClosure).not.toHaveBeenCalled();
+  });
+});
+
+// BB-6: a resolver may select a binding other than the carried one. Each
+// selected binding below is properly signed, so only the field, readback and
+// selected-copy checks can refuse it.
+describe("selected BundleBinding at another native address", () => {
+  async function selected(
+    select: (fx: Awaited<ReturnType<typeof fixture>>) => BundleBinding,
+    read: (fx: Awaited<ReturnType<typeof fixture>>) => Record<string, unknown> | null = (fx) =>
+      fx.buyerBundle as unknown as Record<string, unknown>,
+  ) {
+    const fx = await fixture();
+    const carriedBuyer = binding(fx.buyerBundle, "buyer", fx.buyerNative);
+    const carriedSeller = binding(fx.sellerBundle, "seller", fx.sellerNative);
+    const chosen = select(fx);
+    const input = { ...fx.input,
+      sellerClosure: { ...fx.input.sellerClosure, result: { ...fx.closureResult, binding: carriedSeller } },
+      copies: { buyer: { ...fx.input.copies.buyer, binding: carriedBuyer },
+        seller: { ...fx.input.copies.seller, binding: carriedSeller } } };
+    const deps: FixedPriceX402AuditCompletionDeps = { ...fx.deps,
+      sellerFinalizationProvider: { ...fx.sellerFinalizationProvider, mapping: "write-input" as const },
+      verifyBundleAnchor: () => ({ disposition: "valid" as const, mapping: "write-input" as const }),
+      resolveBundleBinding: (_logical, _signer, role) => ({
+        disposition: "present" as const, binding: role === "buyer" ? chosen : carriedSeller }),
+      readBundleCopy: (address, role) => address === chosen.nativeAddress && address !== fx.buyerNative
+        ? read(fx) : fx.deps.readBundleCopy(address, role),
+      verifyBundleBinding: () => ({ disposition: "valid" as const }),
+    };
+    return verifyFixedPriceX402AuditCompletion(input, deps).then(
+      (result) => result.milestone, (error: unknown) => error);
+  }
+  const OTHER = "native:other-buyer";
+
+  it("accepts an equal copy at another native address", async () => {
+    await expect(selected((fx) => binding(fx.buyerBundle, "buyer", OTHER))).resolves.toBe("audit-complete");
+  });
+
+  it("refuses the other role's binding for this role", async () => {
+    const outcome = await selected((fx) => binding(fx.sellerBundle, "seller", OTHER));
+    expect(outcome).toBeInstanceOf(DacsError);
+    expect(String(outcome)).toMatch(/completed buyer BundleBinding is not independently resolvable and exact$/);
+  });
+
+  it("refuses a binding over other bundle content", async () => {
+    const outcome = await selected((fx) => binding({ ...fx.buyerBundle, finalisedAt: 1780000000001 }, "buyer", OTHER));
+    expect(String(outcome)).toMatch(/completed buyer BundleBinding is not independently resolvable and exact$/);
+  });
+
+  it.each([
+    ["carries no signatures", (bundle: FaultAttestationBundle) => ({ ...bundle, signatures: [] })],
+    ["carries only its own role's signature", (bundle: FaultAttestationBundle) => ({ ...bundle,
+      signatures: bundle.signatures.filter((entry) => entry.party === BUYER.did) })],
+    ["carries a corrupted counterparty signature", (bundle: FaultAttestationBundle) => ({ ...bundle,
+      signatures: bundle.signatures.map((entry) => entry.party === BUYER.did ? entry
+        : { ...entry, value: Buffer.alloc(64, 7).toString("base64url") }) })],
+  ])("refuses a selected copy with the same signed scope that %s", async (_case, edit) => {
+    const outcome = await selected((fx) => binding(fx.buyerBundle, "buyer", OTHER),
+      (fx) => edit(fx.buyerBundle) as unknown as Record<string, unknown>);
+    expect(outcome).toBeInstanceOf(DacsError);
+    expect(String(outcome)).toMatch(/completed buyer selected BundleBinding does not name the same verified signed scope/);
+  });
+
+  it("keeps a selected copy that is not yet readable indeterminate", async () => {
+    const outcome = await selected((fx) => binding(fx.buyerBundle, "buyer", OTHER), () => null);
+    expect(outcome).toBeInstanceOf(IndeterminateSubstrateError);
+    expect(String(outcome)).toMatch(/selected bundle copy is not yet readable/);
   });
 });
