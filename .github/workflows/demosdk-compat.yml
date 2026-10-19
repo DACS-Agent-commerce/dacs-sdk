@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   demosdk-compat:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -48,7 +48,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "22.21.1"
 
       - name: Record compatibility environment
         run: |
@@ -70,7 +70,14 @@ jobs:
           DEMOSDK: ${{ matrix.demosdk }}
         run: |
           if [ "$DEMOSDK" = "newest-in-range" ]; then
-            spec="$(node -p "require('./package.json').devDependencies['@kynesyslabs/demosdk']")"
+            # The published contract is the peer range; the dev range must
+            # equal it so the locked leg tests the same floor.
+            spec="$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
+            dev="$(node -p "require('./package.json').devDependencies['@kynesyslabs/demosdk']")"
+            if [ "$spec" != "$dev" ]; then
+              echo "demosdk peer range $spec differs from dev range $dev" >&2
+              exit 1
+            fi
           else
             spec="$DEMOSDK"
           fi
@@ -89,9 +96,9 @@ jobs:
               expected="$(node -p "require('./package-lock.json').packages['node_modules/@kynesyslabs/demosdk'].version")"
               ;;
             newest-in-range)
-              # The newest release the registry lists in the package.json
+              # The newest release the registry lists in the published peer
               # range, read independently of the install that resolved it.
-              spec="$(node -p "require('./package.json').devDependencies['@kynesyslabs/demosdk']")"
+              spec="$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
               expected="$(npm view "@kynesyslabs/demosdk@${spec}" version --json | node -e '
                 const versions = [].concat(JSON.parse(require("fs").readFileSync(0, "utf8")));
                 const parts = (v) => v.split(/[.+-]/, 3).map(Number);
