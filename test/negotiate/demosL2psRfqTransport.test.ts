@@ -352,6 +352,7 @@ async function buyerWithSentOffer(options: {
   const sharedKey = randomBytes(32);
   const baseCodec = createDemosL2psRfqAesGcmCodec({ sharedKey });
   const basePeer = hub.peer(BUYER_PEER);
+  const buyerOutbox = memorySendOutbox();
   const transport = createUnverifiedDemosL2psRfqTransport<string>({
     peer: options.history === undefined
       ? basePeer
@@ -359,7 +360,7 @@ async function buyerWithSentOffer(options: {
     codec: options.codec?.(baseCodec) ?? baseCodec,
     l2psUid: L2PS_UID,
     peerChannel: "loopback",
-    outboxStore: memorySendOutbox(),
+    outboxStore: buyerOutbox,
     localClaim: BUYER,
     localPeerKey: BUYER_PEER,
     peerForClaim,
@@ -385,7 +386,7 @@ async function buyerWithSentOffer(options: {
   const packet = status.record.outbox[0]?.packet;
   const own = hub.messages[0];
   if (packet === undefined || own === undefined) throw new Error("frame missing");
-  return { hub, sharedKey, baseCodec, transport, client, packet, own };
+  return { hub, sharedKey, baseCodec, transport, client, packet, own, buyerOutbox };
 }
 
 async function inboundReceiver(options: {
@@ -1002,23 +1003,43 @@ describe("Demos L2PS durable RFQ transport", () => {
 
   test("round 6: a node duplicate refusal acknowledges when history shows our frame", async () => {
     let ticks = 0;
-    let lagging = true;
+    let laggingReads = 0;
     const { hub, transport, packet } = await buyerWithSentOffer({
       monotonicNowMs: () => ticks,
-      history: (base) => async (peerKey, options) =>
-        lagging ? { messages: [], hasMore: false } : base(peerKey, options),
+      history: (base) => async (peerKey, options) => {
+        if (laggingReads === 0) return base(peerKey, options);
+        laggingReads -= 1;
+        return { messages: [], hasMore: false };
+      },
     });
     hub.nodeDedup = true;
     ticks = 60_000;
-    // Lagging history lets the grace authorize a resend of the same bytes.
+    // History lags for reconcile and for publish's own read before the
+    // resend, so the grace authorizes a resend of the same bytes.
+    laggingReads = 2;
     await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "absent" });
-    lagging = false;
     await expect(transport.publish(packet)).resolves.toEqual({ disposition: "acknowledged" });
+    expect(laggingReads).toBe(0);
     expect(hub.sends).toBe(2);
     expect(hub.messages).toHaveLength(1);
     // The acknowledgement is stored: no further history read or send.
-    lagging = true;
+    laggingReads = Number.POSITIVE_INFINITY;
     await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "acknowledged" });
+  });
+
+  test("publish alone never resends a frame that history shows, even after the grace", async () => {
+    let ticks = 0;
+    const { hub, transport, packet } = await buyerWithSentOffer({ monotonicNowMs: () => ticks });
+    ticks = 60_000;
+    // No reconcile first: publish reads history itself before any resend.
+    await expect(transport.publish(packet)).resolves.toEqual({ disposition: "acknowledged" });
+    expect(hub.sends).toBe(1);
+    // Nothing in history, so the same publish resends the stored bytes.
+    const stored = structuredClone(hub.messages[0]!);
+    hub.messages.length = 0;
+    await expect(transport.publish(packet)).resolves.toEqual({ disposition: "acknowledged" });
+    expect(hub.sends).toBe(2);
+    expect(hub.messages[0]?.encrypted).toEqual(stored.encrypted);
   });
 
   test("round 6: a node duplicate refusal missing from history never loops into resends", async () => {
@@ -2296,6 +2317,61 @@ describe("Demos L2PS durable RFQ transport", () => {
     expect(hub.sends).toBe(1);
   });
 
+  test("a packet never handed to the peer is absent however long the pair's history is", async () => {
+    const hub = new FakeL2psHub();
+    // More than one page of the pair's earlier rows: pagination alone can
+    // never prove absence here.
+    for (let index = 0; index < 101; index += 1) {
+      hub.messages.push({
+        id: `earlier-${index}`, from: SELLER_PEER, to: BUYER_PEER,
+        messageHash: index.toString(16).padStart(64, "0"),
+        encrypted: { ciphertext: "AAAA", nonce: "AAAA" }, l2psUid: L2PS_UID,
+        l2psTxHash: null, timestamp: NOW - 1_000 - index, status: "delivered",
+      });
+    }
+    const baseCodec = createDemosL2psRfqAesGcmCodec({ sharedKey: randomBytes(32) });
+    let failSeal = true;
+    let historyReads = 0;
+    const peer = hub.peer(BUYER_PEER);
+    const transport = createUnverifiedDemosL2psRfqTransport<string>({
+      peer: { ...peer, history: (peerKey, options) => { historyReads += 1; return peer.history(peerKey, options); } },
+      codec: {
+        codecId: baseCodec.codecId,
+        seal(plaintext, context) {
+          if (failSeal) {
+            failSeal = false;
+            throw new Error("transient codec outage");
+          }
+          return baseCodec.seal(plaintext, context);
+        },
+        open: (encrypted, context) => baseCodec.open(encrypted, context),
+      },
+      l2psUid: L2PS_UID,
+      peerChannel: "loopback",
+      outboxStore: memorySendOutbox(),
+      localClaim: BUYER,
+      localPeerKey: BUYER_PEER,
+      peerForClaim,
+      claimForPeer,
+      onError: vi.fn(),
+    });
+    const client = createDurableRfqLifecycleClient(clientOptions("buyer", transport, durableReservation()));
+    await client.open(openInput());
+    await expect(client.sendOffer(JOB_ID, {
+      rfqProposalVersion: "1",
+      price: { amount: "9", currency: "USDC" },
+    })).resolves.toMatchObject({ status: "indeterminate" });
+    const status = await client.getStatus(JOB_ID);
+    const packet = status.status === "ok" ? status.record.outbox[0]?.packet : undefined;
+    if (packet === undefined) throw new Error("no outbox packet");
+    // No send outbox entry: the transport never called the peer for it.
+    await expect(transport.reconcile(packet)).resolves.toEqual({ disposition: "absent" });
+    expect(historyReads).toBe(0);
+    await expect(client.resumeOutbox(JOB_ID)).resolves.toMatchObject({ status: "ready" });
+    expect(hub.sends).toBe(1);
+    expect(historyReads).toBe(0);
+  });
+
   test("keeps a transient peer-mapping failure retryable", async () => {
     const hub = new FakeL2psHub();
     let failMapping = true;
@@ -2791,6 +2867,8 @@ describe("Demos L2PS durable RFQ transport", () => {
     const bloatedTransport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: {
         ...hub.peer(BUYER_PEER),
+        // History lags, so the second publish resends instead of finding the frame.
+        history: async () => ({ messages: [], hasMore: false }),
         async send(to, encrypted, messageHash) {
           const result = await send(to, encrypted, messageHash);
           return bloated
@@ -3802,14 +3880,18 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
     return { transport, errors, outboxStore };
   }
 
-  /** A second buyer transport over the receiver fixture's hub and key. */
+  /**
+   * The buyer's reconcile after a restart: its own send outbox and key, with
+   * the grace over, so history alone decides.
+   */
   function buyerReconcile(fixture: Awaited<ReturnType<typeof inboundReceiver>>) {
     return createUnverifiedDemosL2psRfqTransport<string>({
       peer: fixture.hub.peer(BUYER_PEER),
       codec: fixture.baseCodec,
       l2psUid: L2PS_UID,
       peerChannel: "loopback",
-      outboxStore: memorySendOutbox(),
+      outboxStore: fixture.buyerOutbox,
+      monotonicNowMs: () => Number(process.hrtime.bigint() / 1_000_000n) + 60_000,
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -3943,7 +4025,7 @@ describe("Demos L2PS RFQ verdict paths and node limits", () => {
         codec: fixture.baseCodec,
         l2psUid: L2PS_UID,
         peerChannel: "loopback",
-        outboxStore: memorySendOutbox(),
+        outboxStore: fixture.buyerOutbox,
         localClaim: BUYER,
         localPeerKey: BUYER_PEER,
         peerForClaim,
@@ -5064,15 +5146,19 @@ describe("Demos L2PS RFQ membership mapping the transport cannot check", () => {
 });
 
 describe("Demos L2PS RFQ documented transport checks", () => {
-  /** A buyer transport on the hub of a sent offer, with its codec and mapping overridable. */
-  async function buyerRoute(extra: Partial<DemosL2psRfqTransportOptions>) {
+  /**
+   * A buyer transport on the hub of a sent offer, with its codec and mapping
+   * overridable. ownOutbox: the buyer's send outbox, which holds the offer;
+   * otherwise a fresh one that never sent it.
+   */
+  async function buyerRoute(extra: Partial<DemosL2psRfqTransportOptions>, options: { ownOutbox?: boolean } = {}) {
     const sent = await buyerWithSentOffer();
     const transport = createUnverifiedDemosL2psRfqTransport<string>({
       peer: sent.hub.peer(BUYER_PEER),
       codec: sent.baseCodec,
       l2psUid: L2PS_UID,
       peerChannel: "loopback",
-      outboxStore: memorySendOutbox(),
+      outboxStore: options.ownOutbox === true ? sent.buyerOutbox : memorySendOutbox(),
       localClaim: BUYER,
       localPeerKey: BUYER_PEER,
       peerForClaim,
@@ -5106,7 +5192,7 @@ describe("Demos L2PS RFQ documented transport checks", () => {
         if (fail) throw new Error("directory unavailable");
         return claimForPeer(peer);
       },
-    });
+    }, { ownOutbox: true });
     await expect(fixture.transport.publish(fixture.packet)).resolves.toMatchObject({
       disposition: "indeterminate",
     });

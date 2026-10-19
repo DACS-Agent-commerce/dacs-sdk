@@ -518,7 +518,11 @@ never deletes a row, so once two agents have exchanged more than one page
 (`historyPageSize`, 100 rows by default) in their lifetime, absence can never
 be proven between them again: a send that never reached the node, such as
 one refused during a demosdk reconnect, is then never resent, and the job
-ends in the RFQ-4 timeout. `resumeInbound()` similarly replays history through the
+ends in the RFQ-4 timeout. This does not hold back a packet the transport
+never handed to the peer. The confirmed pre-send write precedes every peer
+call, so a packet with no send outbox entry was never sent: `reconcile`
+answers `absent` for it at once, without reading history, and the next
+`publish` sends it however long the pair's history is. `resumeInbound()` similarly replays history through the
 normal lifecycle verifier; duplicate packets are harmless. Peer and codec
 operations are bounded (20 seconds by default); a send timeout is
 `indeterminate`, because the server may accept the packet after the local wait
@@ -532,7 +536,8 @@ reconciliation returns `indeterminate` with the fixed reason
 Presence can still acknowledge immediately. The grace is checked before the
 history request, so a request begun during the grace cannot authorize redrive
 by finishing after it. A refusal before the peer call (for example, a transient
-seal failure) has no send marker and remains immediately retryable.
+seal failure) has no send marker and remains immediately retryable
+(`reconcile` answers `absent` for it without reading history, above).
 
 When `peer.send()` rejects with anything but the node's "Duplicate message"
 refusal (below), `publish` returns `indeterminate` with the reason "Demos L2PS
@@ -665,12 +670,13 @@ lifecycle's own write failed following the acknowledgement. Before any resend,
 the transport opens the stored frame once and compares it canonically with the
 packet. If the frame does not open (for example, after a key rotated under the
 same `codecId`) or opens to other bytes, the result is `indeterminate` and
-nothing is sent. `publish` itself reads no history before such a resend: once
-the grace has passed it resends the stored frame. The durable lifecycle calls
-it again only after `reconcile` answers `absent`; a host that drives the
-transport directly must do the same, and even then a late first send can
-land after that history read, so only the node's unique `messageHash` keeps
-one stored row. Within one process, outbox work for each packet runs one call
+nothing is sent. `publish` then reads history itself, as `reconcile` does, and
+resends only when that read proves absence. So a host that calls `publish`
+without reconciling first never resends a frame that history shows; our own
+frame there acknowledges the packet, and anything else that is not proven
+absence stays `indeterminate` or `rejected` as in `reconcile`. A late first
+send can still land after that read, so only the node's unique `messageHash`
+keeps one stored row. Within one process, outbox work for each packet runs one call
 at a time, so a concurrent `publish` and `resumeOutbox()` cannot both seal a
 frame; serializing drivers across processes stays the host's job.
 
@@ -682,8 +688,9 @@ between machines or boots; a detected rollback starts and persists a new full
 grace. A crash before the end write leaves a durable `sending` marker;
 recovery starts one full grace from its first observation and persists that
 time. Restarting again does not reset an already persisted end time. Do not
-migrate a legacy ambiguous lifecycle entry without its companion send marker;
-settle it first or seed a conservative `sending` marker through the host store.
+migrate a legacy ambiguous lifecycle entry without its companion send marker:
+without one the transport takes the packet as never sent and sends it at once.
+Settle it first or seed a conservative `sending` marker through the host store.
 
 | Situation | Extra hold before absence can authorize retry |
 | --- | --- |
@@ -696,15 +703,15 @@ settle it first or seed a conservative `sending` marker through the host store.
 The hold itself adds at most the configured grace; the host's next
 `resumeOutbox()` cadence adds its polling interval. With the default 20-second
 operation limit, a successful single-page absence check and retry dispatch can
-also spend up to 100 seconds on outbox read, history, retry outbox read,
-opening the stored frame and the pre-send write: at most 160 seconds plus the
-polling interval after a known send end. This transport-only calculation excludes host lifecycle storage, the retry's
+also spend up to 120 seconds on outbox read, history, retry outbox read,
+opening the stored frame, the retry's own history read and the pre-send write:
+at most 180 seconds plus the polling interval after a known send end. This transport-only calculation excludes host lifecycle storage, the retry's
 own send/acknowledgement wait and end write.
 There is no finite whole-call bound for paginated history (a follow-up),
 persistence failures, repeated failures or scheduling stalls. The paginated
-history case also applies to `publish`: after a "Duplicate message" refusal it
-reads history while it holds the packet's in-process lock, so other outbox
-calls for that packet wait for it.
+history case also applies to `publish`: before a resend and after a
+"Duplicate message" refusal it reads history while it holds the packet's
+in-process lock, so other outbox calls for that packet wait for it.
 
 Node `61b8e75` refuses a send whose `encrypted.ciphertext` is longer than
 131,072 characters, before it stores anything (`L2PSMessagingServer.ts:27,

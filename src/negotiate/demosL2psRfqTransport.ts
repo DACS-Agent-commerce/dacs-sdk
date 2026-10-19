@@ -1271,8 +1271,10 @@ function captureTransportOptions(value: DemosL2psRfqTransportOptions) {
  * node, which the host must trust. That is node storage, not the DACS-3
  * §8.3.4 member acknowledgement. Construction refuses a peer whose channel
  * is not wss:// or loopback ws:// (see the `peer` option). Absence is returned
- * only from a fully exhausted first history page; ambiguous pagination never
- * authorizes redrive. No frame exceeds node 61b8e75's ciphertext limit; a
+ * for a packet with no send outbox entry, which never reached the peer, and
+ * otherwise only from a fully exhausted first history page; ambiguous
+ * pagination never authorizes redrive, and publish reads history itself
+ * before a resend. No frame exceeds node 61b8e75's ciphertext limit; a
  * larger packet is rejected before the send outbox is written.
  */
 export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
@@ -1549,15 +1551,20 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
       };
     }
     let absence: RfqLifecycleTransportResult;
+    let stored: boolean;
     try {
       // Decide BEFORE the history snapshot is requested. A read started
       // inside the grace cannot prove absence merely by finishing after it.
-      absence = await withPacketLock(prepared.packet.packetId, async () =>
-        absenceAfterSend(prepared.packet.packetId, await loadSendEntry(prepared)));
+      ({ absence, stored } = await withPacketLock(prepared.packet.packetId, async () => {
+        const entry = await loadSendEntry(prepared);
+        return { absence: await absenceAfterSend(prepared.packet.packetId, entry), stored: entry !== undefined };
+      }));
     } catch {
       return { disposition: "indeterminate", reason: "Demos L2PS RFQ send outbox is unavailable" };
     }
-    if (absence.disposition === "acknowledged") return absence;
+    // The confirmed pre-send write precedes every peer call, so a packet
+    // without an entry never reached the peer, however long history is.
+    if (!stored || absence.disposition === "acknowledged") return absence;
     return historyDisposition(prepared, absence);
   }
 
@@ -2059,6 +2066,10 @@ export function createUnverifiedDemosL2psRfqTransport<TSignature = unknown>(
         if (opened !== "match") {
           return { disposition: "indeterminate", reason: STORED_FRAME_REASON };
         }
+        // Resend only what this history read shows absent, even when the
+        // caller did not reconcile first.
+        const found = await historyDisposition(routed, absence);
+        if (found.disposition !== "absent") return found;
       } else {
         const prepared = await sealPacket(routed);
         entry = {
