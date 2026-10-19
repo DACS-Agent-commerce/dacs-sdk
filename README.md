@@ -516,8 +516,8 @@ never clamped. Rate-phase orchestration and terminal-bundle handoff remain
 authority-separated: the planner authenticates completed settlement, each actor
 publishes only its own direction, and the handoff re-authenticates every remote
 publication before exposing terminal fields. Explicit decline and absence are
-non-fatal. A missing role from a Listing rate step with required:true is reported
-as a diagnostic but, as DACS-5 ST-5 requires, never blocks terminal
+non-fatal. A Listing rate step with required:true is reported through
+requiredAdvisoryMissingRoles but, as DACS-5 ST-5 requires, never blocks terminal
 bundle production or demotes completed commerce. The final handoff is stored in
 the existing generation-fenced session WAL, so restart recovery returns the
 same phase entry and refs and rejects any attempt to rebind them. An application
