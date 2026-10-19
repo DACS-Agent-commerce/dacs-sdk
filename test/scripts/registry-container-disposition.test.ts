@@ -527,7 +527,8 @@ describe("registry/container workflow wiring", () => {
       "scripts/registry-container-disposition.mjs", "scripts/runtime-image-inventory.mjs",
       "scripts/verify-registry-container-consumer.sh",
       "scripts/publish-exact-local-registry.mjs", "scripts/check-publish-environment.mjs", "package.json",
-      ".github/workflows/", ".github/CODEOWNERS"]) {
+      "scripts/publish-release-set.mjs", "scripts/verify-release-set.mjs", "scripts/check-npm-advisories.mjs",
+      "package-lock.json", ".github/workflows/", ".github/CODEOWNERS"]) {
       expect(owners).toContain(`/${path} @randomblocker`);
     }
     // A later, more specific pattern would replace the directory's owner.
