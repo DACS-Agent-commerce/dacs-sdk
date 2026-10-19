@@ -175,6 +175,7 @@ export {
 } from "./liquidityTankEvmFinality.js";
 export {
   runLiquidityTankStoreConformance,
+  certifyLiquidityTankStore,
   type LiquidityTankStoreConformanceOptions,
   type LiquidityTankStoreConformanceResult,
 } from "./liquidityTankStoreConformance.js";

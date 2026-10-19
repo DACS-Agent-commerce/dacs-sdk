@@ -26,6 +26,7 @@ import {
 import {
   assertLiquidityTankRecord,
   liquidityTankRecordTransitions as transitions,
+  markLiquidityTankStoreCertified,
   type LiquidityTankRecord,
   type LiquidityTankRecordTransition,
   type LiquidityTankStore,
@@ -44,6 +45,7 @@ const RECORD_FIELDS = new Set([
   "storeVersion",
   "intent",
   "lease",
+  "signingReservation",
   "submission",
   "submissionRecordedAt",
   "observation",
@@ -232,8 +234,8 @@ function unsupportedFilesystemOperation(error: unknown): boolean {
  * or world-writable, no symbolic link on the path, and not a network or sync
  * filesystem. A row that fails its checks reads as `corrupt`.
  *
- * The store passes `runLiquidityTankStoreConformance` in the SDK's tests and
- * declares `restartSafety: "conformance-tested"`. It serializes writers on one
+ * The store passes `runLiquidityTankStoreConformance` in the SDK's tests, so
+ * the SDK certifies every handle it returns for the core. It serializes writers on one
  * host only: several hosts sharing one network directory are not supported.
  */
 export async function createFsLiquidityTankStore(
@@ -738,10 +740,12 @@ export async function createFsLiquidityTankStore(
     });
   }
 
-  return {
-    restartSafety: "conformance-tested",
+  return markLiquidityTankStoreCertified({
     claim(input) {
       return transact(input.intent.settlementKey, (record) => transitions.claim(record, input), corrupt);
+    },
+    reserveSigning(input) {
+      return transact(input.settlementKey, (record) => transitions.reserveSigning(record, input), corrupt);
     },
     isCurrent(input) {
       return withLock(lockPath(input.settlementKey), async () => {
@@ -799,5 +803,5 @@ export async function createFsLiquidityTankStore(
     recordSettlement(input) {
       return transact(input.settlementKey, (record) => transitions.recordSettlement(record, input), corrupt);
     },
-  };
+  });
 }

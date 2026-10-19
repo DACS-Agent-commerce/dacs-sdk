@@ -217,11 +217,13 @@ export interface LiquidityTankEffectFence {
 /**
  * Native-bridge boundary. `prepareSubmission` must produce the complete signed
  * Demos transaction without broadcasting it; exact bytes are durable first.
- * It must not broadcast, log or otherwise reveal the signed bytes before
- * `recordSubmission` commits them: if the worker stops in between, the next
- * owner signs a fresh submission and the first bytes must never reach the
- * bridge. The core cannot enforce or detect this, so it is part of reviewing
- * any adapter. `preparedAt` is Unix milliseconds from a clock within one
+ * The core calls it at most once per phase: before the call it durably
+ * reserves the phase's one signing slot (`store.reserveSigning`), and a phase
+ * whose reservation was taken by an earlier lease but holds no recorded
+ * submission is never signed again (`liquidity-tank-signing-interrupted`). So
+ * a worker that stops after signing and before `recordSubmission` commits
+ * cannot lead to a second, different signature, whether or not the adapter
+ * revealed the first bytes. `preparedAt` is Unix milliseconds from a clock within one
  * minute of the host's; the core refuses a fresh submission stamped outside
  * that window. The core sets no timeout: every method must settle within its
  * own bounded deadline.
@@ -399,23 +401,31 @@ export type LiquidityTankStoreWrite =
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
 
 /**
- * What a store declares about surviving a restart. The core refuses, before
- * any claim, a store that declares neither value. The declaration is the
- * host's: the core checks only that it is one of these two strings, not that
- * the store is durable or passed conformance, so a volatile store declaring
- * `"conformance-tested"` runs end to end. Review it with the store.
- * - `"conformance-tested"`: durable and atomic, and passes every
- *   `runLiquidityTankStoreConformance` case against its real backend. The
- *   SDK's `createFsLiquidityTankStore` declares it; a host store declares it
- *   once it passes.
+ * The only restart-safety value a store may declare itself. A durable store is
+ * never trusted on its own word: the core runs only on a store the SDK has
+ * certified in this module (`createFsLiquidityTankStore`, or a host store that
+ * `certifyLiquidityTankStore` ran through every conformance case), and refuses
+ * any other before any claim as `liquidity-tank-store-uncertified`.
  * - `"volatile-acknowledged"`: loses every row on restart, and its caller has
  *   said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })`
  *   declares it. For tests and development only, never production: the core
  *   runs end to end on it, and a restart then signs a second bridge operation.
- *   With `NODE_ENV=production` the core refuses it before any claim, as
- *   `liquidity-tank-store-volatile-in-production`.
+ *   Unless `NODE_ENV` is exactly `development` or `test` the core refuses it
+ *   before any claim, as `liquidity-tank-store-volatile-in-production`.
  */
-export type LiquidityTankStoreRestartSafety = "conformance-tested" | "volatile-acknowledged";
+export type LiquidityTankStoreRestartSafety = "volatile-acknowledged";
+
+/** Stores the SDK certified in this module copy; see `certifyLiquidityTankStore`. */
+const CERTIFIED_STORES = new WeakSet<object>();
+
+/**
+ * Marks `store` as one the core may sign with. Internal to the SDK's own
+ * stores and its conformance runner: the package does not export it.
+ */
+export function markLiquidityTankStoreCertified<T extends LiquidityTankStore>(store: T): T {
+  CERTIFIED_STORES.add(store);
+  return store;
+}
 
 /**
  * Durable settlement state. Restart safety holds only for a store that keeps
@@ -428,10 +438,9 @@ export type LiquidityTankStoreRestartSafety = "conformance-tested" | "volatile-a
  */
 export interface LiquidityTankStore {
   /**
-   * Required by the core at run time, as a data property: without one of the
-   * two values it returns `indeterminate`
-   * `liquidity-tank-store-restart-safety-undeclared` before any claim. It is
-   * the host's declaration; the core cannot check it.
+   * Read only for a store the SDK has not certified: `"volatile-acknowledged"`
+   * lets a volatile store run in development and test. Any other uncertified
+   * store is refused before any claim.
    */
   readonly restartSafety?: LiquidityTankStoreRestartSafety;
   /**
@@ -453,6 +462,25 @@ export interface LiquidityTankStore {
     generation: number;
     now: number;
   }): Promise<boolean>;
+  /**
+   * Reserves the phase's one signing slot, durably, before the core asks the
+   * adapter to sign. Compare-and-set against the current lease at `now`: it
+   * records `{ owner, generation, reservedAt: now }` only on a row with no
+   * submission, no terminal outcome and no reservation, and answers
+   * `existing` for a reservation by this same owner and generation. A
+   * reservation by any other lease is permanent: answer `conflict`
+   * `liquidity-tank-signing-interrupted`, never a new reservation, because
+   * that lease may have signed (and revealed) bytes it never recorded. The
+   * reservation must survive restarts like every other field, and
+   * `recordSubmission` must refuse a first submission without a matching one.
+   */
+  reserveSigning(input: {
+    settlementKey: string;
+    bindingHash: string;
+    owner: string;
+    generation: number;
+    now: number;
+  }): Promise<LiquidityTankStoreWrite>;
   /**
    * The first recorded submission keeps this write's `now` as its
    * `submissionRecordedAt`, in the same atomic write. Every later acquired,
@@ -1956,22 +1984,38 @@ export async function advanceLiquidityTankSettlement(
   }
   // A store that loses a row after a broadcast makes the next owner sign and
   // broadcast a second operation, and the core cannot tell a lost row from a
-  // fresh phase. So it runs only on a store that declares how it survives a
-  // restart: the SDK's durable store, a host store that passed conformance,
-  // or the in-memory store whose caller acknowledged it is volatile.
-  let restartSafety: unknown;
+  // fresh phase. So it runs only on a store this SDK certified (its own
+  // durable store, or a host store `certifyLiquidityTankStore` ran through
+  // every conformance case), or, in development and test only, on the
+  // in-memory store whose caller acknowledged it is volatile. A declaration
+  // the store makes about itself never certifies it.
+  if (!CERTIFIED_STORES.has(store as object)) {
+    let restartSafety: unknown;
+    try {
+      restartSafety = stableDataProperty(store, "restartSafety", "store.restartSafety");
+    } catch {
+      restartSafety = undefined;
+    }
+    if (restartSafety !== "volatile-acknowledged") {
+      return { status: "indeterminate", reason: "liquidity-tank-store-uncertified" };
+    }
+    // Volatile storage requires an explicitly declared development/test mode;
+    // an absent, unknown or unreadable environment cannot authorize its use.
+    if (!allowsVolatileStore()) {
+      return { status: "indeterminate", reason: "liquidity-tank-store-volatile-in-production" };
+    }
+  }
+  // Bound here but required only to sign: a store without it can still finish
+  // a phase whose submission is already durable, and never signs one.
+  let reserveSigning: LiquidityTankStore["reserveSigning"] | undefined;
   try {
-    restartSafety = stableDataProperty(store, "restartSafety", "store.restartSafety");
+    reserveSigning = stableBoundMethod<LiquidityTankStore["reserveSigning"]>(
+      store,
+      "reserveSigning",
+      "store.reserveSigning",
+    );
   } catch {
-    restartSafety = undefined;
-  }
-  if (restartSafety !== "conformance-tested" && restartSafety !== "volatile-acknowledged") {
-    return { status: "indeterminate", reason: "liquidity-tank-store-restart-safety-undeclared" };
-  }
-  // Volatile storage requires an explicitly declared development/test mode;
-  // an absent, unknown or unreadable environment cannot authorize its use.
-  if (restartSafety === "volatile-acknowledged" && !allowsVolatileStore()) {
-    return { status: "indeterminate", reason: "liquidity-tank-store-volatile-in-production" };
+    reserveSigning = undefined;
   }
   // Without the host's checks the core cannot tell a forged observation or a
   // submission signing another amount from a genuine one, so it refuses
@@ -2250,6 +2294,37 @@ export async function advanceLiquidityTankSettlement(
     }
     if (retainedAnswer === "unavailable") verifierOutage = true;
   } else {
+    // Reserve-then-sign: the phase's one signing slot is durable before any
+    // signature exists. A reservation another lease holds means that lease
+    // may have signed, and even revealed, bytes it never recorded, so this
+    // phase is never signed again; an operator resolves it from the bridge.
+    // Nothing below releases a reservation: once taken, any path that does not
+    // record a submission (a preparation throw, refused bytes, a lost lease, a
+    // crash) leaves the phase parked rather than risk a second signature.
+    if (reserveSigning === undefined) {
+      return { status: "indeterminate", reason: "liquidity-tank-store-signing-reservation-unavailable" };
+    }
+    let reserved: unknown;
+    try {
+      await fence.assertCurrent();
+      reserved = await reserveSigning({
+        settlementKey: intent.settlementKey,
+        bindingHash: intent.bindingHash,
+        owner: fence.owner,
+        generation: fence.generation,
+        now: readNow(),
+      });
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-signing-reservation-uncertain" };
+    }
+    if (!successfulStoreWrite(reserved)) {
+      const interrupted = reserved !== null && typeof reserved === "object" && !isProxy(reserved) &&
+        getOwnPropertyDescriptor(reserved, "reason")?.value === "liquidity-tank-signing-interrupted";
+      return {
+        status: "indeterminate",
+        reason: interrupted ? "liquidity-tank-signing-interrupted" : "liquidity-tank-signing-reservation-refused",
+      };
+    }
     try {
       await fence.assertCurrent();
       submission = validateSubmission(await prepareSubmission(intent, fence), intent);
@@ -2678,9 +2753,17 @@ export async function advanceLiquidityTankSettlement(
  * One phase's row as the SDK's stores keep it. The in-memory and filesystem
  * stores apply the same transitions to it, so they compare the same fields.
  */
+export interface LiquidityTankSigningReservation {
+  owner: string;
+  generation: number;
+  reservedAt: number;
+}
+
 export interface LiquidityTankRecord {
   intent: Readonly<LiquidityTankIntent>;
   lease: Readonly<LiquidityTankLease>;
+  /** The lease that took the phase's one signing slot; see `reserveSigning`. */
+  signingReservation?: Readonly<LiquidityTankSigningReservation>;
   submission?: Readonly<LiquidityTankPreparedSubmission>;
   submissionRecordedAt?: number;
   observation?: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
@@ -2803,6 +2886,37 @@ function isCurrentTransition(
     !record.settlement && !record.recoveryExpired;
 }
 
+function reserveSigningTransition(
+  record: LiquidityTankRecord | undefined,
+  input: StoreInput<"reserveSigning">,
+): LiquidityTankRecordTransition<LiquidityTankStoreWrite> {
+  if (!currentLease(record, input)) return { result: { status: "stale", reason: "stale-lease" } };
+  if (leaseExpired(record, input.now)) return { result: { status: "stale", reason: "expired-lease" } };
+  if (record.settlement || record.recoveryExpired) {
+    return { result: { status: "conflict", reason: "liquidity-tank-submission-after-terminal" } };
+  }
+  if (record.submission) {
+    return { result: { status: "conflict", reason: "liquidity-tank-submission-already-recorded" } };
+  }
+  const reserved = record.signingReservation;
+  if (reserved) {
+    return reserved.owner === input.owner && reserved.generation === input.generation
+      ? { result: { status: "existing" } }
+      : { result: { status: "conflict", reason: "liquidity-tank-signing-interrupted" } };
+  }
+  return {
+    result: { status: "recorded" },
+    next: {
+      ...record,
+      signingReservation: Object.freeze({
+        owner: input.owner,
+        generation: input.generation,
+        reservedAt: requireUInt(input.now, "reservation now"),
+      }),
+    },
+  };
+}
+
 /** `bridgeOwner` is the settlement key that already holds the submission's bridge ID, if any. */
 function recordSubmissionTransition(
   record: LiquidityTankRecord | undefined,
@@ -2821,6 +2935,14 @@ function recordSubmissionTransition(
     return record.submission.submissionHash === input.submission.submissionHash
       ? { result: { status: "existing" } }
       : { result: { status: "conflict", reason: "liquidity-tank-submission-replacement-forbidden" } };
+  }
+  // Only the lease that reserved the signing slot may record the first bytes.
+  const reserved = record.signingReservation;
+  if (!reserved) {
+    return { result: { status: "conflict", reason: "liquidity-tank-signing-unreserved" } };
+  }
+  if (reserved.owner !== input.owner || reserved.generation !== input.generation) {
+    return { result: { status: "conflict", reason: "liquidity-tank-signing-interrupted" } };
   }
   return {
     result: { status: "recorded" },
@@ -3035,6 +3157,7 @@ function recordSettlementTransition(
 export const liquidityTankRecordTransitions = Object.freeze({
   claim: claimTransition,
   isCurrent: isCurrentTransition,
+  reserveSigning: reserveSigningTransition,
   recordSubmission: recordSubmissionTransition,
   recordObservation: recordObservationTransition,
   recordRecoveryFailure: recordRecoveryFailureTransition,
@@ -3059,6 +3182,18 @@ export function assertLiquidityTankRecord(record: LiquidityTankRecord, settlemen
   requireString(lease.owner, "stored lease owner");
   requireUInt(lease.generation, "stored lease generation", true);
   requireUInt(lease.expiresAt, "stored lease expiresAt");
+  // A reservation without a submission is a legal row (a signing window that
+  // never recorded); a submission without one is a row from before
+  // reservations existed, and stays readable.
+  if (record.signingReservation !== undefined) {
+    const reserved = withoutPrototype(record.signingReservation);
+    requireString(reserved.owner, "stored reservation owner");
+    requireUInt(reserved.generation, "stored reservation generation", true);
+    requireUInt(reserved.reservedAt, "stored reservation reservedAt");
+    if (reserved.generation > lease.generation) {
+      throw new DacsError("pay-cross-chain-liquidity-tank: stored reservation is ahead of the lease");
+    }
+  }
   if ((record.submission === undefined) !== (record.submissionRecordedAt === undefined)) {
     throw new DacsError("pay-cross-chain-liquidity-tank: stored submission receipt mismatch");
   }
@@ -3147,6 +3282,9 @@ export function createInMemoryLiquidityTankStore(
     },
     async isCurrent(input) {
       return isCurrentTransition(records.get(input.settlementKey), input);
+    },
+    async reserveSigning(input) {
+      return commit(input.settlementKey, reserveSigningTransition(records.get(input.settlementKey), input));
     },
     async recordSubmission(input) {
       const transition = recordSubmissionTransition(
