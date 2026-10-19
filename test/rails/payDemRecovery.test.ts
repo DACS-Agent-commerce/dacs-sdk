@@ -19,16 +19,23 @@ const request = (priorAttempts: readonly SettlementRecoveryAttempt[] = [prior()]
   rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "retained-native",
   amount: "1", asset: "DEM", payee: payeeClaim, expectedPayee: payeeClaim, priorAttempts,
 });
+// The prepared-transfer journal entry the rail wrote for this job's transfer.
+const journal = (network = "demos") => ({
+  txHash, nonce: 9, payer, payee, amountOs: "1000000000", denomination: "os" as const, network,
+  recovery: { railId: "pay-dem", jobId: "retained-native", phaseIndex: 0,
+    settlementKey: "pay-dem:retained-native:0", network, payer, payee, amountOs: "1000000000" },
+});
 const executed = () => ({
   ok: true as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
   blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
-  networkFeeOs: "0", execution: "executed" as const,
+  networkFeeOs: "0", execution: "executed" as const, preparedTransfer: journal(),
 });
 const failed = () => ({
   ok: false as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
   blockNumber: 42, txRefKind: "demos", errorClass: "permanent" as const,
   failureProof: { kind: "demos-failed-record" as const, txHash, payer, payee,
     nonce: 9, blockNumber: 42, amountOs: "1000000000" },
+  preparedTransfer: journal(),
 });
 
 function fixture(reconcile?: PayDemSettlementReconcile) {
@@ -74,10 +81,15 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
   );
 
   test.each([true, false])("requires a reconciler for retained ok=%s before touching the log", async (ok) => {
-    const f = fixture();
-    await expect(f.settle(request([prior(ok)]))).rejects.toThrow(/requires read-only reconciliation/);
-    expect(f.once).not.toHaveBeenCalled();
-    expect(f.submit).not.toHaveBeenCalled();
+    const store = createIdempotencyStore();
+    const once = vi.spyOn(store, "once");
+    const readOutcome = vi.spyOn(store, "readOutcome");
+    const submit = vi.fn();
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store });
+    await expect(settle(request([prior(ok)]))).rejects.toThrow(/requires read-only reconciliation/);
+    expect(readOutcome).not.toHaveBeenCalled();
+    expect(once).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
   });
 
   test("audits the canonical hash on a configured network at the history limit", async () => {
@@ -85,7 +97,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     const f = fixture();
     const reconcile = vi.fn(async (context: ReconcileContext) => {
       expect(context).toMatchObject({ txHash, network });
-      return { ...executed(), chainId: network };
+      return { ...executed(), chainId: network, preparedTransfer: journal(network) };
     });
     const settle = payDemSettle({ address: payer, settle: f.submit }, { network },
       { store: { once: f.once, readOutcome: async () => null }, reconcile });
@@ -99,8 +111,11 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
 
   const bindsTuple = /does not bind the exact pay-dem network, payer, and payee/;
   test.each([
-    ["missing journal", undefined], ["conflicting journal hash", undefined],
-    ["conflicting journal nonce", undefined], ["timeout", undefined],
+    ["missing journal", /must return the prepared-transfer journal entry/],
+    ["conflicting journal hash", /journal does not bind the retained transaction/],
+    ["conflicting journal tuple", /journal does not bind the retained transaction/],
+    ["conflicting journal nonce", /does not match the journaled signed nonce/],
+    ["unreadable journal", undefined], ["timeout", undefined],
     ["absence", /contradicts reconciliation proof of absence/],
     ["wrong hash", /does not match the retained transaction/],
     ["wrong network", bindsTuple], ["wrong payer", bindsTuple], ["wrong payee", bindsTuple],
@@ -114,7 +129,19 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     const reconcile = vi.fn(async (context: PayDemSettlementAuditContext) => {
       // The application's journal is authoritative for the original signed
       // nonce. A lost/contradictory journal cannot be reconstructed from inclusion.
-      if (reply.includes("journal") || reply === "timeout") throw originalCause;
+      if (reply === "unreadable journal" || reply === "timeout") throw originalCause;
+      if (reply === "missing journal") {
+        const { preparedTransfer: _journal, ...unjournaled } = executed();
+        return unjournaled;
+      }
+      if (reply === "conflicting journal hash") {
+        return { ...executed(), preparedTransfer: { ...journal(), txHash: "34".repeat(32) } };
+      }
+      if (reply === "conflicting journal tuple") {
+        return { ...executed(), preparedTransfer: { ...journal(),
+          recovery: { ...journal().recovery, jobId: "other-job", settlementKey: "pay-dem:other-job:0" } } };
+      }
+      if (reply === "conflicting journal nonce") return { ...failed(), preparedTransfer: { ...journal(), nonce: 8 } };
       if (reply === "absence") return null;
       if (reply === "malformed") return undefined;
       if (reply === "indeterminate") {
@@ -212,7 +239,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
 
   test("an in-process authenticated success is rechecked by a later audit but never demoted", async () => {
     const submit = vi.fn(async () => {
-      const { amountOs: _amount, ...result } = executed();
+      const { amountOs: _amount, preparedTransfer: _journal, ...result } = executed();
       return result;
     });
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
@@ -243,7 +270,7 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     phase: "pay-dem", amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM",
     payer, payee, network: "demos", finality: { model: "bft-final" },
   };
-  const { amountOs: _amount, execution: _execution, ...storedSuccess } = executed();
+  const { amountOs: _amount, execution: _execution, preparedTransfer: _journal, ...storedSuccess } = executed();
   const demoted = /contradicted an authenticated successful outcome/;
 
   test("refuses a failed reconciliation of a session-recorded success, even after history is omitted", async () => {
@@ -259,6 +286,18 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     // A prior non-success may still become a success after finality.
     reconcile.mockImplementation(async () => executed());
     await expect(f.settle(request([prior(false)]))).resolves.toMatchObject({ ok: true, txHash });
+  });
+
+  test("a success an earlier audit authenticated is never demoted by a later audit", async () => {
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed());
+    const f = fixture(reconcile);
+    await expect(f.settle(request([prior(false)]))).resolves.toMatchObject({ ok: true, txHash });
+    // The session still holds only the earlier non-success; the chain reader now disagrees.
+    reconcile.mockImplementation(async () => failed());
+    await expect(f.settle(request([prior(false)]))).rejects.toThrow(demoted);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(f.once).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
   });
 
   test.each([false, true])("keeps a durable success on restart (history=%s)", async (withHistory) => {

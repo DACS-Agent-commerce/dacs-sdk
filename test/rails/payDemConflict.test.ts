@@ -13,13 +13,19 @@ const request: SettleRequest = {
   rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "conflicting-native",
   amount: "1", asset: "DEM", payee: claim, expectedPayee: claim,
 };
+// The prepared-transfer journal entry the rail wrote for this job's transfer.
+const journal = (txHash: string, nonce = 9) => ({
+  txHash, nonce, payer, payee, amountOs: "1000000000", denomination: "os" as const, network: "demos",
+  recovery: { railId: "pay-dem", jobId: request.jobId, phaseIndex: 0,
+    settlementKey: "pay-dem:conflicting-native:0", network: "demos", payer, payee, amountOs: "1000000000" },
+});
 const executed = (txHash = hashA) => ({
   ok: true as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
   blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
-  execution: "executed" as const,
+  execution: "executed" as const, preparedTransfer: journal(txHash),
 });
 const freshSuccess = () => {
-  const { amountOs: _amount, ...result } = executed();
+  const { amountOs: _amount, preparedTransfer: _journal, ...result } = executed();
   return result;
 };
 const failed = (txHash = hashB) => ({
@@ -27,6 +33,7 @@ const failed = (txHash = hashB) => ({
   blockNumber: 42, txRefKind: "demos", errorClass: "permanent" as const,
   failureProof: { kind: "demos-failed-record" as const, txHash, payer, payee,
     nonce: 9, blockNumber: 42, amountOs: "1000000000" },
+  preparedTransfer: journal(txHash),
 });
 
 const history = (txHash = hashB, ok = true): SettleRequest => ({
@@ -38,7 +45,7 @@ const binding: SettlementBinding = {
   payer, payee, network: "demos", finality: { model: "bft-final" },
 };
 const stored = (value: ReturnType<typeof executed> | ReturnType<typeof failed>) => {
-  const { amountOs: _amount, ...result } = value;
+  const { amountOs: _amount, preparedTransfer: _journal, ...result } = value;
   const { execution: _execution, ...outcome } = result as ReturnType<typeof executed>;
   return outcome as SettleResult;
 };
@@ -52,7 +59,7 @@ describe("pay-dem cross-store transaction identity", () => {
     async ({ restart, bExecuted }) => {
       const log = createInMemorySettlementLog();
       const submit = vi.fn(async () => {
-        const { amountOs: _amount, ...result } = executed();
+        const { amountOs: _amount, preparedTransfer: _journal, ...result } = executed();
         return result;
       });
       const reconcile = vi.fn(async () => bExecuted ? executed(hashB) : failed());
@@ -61,15 +68,14 @@ describe("pay-dem cross-store transaction identity", () => {
       const settle = payDemSettle(rail, {}, { store, reconcile });
       await expect(settle(request)).resolves.toMatchObject({ ok: true, txHash: hashA });
       const audit = restart ? payDemSettle(rail, {}, { store: createIdempotencyStore(log), reconcile }) : settle;
-      let result: SettleResult | undefined;
-      try {
-        result = await audit({ ...request, priorAttempts: [{ txHash: hashB, chainId: "demos", ok: true }] });
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toMatch(/conflict|does not match/);
-      }
-      if (result !== undefined) expect(result.txHash).toBe(hashA);
+      // The bridge's authenticated A, or the rail log's A after a restart,
+      // refuses history B before any chain read.
+      await expect(audit({ ...request, priorAttempts: [{ txHash: hashB, chainId: "demos", ok: true }] }))
+        .rejects.toThrow(/retained transaction conflicts with the rail outcome/);
+      expect(reconcile).not.toHaveBeenCalled();
       expect(submit).toHaveBeenCalledTimes(1);
+      await expect(createIdempotencyStore(log).readOutcome!("pay-dem:conflicting-native:0", binding))
+        .resolves.toMatchObject({ ok: true, txHash: hashA });
     },
   );
 });
@@ -85,7 +91,7 @@ describe("pay-dem retained identity conflict quarantine", () => {
       const store = createIdempotencyStore(log);
       const submit = vi.fn<PayDemRail["settle"]>(async () => {
         if (paid) return freshSuccess();
-        const { amountOs: _amount, ...result } = failed(hashA);
+        const { amountOs: _amount, preparedTransfer: _journal, ...result } = failed(hashA);
         return result;
       });
       const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
@@ -139,11 +145,31 @@ describe("pay-dem retained identity conflict quarantine", () => {
     const reply = change === "success" ? executed() : {
       ...failed(hashA), ...(change === "block" ? { blockNumber: 43 } : {}),
       failureProof: { ...failed(hashA).failureProof, ...(change === "block" ? { blockNumber: 43 } : { nonce: 10 }) },
+      // A journal that agrees with the reply: the conflict is with the stored proof.
+      ...(change === "nonce" ? { preparedTransfer: journal(hashA, 10) } : {}),
     };
     const submit = vi.fn();
     const reconcile = vi.fn(async () => reply);
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
     await expect(settle(history(hashA, false))).rejects.toThrow(message);
+    expect(putOutcome).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  test.each([true, false])("keeps a stored permanent failure that reconciliation presents with other fee fields (history=%s)", async (withHistory) => {
+    const log = createInMemorySettlementLog();
+    const store = createIdempotencyStore(log);
+    await store.once("pay-dem:conflicting-native:0", binding, async () => stored(failed(hashA)));
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const submit = vi.fn();
+    // Same transaction, block and proof; the reconciler also reports the fee.
+    const reply = { ...failed(hashA), networkFeeOs: "5" };
+    const reconcile = vi.fn(async () => reply);
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    await expect(settle(withHistory ? history(hashA, false) : request)).resolves.toMatchObject({
+      ok: false, errorClass: "permanent", txHash: hashA, failureProof: failed(hashA).failureProof,
+    });
+    expect(reconcile).toHaveBeenCalledTimes(1);
     expect(putOutcome).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });
@@ -192,6 +218,25 @@ describe("pay-dem retained identity conflict quarantine", () => {
     expect(reconcile).not.toHaveBeenCalled();
     expect(once).toHaveBeenCalledTimes(1);
     expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  test("keeps a success another bridge records for the retained hash during the audit", async () => {
+    const log = createInMemorySettlementLog();
+    const store = createIdempotencyStore(log);
+    const once = vi.spyOn(store, "once");
+    const submit = vi.fn();
+    const reconcile = vi.fn(async () => {
+      // Another process records A executed while this audit's chain read says failed.
+      await createIdempotencyStore(log).once("pay-dem:conflicting-native:0", binding, async () => stored(executed()));
+      return failed(hashA);
+    });
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    await expect(settle(history(hashA, false))).rejects.toThrow(/contradicted an authenticated successful outcome/);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(once).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    await expect(store.readOutcome!("pay-dem:conflicting-native:0", binding))
+      .resolves.toMatchObject({ txHash: hashA, ok: true });
   });
 
   test("rechecks the rail log when another bridge finishes during the audit", async () => {
