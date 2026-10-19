@@ -448,7 +448,8 @@ describe("DemosAdapter", () => {
     const real: Pick<DemosRawClient, "getNetworkInfo" | "getAddressInfo"> =
       {} as Pick<Demos, "getNetworkInfo" | "getAddressInfo">;
     void real;
-    // Interfaces shaped like 4.0.18's, with no index signature, so this
+    // Subsets of 4.0.18's interfaces (AddressInfo omits assignedTxs and
+    // identities), with no index signature like the originals, so this
     // assignment is checked even while the installed SDK types are `any`.
     interface StubForkStatus {
       activationHeight: number | null;
