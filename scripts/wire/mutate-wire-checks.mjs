@@ -116,6 +116,12 @@ const MUTANTS = [
   M("response status binding", "wire/response.ts", "status !== received.status ||", "", ["response/wrong-status"]),
   M("response body binding", "wire/response.ts", "bodyHash !== sha256Hex(responseBytes) || ", "", ["response/wrong-body"]),
   M("response principal", "wire/envelope.ts", 'if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");', "", ["response/signer-not-seller"]),
+  // No delegation authenticates a seller answer. Without the exact member check, the delegated answer reaches the
+  // seller-key signature check instead; without the kind conjunct, a verifier given requireDelegation accepts the
+  // buyer-delegated session key as the seller's.
+  M("exact response envelope members", "wire/envelope.ts", 'if (!hasKeys(envelope, ["payload", "signature", ...(delegated ? ["delegation"] : [])])) fail("peer_envelope_invalid");', 'if (!isRecord(envelope)) fail("peer_envelope_invalid");', ["response/delegated-session-signed"]),
+  M("response never delegated (open)", "wire/envelope.ts", 'const delegated = kind === "request" && requireDelegation', "const delegated = requireDelegation", ["response/delegated-session-signed-delegation-required"]),
+  M("response carries no delegation (signer)", "wire/envelope.ts", '  if (delegation !== null && payload.kind !== "request") fail("peer_envelope_invalid", 500);\n', "", ["signing/envelope-response-delegation"]),
   M("response identity binding", "wire/response.ts", "!sameCanonical(identity, expected) || ", "", ["response/identity-mismatch"]),
   M("response request-hash binding", "wire/response.ts", "requestHash !== expectedRequestHash || ", "", ["response/request-hash-mismatch"]),
   M("response expiry", "wire/response.ts", "expiresAt <= received.now ||", "", ["response/expired"]),

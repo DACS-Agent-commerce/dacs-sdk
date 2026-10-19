@@ -116,6 +116,8 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
   if (purchaseProfile !== null || payload.kind !== "response") assertPurchaseProfile(purchaseProfile, binding, 500);
   const delegation = suppliedDelegation ? ownedArtifact(suppliedDelegation, "peer_delegation_invalid", 500) : null;
+  // Only a request carries a delegation; every receiver refuses a response header that has one.
+  if (delegation !== null && payload.kind !== "request") fail("peer_envelope_invalid", 500);
   assertPeerProfile(payload.profile, binding, 500);
   const signingBytes = wireEnvelopeSigningBytes(payload as unknown as WirePayload);
   // A canonical Ed25519 signature is always 86 base64url characters. Bound
@@ -160,7 +162,10 @@ export interface OpenEnvelopeOptions {
   purchaseProfile: Tp1WireProfile | null;
   /** Required signer of a response (the seller); a request is signed by its buyer or delegated session key. */
   principal?: string;
-  /** Seller-side: a request must carry a delegation, and one is read only then. */
+  /**
+   * Seller-side: a request must carry a delegation, and one is read only then.
+   * A response never carries one: with this set, a response is refused.
+   */
   requireDelegation?: boolean;
 }
 

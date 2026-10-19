@@ -13,7 +13,7 @@ it.each([true, false])("validates every named source target and vector without a
     const script = fileURLToPath(new URL("../../scripts/wire/mutate-wire-checks.mjs", import.meta.url));
     const run = spawnSync(process.execPath, [script, ...(first ? ["--check", "--scratch", scratch] : ["--scratch", scratch, "--check"])], { encoding: "utf8", timeout: 10_000 });
     expect(run.status, run.stderr).toBe(0);
-    expect(run.stdout).toBe("97 named checks have current source targets and vectors; no mutations applied\n");
+    expect(run.stdout).toBe("100 named checks have current source targets and vectors; no mutations applied\n");
     expect(readFileSync(sentinel, "utf8")).toBe("retained scratch contents");
     expect(existsSync(join(scratch, "src"))).toBe(false);
     expect(existsSync(join(scratch, "vitest.json"))).toBe(false);

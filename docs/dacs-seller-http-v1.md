@@ -137,6 +137,11 @@ included) and `status` (the HTTP status, 200-599). The seller signs every
 answer, refusals included, with its Listing key; the buyer verifies it against
 the seller claim of the verified Listing and requires every request field,
 the profile among them, to be echoed exactly.
+No delegation ever authenticates or accompanies an answer. A response header
+with a `delegation` member is refused (`peer_envelope_invalid`), including
+when `openWireEnvelope` is called with `requireDelegation`; a response never
+meets that requirement (`peer_delegation_required`). `signWireEnvelope` also
+refuses an answer given a delegation, before its signer is called.
 
 Request signers: the buyer key directly, or a session key the buyer's wallet
 delegated (below). The seller additionally binds the request to the HTTP
@@ -537,7 +542,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 
 ## Vectors, fixtures and checks
 
-- `vectors/dacs-seller-http-v1.json` (186 vectors, from
+- `vectors/dacs-seller-http-v1.json` (189 vectors, from
   `scripts/wire/generate-wire-vectors.mjs`): valid and invalid envelopes,
   expired and wrong-scope delegations, wrong domain, wrong and missing profile,
   the profile tuple (a correctly signed message, request, response, delegation
@@ -551,7 +556,10 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
   envelope signer, where `null` signs an answer to a new purchase but no
   request; and the exact tuple, kept and for a new purchase),
   mismatched endpoint proof, response binding (principal, identity, request
-  hash, status, body, expiry, lifetime), the request's method and path
+  hash, status, body, expiry, lifetime), an answer signed by a
+  buyer-delegated session key and carrying its delegation (at the buyer, and
+  at `openWireEnvelope` with `requireDelegation`), an answer given a
+  delegation at the generic signer, the request's method and path
   binding, a required delegation missing at the seller's opening only or at
   its check only, the delegation's buyer, seller, Listing and job scope (including a
   delegation another wallet signed under a request naming the buyer), the
@@ -584,7 +592,7 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
   Each negative names the check that refuses it, and
   `test/wire/vectors.test.ts` checks that each received revision vector is
   correctly signed by its party, so only the profile gate can refuse it.
-  `scripts/wire/mutate-wire-checks.mjs` defines 97 named-check replay plans.
+  `scripts/wire/mutate-wire-checks.mjs` defines 100 named-check replay plans.
   Its `--check` mode verifies all source targets and vector IDs without
   applying mutations or running tests. Request producer fixtures use the
   selected `DACS_WIRE_IMPL` for signing, discovery and proof verification.

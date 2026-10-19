@@ -14,8 +14,8 @@ import { describe, expect, it, vi } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import {
   checkWireRequest, DACS_SELLER_HTTP_DOMAINS, openWireEnvelope, signDiscoveryDocument,
-  signSellerSessionDelegation, signWireResponse, TP1_CAPABILITIES, verifyEndpointProof,
-  verifySellerSessionDelegation, verifyWireResponse, WireError, type DiscoveryPayload, type WireSigner,
+  signSellerSessionDelegation, signWireEnvelope, signWireResponse, TP1_CAPABILITIES, verifyEndpointProof,
+  verifySellerSessionDelegation, verifyWireResponse, WireError, type DiscoveryPayload, type WireResponsePayload, type WireSigner,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
 // test list (./testApproval.ts); no shipped module takes an approval list.
@@ -206,6 +206,54 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
       expect(await code(() => signWireResponse(good, 200, text, { signer: sellerCounting, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile }))).toBe("outgoing_body_rejected");
     }
     expect(counting.calls + sellerCounting.calls).toBe(0);
+  });
+
+  it("no delegation authenticates or accompanies a seller answer, at any entry point", async () => {
+    const w = world();
+    const text = `{"jobId":"${JOB}"}`;
+    const answer = '{"paid":true}';
+    const { payload: request } = await signWireRequest({ signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/payments", jobId: JOB, text, seller: w.seller.claim, job: { listingPin: PIN, agreementHash: AGREEMENT, profile: w.buyerBinding.profile }, now: NOW });
+    const delegation = await signSellerSessionDelegation({
+      version: "1", kind: "seller-session-delegation", buyer: w.buyer.claim, sessionPublicKey: w.session.raw, seller: w.seller.claim,
+      listingPin: PIN, jobId: JOB, notBefore: NOW - 1000, expiresAt: NOW + 3_600_000, profile: w.buyerBinding.profile,
+    }, w.buyer, w.buyerBinding, RPC_A);
+    const response = { ...request, kind: "response", bodyHash: sha(answer), expiresAt: NOW + 30_000, requestHash: sha(canonicalize(request)), status: 200 };
+    const headerOf = (signer: WireSigner, extra: object = {}) => Buffer.from(canonicalize({ payload: response,
+      signature: Buffer.from(signer.sign(Buffer.from(`${DACS_SELLER_HTTP_DOMAINS.response}${canonicalize(response)}`)) as Uint8Array).toString("base64url"), ...extra })).toString("base64url");
+    // The buyer's session key signs the answer and the buyer's valid delegation of that key rides along.
+    const forged = headerOf(w.session, { delegation });
+    const received = { status: 200, body: Buffer.from(answer), now: NOW, binding: w.buyerBinding, local: RPC_A };
+    const openAsResponse = (header: string, options: object) => openWireEnvelope(header, "response", { binding: w.buyerBinding, local: RPC_A, purchaseProfile: request.profile, principal: request.seller, ...options });
+    let receipts = 0;
+    expect(await code(() => { verifyWireResponse(request, { ...received, header: forged }); receipts += 1; })).toBe("peer_envelope_invalid");
+    // A host opening the answer with the exported verifier and requireDelegation set: the delegation is not read.
+    expect(await code(() => { openAsResponse(forged, { requireDelegation: true }); receipts += 1; })).toBe("peer_envelope_invalid");
+    expect(await code(() => { openAsResponse(forged, { requireDelegation: false }); receipts += 1; })).toBe("peer_envelope_invalid");
+    // The session-signed answer without the delegation is not the seller's.
+    expect(await code(() => { verifyWireResponse(request, { ...received, header: headerOf(w.session) }); receipts += 1; })).toBe("peer_signature_invalid");
+    // The seller's own answer never meets a delegation requirement, and is opened only under the tuple the request names.
+    const genuine = headerOf(w.seller);
+    expect(await code(() => { openAsResponse(genuine, { requireDelegation: true }); receipts += 1; })).toBe("peer_delegation_required");
+    expect(await code(() => { openAsResponse(genuine, { purchaseProfile: null }); receipts += 1; })).toBe("tp1_purchase_profile_mismatch");
+    expect(receipts).toBe(0);
+    // Controls: the seller's own answer opens and verifies.
+    expect(openAsResponse(genuine, {}).payload.seller).toBe(w.seller.claim);
+    expect(verifyWireResponse(request, { ...received, header: genuine }).principal).toBe(w.seller.claim);
+
+    // checkWireRequest takes only an opened request: an answer the seller opened under the same binding is refused
+    // before the exchange is compared or a reservation is made.
+    const sellerOpened = openWireEnvelope(genuine, "response", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, principal: w.seller.claim });
+    const reserve = vi.fn(() => true);
+    expect(await code(() => checkWireRequest(sellerOpened as unknown as Parameters<typeof checkWireRequest>[0], { reserveRequest: reserve, seller: w.seller.claim, listingPin: PIN, method: "POST", path: response.path, rawBody: Buffer.from(answer), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }))).toBe("peer_request_unverified");
+    expect(reserve).not.toHaveBeenCalled();
+
+    // The generic signer refuses an answer with a delegation before its signer is called; without one it signs.
+    const sellerCounting = { claim: w.seller.claim, calls: 0, sign(b: Uint8Array) { sellerCounting.calls += 1; return w.seller.sign(b); } };
+    const context = { signer: sellerCounting, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile };
+    expect(await code(() => signWireEnvelope(response as WireResponsePayload, context, delegation))).toBe("peer_envelope_invalid");
+    expect(sellerCounting.calls).toBe(0);
+    expect(await code(() => signWireEnvelope(response as WireResponsePayload, context))).toBe("ok");
+    expect(sellerCounting.calls).toBe(1);
   });
 
   it("a lifetime override above 60 s is refused before any check passes or any signature is made", async () => {

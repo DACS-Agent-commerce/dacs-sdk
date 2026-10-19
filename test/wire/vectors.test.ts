@@ -143,7 +143,7 @@ async function produce(input: Record<string, any>): Promise<void> {
       const binding = bind(local);
       const discovery = file.vectors.find((v: Vector) => v.id === "discovery/valid").input;
       const endpointProof = wire.verifyEndpointProof(b(discovery.document), { readListingEligibility: readFixtureListingEligibility, listing: discovery.listing, binding, local, now: file.now });
-      await wire.signWireEnvelope(subject({ ...input.payload }), { signer, binding, local, ...kept(input, "purchaseProfile"), endpointProof, publicEndpoint: discovery.listing.publicEndpoint, now: file.now } as unknown as WireModule.EnvelopeSigningContext);
+      await wire.signWireEnvelope(subject({ ...input.payload }), { signer, binding, local, ...kept(input, "purchaseProfile"), endpointProof, publicEndpoint: discovery.listing.publicEndpoint, now: file.now } as unknown as WireModule.EnvelopeSigningContext, input.delegation);
     } else if (input.producer === "delegation") {
       const local = file.localBindings.buyer;
       await wire.signSellerSessionDelegation(subject({ ...input.payload, buyer: signer.claim }), signer, bind(local), local);
@@ -196,6 +196,11 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
       });
       return { ok: true };
     case "response":
+      // requireDelegation: the answer is opened as a host calling the exported verifier with that flag would.
+      if (input.requireDelegation) {
+        wire.openWireEnvelope(input.header, "response", { ...verifier(input, file.localBindings.buyer), purchaseProfile: input.request.profile, principal: input.request.seller, requireDelegation: true });
+        return { ok: true };
+      }
       wire.verifyWireResponse(input.request, { header: input.header, status: input.status, body: b(input.body), now: file.now, ...verifier(input, file.localBindings.buyer) });
       return { ok: true };
     case "discovery":
@@ -316,6 +321,9 @@ describe("dacs-seller-http/v1 vectors", () => {
       "request/open-delegation-required", "request/check-delegation-required",
       "signing/response-purchase-profile-missing", "signing/response-purchase-profile-other-revision", "signing/response-new-purchase",
       "signing/envelope-purchase-profile-missing", "signing/envelope-purchase-profile-other-revision", "signing/envelope-request-purchase-profile-none",
+      // No delegation authenticates or accompanies a seller answer: at the buyer, at the exported verifier with
+      // requireDelegation set, and at the generic signer.
+      "response/delegated-session-signed", "response/delegated-session-signed-delegation-required", "signing/envelope-response-delegation",
     ]) expect(ids).toContain(required);
   });
 

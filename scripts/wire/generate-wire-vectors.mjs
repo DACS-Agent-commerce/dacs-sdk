@@ -66,6 +66,9 @@ const delegation = del(delegationPayload);
 const delegated = { ...request, nonce: Buffer.from(NONCE, "base64url").reverse().toString("base64url") };
 const response = { ...request, kind: "response", bodyHash: sha256Hex(RESPONSE_TEXT), expiresAt: NOW + 60_000, requestHash: sha256Hex(canonicalize(request)), status: 200 };
 const resp = (p, { signer = seller.signer, domain = D.response } = {}) => headerOf({ payload: p, signature: signedText(domain, p, signer) });
+// A seller answer signed by the buyer-delegated session key and carrying the buyer's valid delegation of that key:
+// the seller signs every answer with its own key, so no delegation ever authenticates a response.
+const delegatedResponse = headerOf({ payload: response, signature: signedText(D.response, response, session.signer), delegation });
 
 // Raw-input (CF-5) header cases: correctly signed, refused only by admission.
 const envelopeText = (p) => JSON.stringify({ payload: p, signature: signedText(D.request, p, buyer.signer) });
@@ -259,6 +262,10 @@ const vectors = [
   S("response/wrong-body", "response body binding", { request, header: resp(response), body: b64(enc('{"status":"other"}')) }, no("peer_response_mismatch")),
   S("response/other-signer", "response signature key", { request, header: resp(response, { signer: other.signer }) }, no("peer_signature_invalid")),
   S("response/signer-not-seller", "response principal", { request, header: resp({ ...response, seller: other.claim }, { signer: other.signer }) }, no("peer_signer_wrong")),
+  // `requireDelegation`: the replay opens the answer with openWireEnvelope and that flag set, as a host calling the
+  // exported verifier might, instead of verifyWireResponse (which never sets it). Either way it is refused.
+  S("response/delegated-session-signed", "exact response envelope members", { request, header: delegatedResponse }, no("peer_envelope_invalid")),
+  S("response/delegated-session-signed-delegation-required", "response never delegated (open)", { request, header: delegatedResponse, requireDelegation: true }, no("peer_envelope_invalid")),
   S("response/identity-mismatch", "response identity binding", { request, header: resp({ ...response, agreementHash: sha256Hex("other-agreement") }) }, no("peer_response_mismatch")),
   S("response/request-hash-mismatch", "response request-hash binding", { request, header: resp({ ...response, requestHash: sha256Hex("other-request") }) }, no("peer_response_mismatch")),
   S("response/expired", "response expiry", { request, header: resp({ ...response, expiresAt: NOW }) }, no("peer_response_mismatch")),
@@ -339,6 +346,8 @@ const vectors = [
   P("signing/envelope-purchase-profile-missing", "purchase tuple kept (envelope signer)", { producer: "envelope", payload: request, purchaseProfile: "omitted" }, no("tp1_purchase_profile_mismatch")),
   P("signing/envelope-purchase-profile-other-revision", "purchase tuple kept (envelope signer)", { producer: "envelope", payload: request, purchaseProfile: revised("TP-1.1") }, no("tp1_purchase_profile_mismatch")),
   P("signing/envelope-request-purchase-profile-none", "purchase tuple kept (envelope signer)", { producer: "envelope", payload: request, purchaseProfile: null }, no("tp1_purchase_profile_mismatch")),
+  // Only a request carries a delegation: the generic signer refuses an answer with one before its signer is called.
+  P("signing/envelope-response-delegation", "response carries no delegation (signer)", { producer: "envelope", payload: response, delegation }, no("peer_envelope_invalid")),
   // `view`: the signer's payload, or signWireResponse's request, passed as a Proxy whose `profile` answers
   // the bound profile for the first n reads and the mocked mainnet profile from then on, for every n from 0 to 16.
   // Each signer copies its input once and refuses a Proxy outright, so the expectation holds for every n, with zero
