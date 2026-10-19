@@ -307,7 +307,10 @@ export interface SessionDeps {
    * transfer's execution. Return success only for a `confirmed` record, or a
    * bound permanent failure, for the retained hash; throw on absence or
    * indeterminate observations. Neither outcome authorizes another broadcast,
-   * and a different native transaction is refused. The session has no signed
+   * and a different native transaction is refused. A saved success is kept
+   * only by a matching success: any failure, a bound permanent one included,
+   * is refused and the saved success is neither completed nor rewritten as
+   * failed (DACS-4 §9.5.1 PC-7). The session has no signed
    * nonce for a success: it requires the hash, network, parties, block,
    * txRefKind, finality and any saved `networkFeeOs` to match the saved
    * record, and a saved failure proof (nonce included) to be returned
@@ -2227,25 +2230,25 @@ function isNativeSettlement(binding: Pick<SettlementBinding, "phase" | "asset">)
 
 /**
  * The audit must re-assert every chain fact the saved success claims: block,
- * kind and, to keep the success, finality and a saved fee. Only the original
- * observation time is kept without an echo; it is not a chain fact.
+ * kind, finality and a saved fee. Only the original observation time is kept
+ * without an echo; it is not a chain fact. A failure never re-asserts a saved
+ * success, not even a bound permanent one (DACS-4 §9.5.1 PC-7): it is refused
+ * and the saved success stays in place.
  */
 function canReauthenticateNativeSuccess(
   prior: DurableSettlementOutcome,
   next: DurableSettlementOutcome,
 ): boolean {
-  return prior.ok && isNativeSettlement(prior) &&
+  return prior.ok && next.ok && isNativeSettlement(prior) &&
     sameSettlementBinding(prior, next) &&
     prior.txHash === next.txHash && prior.chainId === next.chainId &&
     prior.payer === next.payer && prior.payee === next.payee &&
     prior.blockNumber === next.blockNumber &&
     prior.txRefKind === next.txRefKind &&
-    (next.ok
-      ? (prior.networkFeeOs === undefined || prior.networkFeeOs === next.networkFeeOs) &&
-        prior.finalityModel === next.finalityModel &&
-        prior.finalityBlocks === next.finalityBlocks &&
-        prior.finalityCommitmentLevel === next.finalityCommitmentLevel
-      : next.errorClass === "permanent");
+    (prior.networkFeeOs === undefined || prior.networkFeeOs === next.networkFeeOs) &&
+    prior.finalityModel === next.finalityModel &&
+    prior.finalityBlocks === next.finalityBlocks &&
+    prior.finalityCommitmentLevel === next.finalityCommitmentLevel;
 }
 
 /** A saved native failure is reused only when the rail re-reads the exact proof. */
@@ -2657,11 +2660,9 @@ function isValidSettlementOutcomeProgression(
         ? next.outcome.ok && sameKnownTransaction
         : next.outcome.ok;
     }
-    // Old native successes predate execution authentication. Only a bound
-    // terminal failure for that same transaction may invalidate that claim.
-    return !prior.outcome.ok || next.outcome.ok ||
-      (sameKnownTransaction && isNativeSettlement(next.outcome) &&
-        next.outcome.errorClass === "permanent");
+    // Rail-authenticated migration may promote an old non-definitive failure to
+    // success, but can never demote an already-successful durable receipt.
+    return !prior.outcome.ok || next.outcome.ok;
   }
 
   if (prior.status === "current-rail") {
@@ -2680,7 +2681,6 @@ function isValidSettlementOutcomeProgression(
     }
     return (
       sameSettlementOutcome(prior.outcome, next.outcome) ||
-      (!next.outcome.ok && canReauthenticateNativeSuccess(prior.outcome, next.outcome)) ||
       (sameSettlementBinding(prior.outcome, next.outcome) &&
         prior.outcome.ok === false &&
         prior.outcome.errorClass !== "permanent" &&
@@ -4211,8 +4211,7 @@ export async function runSessionCore(
           prior.outcome.chainId === outcome.chainId) ||
           (outcome.supersedesTxHash === prior.outcome.txHash &&
             outcome.supersedesChainId === prior.outcome.chainId));
-      if (!canResolveAmbiguous &&
-          !(!outcome.ok && canReauthenticateNativeSuccess(prior.outcome, outcome))) {
+      if (!canResolveAmbiguous) {
         throw new CounterpartyError(
           `could not record settlement outcome for ${jobId}: existing outcome conflicts with ${outcome.txHash}`,
         );
@@ -4346,8 +4345,10 @@ export async function runSessionCore(
         );
       }
       if (prior.ok && isNativeSettlement(expectedSettlementBinding)) {
-        if (("outcomeSource" in prior && !canReauthenticateNativeSuccess(prior, outcome)) ||
-            (!outcome.ok && outcome.errorClass !== "permanent")) {
+        // Any failure, a bound permanent one included, contradicts the saved
+        // success: refuse it and keep that success (DACS-4 §9.5.1 PC-7).
+        if (!outcome.ok ||
+            ("outcomeSource" in prior && !canReauthenticateNativeSuccess(prior, outcome))) {
           throw new CounterpartyError(
             "native settlement execution remains indeterminate or conflicts with the saved success",
           );

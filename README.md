@@ -634,12 +634,9 @@ audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plu
 original prepared-transfer journal, check that its signed nonce and tuple match
 that exact hash, and throw when the journal is missing or conflicting. It must
 never return `null` for a hash it cannot tie to the journal. A payment that the
-bridge or its rail log already recorded as successful is never reported unpaid:
-a reconciliation that contradicts it is refused rather than returned as a
-permanent failure (DACS-4 §9.5.1 PC-7). A success in the session's
-`priorAttempts` is the claim the audit checks, not evidence for it: a bound
-failed record for the retained hash is returned as a permanent failure (see the
-resume paragraph below).
+bridge, its rail log or the session already recorded as successful is never
+reported unpaid: a reconciliation that contradicts it is refused rather than
+returned as a permanent failure (DACS-4 §9.5.1 PC-7).
 
 Every pay-DEM settlement request must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
@@ -674,14 +671,18 @@ input remains available for callers with a separate trusted pin.
 A saved native DEM outcome is not reused on trust. Every resume, including a
 re-run of a completed session, calls `resumeSettlement` once as a read-only audit
 of the retained transaction hash: a success is kept only when the rail re-reads
-a `confirmed` record with the same block, parties and any saved fee, and a
-permanent failure only when it returns the identical failure proof. Absence, an
-indeterminate read, another hash or any mismatch fails closed without paying
-again. Wire `payDemSettle` with a `reconcile` that checks the node record
-against the retained prepared-transfer journal (signed nonce included). This
-treats an `included` transaction whose record `failed` as unpaid, which is
-stricter than the pinned DACS-4 §9.5.9 text and follows the open DACS-Standard
-#432 candidate rules.
+a `confirmed` record with the same block, kind, parties, finality and any saved
+fee, and a permanent failure only when it returns the identical failure proof.
+Absence, an indeterminate read, another hash or any mismatch fails closed
+without paying again. A failure read for a saved success, a bound failed record
+included, is refused the same way: the session neither completes nor records the
+payment as failed, and the saved success stays in place for an operator to
+resolve (DACS-4 §9.5.1 PC-7). Wire `payDemSettle` with a `reconcile` that checks
+the node record against the retained prepared-transfer journal (signed nonce
+included). Requiring a `confirmed` record is stricter than the pinned DACS-4
+§9.5.9 text, which counts a terminal `included` status as success: the node can
+report `included` for a transaction whose stored record `failed`, so such a
+saved success is held unresolved rather than completed or reported unpaid.
 
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write

@@ -1117,9 +1117,11 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
   });
 
   test.each(["checkpoint", "legacy checkpoint", "anchored rail", "anchored evidence", "anchor only"]
-    .flatMap((saved) => [true, false].map((journalAvailable) => ({ saved, journalAvailable }))))(
-    "audits included-only native success from $saved with journalAvailable=$journalAvailable before reuse",
-    async ({ saved, journalAvailable }) => {
+    .flatMap((saved) => (["journal missing", "rail audit", "injected failure"] as const)
+      .map((reconciler) => ({ saved, reconciler }))))(
+    "audits included-only native success from $saved with $reconciler before reuse",
+    async ({ saved, reconciler }) => {
+      const journalAvailable = reconciler !== "journal missing";
       const store = createInMemorySessionStore();
       const kv = new Map<string, Record<string, unknown>>();
       kv.set("stor:listing", await buildSignedArtifact({ ...listing,
@@ -1181,47 +1183,48 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         resumeSettlement: async (req) => {
           expect(req.priorAttempts?.[0]).toMatchObject({ txHash, chainId: "demos", ok: true });
           expect(req.priorAttempts?.every((attempt) => attempt.txHash === txHash)).toBe(true);
-          return audit(req);
+          if (reconciler !== "injected failure") return audit(req);
+          // A custom native rail that reports the bound failed record itself.
+          reconciliations += 1;
+          return failure;
         },
       });
-      if (!journalAvailable) {
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-            .rejects.toBe(missingJournal);
-        }
+      // A saved success is never reported unpaid (DACS-4 §9.5.1 PC-7): the rail
+      // refuses the contradicting record, and the session refuses it from any
+      // other rail. Either way nothing completes and nothing is rewritten.
+      const refusal = {
+        "journal missing": missingJournal,
+        "rail audit": /pay-dem reconciliation contradicted an authenticated successful outcome; refusing to report a final payment unpaid/,
+        "injected failure": /native settlement execution remains indeterminate or conflicts with the saved success/,
+      }[reconciler];
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const run = expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1")).rejects;
+        await (refusal instanceof Error ? run.toBe(refusal) : run.toThrow(refusal));
         expect(await store.load("job-1")).toEqual(before);
         expect([...kv]).toEqual(beforeEvidence);
-      } else if (saved.startsWith("anchor")) {
-        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-          .rejects.toThrow("saved native success evidence contradicts chain execution");
-        // Anchored evidence is immutable: the audit writes no outcome under it.
-        expect(await store.load("job-1")).toEqual(before);
-        expect([...kv]).toEqual(beforeEvidence);
-      } else {
-        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-          .resolves.toMatchObject({ outcome: "failed" });
-        const evidence = kv.get(`stor:${sessionAnchorName.evidence("job-1")}`);
-        expect(evidence).toMatchObject({ outcome: "failure" });
-        expect(evidence).not.toHaveProperty("settlementFinality");
-        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-          .resolves.toMatchObject({ outcome: "failed" });
       }
       if (journalAvailable && saved === "checkpoint") {
+        // The same failure written under the success (as a demoting writer
+        // would) is conflicting history, refused before any rail call.
         const poisonedStore: NonNullable<SessionDeps["sessionStore"]> = { ...store, load: async (jobId) => {
           const loaded = await store.load(jobId);
           if (loaded.status === "ok") {
             const original = loaded.record.checkpoints.find((cp) => cp.stage === "outcome")!;
-            loaded.record.checkpoints.push(structuredClone(original));
+            const { finalityModel: _model, ...binding } = original.data!;
+            loaded.record.checkpoints.push({ ...structuredClone(original), data: { ...binding, ok: false,
+              errorClass: "permanent", failureProofJson: JSON.stringify(failure.failureProof) } });
           }
           return loaded;
         } };
-        const stale = await makeDeps(poisonedStore, { kv });
+        const stale = await makeDeps(poisonedStore, { kv, resumeSettlement: async () => {
+          throw new Error("conflicting history must not reach the rail");
+        } });
         await expect(runSessionCore(stale.listingRef, demTerms, stale.deps, "job-1"))
-          .rejects.toThrow(/conflicting|invalid|indeterminate/);
+          .rejects.toThrow("settlement outcome history contains conflicting entries");
         expect(stale.settleCalls.n).toBe(0);
       }
-      // The demoted failure is itself re-read on the later resume.
-      expect(reconciliations).toBe(journalAvailable && saved.startsWith("anchor") ? 1 : 2);
+      // Every resume re-reads the saved success; none is answered from a cache.
+      expect(reconciliations).toBe(2);
       expect(once).not.toHaveBeenCalled();
       expect(broadcasts).toBe(0);
       expect(resumed.settleCalls.n).toBe(0);
@@ -1277,7 +1280,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 
   test.each(["checkpoint", "anchored evidence"].flatMap((saved) =>
     ["absent", "indeterminate", "timeout", "hash", "network", "payer", "payee", "block", "block omitted", "fee",
-      "fee omitted", "saved block deleted", "saved kind deleted", "proof amount", "stale success",
+      "fee omitted", "finality omitted", "saved block deleted", "saved kind deleted", "proof amount", "stale success",
       "missing reconciler"]
       .map((reply) => ({ saved, reply }))),
   )("withholds saved native success from $saved on $reply without a second debit", async ({ saved, reply }) => {
@@ -1336,6 +1339,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           txHash: reply === "absent" ? "" : success.txHash, chainId: success.chainId,
           payer: success.payer, payee: success.payee, blockNumber: 42, txRefKind: "demos" };
         const { blockNumber: _block, networkFeeOs: _fee, ...unechoed } = success;
+        // Finality is a chain fact too: an executed read without the bft-final echo is not enough.
+        const { finality: _finality, ...unfinal } = success;
+        if (reply === "finality omitted") return unfinal;
         return { ...(reply === "block omitted" ? { ...unechoed, networkFeeOs: "0" }
           : reply === "fee omitted" ? { ...unechoed, blockNumber: 42 } : success),
           ...(reply === "hash" ? { txHash: "ef".repeat(32) } : {}),
@@ -1360,11 +1366,14 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       "block omitted": conflict,
       fee: conflict,
       "fee omitted": conflict,
+      "finality omitted": conflict,
       "saved block deleted": conflict,
       "saved kind deleted": conflict,
       "proof amount": /terminal failure does not bind the payment amount and rail/,
+      // A failure written under the saved success is conflicting history.
       "stale success": saved === "checkpoint"
-        ? /existing outcome conflicts with/ : /authenticated evidence conflicts with the durable rail outcome/,
+        ? /could not record settlement outcome for job-1: settlement outcome history contains conflicting entries/
+        : /cannot migrate authenticated evidence for job-1: settlement outcome history contains conflicting entries/,
       "missing reconciler": /requires authenticated rail reconciliation/,
     };
     await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
@@ -1534,7 +1543,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     },
   );
 
-  test("a permanent failure saved over a native success is refused when the rail re-reads success", async () => {
+  test("a permanent failure saved over a native success is refused as conflicting history", async () => {
     const store = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();
     kv.set("stor:listing", await buildSignedArtifact({ ...listing,
@@ -1567,10 +1576,11 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     let audits = 0;
     const resumed = await makeDeps(store, { kv, resumeSettlement: async () => { audits += 1; return success; } });
     for (let repeat = 0; repeat < 2; repeat += 1) {
+      // A success is never demoted, so the pair is invalid history (PC-7).
       await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-        .rejects.toThrow(/failure proof conflicts with the rail re-read/);
+        .rejects.toThrow("invalid durable state: settlement outcome history contains conflicting entries");
     }
-    expect(audits).toBe(2);
+    expect(audits).toBe(0);
     expect(await store.load("job-1")).toEqual(before);
     expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
   });

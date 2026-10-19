@@ -2024,9 +2024,9 @@ function captureFreshPayDemResult(
 }
 
 /**
- * DACS-4 §9.5.1 PC-7: a payment this bridge or its rail log saw succeed is
- * never reported unpaid. A contradicting observation fails closed and leaves
- * the recorded success in place.
+ * DACS-4 §9.5.1 PC-7: a payment this bridge, its rail log or the session saw
+ * succeed is never reported unpaid. A contradicting observation fails closed
+ * and leaves the recorded success in place.
  */
 function assertPayDemSuccessKept(succeeded: boolean, captured: SettleResult): void {
   if (succeeded && !captured.ok) {
@@ -2036,8 +2036,14 @@ function assertPayDemSuccessKept(succeeded: boolean, captured: SettleResult): vo
   }
 }
 
-/** A native transfer cannot supersede another retained transaction. */
-function retainedPayDemHash(req: SettleRequest, network: string): string | undefined {
+/**
+ * A native transfer cannot supersede another retained transaction. Returns the
+ * retained hash and whether the session recorded any attempt as successful.
+ */
+function retainedPayDemAttempt(
+  req: SettleRequest,
+  network: string,
+): Readonly<{ txHash: string; succeeded: boolean }> | undefined {
   const prior = stableDataProperty(req, "priorAttempts", "pay-dem recovery history");
   if (!prior.found || prior.value === undefined) return undefined;
   if (!Array.isArray(prior.value) || nodeTypes.isProxy(prior.value) ||
@@ -2046,6 +2052,7 @@ function retainedPayDemHash(req: SettleRequest, network: string): string | undef
   }
   const attempts = snapshotCanonicalJsonRead(prior.value, "pay-dem recovery history");
   let retained: string | undefined;
+  let succeeded = false;
   for (const attempt of attempts as unknown[]) {
     if (attempt === null || typeof attempt !== "object" || Array.isArray(attempt)) {
       throw new DacsError("pay-dem recovery history has a malformed attempt");
@@ -2060,8 +2067,9 @@ function retainedPayDemHash(req: SettleRequest, network: string): string | undef
       throw new DacsError("pay-dem recovery history contains conflicting native transactions; refusing reuse or rebroadcast");
     }
     retained = hash;
+    succeeded ||= record.ok === true;
   }
-  return retained;
+  return retained === undefined ? undefined : Object.freeze({ txHash: retained, succeeded });
 }
 
 function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
@@ -2101,10 +2109,8 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * without them. Once audited, a key stays audit-only for the life of this
  * bridge (one small entry per key, never pruned, like its authenticated
  * results), so omitting history later cannot restore submit authority.
- * A success this bridge or its rail log recorded is never reported unpaid: a
- * contradicting reconciliation is refused (PC-7). The history's `ok` flags are
- * the session's claim under audit, not evidence for it: a bound failed record
- * for the retained hash is returned as a permanent failure (#432 DEM-4).
+ * A success this bridge, its rail log or the session recorded is never
+ * reported unpaid: a contradicting reconciliation is refused (PC-7).
  *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
@@ -2225,6 +2231,7 @@ export function payDemSettle(
   const retainedAudits = new Map<string, Readonly<{
     context: Readonly<PayDemSettlementRecoveryContext>;
     txHash: string;
+    succeeded: boolean;
   }>>();
   // Keep a slow submit/reconcile from being overtaken by another call for the
   // same effect. Different settlement keys remain independent.
@@ -2318,7 +2325,8 @@ export function payDemSettle(
       payee: payeeAddress,
       amountOs,
     }) satisfies Readonly<PayDemSettlementRecoveryContext>;
-    const suppliedTxHash = retainedPayDemHash(req, network);
+    const supplied = retainedPayDemAttempt(req, network);
+    const suppliedTxHash = supplied?.txHash;
     const binding = Object.freeze({
       bindingVersion: "1",
       railId,
@@ -2353,18 +2361,21 @@ export function payDemSettle(
       }
       const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash;
       if (retainedTxHash !== undefined) {
+        // A success the session recorded for this key stays recorded.
+        const historySucceeded = supplied?.succeeded === true || retainedAudit?.succeeded === true;
         // Independent session/rail snapshots must agree on the effect identity.
         // Never let history B discard an authenticated or durably recorded A.
         const assertHash = (result: SettleResult) => {
           if (result.txHash.length > 0 && result.txHash !== retainedTxHash) {
-            retainedAudits.set(key, { context, txHash: result.txHash });
+            // The session's success claim was for the conflicting hash, not this one.
+            retainedAudits.set(key, { context, txHash: result.txHash, succeeded: false });
             throw new DacsError("pay-dem retained transaction conflicts with the rail outcome; refusing reuse or rebroadcast");
           }
         };
         if (priorAuthenticated !== undefined) assertHash(priorAuthenticated.result);
         // Remember the identity before awaiting the store: uncertainty must not
         // restore submit authority when a subsequent call omits its history.
-        retainedAudits.set(key, { context, txHash: retainedTxHash });
+        retainedAudits.set(key, { context, txHash: retainedTxHash, succeeded: historySucceeded });
         if (storeReadOutcome === undefined) {
           throw new DacsError("pay-dem retained recovery requires read-only outcome lookup; refusing reuse or rebroadcast");
         }
@@ -2403,9 +2414,7 @@ export function payDemSettle(
             throw new DacsError("pay-dem reconciliation contradicted a permanent failed-record outcome");
           }
         }
-        // The session's `ok` history is the claim under audit (a rail before the
-        // execution gate minted it from inclusion alone), so only this bridge's
-        // result or its rail log keeps a success against a bound failed record.
+        assertPayDemSuccessKept(historySucceeded, captured);
         authenticatedResults.set(key, { context, result: captured });
         return publicPayDemResult(captured, expectedPayee);
       }
