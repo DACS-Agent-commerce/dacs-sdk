@@ -569,3 +569,88 @@ it("never invokes candidate accessors while capturing an unadmitted request", as
   await expect(resolveBundleBindingCandidates(value)).rejects.toThrow("admission refused");
   expect(touched).toBe(0);
 });
+
+// CORE B.1 CF-3: a party is its scheme and identifier. Advisory parameters on
+// the admitted holder, the binding signer, the copy's party claim or the
+// copy's verified signer never make the same key another party.
+describe("CF-3 party identity in BB-5 and BB-6", () => {
+  const ADMITTED = `${SELLER}?jurisdiction=GB`;
+
+  function admittedAs(participant: string) {
+    return () => ({ status: "valid", releasePin: DACS_STANDARD_PIN,
+      moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS, roles: [
+        { jobId: JOB_ID, role: "buyer", participant: BUYER },
+        { jobId: JOB_ID, role: "seller", participant },
+      ] });
+  }
+
+  it("resolves the admitted holder's binding when each join spells the key differently", async () => {
+    const address = "stor-" + "1".repeat(40);
+    const one = copy("one", { holder: `${SELLER}?tier=gold` });
+    const signed: unknown[] = [];
+    const { value, fetched } = input([binding(address, one)], { [address]: one }, {
+      roleHolder: ADMITTED,
+      verifyBindingSignature: (entry) => { signed.push(entry); return entry.signature.value === GOOD; },
+      verifyCopy: () => ({ valid: true as const, signers: [`${SELLER}?region=eu`], fullySigned: true,
+        abortStanding: false }),
+    });
+    await expect(resolveBundleBindingCandidates(value)).resolves.toEqual({
+      disposition: "present", binding: binding(address, one), copy: one, fullySigned: true });
+    expect(fetched).toEqual([address]);
+    // The signature hook saw the binding's own signed bytes, not the admitted spelling.
+    expect(signed).toEqual([binding(address, one)]);
+  });
+
+  it("accepts a role-holder hint that differs from admission only in parameters", async () => {
+    const address = "stor-" + "1".repeat(40);
+    const one = copy("one");
+    const { value } = input([binding(address, one)], { [address]: one }, {
+      authenticateSessionProfile: admittedAs(ADMITTED), roleHolder: SELLER,
+    });
+    await expect(resolveBundleBindingCandidates(value)).resolves.toMatchObject({ disposition: "present" });
+    value.roleHolder = `${OUTSIDER}?jurisdiction=GB`;
+    await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/role holder differs/);
+  });
+
+  it("still discards another key's binding and copy whatever its parameters", async () => {
+    const address = "stor-" + "1".repeat(40);
+    const one = copy("one");
+    const outsiderSigner = `${OUTSIDER}?jurisdiction=GB`;
+    const outsider = binding(address, one, { signer: outsiderSigner,
+      signature: { algorithm: "ed25519", signer: outsiderSigner, value: GOOD } });
+    const pruned = input([outsider], { [address]: one }, { authenticateSessionProfile: admittedAs(ADMITTED) });
+    await expect(resolveBundleBindingCandidates(pruned.value)).resolves.toEqual({
+      disposition: "indeterminate", reason: "bundle-binding-undiscovered" });
+    expect(pruned.fetched).toEqual([]);
+    // Check 9: the copy's holder and verified signer must be the binding signer's key.
+    const foreign = copy("foreign", { holder: outsiderSigner });
+    const held = input([binding(address, foreign)], { [address]: foreign },
+      { authenticateSessionProfile: admittedAs(ADMITTED) });
+    await expect(resolveBundleBindingCandidates(held.value)).resolves.toEqual({
+      disposition: "indeterminate", reason: "bundle-binding-candidates-rejected" });
+    const unsigned = input([binding(address, one)], { [address]: one }, {
+      authenticateSessionProfile: admittedAs(ADMITTED),
+      verifyCopy: () => ({ valid: true as const, signers: [`${OUTSIDER}?region=eu`], fullySigned: true,
+        abortStanding: false }),
+    });
+    await expect(resolveBundleBindingCandidates(unsigned.value)).resolves.toEqual({
+      disposition: "indeterminate", reason: "bundle-binding-candidates-rejected" });
+  });
+
+  it("counts one N = 8 budget per signer identity, not per parameter spelling", async () => {
+    const store: Record<string, Copy> = {};
+    const candidates: BundleBinding[] = [];
+    for (let index = 0; index < BUNDLE_BINDING_FETCH_BUDGET + 1; index += 1) {
+      const address = `stor-${String(index).repeat(40)}`;
+      store[address] = copy(`copy-${index}`, { full: index === 0 });
+      // Alternate spellings of one key must not buy a second budget.
+      const signer = index % 2 === 0 ? SELLER : `${SELLER}?jurisdiction=GB`;
+      candidates.push(binding(address, store[address],
+        { signer, signature: { algorithm: "ed25519", signer, value: GOOD } }));
+    }
+    const { value, fetched } = input(candidates, store, { authenticateSessionProfile: admittedAs(ADMITTED) });
+    await expect(resolveBundleBindingCandidates(value)).resolves.toEqual({
+      disposition: "indeterminate", reason: "bundle-binding-budget-exhausted" });
+    expect(fetched).toHaveLength(BUNDLE_BINDING_FETCH_BUDGET);
+  });
+});

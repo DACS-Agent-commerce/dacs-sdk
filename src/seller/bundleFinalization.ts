@@ -48,6 +48,7 @@ import { ed25519Sign, signedBytes } from "../crypto/index.js";
 import { DacsError, SubstrateError, IndeterminateSubstrateError } from "../errors.js";
 import { isUnresolvedBundleBindingCandidateSet } from "../discovery/bundleBindingCandidates.js";
 import { identityBundleHash } from "../identity/bundle.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   assertNoRawSessionSeed,
   attestationBundleHash,
@@ -4084,9 +4085,11 @@ export async function verifyFinalizedSellerBundleReadOnly(
       const selected = bindingLookup.binding;
       // BB-6 collapses equal signed content across native publications. Each
       // binding still authenticates its own receipt/readback, never the other's.
+      // The signer is the same party by CORE B.1 CF-3 identity, as BB-6 selects.
       if (!isBundleBinding(selected) || selected.jobId !== expectedBinding.jobId ||
           selected.role !== "seller" || selected.logicalAddress !== logicalAddress ||
-          selected.bundleContentHash !== expectedBundleHash || selected.signer !== expectedBinding.signer ||
+          selected.bundleContentHash !== expectedBundleHash ||
+          !sameCanonicalClaimIdentity(selected.signer, expectedBinding.signer) ||
           !retainedProvider.verifyBundleBinding) {
         throw new DacsError("retained BundleBinding is not independently readable and exact");
       }

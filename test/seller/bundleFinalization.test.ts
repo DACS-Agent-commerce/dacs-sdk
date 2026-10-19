@@ -34,6 +34,7 @@ import {
   signedBytes,
 } from "../../src/crypto/index.js";
 import { identityBundleHash } from "../../src/identity/bundle.js";
+import { parseCanonicalClaimReference, sameCanonicalClaimIdentity } from "../../src/identity/claimReference.js";
 import {
   attestationBundleHash,
 } from "../../src/agent/twoSidedBundle.js";
@@ -3281,6 +3282,41 @@ describe("read-only authentication of retained finalized seller bundles", () => 
       ).rejects.toThrow(/BundleBinding|readable|exact|binding/i);
     },
   );
+
+  // CORE B.1 CF-3: BB-6 may select an equal signed binding whose signer spells
+  // the seller's key with advisory parameters; that is the same party.
+  test("accepts a selected BundleBinding whose signer differs only in CF-3 parameters", async () => {
+    const retained = await finalizedForReadVerification("write-input");
+    const { signature: _signature, ...unsigned } = retained.result.binding!;
+    const reselected = (signer: string) => signTestComponent(
+      { ...unsigned, signer }, BUNDLE_BINDING_SEPARATOR, signer) as unknown as BundleBinding;
+    const resolveKey = retained.provider.bundleCopyVerifier.resolvePublicKey;
+    const provider = (selected: BundleBinding): SellerBundleFinalizationReadProvider => ({
+      ...retained.provider,
+      // CF-3 key and binding verifiers, like dacs-node's: parameters do not change the key.
+      bundleCopyVerifier: {
+        ...retained.provider.bundleCopyVerifier,
+        resolvePublicKey: (claim) => {
+          const parsed = parseCanonicalClaimReference(claim);
+          return resolveKey(parsed === null ? claim : `${parsed.identity.scheme}:${parsed.identity.identifier}`);
+        },
+      },
+      verifyBundleBinding: (binding) => sameCanonicalClaimIdentity(binding.signer, SELLER) &&
+        binding.signature.signer === binding.signer && ed25519Verify(
+          signedBytes(BUNDLE_BINDING_SEPARATOR, contentHash(binding as unknown as Record<string, unknown>)),
+          Buffer.from(binding.signature.value, "base64url"),
+          publicKeyFromSeed(SELLER_SEED),
+        ) ? "valid" : "invalid",
+      resolveBundleBinding: () => ({ disposition: "present", binding: selected }),
+    });
+    await expect(verifyFinalizedSellerBundleReadOnly(retained.input, retained.result,
+      provider(reselected(`${SELLER}?jurisdiction=GB`)))).resolves.toEqual(retained.result);
+    // Another key is still another party, whatever its parameters.
+    const error = await verifyFinalizedSellerBundleReadOnly(retained.input, retained.result,
+      provider(reselected(`${BUYER}?jurisdiction=GB`))).then(() => undefined, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).not.toBeInstanceOf(SubstrateError);
+  });
 
   // ST-11/BB-8: discovery visibility never gates completion. The retained
   // binding's signature and the provider's native read of the bound copy still do.

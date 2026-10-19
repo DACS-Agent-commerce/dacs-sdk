@@ -109,7 +109,7 @@ function binding(role: Role, nativeAddress: string, copy: FaultAttestationBundle
 
 // A Demos stub: write-once programs keyed by native address, a name index that
 // can lag, and receipts that authenticate whatever was written.
-function harness(role: Role, discovery: DacsBundleBindingDiscoverySurfaceV1[] = []) {
+function harness(role: Role, discovery: DacsBundleBindingDiscoverySurfaceV1[] = [], admittedSeller = SELLER) {
   const programs = new Map<string, unknown>();
   const names = new Map<string, string>();
   const writers = new Map<string, string>();
@@ -152,7 +152,7 @@ function harness(role: Role, discovery: DacsBundleBindingDiscoverySurfaceV1[] = 
     verifyDemosAnchorReceipt: vi.fn(async () => true),
   };
   const context = {
-    authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, SELLER),
+    authenticateSessionProfile: () => trustedSessionProfile(JOB_ID, BUYER, admittedSeller),
     role,
     authority: role === "buyer" ? BUYER : SELLER,
     config: { role },
@@ -388,6 +388,28 @@ describe("Demos BundleBinding publication (BB-1 producer path)", () => {
     equivocating.seedProgram(otherNative, other, SELLER);
     await expect(equivocating.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER, signed))
       .resolves.toEqual({ disposition: "indeterminate", reason: "bundle-binding-equivocation" });
+  });
+
+  // CORE B.1 CF-3: deployment admission may name the seller with advisory
+  // parameters. A binding signed under the plain key is still that party's.
+  it("resolves the seller's binding when admission or lookup qualifies the holder with parameters", async () => {
+    const { copy, signed } = await submitted();
+    const qualified = `${SELLER}?jurisdiction=GB`;
+    const consumer = harness("buyer", [], qualified);
+    consumer.seedProgram(signed.nativeAddress, copy, SELLER);
+    for (const signer of [SELLER, qualified]) {
+      await expect(consumer.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), signer, signed))
+        .resolves.toEqual({ disposition: "present", binding: signed });
+    }
+    // The same key signing under a qualified spelling is the same role holder.
+    const { signature: _signature, ...unsigned } = signed;
+    const payload = { ...unsigned, signer: qualified };
+    const requalified = { ...payload, signature: { algorithm: "ed25519", signer: qualified,
+      value: Buffer.from(ed25519Sign(signedBytes(BUNDLE_BINDING_SEPARATOR, contentHash(payload)),
+        seed(SELLER))).toString("base64url") } } as BundleBinding;
+    await expect(consumer.publication.verifyBundleBinding(requalified)).resolves.toBe("valid");
+    await expect(consumer.publication.resolveBundleBinding(bundleAddress(JOB_ID, "seller"), SELLER, requalified))
+      .resolves.toEqual({ disposition: "present", binding: requalified });
   });
 
   it.each((["present", "equivocation", "budget-exhausted", "candidates-unfetched"] as const)

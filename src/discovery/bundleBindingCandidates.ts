@@ -27,18 +27,30 @@ import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
  *
  * The native address is never recomputed and no storage-program name is an
  * input (BB-5, BB-7).
+ *
+ * Every party join (the role-holder hint, the binding signer, the copy's role
+ * holder, the copy's verified signers, and the BB-6 per-signer grouping) is a
+ * CORE B.1 CF-3 identity comparison: scheme and identifier, never advisory
+ * parameters. Signatures are still checked over each binding's exact bytes.
  */
 
 import type { BundleBinding } from "../artifacts/types.js";
 import { hasBundleBindingEnvelope, isBundleBinding } from "../artifacts/validators.js";
 import { bundleAddress, canonicalize } from "../canonical/index.js";
 import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../errors.js";
+import { parseCanonicalClaimReference, sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import type { BundleCopyRole, CopyValidity } from "../agent/bundleCopyValidity.js";
 import { attestationBundleHash } from "../agent/twoSidedBundle.js";
 import { authenticateSessionProfile, type AuthenticateSessionProfile } from "./sessionProfileAdmission.js";
 
-/** BB-6: N, the fetch budget per authenticated signer per `(jobId, role)`. */
+/**
+ * BB-6: N, the fetch budget per authenticated signer per `(jobId, role)`.
+ * Every distinct native address of the admitted signer counts, including one
+ * whose copy later proves inert. That reading is more conservative than
+ * counting only authorized candidates: it is `indeterminate` more often and
+ * never yields a wrong `present`.
+ */
 export const BUNDLE_BINDING_FETCH_BUDGET = 8;
 
 export interface ResolveBundleBindingCandidatesInput {
@@ -50,7 +62,8 @@ export interface ResolveBundleBindingCandidatesInput {
   candidates: readonly unknown[];
   /**
    * Optional assertion about the expected holder. Independent profile admission
-   * must establish this same participant; caller input never supplies authority.
+   * must establish this same participant (CF-3 identity); caller input never
+   * supplies authority.
    * Only the admitted holder's bindings are authenticated or fetched.
    */
   roleHolder?: string;
@@ -163,6 +176,12 @@ function roleHolderOf(
   return typeof claim === "string" ? claim : undefined;
 }
 
+/** CORE B.1 CF-3 party key: parameters never split one signer's BB-6 budget. */
+function claimIdentityKey(claim: string): string {
+  const parsed = parseCanonicalClaimReference(claim)!;
+  return `${parsed.identity.scheme}:${parsed.identity.identifier}`;
+}
+
 /** Resolve one side's read disposition from its discovered bindings (BB-5..BB-7). */
 export async function resolveBundleBindingCandidates(
   input: Readonly<ResolveBundleBindingCandidatesInput>,
@@ -181,7 +200,7 @@ export async function resolveBundleBindingCandidates(
   input = { ...input, candidates };
   const admitted = await authenticateSessionProfile(input.authenticateSessionProfile, { jobId: input.jobId }, input.role);
   const roleHolder = admitted[input.role]!;
-  if (input.roleHolder !== undefined && input.roleHolder !== roleHolder) {
+  if (input.roleHolder !== undefined && !sameCanonicalClaimIdentity(input.roleHolder, roleHolder)) {
     throw new DacsError("requested role holder differs from authenticated profile authority");
   }
   const logicalAddress = bundleAddress(input.jobId, input.role);
@@ -198,7 +217,7 @@ export async function resolveBundleBindingCandidates(
     }
     if (!hasBundleBindingEnvelope(candidate)) continue;
     if (candidate.logicalAddress !== logicalAddress || candidate.role !== input.role ||
-        candidate.signer !== roleHolder) continue;
+        !sameCanonicalClaimIdentity(candidate.signer, roleHolder)) continue;
     let signed = false;
     try {
       // The hook sees the actual signed payload, including an unchecked
@@ -220,9 +239,10 @@ export async function resolveBundleBindingCandidates(
 
   const bySigner = new Map<string, BundleBinding[]>();
   for (const binding of bindings) {
-    const group = bySigner.get(binding.signer) ?? [];
+    const signer = claimIdentityKey(binding.signer);
+    const group = bySigner.get(signer) ?? [];
     group.push(binding);
-    bySigner.set(binding.signer, group);
+    bySigner.set(signer, group);
   }
 
   const authorized: Authorized[] = [];
@@ -269,8 +289,8 @@ export async function resolveBundleBindingCandidates(
       for (const binding of ordered.filter((entry) => entry.nativeAddress === address)) {
         // BB-5 checks 7-9; a copy failing them is inert (BB-6).
         if (copy["jobId"] !== binding.jobId || hash !== binding.bundleContentHash ||
-            !validity.valid || holder !== binding.signer ||
-            !validity.signers.includes(binding.signer)) continue;
+            !validity.valid || !sameCanonicalClaimIdentity(holder, binding.signer) ||
+            !validity.signers.some((signer) => sameCanonicalClaimIdentity(signer, binding.signer))) continue;
         if (input.verifyBindingCopy) {
           try {
             if (await input.verifyBindingCopy(clone(binding), clone(copy)) !== true) continue;

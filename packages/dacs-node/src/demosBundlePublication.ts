@@ -20,7 +20,7 @@ import {
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import { ed25519Verify, publicKeyFromRaw, signedBytes } from
   "@kynesyslabs/dacs/crypto";
-import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
+import { canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity } from "@kynesyslabs/dacs/identity";
 
 import type { DacsBundleBindingDiscoverySurfaceV1 } from "./bundleBindingDiscovery.js";
 import { dacsFixedPricePurchaseAnchorOptionsV1 } from "./purchaseDemosBudget.js";
@@ -146,15 +146,17 @@ function bindingAddress(jobId: string, role: DacsBundleRoleV1): string {
   return `dacs5:bundle-binding:${jobId}:${role}`;
 }
 
+// CORE B.1 CF-3: advisory parameters never make the role holder another party.
 function roleFor(
   input: Readonly<DacsDemosBundlePublicationOptionsV1>,
   logicalAddress: string,
   signer: string,
 ): DacsBundleRoleV1 | null {
   return logicalAddress === bundleAddress(input.jobId, "seller") &&
-      signer === input.seller
+      sameCanonicalClaimIdentity(signer, input.seller)
     ? "seller"
-    : logicalAddress === bundleAddress(input.jobId, "buyer") && signer === input.buyer
+    : logicalAddress === bundleAddress(input.jobId, "buyer") &&
+        sameCanonicalClaimIdentity(signer, input.buyer)
       ? "buyer" : null;
 }
 
