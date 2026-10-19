@@ -57,6 +57,10 @@ import {
 } from "@kynesyslabs/dacs/negotiate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Explicitly non-live harness: the live paths here run against a released
+// profile record; the real record at the pin refuses every admission.
+vi.mock("../../../src/discovery/standardProfileRelease.js", () => ({ DACS_STANDARD_PROFILE_STATUS: "released" }));
+
 const mocks = vi.hoisted(() => ({
   agreementPublication: vi.fn(),
   bundleRequest: vi.fn(),

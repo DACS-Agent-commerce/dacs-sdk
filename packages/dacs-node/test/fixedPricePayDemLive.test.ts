@@ -1,5 +1,14 @@
 import { trustedSessionProfile } from "./helpers/sessionProfile.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Explicitly non-live harness: these cases run against a released profile
+// record; a case that sets `release.real` gets the real record at the pin.
+const release = vi.hoisted(() => ({ real: false }));
+vi.mock("../../../src/discovery/standardProfileRelease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/discovery/standardProfileRelease.js")>();
+  return { get DACS_STANDARD_PROFILE_STATUS() { return release.real ? actual.DACS_STANDARD_PROFILE_STATUS : "released"; } };
+});
+afterEach(() => { release.real = false; });
 
 const factories = vi.hoisted(() => ({
   buyerAgreement: vi.fn(),
@@ -186,10 +195,19 @@ for (const role of ["buyer", "seller"] as const) {
     const options = { context, observeDemosTransfer: vi.fn() } as never;
     const live = await factory(options);
     const good = structuredClone(admission);
+    // The real record at the pin refuses a complete authority reply that
+    // states the candidate status.
+    release.real = true;
+    admission = trustedSessionProfile(jobId, buyer, seller);
+    await expect(live.payDemOperations.agreement!({ order: { jobId } } as never)).rejects.toThrow(/unreleased candidate/);
+    await expect(live.validatePayload({ jobId } as never)).rejects.toThrow(/unreleased candidate/);
+    await expect(live.handleMessage({ envelope: { jobId } } as never, {} as never)).rejects.toThrow(/unreleased candidate/);
+    expect(effect).not.toHaveBeenCalled();
+    release.real = false;
     const invalid = [
       { ...good, releasePin: "historical" },
       (({ profileStatus: _status, ...pinOnly }) => pinOnly)(good),
-      { ...good, profileStatus: "released" },
+      { ...good, profileStatus: "unreleased-candidate" },
       { ...good, moduleVersions: { core: "0.3" } },
       { ...good, roles: [good.roles[0], good.roles[0]] },
       { ...good, roles: good.roles.map((entry) => ({ ...entry, jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E" })) },

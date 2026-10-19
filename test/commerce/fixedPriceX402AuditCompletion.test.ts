@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const verifySellerClosure = vi.hoisted(() => vi.fn());
 
@@ -13,6 +13,15 @@ vi.mock("../../src/seller/bundleFinalization.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/seller/bundleFinalization.js")>()),
   verifyFinalizedSellerBundleReadOnly: verifySellerClosure,
 }));
+
+// Explicitly non-live harness: these gates run against a released profile
+// record; a case that sets `release.real` gets the real record at the pin.
+const release = vi.hoisted(() => ({ real: false }));
+vi.mock("../../src/discovery/standardProfileRelease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/discovery/standardProfileRelease.js")>();
+  return { get DACS_STANDARD_PROFILE_STATUS() { return release.real ? actual.DACS_STANDARD_PROFILE_STATUS : "released"; } };
+});
+afterEach(() => { release.real = false; });
 
 import type {
   AnchorReceipt,
@@ -656,9 +665,9 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       sellerClosure: fx.input.sellerClosure, copies: fx.input.copies };
     const badAdmissions: unknown[] = [undefined, { status: "invalid" },
       { ...trustedAdmission(), releasePin: "00".repeat(20) },
-      // The candidate pin and tuple alone never admit (PROFILE.md: unreleased).
+      // The pin and tuple alone, or a stale candidate acknowledgement, never admit.
       (({ profileStatus: _status, ...pinOnly }) => pinOnly)(trustedAdmission()),
-      { ...trustedAdmission(), profileStatus: "released" },
+      { ...trustedAdmission(), profileStatus: "unreleased-candidate" },
       { ...trustedAdmission(), moduleVersions: { ...COMPLETED_SESSION_MODULE_VERSIONS, dacs5: "0.4" } },
       { ...trustedAdmission(), moduleVersions: { core: "0.3" } },
       { ...trustedAdmission(), roles: [...trustedAdmission().roles, trustedAdmission().roles[0]] },
@@ -1256,6 +1265,20 @@ async function gateWithAudit(
 
 describe("native DEM exact profile admission", () => {
   const historicalRelease = "965df755aba4ff392f1fb37a93d287242b177ba4";
+
+  it.each(["pay-x402", "pay-dem"] as const)(
+    "refuses %s completion while the pinned profile is unreleased, before any read", async (rail) => {
+      const gate = await gateWithAudit(rail, (fx) => ({
+        buyer: auditSuccess(fx.buyerNative), seller: auditSuccess(fx.sellerNative),
+      }));
+      release.real = true;
+      const read = vi.fn(gate.fx.deps.readBundleCopy);
+      // The authority states the candidate status in full; that opens nothing.
+      await expect(gate.verify({ ...gate.fx.deps, readBundleCopy: read }))
+        .rejects.toThrow(/unreleased candidate and is not an admissible live session profile/);
+      expect(read).not.toHaveBeenCalled();
+      expect(verifySellerClosure).not.toHaveBeenCalled();
+    });
 
   it("binds new native orders to the current completed-session release", () => {
     expect(FIXED_PRICE_PAY_DEM_STANDARD_REVISION).toBe(FIXED_PRICE_X402_STANDARD_REVISION);

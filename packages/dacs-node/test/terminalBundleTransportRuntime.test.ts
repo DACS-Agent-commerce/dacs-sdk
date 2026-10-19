@@ -45,6 +45,10 @@ import { identityBundleHash } from "@kynesyslabs/dacs/identity";
 import BetterSqlite3 from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// Explicitly non-live harness: the live paths here run against a released
+// profile record; the real record at the pin refuses every admission.
+vi.mock("../../../src/discovery/standardProfileRelease.js", () => ({ DACS_STANDARD_PROFILE_STATUS: "released" }));
+
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import type { DacsDemosActorRuntimeV1 } from "../src/demosRuntime.js";
 import { createDacsFixedPricePayDemOrderPairV1 } from "../src/liveOrder.js";

@@ -40,10 +40,12 @@ The native DEM commerce profile uses Standard commit
 tuple required by its completed-session admission. At that pin PROFILE.md lists
 the tuple as the unreleased JID-1 corrective candidate, which is not an
 admissible live profile until the Standard records a coordinated release. Until
-then a live deployment is not conformant: session admission refuses unless the
-deployment authority explicitly states `profileStatus: "unreleased-candidate"`
-(for a testnet or interop trial), and the pin moves to the release when it is
-cut. Orders and databases bound to the historical
+then every session profile admission is refused, whatever the deployment
+authority returns, so the native DEM and x402 live paths, BundleBinding
+resolution, Demos publication and both completion gates take no effect at this
+pin (`DACS_STANDARD_PROFILE_STATUS` is `"unreleased-candidate"`). When the
+release is cut, the pin and that status move to it together. Orders and
+databases bound to the historical
 `965df755aba4ff392f1fb37a93d287242b177ba4` revision are refused;
 there is no automatic migration or relabelling of signed evidence. Retain the
 original database and use its matching SDK release to recover historical work.
@@ -290,11 +292,11 @@ role runtime. It must authenticate the exact session's buyer and seller, the
 pinned Standard commit, its PROFILE.md release status and every module version
 from deployment authority independent of caller input and artifacts. It returns
 `{ status: "valid", releasePin, profileStatus, moduleVersions, roles }`, with
-`profileStatus` equal to `DACS_STANDARD_PROFILE_STATUS` (the pin and tuple alone
-never admit an unreleased candidate) and exactly one
-`{ jobId, role, participant }` entry for each role. Every live operation and
-inbound entry point rechecks this authority before effects; missing or conflicting
-admission refuses the action. The public BundleBinding resolver requires the same
+`profileStatus` equal to `DACS_STANDARD_PROFILE_STATUS` and exactly one
+`{ jobId, role, participant }` entry for each role. Admission is refused before
+the callback is asked while `DACS_STANDARD_PROFILE_STATUS` is not `"released"`
+(see above). Every live operation and inbound entry point rechecks this
+authority before effects; missing or conflicting admission refuses the action. The public BundleBinding resolver requires the same
 independent callback before deriving an address, and the Demos publication adapter
 checks it before discovery. Configure this authority for both roles before use.
 The x402 seller also rechecks the matched HTTP session before payment handling

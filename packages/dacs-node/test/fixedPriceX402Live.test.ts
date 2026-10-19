@@ -1,4 +1,13 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+// Explicitly non-live harness: these cases run against a released profile
+// record; a case that sets `release.real` gets the real record at the pin.
+const release = vi.hoisted(() => ({ real: false }));
+vi.mock("../../../src/discovery/standardProfileRelease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/discovery/standardProfileRelease.js")>();
+  return { get DACS_STANDARD_PROFILE_STATUS() { return release.real ? actual.DACS_STANDARD_PROFILE_STATUS : "released"; } };
+});
+afterEach(() => { release.real = false; });
 import { trustedSessionProfile } from "./helpers/sessionProfile.js";
 
 const mocks = vi.hoisted(() => ({ buyer: vi.fn(), seller: vi.fn(), resolveHttp: vi.fn() }));
@@ -103,9 +112,16 @@ for (const role of ["buyer", "seller"] as const) {
       () => live.terminalBundles!.registerLocalVetPass!({ jobId: JOB } as never),
       () => live.terminalBundles!.advanceRegisteredTerminal(JOB),
     ];
+    // The real record at the pin refuses a complete authority reply that
+    // states the candidate status, at every entry point.
+    release.real = true;
+    admission = trustedSessionProfile(JOB, BUYER, SELLER);
+    for (const call of calls) await expect(call()).rejects.toThrow(/unreleased candidate/);
+    expect(effect).not.toHaveBeenCalled();
+    release.real = false;
     for (const bad of [undefined, { ...good, releasePin: "historical" },
       (({ profileStatus: _status, ...pinOnly }) => pinOnly)(good),
-      { ...good, profileStatus: "released" },
+      { ...good, profileStatus: "unreleased-candidate" },
       { ...good, moduleVersions: { core: "0.3" } },
       { ...good, roles: [good.roles[0], good.roles[0]] },
       { ...good, roles: good.roles.map(entry => ({ ...entry, jobId: JOB.slice(0, -1) + "E" })) },

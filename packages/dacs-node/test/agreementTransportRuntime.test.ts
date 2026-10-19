@@ -44,6 +44,10 @@ import { loadDacsAgreementTerminalBoundaryForOrderV1 } from "../src/agreementTra
 import { identityBundleHash } from "@kynesyslabs/dacs/identity";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// Explicitly non-live harness: the live paths here run against a released
+// profile record; the real record at the pin refuses every admission.
+vi.mock("../../../src/discovery/standardProfileRelease.js", () => ({ DACS_STANDARD_PROFILE_STATUS: "released" }));
+
 import {
   createDacsBuyerAgreementTransportRuntimeV1,
   createDacsSellerAgreementTransportRuntimeV1,

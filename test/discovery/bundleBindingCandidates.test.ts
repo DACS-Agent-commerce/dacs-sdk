@@ -1,5 +1,5 @@
 import { DACS_STANDARD_PIN, DACS_STANDARD_PROFILE_STATUS, COMPLETED_SESSION_MODULE_VERSIONS } from "../../src/index.js";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   BUNDLE_BINDING_FETCH_BUDGET,
@@ -14,6 +14,15 @@ import {
   type ResolveBundleBindingCandidatesInput,
 } from "../../src/index.js";
 import { isUnresolvedBundleBindingCandidateSet } from "../../src/discovery/index.js";
+
+// Explicitly non-live harness: these cases run against a released profile
+// record; a case that sets `release.real` gets the real record at the pin.
+const release = vi.hoisted(() => ({ real: false }));
+vi.mock("../../src/discovery/standardProfileRelease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/discovery/standardProfileRelease.js")>();
+  return { get DACS_STANDARD_PROFILE_STATUS() { return release.real ? actual.DACS_STANDARD_PROFILE_STATUS : "released"; } };
+});
+afterEach(() => { release.real = false; });
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const SELLER = "did:demos:agent:" + "a".repeat(64);
@@ -501,7 +510,7 @@ it("rejects substituted deployment authority before candidate verification or fe
   const invalid = [
     { ...trusted, releasePin: "historical" },
     (({ profileStatus: _status, ...pinOnly }) => pinOnly)(trusted),
-    { ...trusted, profileStatus: "released" },
+    { ...trusted, profileStatus: "unreleased-candidate" },
     { ...trusted, moduleVersions: { core: "0.3" } },
     { ...trusted, roles: [trusted.roles[0], trusted.roles[0]] },
     { ...trusted, roles: trusted.roles.map((entry: any) => ({ ...entry, jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" })) },
@@ -512,6 +521,20 @@ it("rejects substituted deployment authority before candidate verification or fe
     await expect(resolveBundleBindingCandidates(value)).rejects.toThrow();
     expect(fetched).toEqual([]);
   }
+});
+
+it("refuses resolution while the pinned profile is unreleased, whatever the authority states", async () => {
+  release.real = true;
+  const { value, fetched } = input([binding("stor-" + "1".repeat(40), copy("unreleased"))], {});
+  const trusted = value.authenticateSessionProfile!;
+  let admissions = 0;
+  let signatures = 0;
+  value.authenticateSessionProfile = () => { admissions++; return trusted(); };
+  value.verifyBindingSignature = () => { signatures++; return true; };
+  await expect(resolveBundleBindingCandidates(value)).rejects.toThrow(/unreleased candidate/);
+  expect(admissions).toBe(0);
+  expect(signatures).toBe(0);
+  expect(fetched).toEqual([]);
 });
 
 it("bounds decoded candidate lists before any admission or native read", async () => {

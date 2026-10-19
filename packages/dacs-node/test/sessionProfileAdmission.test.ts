@@ -1,4 +1,13 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+
+// Explicitly non-live harness: these cases run against a released profile
+// record; a case that sets `release.real` gets the real record at the pin.
+const release = vi.hoisted(() => ({ real: false }));
+vi.mock("../../../src/discovery/standardProfileRelease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/discovery/standardProfileRelease.js")>();
+  return { get DACS_STANDARD_PROFILE_STATUS() { return release.real ? actual.DACS_STANDARD_PROFILE_STATUS : "released"; } };
+});
+afterEach(() => { release.real = false; });
 import { DacsError, IndeterminateSubstrateError, SubstrateError, TransientError } from "@kynesyslabs/dacs";
 import { admitDacsNativeLiveGraph, admitDacsX402LiveGraph } from "../src/sessionProfileAdmission.js";
 import { trustedSessionProfile } from "./helpers/sessionProfile.js";
@@ -32,6 +41,17 @@ for (const rail of ["native", "x402"] as const) {
         }
         expect(validate).not.toHaveBeenCalled();
       }
+      // The real record at the pin refuses before the authority is asked; that
+      // refusal is permanent, never an outage.
+      release.real = true;
+      authenticate.mockClear();
+      authenticate.mockImplementation(() => trustedSessionProfile(JOB, BUYER, SELLER));
+      for (const validator of validators) {
+        await expect(validator({ jobId: JOB } as never)).rejects.toThrow(/unreleased candidate/);
+      }
+      expect(authenticate).not.toHaveBeenCalled();
+      expect(validate).not.toHaveBeenCalled();
+      release.real = false;
       // Permanent policy refusals still reject, rather than authenticating a
       // message or disguising a known refusal as a transient observation.
       const refused = new DacsError("session revoked");

@@ -20,6 +20,10 @@ import {
 } from "@kynesyslabs/dacs/crypto";
 import { describe, expect, it, vi } from "vitest";
 
+// Explicitly non-live harness: the live paths here run against a released
+// profile record; the real record at the pin refuses every admission.
+vi.mock("../../../src/discovery/standardProfileRelease.js", () => ({ DACS_STANDARD_PROFILE_STATUS: "released" }));
+
 import {
   createCatalogBundleBindingSurfaceV1,
   createWellKnownBundleBindingSurfaceV1,
