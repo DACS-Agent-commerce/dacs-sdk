@@ -188,6 +188,8 @@ for (const role of ["buyer", "seller"] as const) {
     const good = structuredClone(admission);
     const invalid = [
       { ...good, releasePin: "historical" },
+      (({ profileStatus: _status, ...pinOnly }) => pinOnly)(good),
+      { ...good, profileStatus: "released" },
       { ...good, moduleVersions: { core: "0.3" } },
       { ...good, roles: [good.roles[0], good.roles[0]] },
       { ...good, roles: good.roles.map((entry) => ({ ...entry, jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7E" })) },

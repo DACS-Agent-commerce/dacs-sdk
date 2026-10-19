@@ -35,10 +35,16 @@ published extensionless `demoswork/operations/` directory import. Generated
 compiled services use this hook instead of shipping a general TypeScript/esbuild
 transformer in production; all unrelated resolution failures remain unchanged.
 
-The native DEM commerce profile uses Standard release
-`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, the same release and full module
-tuple required by its completed-session admission. Orders and databases bound
-to the historical `965df755aba4ff392f1fb37a93d287242b177ba4` release are refused;
+The native DEM commerce profile uses Standard commit
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, the same pin and full module
+tuple required by its completed-session admission. At that pin PROFILE.md lists
+the tuple as the unreleased JID-1 corrective candidate, which is not an
+admissible live profile until the Standard records a coordinated release. Until
+then a live deployment is not conformant: session admission refuses unless the
+deployment authority explicitly states `profileStatus: "unreleased-candidate"`
+(for a testnet or interop trial), and the pin moves to the release when it is
+cut. Orders and databases bound to the historical
+`965df755aba4ff392f1fb37a93d287242b177ba4` revision are refused;
 there is no automatic migration or relabelling of signed evidence. Retain the
 original database and use its matching SDK release to recover historical work.
 Start current-profile work in a new database.
@@ -281,9 +287,11 @@ interface still conform.
 Native DEM and x402 live factories require a verifier-owned
 `context.authenticateSessionProfile(jobId)` callback, also configurable on the
 role runtime. It must authenticate the exact session's buyer and seller, the
-pinned Standard release and every module version from deployment authority
-independent of caller input and artifacts. It returns
-`{ status: "valid", releasePin, moduleVersions, roles }`, with exactly one
+pinned Standard commit, its PROFILE.md release status and every module version
+from deployment authority independent of caller input and artifacts. It returns
+`{ status: "valid", releasePin, profileStatus, moduleVersions, roles }`, with
+`profileStatus` equal to `DACS_STANDARD_PROFILE_STATUS` (the pin and tuple alone
+never admit an unreleased candidate) and exactly one
 `{ jobId, role, participant }` entry for each role. Every live operation and
 inbound entry point rechecks this authority before effects; missing or conflicting
 admission refuses the action. The public BundleBinding resolver requires the same

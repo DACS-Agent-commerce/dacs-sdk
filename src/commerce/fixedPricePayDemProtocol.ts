@@ -9,7 +9,8 @@ import {
 import { DACS_STANDARD_PIN } from "../version.js";
 
 /**
- * Exact current Standard release, shared with native completion admission.
+ * Exact pinned Standard commit, shared with native completion admission. At
+ * this pin it is an unreleased candidate (`DACS_STANDARD_PROFILE_STATUS`).
  * Historical orders are refused, never relabelled as current-profile evidence.
  */
 export const FIXED_PRICE_PAY_DEM_STANDARD_REVISION = DACS_STANDARD_PIN;

@@ -1,6 +1,5 @@
-import { requireAuthenticatedSessionProfile, COMPLETED_SESSION_MODULE_VERSIONS, type AuthenticateSessionProfile } from "../discovery/sessionProfileAdmission.js";
+import { requireAuthenticatedSessionProfile, type AuthenticateSessionProfile } from "../discovery/sessionProfileAdmission.js";
 import { types as nodeTypes } from "node:util";
-import { DACS_STANDARD_PIN } from "../version.js";
 
 import type {
   AnchorReceipt,
@@ -236,7 +235,7 @@ export interface FixedPriceX402AuditCompletionDeps
   extends CompletedTwoSidedSessionDeps {}
 
 /** Native-DEM alias retained as an explicit discoverable public surface. */
-export { COMPLETED_SESSION_MODULE_VERSIONS } from "../discovery/sessionProfileAdmission.js";
+export { COMPLETED_SESSION_MODULE_VERSIONS, DACS_STANDARD_PROFILE_STATUS } from "../discovery/sessionProfileAdmission.js";
 
 export interface FixedPricePayDemAuditCompletionDeps extends CompletedTwoSidedSessionDeps {
   /**
@@ -1121,20 +1120,14 @@ export async function verifyFixedPricePayDemAuditCompletion(
       deadline,
       "trusted session profile admission",
     ), "trusted session profile admission");
-    if (!isRecord(admission) || !exactKeys(admission, ["status", "releasePin", "moduleVersions", "roles"]) ||
-        admission.status !== "valid" || admission.releasePin !== DACS_STANDARD_PIN ||
+    // The shared admission check (pin, profile status, tuple, exact roles),
+    // then both orders' own revision.
+    requireAuthenticatedSessionProfile(admission, {
+      jobId: retained.buyer.jobId, buyer: retained.buyer.buyer, seller: retained.buyer.seller,
+    });
+    if (!isRecord(admission) ||
         admission.releasePin !== retained.buyer.protocol.standardRevision ||
-        admission.releasePin !== retained.seller.protocol.standardRevision ||
-        !exact(admission.moduleVersions, COMPLETED_SESSION_MODULE_VERSIONS) ||
-        !Array.isArray(admission.roles) || admission.roles.length !== 2 ||
-        !(["buyer", "seller"] as const).every((role) => {
-          const records = (admission.roles as unknown[]).filter((entry: unknown) => isRecord(entry) && entry.role === role);
-          const entry = records[0];
-          return records.length === 1 && isRecord(entry) &&
-            exactKeys(entry, ["jobId", "role", "participant"]) &&
-            entry.jobId === retained.buyer.jobId && isCanonicalClaimReference(entry.participant) &&
-            sameCanonicalClaimIdentity(entry.participant, retained.buyer[role]);
-        })) {
+        admission.releasePin !== retained.seller.protocol.standardRevision) {
       throw new DacsError("native DEM completion lacks authenticated session profile and role authority");
     }
 

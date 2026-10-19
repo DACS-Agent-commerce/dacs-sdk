@@ -16,12 +16,26 @@ export const COMPLETED_SESSION_MODULE_VERSIONS = Object.freeze({
   core: "0.3", dacs1: "0.7", dacs2: "0.6", dacs3: "0.5", dacs4: "0.8", dacs5: "0.5",
 } as const);
 
+/**
+ * PROFILE.md release status of that tuple at `DACS_STANDARD_PIN`. The pin and
+ * tuple alone never admit an unreleased candidate: the deployment authority must
+ * state this exact status, so a non-conformant trial deployment (testnet,
+ * interop) is an explicit operator choice. Set it to `"released"` together with
+ * the pin when the Standard records the release; a stale acknowledgement is then
+ * refused.
+ */
+export const DACS_STANDARD_PROFILE_STATUS = "unreleased-candidate" as const;
+
 /** Verifier-owned deployment authority, independent of the session's wire artifacts. */
 export type AuthenticateSessionProfile = () => Promise<unknown> | unknown;
 type Role = "buyer" | "seller" | "orchestrator";
 type Roles = Partial<Record<Role, string>>;
 
-/** Validate an independently authenticated exact release and session role map. */
+/**
+ * Validate an independently authenticated exact pin, profile status and session
+ * role map. Every admission path (resolver, completion gates, live graphs,
+ * publication) goes through this one check.
+ */
 export function requireAuthenticatedSessionProfile(
   source: unknown,
   expected: Readonly<{ jobId: string; buyer?: string; seller?: string }>,
@@ -30,8 +44,13 @@ export function requireAuthenticatedSessionProfile(
   requireCanonicalJobId(expected.jobId, "profile admission jobId");
   const admission = snapshotCanonicalJsonRead(source, "trusted session profile admission") as Record<string, unknown>;
   const reject = (): never => { throw new DacsError("session profile admission lacks authenticated role authority"); };
+  if (admission !== null && typeof admission === "object" && !Array.isArray(admission) &&
+      admission.status === "valid" && admission.profileStatus !== DACS_STANDARD_PROFILE_STATUS) {
+    throw new DacsError(`session profile admission does not acknowledge the pinned Standard profile status "${
+      DACS_STANDARD_PROFILE_STATUS}"; the pin alone is not a release`);
+  }
   if (admission === null || typeof admission !== "object" || Array.isArray(admission) ||
-      Object.keys(admission).sort().join() !== "moduleVersions,releasePin,roles,status" ||
+      Object.keys(admission).sort().join() !== "moduleVersions,profileStatus,releasePin,roles,status" ||
       admission.status !== "valid" || admission.releasePin !== DACS_STANDARD_PIN ||
       canonicalize(admission.moduleVersions) !== canonicalize(COMPLETED_SESSION_MODULE_VERSIONS) ||
       !Array.isArray(admission.roles) || (requestedRole === undefined

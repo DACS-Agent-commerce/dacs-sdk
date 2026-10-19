@@ -52,6 +52,7 @@ import {
   type FixedPriceX402AuditCompletionDeps,
   type FixedPricePayDemAuditCompletionDeps,
   COMPLETED_SESSION_MODULE_VERSIONS,
+  DACS_STANDARD_PROFILE_STATUS,
   type FixedPriceX402CoordinatorRole,
   type FixedPriceX402OrderInput,
   type FixedPriceX402ProtocolBinding,
@@ -85,7 +86,7 @@ const BUYER = party(71);
 const SELLER = party(72);
 const h = (character: string): string => character.repeat(64);
 function trustedAdmission() {
-  return { status: "valid", releasePin: FIXED_PRICE_X402_STANDARD_REVISION,
+  return { status: "valid", releasePin: FIXED_PRICE_X402_STANDARD_REVISION, profileStatus: DACS_STANDARD_PROFILE_STATUS,
     moduleVersions: { ...COMPLETED_SESSION_MODULE_VERSIONS },
     roles: [
       { jobId: JOB_ID, role: "buyer", participant: BUYER.did },
@@ -655,6 +656,9 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       sellerClosure: fx.input.sellerClosure, copies: fx.input.copies };
     const badAdmissions: unknown[] = [undefined, { status: "invalid" },
       { ...trustedAdmission(), releasePin: "00".repeat(20) },
+      // The candidate pin and tuple alone never admit (PROFILE.md: unreleased).
+      (({ profileStatus: _status, ...pinOnly }) => pinOnly)(trustedAdmission()),
+      { ...trustedAdmission(), profileStatus: "released" },
       { ...trustedAdmission(), moduleVersions: { ...COMPLETED_SESSION_MODULE_VERSIONS, dacs5: "0.4" } },
       { ...trustedAdmission(), moduleVersions: { core: "0.3" } },
       { ...trustedAdmission(), roles: [...trustedAdmission().roles, trustedAdmission().roles[0]] },

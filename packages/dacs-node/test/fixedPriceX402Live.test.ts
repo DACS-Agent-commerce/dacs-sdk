@@ -104,6 +104,8 @@ for (const role of ["buyer", "seller"] as const) {
       () => live.terminalBundles!.advanceRegisteredTerminal(JOB),
     ];
     for (const bad of [undefined, { ...good, releasePin: "historical" },
+      (({ profileStatus: _status, ...pinOnly }) => pinOnly)(good),
+      { ...good, profileStatus: "released" },
       { ...good, moduleVersions: { core: "0.3" } },
       { ...good, roles: [good.roles[0], good.roles[0]] },
       { ...good, roles: good.roles.map(entry => ({ ...entry, jobId: JOB.slice(0, -1) + "E" })) },

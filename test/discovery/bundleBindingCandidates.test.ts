@@ -1,4 +1,4 @@
-import { DACS_STANDARD_PIN, COMPLETED_SESSION_MODULE_VERSIONS } from "../../src/index.js";
+import { DACS_STANDARD_PIN, DACS_STANDARD_PROFILE_STATUS, COMPLETED_SESSION_MODULE_VERSIONS } from "../../src/index.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -67,7 +67,7 @@ function input(
     jobId: JOB_ID,
     role: "seller",
     candidates,
-    authenticateSessionProfile: () => ({ status: "valid", releasePin: DACS_STANDARD_PIN,
+    authenticateSessionProfile: () => ({ status: "valid", releasePin: DACS_STANDARD_PIN, profileStatus: DACS_STANDARD_PROFILE_STATUS,
       moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS, roles: [
         { jobId: JOB_ID, role: "buyer", participant: BUYER },
         { jobId: JOB_ID, role: "seller", participant: extra.roleHolder ?? SELLER },
@@ -500,6 +500,8 @@ it("rejects substituted deployment authority before candidate verification or fe
   const trusted = await value.authenticateSessionProfile!() as any;
   const invalid = [
     { ...trusted, releasePin: "historical" },
+    (({ profileStatus: _status, ...pinOnly }) => pinOnly)(trusted),
+    { ...trusted, profileStatus: "released" },
     { ...trusted, moduleVersions: { core: "0.3" } },
     { ...trusted, roles: [trusted.roles[0], trusted.roles[0]] },
     { ...trusted, roles: trusted.roles.map((entry: any) => ({ ...entry, jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" })) },
@@ -545,7 +547,7 @@ it("admits the requested orchestrator role independently of artifact parties", a
   const candidate = binding(address, one, { role: "orchestrator", logicalAddress: bundleAddress(JOB_ID, "orchestrator") });
   let admissions = 0;
   const { value, fetched } = input([candidate], { [address]: one }, {
-    role: "orchestrator", authenticateSessionProfile: () => { admissions++; return { status: "valid", releasePin: DACS_STANDARD_PIN,
+    role: "orchestrator", authenticateSessionProfile: () => { admissions++; return { status: "valid", releasePin: DACS_STANDARD_PIN, profileStatus: DACS_STANDARD_PROFILE_STATUS,
       moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS, roles: [{ jobId: JOB_ID, role: "orchestrator", participant: SELLER }] }; },
     verifyCopy: () => ({ valid: true, signers: [SELLER], fullySigned: true, abortStanding: false }),
   });
@@ -577,7 +579,7 @@ describe("CF-3 party identity in BB-5 and BB-6", () => {
   const ADMITTED = `${SELLER}?jurisdiction=GB`;
 
   function admittedAs(participant: string) {
-    return () => ({ status: "valid", releasePin: DACS_STANDARD_PIN,
+    return () => ({ status: "valid", releasePin: DACS_STANDARD_PIN, profileStatus: DACS_STANDARD_PROFILE_STATUS,
       moduleVersions: COMPLETED_SESSION_MODULE_VERSIONS, roles: [
         { jobId: JOB_ID, role: "buyer", participant: BUYER },
         { jobId: JOB_ID, role: "seller", participant },
