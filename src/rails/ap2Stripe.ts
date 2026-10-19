@@ -11,6 +11,9 @@ import type {
 } from "./ap2.js";
 
 const STRIPE_API = "https://api.stripe.com/v1";
+// Stripe may prune idempotency keys at 24 hours. Reserve five minutes for
+// clock skew and dispatch delay; retries never refresh the persisted deadline.
+const STRIPE_REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
 const STRIPE_KEY_RE = /^rk_(test|live)_[A-Za-z0-9]+$/;
 const STRIPE_PAYMENT_INTENT_RE = /^pi_[A-Za-z0-9]+$/;
 const HASH_RE = /^(?:0x)?([0-9a-fA-F]{64})$/;
@@ -258,6 +261,13 @@ export function createStripeAp2Integration(
   const decimals = currencyMinorUnits as number;
 
   const provider: Ap2ProviderAdapter = {
+    noReferenceReplayWindowMs: STRIPE_REPLAY_WINDOW_MS,
+    operation: Object.freeze({
+      destination: `${STRIPE_API}/payment_intents`,
+      // Key rotation is conservatively a new namespace; no raw credential is persisted.
+      idempotencyNamespace: sha256Hex(createKey),
+      parameters: Object.freeze({ adapterVersion: "stripe-ap2-v1", payeeId, currencyMinorUnits: decimals }),
+    }),
     capabilities: Object.freeze({
       createCredential: true,
       statusOnlyCredential: true,
@@ -301,7 +311,7 @@ export function createStripeAp2Integration(
       form.set("metadata[dacs_agreement_hash]", input.metadata.dacs_agreement_hash ?? "");
 
       try {
-        await input.fence.assertCurrent();
+        await input.fence.assertSubmissionAllowed();
         const response = await fetchImpl(`${STRIPE_API}/payment_intents`, {
           method: "POST",
           headers: {

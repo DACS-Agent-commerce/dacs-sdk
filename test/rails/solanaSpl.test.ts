@@ -30,7 +30,7 @@ function authority(
   overrides: Partial<SolanaSplSettlementAuthority> = {},
 ): SolanaSplSettlementAuthority {
   return {
-    jobId: "job-solana-spl-1",
+    jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     phaseIndex: 2,
     railId: "solana-devnet-usdc",
     railDescriptorHash: HASH,
@@ -192,9 +192,20 @@ describe("createSolanaSplSettlementIntent", () => {
   });
 
   test("uses an unambiguous structured settlement-key preimage", () => {
-    expect(solanaSplSettlementKey({ jobId: "a:b", railId: "c", phaseIndex: 1 }))
-      .not.toBe(solanaSplSettlementKey({ jobId: "a", railId: "b:c", phaseIndex: 1 }));
+    const jobId = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    expect(solanaSplSettlementKey({ jobId, railId: "b:c", phaseIndex: 1 }))
+      .not.toBe(solanaSplSettlementKey({ jobId, railId: "b", phaseIndex: 1 }));
   });
+
+  test.each(["a:b", "job-solana-spl-1", "01arz3ndektsv4rrffq69g5fav", "café-job"])(
+    "refuses non-JID-1 job id %j before hashing (CORE JID-3)",
+    (jobId) => {
+      expect(() => solanaSplSettlementKey({ jobId, railId: "c", phaseIndex: 1 }))
+        .toThrow(/pay-solana-spl: jobId must be a canonical uppercase ULID/);
+      expect(() => createSolanaSplSettlementIntent(authority({ jobId })))
+        .toThrow(/pay-solana-spl: jobId must be a canonical uppercase ULID/);
+    },
+  );
 });
 
 describe("advanceSolanaSplSettlement", () => {

@@ -1,10 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
+import { x402Client, x402HTTPClient } from "@x402/fetch";
 import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
+import { DacsError } from "../../src/errors.js";
 import {
   createX402Rail,
   dacsX402AuthorizationNonce,
+  legacyDacsX402AuthorizationNonce,
   termsMatch,
   verifyDacsX402AuthorizationNonce,
   x402Settle,
@@ -26,20 +29,24 @@ const TEST_EVM_KEY = keccak256(stringToHex("dacs-sdk:test:x402-rail"));
 
 describe("DACS EIP-3009 session binding", () => {
   test("reproduces the normative SB-3 live, phase, job and ULID vectors", async () => {
-    const vectors = [
+    // The pre-JID-1 labels are derivation-only: they reproduce through the
+    // named legacy helper, and the payment-path helper refuses them.
+    const legacy = [
       ["practice-dacs-0001", 3, "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff"],
       ["practice-dacs-0001", 4, "0x80fa47321a52f728f5ecbde7a5ceb44dd6086c9902dd8b95980b05909e5ea969"],
       ["practice-dacs-0002", 3, "0x69256a3bf1c9bd6a5ba1ffc93705d44c5322e03de8f1e3ad6b6d709f4254ce29"],
-      ["01ARZ3NDEKTSV4RRFFQ69G5FAV", 3, "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
     ] as const;
-    for (const [jobId, phaseIndex, expected] of vectors) {
-      expect(await dacsX402AuthorizationNonce({ jobId, phaseIndex })).toBe(expected);
+    for (const [jobId, phaseIndex, expected] of legacy) {
+      expect(await legacyDacsX402AuthorizationNonce({ jobId, phaseIndex })).toBe(expected);
+      await expect(dacsX402AuthorizationNonce({ jobId, phaseIndex })).rejects.toThrow(/canonical uppercase ULID/);
     }
+    expect(await dacsX402AuthorizationNonce({ jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 3 }))
+      .toBe("0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2");
   });
 
   test("classifies matching, mismatching and malformed presented nonces", async () => {
-    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
-    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
+    const input = { jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 3 };
+    const expected = "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2";
     expect(await verifyDacsX402AuthorizationNonce(
       input,
       expected,
@@ -60,29 +67,41 @@ describe("DACS EIP-3009 session binding", () => {
     expect(await verifyDacsX402AuthorizationNonce(input, `0x${"A".repeat(64)}`)).toBe("malformed");
   });
 
-  test("the three normative retry cases retain the same derived nonce", async () => {
-    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
-    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
-    // used+same-transfer resumes, used+different-transfer refuses, and cancelled
-    // refuses at the reconcile layer; none may mint a replacement nonce.
-    for (const _state of ["used-same", "used-different", "cancelled"]) {
-      expect(await dacsX402AuthorizationNonce(input)).toBe(expected);
+  test("a retry re-derives the same nonce for the same job and phase", async () => {
+    const input = { jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 3 };
+    const expected = "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2";
+    // Only the derivation is pinned here. The three retry vectors (used-same,
+    // used-different, cancelled) run across a real restart in
+    // idempotencyProcessRestart.test.ts.
+    expect(await dacsX402AuthorizationNonce(input)).toBe(expected);
+    expect(await dacsX402AuthorizationNonce({ ...input })).toBe(expected);
+  });
+
+  test("a missing derivation input gets the typed JID-1 refusal, not a TypeError", async () => {
+    for (const input of [undefined, null]) {
+      const refusal = dacsX402AuthorizationNonce(input as never);
+      await expect(refusal).rejects.toThrow(DacsError);
+      await expect(refusal).rejects.toThrow(/x402 DACS binding jobId must be a canonical uppercase ULID/);
     }
   });
 
   test("rejects malformed derivation inputs", async () => {
-    await expect(dacsX402AuthorizationNonce({
+    // The Unicode label reproduces its frozen vector only through the legacy
+    // helper; the payment-path helper refuses it before hashing.
+    await expect(dacsX402AuthorizationNonce({ jobId: "job-1", phaseIndex: 0 }))
+      .rejects.toThrow(/x402 DACS binding jobId must be a canonical uppercase ULID/);
+    await expect(legacyDacsX402AuthorizationNonce({
       jobId: "cafe\u0301-job",
       phaseIndex: 0,
     })).resolves.toBe(
       "0xc4d6eb3c8774ff6078765567559c1ce1953badb01ba1ea8a5252561712294397",
     );
     await expect(dacsX402AuthorizationNonce({
-      jobId: "practice-dacs-0001",
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       phaseIndex: -1,
     })).rejects.toThrow(/non-negative phaseIndex/);
     await expect(dacsX402AuthorizationNonce({
-      jobId: "practice-dacs-0001",
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       // @ts-expect-error — exercising the canonical integer runtime guard
       phaseIndex: "03",
     })).rejects.toThrow(/non-negative phaseIndex/);
@@ -272,6 +291,75 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     asset: TOKEN,
     finalityBlocks: 2,
   };
+
+  test.each(["job-1", "", null, undefined, 3, "01arz3ndektsv4rrffq69g5fav", "01ARZ3NDEKTSV4RRFFQ69G5FAV\n", "01ARZ3NDEKTSV4RRFFQ69G5FAV\r"])("direct core refuses supplied malformed jobId %s before callbacks", async (jobId) => {
+    const client = fakeClient([]);
+    const fetchImpl = vi.fn(fakeFetch());
+    const deps = coreDeps(client, fetchImpl);
+    const finality = vi.spyOn(deps, "assertFinalityContext");
+    const payload = vi.spyOn(client, "createPaymentPayload");
+    await expect(x402SettleCore({ ...params, jobId } as never, deps)).rejects.toThrow(/canonical uppercase ULID/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(finality).not.toHaveBeenCalled();
+    expect(payload).not.toHaveBeenCalled();
+  });
+
+  test.each([-1, -0, "0", null, undefined, Number.NaN, Number.MAX_SAFE_INTEGER + 1])("direct core refuses a supplied malformed phaseIndex %s before callbacks", async (phaseIndex) => {
+    const client = fakeClient([]);
+    const fetchImpl = vi.fn(fakeFetch());
+    const deps = coreDeps(client, fetchImpl);
+    const finality = vi.spyOn(deps, "assertFinalityContext");
+    const payload = vi.spyOn(client, "createPaymentPayload");
+    await expect(x402SettleCore({ ...params, jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex } as never, deps)).rejects.toThrow(/phaseIndex/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(finality).not.toHaveBeenCalled();
+    expect(payload).not.toHaveBeenCalled();
+  });
+
+  test("real locked x402 client refuses malformed direct-core ID and pays a canonical control", async () => {
+    const payloads = vi.fn(async (version: number) => ({ x402Version: version, payload: { synthetic: true } }));
+    const client = new x402HTTPClient(new x402Client().register(NETWORK, { scheme: "exact", createPaymentPayload: payloads })) as unknown as X402ClientLike;
+    const paid = vi.fn();
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (new Headers(init?.headers).has("PAYMENT-SIGNATURE")) {
+        paid();
+        return new Response("delivered", { status: 200, headers: { "PAYMENT-RESPONSE": encodedReceipt({ success: true, transaction: TX_HASH, network: NETWORK, payer: PAYER, amount: params.amount }) } });
+      }
+      const challenge = { x402Version: 2, resource: { url: params.paywallUrl }, accepts: [{ scheme: "exact", network: NETWORK, payTo: RECIPIENT, amount: params.amount, asset: TOKEN, maxTimeoutSeconds: 120, extra: { name: "USDC", version: "2" } }], extensions: {} };
+      return new Response(JSON.stringify(challenge), { status: 402, headers: { "PAYMENT-REQUIRED": encodedReceipt(challenge) } });
+    });
+    const deps = coreDeps(client, fetchImpl);
+    const finality = vi.spyOn(deps, "assertFinalityContext");
+    await expect(x402SettleCore({ ...params, jobId: "job-1", phaseIndex: 0 }, deps)).rejects.toThrow(/canonical uppercase ULID/);
+    for (const fn of [fetchImpl, finality, payloads, paid]) expect(fn).not.toHaveBeenCalled();
+    await expect(x402SettleCore({ ...params, jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 0 }, deps)).resolves.toMatchObject({ ok: true });
+    expect(payloads).toHaveBeenCalledTimes(1);
+    expect(paid).toHaveBeenCalledTimes(1);
+  });
+
+  test("direct core accepts a canonical bound ID and rejects an accessor without reading it", async () => {
+    const client = fakeClient([{ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN }]);
+    await expect(x402SettleCore({ ...params, jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 0 }, coreDeps(client, fakeFetch()))).resolves.toMatchObject({ ok: true });
+    const getter = vi.fn(() => "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    await expect(x402SettleCore(Object.defineProperty({ ...params }, "jobId", { get: getter }), coreDeps(client, fakeFetch()))).rejects.toThrow();
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  test.each([["permit2"], ["permit2", "eip3009"], ["eip3009", "permit2"]])("selects supported EIP-3009 offer before signing: %s", async (...methods) => {
+    const client = fakeClient(methods.map((method) => ({ network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN, extra: { assetTransferMethod: method } })));
+    const payload = vi.spyOn(client, "createPaymentPayload");
+    const paid = vi.fn();
+    const run = x402SettleCore(params, coreDeps(client, fakeFetch({ onPaid: paid })));
+    if (methods.includes("eip3009")) {
+      await expect(run).resolves.toMatchObject({ ok: true });
+      expect(payload.mock.calls[0]![0].accepts).toMatchObject([{ extra: { assetTransferMethod: "eip3009" } }]);
+      expect(paid).toHaveBeenCalledTimes(1);
+    } else {
+      await expect(run).rejects.toThrow(/does not match/);
+      expect(payload).not.toHaveBeenCalled();
+      expect(paid).not.toHaveBeenCalled();
+    }
+  });
 
   test("happy path: pays the matching requirement and returns settlement", async () => {
     let paidHeader = "";
@@ -799,12 +887,12 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "USDC",
       payee: RECIPIENT,
       expectedPayee: RECIPIENT,
-      jobId: "j1",
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     });
 
     expect(captured?.asset).toBe("0x036CbD53842c5426634e7929541eC2318f3dCF7e");
     expect(captured?.amount).toBe("1000000");
-    expect(captured?.jobId).toBe("j1");
+    expect(captured?.jobId).toBe("01ARZ3NDEKTSV4RRFFQ69G5FAV");
     expect(captured?.phaseIndex).toBe(3);
   });
 
@@ -845,7 +933,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "USDC",
       payee: RECIPIENT,
       expectedPayee: RECIPIENT,
-      jobId: "j1",
+      jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       phaseIndex: 2,
     });
 
@@ -876,7 +964,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     });
 
-    await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "j1" });
+    await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV" });
 
     expect(captured?.phaseIndex).toBe(0);
   });

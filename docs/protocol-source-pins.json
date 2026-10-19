@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "scope": "Immutable reference sources; these pins alone do not certify runtime or deployment compatibility.",
+  "sources": {
+    "dacsStandard": { "repository": "https://github.com/DACS-Agent-commerce/DACS-Standard", "revision": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20" },
+    "demosSdk": { "repository": "https://github.com/kynesyslabs/sdks", "revision": "d3620ae24f657ae7442e63e7adaefef7094b22e2", "npmVersion": "4.0.16" },
+    "x402": { "repository": "https://github.com/x402-foundation/x402", "revision": "b32a7023e93f3acb99fcc55ebb70151f5296948b", "npmVersion": "2.15.0" },
+    "ap2V020": { "repository": "https://github.com/google-agentic-commerce/AP2", "revision": "b4587ac1d055888a73b4b21750973cffba961793" },
+    "ap2OfficialVerifierFixture": { "repository": "https://github.com/google-agentic-commerce/AP2", "revision": "e1ea56db72a6385bce3e5c1112b3a56ce60acb43" },
+    "eip712": { "repository": "https://github.com/ethereum/EIPs", "revision": "deb8f0d3ea9167bd30775fb3d45d052fce651d56", "path": "EIPS/eip-712.md" },
+    "erc20And3009": { "repository": "https://github.com/ethereum/ercs", "revision": "4dec821bcb7dfbd739c843dcb7247e750781dd55", "paths": ["ERCS/erc-20.md", "ERCS/erc-3009.md"] },
+    "ulid": { "repository": "https://github.com/ulid/spec", "revision": "d0c7170df4517939e70129b4d6462cc162f2d5bf" },
+    "splToken": { "repository": "https://github.com/solana-program/token", "revision": "31646dce3df0a03d468a14913f01b9fd3c3adad0" }
+  },
+  "supportedCleanNodeRevision": null,
+  "deploymentObservations": [
+    {
+      "endpoint": "https://node2.demos.sh",
+      "observedVia": "nodeCall getNetworkInfo; GET /version reports a release label instead and omits the source, dirty and build fields",
+      "capturedDate": "2026-10-18",
+      "reportedVersion": "0.9.8",
+      "reportedSourceRevision": "61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+      "reportedBranch": "stabilisation",
+      "reportedDirty": true,
+      "reportedBuiltAt": "2026-10-14T16:45:24Z",
+      "sourceConformanceEvidence": false
+    }
+  ]
+}

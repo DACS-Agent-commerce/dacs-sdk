@@ -1,4 +1,13 @@
-import { describe, expect, test, vi } from "vitest";
+import { ap2ProfileScope, AP2_TEST_RECORD, AP2_TEST_PROFILE, AP2_TEST_PEER } from "../fixtures/ap2Profile.js";
+import { writeMainFormatAp2Record } from "../fixtures/ap2LegacyRecord.js";
+import { AP2_IMPLEMENTED_MODULE_VERSIONS, authenticateAp2ProfileAdmission } from "../../src/rails/ap2Admission.js";
+import { createFsAp2BindingStore } from "../../src/rails/ap2SettlementFs.js";
+import { readFileSync } from "node:fs";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   admitAp2MandateChain,
@@ -24,27 +33,52 @@ const TRANSACTION_ID = "rtXpY7wp4o7vknuw0ZaOpynbfydEGvpoFkFUiRFpYJU";
 const CHANGED_TRANSACTION_ID = "iECTDxg6jDyMmaBix8DHKhNnhNqCzzEgD4RJ-tXvuXM";
 const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const OTHER_JOB_ID = `${JOB_ID.slice(0, -1)}W`;
+const PROFILE_SCOPE = await ap2ProfileScope();
 const AGREEMENT_HASH = "a".repeat(64);
+const AP2_CORPUS = JSON.parse(readFileSync(new URL(
+  "../../vendor/DACS-Standard/conformance/vectors/security/ap2-handler-safety-v0.6.json",
+  import.meta.url,
+), "utf8")) as { hash: string; count: number; vectors: Array<{
+  name: string; op: string; jobId: string; phaseIndex: unknown;
+  expected: "pass" | "error"; expectedKey?: string;
+}> };
+const AP2_KEY_VECTORS = AP2_CORPUS.vectors.filter((vector) => vector.op === "derive-idempotency-key");
 
-// Exact 30 cases from DACS-Standard@662be1d4
-// conformance/vectors/security/ap2-handler-safety-v0.6.json
-// declared vector hash: f85b678a1e91db0707a97a792134adb8d2ba87da57f715abd42a109d38dba745.
-describe("DACS-4 v0.6 AP2 30-case safety corpus", () => {
-  test.each([
-    ["ap2-key-base", JOB_ID, 3, "326c806fa163e7ec2c97f512d479a846a67291c8c4092d55395068e35356eb97"],
-    ["ap2-key-phase-separation", JOB_ID, 4, "7b80ba1a15d989611ed25599fb25d7e7071b52c30a01c54fed23138371f058a4"],
-    ["ap2-key-job-separation", OTHER_JOB_ID, 3, "e255e8c5eacfbeadbefbeee884bad22bf2164894a890bb9a7ceb934d99062f3b"],
-    ["ap2-key-nfc-normalization", "cafe\u0301-job", 0, "2128576ea9daf4765462705820c909c9f40cad744fa7b46298e495579c4eb184"],
-  ])("%s", (_name, jobId, phaseIndex, expected) => {
-    expect(deriveAp2IdempotencyKey(jobId, phaseIndex)).toBe(expected);
+// conformance/vectors/security/ap2-handler-safety-v0.6.json at the Standard
+// revision pinned in package.json (d45c0a2: 66 vectors, hash asserted below).
+// Key and binding vectors are replayed from that file. Earlier signature and
+// registration cases remain pinned below; profile cases also exercise the composed handler.
+describe("DACS-4 AP2 handler safety corpus", () => {
+  // The key vectors are read from the pinned corpus, so a withdrawn or
+  // changed vector cannot survive here as a hard-coded copy.
+  test("replays exactly the pinned AP2-6 key vectors", () => {
+    expect(AP2_CORPUS).toMatchObject({
+      count: 66,
+      hash: "f5566a4d096b0bf77382725f292aac2f828ffc59e4c8c0265a353d2723b5ff2e",
+    });
+    expect(AP2_KEY_VECTORS.map(({ name }) => name)).toEqual([
+      "ap2-key-base",
+      "ap2-key-phase-separation",
+      "ap2-key-job-separation",
+      "ap2-key-noncanonical-unicode-error",
+      "ap2-key-overflow-job-error",
+      "ap2-key-negative-phase-error",
+      "ap2-key-string-phase-error",
+    ]);
+    expect(AP2_KEY_VECTORS.find(({ name }) => name === "ap2-key-job-separation")?.jobId)
+      .toBe(OTHER_JOB_ID);
   });
 
-  test("ap2-key-negative-phase-error", () => {
-    expect(() => deriveAp2IdempotencyKey(JOB_ID, -1)).toThrow();
-  });
-
-  test("ap2-key-string-phase-error", () => {
-    expect(() => deriveAp2IdempotencyKey(JOB_ID, "03" as never)).toThrow();
+  test.each(AP2_KEY_VECTORS.map((vector) => [vector.name, vector] as const))("%s", (_name, vector) => {
+    if (vector.expected === "pass") {
+      expect(deriveAp2IdempotencyKey(vector.jobId, vector.phaseIndex as number)).toBe(vector.expectedKey);
+      return;
+    }
+    expect(vector.expected).toBe("error");
+    const refusal = vector.name.endsWith("-phase-error")
+      ? /pay-ap2: phaseIndex must be a non-negative safe integer/
+      : /pay-ap2: jobId must be a canonical uppercase ULID/;
+    expect(() => deriveAp2IdempotencyKey(vector.jobId, vector.phaseIndex as never)).toThrow(refusal);
   });
 
   test.each([
@@ -64,6 +98,7 @@ describe("DACS-4 v0.6 AP2 30-case safety corpus", () => {
   });
 
   const admissionBase = {
+    ...PROFILE_SCOPE,
     checkoutMandatePresent: true,
     checkoutMandateVerified: true,
     paymentMandatePresent: true,
@@ -81,6 +116,7 @@ describe("DACS-4 v0.6 AP2 30-case safety corpus", () => {
     ["ap2-admission-payment-mandate-missing", { paymentMandatePresent: false, paymentMandateVerified: false }, "fail", false],
     ["ap2-admission-deterministic-signature-rejects", { algorithm: "Ed25519", signatureGeneration: "deterministic" }, "fail", false],
     ["ap2-admission-unsupported-algorithm-errors", { sdAlg: "dacs-unknown-hash" }, "error", false],
+    ["ap2-admission-negative-zero-errors", { phaseIndex: -0 }, "error", false],
   ])("%s", (_name, override, decision, permitsEffects) => {
     const result = admitAp2MandateChain({ ...admissionBase, ...override } as never);
     expect(result.decision).toBe(decision);
@@ -88,25 +124,28 @@ describe("DACS-4 v0.6 AP2 30-case safety corpus", () => {
     expect(result.submitProviderPayment).toBe(permitsEffects);
   });
 
-  test.each([
-    ["ap2-first-presentation-binds", [], JOB_ID, 3, "pass", "bind-new", true],
-    ["ap2-same-tuple-inflight-resumes", [{ transactionId: TRANSACTION_ID, jobId: JOB_ID, phaseIndex: 3, state: "in-flight" }], JOB_ID, 3, "pass", "resume-existing", false],
-    ["ap2-same-tuple-settled-resumes-evidence", [{ transactionId: TRANSACTION_ID, jobId: JOB_ID, phaseIndex: 3, state: "settled" }], JOB_ID, 3, "pass", "resume-settlement", false],
-    ["ap2-cross-job-replay-rejects", [{ transactionId: TRANSACTION_ID, jobId: JOB_ID, phaseIndex: 3, state: "in-flight" }], OTHER_JOB_ID, 3, "fail", "reject-replay", false],
-    ["ap2-cross-phase-replay-rejects", [{ transactionId: TRANSACTION_ID, jobId: JOB_ID, phaseIndex: 3, state: "in-flight" }], JOB_ID, 4, "fail", "reject-replay", false],
-    ["ap2-conflicting-stored-bindings-error", [
-      { transactionId: TRANSACTION_ID, jobId: JOB_ID, phaseIndex: 3, state: "in-flight" },
-      { transactionId: TRANSACTION_ID, jobId: OTHER_JOB_ID, phaseIndex: 3, state: "in-flight" },
-    ], JOB_ID, 3, "error", "refuse-conflict", false],
-  ])("%s", (_name, priorBindings, jobId, phaseIndex, decision, action, submit) => {
-    const result = evaluateAp2TransactionBinding({
-      transactionId: TRANSACTION_ID,
-      jobId,
-      phaseIndex,
-      priorBindings: priorBindings as never,
+  test.each(AP2_CORPUS.vectors.filter((vector) =>
+    ["ap2-admission-noncanonical-job-errors", "ap2-admission-overflow-job-errors", "ap2-admission-negative-phase-errors"].includes(vector.name),
+  ))("$name through the admission helper", (vector) => {
+    expect(vector.expected).toBe("error");
+    expect(admitAp2MandateChain({ ...admissionBase, ...vector } as never)).toMatchObject({
+      decision: "error", reserveAp2Binding: false, submitProviderPayment: false,
     });
-    expect(result).toEqual({ decision, action, submitNewPayment: submit });
   });
+
+  test.each(["jobId", "phaseIndex"])("admission rejects a %s accessor without reading it", (key) => {
+    const getter = vi.fn(() => { throw new Error("scope accessor invoked"); });
+    const args = Object.defineProperty({ ...admissionBase }, key, { enumerable: true, get: getter });
+    expect(admitAp2MandateChain(args)).toMatchObject({ decision: "error", reserveAp2Binding: false, submitProviderPayment: false });
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  test.each(AP2_CORPUS.vectors.filter((vector) => vector.op === "transaction-binding"))(
+    "$name", (vector) => {
+      const expected = vector as unknown as { expected: string; want: { action: string; submitNewPayment: boolean } };
+      expect(evaluateAp2TransactionBinding(vector as never)).toEqual({ decision: expected.expected, ...expected.want });
+    },
+  );
 
   test.each([
     ["ap2-checkout-randomized-signature-pass", "ES256", "non-deterministic", "pass"],
@@ -192,6 +231,8 @@ function capturedStatus(
 
 function provider(overrides: Partial<Ap2ProviderAdapter> = {}): Ap2ProviderAdapter {
   return {
+    noReferenceReplayWindowMs: 24 * 60 * 60 * 1000,
+    operation: { destination: "https://provider.example/payments", idempotencyNamespace: "account-a", parameters: { adapterVersion: "test-v1" } },
     capabilities: {
       createCredential: true,
       statusOnlyCredential: true,
@@ -217,6 +258,7 @@ function input(
   overrides: Partial<AdvanceAp2SettlementInput<object, object>> = {},
 ): AdvanceAp2SettlementInput<object, object> {
   return {
+    ...PROFILE_SCOPE,
     jobId: JOB_ID,
     phaseIndex: 3,
     agreementHash: AGREEMENT_HASH,
@@ -235,6 +277,26 @@ function input(
 }
 
 describe("advanceAp2Settlement", () => {
+  test.each([undefined, null, 0, -1, NaN, Infinity, "1000"])(
+    "refuses missing or invalid replay policy %s before verification or effects", async (window) => {
+      const adapter = provider();
+      const verify = verifier();
+      const store = createInMemoryAp2BindingStore();
+      const checkout = vi.spyOn(verify, "verifyCheckoutMandate");
+      const payment = vi.spyOn(verify, "verifyPaymentMandate");
+      const claim = vi.spyOn(store, "claim");
+      const submit = vi.spyOn(adapter, "submit");
+      const status = vi.spyOn(adapter, "readAttestedStatus");
+      if (window === undefined) Reflect.deleteProperty(adapter, "noReferenceReplayWindowMs");
+      else Object.assign(adapter, { noReferenceReplayWindowMs: window });
+
+      expect(await advanceAp2Settlement(input({ provider: adapter, verifier: verify, store }))).toEqual({
+        status: "failed", reason: "pay-ap2: noReferenceReplayWindowMs must be a positive safe integer",
+      });
+      for (const effect of [checkout, payment, claim, submit, status]) expect(effect).not.toHaveBeenCalled();
+    },
+  );
+
   test("persists one binding and returns only attested, term-bound captured status", async () => {
     const submit = vi.fn(provider().submit);
     const readAttestedStatus = vi.fn(provider().readAttestedStatus);
@@ -341,6 +403,7 @@ describe("advanceAp2Settlement", () => {
     await expect(advanceAp2Settlement(input({ store, provider: provider({ submit }) })))
       .resolves.toMatchObject({ status: "settled" });
     await expect(advanceAp2Settlement(input({
+      ...await ap2ProfileScope(OTHER_JOB_ID),
       jobId: OTHER_JOB_ID,
       agreementHash: "c".repeat(64),
       store,
@@ -455,4 +518,241 @@ describe("advanceAp2Settlement", () => {
     expect(submit).toHaveBeenCalledTimes(1);
     expect(readAttestedStatus).not.toHaveBeenCalled();
   });
+});
+
+// Review probes are permanent refusal regressions, with a valid control above.
+describe("AP2 complete operation and handler admission", () => {
+  test.each(["payment bytes", "checkout bytes", "provider", "namespace", "parameters", "unicode bytes", "replay policy"])("recovery rejects changed %s before any provider call", async (change) => {
+    let clock = 1000;
+    const submit = vi.fn(async () => ({ disposition: "indeterminate" as const, reason: "response-lost" }));
+    const status = vi.fn(provider().readAttestedStatus);
+    const first = input({ now: () => clock, provider: provider({ submit, readAttestedStatus: status }) });
+    if (change === "unicode bytes") first.paymentMandate = { exact: "caf\u00e9" };
+    expect((await advanceAp2Settlement(first)).status).toBe("indeterminate");
+    clock += 101;
+    const retry = { ...first, provider: provider({ submit, readAttestedStatus: status }) };
+    if (change === "payment bytes") retry.paymentMandate = { changed: true };
+    if (change === "checkout bytes") retry.checkoutMandate = { changed: true };
+    if (change === "provider") retry.provider.operation = { ...retry.provider.operation, destination: "https://provider-b.example/payments" };
+    if (change === "namespace") retry.provider.operation = { ...retry.provider.operation, idempotencyNamespace: "account-b" };
+    if (change === "parameters") retry.provider.operation = { ...retry.provider.operation, parameters: { adapterVersion: "test-v2" } };
+    if (change === "unicode bytes") retry.paymentMandate = { exact: "cafe\u0301" };
+    if (change === "replay policy") retry.provider = provider({ submit, readAttestedStatus: status, noReferenceReplayWindowMs: 2 * 24 * 60 * 60 * 1000 });
+    // Same transaction_id, job and phase: an operation conflict, never a cross-session replay.
+    expect(await advanceAp2Settlement(retry)).toEqual({ status: "failed", reason: "ap2-retained-operation-conflict" });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(status).not.toHaveBeenCalled();
+  });
+
+  const negativeNames = ["unauthenticated-profile", "caller-profile", "duplicate-profile", "peer-identity-mismatch", "session-mismatch", "copied-profile-reference"];
+  test.each(negativeNames)("pinned ap2-admission-%s-refuses through the composed handler", async (name) => {
+    expect(AP2_CORPUS.vectors.some((v) => v.name === `ap2-admission-${name}-refuses`)).toBe(true);
+    let scope = { ...PROFILE_SCOPE };
+    if (name === "caller-profile" || name === "copied-profile-reference") {
+      scope.profileAdmission = { ...PROFILE_SCOPE.profileAdmission };
+    } else {
+      const records = [{ ...AP2_TEST_RECORD }];
+      if (name === "unauthenticated-profile") records[0]!.authenticated = false;
+      if (name === "duplicate-profile") records.push({ ...AP2_TEST_RECORD });
+      if (name === "peer-identity-mismatch") records[0]!.identity = "did:demos:other-peer";
+      if (name === "session-mismatch") records[0]!.jobId = OTHER_JOB_ID;
+      await expect(authenticateAp2ProfileAdmission({
+        jobId: JOB_ID, peerIdentity: AP2_TEST_PEER, expectedProfile: AP2_TEST_PROFILE,
+        authenticateParticipants: async () => records,
+      })).rejects.toThrow();
+      scope.profileAdmission = undefined as never;
+    }
+    const verify = vi.fn(verifier().verifyCheckoutMandate);
+    const submit = vi.fn(provider().submit);
+    const status = vi.fn(provider().readAttestedStatus);
+    const claim = vi.fn(createInMemoryAp2BindingStore().claim);
+    const args = input({ ...scope, verifier: { ...verifier(), verifyCheckoutMandate: verify },
+      provider: provider({ submit, readAttestedStatus: status }), store: { ...createInMemoryAp2BindingStore(), claim } });
+    expect(await advanceAp2Settlement(args)).toEqual({ status: "failed", reason: "ap2-profile-admission-refused" });
+    for (const fn of [verify, submit, status, claim]) expect(fn).not.toHaveBeenCalled();
+    expect(admitAp2MandateChain({ ...args } as never)).toMatchObject({ decision: "fail", reserveAp2Binding: false, submitProviderPayment: false });
+  });
+
+  test.each(["unrelated malformed record", "wrong pin", "incomplete tuple", "wrong tuple", "major-only tuple", "unknown field"])("refuses %s before issuing admission", async (name) => {
+    const records = structuredClone([AP2_TEST_RECORD]);
+    if (name === "unrelated malformed record") records.push({ ...AP2_TEST_RECORD, identity: "other", authenticated: false });
+    if (name === "wrong pin") records[0]!.releasePin = "2".repeat(40);
+    if (name === "incomplete tuple") delete (records[0]!.moduleVersions as Partial<typeof AP2_TEST_PROFILE.moduleVersions>).dacs5;
+    if (name === "wrong tuple") records[0]!.moduleVersions.dacs4 = "0.7";
+    if (name === "major-only tuple") records[0]!.moduleVersions.core = "1";
+    if (name === "unknown field") Object.assign(records[0]!, { profileRef: "copied" });
+    await expect(ap2ProfileScope(JOB_ID, records)).rejects.toThrow();
+  });
+
+  test.each(AP2_CORPUS.vectors.filter((v) => /(?:unknown|wrong-type)-state-entry/.test(v.name)))("$name", (vector) => {
+    expect(evaluateAp2TransactionBinding(vector as never)).toEqual({ decision: "error", action: "refuse-conflict", submitNewPayment: false });
+  });
+});
+
+
+test("AP2 recovery submits artifacts decoded from the retained operation, not the verification snapshot", async () => {
+  let clock = 1000;
+  const verifiedArtifacts: unknown[] = [];
+  const submittedArtifacts: unknown[] = [];
+  const verification = verifier();
+  const originalVerify = verification.verifyCheckoutMandate;
+  verification.verifyCheckoutMandate = async (artifact) => { verifiedArtifacts.push(artifact); return originalVerify(artifact); };
+  const submit = vi.fn(async ({ checkoutMandate }: Parameters<Ap2ProviderAdapter["submit"]>[0]) => {
+    submittedArtifacts.push(checkoutMandate);
+    return submit.mock.calls.length === 1
+      ? { disposition: "indeterminate" as const, reason: "response-lost" }
+      : { disposition: "accepted" as const, providerRef: "provider-1" };
+  });
+  const args = input({ verifier: verification, provider: provider({ submit }), now: () => clock });
+  expect((await advanceAp2Settlement(args)).status).toBe("indeterminate");
+  clock += 101;
+  expect((await advanceAp2Settlement({ ...args, checkoutMandate: structuredClone(args.checkoutMandate) })).status).toBe("settled");
+  expect(submittedArtifacts[1]).toEqual(verifiedArtifacts[1]);
+  expect(submittedArtifacts[1]).not.toBe(verifiedArtifacts[1]);
+});
+
+test("AP2 refuses legacy incomplete retained intents before provider status or submission", async () => {
+  const store = createInMemoryAp2BindingStore();
+  const submit = vi.fn(provider().submit);
+  const status = vi.fn(provider().readAttestedStatus);
+  const originalClaim = store.claim;
+  store.claim = async (args) => {
+    const result = await originalClaim(args);
+    if ("intent" in result) return { ...result, intent: { ...result.intent, intentVersion: "1" } } as never;
+    return result;
+  };
+  expect((await advanceAp2Settlement(input({ store, provider: provider({ submit, readAttestedStatus: status }) })))).toMatchObject({ status: "failed", reason: "ap2-binding-store-intent-mismatch" });
+  expect(submit).not.toHaveBeenCalled();
+  expect(status).not.toHaveBeenCalled();
+});
+
+test.each([{ jobId: "job-1" }, { phaseIndex: -1 }, { phaseIndex: "3" }, { phaseIndex: -0 }])("AP2 entry gate refuses invalid session/phase before any dependency: %j", async (override) => {
+  const verify = vi.fn(verifier().verifyCheckoutMandate);
+  const claim = vi.fn(createInMemoryAp2BindingStore().claim);
+  const submit = vi.fn(provider().submit);
+  const args = input({ verifier: { ...verifier(), verifyCheckoutMandate: verify }, provider: provider({ submit }), store: { ...createInMemoryAp2BindingStore(), claim }, ...override } as never);
+  expect((await advanceAp2Settlement(args)).status).toBe("failed");
+  for (const fn of [verify, claim, submit]) expect(fn).not.toHaveBeenCalled();
+});
+
+
+test("AP2 provider A executing with a lost reference cannot resume at provider B's independent namespace", async () => {
+  let clock = 1000;
+  const effects: string[] = [];
+  const a = provider({
+    async submit() { effects.push("provider-A"); return { disposition: "indeterminate", reason: "reference-lost" }; },
+  });
+  const bSubmit = vi.fn(async () => { effects.push("provider-B"); return { disposition: "accepted" as const, providerRef: "provider-1" }; });
+  const bStatus = vi.fn(provider().readAttestedStatus);
+  const b = provider({
+    operation: { destination: "https://provider-b.example/payments", idempotencyNamespace: "account-B", parameters: { adapterVersion: "test-v1" } },
+    submit: bSubmit, readAttestedStatus: bStatus,
+  });
+  const args = input({ provider: a, now: () => clock });
+  expect((await advanceAp2Settlement(args)).status).toBe("indeterminate");
+  clock += 101;
+  expect((await advanceAp2Settlement({ ...args, provider: b })).status).toBe("failed");
+  expect(effects).toEqual(["provider-A"]);
+  expect(bSubmit).not.toHaveBeenCalled();
+  expect(bStatus).not.toHaveBeenCalled();
+});
+
+
+test("AP2 local profile authority has a closed data shape before its resolver is invoked", async () => {
+  const authenticateParticipants = vi.fn(async () => [AP2_TEST_RECORD]);
+  const authority = { jobId: JOB_ID, peerIdentity: AP2_TEST_PEER, expectedProfile: AP2_TEST_PROFILE, authenticateParticipants };
+  await expect(authenticateAp2ProfileAdmission({ ...authority, callerProfile: AP2_TEST_PROFILE } as never)).rejects.toThrow(/closed stable data/);
+  const getter = vi.fn(() => JOB_ID);
+  await expect(authenticateAp2ProfileAdmission(Object.defineProperty({ ...authority }, "jobId", { get: getter }))).rejects.toThrow(/closed stable data/);
+  expect(authenticateParticipants).not.toHaveBeenCalled();
+  expect(getter).not.toHaveBeenCalled();
+});
+
+test("AP2 refuses a local profile naming a module tuple this implementation does not implement", async () => {
+  // CORE §11.1.2(3): the tuple is the one PROFILE.md names at the pinned Standard revision.
+  const profile = readFileSync(new URL("../../vendor/DACS-Standard/spec/PROFILE.md", import.meta.url), "utf8");
+  const table = profile.split("Its affected document tuple is:")[1]!.split("\n\n")[1]!;
+  const pinned = Object.fromEntries([...table.matchAll(/^\| \[(CORE|DACS-(\d))[^\]]*\]\([^)]*\) \| (\d+\.\d+) \|/gm)]
+    .map(([, document, module, version]) => [document === "CORE" ? "core" : `dacs${module}`, version]));
+  expect(AP2_IMPLEMENTED_MODULE_VERSIONS).toEqual(pinned);
+  expect(AP2_TEST_PROFILE.moduleVersions).toEqual(AP2_IMPLEMENTED_MODULE_VERSIONS);
+  for (const [module, version] of [["dacs4", "0.7"], ["core", "0.2"], ["dacs5", "0.6"]] as const) {
+    const moduleVersions = { ...AP2_TEST_PROFILE.moduleVersions, [module]: version };
+    // A peer that matches the misconfigured local policy still gains nothing.
+    const authenticateParticipants = vi.fn(async () => [{ ...AP2_TEST_RECORD, moduleVersions }]);
+    await expect(authenticateAp2ProfileAdmission({
+      jobId: JOB_ID, peerIdentity: AP2_TEST_PEER, expectedProfile: { ...AP2_TEST_PROFILE, moduleVersions },
+      authenticateParticipants,
+    })).rejects.toThrow(/does not implement/);
+    expect(authenticateParticipants).not.toHaveBeenCalled();
+  }
+});
+
+const ap2Dirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(ap2Dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+async function ap2Dir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "dacs-ap2-handler-"));
+  ap2Dirs.push(dir);
+  return dir;
+}
+
+describe.each([
+  ["in-memory", async () => createInMemoryAp2BindingStore()],
+  ["filesystem", async () => createFsAp2BindingStore({ dir: await ap2Dir() })],
+])("AP2 %s store recovery after a lost provider response", (_name, make) => {
+  test("a retry presenting the same mandates with reordered keys resumes the same operation and key", async () => {
+    let clock = 1000;
+    const calls: Array<Parameters<Ap2ProviderAdapter["submit"]>[0]> = [];
+    const submit = vi.fn(async (call: Parameters<Ap2ProviderAdapter["submit"]>[0]) => {
+      calls.push(call);
+      return calls.length === 1
+        ? { disposition: "indeterminate" as const, reason: "response-lost" }
+        : { disposition: "accepted" as const, providerRef: "provider-1" };
+    });
+    const status = vi.fn(provider().readAttestedStatus);
+    const store = await make();
+    const first = input({
+      store, now: () => clock, provider: provider({ submit, readAttestedStatus: status }),
+      checkoutMandate: { kind: "CheckoutMandate", checkout_jwt: CHECKOUT_JWS, nested: { a: 1, b: "café" } },
+      paymentMandate: { kind: "PaymentMandate", transaction_id: TRANSACTION_ID, amount: "10.00" },
+    });
+    expect(await advanceAp2Settlement(first)).toEqual({ status: "indeterminate", reason: "response-lost" });
+    clock += 101;
+    const reordered = {
+      ...first,
+      owner: "worker-restarted",
+      provider: provider({
+        submit, readAttestedStatus: status,
+        operation: { parameters: { adapterVersion: "test-v1" }, idempotencyNamespace: "account-a", destination: "https://provider.example/payments" },
+      }),
+      checkoutMandate: { nested: { b: "café", a: 1 }, checkout_jwt: CHECKOUT_JWS, kind: "CheckoutMandate" },
+      paymentMandate: { amount: "10.00", transaction_id: TRANSACTION_ID, kind: "PaymentMandate" },
+    };
+    expect(await advanceAp2Settlement(reordered)).toMatchObject({ status: "settled" });
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(calls[1]!.idempotencyKey).toBe(calls[0]!.idempotencyKey);
+    expect(calls[1]!.intent.operationJson).toBe(calls[0]!.intent.operationJson);
+    expect(calls[1]!.checkoutMandate).toEqual(first.checkoutMandate);
+    expect(calls[1]!.paymentMandate).toEqual(first.paymentMandate);
+  });
+});
+
+// Upgrade over the previous release's filesystem store: its records carry no
+// phase binding. The handler must neither submit nor read status for them.
+test.each([
+  ["a second transaction_id for the occupied phase", CHANGED_TRANSACTION_ID, "ap2-phase-bound-to-another-transaction"],
+  ["the main-format transaction_id itself", TRANSACTION_ID, "ap2-legacy-record-requires-reconciliation"],
+])("AP2 opened over a main-format in-flight record refuses %s with no provider call", async (_name, legacy, reason) => {
+  const dir = await ap2Dir();
+  await writeMainFormatAp2Record(dir, { transactionId: legacy, jobId: JOB_ID, phaseIndex: 3 });
+  const submit = vi.fn(provider().submit);
+  const status = vi.fn(provider().readAttestedStatus);
+  const store = await createFsAp2BindingStore({ dir });
+  expect(await advanceAp2Settlement(input({ store, provider: provider({ submit, readAttestedStatus: status }) })))
+    .toEqual({ status: "failed", reason });
+  expect(submit).not.toHaveBeenCalled();
+  expect(status).not.toHaveBeenCalled();
+  expect(await readdir(join(dir, "records"))).toHaveLength(1);
 });

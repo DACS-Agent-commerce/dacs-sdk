@@ -1,3 +1,4 @@
+import { ap2ProfileScope } from "../fixtures/ap2Profile.js";
 import { spawnSync } from "node:child_process";
 import { chmod, lstat, mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -260,6 +261,9 @@ describe("LIVE AP2 → Stripe → DAHR → Demos reference path", () => {
       dir: join(stateDir, "ap2-settlement-store"),
     });
     const progress = await advanceAp2Settlement({
+      // Synthetic, self-asserted profile admission: this live run exercises
+      // Stripe and DAHR, not an authenticated CORE §11.1.2 handshake.
+      ...await ap2ProfileScope(JOB_ID),
       jobId: JOB_ID,
       phaseIndex: PHASE_INDEX,
       agreementHash,

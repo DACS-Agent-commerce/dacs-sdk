@@ -1885,3 +1885,5 @@ export {
   type VerifyComponentSignatureInput,
   type VerifyComponentSignatureDeps,
 } from "./artifacts/index.js";
+
+export { AP2_IMPLEMENTED_MODULE_VERSIONS, authenticateAp2ProfileAdmission, type Ap2CorrectiveProfile, type Ap2ParticipantProfile, type Ap2ProfileAdmission } from "./rails/ap2Admission.js";

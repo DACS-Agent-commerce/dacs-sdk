@@ -6,8 +6,9 @@ import {
   canonicalize,
   sha256Hex,
 } from "../canonical/index.js";
-import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
+import { snapshotCanonicalJsonRead, snapshotWireJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 /**
  * Settlement idempotency (issue #43).
@@ -247,7 +248,21 @@ function nonEmptyNfc(value: unknown, label: string): string {
 
 /** Capture and hash the complete fixed settlement authority. */
 export function settlementBindingHash(value: Readonly<SettlementBinding>): string {
-  const binding = frozenClone(value, "settlement binding") as Readonly<SettlementBinding>;
+  return hashCapturedBinding(captureBinding(value, "settlement binding"));
+}
+
+function hashCapturedBinding(binding: Readonly<SettlementBinding>): string {
+  return sha256Hex(canonicalize(binding));
+}
+
+/**
+ * Own and validate a binding exactly as presented. A canonical (NFC) clone
+ * would repair a malformed job id or term before these checks see it (CORE
+ * JID-1/JID-3: never repair), so this takes a wire snapshot, refuses every
+ * non-exact string, and only then lets the hash canonicalise.
+ */
+function captureBinding(value: Readonly<SettlementBinding>, label: string): Readonly<SettlementBinding> {
+  const binding = deepFreeze(snapshotWireJsonRead(value, label)) as Readonly<SettlementBinding>;
   const allowed = new Set([
     "bindingVersion", "railId", "jobId", "phaseIndex", "phase", "amount",
     "agreementAsset", "settlementAsset", "payer", "payee", "network",
@@ -295,7 +310,7 @@ export function settlementBindingHash(value: Readonly<SettlementBinding>): strin
   if (settlementKey(binding.railId, binding.jobId, binding.phaseIndex).length === 0) {
     throw new DacsError("settlement binding key is invalid");
   }
-  return sha256Hex(canonicalize(binding));
+  return binding;
 }
 
 function captureResult(value: SettleResult, label: string): Readonly<SettleResult> {
@@ -613,16 +628,18 @@ export function createInMemorySettlementLog(): SettlementLog {
   };
 }
 
-/** Deterministic settlement idempotency key: `railId:jobId:phaseIndex`. */
+/**
+ * Deterministic settlement idempotency key: `railId:jobId:phaseIndex`. CORE
+ * JID-3: the job id must pass JID-1 before it reaches the key.
+ */
 export function settlementKey(railId: string, jobId: string, phaseIndex: number): string {
   if (typeof railId !== "string" || railId.length === 0 || railId.normalize("NFC") !== railId ||
-      typeof jobId !== "string" || jobId.length === 0 || jobId.normalize("NFC") !== jobId ||
-      jobId.includes(":") || !Number.isSafeInteger(phaseIndex) || phaseIndex < 0 ||
-      Object.is(phaseIndex, -0)) {
+      !Number.isSafeInteger(phaseIndex) || phaseIndex < 0 || Object.is(phaseIndex, -0)) {
     throw new DacsError(
-      "settlement key requires exact NFC rail/job identifiers, a colon-free job id, and a non-negative phase index",
+      "settlement key requires an exact NFC rail identifier and a non-negative phase index",
     );
   }
+  requireCanonicalJobId(jobId, "settlement key jobId");
   return `${railId}:${jobId}:${phaseIndex}`;
 }
 
@@ -767,11 +784,8 @@ export function createIdempotencyStore(
 
   return {
     async once(key, binding, submit, reconcile) {
-      const capturedBinding = frozenClone(
-        binding,
-        "settlement idempotency binding",
-      ) as Readonly<SettlementBinding>;
-      const bindingHash = settlementBindingHash(capturedBinding);
+      const capturedBinding = captureBinding(binding, "settlement idempotency binding");
+      const bindingHash = hashCapturedBinding(capturedBinding);
       if (settlementKey(
         capturedBinding.railId,
         capturedBinding.jobId,

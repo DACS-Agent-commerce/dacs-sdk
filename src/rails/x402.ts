@@ -2,6 +2,7 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
 import { CounterpartyError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import type {
   PaymentPayloadResult,
   PaymentRequirements,
@@ -53,6 +54,7 @@ export interface X402PaymentRequirement {
   payTo: string;
   amount: string | number | bigint;
   asset?: string;
+  extra?: Readonly<Record<string, unknown>>;
 }
 export interface X402PaymentRequired {
   accepts?: X402PaymentRequirement[];
@@ -316,6 +318,15 @@ export async function x402SettleCore(
   deps: X402SettleCoreDeps,
   effectFence?: Readonly<X402PaidEffectFence>,
 ): Promise<SettleResult> {
+  const jobId = stableX402Property(params, "jobId", "x402 jobId");
+  if (jobId.found) {
+    if (!Object.hasOwn(params, "jobId")) throw new CounterpartyError("x402 jobId must be own data");
+    requireCanonicalJobId(jobId.value, "x402 jobId");
+  }
+  const phaseIndex = stableX402Property(params, "phaseIndex", "x402 phaseIndex");
+  if (phaseIndex.found && (!Object.hasOwn(params, "phaseIndex") || !Number.isSafeInteger(phaseIndex.value) || (phaseIndex.value as number) < 0 || Object.is(phaseIndex.value, -0))) {
+    throw new CounterpartyError("x402: phaseIndex must be a non-negative safe integer");
+  }
   // Snapshot caller-owned policy and transport scalars before the first
   // callback. A callback may retain the original params object; it must not be
   // able to change the amount, endpoint, token or confirmation depth after the
@@ -485,7 +496,7 @@ export async function x402SettleCore(
         asset: req.asset != null ? String(req.asset) : undefined,
       },
     );
-    if (m.ok) {
+    if (m.ok && (req.extra?.assetTransferMethod === undefined || req.extra.assetTransferMethod === "eip3009")) {
       chosen = req;
       break;
     }
@@ -503,7 +514,7 @@ export async function x402SettleCore(
     accepts: [chosen],
   });
 
-  // 4. Retry with the X-PAYMENT header; the seller verifies + settles.
+  // 4. Retry with the v2 PAYMENT-SIGNATURE header; the seller verifies + settles.
   const headers = new Headers(requestInit?.headers);
   capturePaymentHeaders(encodePaymentSignatureHeader(payload)).forEach(
     (value, name) => headers.set(name, value),
@@ -625,8 +636,24 @@ export interface X402Rail {
   ): Promise<SettleResult>;
 }
 
-/** Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase. */
+/**
+ * Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase.
+ * CORE JID-3: the job id must pass JID-1 before it is hashed.
+ */
 export async function dacsX402AuthorizationNonce(input: {
+  jobId: string;
+  phaseIndex: number;
+}): Promise<`0x${string}`> {
+  requireCanonicalJobId(input?.jobId, "x402 DACS binding jobId");
+  return legacyDacsX402AuthorizationNonce(input);
+}
+
+/**
+ * Pre-JID-1 SB-3 derivation for the Standard's frozen derivation-only vectors
+ * (short, descriptive or Unicode job labels). It establishes no payment or
+ * verification authority; payment paths use {@link dacsX402AuthorizationNonce}.
+ */
+export async function legacyDacsX402AuthorizationNonce(input: {
   jobId: string;
   phaseIndex: number;
 }): Promise<`0x${string}`> {
@@ -774,6 +801,9 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
         throw new Error("pay-x402 requires the DACS jobId/phaseIndex authorization binding");
       }
 
+      // CORE JID-3: any supplied job id passes JID-1 before the nonce hash or
+      // any request, even when no phase makes this a bound payment.
+      if (jobId !== undefined) requireCanonicalJobId(jobId, "pay-x402 jobId");
       let scheme: SchemeNetworkClient = new ExactEvmScheme(account);
       if (jobId !== undefined && phaseIndex !== undefined) {
         const nonce = await dacsX402AuthorizationNonce({
@@ -920,6 +950,9 @@ export function x402Settle(
         `x402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipientEvm}`,
       );
     }
+    // CORE JID-3: refuse a non-canonical job id before the SB-3 nonce, the
+    // idempotency key or the paywall request is derived from it.
+    requireCanonicalJobId(jobId, "x402 settlement jobId");
     // phaseIndex is a property of the SETTLEMENT REQUEST, not the static paywall
     // descriptor: the SB-3 authorization nonce MUST bind the same phase the
     // idempotency key dedupes on, or the on-chain single-use nonce and the

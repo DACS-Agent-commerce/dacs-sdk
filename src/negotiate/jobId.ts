@@ -8,7 +8,7 @@ const MAX_ULID_TIME = 0xffff_ffff_ffff;
 
 /** CORE §B.1 canonical 26-character uppercase Crockford-Base32 ULID. */
 export function isCanonicalJobId(value: unknown): value is string {
-  return typeof value === "string" && CANONICAL_JOB_ID.test(value);
+  return typeof value === "string" && value.length === 26 && CANONICAL_JOB_ID.test(value);
 }
 
 /** Reject alternate spellings instead of silently changing an idempotency key. */

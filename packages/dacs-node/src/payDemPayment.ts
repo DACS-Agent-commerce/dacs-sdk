@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import {
   combineWalletSpendEffectFenceV1,
+  isCanonicalJobId,
   settlementKey,
   type PayDemPreparedTransfer,
   type PayDemRail,
@@ -299,7 +300,9 @@ function capturePaymentInput(value: unknown): Readonly<DacsPayDemBuyerPaymentInp
     "paymentInputVersion", "orderBindingHash", "orderLocalBindingHash",
     "settlementKey",
   ]) || value.authorityVersion !== "1" || value.paymentInputVersion !== "1" ||
-      typeof value.jobId !== "string" || !Number.isSafeInteger(value.phaseIndex) ||
+      // JID-1 first, so a non-canonical retained id keeps this typed refusal
+      // instead of reaching settlementKey's own JID-3 check.
+      !isCanonicalJobId(value.jobId) || !Number.isSafeInteger(value.phaseIndex) ||
       (value.phaseIndex as number) < 0 || !text(value.railId) ||
       !Number.isSafeInteger(value.railVersion) || (value.railVersion as number) <= 0 ||
       typeof value.railDescriptorHash !== "string" ||

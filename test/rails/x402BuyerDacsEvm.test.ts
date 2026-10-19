@@ -28,7 +28,7 @@ const OTHER_PRIVATE_KEY = keccak256(
   stringToHex("dacs-sdk:test:x402-buyer:other"),
 );
 const ACCOUNT = privateKeyToAccount(PRIVATE_KEY);
-const JOB_ID = "job-real-x402-dacs-nonce";
+const JOB_ID = "01K0BVYERREA1X402DACSN0NCE";
 const PHASE_INDEX = 4;
 const NETWORK = "eip155:84532" as const;
 const PAYEE = "0x1111111111111111111111111111111111111111";

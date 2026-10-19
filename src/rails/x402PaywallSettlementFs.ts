@@ -16,6 +16,7 @@ import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import {
   atomicWritePrivateFile,
   preparePrivateStoreDirectory,
@@ -210,7 +211,7 @@ function captureIntent(value: unknown): X402PaywallSettlementIntent {
   );
   if (record.intentVersion !== "2" ||
       typeof record.bindingHash !== "string" || !HASH_RE.test(record.bindingHash) ||
-      typeof record.jobId !== "string" || record.jobId.length === 0 ||
+      !isCanonicalJobId(record.jobId) ||
       typeof record.phaseIndex !== "number" || !Number.isSafeInteger(record.phaseIndex) ||
       record.phaseIndex < 0 || Object.is(record.phaseIndex, -0) ||
       typeof record.httpResource !== "string" ||
