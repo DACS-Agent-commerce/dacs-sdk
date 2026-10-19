@@ -342,7 +342,15 @@ export async function discoverListings(
   }
   const found: DiscoveredListing[] = [];
   for (const ref of refs) {
-    const raw = await capturedReadAnchor(ref);
+    // A read the substrate did not answer (a Demos 404 included) is neither an
+    // absence verdict nor a reason to drop the other refs: skip only this one,
+    // as a throwing key resolver does (#71).
+    let raw: Record<string, unknown> | null;
+    try {
+      raw = await capturedReadAnchor(ref);
+    } catch {
+      continue;
+    }
     if (!raw) continue;
     const snapshot = snapshotListingArtifact(raw);
     if (!snapshot) continue;

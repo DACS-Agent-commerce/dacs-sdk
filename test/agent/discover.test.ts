@@ -11,6 +11,8 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../../src/crypto/index.js";
+import { SubstrateError } from "../../src/errors.js";
+import { DemosAdapter } from "../../src/substrate/DemosAdapter.js";
 
 const LISTING = {
   agentId: "did:demos:alice",
@@ -50,6 +52,36 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
 
   test("skips missing refs without throwing", async () => {
     expect(await discoverListings(["missing", "also-missing"], read, TRUST)).toEqual([]);
+  });
+
+  test("a THROWING read drops only that ref, not the whole batch", async () => {
+    const reads: string[] = [];
+    const found = await discoverListings(["ref:1", "unanswered", "ref:3"], async (ref) => {
+      reads.push(ref);
+      if (ref === "unanswered") throw new Error("read failed");
+      return read(ref);
+    }, TRUST);
+    expect(found.map((f) => f.ref)).toEqual(["ref:1", "ref:3"]);
+    expect(reads).toEqual(["ref:1", "unanswered", "ref:3"]);
+  });
+
+  // DemosAdapter.readAnchor keeps a 404 indeterminate (it throws); discovery
+  // still returns the refs the node did serve.
+  test("a Demos 404 on one ref leaves the other refs discoverable", async () => {
+    const adapter = new DemosAdapter({ rpc: "https://node.invalid", chainIdentity: "test-chain" });
+    (adapter.raw as any).storagePrograms.read = async (address: string) => {
+      if (address === "stor-missing") {
+        throw Object.assign(new Error("Request failed with status code 404"), {
+          response: { status: 404, data: { success: false, errorCode: "NOT_FOUND" } },
+        });
+      }
+      return { success: true, storageAddress: address, data: LISTING };
+    };
+    await expect(adapter.readAnchor("stor-missing")).rejects.toBeInstanceOf(SubstrateError);
+    const found = await discoverListings(
+      ["stor-missing", "stor-good"], (ref) => adapter.readAnchor(ref), TRUST,
+    );
+    expect(found.map((f) => f.ref)).toEqual(["stor-good"]);
   });
 
   test("empty input yields empty result", async () => {
