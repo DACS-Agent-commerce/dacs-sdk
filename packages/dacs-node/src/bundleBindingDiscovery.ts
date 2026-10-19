@@ -78,19 +78,25 @@ export function createWellKnownBundleBindingSurfaceV1(options: Readonly<{
   });
 }
 
-/** DACS-1 §6.3.6: `GET /api/dacs/bundles/{jobId}` on a catalog. */
+/**
+ * DACS-1 §6.3.6: `GET /api/dacs/bundles/{jobId}` on a catalog. The route is
+ * absolute, so `catalogUrl` is the catalog's origin; a path, query or fragment
+ * would move the Standard's endpoint and is refused.
+ */
 export function createCatalogBundleBindingSurfaceV1(options: Readonly<{
   catalogUrl: string;
   readJson: DacsReadJsonV1;
 }>): Readonly<DacsBundleBindingDiscoverySurfaceV1> {
   const base = httpsUrl(options.catalogUrl);
+  if (base.pathname !== "/" || base.search !== "" || base.hash !== "") {
+    throw new TypeError("catalogUrl must be an origin without a path, query or fragment");
+  }
   const readJson = options.readJson;
   if (typeof readJson !== "function") throw new TypeError("readJson is required");
   return Object.freeze({
     kind: "catalog" as const,
     async discover({ jobId }: Readonly<{ jobId: string }>) {
-      const url = new URL(`api/dacs/bundles/${encodeURIComponent(jobId)}`,
-        base.href.endsWith("/") ? base : new URL(`${base.href}/`));
+      const url = new URL(`/api/dacs/bundles/${encodeURIComponent(jobId)}`, base.origin);
       return bindingsOf(await readJson(url.toString()));
     },
   });

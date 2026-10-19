@@ -619,15 +619,22 @@ describe("BundleBinding discovery surfaces (DACS-1 §6.3.5, §6.3.6)", () => {
   });
 
   it("reads a catalog's bundles endpoint for the job", async () => {
-    const readJson = reader({ [`https://catalog.example/v1/api/dacs/bundles/${JOB_ID}`]: index });
+    // DACS-1 §6.3.6: the route is absolute on the catalog's origin.
+    const readJson = reader({ [`https://catalog.example/api/dacs/bundles/${JOB_ID}`]: index });
     const surface = createCatalogBundleBindingSurfaceV1({
-      catalogUrl: "https://catalog.example/v1", readJson });
+      catalogUrl: "https://catalog.example/", readJson });
     await expect(surface.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
       .resolves.toEqual([sellerBinding]);
-    const malformed = createCatalogBundleBindingSurfaceV1({ catalogUrl: "https://catalog.example/v1",
-      readJson: reader({ [`https://catalog.example/v1/api/dacs/bundles/${JOB_ID}`]: { bindings: 1 } }) });
+    const malformed = createCatalogBundleBindingSurfaceV1({ catalogUrl: "https://catalog.example",
+      readJson: reader({ [`https://catalog.example/api/dacs/bundles/${JOB_ID}`]: { bindings: 1 } }) });
     await expect(malformed.discover({ jobId: JOB_ID, role: "seller", signer: SELLER }))
       .rejects.toThrow(/malformed/);
+    // A path would move the Standard's endpoint (to /v1/api/...): refuse it.
+    for (const catalogUrl of ["https://catalog.example/v1", "https://catalog.example/v1/",
+      "https://catalog.example/?x=1", "https://catalog.example/#f"]) {
+      expect(() => createCatalogBundleBindingSurfaceV1({ catalogUrl, readJson }))
+        .toThrow(/origin without a path/);
+    }
   });
 
   it("finds the seller's copy through a catalog when no binding program shows it", async () => {
