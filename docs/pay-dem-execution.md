@@ -62,6 +62,23 @@ sees its result.
   `PayDemReconciledFailure` for a bound `failed` record. After a restart, a
   durable outcome and a reconciliation that disagree on the transaction, the
   block, success or the failure proof are refused.
+- A settlement request carrying `priorAttempts` (which `runSession` sends for
+  a session holding a transaction-bearing outcome) is a read-only audit of
+  that retained transaction. `payDemSettle` never claims a submit generation
+  for it, even when the rail log lost its record, and requires both
+  `settlementStore.readOutcome` and `reconcile`. The reconciler then receives a
+  `PayDemSettlementAuditContext` with `txHash`, the retained hash in canonical
+  form (64 lower-case hex digits, no `0x`). It must load the prepared-transfer
+  journal entry for that hash, bind the record to it, and return the entry as
+  `preparedTransfer`. The audit is refused unless the entry names that hash,
+  the same payer, payee, OS amount and network, and a `recovery` tuple equal
+  to this rail, job and phase; a permanent failure's proof must also carry the
+  journaled nonce. The reconciler throws when the journal is missing or
+  conflicting and never returns `null` for a hash it cannot tie to the
+  journal.
+- A success that the bridge, its rail log or the session recorded is never
+  reported unpaid: a reconciliation that contradicts it is refused rather than
+  returned as a permanent failure (DACS-4 §9.5.1 PC-7).
 
 The settlement store persists a bound permanent failure as the definitive
 outcome for that key. It never permits a replacement payment.
@@ -99,6 +116,10 @@ These were read from kynesyslabs/node `stabilisation@61b8e75` and
   number up to `Number.MAX_SAFE_INTEGER` and a decimal string above it;
 - not-found is `{result: 400, response: "error"}` at 61b8e75 and
   `{result: 404, response: null}` at 52e2e569.
+- `getTxByHash` matches the stored lower-case hash exactly and answers any
+  other spelling as not found; `getTransactionStatus` lower-cases hex but
+  rejects a `0x` prefix as an invalid request. The rail always passes the
+  canonical form.
 
 The default `testnet` branch has no `getTransactionStatus`, so against such a
 node the rail never observes inclusion and stays indeterminate.
