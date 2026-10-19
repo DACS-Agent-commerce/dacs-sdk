@@ -7,8 +7,8 @@ import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs
 import { dirname, isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { admitRawJson, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
-import { decodeSignature } from '../wallet/demos-signature.mjs';
-import { assertSellerSessionLifetime } from '../../public/portal/seller-session-limits.mjs';
+import { decodeSignature } from './demos-claims.mjs';
+import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
 export const SELLER_TRANSPORT_MAX_RESPONSE = 512 * 1024;

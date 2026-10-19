@@ -4,13 +4,13 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "e4c838af6f0b63d710b9f487712b0e449a5ea1b80672738a1c46758288d390f8",
+      "sha256": "9a0ba22482f9d6e0fde467fd5943cdfe8aa23ceec5def81dcaf2ad531062a6df",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-context-route.mjs",
       "originalSha256": "ca0377f1d93a5af069547bc6a1a63d2ba53fd84d92357909b3307e74d8f60fba",
-      "sha256": "9fa9811aab4b02e76572dc3d97c386ec085048b0cc0997c84503fc02c78de23d",
+      "sha256": "2181ea59fd9fd005fb98b9c4b3cd27f0166ea6cae2458cb4ab86e2e12624882f",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -28,19 +28,19 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-transport-auth.mjs",
       "originalSha256": "82c5b7dbdd866cad0d601325d05680db2503ce87d7ff1346d6e06eb9683b645f",
-      "sha256": "1d773805764b3dc3a07ffbe5aadbf594e99df460e3bfac7919adfa6ac487c6a2",
+      "sha256": "920c5f68aae9bc1bbca4492c8270d3f40a4f5845a788383cc2a6859bb734059f",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/agreement-context.mjs",
       "originalSha256": "ce56ddcb8659ecc66ade10dbbf21b14a466c11bbd390a42324b4e67d3a7e4d66",
-      "sha256": "4f796b03c11158b3d049abb6b135336a540d15e9a3bab33bee6b24f960957fad",
+      "sha256": "c046e0bb18584710d55a78aca13bba927e68d0d762e24c1cd14d3f80c52dda2d",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/artifact-anchor.mjs",
       "originalSha256": "b9aadf636868c2c01bdff93a42bb1c74708fe5dc1970978fabb02e3f3823a6ec",
-      "sha256": "222ed58a9e9c117934c4087b86cbbb5055bd36023bc2459402d2e0fdc5d85df5",
+      "sha256": "6e8ec8297acce7094814449f6605ada5fd1291e5c011caa37666353c71e547b0",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -52,13 +52,13 @@
     {
       "path": "packages/dacs-seller/src/devnet-demo/party-vet-store.mjs",
       "originalSha256": "b8db340a0650c0343fa43531267fa6a06a1a2cf82883c3510423c2deea2a7ac1",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage.",
-      "sha256": "db4b13a2bc3852f524d40047cde7ae5de6d042b5775d0a919452e64dceaa50ea"
+      "sha256": "db4b13a2bc3852f524d40047cde7ae5de6d042b5775d0a919452e64dceaa50ea",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/seller-purchase-source.mjs",
       "originalSha256": "fdc3f0328c52b3748f7811cdda77e3e1037038cf20dbe19a4511201bf48179bc",
-      "sha256": "3dffb2f7ae4a3811be96523c1a8fa0dba5e25378d63a0ec0298c39a1847902db",
+      "sha256": "024c3945f9db5bb43c19b2775c296855badc83a4c4177bb5a3fc320411af349e",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -94,7 +94,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/anchor-isolated-fixture.mjs",
       "originalSha256": null,
-      "sha256": "a30a3ace2c352a9b67b6f44d5b444173a6ebb9a03fcf9b2bf4b8fc912b6456e9",
+      "sha256": "ba24d1ac29d658a65ba0fb1f9d5abc4979c72c14617a0d6e44678e5764d72f22",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -106,13 +106,13 @@
     {
       "path": "packages/dacs-seller/test/helpers/d5-http-fixture.mjs",
       "originalSha256": "99084122810ba55116c09edb82ab713e55d037f7046846d71b780f81d3957fa9",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage.",
-      "sha256": "9afe0a72c894b9d22e839b276ced406506ac1dc08e16b36ef51993f2f4028403"
+      "sha256": "9afe0a72c894b9d22e839b276ced406506ac1dc08e16b36ef51993f2f4028403",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/helpers/d5-isolated-dependencies.mjs",
       "originalSha256": "7fccb503616d2514b23a8a4af98df0a36e1d7498a5d86ef3387addf1543df7f2",
-      "sha256": "86a6dd559959120de48742ab52f3706a4236b190d9192b44fceff935daf0c90b",
+      "sha256": "17c12d1610b7577b76920bdd1af17eeeb19631cab9c05af4e4b0225d1044218a",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -124,19 +124,19 @@
     {
       "path": "packages/dacs-seller/test/helpers/lifecycle-protocol-fixture.mjs",
       "originalSha256": null,
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage.",
-      "sha256": "70779685237ab05dccd838123f15211beae1c4a813de1d40057f3a0d8dbeb80d"
+      "sha256": "70779685237ab05dccd838123f15211beae1c4a813de1d40057f3a0d8dbeb80d",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/helpers/local-anchor-fixture.mjs",
       "originalSha256": null,
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage.",
-      "sha256": "4567e8f4cda87d97007dda9d6e3fb5d174a695de4f1500d2c3685136c9525a64"
+      "sha256": "4567e8f4cda87d97007dda9d6e3fb5d174a695de4f1500d2c3685136c9525a64",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/helpers/seller-agent-isolated-fixture.mjs",
       "originalSha256": null,
-      "sha256": "9901f9cdc9f36bca6300d09c3a43a27e45cfcac2820673449602a5f1031f3b79",
+      "sha256": "2f0d9893e07662fa1fff95a85894f08c2781a115f95674038ecd187fd92d528f",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -166,38 +166,182 @@
     {
       "path": "packages/dacs-seller/test/d5-challenge-retention.test.mjs",
       "originalSha256": "b4476e0440706f508bd49ba112922a598ddf994a9286d81a7799c4e7749d5a8c",
-      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
-      "sha256": "11d38c7a3d5daf4ce87d5d5374fceca90847d1013fb02811dd476b87b94f34f1"
+      "sha256": "11d38c7a3d5daf4ce87d5d5374fceca90847d1013fb02811dd476b87b94f34f1",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/operator-approval.mjs",
       "originalSha256": "812eb28edee29d842eda986fdab8926de26621342a2c11fada80e44477a0206c",
-      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
-      "sha256": "12f71da012b13c323a4a6f98341bb4165dd01707718ad7b68cb030cef8331011"
+      "sha256": "12f71da012b13c323a4a6f98341bb4165dd01707718ad7b68cb030cef8331011",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/d5-admission.test.mjs",
       "originalSha256": "1ed2fdf056132a6a3b89e1c85fb8bcbc7dc1f9bbb9090e610c7f4297dfa935f8",
-      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
-      "sha256": "0edb2a0c79df23ca86e7471cc5228c19e6f398db3ca73c3883cac00aba11c259"
+      "sha256": "0edb2a0c79df23ca86e7471cc5228c19e6f398db3ca73c3883cac00aba11c259",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/deliverable.mjs",
       "originalSha256": "3eb5ac827a27138746f8d5eecd790d82cdf1ea15a31f7a9216200b16a0a07668",
-      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
-      "sha256": "528a4d536cc8e36224a15a1664a4beda24764d50549f7fe42a181b7a823cf3c2"
+      "sha256": "528a4d536cc8e36224a15a1664a4beda24764d50549f7fe42a181b7a823cf3c2",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/native-delivery.mjs",
       "originalSha256": "220ed1c9fc344617745573141ec6d40bf0baf1d187e7038c1350e6a79beee700",
-      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
-      "sha256": "1dcced61c2632532a85dba8852006d67ddcb0c8defd99a3d274bddb065bb4d3e"
+      "sha256": "1dcced61c2632532a85dba8852006d67ddcb0c8defd99a3d274bddb065bb4d3e",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/canonical-job-boundaries.test.mjs",
       "originalSha256": null,
-      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage.",
-      "sha256": "463b707094411af34f2197edceebf3519f88f9cf16d015d55460c45ed5ba1c71"
+      "sha256": "463b707094411af34f2197edceebf3519f88f9cf16d015d55460c45ed5ba1c71",
+      "reason": "Maintain canonical seller admission, qualified native writes and standalone regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/agreement-context-consumer.mjs",
+      "originalSha256": null,
+      "sha256": "41ebc4c1b6ef76ba2340ab4f50e29222b412020527432d949ea9511358eb5579",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/buyer-chain-readback.mjs",
+      "originalSha256": null,
+      "sha256": "0fa485b3de1cee9e772e085e9f6bda7ca115ddb009c13a26ca37b717e3af0b27",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/chain.mjs",
+      "originalSha256": null,
+      "sha256": "416c01d7fb49417ea27e5a5bf8d0888dea7a997a550ae29596e7e81c7c18eeea",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/commit-on-signature.mjs",
+      "originalSha256": "e6edd9fadd0cffe4af460d82d8970f8032a3a4eea723fc4102844a5ae6c3929f",
+      "sha256": "95f996ffd9e91f75b51833ea5b30e58575939ce79153aef148f097f236d5ded0",
+      "reason": "Seller run time: imports name the SDK claims and devnet-source modules and the src/public path."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/delivery-evidence.mjs",
+      "originalSha256": null,
+      "sha256": "58601c6dd9238d0c4e3181d8c919727100c9ac638ee62026e6ecfe5a549bce04",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs",
+      "originalSha256": null,
+      "sha256": "682a57ba2857cef4bf5c54a868263cfa0dbd85cb23c285bb7cdabb8f6610268e",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/demos-claims.mjs",
+      "originalSha256": null,
+      "sha256": "c04f5eed57b905e7fd16dae2efadbb0a1517299c5764b2f8ba58fe8da303b4e2",
+      "reason": "Seller run time: SDK code in place of an excluded plugin wallet module (README.md)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/demos-sr2-adapter.mjs",
+      "originalSha256": null,
+      "sha256": "b69e5f80c6cf83869721202ffea292a7553c7a10bc9094f28ba39d4d43f956e6",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/devnet-source.mjs",
+      "originalSha256": null,
+      "sha256": "c6c4f0eb154cb750b65325a48ec08363abd791614c073af13394f34d8cce184f",
+      "reason": "Seller run time: SDK code in place of an excluded plugin wallet module (README.md)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/fixture-anchors.mjs",
+      "originalSha256": null,
+      "sha256": "db31db894fa8c4434c3f5c3f80e43cba4199db89becbcfe3fb14bc130090c561",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/listing.mjs",
+      "originalSha256": null,
+      "sha256": "fbeb16beb9bff72f1304b08ce5279ad96406c37d844fa981158e311f758adb21",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs",
+      "originalSha256": null,
+      "sha256": "985d4a0576a0ac9e1cc4ec52ac2a052c193cd3c5db44e5f64d0c44d27f68432c",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/native-payment-evidence-consumer.mjs",
+      "originalSha256": null,
+      "sha256": "4d528414dc8b48a34cfe741af8b786a8c7b4f20b6742b8a43efb7c0dfc1d5283",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/purchase-protocol.mjs",
+      "originalSha256": null,
+      "sha256": "0717995ce60d075915bbc0bc6d93257939394b79b2ee41ffcecdc049112a1073",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/wallet-transactions.mjs",
+      "originalSha256": null,
+      "sha256": "f954be8521608bbc1e64eeccc5685606f3648723ad7a19d655179c4bb6c17226",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/buyer-access.mjs",
+      "originalSha256": null,
+      "sha256": "7df8478a0ce404e54831ff2b7b8eb39be85fca49b597abaef00d7eb19d3c3c89",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/devnet-demo/stop-request.mjs",
+      "originalSha256": null,
+      "sha256": "4dbff0247e4def01305e58cf7db2ec3bd0b4c071eefb4f6bbcf34706430dae1d",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/mcp/seller-content.mjs",
+      "originalSha256": null,
+      "sha256": "397b6159334c29b68da44ac930cf2e69a8b6be1cb8ad2514edad109faf9885ee",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/operations.mjs",
+      "originalSha256": null,
+      "sha256": "ce5f96e6558d3a28273feb21e7d3fe43d8bc20a48b90044641aad913209eba5a",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/public/portal/seller-session-limits.mjs",
+      "originalSha256": null,
+      "sha256": "be1cf2d9d67a701cf930b00d858154fddcb7308cebaf1ed40d1194130756c9b3",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/util/http.mjs",
+      "originalSha256": null,
+      "sha256": "0a1f5395db754e034f3b012dccba693deae1c0d8c8c9aa64587c6f5a007c3784",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/util/immutable-readbacks.mjs",
+      "originalSha256": null,
+      "sha256": "40b860f901f3271effed01b0b2dc78beefece3cc377e8de8800b74747f15a5d7",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/src/util/text.mjs",
+      "originalSha256": null,
+      "sha256": "9a7c14b6d10d491ec4e8ac5df6721e65400abef54fe9a526d8637a76ed91da43",
+      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+    },
+    {
+      "path": "packages/dacs-seller/test/demos-claims.test.mjs",
+      "originalSha256": null,
+      "sha256": "0d144cfd2370bcc40452208579d6f09d11dc3b549fa6eee81c32cbf358eefc74",
+      "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     }
   ]
 }

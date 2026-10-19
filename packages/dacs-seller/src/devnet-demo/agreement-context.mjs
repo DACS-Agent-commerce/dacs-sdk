@@ -1,6 +1,6 @@
 import { OperationError } from '../operations.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
-import { addressForClaim } from '../wallet/demos-signature.mjs';
+import { addressForClaim } from '../dacs/demos-claims.mjs';
 import {
   canonicalize, compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore,
   identityBundleHash, isCanonicalJobId, partyVetCore, sha256Hex, verifyCompositeVerificationRecord, vetPhaseFailureClass,

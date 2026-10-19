@@ -20,8 +20,8 @@ export async function anchorFixture({writer,signRpc=null}={}){
   '@kynesyslabs/dacs':{...core,isFinalityCommitmentRecord:()=>true},
   '../dacs/demos-sr2-adapter.mjs':{createDemosSr2Adapter:()=>controls.reader,createInMemoryDemosSr2Journal:()=>({}),demosSr2TxRef:noop},
   '../dacs/wallet-transactions.mjs':{deriveStorageAddress:()=> 'stor-local',buildStorageProgramCreatePayload:input=>({content:{type:'storageProgram',from:owner,nonce:input.nonce,data:['storageProgram',{data:input.signedListing,metadata:{logicalAddress:input.logicalAddress}}]}})},
-  '../wallet/demos-signature.mjs':{addressForClaim:()=>owner,verifyDemosSignature:()=>false},
-  '../wallet/devnet-native-transport.mjs':{DEVNET_AGREEMENT_PROFILE:'local',DEVNET_DEMO_ARTIFACT_KIND:'local',DEVNET_DEMO_ARTIFACT_POLICY:'local',DEVNET_DEMO_ARTIFACT_TYPES:[],isDevnetDemoTransport:()=>true}
+  '../dacs/demos-claims.mjs':{addressForClaim:()=>owner,verifyDemosSignature:()=>false},
+  '../dacs/devnet-source.mjs':{DEVNET_AGREEMENT_PROFILE:'local',DEVNET_DEMO_ARTIFACT_KIND:'local',DEVNET_DEMO_ARTIFACT_POLICY:'local',DEVNET_DEMO_ARTIFACT_TYPES:[],isDevnetDemoTransport:()=>true}
  };
  const module=new vm.SourceTextModule(readFileSync(new URL('../../src/devnet-demo/artifact-anchor.mjs',import.meta.url),'utf8'));
  await module.link(async spec=>{const values=modules[spec];if(!values)throw new Error('missing isolated import '+spec);return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value] of Object.entries(values))this.setExport(key,value);});});await module.evaluate();

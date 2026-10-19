@@ -1,5 +1,5 @@
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
-import { addressForClaim } from '../wallet/demos-signature.mjs';
+import { addressForClaim } from './demos-claims.mjs';
 // Seller agent for one verified fixed-price DEM Listing, acting as phase
 // orchestrator (seller-as-phase-orchestrator-v1). Transport-neutral: every
 // method takes and returns plain JSON; seller-http.mjs is a narrow adapter.

@@ -1,0 +1,372 @@
+{
+  "format": "dacs-seller-runtime-ports/v1",
+  "sourceRepository": "DACS-Agent-commerce/frontend",
+  "sourceCommit": "15fdf23",
+  "rule": "Each port is the listed source lines, unchanged and in order, after a generated header. Only the listed import replacements are applied, and, where publicationText is set, the repository's publication wording (scripts/lib/publication-text.mjs). Regenerate or check with scripts/runtime-ports.mjs --source <http-mcp directory> [--write|--check].",
+  "ports": [
+    {
+      "target": "src/dacs/listing.mjs",
+      "source": "src/dacs/listing.mjs",
+      "lines": "all",
+      "replace": [
+        [
+          "from '../wallet/demos-signature.mjs'",
+          "from './demos-claims.mjs'"
+        ]
+      ],
+      "sourceSha256": "a57eb4285cf7002229f796cfaa12512624c49aba00f0b2262eb13c10af33919d",
+      "sha256": "fbeb16beb9bff72f1304b08ce5279ad96406c37d844fa981158e311f758adb21"
+    },
+    {
+      "target": "src/dacs/delivery-evidence.mjs",
+      "source": "src/dacs/delivery-evidence.mjs",
+      "lines": "all",
+      "replace": [
+        [
+          "from '../wallet/demos-signature.mjs'",
+          "from './demos-claims.mjs'"
+        ]
+      ],
+      "sourceSha256": "20c97e58f6541b0eee7b63dd9e32cb3c9436736eac7ce3019c2a5df9b3ad3c55",
+      "sha256": "58601c6dd9238d0c4e3181d8c919727100c9ac638ee62026e6ecfe5a549bce04"
+    },
+    {
+      "target": "src/dacs/native-dem-delivery-consumer.mjs",
+      "source": "src/dacs/native-dem-delivery-consumer.mjs",
+      "lines": "all",
+      "replace": [],
+      "sourceSha256": "f3dda073cab214112bc9be242c8528cc9d4cdd3b7b90722e019433647af8a5bc",
+      "sha256": "985d4a0576a0ac9e1cc4ec52ac2a052c193cd3c5db44e5f64d0c44d27f68432c"
+    },
+    {
+      "target": "src/dacs/native-payment-evidence-consumer.mjs",
+      "source": "src/dacs/native-payment-evidence-consumer.mjs",
+      "lines": "all",
+      "replace": [
+        [
+          "from '../wallet/devnet-native-transport.mjs'",
+          "from './devnet-source.mjs'"
+        ]
+      ],
+      "sourceSha256": "a46930e5bafd5353fc582898c06e2f70764b061abf5f7164640f7fc40a2ebc1e",
+      "sha256": "4d528414dc8b48a34cfe741af8b786a8c7b4f20b6742b8a43efb7c0dfc1d5283"
+    },
+    {
+      "target": "src/dacs/demos-sr2-adapter.mjs",
+      "source": "src/dacs/demos-sr2-adapter.mjs",
+      "lines": "all",
+      "replace": [
+        [
+          "from '../wallet/demos-signature.mjs'",
+          "from './demos-claims.mjs'"
+        ],
+        [
+          "from '../../node_modules/@kynesyslabs/dacs/dist/substrate/demosWriteEvidence.js'",
+          "from '@kynesyslabs/dacs'"
+        ],
+        [
+          "from '../wallet/devnet-native-transport.mjs'",
+          "from './devnet-source.mjs'"
+        ]
+      ],
+      "sourceSha256": "1312e104fa21986fe20a8eb5bf774b41c5b6fd17f6730d00f0bc3dd0459f73ac",
+      "sha256": "b69e5f80c6cf83869721202ffea292a7553c7a10bc9094f28ba39d4d43f956e6"
+    },
+    {
+      "target": "src/util/http.mjs",
+      "source": "src/util/http.mjs",
+      "lines": "all",
+      "replace": [],
+      "sourceSha256": "71a4685402234a53c30c111297d4b825bdc63a649f8867b1ff8af196ad88eb9d",
+      "sha256": "0a1f5395db754e034f3b012dccba693deae1c0d8c8c9aa64587c6f5a007c3784"
+    },
+    {
+      "target": "src/util/text.mjs",
+      "source": "src/util/text.mjs",
+      "lines": "all",
+      "replace": [],
+      "sourceSha256": "9d07a60f32ee5ac28f24c45130da64f294e2234a39dacf078c64da2e28b2f4ea",
+      "sha256": "9a7c14b6d10d491ec4e8ac5df6721e65400abef54fe9a526d8637a76ed91da43"
+    },
+    {
+      "target": "src/util/immutable-readbacks.mjs",
+      "source": "src/util/immutable-readbacks.mjs",
+      "lines": "all",
+      "replace": [],
+      "sourceSha256": "ff4fff9d12516f3aa683655ed31913d7c7de3c4a8407fb24144b7b0175cd14f0",
+      "sha256": "40b860f901f3271effed01b0b2dc78beefece3cc377e8de8800b74747f15a5d7"
+    },
+    {
+      "target": "src/devnet-demo/stop-request.mjs",
+      "source": "src/devnet-demo/stop-request.mjs",
+      "lines": "all",
+      "replace": [],
+      "sourceSha256": "897ba1b101303b630a7285b6c2f37754de467f4ead43ded682f39de6a83d3cc2",
+      "sha256": "4dbff0247e4def01305e58cf7db2ec3bd0b4c071eefb4f6bbcf34706430dae1d"
+    },
+    {
+      "target": "src/public/portal/seller-session-limits.mjs",
+      "source": "public/portal/seller-session-limits.mjs",
+      "lines": "all",
+      "replace": [],
+      "sourceSha256": "ef40d701c3c328a5893a050e18ecddad46e88c5bd3200ba928a0bb69e002d543",
+      "sha256": "be1cf2d9d67a701cf930b00d858154fddcb7308cebaf1ed40d1194130756c9b3"
+    },
+    {
+      "target": "src/dacs/purchase-protocol.mjs",
+      "source": "src/dacs/purchase-protocol.mjs",
+      "lines": [
+        [
+          14,
+          24
+        ],
+        [
+          26,
+          31
+        ],
+        [
+          33,
+          34
+        ],
+        [
+          38,
+          40
+        ],
+        [
+          44,
+          90
+        ],
+        [
+          95,
+          162
+        ],
+        [
+          184,
+          202
+        ],
+        [
+          221,
+          247
+        ],
+        [
+          373,
+          536
+        ],
+        [
+          545,
+          546
+        ]
+      ],
+      "replace": [
+        [
+          "import { addressForClaim, claimForAddress } from '../wallet/demos-signature.mjs';",
+          "import { addressForClaim } from './demos-claims.mjs';"
+        ],
+        [
+          "import { anchorWriteMessage, canonicalSignature,",
+          "import { canonicalSignature,"
+        ]
+      ],
+      "omitted": "the buyer Agreement exchange and commitment readback, Agreement planning, the app purchase-terms check, deliveryIsFinal and two structural aliases; none is reached by the seller",
+      "sourceSha256": "7393438497a5a8a82f1bb9e72cf37598d05f29e3c3a825c559050e31b8e56f45",
+      "sha256": "0717995ce60d075915bbc0bc6d93257939394b79b2ee41ffcecdc049112a1073"
+    },
+    {
+      "target": "src/dacs/fixture-anchors.mjs",
+      "source": "src/dacs/fixture-anchors.mjs",
+      "lines": [
+        [
+          13,
+          13
+        ],
+        [
+          15,
+          16
+        ],
+        [
+          18,
+          21
+        ],
+        [
+          23,
+          80
+        ],
+        [
+          134,
+          139
+        ]
+      ],
+      "replace": [
+        [
+          "from '../wallet/demos-signature.mjs'",
+          "from './demos-claims.mjs'"
+        ]
+      ],
+      "omitted": "the loopback fixture substrate HTTP client (createFixtureAnchorClient); this package ships no fixture substrate",
+      "sourceSha256": "3392ab78c6d9eb39ce2c1d23ac612cf5a9bd6c5a2f4ca7795073e901eab1da5b",
+      "sha256": "db31db894fa8c4434c3f5c3f80e43cba4199db89becbcfe3fb14bc130090c561"
+    },
+    {
+      "target": "src/dacs/wallet-transactions.mjs",
+      "source": "src/dacs/wallet-transactions.mjs",
+      "lines": [
+        [
+          18,
+          18
+        ],
+        [
+          20,
+          22
+        ],
+        [
+          27,
+          31
+        ],
+        [
+          69,
+          100
+        ]
+      ],
+      "replace": [],
+      "omitted": "the native-send payload, amount encoding, payload hash and the application coordinate store",
+      "sourceSha256": "79ddb3a62e16ce1da2a779f91a8bf1ab4e7d2f31d5a3ffa3e4d5ff3222797713",
+      "sha256": "f954be8521608bbc1e64eeccc5685606f3648723ad7a19d655179c4bb6c17226"
+    },
+    {
+      "target": "src/dacs/dem-delivery-context-consumer.mjs",
+      "source": "src/dacs/dem-delivery-context-consumer.mjs",
+      "lines": [
+        [
+          1,
+          9
+        ],
+        [
+          11,
+          11
+        ],
+        [
+          13,
+          16
+        ],
+        [
+          21,
+          30
+        ],
+        [
+          37,
+          99
+        ],
+        [
+          133,
+          152
+        ]
+      ],
+      "replace": [],
+      "omitted": "the buyer-side resolver and its answer capture",
+      "sourceSha256": "6757fcc43ed5c02cecc83673834174383d64b51741700458f4e9e7adb7758ef8",
+      "sha256": "682a57ba2857cef4bf5c54a868263cfa0dbd85cb23c285bb7cdabb8f6610268e"
+    },
+    {
+      "target": "src/dacs/agreement-context-consumer.mjs",
+      "source": "src/dacs/agreement-context-consumer.mjs",
+      "lines": [
+        [
+          22,
+          22
+        ]
+      ],
+      "replace": [],
+      "omitted": "the buyer-side consumer; only the source label the seller context route names",
+      "sourceSha256": "f67e5a8ae34403b9cfa323aef00dde1e3b085ed86695ec3dbb1f7dab4dc2868c",
+      "sha256": "41ebc4c1b6ef76ba2340ab4f50e29222b412020527432d949ea9511358eb5579"
+    },
+    {
+      "target": "src/dacs/chain.mjs",
+      "source": "src/dacs/chain.mjs",
+      "lines": [
+        [
+          22,
+          22
+        ],
+        [
+          24,
+          31
+        ]
+      ],
+      "replace": [],
+      "omitted": "the chain reader and node parsers; only the OS and DEM amount patterns",
+      "sourceSha256": "a5213e6053c832fac3d63b39ffe520b9e198a59e78d3e5b1c7cc2854333d8cad",
+      "sha256": "416c01d7fb49417ea27e5a5bf8d0888dea7a997a550ae29596e7e81c7c18eeea"
+    },
+    {
+      "target": "src/dacs/buyer-chain-readback.mjs",
+      "source": "src/dacs/buyer-chain-readback.mjs",
+      "lines": [
+        [
+          197,
+          199
+        ]
+      ],
+      "replace": [],
+      "omitted": "the buyer readback; only the answer field the seller writes",
+      "sourceSha256": "a4e7f42a11628e670cd2af1392b05dbe3c4ee09630b91cd292255251d08a75fd",
+      "sha256": "0fa485b3de1cee9e772e085e9f6bda7ca115ddb009c13a26ca37b717e3af0b27"
+    },
+    {
+      "target": "src/mcp/seller-content.mjs",
+      "source": "src/mcp/seller-content.mjs",
+      "lines": [
+        [
+          10,
+          14
+        ],
+        [
+          22,
+          63
+        ],
+        [
+          83,
+          92
+        ]
+      ],
+      "replace": [],
+      "publicationText": true,
+      "omitted": "the MCP report and purchase views; only the labelled seller-data envelope",
+      "sourceSha256": "06a09d9f67c7dd023ba92ef809f8a4dcca10b0944bafc3e718dd9aec70791cda",
+      "sha256": "397b6159334c29b68da44ac930cf2e69a8b6be1cb8ad2514edad109faf9885ee"
+    },
+    {
+      "target": "src/devnet-demo/buyer-access.mjs",
+      "source": "src/devnet-demo/buyer-access.mjs",
+      "lines": [
+        [
+          1,
+          51
+        ]
+      ],
+      "replace": [
+        [
+          "from '../wallet/demos-signature.mjs'",
+          "from '../dacs/demos-claims.mjs'"
+        ]
+      ],
+      "omitted": "the operator relay, resend log and approval wrappers",
+      "sourceSha256": "c46e31242db5a8a9a69c097ec0cb9fe62808434d77d831aff3460094760f41c5",
+      "sha256": "7df8478a0ce404e54831ff2b7b8eb39be85fca49b597abaef00d7eb19d3c3c89"
+    },
+    {
+      "target": "src/operations.mjs",
+      "source": "src/operations.mjs",
+      "lines": [
+        [
+          11,
+          17
+        ]
+      ],
+      "replace": [],
+      "omitted": "the application operation store; only its error class",
+      "sourceSha256": "cc1d58e59e9d724d5893ad9fac344ce12f3c3a96e7d9bd4e6da255ad149c69d2",
+      "sha256": "ce5f96e6558d3a28273feb21e7d3fe43d8bc20a48b90044641aad913209eba5a"
+    }
+  ]
+}

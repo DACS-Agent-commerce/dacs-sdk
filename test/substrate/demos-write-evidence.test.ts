@@ -8,7 +8,9 @@ import {
   demosWriteEvidenceToAnchorReceipt,
   sha256Hex,
 } from "../../src/index.js";
+import * as root from "../../src/index.js";
 import type { DemosWriteEvidence } from "../../src/substrate/index.js";
+import * as substrate from "../../src/substrate/index.js";
 import { demosTransactionContentMatches } from "../../src/substrate/demosWriteEvidence.js";
 
 const artifact = { hello: "world" };
@@ -233,5 +235,13 @@ describe("Demos portable write evidence", () => {
       writer: "did:demos:agent:abc",
       evidence: { ...evidence, finalityProofHash: "tampered" },
     })).toThrow(/invalid proof hash/);
+  });
+
+  it("exports the signed-content matcher from the root and substrate entry points", () => {
+    const content = JSON.parse(signedTransaction).content;
+    expect(root.demosTransactionContentMatches).toBe(demosTransactionContentMatches);
+    expect(substrate.demosTransactionContentMatches).toBe(demosTransactionContentMatches);
+    expect(root.demosTransactionContentMatches(content, content, "tx-abc")).toBe(true);
+    expect(root.demosTransactionContentMatches(content, { ...content, nonce: 8 }, "tx-abc")).toBe(false);
   });
 });

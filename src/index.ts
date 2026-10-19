@@ -308,6 +308,7 @@ export {
   assertDemosWriteEvidence,
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
+  demosTransactionContentMatches,
   demosWriteEvidenceBindsReceiptContent,
   demosWriteEvidenceToAnchorReceipt,
   type DemosAnchorReceiptProof,

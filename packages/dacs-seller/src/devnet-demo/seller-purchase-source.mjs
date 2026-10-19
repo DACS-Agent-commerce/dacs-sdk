@@ -1,5 +1,5 @@
 // Seller-owned purchase state only. Nothing here writes, signs or reads the chain.
-import { addressForClaim } from '../wallet/demos-signature.mjs';
+import { addressForClaim } from '../dacs/demos-claims.mjs';
 
 const CLAIM=/^did:demos:agent:[0-9a-f]{64}$/;
 const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,9})?$/.test(value)?BigInt(value.split('.')[0])*1_000_000_000n+BigInt((value.split('.')[1]??'').padEnd(9,'0')):null;

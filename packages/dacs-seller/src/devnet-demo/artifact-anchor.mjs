@@ -25,14 +25,14 @@ import {
 } from '@kynesyslabs/dacs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, demosSr2TxRef } from '../dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
-import { addressForClaim, verifyDemosSignature } from '../wallet/demos-signature.mjs';
+import { addressForClaim, verifyDemosSignature } from '../dacs/demos-claims.mjs';
 import {
   DEVNET_AGREEMENT_PROFILE,
   DEVNET_DEMO_ARTIFACT_KIND,
   DEVNET_DEMO_ARTIFACT_POLICY,
   DEVNET_DEMO_ARTIFACT_TYPES,
   isDevnetDemoTransport,
-} from '../wallet/devnet-native-transport.mjs';
+} from '../dacs/devnet-source.mjs';
 
 const clone=(v)=>JSON.parse(canonicalize(v));
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};

@@ -12,6 +12,8 @@ import * as lifecycleProtocol from './lifecycle-protocol-fixture.mjs';
 import {fixtureListing} from '../fixtures/listings.mjs';
 import {key,bundleFor,T,JOBS} from './bilateral-vet-fixture.mjs';
 const {createSellerDurableState}=await import('../../src/dacs/seller-durable-state.mjs');
+// The package's own claim and signature module; only absent host capabilities are stubbed.
+const claims=await import('../../src/dacs/demos-claims.mjs');
 const forbidden=()=>{throw new Error('external effect reached before lifecycle admission')};
 export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false}={}){
  const seller=key(),buyer=key(),dir=mkdtempSync(join(tmpdir(),'seller-agent-gates-'));
@@ -45,14 +47,14 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
  let signatureCapability;
  if(lifecycle){
   const authModule=new vm.SourceTextModule(readFileSync(new URL('../../src/dacs/commit-on-signature.mjs',import.meta.url),'utf8'));
-  const dependencies={'@kynesyslabs/dacs':core,'../wallet/demos-signature.mjs':{addressForClaim:c=>'0x'+c.slice(16),verifyDemosSignature:({address,message,signature})=>lifecycleProtocol.verifyBytes(Buffer.from(message),Buffer.from(signature,'base64url'),Buffer.from(address.slice(2),'hex'))},'./wallet-transactions.mjs':{deriveStorageAddress}};
+  const dependencies={'@kynesyslabs/dacs':core,'./demos-claims.mjs':claims,'./wallet-transactions.mjs':{deriveStorageAddress}};
   await authModule.link(spec=>{const values=dependencies[spec];return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value] of Object.entries(values))this.setExport(key,value);});});await authModule.evaluate();signatureCapability=authModule.namespace;
  }
 
  const modules={
   '@kynesyslabs/dacs':core,'node:path':await import('node:path'),
   '../devnet-demo/buyer-access.mjs':{operatorBuyerAccessConfig:()=>null},
-  '../wallet/demos-signature.mjs':{addressForClaim:c=>'0x'+c.slice(16)},
+  './demos-claims.mjs':claims,
   './commit-on-signature.mjs':lifecycle?signatureCapability:{commitOnSignatureConfig:v=>v,verifySignatureAgreement:forbidden,verifyAgreementCreateAuthorization:forbidden},
   './delivery-evidence.mjs':{isNativeDeliveryEvidence:forbidden},
   './listing.mjs':{validateListing:async()=>({disposition:'verified'}),verifyComponent,DEM_RAIL:{railId:'demos-native:DEM',railVersion:1}},

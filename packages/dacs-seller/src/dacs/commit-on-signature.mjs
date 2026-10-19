@@ -1,5 +1,5 @@
 import { canonicalize, contentHash, finalizeFixedPriceAgreementContributions, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
-import { addressForClaim, verifyDemosSignature } from '../wallet/demos-signature.mjs';
+import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
 import { deriveStorageAddress } from './wallet-transactions.mjs';
 const plainJson = value => JSON.parse(canonicalize(value));
 

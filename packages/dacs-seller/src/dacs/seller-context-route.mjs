@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import { identityBundleHash, isCanonicalJobId, isIdentityBundle } from '@kynesyslabs/dacs';
 import { sellerData } from '../mcp/seller-content.mjs';
-import { addressForClaim } from '../wallet/demos-signature.mjs';
+import { addressForClaim } from './demos-claims.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from './agreement-context-consumer.mjs';
 import { DEM_RAIL, canonicalize, purchaseSupport, verifyComponent } from './listing.mjs';
 import { listingPin } from './purchase-protocol.mjs';
