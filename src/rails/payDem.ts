@@ -2352,6 +2352,38 @@ function retainedPayDemAttempt(
   return retained === undefined ? undefined : Object.freeze({ txHash: retained, succeeded });
 }
 
+/**
+ * The attempt record compares hashes as exact strings, and the bridge records
+ * the canonical form. The fence a rail receives therefore records the
+ * canonical form too, whichever form the rail returns, and refuses a value
+ * that is not a Demos hash before the rail can broadcast. Everything else is
+ * the store's own fence.
+ */
+function canonicalAttemptFence(
+  fence: Readonly<SettlementEffectFence> | undefined,
+): Readonly<SettlementEffectFence> | undefined {
+  if (fence === undefined) return undefined;
+  const property = stableDataProperty(fence, "recordAttempt", "pay-dem effect fence attempt record");
+  if (!property.found || property.value === undefined) return fence;
+  const recordAttempt = stableMethod<NonNullable<SettlementEffectFence["recordAttempt"]>>(
+    fence, "recordAttempt", "pay-dem effect fence attempt record",
+  );
+  return Object.freeze(Object.create(fence, {
+    recordAttempt: {
+      enumerable: true,
+      value: async (txHash: unknown) => {
+        const hash = canonicalDemosTxHash(txHash);
+        if (hash === null) {
+          throw new DacsError(
+            "pay-dem attempt record needs a 32-byte Demos transaction hash; refusing broadcast",
+          );
+        }
+        await recordAttempt(hash);
+      },
+    },
+  }) as SettlementEffectFence);
+}
+
 function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
   return Object.freeze({
     ...result,
@@ -2393,7 +2425,8 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * names that hash. It always reads the record, which refuses another hash
  * whatever this bridge holds. A custom rail must record the hash it returns
  * before it broadcasts: the bridge's write after the return cannot cover a
- * crash in between. A rail-log outcome or an injected store's records never do, and
+ * crash in between. Its fence records the canonical form and refuses a value
+ * that is not a Demos hash. A rail-log outcome or an injected store's records never do, and
  * neither does a prepared-transfer journal entry the reconciliation returns:
  * that entry is checked against this exact payment tuple and can refuse the
  * audit, but never counts the hash on its own. Once
@@ -2761,7 +2794,7 @@ export function payDemSettle(
         // Another process may record this key's attempt while the chain read runs.
         if (!recordedBefore && !await attemptNames()) {
           throw new DacsError(
-            "pay-dem: no SDK record binds the retained transaction to this payment (no attempt record of this key names it); refusing reuse or rebroadcast",
+            "pay-dem: no SDK record binds the retained transaction to this payment (no attempt record of this key in a createIdempotencyStore store names it; an injected store's records never count); refusing reuse or rebroadcast",
           );
         }
         authenticatedResults.set(key, { context, result: captured, boundToKey: true });
@@ -2773,7 +2806,7 @@ export function payDemSettle(
           amount: amountOs,
           network,
           recovery: context,
-        }, effectFence);
+        }, canonicalAttemptFence(effectFence));
         const captured = captureFreshPayDemResult(
           submitted,
           context,
@@ -2786,7 +2819,8 @@ export function payDemSettle(
         // restart can bind it; `createPayDemRail` already did so before its
         // broadcast. A refused record fails closed and leaves the hash unbound.
         if (captured.txHash.length > 0) await effectFence?.recordAttempt?.(captured.txHash);
-        authenticatedResults.set(key, { context, result: captured, boundToKey: true });
+        // A result without a hash names no transaction, so it binds none.
+        authenticatedResults.set(key, { context, result: captured, boundToKey: captured.txHash.length > 0 });
         return captured;
       };
       if (recordVerifiedRail) sdkRecordReadingSubmissions.add(submit);

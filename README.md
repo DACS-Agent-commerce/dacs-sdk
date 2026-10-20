@@ -661,7 +661,10 @@ the store persists or returns it; when that write is refused the call fails
 and the hash stays unbound. A custom rail must call `fence.recordAttempt` with
 the exact hash it will return before it broadcasts, and must not broadcast
 when it rejects: the bridge's own write after the rail returns cannot cover a
-crash between that broadcast and the return. The record is compare-and-set
+crash between that broadcast and the return. The fence a rail receives records
+the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
+passes, and rejects a value that is not a Demos transaction hash, so a rail
+that awaits it never broadcasts one. The record is compare-and-set
 under the submit generation and never changes, so after a crash, a timeout or
 an ambiguous result a restarted process can still audit the payment and never
 fails, resubmits or reports unpaid a final one (DACS-4 §9.5.1 PC-7). A durable
@@ -681,6 +684,14 @@ So an audit never counts another job's transfer of the same amount to the same
 payee for this one, even when the reconciler returns an entry naming this job.
 The reconciler throws when the entry it loads conflicts with the node's record,
 and never returns `null` for the retained hash.
+
+A process that dies after the record and before its broadcast leaves a recorded
+hash that nothing sent. The SDK never signs or sends again for that key: when
+the reconciler finds nothing for the recorded hash, the restart is refused and
+the key stays held. The operator clears it in the durable log only after
+establishing that the recorded transaction can no longer land, for example
+that the payer account's nonce has moved past the transaction's journaled
+nonce.
 
 A restart without history (the lease expired and the session holds no hash)
 reconciles in the store. When the key has an attempt record, the reconciler

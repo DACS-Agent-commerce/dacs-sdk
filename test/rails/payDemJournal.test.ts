@@ -282,13 +282,15 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
   test("does not take an injected store's outcome as this payment's record", async () => {
     const { amountOs: _amount, execution: _execution, ...outcomeA } = executed(hashA);
     const once = vi.fn(async () => { throw new Error("must never claim a retained transfer"); });
-    // Answers job A's outcome whatever key and terms it is asked for.
-    const store = { once, readOutcome: vi.fn(async () => outcomeA) };
+    // Answers job A's outcome and attempt whatever key and terms it is asked for.
+    const store = { once, readOutcome: vi.fn(async () => outcomeA), readAttempt: vi.fn(async () => hashA) };
     const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile: honest() });
     await expect(settle(request("job-b", 0, hashA)))
-      .rejects.toThrow(/no SDK record binds the retained transaction/);
+      .rejects.toThrow(/no SDK record binds the retained transaction.*an injected store's records never count/);
     expect(store.readOutcome).toHaveBeenCalled();
+    // Its attempt lookup is never even asked: only the SDK store's own counts.
+    expect(store.readAttempt).not.toHaveBeenCalled();
     // The SDK store's own attempt lookup still binds, even on another object.
     const inner = createIdempotencyStore();
     await payDemSettle(await unjournaledRail(), {}, { store: inner })(request("job-a"));

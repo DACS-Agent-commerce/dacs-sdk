@@ -108,7 +108,10 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   also records any hash a rail returns before the store persists or returns
   it, and a refused write fails the call and leaves the hash unbound. A custom
   rail must record the exact hash it will return before it broadcasts: the
-  bridge's write after the return cannot cover a crash in between. The write is
+  bridge's write after the return cannot cover a crash in between. The fence a
+  rail receives records the canonical form (64 lower-case hex digits, no `0x`)
+  whichever form the rail passes, and rejects a value that is not a Demos
+  transaction hash before the rail can broadcast it. The write is
   compare-and-set under the submit generation and the record never changes. A
   crash after broadcast, a timeout or an ambiguous result therefore still lets
   a restarted process audit the payment. A durable log needs the pair: over a
@@ -124,6 +127,12 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   key-only restart reconciliation can have written. The reconciler throws
   when a loaded entry conflicts with the record and never returns `null` for
   the retained hash.
+- A crash after the record and before the broadcast leaves a recorded hash
+  that nothing sent. The SDK never signs or sends again for the key: when the
+  reconciler finds nothing for the recorded hash, the restart is refused and
+  the key stays held until the operator establishes that the transaction can
+  no longer land (for example, the payer's nonce has moved past its journaled
+  nonce) and clears the key in the durable log.
 - A restart without history reconciles in the store. With an attempt record
   the reconciler receives its hash as `txHash`, and any other transaction is
   refused. Without one, the reconciler's answer for the key is still accepted

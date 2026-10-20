@@ -47,6 +47,9 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(doc).toContain("A durable log needs the pair");
     expect(readme).toContain("A durable log needs the attempt pair for restart audits");
     expect(doc).toContain("a refused write fails the call and leaves the hash unbound");
+    for (const text of [doc, readme]) {
+      expect(text).toContain("records the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail passes");
+    }
   });
 
   it("says a failure proof from outside createPayDemRail never becomes the recorded outcome", () => {

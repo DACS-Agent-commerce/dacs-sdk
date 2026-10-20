@@ -59,6 +59,11 @@ export interface RailDispatchOptions {
    * restart recovery should supply all three of `settlementStore`,
    * `reconcile`, and `journalPreparedTransfer`; omitting them preserves the
    * low-level process-local compatibility behavior but is not restart-safe.
+   * Auditing a retained hash after a restart also needs `settlementStore` to
+   * be a `createIdempotencyStore` store over a `SettlementLog` with
+   * `readOutcome` and the `putAttempt`/`readAttempt` pair: an injected store's
+   * own lookups never bind a hash, and without that record the audit fails
+   * closed.
    */
   payDem?: {
     /** Maximum transfer amount plus confirmed Demos fees, in OS base units. */
