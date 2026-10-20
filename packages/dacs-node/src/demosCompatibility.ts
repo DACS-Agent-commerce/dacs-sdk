@@ -21,7 +21,11 @@ function field(value: unknown, name: string): unknown {
   return descriptor && "value" in descriptor ? descriptor.value : undefined;
 }
 
-/** Read-only build admission for generated doctor gates; accepts SDK-unwrapped info. */
+/**
+ * Read-only build compatibility report for SDK-unwrapped network info. The node
+ * self-reports this metadata, so callers report it and must not treat it as
+ * authentication of the node.
+ */
 export function inspectDacsDemosNodeCompatibilityV1(networkInfo: unknown): Readonly<{
   compatible: boolean;
   reasonCode: "demos-node-compatible" | "demos-node-build-unidentified" |

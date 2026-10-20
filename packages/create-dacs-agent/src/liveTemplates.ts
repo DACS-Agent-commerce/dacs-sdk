@@ -1277,16 +1277,25 @@ function baseProbes(
     },
     "local.deployment-runtime": dockerRuntime,
     "demos.rpc-chain": actors === undefined ? actorUnavailable : async () => {
+      let infos: unknown[];
       try {
-        const infos = await Promise.all([
+        infos = await Promise.all([
           actors.buyer.runtime.networkInfo(), actors.seller.runtime.networkInfo(),
         ]);
-        for (const info of infos) {
-          const compatibility = inspectDacsDemosNodeCompatibilityV1(info);
-          if (!compatibility.compatible) return blocked(compatibility.reasonCode);
-        }
-        return pass({ actorCount: 2 });
       } catch { return fail("demos-rpc-unavailable"); }
+      // demosdk resolves null when the RPC is unreachable.
+      if (infos.some((info) => info === null || info === undefined)) {
+        return fail("demos-rpc-unavailable");
+      }
+      if (infos.some((info) => typeof info !== "object" || Array.isArray(info))) {
+        return fail("demos-rpc-response-malformed");
+      }
+      // Build metadata is self-reported by the node: report it, never gate on it.
+      return pass({
+        actorCount: 2,
+        buyerNodeBuild: inspectDacsDemosNodeCompatibilityV1(infos[0]).reasonCode,
+        sellerNodeBuild: inspectDacsDemosNodeCompatibilityV1(infos[1]).reasonCode,
+      });
     },
     "demos.storage-read": actors === undefined ? actorUnavailable
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
@@ -4846,6 +4855,13 @@ services open the SDK's role-owned SQLite, Demos identity, authenticated HTTP an
 readiness runtime when their prerequisites exist. Commerce remains blocked until
 the exact Listing, signed rail authority and operation graph pass doctor. Never
 bypass that gate.
+
+The \`demos.rpc-chain\` check reports each node's self-described build as the
+\`buyerNodeBuild\` and \`sellerNodeBuild\` facts. The default public testnet RPC
+reports a dirty build (\`demos-node-build-dirty\`). This is informational and does
+not block start, setup or purchase; settlement is still verified from
+transaction and block evidence. The check fails only when the RPC is unreachable
+or returns a malformed reply.
 
 Payment capability: **${options.rails}**. Dual-rail mode publishes two separately
 signed sibling Listings for the same offer. Setup and purchase select one exact

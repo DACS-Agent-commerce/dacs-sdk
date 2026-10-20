@@ -88,6 +88,12 @@ describe("generated operator contracts", () => {
     if (rails !== "x402") expect(readme).toContain("--max-total-debit-dem 3");
     if (!nativeOnly) expect(readme).toContain("--max-network-fee-eth 0.001");
     expect(readme).toContain("exact creating\nSDK version, including patch releases");
-    expect(files["src/doctor.ts"]).toContain("blocked(compatibility.reasonCode)");
+    // Self-reported node build metadata is a reported fact, never a gate.
+    expect(files["src/doctor.ts"]).toContain(
+      "buyerNodeBuild: inspectDacsDemosNodeCompatibilityV1(infos[0]).reasonCode",
+    );
+    expect(files["src/doctor.ts"]).not.toContain("blocked(compatibility.reasonCode)");
+    expect(readme).toContain("(`demos-node-build-dirty`)");
+    expect(readme).toContain("not block start, setup or purchase");
   });
 });

@@ -317,8 +317,8 @@ describe("create-dacs-agent", () => {
     expect(environmentExample).toContain("DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT=100");
     expect(environmentExample).toContain("DACS_PAY_DEM_WALLET_MINIMUM_RESERVE=5");
     const generatedDoctor = await readFile(join(target, "src/doctor.ts"), "utf8");
-    expect(generatedDoctor).toContain("inspectDacsDemosNodeCompatibilityV1(info)");
-    expect(generatedDoctor).toContain("blocked(compatibility.reasonCode)");
+    expect(generatedDoctor).toContain("inspectDacsDemosNodeCompatibilityV1(infos[1]).reasonCode");
+    expect(generatedDoctor).not.toContain("blocked(compatibility.reasonCode)");
     const generatedReadme = await readFile(join(target, "README.md"), "utf8");
     expect(generatedReadme).toContain("Restore requires the exact creating");
     expect(generatedReadme).toContain("SDK version, including patch releases");

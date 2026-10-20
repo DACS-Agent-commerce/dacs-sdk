@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 import ts from "typescript";
@@ -55,16 +56,24 @@ const clean = {
 };
 
 describe("generated doctor RPC compatibility probe", () => {
-  it("passes only after reading compatible clean metadata from both actors", async () => {
+  const compatibleFacts = {
+    actorCount: 2,
+    buyerNodeBuild: "demos-node-compatible",
+    sellerNodeBuild: "demos-node-compatible",
+  };
+
+  it("reports compatible clean metadata read from both actors", async () => {
     const buyer = { networkInfo: vi.fn(async () => structuredClone(clean)) };
     const seller = { networkInfo: vi.fn(async () => structuredClone(clean)) };
     expect(await generatedProbe(buyer, seller)()).toEqual({
-      status: "pass", facts: { actorCount: 2 },
+      status: "pass", facts: compatibleFacts,
     });
     expect(buyer.networkInfo).toHaveBeenCalledOnce();
     expect(seller.networkInfo).toHaveBeenCalledOnce();
   });
 
+  // Build metadata is self-reported by the node, so it is advisory: the
+  // default public RPC reports a dirty build and must not block start.
   const incompatible = [
     [{ ...clean.nodeVersion, dirty: true }, "demos-node-build-dirty"],
     [{ ...clean.nodeVersion, name: "foreign-node" }, "demos-node-build-unidentified"],
@@ -73,19 +82,54 @@ describe("generated doctor RPC compatibility probe", () => {
     [{ name: "demos-node-software" }, "demos-node-build-unidentified"],
   ] as const;
   for (const role of ["buyer", "seller"] as const) {
-    it.each(incompatible)(`blocks incompatible ${role} metadata %j`, async (nodeVersion, reasonCode) => {
+    it.each(incompatible)(`reports incompatible ${role} metadata %j without blocking`, async (nodeVersion, reasonCode) => {
       const runtimes = {
         buyer: { networkInfo: vi.fn(async (): Promise<unknown> => structuredClone(clean)) },
         seller: { networkInfo: vi.fn(async (): Promise<unknown> => structuredClone(clean)) },
       };
       runtimes[role].networkInfo.mockResolvedValue({ nodeVersion });
       expect(await generatedProbe(runtimes.buyer, runtimes.seller)()).toEqual({
-        status: "blocked", reasonCode,
+        status: "pass", facts: { ...compatibleFacts, [`${role}NodeBuild`]: reasonCode },
       });
       expect(runtimes.buyer.networkInfo).toHaveBeenCalledOnce();
       expect(runtimes.seller.networkInfo).toHaveBeenCalledOnce();
     });
+
+    // demosdk's getNetworkInfo() resolves null on a transport failure; any
+    // other non-object reply is a malformed response, not a build verdict.
+    it.each([
+      [null, "demos-rpc-unavailable"],
+      [undefined, "demos-rpc-unavailable"],
+      ["unavailable", "demos-rpc-response-malformed"],
+      [500, "demos-rpc-response-malformed"],
+      [[], "demos-rpc-response-malformed"],
+    ] as const)(`fails when the ${role} RPC returns %j`, async (reply, reasonCode) => {
+      const runtimes = {
+        buyer: { networkInfo: vi.fn(async (): Promise<unknown> => structuredClone(clean)) },
+        seller: { networkInfo: vi.fn(async (): Promise<unknown> => structuredClone(clean)) },
+      };
+      runtimes[role].networkInfo.mockResolvedValue(reply);
+      expect(await generatedProbe(runtimes.buyer, runtimes.seller)()).toEqual({
+        status: "fail", reasonCode,
+      });
+    });
   }
+
+  it("does not block start on the default node2 RPC's captured dirty build", async () => {
+    const capture = JSON.parse(readFileSync(new URL(
+      "../../dacs-node/test/fixtures/demos-rpc-v1.json", import.meta.url,
+    ), "utf8")) as { endpoint: string; networkInfo: unknown };
+    expect(capture.endpoint).toContain("node2.demos.sh");
+    const node2 = { networkInfo: async () => structuredClone(capture.networkInfo) };
+    expect(await generatedProbe(node2, node2)()).toEqual({
+      status: "pass",
+      facts: {
+        actorCount: 2,
+        buyerNodeBuild: "demos-node-build-dirty",
+        sellerNodeBuild: "demos-node-build-dirty",
+      },
+    });
+  });
 
   it("fails when a runtime cannot read network metadata", async () => {
     const unavailable = { networkInfo: vi.fn(async () => { throw new Error("unavailable"); }) };

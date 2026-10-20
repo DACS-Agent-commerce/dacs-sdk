@@ -493,15 +493,22 @@ Demos node `0.9.8` at
 [`61b8e75aa8db5e408c49e1c3a89db4d673f45578`](https://github.com/kynesyslabs/node/tree/61b8e75aa8db5e408c49e1c3a89db4d673f45578),
 with demosdk `4.0.16` at published source revision
 [`d3620ae24f657ae7442e63e7adaefef7094b22e2`](https://github.com/kynesyslabs/sdks/tree/d3620ae24f657ae7442e63e7adaefef7094b22e2).
-Generated live doctor gates require this exact node revision and version, the
-`demos-node-software` identity, and `dirty: false`. Missing build metadata,
-dirty trees and other revisions block readiness. The endpoint URL is not a
-compatibility pin. Build metadata describes compatibility; independently
-verified transaction and block evidence still establish settlement.
+`inspectDacsDemosNodeCompatibilityV1()` reports `demos-node-compatible` only for
+this exact node revision and version, the `demos-node-software` identity, and
+`dirty: false`; otherwise it reports `demos-node-build-unidentified`,
+`demos-node-build-dirty` or `demos-node-revision-unsupported`. A node reports
+this metadata about itself and nothing authenticates it, so the generated
+`demos.rpc-chain` doctor check reports it as the `buyerNodeBuild` and
+`sellerNodeBuild` facts and does not block start, setup or purchase. The check
+fails only when the RPC is unreachable (`demos-rpc-unavailable`) or returns a
+non-object reply (`demos-rpc-response-malformed`). The endpoint URL is not a
+compatibility pin. Independently verified transaction and block evidence, not
+build metadata, establish settlement.
 
-The read-only capture from node2 on 2026-10-16 reports `dirty: true`. It is a
-response-shape reference, **not an approved reproducible deployment**. Operators
-must build the pinned source from a clean tree, retain its build inputs and
+The read-only capture from node2, the generated default RPC, on 2026-10-16
+reports `dirty: true`, so the doctor reports `demos-node-build-dirty` for it on
+the public testnet. It is a response-shape reference, **not an approved
+reproducible deployment**. Before a production launch, operators must build the pinned source from a clean tree, retain its build inputs and
 artifact digest, configure both roles to that node, rerun read-only doctor and
 contract probes, and retain those results before launch. A change to the node
 revision requires reviewing and updating the contract and fixtures together;
