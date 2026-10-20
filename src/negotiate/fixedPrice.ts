@@ -82,9 +82,13 @@ export interface FixedPriceAgreementInput {
    * signatures and the agreement hash. Omit it (do not pass `{}` or
    * `undefined`) for an Agreement byte-identical to one derived without it.
    * Keys are `<namespace>:<name>:v<n>`; size and depth are capped (see
-   * docs/fixed-price-agreement.md). A seller re-derives from its own
-   * authenticated context, so it must resolve the same terms itself; a
-   * proposal carrying terms the seller did not resolve fails.
+   * docs/fixed-price-agreement.md). Only this derivation applies that
+   * profile; the signing plan and signer take a draft as given. A seller
+   * re-derives from its own authenticated context, so it must resolve the
+   * same terms itself; a proposal carrying terms the seller did not resolve
+   * fails. Never read price, rail, deadline, payout, deliverable, or Vet
+   * meaning from these entries, and never flatten or merge them into the
+   * §8.5 terms.
    */
   additionalTerms?: Record<string, unknown>;
   /** Provisional signing-time clock; #99 re-checks deadlines at finalized commit. */

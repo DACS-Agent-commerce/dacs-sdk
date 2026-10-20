@@ -84,6 +84,7 @@
     "docs/presence-conformance-adoption.md",
     "docs/alternative-payment-projection.md",
     "docs/demos-cci-identities.md",
+    "docs/fixed-price-agreement.md",
     "docs/fixed-price-offline-coordinator.md",
     "docs/fixed-price-x402-coordinator.md",
     "docs/settlement-verified-reputation.md",

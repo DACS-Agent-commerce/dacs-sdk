@@ -540,6 +540,12 @@ export interface AgreementTerms {
   deadline: number;
   priceAnchor?: PriceAnchor;
   feeSchedule?: FeeSchedule;
+  /**
+   * Extension data under the agreement hash and both signatures. Never read
+   * price, rail, deadline, payout, deliverable, or Vet meaning from it, and
+   * never flatten or merge it into the other terms; only the other §8.5
+   * members and the parties' Vet references carry those.
+   */
   additionalTerms?: Record<string, unknown>;
 }
 
