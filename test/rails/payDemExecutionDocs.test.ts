@@ -50,8 +50,20 @@ describe("pay-dem execution docs match the code (#338)", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain("Only the SDK's own read of the node makes a verdict final: inside `createPayDemRail`, or through a record reader `createPayDemRecordReader` built.");
     expect(doc).toContain("The client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are ignored");
-    expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else.");
+    expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else, when it has no signed nonce, when it is not bound to a transfer this call journaled and signed");
     expect(doc).toContain("No file in the package exports a way to add to it");
+  });
+
+  it("says a client or rail the SDK cannot finalise is refused before its effect, and how a transfer is bound to the call", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    expect(doc).toContain("before its `transfer` runs: its result could never be final");
+    expect(doc).toContain("any other rail, including a wrapper around one of these, is refused when the bridge is built");
+    expect(doc).toContain("whose signed nonce is above that account nonce");
+    expect(doc).toContain("One hash settles at most one payment in a process");
+    const source = read("src/rails/payDem.ts");
+    expect(source).toMatch(/"getAddressNonce"/);
+    expect(source).toMatch(/signedNonce > nonceFloor/);
+    expect(source).toMatch(/refusing transfer/);
     expect(doc).not.toMatch(/vouch/i);
   });
 

@@ -1140,30 +1140,20 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(await outcomes(store)).toHaveLength(1);
     });
 
-    // The proof binds shape, not origin: one no node served, from a custom
-    // rail, must leave the settlement intent held and never be recorded as
-    // the definitive outcome, so a restarted session cannot reuse or resend.
-    test("keeps an invented proof from a custom pay-dem rail held, not a durable verdict", async () => {
-      const store = createInMemorySessionStore();
-      const kv = await demKv();
+    // The proof binds shape, not origin: a custom rail that could invent one
+    // no node served is refused before the session can call it, so it can
+    // neither pay nor leave a durable verdict (#338).
+    test("refuses a custom pay-dem rail that could invent a proof before calling it", async () => {
       const log = createInMemorySettlementLog();
       const putOutcome = vi.spyOn(log, "putOutcome");
       const rail: PayDemRail = {
         address: PAYER_HEX,
         settle: vi.fn(async () => failedRecord(payeeHex) as Awaited<ReturnType<PayDemRail["settle"]>>),
       };
-      const settle = payDemSettle(rail, { network: "demos" }, {
+      expect(() => payDemSettle(rail, { network: "demos" }, {
         store: createIdempotencyStore(log),
-      });
-      const first = await makeDeps(store, { kv, settle });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
-        .rejects.toThrow(/remains indeterminate/);
-      expect(putOutcome).not.toHaveBeenCalled();
-
-      const resumed = await makeDeps(store, { kv, resumeSettlement: settle });
-      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-        .rejects.toThrow(/refusing to resubmit/);
-      expect(rail.settle).toHaveBeenCalledTimes(1);
+      })).toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
+      expect(rail.settle).not.toHaveBeenCalled();
       expect(putOutcome).not.toHaveBeenCalled();
     });
 

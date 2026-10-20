@@ -795,6 +795,9 @@ describe("native DEM buyer payment track", () => {
   // when it carries the SDK's record reader, because the SDK itself then reads
   // and binds this transfer's executed record.
   it("settles the wallet and notice for a custom client on the SDK's own record read", async () => {
+    // Before the transfer the payer had used nonce 6, so the client signs 7.
+    demosSdk.nodeCall.mockImplementation(async (message: string) =>
+      message === "getAddressNonce" ? 6 : { state: "included", blockNumber: 42 });
     demosSdk.getTxByHash.mockResolvedValue({
       hash: TX_HASH,
       status: "confirmed",

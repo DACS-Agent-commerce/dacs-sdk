@@ -377,8 +377,10 @@ export {
   type D402SettlementResult,
 } from "./payD402.js";
 export {
+  createPayDemClientRail,
   createPayDemRail,
   createPayDemRecordReader,
+  isPayDemRecordVerifyingRail,
   PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,

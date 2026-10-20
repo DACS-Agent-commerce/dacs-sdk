@@ -133,13 +133,15 @@ const outcome = async (run) => {
 };
 
 // Forgery 1: a custom rail's bound failed record must not become a definitive
-// (persisted, reused) permanent failure.
-const failureSettle = sdk.payDemSettle(forgedRail, { network: "demos" });
-const failureFirst = await outcome(() => failureSettle(request));
-const failureSecond = await outcome(() => failureSettle(request));
+// (persisted, reused) permanent failure. The rail is refused before it runs.
+const failureFirst = await outcome(() =>
+  sdk.payDemSettle(forgedRail, { network: "demos" })(request));
+const failureSecond = await outcome(() =>
+  sdk.payDemSettle(forgedRail, { network: "demos" })(request));
 
 // Forgery 2: a custom client's `execution: "executed"` statement must not mint
-// a final payment, directly or through the runSession bridge.
+// a final payment, directly or through the runSession bridge. Without an SDK
+// reader the client, and a custom rail, are refused before they run.
 const coreSuccess = await outcome(() => sdk.payDemSettleCore(
   { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
   forgedClient,
@@ -207,6 +209,8 @@ const node = createServer((req, res) => {
     if (req.method === "POST") {
       const { message, data } = JSON.parse(body).params[0];
       nodeReads.push(message);
+      // The payer had used nonce 6, so the client's transfer carries 7.
+      if (message === "getAddressNonce") response = 6;
       if (message === "getTransactionStatus") response = { state: "included", blockNumber: 42 };
       if (message === "getNetworkInfo") response = { forks: { osDenomination: { activated: true } } };
       if (message === "getTxByHash") {
@@ -232,12 +236,23 @@ try {
 } catch (error) {
   readerUnavailable = String(error?.code ?? error?.message ?? error).slice(0, 200);
 }
+// A client that journals its signed transfer through the journal the SDK
+// hands it, then returns the hash and nonce it signed.
 const readerClient = (hash) => ({
   address: PAYER,
   recordReader,
-  transfer: async () => ({ ok: false, state: "timeout", hash, nonce: 7 }),
+  transfer: async (args) => {
+    await args.journalPreparedTransfer?.({
+      txHash: hash, nonce: 7, payer: PAYER, payee: SELLER, amountOs: AMOUNT_OS,
+      network: "demos",
+      ...(args.recovery === undefined ? {} : { recovery: args.recovery }),
+    });
+    return { ok: false, state: "timeout", hash, nonce: 7 };
+  },
 });
+const BRIDGE_HASH = "56".repeat(32);
 let readerSuccess = null;
+let readerReplay = null;
 let readerFailure = null;
 let forgedReader = null;
 if (recordReader !== undefined) {
@@ -249,10 +264,15 @@ if (recordReader !== undefined) {
     core: await outcome(async () => readerCore),
     verified: sdk.payDemRecordVerifiedTransfer(readerCore) ?? null,
     bridge: await outcome(() => sdk.payDemSettle(
-      { address: PAYER, settle: (params) => sdk.payDemSettleCore(params, readerClient(TX_HASH)) },
+      sdk.createPayDemClientRail(readerClient(BRIDGE_HASH)),
       { network: "demos" },
     )({ ...request, jobId: "reader-success" })),
   };
+  // The same confirmed transfer handed back for another payment.
+  readerReplay = await outcome(() => sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    readerClient(TX_HASH),
+  ));
   readerFailure = await outcome(() => sdk.payDemSettleCore(
     { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
     readerClient(FAILED_HASH),
@@ -267,6 +287,7 @@ node.close();
 process.stdout.write(`${JSON.stringify({
   readerUnavailable,
   readerSuccess,
+  readerReplay,
   readerFailure,
   forgedReader,
   nodeReads: [...new Set(nodeReads)].sort(),
