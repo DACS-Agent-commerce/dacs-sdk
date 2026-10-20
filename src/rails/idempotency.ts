@@ -74,6 +74,14 @@ export interface SettlementEffectFence extends SettlementLeaseToken {
   bindingHash: string;
   effectIdentity?: string;
   assertCurrent(): Promise<void>;
+  /**
+   * Durably record the transaction hash this effect signed, through this exact
+   * generation. A store whose log keeps attempts provides it; a rail calls it
+   * before its one broadcast and must not broadcast when it rejects. The same
+   * hash again resolves; another hash for the key, or a first record from a
+   * superseded generation, rejects.
+   */
+  recordAttempt?(txHash: string): Promise<void>;
 }
 
 /**
@@ -117,6 +125,14 @@ export type SettlementRecoveryGrant =
 export type SettlementOutcomeWrite =
   | { status: "recorded" | "existing"; outcome: Readonly<SettlementOutcomeRecord> }
   | { status: "stale" | "conflict" };
+
+/** The transaction hash a key's own effect signed, recorded under its generation. */
+export interface SettlementAttemptRecord {
+  bindingHash: string;
+  txHash: string;
+}
+
+export type SettlementAttemptWrite = "recorded" | "existing" | "stale" | "conflict";
 
 export interface SettlementLog {
   /**
@@ -167,6 +183,24 @@ export interface SettlementLog {
     lease: Readonly<SettlementLeaseToken>;
     now: number;
   }>): Promise<"released" | "stale" | "conflict">;
+  /**
+   * Atomically record the transaction hash the key's own effect signed. The
+   * first record needs the exact current unexpired generation (`stale`
+   * otherwise). After that the record never changes or disappears: the same
+   * hash again is `existing`, any other hash or binding is `conflict`.
+   * Optional, but a log provides both attempt methods or neither. Without
+   * them a pay-dem audit after a restart cannot bind its retained hash and
+   * fails closed.
+   */
+  putAttempt?(input: Readonly<{
+    key: string;
+    bindingHash: string;
+    lease: Readonly<SettlementLeaseToken>;
+    txHash: string;
+    now: number;
+  }>): Promise<SettlementAttemptWrite>;
+  /** Read the recorded attempt without acquiring a lease or changing a generation. */
+  readAttempt?(key: string): Promise<Readonly<SettlementAttemptRecord> | null>;
 }
 
 /**
@@ -196,14 +230,25 @@ export interface SettlementIdempotencyStore {
    * Read and validate a recorded outcome under these exact terms, without
    * claiming an intent. Required for native retained-transaction audits:
    * `payDemSettle` refuses a request carrying `priorAttempts` without it.
-   * `null` means no recorded outcome, never permission to submit again. Only
-   * the lookup `createIdempotencyStore` returns can bind a retained hash to its
-   * payment; a prepared-transfer journal entry a reconciler returns cannot.
+   * `null` means no recorded outcome, never permission to submit again. An
+   * outcome never binds a retained hash to its payment (a key-only
+   * reconciliation can have written it); see {@link readAttempt}.
    */
   readOutcome?(
     key: string,
     binding: Readonly<SettlementBinding>,
   ): Promise<SettleResult | null>;
+  /**
+   * The transaction hash this key's own effect recorded through
+   * {@link SettlementEffectFence.recordAttempt}, checked against these exact
+   * terms, or `null` when none was recorded. `createIdempotencyStore` provides
+   * it only over a log that keeps attempts. Only its lookup binds a retained
+   * pay-dem hash after a restart.
+   */
+  readAttempt?(
+    key: string,
+    binding: Readonly<SettlementBinding>,
+  ): Promise<string | null>;
   /**
    * Run one settlement under a generation-fenced write-ahead protocol.
    *
@@ -231,6 +276,7 @@ interface StoredSettlementRecord {
   generation: number;
   lease?: SettlementIntentLease;
   outcome?: SettlementOutcomeRecord;
+  attempt?: string;
 }
 
 function leaseExpiry(now: number, duration: number): number {
@@ -638,6 +684,23 @@ export function createInMemorySettlementLog(): SettlementLog {
       record.lease = undefined;
       return "released";
     },
+    async putAttempt(input) {
+      const record = records.get(input.key);
+      if (!record) return "stale";
+      if (record.bindingHash !== input.bindingHash) return "conflict";
+      if (record.attempt !== undefined) {
+        return record.attempt === input.txHash ? "existing" : "conflict";
+      }
+      if (!current(record, input)) return "stale";
+      record.attempt = input.txHash;
+      return "recorded";
+    },
+    async readAttempt(key) {
+      const record = records.get(key);
+      return record?.attempt === undefined
+        ? null
+        : Object.freeze({ bindingHash: record.bindingHash, txHash: record.attempt });
+    },
   };
 }
 
@@ -717,6 +780,11 @@ function captureSettlementLog(log: SettlementLog): BoundSettlementLog {
   if (log === null || typeof log !== "object" || nodeTypes.isProxy(log)) {
     throw new DacsError("settlement log must be a stable object capability");
   }
+  const putAttempt = settlementLogMethod(log, "putAttempt", true);
+  const readAttempt = settlementLogMethod(log, "readAttempt", true);
+  if ((putAttempt === undefined) !== (readAttempt === undefined)) {
+    throw new DacsError("settlement log must provide both putAttempt and readAttempt, or neither");
+  }
   return Object.freeze({
     readOutcome: settlementLogMethod(log, "readOutcome", true),
     claimIntent: settlementLogMethod(log, "claimIntent"),
@@ -724,7 +792,24 @@ function captureSettlementLog(log: SettlementLog): BoundSettlementLog {
     grantRecovery: settlementLogMethod(log, "grantRecovery"),
     putOutcome: settlementLogMethod(log, "putOutcome"),
     releaseIntent: settlementLogMethod(log, "releaseIntent"),
+    putAttempt,
+    readAttempt,
   });
+}
+
+function captureStoredAttempt(value: unknown, key: string): Readonly<SettlementAttemptRecord> {
+  const attempt = frozenClone(
+    value as SettlementAttemptRecord,
+    "settlement attempt record",
+  ) as Readonly<SettlementAttemptRecord>;
+  if (attempt === null || typeof attempt !== "object" || Array.isArray(attempt) ||
+      !hasExactKeys(attempt, ["bindingHash", "txHash"]) ||
+      typeof attempt.bindingHash !== "string" || !/^[0-9a-f]{64}$/.test(attempt.bindingHash) ||
+      typeof attempt.txHash !== "string" || attempt.txHash.length === 0 ||
+      attempt.txHash.trim() !== attempt.txHash) {
+    throw new DacsError(`settlement ${key} attempt record has an invalid shape`);
+  }
+  return attempt;
 }
 
 function isReplayAuthorization(value: unknown): value is SettlementReplayAuthorization {
@@ -776,14 +861,17 @@ function captureReplayAuthorization(
   });
 }
 
-// The `readOutcome` closures `createIdempotencyStore` built. Each checks the
-// recorded outcome's key and binding hash against the exact requested terms.
+// The `readOutcome` and `readAttempt` closures `createIdempotencyStore` built.
+// Each checks the record's key and binding hash against the exact requested
+// terms.
 const bindingCheckedOutcomeLookups = new WeakSet<object>();
 
 /**
- * Internal (not re-exported): true only for a `readOutcome` that
- * `createIdempotencyStore` returned, so a recorded outcome it answers is bound
- * to the requested key and terms by this module rather than by the caller.
+ * Internal (not re-exported): true only for a `readOutcome` or `readAttempt`
+ * that `createIdempotencyStore` returned, so a record it answers is bound to
+ * the requested key and terms by this module rather than by the caller. A
+ * second installed copy of this module has its own set, so its lookups do not
+ * count here.
  */
 export function isBindingCheckedOutcomeLookup(value: unknown): boolean {
   return typeof value === "function" && bindingCheckedOutcomeLookups.has(value);
@@ -796,6 +884,7 @@ export function createIdempotencyStore(
 ): SettlementIdempotencyStore {
   const store = buildIdempotencyStore(log, options);
   bindingCheckedOutcomeLookups.add(store.readOutcome!);
+  if (store.readAttempt !== undefined) bindingCheckedOutcomeLookups.add(store.readAttempt);
   return store;
 }
 
@@ -818,7 +907,28 @@ function buildIdempotencyStore(
     return value;
   };
 
+  const { putAttempt, readAttempt } = durable;
+  const attemptLookup = readAttempt === undefined
+    ? {}
+    : {
+        async readAttempt(key: string, binding: Readonly<SettlementBinding>): Promise<string | null> {
+          const capturedBinding = frozenClone(binding, "settlement attempt lookup binding");
+          const bindingHash = settlementBindingHash(capturedBinding);
+          if (settlementKey(capturedBinding.railId, capturedBinding.jobId, capturedBinding.phaseIndex) !== key) {
+            throw new DacsError("settlement attempt lookup binding does not match its idempotency key");
+          }
+          const raw = await readAttempt(key);
+          if (raw === null) return null;
+          const attempt = captureStoredAttempt(raw, key);
+          if (attempt.bindingHash !== bindingHash) {
+            throw new DacsError(`settlement ${key} attempt binding conflicts with requested terms`);
+          }
+          return attempt.txHash;
+        },
+      };
+
   return {
+    ...attemptLookup,
     async readOutcome(key, binding) {
       const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
       const bindingHash = settlementBindingHash(capturedBinding);
@@ -926,6 +1036,24 @@ function buildIdempotencyStore(
                 throw new DacsError(`settlement ${key} effect fence is stale`);
               }
             },
+            ...(putAttempt === undefined ? {} : {
+              async recordAttempt(txHash: string) {
+                if (typeof txHash !== "string" || txHash.length === 0 || txHash.trim() !== txHash) {
+                  throw new DacsError(`settlement ${key} attempt needs a non-empty exact transaction hash`);
+                }
+                const write = await putAttempt({ key, bindingHash, lease: token, txHash, now: now() });
+                if (write === "recorded" || write === "existing") return;
+                if (write === "conflict") {
+                  throw new DacsError(
+                    `settlement ${key} already records another transaction or different terms; refusing a second effect`,
+                  );
+                }
+                if (write === "stale") {
+                  throw new DacsError(`settlement ${key} attempt was produced by a stale generation`);
+                }
+                throw new DacsError(`settlement ${key} attempt write is invalid`);
+              },
+            }),
           });
         };
 

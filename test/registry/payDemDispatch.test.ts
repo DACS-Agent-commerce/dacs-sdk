@@ -518,7 +518,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(store.keys).toEqual(["rail:job:4"]);
   });
 
-  test("passes on an SDK store's own outcome lookup and binds an injected one", async () => {
+  test("passes on an SDK store's own lookups and binds an injected outcome lookup", async () => {
     const sdkStore = createIdempotencyStore();
     const injected = {
       keys: [] as string[],
@@ -528,6 +528,8 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         this.keys.push(key);
         return null;
       }),
+      // Never consulted, so never passed on.
+      readAttempt: vi.fn(async () => "56".repeat(32)),
     };
     mocks.createPayDemRail.mockResolvedValue({});
     mocks.payDemSettle.mockReturnValue(vi.fn());
@@ -540,10 +542,13 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       });
     }
     const [sdkCaptured, injectedCaptured] = mocks.payDemSettle.mock.calls.map((call) => call[2].store!);
-    // payDemSettle lets only the SDK's lookup bind a retained hash without a journal entry.
+    // payDemSettle lets only the SDK's attempt lookup bind a retained hash.
     expect(sdkCaptured.readOutcome).toBe(sdkStore.readOutcome);
+    expect(sdkCaptured.readAttempt).toBe(sdkStore.readAttempt);
     expect(isBindingCheckedOutcomeLookup(sdkCaptured.readOutcome)).toBe(true);
+    expect(isBindingCheckedOutcomeLookup(sdkCaptured.readAttempt)).toBe(true);
     expect(isBindingCheckedOutcomeLookup(injectedCaptured.readOutcome)).toBe(false);
+    expect(injectedCaptured.readAttempt).toBeUndefined();
     await expect(injectedCaptured.readOutcome!("rail:job:4", storeBinding())).resolves.toBeNull();
     expect(injected.readOutcome).toHaveBeenCalledWith("rail:job:4", storeBinding());
     expect(injected.keys).toEqual(["rail:job:4"]);

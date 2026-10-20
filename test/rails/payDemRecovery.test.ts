@@ -144,7 +144,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
 
   const bindsTuple = /does not bind the exact pay-dem network, payer, and payee/;
   test.each([
-    ["missing journal", /must return the prepared-transfer journal entry/],
+    ["missing journal", /no SDK record binds the retained transaction/],
     ["conflicting journal hash", /journal does not bind the retained transaction/],
     ["conflicting journal tuple", /journal does not bind the retained transaction/],
     ["conflicting journal nonce", /does not match the journaled signed nonce/],
@@ -400,7 +400,8 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
       {}, { store: createIdempotencyStore(log, { ...options, owner: "b" }), reconcile });
     await expect(other(fresh)).resolves.toMatchObject({ ok: false, errorClass: "permanent" });
     finish();
-    await expect(slow).rejects.toThrow(/outcome conflicts/);
+    // The superseded generation can no longer record its hash, so nothing is persisted.
+    await expect(slow).rejects.toThrow(/attempt was produced by a stale generation/);
     await expect(settle(fresh)).rejects.toThrow(demoted);
     expect(submit).toHaveBeenCalledTimes(1);
   });

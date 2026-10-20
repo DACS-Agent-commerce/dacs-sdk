@@ -159,7 +159,11 @@ describe("pay-dem retained identity conflict quarantine", () => {
   test.each([true, false])("keeps a stored permanent failure that reconciliation presents with other fee fields (history=%s)", async (withHistory) => {
     const log = createInMemorySettlementLog();
     const store = createIdempotencyStore(log);
-    await store.once("pay-dem:conflicting-native:0", binding, async () => stored(failed(hashA)));
+    // This key's own submit records its hash, as the bridge's submit does.
+    await store.once("pay-dem:conflicting-native:0", binding, async (fence) => {
+      await fence!.recordAttempt!(hashA);
+      return stored(failed(hashA));
+    });
     const putOutcome = vi.spyOn(log, "putOutcome");
     const submit = vi.fn();
     // Same transaction, block and proof; the reconciler also reports the fee.

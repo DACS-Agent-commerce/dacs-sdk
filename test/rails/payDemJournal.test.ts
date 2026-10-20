@@ -130,7 +130,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       const f = auditor(reconcile, auditStore);
       for (let attempt = 0; attempt < 2; attempt += 1) {
         await expect(f.settle(request("job-b", 0, hashA)))
-          .rejects.toThrow(/must return the prepared-transfer journal entry/);
+          .rejects.toThrow(/no SDK record binds the retained transaction/);
       }
       expect(f.once).not.toHaveBeenCalled();
       expect(f.submit).not.toHaveBeenCalled();
@@ -149,7 +149,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     for (const ok of [true, false]) {
       const f = auditor(reconcile);
       await expect(f.settle(request("job-b", 0, hashA, ok)))
-        .rejects.toThrow(/must return the prepared-transfer journal entry/);
+        .rejects.toThrow(/no SDK record binds the retained transaction/);
       expect(f.once).not.toHaveBeenCalled();
       expect(f.submit).not.toHaveBeenCalled();
     }
@@ -195,7 +195,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     const f = auditor(reconcile, await settledJobA());
     await expect(f.settle(request("job-a", 0, hashA))).rejects.toThrow(
       preparedTransfer === "journal" || preparedTransfer === null
-        ? /must return the prepared-transfer journal entry/
+        ? /malformed prepared-transfer journal entry/
         : binds,
     );
     expect(f.once).not.toHaveBeenCalled();
@@ -263,7 +263,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
     // Job B's rail log has no record of job A's hash.
     await expect(payDemSettle(rail, {}, { store, reconcile })(request("job-b", 0, hashA)))
-      .rejects.toThrow(/must return the prepared-transfer journal entry/);
+      .rejects.toThrow(/no SDK record binds the retained transaction/);
     // A supplied entry is still checked.
     const mismatched = vi.fn(async () => ({ ...executed(hashA),
       preparedTransfer: entry({ payee: "ef".repeat(32) }) })) as unknown as PayDemSettlementReconcile;
@@ -282,9 +282,9 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(settle(request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(store.readOutcome).toHaveBeenCalledTimes(2);
-    // Without that result, the journal entry is required.
+    // Without that result or an attempt record, nothing binds the hash.
     await expect(payDemSettle(rail, {}, { store, reconcile: honest() })(request("job-a", 0, hashA)))
-      .rejects.toThrow(/must return the prepared-transfer journal entry/);
+      .rejects.toThrow(/no SDK record binds the retained transaction/);
     expect(rail.settle).toHaveBeenCalledTimes(1);
   });
 
@@ -298,12 +298,12 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile: honest() });
     await expect(settle(request("job-b", 0, hashA)))
-      .rejects.toThrow(/must return the prepared-transfer journal entry/);
+      .rejects.toThrow(/no SDK record binds the retained transaction/);
     expect(store.readOutcome).toHaveBeenCalled();
-    // The SDK store's own lookup still binds, even on another object.
+    // The SDK store's own attempt lookup still binds, even on another object.
     const inner = createIdempotencyStore();
     await payDemSettle(unjournaledRail(), {}, { store: inner })(request("job-a"));
-    const borrowed = { once, readOutcome: inner.readOutcome };
+    const borrowed = { once, readOutcome: inner.readOutcome, readAttempt: inner.readAttempt };
     await expect(payDemSettle({ address: payer, settle: submit }, {}, { store: borrowed, reconcile: honest() })(
       request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(once).not.toHaveBeenCalled();
@@ -323,7 +323,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     // audit fails closed and binds nothing for the next one.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await expect(settle(request("job-a", 0, hashA)))
-        .rejects.toThrow(/must return the prepared-transfer journal entry/);
+        .rejects.toThrow(/no SDK record binds the retained transaction/);
     }
     expect(reconcile).toHaveBeenCalledTimes(2);
     expect(once).not.toHaveBeenCalled();
@@ -347,7 +347,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
     await expect(settle(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(settle(request("job-b", 0, hashA)))
-      .rejects.toThrow(/must return the prepared-transfer journal entry/);
+      .rejects.toThrow(/no SDK record binds the retained transaction/);
     // Nor does a reconciliation that also returns an entry naming the key.
     const bound = vi.fn<PayDemSettlementReconcile>(async () => executed(hashA));
     bound.mockImplementationOnce(async () => ({ ...executed(hashA),
@@ -355,7 +355,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     const journaled = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile: bound });
     await expect(journaled(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(journaled(request("job-b", 0, hashA)))
-      .rejects.toThrow(/must return the prepared-transfer journal entry/);
+      .rejects.toThrow(/no SDK record binds the retained transaction/);
     expect(bound).toHaveBeenCalledTimes(2);
     expect(submit).not.toHaveBeenCalled();
   });
@@ -382,7 +382,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       const audit = settle(request("job-a", 0, found));
       await (audited
         ? expect(audit).resolves.toMatchObject({ ok: true, txHash: hashA })
-        : expect(audit).rejects.toThrow(/must return the prepared-transfer journal entry/));
+        : expect(audit).rejects.toThrow(/no SDK record binds the retained transaction/));
     }
     expect(rail.settle).toHaveBeenCalledTimes(2);
   });
