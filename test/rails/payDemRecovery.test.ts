@@ -1,7 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
-import { createIdempotencyStore, createInMemorySettlementLog, type SettlementBinding } from "../../src/rails/idempotency.js";
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  type SettlementBinding,
+  type SettlementIdempotencyStore,
+} from "../../src/rails/idempotency.js";
 import {
   payDemSettle,
   type PayDemSettlementAuditContext,
@@ -38,11 +43,38 @@ const failed = () => ({
   preparedTransfer: journal(),
 });
 
-function fixture(reconcile?: PayDemSettlementReconcile) {
-  const store = createIdempotencyStore();
+function fixture(
+  reconcile?: PayDemSettlementReconcile,
+  store: SettlementIdempotencyStore = createIdempotencyStore(),
+) {
   const once = vi.spyOn(store, "once");
   const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
   const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+  return { settle, once, submit };
+}
+
+// The rail log of a bridge that settled this job with `outcome`: the SDK's
+// own record of the hash for the key, which an audit needs to count it.
+async function settledLog(outcome: ReturnType<typeof executed> | ReturnType<typeof failed>, network = "demos") {
+  const log = createInMemorySettlementLog();
+  const { amountOs: _amount, preparedTransfer: _journal, ...result } = outcome;
+  const { priorAttempts: _history, ...fresh } = request();
+  await payDemSettle({ address: payer, settle: async () => ({ ...result, chainId: network }) }, { network },
+    { store: createIdempotencyStore(log) })(fresh);
+  return log;
+}
+
+// A bridge whose own submit for this key returned only the signed hash. Its
+// record ties the hash to the key without saying whether the transfer executed.
+async function signedOnly(reconcile: PayDemSettlementReconcile) {
+  const store = createIdempotencyStore();
+  const once = vi.spyOn(store, "once");
+  const submit = vi.fn(async () => ({ ok: false as const, txHash, payer, payee, chainId: "demos" }));
+  const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+  const { priorAttempts: _history, ...fresh } = request();
+  await expect(settle(fresh)).resolves.toMatchObject({ ok: false, txHash });
+  once.mockClear();
+  submit.mockClear();
   return { settle, once, submit };
 }
 
@@ -57,8 +89,9 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
         expect(Object.isFrozen(context)).toBe(true);
         return outcome === "executed" ? executed() : failed();
       });
-      const first = fixture(reconcile);
-      const restarted = fixture(reconcile);
+      const log = await settledLog(outcome === "executed" ? executed() : failed());
+      const first = fixture(reconcile, createIdempotencyStore(log));
+      const restarted = fixture(reconcile, createIdempotencyStore(log));
       for (const f of [first, first, restarted]) {
         const pending = f.settle(request([prior(false), prior(ok)]));
         if (ok && outcome === "failed") {
@@ -94,13 +127,13 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
 
   test("audits the canonical hash on a configured network at the history limit", async () => {
     const network = "demos:testnet";
-    const f = fixture();
+    const store = createIdempotencyStore(await settledLog(executed(), network));
+    const f = fixture(undefined, store);
     const reconcile = vi.fn(async (context: ReconcileContext) => {
       expect(context).toMatchObject({ txHash, network });
       return { ...executed(), chainId: network, preparedTransfer: journal(network) };
     });
-    const settle = payDemSettle({ address: payer, settle: f.submit }, { network },
-      { store: { once: f.once, readOutcome: async () => null }, reconcile });
+    const settle = payDemSettle({ address: payer, settle: f.submit }, { network }, { store, reconcile });
     const history = Array.from({ length: 256 }, () => ({
       ...prior(), chainId: network, txHash: `0x${txHash.toUpperCase()}`,
     }));
@@ -219,7 +252,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
       if (reply === "missing journal") throw new Error(reply);
       return executed();
     });
-    const f = fixture(reconcile);
+    const f = fixture(reconcile, createIdempotencyStore(await settledLog(executed())));
     const { priorAttempts: _history, ...withoutHistory } = request();
     for (const req of [request(), withoutHistory]) {
       if (reply === "missing journal") await expect(f.settle(req)).rejects.toThrow(reply);
@@ -275,7 +308,8 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
 
   test("refuses a failed reconciliation of a session-recorded success, even after history is omitted", async () => {
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
-    const f = fixture(reconcile);
+    // Only the session records a success; the bridge's own record binds the hash.
+    const f = await signedOnly(reconcile);
     const { priorAttempts: _history, ...withoutHistory } = request();
     for (const req of [request([prior(true)]), request([prior(false)]), withoutHistory]) {
       await expect(f.settle(req)).rejects.toThrow(demoted);
@@ -290,7 +324,7 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
 
   test("a success an earlier audit authenticated is never demoted by a later audit", async () => {
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed());
-    const f = fixture(reconcile);
+    const f = await signedOnly(reconcile);
     await expect(f.settle(request([prior(false)]))).resolves.toMatchObject({ ok: true, txHash });
     // The session still holds only the earlier non-success; the chain reader now disagrees.
     reconcile.mockImplementation(async () => failed());

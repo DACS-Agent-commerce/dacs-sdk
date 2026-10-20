@@ -251,13 +251,14 @@ export interface PayDemSettlementAuditContext extends PayDemSettlementRecoveryCo
    * see `included` with no record. Reconciliation returns the node's record
    * for this hash and, whenever it can load one, the original prepared-transfer
    * journal entry for it as `preparedTransfer`. The SDK refuses the audit
-   * unless that entry names this exact hash and this exact recovery tuple, or
-   * the SDK's own record already names this hash for this key: the outcome a
+   * unless its own record already names this hash for this key: the outcome a
    * `createIdempotencyStore` rail log recorded under these exact terms, or a
-   * result this bridge submitted or already bound. An injected store's
-   * `readOutcome` never stands in for the entry. Throw when a loaded entry
-   * conflicts with the record, and never return `null` for the retained hash:
-   * absence never authorizes a new transfer.
+   * result this bridge submitted or already bound. A returned entry must also
+   * name this exact hash and recovery tuple, but it is the reconciler's
+   * object, so it never stands in for that record, and neither does an
+   * injected store's `readOutcome`. Throw when a loaded entry conflicts with
+   * the record, and never return `null` for the retained hash: absence never
+   * authorizes a new transfer.
    */
   txHash: string;
 }
@@ -271,13 +272,13 @@ export interface PayDemReconciledSettlement extends SettleResult {
   amountOs: string;
   /**
    * The prepared-transfer journal entry the rail wrote for `txHash` before its
-   * one broadcast. Required in reply to a {@link PayDemSettlementAuditContext}
-   * unless the SDK's own record already names that hash for the key (see
-   * there), and checked whenever supplied: its hash must be `txHash`, its
+   * one broadcast. Checked whenever supplied: its hash must be `txHash`, its
    * `recovery` must equal the context's tuple, and its denomination and debit
-   * bounds must be well formed, so a transaction of the same payer, payee and
-   * amount made for another rail, job or phase is never counted for this one.
-   * It is not persisted with the settlement.
+   * bounds must be well formed, so the reconciler can never present a
+   * transaction of the same payer, payee and amount made for another rail, job
+   * or phase as this one. It never counts a transaction on its own: in reply
+   * to a {@link PayDemSettlementAuditContext}, only the SDK's own record does
+   * (see there). It is not persisted with the settlement.
    */
   preparedTransfer?: PayDemPreparedTransfer;
   /**
@@ -2027,10 +2028,11 @@ const PAY_DEM_RECOVERY_CONTEXT_KEYS = [
 ] as const;
 
 /**
- * DACS-4 §9.5.1 PC-7: a transaction counts for this payment only through the
- * journal entry written before its one broadcast. The entry must name the
- * exact hash and carry this exact rail/session/phase tuple, so another job's
- * transfer of the same payer, payee and amount is never counted here.
+ * DACS-4 §9.5.1 PC-7: a prepared-transfer journal entry a reconciliation
+ * supplies must name the exact hash and carry this exact rail/session/phase
+ * tuple, so it never presents another job's transfer of the same payer, payee
+ * and amount as this one. The reconciler supplies it, so passing this check
+ * never counts a transaction for this payment.
  */
 function assertPreparedTransferBinds(
   value: unknown,
@@ -2085,18 +2087,15 @@ function assertPreparedTransferBinds(
 }
 
 /**
- * `retained.recordedForKey` is true when the bridge's own record already ties
- * the retained hash to this exact payment: the outcome a
- * `createIdempotencyStore` rail log recorded under this settlement key and
- * terms, or a result this bridge submitted or bound for the key. Otherwise
- * only the prepared-transfer journal entry can. `journaled` reports whether a
- * supplied entry was checked.
+ * A supplied prepared-transfer journal entry is always checked against this
+ * payment. It is the reconciler's object, not the entry the rail wrote before
+ * broadcast, so it never ties a hash to the key by itself.
  */
 function capturePayDemReconciliation(
   value: unknown,
   context: Readonly<PayDemSettlementRecoveryContext>,
-  retained?: Readonly<{ txHash: string; recordedForKey: boolean }>,
-): Readonly<{ result: SettleResult; journaled: boolean }> {
+  retainedTxHash?: string,
+): SettleResult {
   const snapshot = snapshotCanonicalJsonRead(
     value,
     "pay-dem reconciliation result",
@@ -2138,16 +2137,13 @@ function capturePayDemReconciliation(
       "pay-dem reconciliation does not attest that the transaction record shows the transfer executed (#338); refusing reuse or rebroadcast",
     );
   }
-  // An audit of a retained hash the bridge has no record of for this key
-  // needs its journal entry; any reconciliation that supplies one must not
-  // contradict it either.
-  if (retained !== undefined && captured.txHash !== retained.txHash) {
+  if (retainedTxHash !== undefined && captured.txHash !== retainedTxHash) {
     throw new DacsError("pay-dem reconciliation does not match the retained transaction; refusing reuse or rebroadcast");
   }
-  const journaled = (retained !== undefined && !retained.recordedForKey) ||
-    record.preparedTransfer !== undefined;
-  if (journaled) assertPreparedTransferBinds(record.preparedTransfer, context, captured);
-  return Object.freeze({ result: captured, journaled });
+  if (record.preparedTransfer !== undefined) {
+    assertPreparedTransferBinds(record.preparedTransfer, context, captured);
+  }
+  return captured;
 }
 
 function captureFreshPayDemResult(
@@ -2253,13 +2249,15 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * restart/crash recovery. A request carrying priorAttempts is a read-only audit:
  * it never claims a submit generation, even if the rail store lost its record.
  * The audit requires `store.readOutcome` and `reconcile` and fails closed
- * without them; the reconciliation must return the prepared-transfer journal
- * entry that ties the retained hash to this exact payment tuple, unless a
+ * without them. It counts the retained hash only when a
  * `createIdempotencyStore` rail log's outcome for the key, or a result this
  * bridge submitted or already bound, names that hash. An injected store's
- * outcome never does. Once audited, a key stays audit-only for the life of
- * this bridge (one small entry per key, never pruned, like its authenticated
- * results), so omitting history later cannot restore submit authority.
+ * outcome never does, and neither does a prepared-transfer journal entry the
+ * reconciliation returns: that entry is checked against this exact payment
+ * tuple and can refuse the audit, but never counts the hash on its own. Once
+ * audited, a key stays audit-only for the life of this bridge (one small entry
+ * per key, never pruned, like its authenticated results), so omitting history
+ * later cannot restore submit authority.
  * A success this bridge, its rail log or the session recorded is never
  * reported unpaid: a contradicting reconciliation is refused (PC-7).
  *
@@ -2305,7 +2303,7 @@ export function payDemSettle(
       );
   // Only a lookup `createIdempotencyStore` built checks a recorded outcome's
   // key and terms itself. An injected store's answer is the caller's, so it
-  // cannot stand in for a retained hash's journal entry.
+  // cannot tie a retained hash to the key.
   const outcomeBindsKey = readOutcomeProperty.found &&
     isBindingCheckedOutcomeLookup(readOutcomeProperty.value);
   const configuredRecipient = optionalStableString(
@@ -2375,9 +2373,9 @@ export function payDemSettle(
   // outcome is independently reconciled against the full amount/address tuple
   // before reuse. This prevents a `(railId, jobId, phaseIndex)` collision from
   // inheriting a result for different committed terms. `boundToKey` is true
-  // only for a hash this bridge submitted, or bound through a journal entry or
-  // an audit: a reconciler's answer to a lookup by key alone may be another
-  // job's transfer of the same parties and amount.
+  // only for a hash this bridge submitted or bound through an audit: a
+  // reconciler's answer, with or without a journal entry, may be another job's
+  // transfer of the same parties and amount.
   const authenticatedResults = new Map<
     string,
     Readonly<{
@@ -2554,9 +2552,10 @@ export function payDemSettle(
         }
         const before = await readOutcome();
         // An SDK rail log binds its outcome to this exact key and terms, and a
-        // bound result of this bridge came from this key's own submit or
-        // journal entry. Either one, never the session's history or an
-        // injected store, ties the hash to the payment without a journal entry.
+        // bound result of this bridge came from this key's own submit or an
+        // audit that one of these bound. Only they tie the hash to the payment:
+        // the session's history, an injected store's outcome and the
+        // reconciler's journal entry are all the caller's.
         const recordedForKey =
           (priorAuthenticated?.boundToKey === true && priorAuthenticated.result.txHash === retainedTxHash) ||
           (outcomeBindsKey && before?.txHash === retainedTxHash);
@@ -2564,9 +2563,7 @@ export function payDemSettle(
         if (recovered === null) {
           throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
         }
-        // Throws unless the journal entry or that record binds the hash.
-        const captured = capturePayDemReconciliation(recovered, context,
-          { txHash: retainedTxHash, recordedForKey }).result;
+        const captured = capturePayDemReconciliation(recovered, context, retainedTxHash);
         // A different store/bridge can finish while the chain read is pending.
         // Recheck without a lease or outcome write before returning any verdict.
         const after = await readOutcome();
@@ -2583,6 +2580,11 @@ export function payDemSettle(
           }
         }
         assertPayDemSuccessKept(historySucceeded, captured);
+        if (!recordedForKey) {
+          throw new DacsError(
+            "pay-dem reconciliation must return the prepared-transfer journal entry for the retained transaction; refusing reuse or rebroadcast",
+          );
+        }
         authenticatedResults.set(key, { context, result: captured, boundToKey: true });
         return publicPayDemResult(captured, expectedPayee);
       }
@@ -2598,10 +2600,11 @@ export function payDemSettle(
         return captured;
       };
       // A hash this bridge already bound for the key stays bound when a later
-      // reconciliation confirms it without the journal entry.
-      const boundAfterReconciliation = (journaled: boolean, reconciled: SettleResult) => {
+      // reconciliation confirms it. A reconciliation never binds one itself,
+      // even with a journal entry.
+      const boundAfterReconciliation = (reconciled: SettleResult) => {
         const prior = authenticatedResults.get(key);
-        return journaled || (prior?.boundToKey === true && prior.result.txHash === reconciled.txHash);
+        return prior?.boundToKey === true && prior.result.txHash === reconciled.txHash;
       };
       const reconcileForStore: SettlementReconcile | undefined = reconcile === undefined
         ? undefined
@@ -2613,12 +2616,12 @@ export function payDemSettle(
             }
             const found = await reconcile(context);
             if (found === null) return null;
-            const { result: captured, journaled } = capturePayDemReconciliation(found, context);
+            const captured = capturePayDemReconciliation(found, context);
             // An expired lease after a lost outcome write must not demote the
             // success this bridge already authenticated for the key.
             assertPayDemSuccessKept(authenticatedResults.get(key)?.result.ok === true, captured);
             authenticatedResults.set(key, {
-              context, result: captured, boundToKey: boundAfterReconciliation(journaled, captured),
+              context, result: captured, boundToKey: boundAfterReconciliation(captured),
             });
             return captured;
           };
@@ -2650,7 +2653,7 @@ export function payDemSettle(
             "pay-dem durable outcome contradicts reconciliation proof of absence; refusing reuse or rebroadcast",
           );
         }
-        const { result: reconciled, journaled } = capturePayDemReconciliation(recovered, context);
+        const reconciled = capturePayDemReconciliation(recovered, context);
         if (
           reconciled.txHash !== captured.txHash ||
           reconciled.blockNumber !== captured.blockNumber
@@ -2671,7 +2674,7 @@ export function payDemSettle(
         // already authenticated, even when the reconciliation agrees with it.
         assertPayDemSuccessKept(known?.result.ok === true, reconciled);
         authenticatedResults.set(key, {
-          context, result: reconciled, boundToKey: boundAfterReconciliation(journaled, reconciled),
+          context, result: reconciled, boundToKey: boundAfterReconciliation(reconciled),
         });
         captured = reconciled;
       }

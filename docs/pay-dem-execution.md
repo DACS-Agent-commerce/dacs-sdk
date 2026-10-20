@@ -71,25 +71,24 @@ sees its result.
   form (64 lower-case hex digits, no `0x`). It returns the node's record for
   that hash and, whenever it can load one, the prepared-transfer journal entry
   for that hash as `preparedTransfer`. The hash counts for this payment only
-  through one of:
-  - that entry, which must name that hash, the same payer, payee, OS amount
-    and network, a `recovery` tuple equal to this rail, job and phase, and
-    (when present) a known denomination and debit bounds no lower than the
-    amount; a permanent failure's proof must also carry the journaled nonce.
-    A supplied entry is always checked;
-  - the SDK's own record of that hash for the key: the outcome a
-    `createIdempotencyStore` rail log recorded under these exact terms, or a
-    result this bridge submitted or already bound through an entry or an
-    audit. An injected store's `readOutcome` and a reconciler's answer to a
-    lookup by key alone never stand in for the entry.
+  through the SDK's own record of that hash for the key: the outcome a
+  `createIdempotencyStore` rail log recorded under these exact terms, or a
+  result this bridge submitted or already bound through an audit. Otherwise
+  the audit is refused.
 
-  Otherwise the audit is refused. The reconciler throws when a loaded entry
+  A supplied entry is always checked: it must name that hash, the same payer,
+  payee, OS amount and network, a `recovery` tuple equal to this rail, job and
+  phase, and (when present) a known denomination and debit bounds no lower
+  than the amount; a permanent failure's proof must also carry the journaled
+  nonce. The entry is the reconciler's object, not the one the rail wrote
+  before broadcast, so it can refuse an audit but never counts the hash on its
+  own. Neither does an injected store's `readOutcome` or a reconciler's answer
+  to a lookup by key alone. The reconciler throws when a loaded entry
   conflicts with the record and never returns `null` for the retained hash.
-  A journal-less rail's payment fails closed once the SDK record is lost. The
-  rail log keeps definitive outcomes only, so its ambiguous result (a signed
-  hash with no finalized record) is bound only by the bridge that saw it, and
-  after a restart its audit fails closed until the entry is supplied.
-  Configure `journalPreparedTransfer` wherever audits must survive a restart.
+  An audit fails closed once the SDK record is lost, whether or not the rail
+  has `journalPreparedTransfer`. The rail log keeps definitive outcomes only,
+  so an ambiguous result (a signed hash with no finalized record) is bound
+  only by the bridge that saw it, and after a restart its audit fails closed.
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).

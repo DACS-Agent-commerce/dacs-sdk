@@ -346,9 +346,13 @@ describe("pay-dem serializes calls for one settlement key", () => {
     const reconcile = vi.fn<PayDemSettlementReconcile>()
       .mockImplementationOnce(async () => { await gate; throw cause; })
       .mockImplementation(async () => executed());
-    const submit = vi.fn();
+    const submit = vi.fn(async () => freshSuccess());
     const store = unwaitingStore();
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: store as never, reconcile });
+    // This bridge paid A itself, so its own record binds A to the key.
+    await expect(settle(request)).resolves.toMatchObject({ ok: true, txHash: hashA });
+    store.once.mockClear();
+    submit.mockClear();
     const first = expect(settle(history(hashA, false))).rejects.toBe(cause);
     const second = settle(history(hashA, false));
     await new Promise((resolve) => setImmediate(resolve));

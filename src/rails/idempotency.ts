@@ -198,7 +198,7 @@ export interface SettlementIdempotencyStore {
    * `payDemSettle` refuses a request carrying `priorAttempts` without it.
    * `null` means no recorded outcome, never permission to submit again. Only
    * the lookup `createIdempotencyStore` returns can bind a retained hash to its
-   * payment in place of the prepared-transfer journal entry.
+   * payment; a prepared-transfer journal entry a reconciler returns cannot.
    */
   readOutcome?(
     key: string,
