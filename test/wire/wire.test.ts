@@ -1,5 +1,5 @@
 // Route table, limits, signing domains and the TP-1 record of @kynesyslabs/dacs/wire.
-import { readdirSync, readFileSync, type Dirent } from "node:fs";
+import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { posix } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -91,8 +91,16 @@ describe("signing domains", () => {
     expect(g12.evidence).toEqual([
       { repo: "DACS-Standard", commit: "d45c0a2", path: "spec/CORE.md", lines: "487" },
       { repo: "DACS-Standard", commit: "d45c0a2", path: "spec/CORE.md", lines: "590" },
+      { repo: "DACS-Standard", commit: "d45c0a2", path: "spec/CORE.md", lines: "598" },
     ]);
     expect(g12.summary).toContain("SIG-4");
+    // B.7 signs separator ‖ artifact_hash and forbids signing the canonical form; the wire signs domain ‖ canonical(payload).
+    expect(g12.summary).toContain("domain ‖ canonical(payload)");
+    expect(g12.closedBy).toContain("sha256hex(canonical(payload))");
+    const vendored = new URL("../../vendor/DACS-Standard/spec/CORE.md", import.meta.url);
+    if (existsSync(vendored)) {
+      expect(readFileSync(vendored, "utf8").split("\n")[597]).toContain("MUST NOT compute a signature over the canonical form directly");
+    }
     expect(g12.status).toBe("open");
     for (const domain of Object.values(DACS_SELLER_HTTP_DOMAINS)) {
       expect(domain.startsWith("dacs-x-")).toBe(false);

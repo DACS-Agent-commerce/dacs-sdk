@@ -46,7 +46,7 @@
     }
   },
   "nodeObservationEvidence": {"manifest": "conformance/tp1-node-observations/manifest.json", "sourceCommit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578", "deploymentQualified": false, "reason": "Reported dirty deployment; artifact digest and overlay unavailable. Execution-failure wording is source inference, not a captured failed transaction."},
-  "wireReaderRestrictions": [{"rule": "DACS-1 DID reader spelling at d45c0a2:170-177", "deviation": "TP-1 wire accepts only canonical lowercase did:demos:agent claims; uppercase DID scheme is refused, not rewritten.", "pinnedBy": ["src/wire/validate.ts", "test/wire/admission.test.ts"]}],
+  "wireReaderRestrictions": [{"rule": "DACS-1 DID reader spelling at d45c0a2:170-177", "deviation": "TP-1 wire accepts only canonical lowercase did:demos:agent claims; uppercase DID scheme is refused, not rewritten.", "pinnedBy": ["src/wire/validate.ts", "test/wire/admission.test.ts"]}, {"rule": "CORE CF-1 values-only NFC at d45c0a2:409", "deviation": "TP-1 wire refuses a received string value that is not already NFC (WIRE-NON-NFC-STRING), including in bodies that carry DACS artifacts, where CF-1 has verifiers normalize values before canonicalizing.", "pinnedBy": ["src/wire/validate.ts", "vectors/dacs-seller-http-v1.json"]}],
   "sources": [
     { "repo": "dacs-sdk", "commit": "3904d704fb540e6e1d7dd502a0be29f20569c92d" },
     { "source": "plugin implementation (not public)", "provenance": "prov-01" },
@@ -137,10 +137,10 @@
         { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "606" },
         { "repo": "DACS-Standard", "commit": "df7bc20", "path": "spec/DACS-2-VET.md", "lines": "1464-1465" }
       ],
-      "tp1": "Seller-as-orchestrator Vets in this release; the buyer-written Vet follows in a later revision.",
+      "tp1": "Seller-as-orchestrator Vets in this release. The base lets the orchestrator act as verifier for the counterparty; whether this seller does so with the counterparty's authority, verifier-issued challenges and independently authenticated identities is not yet qualified.",
       "classification": null,
       "label": "declaration only",
-      "closedBy": "the buyer-written Vet, then verifier-issued session challenges in both directions in the SDK",
+      "closedBy": "A composition review showing each Vet's verifier is the counterparty, or the orchestrator acting on its behalf (CORE §B.8, DACS-2 §7.8), with verifier-issued session challenges in both directions (SN-1) and an independently authenticated expected verifier; a buyer-written Vet is one way to meet it, not a requirement",
       "blocksPublication": false,
       "status": "open"
     },
@@ -252,16 +252,17 @@
     },
     {
       "id": "G12", "kind": "gap",
-      "summary": "The wire signing domains dacs-seller-http:v1:{request,response,delegation,discovery}: are not in CORE §B.7's closed registry and do not take the dacs-x- form SIG-4 gives a kind outside it; the SDK treats them as transport-message signatures, not artifact kinds, and the Standard has not ruled on that.",
+      "summary": "The wire signing domains dacs-seller-http:v1:{request,response,delegation,discovery}: are not in CORE §B.7's closed registry and do not take the dacs-x- form SIG-4 gives a kind outside it, and the wire signs domain ‖ canonical(payload), where §B.7 signs separator ‖ artifact_hash and forbids signing the canonical form directly; the SDK treats them as transport-message signatures, not artifact kinds, and the Standard has not ruled on that.",
       "evidence": [
         { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "487" },
-        { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "590" }
+        { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "590" },
+        { "repo": "DACS-Standard", "commit": "d45c0a2", "path": "spec/CORE.md", "lines": "598" }
       ],
       "tp1": "SDK transport domains; no wire domain equals a registered signature domain or hash-domain tag, and none is a prefix of one in either direction (test/wire/wire.test.ts).",
       "classification": null,
       "label": "declaration only",
       "pinnedBy": ["src/wire/routes.ts", "test/wire/wire.test.ts"],
-      "closedBy": "A Standard ruling on transport signatures: either rename the domains to dacs-x-seller-http:v1:{request,response,delegation,discovery}: and regenerate the vectors and the revision-adapted fixture, or register them",
+      "closedBy": "A Standard ruling on transport signatures: either rename the domains to dacs-x-seller-http:v1:{request,response,delegation,discovery}:, sign domain ‖ sha256hex(canonical(payload)), and regenerate the vectors and the revision-adapted fixture, or register the transport domains and their signed bytes",
       "blocksPublication": false,
       "status": "open"
     }
