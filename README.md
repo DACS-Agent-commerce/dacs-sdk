@@ -718,7 +718,9 @@ an exact JID-1 uppercase ULID. For historical inspection, explicitly select
 `lookupLegacyBundleCopies` or `deriveLegacyReputation`. These archival interfaces
 do not establish current-profile semantic conformance and are never selected as
 fallbacks. Historical evidence-bound bundle replay explicitly sets
-`jobIdProfile: "legacy"` in its verifier dependencies; the default is current.
+`jobIdProfile: "legacy"` in its verifier dependencies and accepts pre-JID-1
+bundles only. The default current profile, and a JID-1 bundle under either label,
+is refused before any key lookup and yields no execution authority.
 `verifySettlementEvidence` requires an admitted record; structure-only
 inspection remains available through `validateSettlementEvidenceStructure`.
 
@@ -1160,6 +1162,10 @@ after the caller wires that complete evidence-set gate; completed publication
 still remains `audit-pending` until the bundle itself is finalized and
 independently resolvable under ST-11. EBFAB extended pointers require the same
 verified authority token; URL shape validation is not a deployment SSRF policy.
+At the pinned unreleased Standard this verifier grants authority only for explicit
+archival replay (`jobIdProfile: "legacy"`, pre-JID-1 jobs), so its verdicts and
+tokens are archival. A JID-1 bundle, including every bundle with a
+`pay-alternative` projection, is refused with the release-admission error.
 
 For reputation that makes an explicit settlement-verification claim, use
 `deriveSettlementVerifiedReputation()` or its replayable counterpart. These
