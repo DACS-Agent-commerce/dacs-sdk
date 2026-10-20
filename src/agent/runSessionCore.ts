@@ -313,8 +313,10 @@ export interface SessionDeps {
    * failed (DACS-4 §9.5.1 PC-7). The session has no signed
    * nonce for a success: it requires the hash, network, parties, block,
    * txRefKind, finality and any saved `networkFeeOs` to match the saved
-   * record, and a saved failure proof (nonce included) to be returned
-   * byte-for-byte. Checking the node record against the retained
+   * record (from signed evidence alone: the hash, network, payee, block,
+   * txRefKind and finality it carries), and a saved failure proof (nonce
+   * included) to be returned byte-for-byte; failure evidence without that
+   * proof is held as indeterminate. Checking the node record against the retained
    * prepared-transfer journal, signed nonce included, is this implementation's
    * job (`payDemSettle` gives its `reconcile` the retained hash for that). The
    * session also trusts this seam's `ok: true` as it trusts `settle`'s:
@@ -1012,9 +1014,9 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
     throw new CounterpartyError(`${label} returned a malformed result`);
   }
   // A native DEM rail reports a terminal failed record as a permanent class
-  // with its bound proof. Accept only that exact pair; the session still
-  // treats it as a transaction-bearing non-success, so the hash is bound and
-  // the intent stays held.
+  // with its bound proof. Accept only that exact pair; the session binds the
+  // hash for anti-replay and, once the proof also binds the payment amount
+  // for a native DEM settlement, records it as the terminal failed outcome.
   if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
       !hasDefinitiveDemosFailure(
         result as unknown as SettleResult,
@@ -4626,9 +4628,32 @@ export async function runSessionCore(
       const authenticated = await recoverRailOutcome(
         "saved native success evidence requires execution reconciliation", prior, false,
       );
+      // Re-assert every chain fact the signed evidence claims: block, kind and
+      // finality (minted from the rail's finality, provider-receipt when it
+      // reported none). The evidence carries no payer or fee; a rail checkpoint,
+      // when one exists, binds those above.
+      const claimed = (unsignedEvidence as { settlementFinality?: SettlementFinality })
+        .settlementFinality;
+      const reread = settlementFinalityFromDurable(authenticated) ?? { model: "provider-receipt" };
       if (!authenticated.ok || authenticated.blockNumber !== identity.blockNumber ||
-          authenticated.txRefKind !== identity.kind) {
+          authenticated.txRefKind !== identity.kind || claimed?.model !== reread.model ||
+          claimed.finalityBlocks !== reread.finalityBlocks ||
+          claimed.finalityCommitmentLevel !== reread.finalityCommitmentLevel) {
         throw new CounterpartyError("saved native success evidence contradicts chain execution");
+      }
+    }
+
+    // Without a SessionStore no failure proof outlives the run that minted the
+    // evidence, so a transaction-bearing failure cannot be re-read against it.
+    // Hold it as indeterminate, as the store path does without a retained proof.
+    if (!settledOk && !store) {
+      const tx = unsignedEvidence.paymentTxRefs?.[0];
+      const identity = tx === undefined ? undefined : settlementIdentityFromTxRef(tx);
+      if (identity !== undefined && identity.txHash.length > 0) {
+        throw new CounterpartyError(
+          `authenticated failure evidence carries transaction ${identity.chainId}:${identity.txHash}; ` +
+            "the payment remains indeterminate without a SessionStore holding its failure proof",
+        );
       }
     }
 
