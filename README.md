@@ -621,10 +621,13 @@ the hash and finding it `confirmed` for this payer, payee and amount; a
 authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
-recorded outcome by itself. A non-final observation must throw. Only the rail
-`createPayDemRail` returns reads the node's record itself, so a custom
-`DemosNativeClient` or `PayDemRail` result is held as `ok: false` with its
-hash and never becomes a final success or permanent failure. See
+recorded outcome by itself. A non-final observation must throw. Only the SDK's
+own read of the node record is final: the rail `createPayDemRail` returns, or a
+custom `DemosNativeClient` that carries
+`recordReader: await createPayDemRecordReader({ rpc })` and returns its signed
+`nonce`, whose returned hash the SDK then observes and binds itself. Any other
+custom `DemosNativeClient` or `PayDemRail` result is held as `ok: false` with
+its hash and never becomes a final success or permanent failure. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
@@ -638,8 +641,8 @@ must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
-requests used by broadcast, status, and nonce reads have no cancellation or
-request timeout. An open transport socket may therefore keep a Node process
+requests used by broadcast, status, transaction-record and nonce reads have no
+cancellation or request timeout. An open transport socket may therefore keep a Node process
 alive after the rail has returned an unresolved result. Terminating that process
 does not make the marked attempt retryable: retain the marker and checkpoint and
 reconcile read-only from another process. demosdk may internally retry the same

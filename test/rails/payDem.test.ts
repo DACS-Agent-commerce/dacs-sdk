@@ -788,9 +788,9 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(res.finality).toEqual({ model: "bft-final" });
   });
 
-  // #338: the bridge reports a final verdict only from createPayDemRail's own
-  // settle, which reads the transaction record. A custom rail's success or
-  // bound failure is its statement: held, never final, never persisted.
+  // #338: the bridge reports a final verdict only from the SDK's own record
+  // read. A custom rail's success or bound failure is its statement: held,
+  // never final, never persisted.
   test.each([
     ["a custom client's executed statement", (): PayDemRail => ({
       address: PAYER,
@@ -810,9 +810,20 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         txRefKind: "demos",
       }),
     })],
-    ["a wrapper relaying the SDK rail's genuine success", (sdkOwned?: PayDemRail): PayDemRail => ({
+    ["a wrapper relaying a copy of the SDK rail's genuine success", (sdkOwned?: PayDemRail): PayDemRail => ({
       address: PAYER,
-      settle: (params, fence) => sdkOwned!.settle(params, fence),
+      settle: async (params, fence) => ({ ...await sdkOwned!.settle(params, fence) }),
+    })],
+    ["a wrapper relaying the SDK rail's success for another settlement key", (sdkOwned?: PayDemRail): PayDemRail => ({
+      address: PAYER,
+      settle: (params, fence) => sdkOwned!.settle({
+        ...params,
+        recovery: {
+          ...params.recovery!,
+          jobId: "another-job",
+          settlementKey: settlementKey(params.recovery!.railId, "another-job", params.recovery!.phaseIndex),
+        },
+      }, fence),
     })],
   ])("holds %s without a final verdict or a second payment", async (_case, build) => {
     const log = createInMemorySettlementLog();
@@ -830,6 +841,22 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     });
     await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
     expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  // The relayed object is the SDK's own record-verified success for this
+  // payment's terms and settlement key: the payment executed, so holding it
+  // would deny a debited payment (#338).
+  test("settles a wrapper relaying the SDK rail's genuine success for this payment", async () => {
+    const log = createInMemorySettlementLog();
+    const sdkOwned = await sdkRail();
+    const settle = payDemSettle({
+      address: PAYER,
+      settle: (params, fence) => sdkOwned.settle(params, fence),
+    }, { network: "demos" }, { store: createIdempotencyStore(log) });
+    const first = await settle(req());
+    expect(first).toMatchObject({ ok: true, txHash: TX_HASH, finality: { model: "bft-final" } });
+    await expect(settle(req())).resolves.toEqual(first);
+    expect(sdkTransfers()).toBe(1);
   });
 
   test("keeps the SDK rail's settle final when a caller reuses it on its own object", async () => {

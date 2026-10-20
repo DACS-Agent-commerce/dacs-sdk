@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,9 +13,17 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // test/fixtures/payDemPackedForgery.mjs in a separate Node process. The script
 // imports every JavaScript file the package ships, offers the forged rail and
 // client to every brand-like export, then asks the shipped entry points for a
-// verdict.
+// verdict. It also checks the legitimate path: a custom client carrying the
+// shipped record reader settles on the SDK's own read of a local node.
 
 const repo = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+// The package resolves demosdk from this checkout. Plain Node ESM cannot import
+// the locked 4.0.16 build (a directory import), so the reader cases run where
+// a consumer resolves 4.0.18: CI's "Typecheck and test against demosdk 4.0.18".
+const demosdkVersion = (JSON.parse(readFileSync(
+  join(repo, "node_modules", "@kynesyslabs", "demosdk", "package.json"),
+  "utf8",
+)) as { version: string }).version;
 const HELD = {
   ok: false,
   errorClass: null,
@@ -34,6 +42,11 @@ interface ForgeryReport {
   coreSuccess: unknown;
   bridgeSuccess: unknown;
   railSuccess: unknown;
+  readerUnavailable: string | null;
+  readerSuccess: { core: unknown; verified: unknown; bridge: unknown } | null;
+  readerFailure: unknown;
+  forgedReader: unknown;
+  nodeReads: string[];
 }
 
 describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
@@ -82,6 +95,7 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     // Exactly the two read-only checks, whatever the export syntax.
     expect(report.brandExports.filter((entry) => entry.startsWith("dist/rails/payDem.js#")).sort())
       .toEqual([
+        "dist/rails/payDem.js#createPayDemRecordReader",
         "dist/rails/payDem.js#isRecordVerifiedSource",
         "dist/rails/payDem.js#payDemRecordVerifiedTransfer",
       ]);
@@ -103,5 +117,45 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
 
   it("reports no forged, copied or custom-client success as SDK record-verified", () => {
     expect(report.verifiedForgeries).toEqual([null, null, null]);
+  });
+
+  it("can build the shipped record reader unless demosdk is the locked 4.0.16", () => {
+    expect(report.readerUnavailable).toBe(
+      demosdkVersion === "4.0.16" ? "ERR_UNSUPPORTED_DIR_IMPORT" : null,
+    );
+  });
+
+  it.skipIf(demosdkVersion === "4.0.16")("settles a custom client's payment on the shipped reader's own read of a confirmed record", () => {
+    const settled = {
+      ok: true,
+      errorClass: null,
+      failureProof: false,
+      finality: "bft-final",
+      txHash: "12".repeat(32),
+    };
+    expect(report.readerSuccess).toEqual({
+      core: settled,
+      verified: {
+        payer: "c3".repeat(32),
+        payee: "a1".repeat(32),
+        amountOs: "5000000000",
+        network: "demos",
+      },
+      bridge: settled,
+    });
+    expect(report.nodeReads).toEqual(["getNetworkInfo", "getTransactionStatus", "getTxByHash"]);
+  });
+
+  it.skipIf(demosdkVersion === "4.0.16")("denies success for an included transfer whose record failed, and refuses a copied reader", () => {
+    expect(report.readerFailure).toEqual({
+      ok: false,
+      errorClass: "permanent",
+      failureProof: true,
+      finality: null,
+      txHash: "34".repeat(32),
+    });
+    expect(report.forgedReader).toEqual({
+      threw: expect.stringMatching(/createPayDemRecordReader/),
+    });
   });
 });
