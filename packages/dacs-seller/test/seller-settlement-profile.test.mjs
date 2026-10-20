@@ -18,6 +18,7 @@ import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consu
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { SELLER_PRE_EFFECT_REFUSALS } from '../src/dacs/seller-http.mjs';
+import { SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 
@@ -30,6 +31,12 @@ function key() {
 const identityFor = (party, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'settlement-profile' });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
+};
+// A presentation carrying a given session nonce, signed by the party.
+const presentWith = (party, presentedAt, sessionNonce) => {
+  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'settlement-profile' });
+  const bundle = { ...unsigned.bundle, sessionNonce }, bundleHash = core.sha256Hex(core.canonicalize(bundle));
+  return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 
 async function world(t) {
@@ -80,14 +87,21 @@ async function world(t) {
     return { proposal, transportIdentity, buyerIdentityBundle: buyerBundle };
   };
   const payment = { jobId, txHash: 'a'.repeat(64), payerPayingKey: buyerKey.claim };
-  return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward, buyerKey, sellerKey, buyerBundle, admission, now };
+  // A seller agent with this world's buyer challenge issued for its job, as the
+  // operator's issuer does before the buyer presents (CORE SN-1/SN-3).
+  const agent = async (options) => {
+    const opened = await seller.createSellerAgent(options);
+    admission.issue(opened, jobId, buyerBundle);
+    return opened;
+  };
+  return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward, buyerKey, sellerKey, buyerBundle, admission, now, agent };
 }
 const refused = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status }; } };
 const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
 
 test('a native agent without the Vet context and delivery chain signs, commits and takes payment for nothing', async (t) => {
   const w = await world(t);
-  const agent = await seller.createSellerAgent(w.capabilities);
+  const agent = await w.agent(w.capabilities);
   t.after(() => agent.close());
   assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.synthetic))), { code: 'vet_context_required', status: 503 });
   assert.equal(agent.stageOf(w.jobId), null, 'no session is opened for the refused proposal');
@@ -99,7 +113,7 @@ test('a native agent without the Vet context and delivery chain signs, commits a
 
 test('native payment evidence and the Vet context without native delivery sign the vetted Agreement but commit and take payment for nothing', async (t) => {
   const w = await world(t);
-  const agent = await seller.createSellerAgent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext() });
+  const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext() });
   t.after(() => agent.close());
   // A proposal over the synthetic not-performed Vet references is not the vetted Agreement.
   const unvetted = await refused(async () => { const answer = await agent.receiveProposal(await w.proposalFor(w.synthetic)); if (answer.disposition === 'complete') throw Object.assign(new Error('signed'), { code: 'signed' }); });
@@ -113,7 +127,7 @@ test('native payment evidence and the Vet context without native delivery sign t
 
 test('the complete native profile takes payment only as native payment evidence, before any transfer is observed', async (t) => {
   const w = await world(t);
-  const agent = await seller.createSellerAgent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(),
+  const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(),
     demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() });
   t.after(() => agent.close());
   assert.equal((await agent.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
@@ -124,7 +138,7 @@ test('the complete native profile takes payment only as native payment evidence,
 test('a Vet context that names the not-performed Vet references is not signed', async (t) => {
   const w = await world(t);
   for (const input of [w.synthetic, w.signedSynthetic]) {
-    const agent = await seller.createSellerAgent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(),
+    const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(),
       demDeliveryContext: w.chain.demDeliveryContext(input), nativeDemDelivery: w.chain.nativeDemDelivery() });
     const answer = await agent.receiveProposal(await w.proposalFor(input));
     agent.close();
@@ -140,7 +154,7 @@ const complete = (w, extra = {}) => ({ ...w.capabilities, nativePaymentEvidence:
 test('without the steward-signed rail authority the native profile is refused before any state is opened', async (t) => {
   const w = await world(t), durableDirectory = w.dir();
   for (const railAuthority of [undefined, null]) {
-    await assert.rejects(seller.createSellerAgent(complete(w, { durableDirectory, railAuthority })), { name: 'TypeError', message: /native seller profile needs railAuthority/ });
+    await assert.rejects(w.agent(complete(w, { durableDirectory, railAuthority })), { name: 'TypeError', message: /native seller profile needs railAuthority/ });
   }
   assert.deepEqual(readdirSync(durableDirectory), [], 'no durable state is created');
   assert.deepEqual(w.reached, []);
@@ -154,7 +168,7 @@ for (const [name, authority] of [
   ['mocked, which payment intake cannot settle', { changes: { availability: 'mocked' } }],
 ]) test(`a new session does not select a ${name} rail: no Agreement is signed`, async (t) => {
   const w = await world(t);
-  const agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), railAuthority: w.steward.railAuthority(authority) }));
+  const agent = await w.agent(complete(w, { durableDirectory: w.dir(), railAuthority: w.steward.railAuthority(authority) }));
   t.after(() => agent.close());
   assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.vetted))), { code: 'rail_unavailable', status: 503 });
   assert.equal(agent.stageOf(w.jobId), null, 'no session, pin or contribution is kept');
@@ -173,7 +187,7 @@ test('a rail authority that is not the steward-signed demos-native:DEM PA-1 defi
     [w.steward.railAuthority({ changes: { governance: { proposedBy: w.steward.stewardClaim, acceptedAt: 1, anchoring: 'single-signer' } } }), /PA-1 in-code definition/],
     [{ ...w.steward.railAuthority(), production: 'yes' }, /local operator policy/],
     [{ ...w.steward.railAuthority(), extra: 1 }, /railAuthority must be exactly/],
-  ]) await assert.rejects(seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), railAuthority })), { name: 'TypeError', message });
+  ]) await assert.rejects(w.agent(complete(w, { durableDirectory: w.dir(), railAuthority })), { name: 'TypeError', message });
   await assert.rejects(seller.createSellerAgent({ signer: w.signer, listing: w.listing, observeDemosTransfer: async () => null, anchors: { read: async () => null, write: async () => null }, simulatedFixture: true, railAuthority: w.steward.railAuthority() }),
     { name: 'TypeError', message: /simulated fixture profile takes no railAuthority/ });
   assert.deepEqual(w.reached, []);
@@ -181,7 +195,7 @@ test('a rail authority that is not the steward-signed demos-native:DEM PA-1 defi
 
 test('an in-flight session keeps its pinned rail across a restart; a pin the steward did not sign is refused before any read', async (t) => {
   const w = await world(t), durableDirectory = w.dir();
-  const first = await seller.createSellerAgent(complete(w, { durableDirectory }));
+  const first = await w.agent(complete(w, { durableDirectory }));
   assert.equal((await first.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
   const pinned = first.durableSessionOf(w.jobId).railPin;
   assert.equal(pinned.basis, 'pa1-in-code');
@@ -189,7 +203,7 @@ test('an in-flight session keeps its pinned rail across a restart; a pin the ste
   first.close();
   // The steward's later revision disables the rail: new sessions may not select
   // it, the pinned one continues (RAV-R2) and reaches the Agreement readback.
-  const disabled = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  const disabled = await w.agent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
   assert.notEqual((await refused(() => disabled.commit({ jobId: w.jobId })))?.code, 'rail_unavailable');
   assert.ok(w.reached.includes('readAgreement'), 'the in-flight session got past the rail gate');
   assert.deepEqual(disabled.durableSessionOf(w.jobId).railPin, pinned, 'the pin is not rewritten');
@@ -197,7 +211,7 @@ test('an in-flight session keeps its pinned rail across a restart; a pin the ste
   w.reached.length = 0;
   // Another steward key does not authenticate the retained pin.
   const other = railSteward();
-  const foreign = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: other.railAuthority() }));
+  const foreign = await w.agent(complete(w, { durableDirectory, railAuthority: other.railAuthority() }));
   t.after(() => foreign.close());
   assert.deepEqual(await refused(() => foreign.commit({ jobId: w.jobId })), { code: 'rail_unavailable', status: 503 });
   assert.deepEqual(await refused(() => foreign.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), { code: 'rail_unavailable', status: 503 });
@@ -260,7 +274,7 @@ const nativeClaim = (w) => ({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMEN
 test('a committed native session takes its payment claim to the transfer observation under its pinned rail, also after a restart with a later registry version or a disabled revision', async (t) => {
   for (const later of [{ authority: { railRegistryVersion: 2 } }, { changes: { availability: 'disabled' }, authority: { railRegistryVersion: 2 } }]) {
     const w = await world(t), chain = nativeChain(w), durableDirectory = w.dir();
-    const first = await seller.createSellerAgent(chain.options(w.steward.railAuthority(), durableDirectory));
+    const first = await w.agent(chain.options(w.steward.railAuthority(), durableDirectory));
     assert.equal((await first.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
     await chain.anchorAgreement(first.durableSessionOf(w.jobId));
     assert.equal((await first.commit({ jobId: w.jobId })).status, 'committed');
@@ -268,7 +282,7 @@ test('a committed native session takes its payment claim to the transfer observa
     first.close();
     // The operator moves to registry version 2. RAV-R2: the session keeps the
     // definition it pinned at session start, registry version 1.
-    const agent = await seller.createSellerAgent(chain.options(w.steward.railAuthority(later), durableDirectory));
+    const agent = await w.agent(chain.options(w.steward.railAuthority(later), durableDirectory));
     t.after(() => agent.close());
     assert.deepEqual(agent.durableSessionOf(w.jobId).railPin, pinned, 'the pin, its registry version included, is not rewritten');
     assert.equal(pinned.railRegistryVersion, 1);
@@ -282,18 +296,18 @@ test('a committed native session takes its payment claim to the transfer observa
 test('a proposal the seller did not sign leaves no in-flight pin: its retry selects again under the current rail authority', async (t) => {
   const w = await world(t), durableDirectory = w.dir();
   // The first proposal is rejected (its Vet context names the not-performed references): nothing is signed.
-  const first = await seller.createSellerAgent(complete(w, { durableDirectory, demDeliveryContext: w.chain.demDeliveryContext(w.synthetic) }));
+  const first = await w.agent(complete(w, { durableDirectory, demDeliveryContext: w.chain.demDeliveryContext(w.synthetic) }));
   assert.equal((await first.receiveProposal(await w.proposalFor(w.synthetic))).disposition, 'rejected');
   assert.equal(first.durableSessionOf(w.jobId)?.sellerContribution, undefined);
   first.close();
   // The steward disables the rail and keeps the registry version. The retry is a new session: no Agreement is signed.
-  const disabled = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  const disabled = await w.agent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
   assert.deepEqual(await refused(async () => disabled.receiveProposal(await w.proposalFor(w.vetted))), { code: 'rail_unavailable', status: 503 });
   assert.equal(disabled.durableSessionOf(w.jobId)?.sellerContribution, undefined, 'no seller contribution');
   disabled.close();
   // Under a live rail the same retry is signed, and its pin is the current definition.
   const live = w.steward.railAuthority();
-  const relive = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: live }));
+  const relive = await w.agent(complete(w, { durableDirectory, railAuthority: live }));
   const signed = await relive.receiveProposal(await w.proposalFor(w.vetted));
   assert.equal(signed.disposition, 'complete');
   const session = relive.durableSessionOf(w.jobId);
@@ -301,7 +315,7 @@ test('a proposal the seller did not sign leaves no in-flight pin: its retry sele
   assert.deepEqual(session.railPin.rail, live.rail);
   relive.close();
   // Once signed, the pin is in flight: the signed proposal again under a disabled revision answers the same contribution.
-  const after = await seller.createSellerAgent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  const after = await w.agent(complete(w, { durableDirectory, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
   t.after(() => after.close());
   const again = await after.receiveProposal(await w.proposalFor(w.vetted));
   assert.equal(again.disposition, 'complete');
@@ -325,7 +339,7 @@ function inProcessFetch(handle, last) {
 // `gate` maps an agent method to a refusal code it throws once, before calling the agent.
 async function httpSeller(t, w, { gate = {} } = {}) {
   const chain = nativeChain(w), durableDirectory = w.dir(), peerDirectory = w.dir(), last = {};
-  const build = (railAuthority) => seller.createSellerAgent(chain.options(railAuthority, durableDirectory));
+  const build = (railAuthority) => w.agent(chain.options(railAuthority, durableDirectory));
   let agent = await build(w.steward.railAuthority());
   const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite') });
   t.after(() => { try { agent.close(); } catch { /* closed by a restart */ } store.close(); });
@@ -390,7 +404,7 @@ test('the HTTP journal answers every pre-effect gate refusal as definite and kee
 test('a native agent without the seller\'s session admission opens no session', async (t) => {
   const w = await world(t);
   const { sessionAdmission: _none, ...capabilities } = complete(w, { durableDirectory: w.dir() });
-  const agent = await seller.createSellerAgent(capabilities);
+  const agent = await w.agent(capabilities);
   t.after(() => agent.close());
   assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.vetted))), { code: 'session_admission_required', status: 503 });
   assert.equal(agent.stageOf(w.jobId), null);
@@ -421,7 +435,7 @@ test('a Vet reference is signed only through the passing record of this job, par
   };
   for (const [label, [role, ref, reason]] of Object.entries({ ...refs, ...counterpartyRefs })) {
     const input = { ...w.vetted, [role]: { ...w.vetted[role], vetRecordRef: ref } }, reads = w.admission.calls.filter(([call]) => call === 'resolveVetRecord').length;
-    const agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(input) }));
+    const agent = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(input) }));
     const answer = await agent.receiveProposal(await w.proposalFor(input));
     agent.close();
     assert.equal(answer.disposition, 'rejected', label);
@@ -459,7 +473,7 @@ test('a Vet context whose requirement invocations the delivery runner would refu
     'an invocation that is not the exact shape': [{ ...buyerInvocation, extra: true }, sellerInvocation],
   };
   for (const [label, vetRequirements] of Object.entries({ ...refused, 'each record\'s party and counterparty verifier': [buyerInvocation, sellerInvocation] })) {
-    const agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(w.vetted, vetRequirements) }));
+    const agent = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(w.vetted, vetRequirements) }));
     const answer = await agent.receiveProposal(await w.proposalFor(w.vetted));
     agent.close();
     if (!(label in refused)) { assert.equal(answer.disposition, 'complete', label); continue; }
@@ -483,7 +497,7 @@ test('a passing, counterparty-signed Vet record over another requirement is not 
   };
   for (const [label, [role, ref]] of Object.entries(records)) {
     const input = { ...w.vetted, [role]: { ...w.vetted[role], vetRecordRef: ref } };
-    const agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(input) }));
+    const agent = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(input) }));
     const answer = await agent.receiveProposal(await w.proposalFor(input));
     agent.close();
     assert.equal(answer.disposition, 'rejected', label);
@@ -493,20 +507,57 @@ test('a passing, counterparty-signed Vet record over another requirement is not 
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
-// CORE SN-4: a presentation nonce admits one session. The host binds it to the
-// job that first presented it, whatever the operator's admission answers (this
-// fixture echoes any nonce as issued and consumed), and the binding is kept
-// with that session, so a restart keeps it too.
+// A retained Vet context may have been kept under an earlier, weaker check, so
+// it is verified against the records it names again before any signature: a
+// record that no longer resolves, or no longer backs its reference, is not
+// signed, also after a restart.
+test('a retained Vet context is verified against its records again before the seller signs, also after a restart', async (t) => {
+  const w = await world(t), durableDirectory = w.dir();
+  let mode = 'ok';
+  const resolveVetRecord = async (query) => {
+    if (mode === 'down') throw new Error('TEST Vet record store is down');
+    const record = await w.admission.sessionAdmission.resolveVetRecord(query);
+    return mode === 'other' ? { ...record, generatedAt: record.generatedAt + 1 } : record;
+  };
+  const options = () => complete(w, { durableDirectory, sessionAdmission: { ...w.admission.sessionAdmission, resolveVetRecord } });
+  let agent = await w.agent(options());
+  t.after(() => agent.close());
+  // The context verifies and is kept; the proposal names another plan, so nothing is signed.
+  const otherRef = await w.admission.vetRecord(w.jobId, w.buyerKey.claim, w.buyerBundle, { requirement: w.listing.buyerRequirement });
+  const mismatched = await agent.receiveProposal(await w.proposalFor({ ...w.vetted, buyer: { ...w.vetted.buyer, vetRecordRef: otherRef } }));
+  assert.equal(mismatched.disposition, 'rejected');
+  assert.match(mismatched.reason, /differs from the independently derived seller agreement/);
+  assert.equal(typeof agent.durableSessionOf(w.jobId).demDeliveryContext, 'object', 'the context is retained, unsigned');
+  const request = await w.proposalFor(w.vetted);
+  for (const [label, reason] of [['down', /^VET_RECORD_UNVERIFIED: the buyer Vet record is unavailable: /], ['other', /^VET_RECORD_UNVERIFIED: buyer: the Vet record does not hash to its reference$/]]) {
+    mode = label;
+    for (const phase of ['running', 'restarted']) {
+      if (phase === 'restarted') { agent.close(); agent = await w.agent(options()); }
+      const answer = await agent.receiveProposal(request);
+      assert.equal(answer.disposition, 'rejected', `${label}, ${phase}`);
+      assert.equal(answer.contribution, undefined, `${label}, ${phase}: no seller contribution is issued`);
+      assert.match(answer.reason, reason, `${label}, ${phase}`);
+    }
+  }
+  mode = 'ok';
+  assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'the retained context whose records verify is signed');
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+// CORE SN-4: a presentation nonce admits one session. The seller's challenge
+// ledger binds it to the job it was issued for, whatever the operator's
+// admission answers (this fixture admits any presentation), and the ledger is
+// kept with the durable seller state, so a restart keeps it too.
 test('a buyer presentation that admitted one session is refused for another job, also after a restart, before the admission is asked', async (t) => {
   const w = await world(t), durableDirectory = w.dir(), otherJob = core.generateCanonicalJobId();
   const admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
-  const first = await seller.createSellerAgent(complete(w, { durableDirectory }));
+  const first = await w.agent(complete(w, { durableDirectory }));
   assert.equal((await first.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
   const replay = async (agent) => refused(async () => agent.receiveProposal(await w.proposalFor({ ...w.vetted, jobId: otherJob }, otherJob)));
   const asked = admits();
   assert.deepEqual(await replay(first), { code: 'session_not_admitted', status: 409 });
   first.close();
-  const restarted = await seller.createSellerAgent(complete(w, { durableDirectory }));
+  const restarted = await w.agent(complete(w, { durableDirectory }));
   t.after(() => restarted.close());
   assert.deepEqual(await replay(restarted), { code: 'session_not_admitted', status: 409 }, 'after a restart');
   assert.equal(admits(), asked, 'the operator admission is not asked for the replayed nonce');
@@ -514,14 +565,11 @@ test('a buyer presentation that admitted one session is refused for another job,
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
-test('a presentation the seller did not challenge, a revoked or unread Listing and a missing or different profile are refused before any session is kept', async (t) => {
+test('a revoked or unread Listing and a missing or different profile are refused before any session is kept; each refused attempt consumes its challenge', async (t) => {
   const w = await world(t);
   const profile = (answer, change) => ({ ...answer, participants: answer.participants.map((entry) => entry.role === 'buyer' ? { ...entry, ...change } : entry) });
   const stale = w.now - 10 * 60 * 1000;
   const refusals = {
-    'a presenter-chosen nonce': (answer) => ({ ...answer, challenge: { ...answer.challenge, nonce: core.sha256Hex('another challenge') } }),
-    'an unconsumed challenge': (answer) => ({ ...answer, challenge: { nonce: answer.challenge.nonce } }),
-    'a stale challenge': (answer) => ({ ...answer, challenge: { ...answer.challenge, consumedAt: stale } }),
     'another job': (answer) => ({ ...answer, jobId: core.generateCanonicalJobId() }),
     'another bundle': (answer) => ({ ...answer, buyerBundleHash: core.sha256Hex('another bundle') }),
     'a revoked Listing': (answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, status: 'revoked' } }),
@@ -532,25 +580,107 @@ test('a presentation the seller did not challenge, a revoked or unread Listing a
     'an older Standard revision': (answer) => profile(answer, { standardRevision: '0'.repeat(40) }),
     'a different document tuple': (answer) => profile(answer, { documentVersions: { ...answer.participants[0].documentVersions, 'DACS-4': '0.7' } }),
     'a profile for another identity': (answer) => profile(answer, { claim: key().claim }),
+    'a challenge in the answer (the seller\'s own ledger holds it)': (answer) => ({ ...answer, challenge: { nonce: w.buyerBundle.sessionNonce, consumedAt: w.now } }),
     'a refusal': () => ({ disposition: 'refused', reason: 'TEST not admitted' }),
     'nothing': () => undefined,
   };
-  const agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
+  const agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => agent.close());
+  const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
+  // CORE SN-4: a challenge is consumed on its first attempt, so each refused
+  // attempt presents its own issued challenge.
+  let presented = 0;
+  const fresh = () => { const bundle = identityFor(w.buyerKey, w.now - 1 - presented++); w.admission.issue(agent, w.jobId, bundle); return { ...request, buyerIdentityBundle: bundle }; };
   for (const [label, change] of Object.entries(refusals)) {
     w.admission.answerWith(change);
-    assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.vetted))), { code: 'session_not_admitted', status: 409 }, label);
+    const attempt = fresh();
+    assert.deepEqual(await refused(() => agent.receiveProposal(attempt)), { code: 'session_not_admitted', status: 409 }, label);
     assert.equal(agent.stageOf(w.jobId), null, `${label}: no session is kept`);
+    w.admission.answerWith(null);
+    const asked = admits();
+    assert.deepEqual(await refused(() => agent.receiveProposal(attempt)), { code: 'session_not_admitted', status: 409 }, `${label}: the consumed challenge is refused again`);
+    assert.equal(admits(), asked, `${label}: the admission is not asked again`);
   }
   w.admission.answerWith(() => { throw new Error('TEST admission store is down'); });
-  assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.vetted))), { code: 'session_admission_unavailable', status: 503 });
+  assert.deepEqual(await refused(() => agent.receiveProposal(fresh())), { code: 'session_admission_unavailable', status: 503 });
   w.admission.answerWith(null);
-  assert.equal((await agent.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete', 'the admitted session is signed');
+  assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'the admitted session is signed');
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
-test('a session in flight continues after its Listing is revoked; a new session on it is refused', async (t) => {
+// CORE SN-1..SN-4: the seller's own challenge ledger decides, before the
+// operator's admission is asked (this fixture admits any presentation, as an
+// echoing callback would).
+test('a presentation nonce the seller did not issue, issued for another job or buyer, expired, or consumed by an earlier attempt is refused before the admission is asked, also after a restart', async (t) => {
+  const w = await world(t), durableDirectory = w.dir();
+  let clock = w.now;
+  const open = () => seller.createSellerAgent(complete(w, { durableDirectory, now: () => clock }));
+  let agent = await open();
+  t.after(() => agent.close());
+  const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
+  const NOT_ADMITTED = { code: 'session_not_admitted', status: 409 };
+  let presented = 0;
+  const bundle = () => identityFor(w.buyerKey, w.now - 1 - presented++);
+  const attempt = (presentation) => refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: presentation }));
+  assert.deepEqual(await attempt(bundle()), NOT_ADMITTED, 'a nonce the seller never issued');
+  const otherJob = bundle();
+  agent.issueSessionChallenge({ jobId: core.generateCanonicalJobId(), buyer: w.buyerKey.claim, sessionNonce: otherJob.sessionNonce });
+  assert.deepEqual(await attempt(otherJob), NOT_ADMITTED, 'a challenge issued for another job');
+  const otherBuyer = bundle();
+  agent.issueSessionChallenge({ jobId: w.jobId, buyer: key().claim, sessionNonce: otherBuyer.sessionNonce });
+  assert.deepEqual(await attempt(otherBuyer), NOT_ADMITTED, 'a challenge issued to another buyer');
+  const late = bundle();
+  w.admission.issue(agent, w.jobId, late);
+  clock += SESSION_CHALLENGE_LIFETIME_MS;
+  assert.deepEqual(await attempt(late), NOT_ADMITTED, 'an expired challenge');
+  clock = w.now;
+  assert.equal(admits(), 0, 'the admission is never asked for these');
+  // Consumed on the first attempt, a refused one too: the same presentation
+  // and a re-signed one carrying the same nonce are refused after it.
+  const first = bundle();
+  w.admission.issue(agent, w.jobId, first);
+  w.admission.answerWith((answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, status: 'indeterminate' } }));
+  assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the first attempt is refused by the admission');
+  w.admission.answerWith(null);
+  const asked = admits();
+  assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the same presentation after its refused attempt');
+  const resigned = presentWith(w.buyerKey, first.presentedAt + 1, first.sessionNonce);
+  assert.notEqual(core.identityBundleHash(resigned), core.identityBundleHash(first));
+  assert.deepEqual(await attempt(resigned), NOT_ADMITTED, 'a re-signed presentation carrying the consumed nonce');
+  agent.close();
+  agent = await open();
+  assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the consumed challenge after a restart');
+  assert.deepEqual(await attempt(late), NOT_ADMITTED, 'the expired challenge after a restart');
+  assert.equal(admits(), asked, 'the admission is not asked for a consumed challenge');
+  assert.equal(agent.stageOf(w.jobId), null, 'no session is kept');
+  // The issued challenge of this presentation admits it, and its accepted
+  // presentation continues after a restart.
+  w.admission.issue(agent, w.jobId, w.buyerBundle);
+  const signed = await agent.receiveProposal(request);
+  assert.equal(signed.disposition, 'complete');
+  agent.close();
+  agent = await open();
+  assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution, 'the accepted presentation continues after a restart');
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+test('the seller issues a fresh 256-bit challenge bound to one job and buyer; a nonce is issued once', async (t) => {
   const w = await world(t), agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
+  t.after(() => agent.close());
+  const issued = agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }), again = agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim });
+  assert.match(issued.sessionNonce, /^[0-9a-f]{64}$/);
+  assert.notEqual(issued.sessionNonce, again.sessionNonce, 'every challenge is fresh');
+  assert.deepEqual({ ...issued, sessionNonce: null }, { jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: null, issuedAt: w.now, expiresAt: w.now + SESSION_CHALLENGE_LIFETIME_MS });
+  const failed = (input) => { try { agent.issueSessionChallenge(input); return null; } catch (error) { return error.code; } };
+  assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: issued.sessionNonce }), 'challenge_taken', 'a nonce is issued once');
+  assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: 'AB'.repeat(32) }), 'challenge_invalid');
+  assert.equal(failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: 'ab'.repeat(15) }), 'challenge_invalid', 'fewer than 128 bits');
+  assert.equal(failed({ jobId: 'not-a-job', buyer: w.buyerKey.claim }), 'job_invalid');
+  assert.equal(failed({ jobId: w.jobId, buyer: w.sellerKey.claim }), 'buyer_invalid', 'the seller is no buyer');
+});
+
+test('a session in flight continues after its Listing is revoked; a new session on it is refused', async (t) => {
+  const w = await world(t), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => agent.close());
   const signed = await agent.receiveProposal(await w.proposalFor(w.vetted));
   assert.equal(signed.disposition, 'complete');
@@ -560,20 +690,25 @@ test('a session in flight continues after its Listing is revoked; a new session 
   assert.deepEqual(await refused(() => agent.receiveProposal({ ...request, transportIdentity: { ...request.transportIdentity, jobId: next.jobId } })), { code: 'session_not_admitted', status: 409 });
 });
 
-test('over HTTP an admission refusal keeps no effect: the same proposal is signed once it is admitted', async (t) => {
+test('over HTTP an admission refusal is definite and keeps no session: the same request runs again and is refused for its consumed challenge, and a presentation under its own challenge is signed', async (t) => {
   const w = await world(t), h = await httpSeller(t, w);
+  const fresh = (presentedAt) => { const bundle = identityFor(w.buyerKey, presentedAt); w.admission.issue(h.agent, w.jobId, bundle); return { ...h.proposal, buyerIdentityBundle: bundle }; };
+  const revoked = fresh(w.now - 1);
   w.admission.answerWith((answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, status: 'revoked' } }));
-  await answered(() => h.client.propose(h.proposal));
+  await answered(() => h.client.propose(revoked));
   assert.deepEqual([h.last.status, h.last.answer.error], [409, 'session_not_admitted']);
+  w.admission.answerWith(null);
+  await answered(() => h.client.propose(revoked));
+  assert.deepEqual([h.last.status, h.last.answer.error, h.last.answer.message], [409, 'session_not_admitted', 'the presentation challenge was consumed by an earlier presentation attempt']);
   w.admission.answerWith(() => { throw new Error('TEST admission store is down'); });
-  await answered(() => h.client.propose(h.proposal));
+  await answered(() => h.client.propose(fresh(w.now - 2)));
   assert.deepEqual([h.last.status, h.last.answer.error], [503, 'session_admission_unavailable']);
   w.admission.answerWith(null);
   assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
 });
 
 test('a buyer presentation signature is accepted only in canonical unpadded Base64URL (CORE SIG-6)', async (t) => {
-  const w = await world(t), agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
+  const w = await world(t), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => agent.close());
   const value = w.buyerBundle.presentation.signatures[0].signature, alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
   // Each decodes leniently to the same 64 signature bytes.

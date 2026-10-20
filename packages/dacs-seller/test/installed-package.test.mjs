@@ -93,6 +93,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.notEqual(out.refusals.fabricatedVetProposal.disposition, 'complete', 'a Vet reference no record backs is not signed');
   assert.equal(out.refusals.fabricatedVetProposal.contribution, null);
   assert.deepEqual(out.refusals.replayedPresentation, { name: 'SellerRefusedError', code: 'session_not_admitted', status: 409 }, 'a presentation is admitted only on the job its challenge was issued for');
+  assert.deepEqual(out.issuedChallenge, { nonce: true, lifetimeMs: 600000 }, 'the installed host issues a fresh 256-bit challenge with its lifetime');
   assert.deepEqual(out.refusals.contextChallenge, { status: 404, body: { error: 'not_found' } });
   for (const attempt of [out.refusals.secondHostSameDirectory, out.refusals.secondProcessSameDirectory]) {
     assert.match(attempt, /^Error: seller state directory is in use by another live operator process/, 'one live host owns the state');

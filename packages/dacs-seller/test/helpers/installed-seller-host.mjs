@@ -82,10 +82,10 @@ const bundleFor = (jobId) => ownBundles.get(jobId) ?? buyerBundle;
 const ownBundle = (jobId) => { ownBundles.set(jobId, identityFor(buyerKey, now - ownBundles.size - 1)); return ownBundles.get(jobId); };
 // The operator's seller-owned session admission: the counterparty-verified
 // CompositeVerificationRecords it keeps (DACS-2 §7.7.2: the buyer's signed by
-// the seller, the seller's by the buyer), one challenge it issued per job (the
-// bundle's sessionNonce), a fresh active revocation reading and both parties
-// under the package's exact profile.
-const vetRecords = new Map(), challenges = new Map(), admissionCalls = [];
+// the seller, the seller's by the buyer), a fresh active revocation reading and
+// both parties under the package's exact profile. The presentation challenge
+// is the host's own: the operator issues one per job through the host.
+const vetRecords = new Map(), admissionCalls = [];
 const verifierOf = (party) => (party === sellerKey.claim ? buyerKey : sellerKey);
 const vetRef = async (jobId, party, bundle) => {
   const verifier = verifierOf(party);
@@ -97,10 +97,9 @@ const vetRef = async (jobId, party, bundle) => {
 const sessionAdmission = {
   admit: async (query) => {
     admissionCalls.push(query.jobId);
-    if (challenges.get(query.jobId) !== query.sessionNonce) return { disposition: 'refused', reason: 'no challenge was issued to this presentation for this job' };
     const at = Date.now();
     return { disposition: 'admitted', jobId: query.jobId, buyer: query.buyer, buyerBundleHash: query.buyerBundleHash, listingPin: query.listingPin,
-      challenge: { nonce: query.sessionNonce, consumedAt: at }, listingStatus: { status: 'active', observedAt: at },
+      listingStatus: { status: 'active', observedAt: at },
       participants: [{ role: 'buyer', claim: query.buyer, ...query.profile }, { role: 'seller', claim: query.seller, ...query.profile }] };
   },
   resolveVetRecord: async ({ ref }) => { if (!vetRecords.has(ref.contentHash)) throw new Error('no Vet record at this reference'); return structuredClone(vetRecords.get(ref.contentHash)); },
@@ -184,7 +183,6 @@ const fabricated = await proposalFor(fabricatedInput(fabricatedJobId));
 const replayedJobId = core.generateCanonicalJobId();
 ownBundle(replayedJobId);
 const replayed = await proposalFor(await vettedInput(replayedJobId));
-for (const id of [jobId, unvettedJobId, fabricatedJobId]) challenges.set(id, bundleFor(id).sessionNonce);
 const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: seller.createSellerTransportClientAuth({
   buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin, agreementHash }) }) });
 // Independent of the package: node:crypto against the seller's own key.
@@ -199,6 +197,10 @@ const refusedCode = async (work) => { try { await work(); return null; } catch (
 try {
 let host = await start();
 out.host = { origin: new URL(host.url).origin, listingPin: host.listingPin, timeouts: host.timeouts };
+// The operator issues each job's challenge through the host (CORE SN-1/SN-3),
+// the nonce its buyer then presents; the replayed job gets none.
+for (const id of [jobId, unvettedJobId, fabricatedJobId]) host.issueSessionChallenge({ jobId: id, buyer: buyerKey.claim, sessionNonce: bundleFor(id).sessionNonce });
+out.issuedChallenge = (({ sessionNonce, issuedAt, expiresAt }) => ({ nonce: /^[0-9a-f]{64}$/.test(sessionNonce), lifetimeMs: expiresAt - issuedAt }))(host.issueSessionChallenge({ jobId: core.generateCanonicalJobId(), buyer: buyerKey.claim }));
 const client = clientFor(host.url);
 const first = await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
 out.proposal = { disposition: first.disposition, role: first.contribution?.role ?? null, signer: first.contribution?.party ?? null };

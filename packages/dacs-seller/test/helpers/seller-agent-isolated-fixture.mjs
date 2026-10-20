@@ -4,7 +4,7 @@ import './d5-isolated-dependencies.mjs';
 import {readFileSync,mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createPublicKey,verify} from 'node:crypto';
+import {createPublicKey,randomBytes,verify} from 'node:crypto';
 import vm from 'node:vm';
 import * as core from '@kynesyslabs/dacs';
 import * as local from './local-anchor-fixture.mjs';
@@ -52,7 +52,7 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
  }
 
  const modules={
-  '@kynesyslabs/dacs':core,'node:path':await import('node:path'),
+  '@kynesyslabs/dacs':core,'node:path':await import('node:path'),'node:crypto':{randomBytes},
   '../devnet-demo/buyer-access.mjs':{operatorBuyerAccessConfig:()=>null},
   './demos-claims.mjs':claims,
   './commit-on-signature.mjs':lifecycle?signatureCapability:{commitOnSignatureConfig:v=>v,verifySignatureAgreement:forbidden,verifyAgreementCreateAuthorization:forbidden},

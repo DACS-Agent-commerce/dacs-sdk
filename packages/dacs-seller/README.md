@@ -30,9 +30,12 @@ const host = await startSellerHost({
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
   sessionAdmission,      // { admit(query), resolveVetRecord(query) }: the seller-owned session admission
-                         // (profile, challenge, revocation, Vet records; src/dacs/session-admission.mjs)
+                         // (profile, revocation, Vet records; src/dacs/session-admission.mjs)
+  reconcilePaymentEvidence, // optional (input) -> the wallet journal's answer for an evidence anchor
+                         // that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
 });
 // host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
+// host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
 ```
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
@@ -74,15 +77,33 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   agent keeps each attempt before it calls the wallet. It sends the same
   bytes again on the buyer's next claim (or after a restart) only when no
   attempt can have written them: the last attempt never reached the wallet
-  (a crash after the evidence checkpoint), or the wallet answered
+  (a crash after the evidence checkpoint), the wallet answered
   `{ status: "refused", reason }`, which must mean it signed and sent
-  nothing. It also needs a readback that finds nothing: at most once per
-  request, never in the request of the first attempt, and never once a
-  readback has authenticated it. A name-index miss is no proof that nothing
-  landed (CORE §5.1): after any other answer, a throw, or a crash during the
-  call, the agent only reads back and holds the claim (`readback:
-  "indeterminate"`, `anchorOutcome: "sent"` or `"unknown"`) until the write
-  reads back; it never sends it again. An unknown readback sends nothing.
+  nothing, or the wallet's journal answered `{ status: "unsigned" }` (below).
+  It also needs a readback that finds nothing: at most once per request,
+  never in the request of the first attempt, and never once a readback has
+  authenticated it. A name-index miss is no proof that nothing landed
+  (CORE §5.1). After any other answer, a throw, or a crash during the call
+  (`anchorOutcome: "sent"` or `"unknown"`), a readback that finds nothing asks
+  the optional `reconcilePaymentEvidence` host option, once per claim. That
+  option is the wallet's own journal for this exact evidence. It is called with
+  `{ logicalAddress, artifact, writer, artifactKind, jobId, receiptContentHash,
+  attempt: { outcome, answer } }`:
+  - `{ status: "unsigned" }` must mean that no transaction the wallet signed for
+    this address is or can still be included; only this answer lets the agent
+    send the same bytes again;
+  - `{ status: "rebroadcast" | "pending", txHash }` means the one signed
+    transaction was broadcast again unchanged (a dropped submission), or is
+    still pending; the agent waits for its readback and never asks for a new
+    signature;
+  - any other answer or a throw keeps the claim held (`reconcileError` keeps
+    the cause).
+
+  Without `reconcilePaymentEvidence`, the agent only reads back and holds the
+  claim (`readback: "indeterminate"`) until the write reads back. To recover
+  such a claim, the operator checks its wallet for its transaction at the
+  `dacs4:payment:…` address: one that landed reads back on the next claim.
+  An unknown readback sends nothing and asks nothing.
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
@@ -104,19 +125,36 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   its retry selects the rail again under the current authority. A pin the
   configured steward did not sign is refused, so a rotated steward key refuses
   sessions pinned under the old one until that key is configured again.
-- It opens a new session only under `sessionAdmission`, before anything of it
-  is kept, read, signed or sent. Its `admit` answer must bind the exact job,
-  buyer, buyer bundle and Listing pin, and must carry three things:
+- It opens a new session only for a presentation of a challenge it issued,
+  and only under `sessionAdmission`, before anything of it is kept, read,
+  signed or sent.
+  - **Issuing.** `host.issueSessionChallenge({ jobId, buyer })` keeps a fresh
+    256-bit nonce for that job and buyer, valid for ten minutes, before it
+    returns `{ jobId, buyer, sessionNonce, issuedAt, expiresAt }`. The operator
+    hands it to the buyer, whose bundle carries it as `sessionNonce` (CORE
+    SN-1..SN-3; delivering the challenge to the buyer is up to the operator).
+  - **Operator-generated nonces.** An operator whose own issuer generates
+    nonces may pass `sessionNonce`: lowercase hex, at least 128 bits from a
+    CSPRNG (SN-2 is the issuer's duty). A nonce is issued only once.
+  - **Consumption.** The first presentation attempt that carries the nonce
+    consumes it, durably and before anything validates it. A refused attempt
+    consumes it too (CORE SN-4, IBH-4).
+  - **Later presentations.** Any later presentation that carries the nonce is
+    refused (`session_not_admitted`): the same one, a re-signed one, or one
+    for another job. Only the presentation that was admitted continues its
+    own session.
+  - **Refused before `admit`.** A nonce the seller did not issue, one issued
+    for another job or buyer, or an expired one is refused before `admit` is
+    asked.
+
+  Its `admit` answer must bind the exact job, buyer, buyer bundle and Listing
+  pin, and must carry two things:
   - both parties configured for this package's exact profile (the Standard
     commit and the complete document tuple in PROFILE.json; CORE §11.1.2);
-  - the challenge the seller issued for this job, equal to the bundle's
-    `sessionNonce` and consumed by this attempt (CORE SN-1..SN-4). The agent
-    itself also binds each nonce to the first job that presented it (kept
-    with that session, so across a restart): the same nonce for another job
-    is refused before `admit` is asked. Issuance and the revocation reading
-    remain the operator's own answers;
   - a revocation reading of the Listing, `active` and at most five minutes
-    old (DACS-1 RB-5/RB-6).
+    old (DACS-1 RB-5/RB-6). This reading is the operator's own answer about
+    its own Listing: Demos gives no authenticated proof that a revocation
+    marker is absent (CORE §5.1).
 
   Anything missing, malformed, duplicated or different is refused
   (`session_not_admitted`), and an `admit` that throws is refused too
@@ -165,7 +203,10 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   resolved Vet, commitment, settlement and bundle records, is not part of this
   package. The session ends at delivery.
 - It does not mount the Vet and Agreement context route itself: the challenge
-  a session needs comes from the operator's `sessionAdmission`.
+  a session needs is the one `host.issueSessionChallenge` issued, which the
+  operator delivers to the buyer. The host keeps every issued challenge
+  with its seller state; nothing removes one yet, so the operator issues one
+  only for a buyer that is about to present.
 - The devnet source transport, wallet custody and the wallet journal are not
   part of this package. The kit builders that need them (the devnet artifact
   anchor, issued-write readback and the source mode of native payment

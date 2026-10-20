@@ -7,15 +7,15 @@
 // sessionAdmission = { admit(query), resolveVetRecord(query) }:
 //  - admit({ jobId, buyer, buyerBundleHash, sessionNonce, seller, listingPin, profile })
 //    answers { disposition: 'admitted', jobId, buyer, buyerBundleHash, listingPin,
-//    challenge: { nonce, consumedAt }, listingStatus: { status, observedAt },
+//    listingStatus: { status, observedAt },
 //    participants: [{ role, claim, standardRevision, documentVersions }, ...] }:
 //      * CORE §11.1.2(3): both participants are configured for this exact
 //        corrective profile (the Standard commit and the complete tuple);
-//      * CORE SN-1..SN-4, DACS-1 §6.3.2: the bundle's sessionNonce is the
-//        challenge the seller issued for this job, consumed by this attempt
-//        (the agent itself also refuses a nonce another job's session took);
 //      * DACS-1 RB-5/RB-6, LR-3: a fresh revocation reading of this Listing is
 //        `active` (revoked or unknown refuses the new session).
+//    It is asked only after the agent's own challenge ledger (CORE SN-1..SN-4,
+//    DACS-1 §6.3.2) found the bundle's sessionNonce issued by this seller for
+//    this job and buyer, and consumed it for this attempt.
 //  - resolveVetRecord({ jobId, role, party, ref }) answers the
 //    CompositeVerificationRecord the Vet reference names (DACS-2 §7.7.1): its
 //    exact hash, the signature of the party's counterparty verifier (DACS-2
@@ -32,14 +32,16 @@ export const SELLER_PROFILE = Object.freeze({
   standardRevision: 'd45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20',
   documentVersions: Object.freeze({ CORE: '0.3', 'DACS-1': '0.7', 'DACS-2': '0.6', 'DACS-3': '0.5', 'DACS-4': '0.8', 'DACS-5': '0.5' }),
 });
-// How old a consumed challenge and a revocation reading may be when admitted.
+// How old a revocation reading may be when admitted.
 export const SESSION_ADMISSION_MAX_AGE_MS = 5 * 60 * 1000;
+// CORE SN-4: how long an issued presentation challenge can be presented.
+export const SESSION_CHALLENGE_LIFETIME_MS = 10 * 60 * 1000;
 
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value, keys) => object(value) && canonicalize(Object.keys(value).sort()) === canonicalize([...keys].sort());
 const same = (left, right) => { try { return canonicalize(left) === canonicalize(right); } catch { return false; } };
 const recent = (time, now) => Number.isSafeInteger(time) && time <= now && now - time <= SESSION_ADMISSION_MAX_AGE_MS;
-const ADMITTED_KEYS = ['disposition', 'jobId', 'buyer', 'buyerBundleHash', 'listingPin', 'challenge', 'listingStatus', 'participants'];
+const ADMITTED_KEYS = ['disposition', 'jobId', 'buyer', 'buyerBundleHash', 'listingPin', 'listingStatus', 'participants'];
 
 export function sessionAdmissionConfig(value) {
   if (value == null) return null;
@@ -48,10 +50,9 @@ export function sessionAdmissionConfig(value) {
 }
 
 // The reason a session admission answer does not admit this exact session, or null.
-export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash, sessionNonce, seller, listingPin, now }) {
+export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash, seller, listingPin, now }) {
   if (!exactKeys(answer, ADMITTED_KEYS) || answer.disposition !== 'admitted') return 'the session is not admitted';
   if (answer.jobId !== jobId || answer.buyer !== buyer || answer.buyerBundleHash !== buyerBundleHash || !same(answer.listingPin, listingPin)) return 'the admission names another job, buyer, bundle or Listing';
-  if (!exactKeys(answer.challenge, ['nonce', 'consumedAt']) || answer.challenge.nonce !== sessionNonce || !recent(answer.challenge.consumedAt, now)) return 'the presentation nonce is not a seller-issued challenge consumed by this attempt';
   if (!exactKeys(answer.listingStatus, ['status', 'observedAt']) || answer.listingStatus.status !== 'active' || !recent(answer.listingStatus.observedAt, now)) return 'the Listing has no fresh active revocation reading';
   const participants = answer.participants;
   if (!Array.isArray(participants) || participants.length !== 2) return 'the profile admission does not name exactly the buyer and the seller';

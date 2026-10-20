@@ -427,6 +427,33 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         if (row.job !== retained.job) fail('seller_state_corrupt');
         return (retained.claims?.length ?? 1) === 1 ? retained.job : null;
       },
+      // CORE SN-1..SN-4: the seller's own challenge ledger. An issued nonce is
+      // kept with its job, buyer and lifetime before any presentation exists;
+      // the first attempt that carries it is kept in the same transaction
+      // that reads it, so it is consumed before the attempt is validated.
+      issueChallenge(nonce, value) {
+        transaction(() => {
+          if (effect(`session-challenge:${nonce}`)) fail('seller_challenge_taken');
+          putEffect(`session-challenge:${nonce}`, { kind: 'session-challenge', ...clone(value), attempt: null });
+        });
+      },
+      // The challenge as it was before this attempt (null when never issued);
+      // the attempt is kept only when it is the first.
+      attemptChallenge(nonce, attempt) {
+        return transaction(() => {
+          const prior = effect(`session-challenge:${nonce}`);
+          if (prior?.kind !== 'session-challenge') return null;
+          if (prior.attempt === null) putEffect(`session-challenge:${nonce}`, { ...prior, attempt: clone(attempt) });
+          return prior;
+        });
+      },
+      admitChallenge(nonce, bundleHash) {
+        transaction(() => {
+          const prior = effect(`session-challenge:${nonce}`);
+          if (prior?.kind !== 'session-challenge' || prior.attempt?.bundleHash !== bundleHash) fail('seller_state_corrupt');
+          putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true } });
+        });
+      },
       signOnce(id, bytes) {
         const bytesHash = sha256Hex(bytes), jobId = scopedJob();
         return transaction(() => {

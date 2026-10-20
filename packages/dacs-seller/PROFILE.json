@@ -9,7 +9,7 @@
     "DACS-4": "0.8",
     "DACS-5": "0.5"
   },
-  "normativeAuthority": "DACS-Standard at standardRevision (the JID-1 corrective candidate tuple in documentVersions) for the native host profile (startSellerHost), which stops at delivery and signs no completed DACS-5 bundle. Each new session is opened only under the operator's seller-owned sessionAdmission: both participants on this exact profile, a seller-issued challenge consumed by the presentation, a fresh active revocation reading of the Listing and the Vet records the Agreement references. The simulated fixture profile (createSellerAgent with simulatedFixture: true) is test-only and not covered: it does not perform DACS-2 Vet and uses an unsigned in-code rail",
+  "normativeAuthority": "DACS-Standard at standardRevision (the JID-1 corrective candidate tuple in documentVersions) for the native host profile (startSellerHost), which stops at delivery and signs no completed DACS-5 bundle. Each new session is opened only for a presentation of a challenge the host issued for its job and buyer (issueSessionChallenge, consumed on its first attempt) and under the operator's seller-owned sessionAdmission: both participants on this exact profile, a fresh active revocation reading of the Listing and the Vet records the Agreement references. The simulated fixture profile (createSellerAgent with simulatedFixture: true) is test-only and not covered: it does not perform DACS-2 Vet and uses an unsigned in-code rail",
   "qualification": "unsupported pending complete host integration and deployment qualification",
   "sellerRequirement": {
     "requirementVersion": "1",

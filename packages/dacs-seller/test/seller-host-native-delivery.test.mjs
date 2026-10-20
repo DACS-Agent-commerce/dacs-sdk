@@ -35,6 +35,12 @@ const identityFor = (party, presentedAt, sessionSeed = 'host-native-delivery') =
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
 };
+// The buyer's presentation of the challenge the seller host issued (CORE SN-1/SN-3).
+const presentChallenge = (party, presentedAt, sessionNonce) => {
+  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'host-native-delivery' });
+  const bundle = { ...unsigned.bundle, sessionNonce }, bundleHash = core.sha256Hex(core.canonicalize(bundle));
+  return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
+};
 
 // One Demos node: confirmed blocks bound to the fixture chain identity, native
 // DEM transfers, signed storage CREATEs and the name index over them.
@@ -93,7 +99,11 @@ function demosNode() {
     return tx.hash;
   };
   // A storage CREATE the writer's wallet signed (Demos: ed25519 over the tx hash).
-  const create = (writer, { logicalAddress, artifact, artifactKind, deliveryBinding }) => {
+  // `land: false` signs it without the node applying it (a dropped submission);
+  // `rebroadcast(hash)` applies a signed CREATE the node has not applied, once.
+  const pending = new Map();
+  const rebroadcast = (hash) => { const apply = pending.get(hash); pending.delete(hash); apply?.(); };
+  const create = (writer, { logicalAddress, artifact, artifactKind, deliveryBinding }, { land = true } = {}) => {
     const owner = writer.address, programName = core.logicalToStorageProgramName(logicalAddress), nonce = (nonces.get(owner) ?? 0) + 1;
     nonces.set(owner, nonce);
     const storageAddress = deriveStorageAddress(owner, programName, nonce, '');
@@ -102,15 +112,18 @@ function demosNode() {
     content.data[1].metadata = metadata;
     content.from_ed25519_address = owner;
     const hash = core.sha256Hex(JSON.stringify(content)), signed = { hash, content, signature: { type: 'ed25519', data: writer.signWallet(hash) } };
-    include(signed);
-    programs.set(storageAddress, { success: true, storageAddress, owner, programName, data: clone(artifact), metadata: clone(metadata), createdByTx: hash, interactionTxs: [hash] });
-    creates.push({ logicalAddress, artifactKind, hash });
+    pending.set(hash, () => {
+      include(signed);
+      programs.set(storageAddress, { success: true, storageAddress, owner, programName, data: clone(artifact), metadata: clone(metadata), createdByTx: hash, interactionTxs: [hash] });
+      creates.push({ logicalAddress, artifactKind, hash });
+    });
+    if (land) rebroadcast(hash);
     return clone(signed);
   };
   const reader = createDemosSr2Adapter({ rpcUrl: RPC, journal: createInMemoryDemosSr2Journal(), fetchImpl });
   // A transfer's block and inclusion time (ms), as the pay-dem observer reads them.
   const inclusion = (hash) => { const { blockNumber } = txs.get(hash); return { blockNumber, includedAt: blocks[blockNumber].content.timestamp * 1000 }; };
-  return { fetchImpl, pay, create, reader, creates, programs, faults, searches, inclusion, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000 };
+  return { fetchImpl, pay, create, rebroadcast, reader, creates, programs, faults, searches, inclusion, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000 };
 }
 
 // The application's Deliverable producer: a report bound to the job, its
@@ -123,7 +136,10 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // `idempotentWallet: false`: the seller wallet signs a new CREATE on every
 // anchorEvidence call, as a plain Demos wallet does (the node checks only the
 // nonce-derived storage address, so a second CREATE under one name lands).
-async function world(t, { deliverableProducer = null, schemaUrl = true, idempotentWallet = true } = {}) {
+// `reconcile: true`: the operator also gives the wallet's journal question
+// (reconcilePaymentEvidence) for an anchor attempt that was sent or whose
+// outcome is unknown.
+async function world(t, { deliverableProducer = null, schemaUrl = true, idempotentWallet = true, reconcile = false } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks 2 s apart).
@@ -134,16 +150,17 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
     category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
   if (!schemaUrl) delete draft.offering.deliverable.schemaUrl;
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
-  // One buyer presentation per job: CORE SN-4, a session nonce admits one session.
+  // One buyer presentation per job, of the challenge the host issued for it
+  // (CORE SN-1..SN-4: a session nonce admits one session).
   const buyerBundles = new Map();
   const buyerBundleFor = (jobId) => {
-    if (!buyerBundles.has(jobId)) buyerBundles.set(jobId, identityFor(buyerKey, now, `host-native-delivery:${jobId}`));
+    if (!buyerBundles.has(jobId)) buyerBundles.set(jobId, presentChallenge(buyerKey, now, host.issueSessionChallenge({ jobId, buyer: buyerKey.claim }).sessionNonce));
     return buyerBundles.get(jobId);
   };
   // What each operator capability did. `faults` script the next answers;
   // `beforeDeliveryReconcile` runs before the delivery capability reconciles.
-  const effects = { anchorEvidence: [], deliverySubmit: [], published: [] };
-  const faults = { anchorEvidence: [], deliverySubmit: [], beforeDeliveryReconcile: async () => {} };
+  const effects = { anchorEvidence: [], reconcileEvidence: [], deliverySubmit: [], published: [] };
+  const faults = { anchorEvidence: [], reconcileEvidence: [], deliverySubmit: [], beforeDeliveryReconcile: async () => {} };
 
   // The operator's Vet context for each job: references to the
   // counterparty-verified records its session admission keeps (DACS-2 §7.7.2).
@@ -198,8 +215,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
   // second (`idempotentWallet: false` writes a new one on every call).
   // `fail`: answers { status: 'refused' }, nothing signed; `throw`: throws
   // before signing, which the agent cannot tell from a lost answer; `lost`:
-  // written, then the answer is lost (a throw); `other`: the wallet writes
-  // seller-signed evidence naming another transfer.
+  // written, then the answer is lost (a throw); `dropped`: signed and answered,
+  // but the node never applied it; `other`: the wallet writes seller-signed
+  // evidence naming another transfer.
   const nativePaymentEvidence = createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl,
     anchorEvidence: async (input) => {
       effects.anchorEvidence.push(input.logicalAddress);
@@ -212,12 +230,26 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
         unsigned.paymentTxRefs = [{ ...unsigned.paymentTxRefs[0], txHash: 'd4'.repeat(32) }];
         artifact = await core.signComponentArtifact(unsigned, core.ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: sellerKey.claim, sign: sellerKey.sign });
       }
-      if (!idempotentWallet && signedCreates.has(input.logicalAddress)) signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact, artifactKind: 'SettlementEvidence' }));
+      if (fault === 'dropped') signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact, artifactKind: 'SettlementEvidence' }, { land: false }));
+      else if (!idempotentWallet && signedCreates.has(input.logicalAddress)) signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact, artifactKind: 'SettlementEvidence' }));
       else writeOnce(input.logicalAddress, artifact, 'SettlementEvidence');
       if (fault === 'lost') throw new Error('TEST wallet answer lost after the CREATE');
       return { status: 'submitted', txHash: signedCreates.get(input.logicalAddress).hash };
     },
     readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) });
+  // The wallet's journal question (DACS-4 PC-7(b)): nothing signed for the
+  // address is 'unsigned'; a signed CREATE is broadcast again as the same
+  // signed transaction ('rebroadcast'). `throw` and `pending` script the answer.
+  const reconcilePaymentEvidence = async ({ logicalAddress }) => {
+    effects.reconcileEvidence.push(logicalAddress);
+    const fault = faults.reconcileEvidence.shift();
+    if (fault === 'throw') throw Object.assign(new Error('TEST wallet journal unavailable'), { code: 'TEST-journal-down' });
+    if (fault === 'pending') return { status: 'pending', txHash: signedCreates.get(logicalAddress)?.hash ?? null };
+    const signed = signedCreates.get(logicalAddress);
+    if (!signed) return { status: 'unsigned', reason: 'TEST the wallet journal holds no CREATE for this address', journal: 'TEST'.repeat(4096) };
+    node.rebroadcast(signed.hash);
+    return { status: 'rebroadcast', txHash: signed.hash };
+  };
   const demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-host-native-delivery',
     resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
     resolveSeller: async ({ jobId }) => {
@@ -255,7 +287,8 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
   const capabilities = () => ({ signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer,
     observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); },
-    nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(), sessionAdmission: admission.sessionAdmission, now: clock });
+    nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(), sessionAdmission: admission.sessionAdmission, now: clock,
+    ...(reconcile ? { reconcilePaymentEvidence } : {}) });
   const start = async () => {
     const host = await seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor });
     hosts.push(host);
@@ -425,7 +458,7 @@ for (const [label, fault] of [['an anchor the wallet sent', undefined], ['an anc
   });
 }
 
-test('a wallet that throws is not a refusal: the anchor is not sent again on an absent readback', async (t) => {
+test('without the wallet\'s journal question a wallet that throws is not a refusal: the anchor is not sent again on an absent readback', async (t) => {
   const w = await world(t, { idempotentWallet: false });
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
   w.faults.anchorEvidence.push('throw');
@@ -436,8 +469,99 @@ test('a wallet that throws is not a refusal: the anchor is not sent again on an 
   const again = await p.claim(tx);
   assert.equal(again.status, 'held', shown(again));
   assert.equal(again.readback, 'indeterminate');
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'only a { status: \'refused\' } answer lets the anchor be sent again');
+  assert.deepEqual(w.effects.anchorEvidence, [address], 'only a { status: \'refused\' } answer (or the journal\'s \'unsigned\') lets the anchor be sent again');
   assert.equal(w.createsAt(address), 0);
+});
+
+// DACS-4 PC-7(b): the anchor retry catches up, idempotent on the payment
+// address. An attempt that was sent or whose outcome is unknown and does not
+// read back is resolved by the wallet's own journal (reconcilePaymentEvidence):
+// only 'unsigned' lets the same bytes be sent again; a rebroadcast of the one
+// signed transaction is waited for. A plain wallet writes a new CREATE on every
+// call, so each vector counts the CREATEs.
+test('a wallet that threw before signing is asked its journal: nothing signed, so the same evidence is sent once more and the order is delivered, also after a restart', async (t) => {
+  for (const restart of [false, true]) {
+    const w = await world(t, { idempotentWallet: false, reconcile: true });
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults.anchorEvidence.push('throw');
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', shown(held));
+    assert.equal(held.anchorOutcome, 'unknown');
+    assert.deepEqual(w.effects.reconcileEvidence, [], 'the first claim only reads back');
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', shown(answer));
+    assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to the SDK delivery runner');
+    assert.deepEqual(w.effects.reconcileEvidence, [address], 'the wallet journal is asked once');
+    assert.deepEqual(w.effects.anchorEvidence, [address, address], 'sent again once, after the journal proved nothing signed');
+    assert.equal(w.createsAt(address), 1, 'one CREATE');
+    assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+    assert.equal(w.effects.anchorEvidence.length, 2, 'once read back, never sent again');
+  }
+});
+
+test('a sent anchor the node dropped is broadcast again as the same signed transaction, never signed anew: one CREATE, then delivery', async (t) => {
+  const w = await world(t, { idempotentWallet: false, reconcile: true });
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.anchorEvidence.push('dropped');
+  const held = await p.claim(tx);
+  assert.equal(held.status, 'held', shown(held));
+  assert.equal(held.anchorOutcome, 'sent');
+  assert.equal(w.createsAt(address), 0, 'the node did not apply it');
+  const signed = w.signedCreate(address);
+  await w.restart();
+  const pending = await p.claim(tx);
+  assert.equal(pending.status, 'held', 'the rebroadcast is waited for, not read in the same claim');
+  assert.deepEqual(w.effects.reconcileEvidence, [address]);
+  assert.equal(w.createsAt(address), 1, 'the same signed CREATE landed');
+  assert.deepEqual(w.signedCreate(address), signed, 'the exact signed bytes, not a new transaction');
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.deepEqual(w.effects.anchorEvidence, [address], 'the wallet is asked to anchor once');
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('a lost anchor answer while the name index lags: the journal names the one signed CREATE, nothing is signed again, and the order goes on once it reads back', async (t) => {
+  const w = await world(t, { idempotentWallet: false, reconcile: true });
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  w.faults.anchorEvidence.push('lost');
+  for (const claim of [1, 2, 3]) {
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
+    assert.equal(held.readback, 'indeterminate');
+    assert.equal(held.anchorOutcome, 'unknown');
+  }
+  assert.deepEqual(w.effects.anchorEvidence, [address], 'the wallet is asked to anchor once');
+  assert.equal(w.createsAt(address), 1, 'one CREATE');
+  w.node.faults.indexEmpty = () => false;
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('a journal question that fails or does not answer \'unsigned\' sends nothing: the claim stays held with its cause', async (t) => {
+  const w = await world(t, { idempotentWallet: false, reconcile: true });
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.anchorEvidence.push('throw');
+  assert.equal((await p.claim(tx)).status, 'held');
+  w.faults.reconcileEvidence.push('throw', 'pending');
+  const down = await p.claim(tx);
+  assert.equal(down.status, 'held', shown(down));
+  assert.equal(down.reconcileError?.code, 'TEST-journal-down', 'the journal error keeps its cause');
+  assert.equal(down.anchorOutcome, 'unknown');
+  const pending = await p.claim(tx);
+  assert.equal(pending.status, 'held', shown(pending));
+  assert.equal(pending.reconcileError, undefined);
+  assert.equal(pending.anchorOutcome, 'unknown');
+  assert.deepEqual(w.effects.anchorEvidence, [address], 'nothing is sent while the journal does not prove nothing signed');
+  assert.equal(w.createsAt(address), 0);
+  // The journal answers: nothing signed. The anchor is sent once and delivered.
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.deepEqual(w.effects.anchorEvidence, [address, address]);
+  assert.equal(w.createsAt(address), 1);
+  const work = (await w.retainedSession(p.jobId)).nativeEvidenceWork;
+  assert.deepEqual(work.reconcileAnswer, { status: 'unsigned', reason: 'TEST the wallet journal holds no CREATE for this address' }, 'only the bounded status and reason of a journal answer are kept');
+  assert.equal(work.anchorOutcome, 'sent', 'the one resend after the journal answer was sent');
 });
 
 // Settlement credit (SB-2): one transfer claimed by two jobs gives neither

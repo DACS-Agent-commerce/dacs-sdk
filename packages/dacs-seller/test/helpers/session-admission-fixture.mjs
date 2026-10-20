@@ -1,7 +1,7 @@
-// A seller-owned session admission for tests: it answers that the bundle's
-// sessionNonce is the challenge it issued and consumed for the job (it keeps
-// no ledger; the host itself refuses a nonce another session took), reads the
-// Listing as active, admits both parties under the package's exact profile,
+// A seller-owned session admission for tests: it reads the Listing as active
+// and admits both parties under the package's exact profile (the presentation
+// challenge is the agent's own ledger: `issue` hands the agent the nonce a
+// bundle carries, as the operator's issuer would before the presentation),
 // and keeps the counterparty-verified CompositeVerificationRecords its Vet
 // references name (DACS-2 §7.7.2: the buyer's record signed by the seller, the
 // seller's by the buyer). Each record hashes the exact BundleRequirement it
@@ -28,12 +28,20 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
     return ref;
   };
   const admitted = (query) => ({ disposition: 'admitted', jobId: query.jobId, buyer: query.buyer, buyerBundleHash: query.buyerBundleHash, listingPin: query.listingPin,
-    challenge: { nonce: query.sessionNonce, consumedAt: now() }, listingStatus: { status: 'active', observedAt: now() },
+    listingStatus: { status: 'active', observedAt: now() },
     participants: [{ role: 'buyer', claim: query.buyer, ...structuredClone(SELLER_PROFILE) }, { role: 'seller', claim: query.seller, ...structuredClone(SELLER_PROFILE) }] });
   let overrides = null;
+  // CORE SN-1/SN-3: the seller issues the bundle's challenge for its job before
+  // the buyer presents it (`target` is the agent or the host). Issuing it again
+  // to the same seller state (after a restart) keeps the first issue.
+  const issue = (target, jobId, bundle) => {
+    try { return target.issueSessionChallenge({ jobId, buyer: bundle.presentedBy, sessionNonce: bundle.sessionNonce }); }
+    catch (error) { if (error.code !== 'challenge_taken') throw error; return null; }
+  };
   return {
     calls,
     vetRecord,
+    issue,
     // The answer for the next admissions: (admitted, query) => answer, or null.
     answerWith: (fn) => { overrides = fn; },
     sessionAdmission: {
