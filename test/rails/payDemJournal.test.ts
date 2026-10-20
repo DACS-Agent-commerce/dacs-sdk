@@ -121,19 +121,52 @@ describe("pay-dem audits count a retained hash only through its prepared-transfe
     ["another hash", entry({ txHash: hashB })],
     ["another amount", entry({ amountOs: "2000000000" })],
     ["another payee", entry({ payee: "ef".repeat(32) })],
+    ["another payer", entry({ payer: "ef".repeat(32) })],
     ["another network", entry({ network: "demos:testnet" })],
     ["no recovery tuple", (({ recovery: _recovery, ...rest }) => rest)(entry())],
+    ["a null recovery tuple", entry({ recovery: null })],
     ["an extra recovery field", entry({ recovery: { ...recovery, extra: 1 } })],
     ["an extra entry field", entry({ signedBytes: "00" })],
     ["a negative nonce", entry({ nonce: -1 })],
     ["a string nonce", entry({ nonce: "9" })],
+    ["an unknown denomination", entry({ denomination: "invalid" })],
+    ["a non-canonical debit ceiling", entry({ maxTotalDebitOs: "01000001000" })],
+    ["a debit ceiling below the amount", entry({ maxTotalDebitOs: "999999999" })],
+    ["a numeric confirmed debit", entry({ confirmedTotalDebitOs: 1000001000 })],
+    ["a confirmed debit below the amount", entry({ confirmedTotalDebitOs: "999999999" })],
+    ["a confirmed debit above the ceiling",
+      entry({ maxTotalDebitOs: "1000001000", confirmedTotalDebitOs: "1000002000" })],
     ["a non-object", "journal"],
+    ["a null entry", null],
   ])("refuses a journal entry with %s", async (_case, preparedTransfer) => {
     const reconcile = vi.fn(async () => ({ ...executed(hashA), preparedTransfer })) as unknown as PayDemSettlementReconcile;
     const f = auditor(reconcile);
     await expect(f.settle(request("job-a", 0, hashA))).rejects.toThrow(
-      preparedTransfer === "journal" ? /must return the prepared-transfer journal entry/ : binds,
+      preparedTransfer === "journal" || preparedTransfer === null
+        ? /must return the prepared-transfer journal entry/
+        : binds,
     );
+    expect(f.once).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
+  });
+
+  // A funded rail journals nonce 0 for a wallet's first transfer, and both
+  // debit bounds (`createPayDemRail` with `maxTotalDebitOs`).
+  test.each([
+    ["nonce 0 and both debit bounds",
+      { nonce: 0, maxTotalDebitOs: "1000002000", confirmedTotalDebitOs: "1000001000" }],
+    ["a pre-fork denomination and a confirmed debit equal to the ceiling",
+      { denomination: "dem", maxTotalDebitOs: "1000001000", confirmedTotalDebitOs: "1000001000" }],
+    ["zero-fee debit bounds equal to the amount",
+      { maxTotalDebitOs: "1000000000", confirmedTotalDebitOs: "1000000000" }],
+    ["only a confirmed debit", { confirmedTotalDebitOs: "1000001000" }],
+    ["only a debit ceiling", { maxTotalDebitOs: "1000001000" }],
+    ["no optional fields", { denomination: undefined }],
+  ])("accepts the entry a rail journals with %s", async (_case, over) => {
+    const preparedTransfer = JSON.parse(JSON.stringify(entry(over))) as PayDemPreparedTransfer;
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({ ...executed(hashA), preparedTransfer }));
+    const f = auditor(reconcile);
+    await expect(f.settle(request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(f.once).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
   });
@@ -150,6 +183,57 @@ describe("pay-dem audits count a retained hash only through its prepared-transfe
       .resolves.toMatchObject({ ok: false, errorClass: "permanent", txHash: hashA });
     expect(f.once).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
+  });
+
+  // A rail configured without a journal still leaves the bridge's own record:
+  // the rail-log outcome under this exact settlement key and terms, or the
+  // result this bridge authenticated. That record, never the session's hash,
+  // ties the retained hash to the payment.
+  const unjournaledRail = (): PayDemRail => ({
+    address: payer,
+    settle: vi.fn(async () => {
+      const { amountOs: _amount, ...result } = executed(hashA);
+      return result;
+    }),
+  });
+  const honest = () => vi.fn(async (context: PayDemSettlementAuditContext) =>
+    executed(context.txHash)) as unknown as PayDemSettlementReconcile;
+
+  test("audits a journal-less payment through the rail log that recorded it", async () => {
+    const store = createIdempotencyStore();
+    const rail = unjournaledRail();
+    const reconcile = honest();
+    await expect(payDemSettle(rail, {}, { store, reconcile })(request("job-a")))
+      .resolves.toMatchObject({ ok: true, txHash: hashA });
+    const once = vi.spyOn(store, "once");
+    // A restarted bridge has only the rail log.
+    await expect(payDemSettle(rail, {}, { store, reconcile })(request("job-a", 0, hashA)))
+      .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
+    // Job B's rail log has no record of job A's hash.
+    await expect(payDemSettle(rail, {}, { store, reconcile })(request("job-b", 0, hashA)))
+      .rejects.toThrow(/must return the prepared-transfer journal entry/);
+    // A supplied entry is still checked.
+    const mismatched = vi.fn(async () => ({ ...executed(hashA),
+      preparedTransfer: entry({ payee: "ef".repeat(32) }) })) as unknown as PayDemSettlementReconcile;
+    await expect(payDemSettle(rail, {}, { store, reconcile: mismatched })(request("job-a", 0, hashA)))
+      .rejects.toThrow(binds);
+    expect(once).not.toHaveBeenCalled();
+    expect(rail.settle).toHaveBeenCalledTimes(1);
+  });
+
+  test("audits a journal-less payment this bridge authenticated", async () => {
+    const inner = createIdempotencyStore();
+    // A rail log that cannot show the outcome: only the bridge's own result binds.
+    const store = { once: inner.once.bind(inner), readOutcome: vi.fn(async () => null) };
+    const rail = unjournaledRail();
+    const settle = payDemSettle(rail, {}, { store, reconcile: honest() });
+    await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    await expect(settle(request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    expect(store.readOutcome).toHaveBeenCalledTimes(2);
+    // Without that result, the journal entry is required.
+    await expect(payDemSettle(rail, {}, { store, reconcile: honest() })(request("job-a", 0, hashA)))
+      .rejects.toThrow(/must return the prepared-transfer journal entry/);
+    expect(rail.settle).toHaveBeenCalledTimes(1);
   });
 
   test("checks a journal entry a restart reconciliation supplies, and never persists it", async () => {

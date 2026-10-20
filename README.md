@@ -636,11 +636,17 @@ so a reader that mixes them can see `included` with no record. The reconciler
 must load the original prepared-transfer journal entry for that hash, bind the
 node's record to it, and return the entry as `preparedTransfer`. The SDK refuses
 the audit unless that entry names the retained hash, the same payer, payee, OS
-amount and network, and a `recovery` tuple equal to this rail, job and phase;
+amount and network, a `recovery` tuple equal to this rail, job and phase, and
+(when present) a known denomination and debit bounds no lower than the amount;
 for a permanent failure its nonce must also be the proof's nonce. So another
 job's transfer of the same amount to the same payee is never counted for this
-one. The reconciler must throw when the journal is missing or conflicting, and
-never return `null` for a hash it cannot tie to the journal. A restart
+one. The entry may be left out only when the bridge's own record already names
+the retained hash for this key: the rail log's outcome under these exact terms,
+or a result this bridge produced or reconciled. That keeps a payment made by a
+rail with no `journalPreparedTransfer` auditable while its rail log holds the
+outcome; once that record is lost, its audit fails closed. The reconciler must
+throw when the journal is missing or conflicting, and never return `null` for a
+hash it cannot tie to the journal. A restart
 reconciliation without history may return the entry too; it is checked the same
 way and never persisted. A payment that the bridge, its rail log or the session
 already recorded as successful is never reported unpaid: a reconciliation that

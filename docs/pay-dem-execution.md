@@ -71,11 +71,17 @@ sees its result.
   form (64 lower-case hex digits, no `0x`). It must load the prepared-transfer
   journal entry for that hash, bind the record to it, and return the entry as
   `preparedTransfer`. The audit is refused unless the entry names that hash,
-  the same payer, payee, OS amount and network, and a `recovery` tuple equal
-  to this rail, job and phase; a permanent failure's proof must also carry the
-  journaled nonce. The reconciler throws when the journal is missing or
-  conflicting and never returns `null` for a hash it cannot tie to the
-  journal. A success for a record that debits a network fee also carries it
+  the same payer, payee, OS amount and network, a `recovery` tuple equal
+  to this rail, job and phase, and (when present) a known denomination and
+  debit bounds no lower than the amount; a permanent failure's proof must also
+  carry the journaled nonce. The entry may be left out only when the bridge's
+  own record already names that hash for the key: the rail log's outcome under
+  these exact terms, or a result this bridge produced or reconciled. A payment
+  from a rail without `journalPreparedTransfer` stays auditable while its rail
+  log holds the outcome, and fails closed once that record is lost. The
+  reconciler throws when the journal is missing or conflicting and never
+  returns `null` for a hash it cannot tie to the journal.
+  A success for a record that debits a network fee also carries it
   as `networkFeeOs` (total debit minus amount, integer OS): `runSession`
   re-asserts a saved fee, so an audit that omits it leaves the saved success
   unresolved (not completed, never reported unpaid).
