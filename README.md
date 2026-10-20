@@ -706,7 +706,11 @@ input remains available for callers with a separate trusted pin.
 A saved native DEM outcome is not reused on trust. A resume that holds one,
 including a re-run of a completed session, calls `resumeSettlement` once as a
 read-only audit of the retained transaction hash, except in the cases below
-that are held without a rail call. With the session's rail checkpoint in the
+that are held without a rail call. Only the SDK's `payDemSettle` adapter
+(directly, from `settleFromRail`, or passed through `Agent.runSession`) is
+called for it: any other `resumeSettlement` could never complete a saved
+outcome, so it is not called and the payment stays indeterminate. With the
+session's rail checkpoint in the
 `SessionStore`, a success is kept only when the rail re-reads a `confirmed`
 record with the same block, kind, parties, finality and any saved fee, and a
 permanent failure only when it returns the identical failure proof. From the
@@ -728,13 +732,19 @@ Absence, an indeterminate read, another hash
 or any mismatch fails closed without paying again. A failure read for a saved
 success, a bound failed record included, is refused the same way: the session
 neither completes nor records the payment as failed, and the saved success
-stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7). A
-recovered native success completes only when `resumeSettlement` is the SDK's
-`payDemSettle` adapter (directly, from `settleFromRail`, or passed through
-`Agent.runSession`); a success from any other implementation is held as
-indeterminate. Wire that adapter with a `reconcile` that checks the node
-record against the retained prepared-transfer journal (signed nonce included)
-and reports the record's network fee. Requiring a `confirmed` record is
+stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7).
+
+A native success or permanent failure is final only when the SDK read the
+node's record for that hash itself: over the rail `createPayDemRail` built,
+the adapter reads the record through that rail's own connection and takes its
+status, block, nonce, parties, amount and fee from it; the reconciler's answer
+only names the hash and can refuse, and one the record contradicts is refused.
+Over any other rail the adapter returns no recovered verdict at all. A success
+or failure proof that any other `settle` or `resumeSettlement` reports is its
+statement: the session binds its hash and saves it as an unresolved attempt,
+so a later resume through the adapter audits that hash instead of paying
+again, and never ends the session as failed on it. A recovered failure is
+final only for a hash the session already held. Requiring a `confirmed` record is
 stricter than the pinned DACS-4 §9.5.9 text, which counts a terminal `included`
 status as success: the node can
 report `included` for a transaction whose stored record `failed`, so such a

@@ -54,6 +54,17 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(doc).not.toMatch(/vouch/i);
   });
 
+  it("says a recovered verdict is the SDK's own node read and only the adapter re-reads a saved one", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    const readme = read("README.md").replace(/\s+/g, " ");
+    expect(doc).toContain("is then decided by the SDK rail's own read of the node's record for that hash");
+    expect(doc).toContain("A failure found by a lookup by key is never final");
+    expect(doc).toContain("does not call any other `resumeSettlement` for it");
+    expect(doc).not.toMatch(/wire one that reads the node you trust/);
+    expect(readme).toContain("so it is not called and the payment stays indeterminate");
+    expect(readme).toContain("the session binds its hash and saves it as an unresolved attempt");
+  });
+
   it("dates the node2 build claims and keeps the fixture historical", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     const source = read("src/rails/payDem.ts").replace(/\s*\*\s*/g, " ");
