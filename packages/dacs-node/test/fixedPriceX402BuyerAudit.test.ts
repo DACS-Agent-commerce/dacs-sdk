@@ -941,9 +941,14 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
       if (verified.disposition !== "verified" || verified.value.outcome !== "success") {
         return;
       }
-      expect(verified.value.nativeObservation.finality).toEqual(
-        material.input.settlement.evidence.settlementFinality,
-      );
+      // The native observation reports the depth it applied, the pin, even
+      // when the signed evidence omits the echo.
+      const signedFinality = material.input.settlement.evidence.settlementFinality;
+      expect(verified.value.nativeObservation.finality).toEqual({
+        model: "block-depth",
+        finalityBlocks: 2,
+        finalityObservedAt: signedFinality?.finalityObservedAt,
+      });
       expect(material.input.settlementContext.rail.finality).toEqual({
         model: "block-depth",
         finalityBlocks: 2,
