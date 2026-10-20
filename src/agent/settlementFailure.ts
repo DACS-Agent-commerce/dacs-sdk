@@ -1,4 +1,24 @@
+import { baseUnits } from "../canonical/index.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "../rails/demosAddress.js";
+
+/** DACS-4 §9.5.9: 1 DEM = 10^9 OS (the rail's `DEM_DECIMALS`). */
+const DEM_OS_DECIMALS = 9;
+
+/**
+ * The exact OS amount a native DEM payment request commits to, or `null` when
+ * the request is not a `pay-dem` DEM payment or its amount does not convert.
+ */
+export function payDemRequestAmountOs(
+  request: Readonly<{ phase: string; asset: string; amount: string }>,
+): string | null {
+  if (request.phase !== "pay-dem" || request.asset !== "DEM") return null;
+  try {
+    const amountOs = baseUnits(request.amount, DEM_OS_DECIMALS);
+    return amountOs === "0" ? null : amountOs;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A trusted rail's attestation of a terminal failed Demos record. It is issued

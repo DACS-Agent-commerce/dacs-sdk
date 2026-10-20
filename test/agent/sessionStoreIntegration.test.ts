@@ -1044,15 +1044,28 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         ? loaded.record.checkpoints.filter((checkpoint) => checkpoint.stage === "outcome")
         : [];
     };
+    // 9.5 DEM is 9500000000 OS, the proof amount above.
+    const demTerms = {
+      ...terms,
+      price: { amount: "9.5", asset: "DEM", decimals: 9, rail: "pay-dem" },
+    };
+    const demKv = async () => new Map<string, Record<string, unknown>>([[
+      "stor:listing",
+      (await buildSignedArtifact(
+        { ...listing, supportedPaymentRails: ["pay-dem"] },
+        ARTIFACT_SEPARATORS.Listing,
+        sign,
+      )) as Record<string, unknown>,
+    ]]);
 
     test("binds the hash and records the outcome on fresh settlement and recovery", async () => {
       const store = createInMemorySessionStore();
-      const kv = new Map<string, Record<string, unknown>>();
+      const kv = await demKv();
       const first = await makeDeps(store, {
         kv,
         settle: async (req) => failedRecord(req.expectedPayee),
       });
-      await expect(runSessionCore(first.listingRef, terms, first.deps))
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
         .rejects.toThrow(/remains indeterminate/);
       expect(await outcomes(store)).toMatchObject([
         { data: { outcomeSource: "rail-result", ok: false, txHash: FAILED_HASH } },
@@ -1064,22 +1077,71 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         kv,
         resumeSettlement: async (req) => failedRecord(req.expectedPayee),
       });
-      await expect(runSessionCore(resumed.listingRef, terms, resumed.deps, "job-1"))
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
         .rejects.toThrow(/remains indeterminate/);
       expect(await outcomes(store)).toHaveLength(1);
     });
 
-    test.each([
-      ["another amount", { amountOs: "" }],
-      ["another transaction", { txHash: "34".repeat(32) }],
-      ["another payee", { payee: "ef".repeat(32) }],
-    ])("refuses a failed-record proof with %s as malformed", async (_case, proof) => {
+    test.each<[string, (payee: string) => SettleResult]>([
+      ["another amount", (payee) => failedRecord(payee, { amountOs: "" })],
+      ["another transaction", (payee) => failedRecord(payee, { txHash: "34".repeat(32) })],
+      ["another payee", (payee) => failedRecord(payee, { payee: "ef".repeat(32) })],
+      ["a permanent class without a proof", (payee) => {
+        const { failureProof: _proof, ...result } = failedRecord(payee);
+        return result;
+      }],
+      ["a proof without a permanent class", (payee) => {
+        const { errorClass: _class, ...result } = failedRecord(payee);
+        return result;
+      }],
+    ])("refuses a failed-record proof with %s as malformed", async (_case, result) => {
       const store = createInMemorySessionStore();
       const first = await makeDeps(store, {
-        settle: async (req) => failedRecord(req.expectedPayee, proof),
+        kv: await demKv(),
+        settle: async (req) => result(req.expectedPayee),
+      });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/malformed terminal-failure proof/);
+      expect(await outcomes(store)).toHaveLength(0);
+    });
+
+    test("refuses a valid proof for another DEM amount on fresh settlement", async () => {
+      const store = createInMemorySessionStore();
+      const first = await makeDeps(store, {
+        kv: await demKv(),
+        settle: async (req) => failedRecord(req.expectedPayee, { amountOs: "20000000000" }),
+      });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/does not bind the requested pay-dem amount/);
+      expect(await outcomes(store)).toHaveLength(0);
+    });
+
+    test("refuses a valid proof for another DEM amount on recovery", async () => {
+      const store = createInMemorySessionStore();
+      const kv = await demKv();
+      const first = await makeDeps(store, {
+        kv,
+        settle: async (req) => failedRecord(req.expectedPayee),
+      });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/remains indeterminate/);
+      const resumed = await makeDeps(store, {
+        kv,
+        resumeSettlement: async (req) =>
+          failedRecord(req.expectedPayee, { amountOs: "20000000000" }),
+      });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/does not bind the requested pay-dem amount/);
+      expect(await outcomes(store)).toHaveLength(1);
+    });
+
+    test("refuses a failed-record proof on a session that is not a DEM payment", async () => {
+      const store = createInMemorySessionStore();
+      const first = await makeDeps(store, {
+        settle: async (req) => failedRecord(req.expectedPayee),
       });
       await expect(runSessionCore(first.listingRef, terms, first.deps))
-        .rejects.toThrow(/malformed terminal-failure proof/);
+        .rejects.toThrow(/does not bind the requested pay-dem amount/);
       expect(await outcomes(store)).toHaveLength(0);
     });
   });

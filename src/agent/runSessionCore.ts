@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 export type { DemosFailedRecordProof } from "./settlementFailure.js";
 import {
   hasDefinitiveDemosFailure,
+  payDemRequestAmountOs,
   type DemosFailedRecordProof,
 } from "./settlementFailure.js";
 
@@ -2113,6 +2114,17 @@ function validateSettlementResultBinding(
     throw new CounterpartyError(
       `${label} returned payee ${result.payee}, expected the request-bound destination ${request.expectedPayee}`,
     );
+  }
+  // A failed-record proof is native DEM only and must carry this request's
+  // exact OS amount, on fresh settlement and on recovery.
+  if (result.errorClass !== undefined || result.failureProof !== undefined) {
+    const amountOs = payDemRequestAmountOs(request);
+    if (amountOs === null ||
+        !hasDefinitiveDemosFailure(result, amountOs, result.chainId)) {
+      throw new CounterpartyError(
+        `${label} returned a terminal-failure proof that does not bind the requested pay-dem amount`,
+      );
+    }
   }
 }
 
