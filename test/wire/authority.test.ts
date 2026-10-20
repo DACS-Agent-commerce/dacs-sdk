@@ -76,7 +76,7 @@ async function boundaries(x: ReturnType<typeof world>) {
     ["response verifier", () => wire.verifyWireResponse(x.request, { ...context, header: response, status: 200, body: Buffer.from("{}"), now })],
     ["discovery verifier", () => wire.verifyEndpointProof(discovery, proofOptions)],
     ["retained endpoint proof", () => assertEndpointProof(endpointProof, { binding: x.binding,
-      seller: x.seller.claim, listingPin: x.request.listingPin, publicEndpoint, now })],
+      seller: x.seller.claim, listingPin: x.request.listingPin, publicEndpoint, now, request: x.request })],
   ];
   x.buyer.calls = x.seller.calls = 0;
   return { calls, reservations: () => reservations, discoveryPayload, signing, requestInput, delegationPayload };

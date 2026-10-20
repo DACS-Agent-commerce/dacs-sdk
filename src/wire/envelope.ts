@@ -15,7 +15,7 @@ import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { assertEndpointProof, type EndpointProof } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, isReadRoute } from "./routes.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
@@ -94,8 +94,8 @@ export interface EnvelopeSigningContext extends SigningContext {
   endpointProof?: EndpointProof;
   publicEndpoint?: string;
   now?: number;
-  /** A request continuing a purchase: the job's accepted Agreement time (WireJobContext.agreedAt). */
-  agreedAt?: number;
+  /** A request continuing a committed purchase: the job's finalized commitment (WireRequestInput.commitment). */
+  commitment?: object;
   /**
    * Required: the tuple the signer kept for this purchase, exactly the
    * binding's profile. `null` (none kept yet) only for a seller's answer to a
@@ -112,7 +112,7 @@ export interface EnvelopeSigningContext extends SigningContext {
  * header all come from those copies.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
-  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, agreedAt } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "agreedAt"]) as Partial<EnvelopeSigningContext>;
+  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment"]) as Partial<EnvelopeSigningContext>;
   assertTp1Binding(binding, local);
   const payload = ownedArtifact(supplied, "peer_envelope_invalid", 500);
   if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
@@ -130,7 +130,7 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
   if (payload.kind === "request") assertEndpointProof(endpointProof, {
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
-    publicEndpoint: publicEndpoint as string, now: now as number, agreedAt,
+    publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment,
   });
   assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");
@@ -266,6 +266,14 @@ export interface RequestCheck {
    * composition qualification entry).
    */
   reserveRequest?: (reservation: WireRequestReservation) => boolean;
+  /**
+   * Required on the proposals route: whether this seller accepts new
+   * purchases now, from its own current state (the `ready` it would publish).
+   * A buyer's endpoint proof can still say `ready: true` for up to ten
+   * minutes after the seller drains, so a new proposal is refused here
+   * (`seller_not_ready`, 503). Other routes do not read it.
+   */
+  ready?: boolean;
 }
 
 /** What the seller host retained for a job: never taken from the request it is compared with. */
@@ -301,7 +309,14 @@ export function messageLifetime(override: unknown, code: string, max: number = D
   return ms;
 }
 
-const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "reserveRequest"] as const;
+const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "reserveRequest", "ready"] as const;
+
+/** A new proposal is admitted only while the seller accepts new purchases by its own current state, never a buyer's kept proof. */
+function admitNewProposal(request: WireRequestPayload, ready: unknown): void {
+  if (request.path !== DACS_SELLER_HTTP_PATHS.proposals) return;
+  if (typeof ready !== "boolean") fail("seller_readiness_required", 500);
+  if (!ready) fail("seller_not_ready", 503);
+}
 
 function reserveEffectRequest(request: WireRequestPayload, reserve: RequestCheck["reserveRequest"]): void {
   if (isReadRoute(request.path)) return;
@@ -379,6 +394,7 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
     }
   }
   if (!delegation) {
+    admitNewProposal(request, c.ready);
     reserveEffectRequest(request, c.reserveRequest);
     return { body, readbackOnly: false };
   }
@@ -390,6 +406,7 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   }
   verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
   if (c.now < delegation.payload.expiresAt && request.expiresAt <= delegation.payload.expiresAt) {
+    admitNewProposal(request, c.ready);
     reserveEffectRequest(request, c.reserveRequest);
     return { body, readbackOnly: false };
   }

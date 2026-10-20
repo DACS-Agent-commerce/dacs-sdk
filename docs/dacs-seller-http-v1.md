@@ -239,7 +239,11 @@ below):
    entries fails with `peer_delegation_agreement_required`. For an initial
    proposal, the host supplies the admitted proposal draft; it must not
    substitute request-derived scope for its retained Agreement.
-3. Before returning a checked body on an effect route, `checkWireRequest`
+3. On the proposals route, `checkWireRequest` then requires the seller's own
+   current `ready` and refuses a new proposal while it is `false`
+   (`seller_not_ready`, 503), before any reservation; other routes do not
+   read it.
+   Before returning a checked body on an effect route, `checkWireRequest`
    requires `reserveRequest`. The host must atomically and durably claim its
    `key` (SHA-256 of canonical `{buyer, seller, profile, nonce}`) across workers
    and restarts, retain `requestHash`, `expiresAt` and `retainUntil`, and return `true` only
@@ -344,14 +348,32 @@ endpoint proof does not retain an authoritative eligibility verdict. A reader
 must return a current decision or throw; a Promise is refused.
 
 `ready: false` and the end of the Listing's window stop new purchases only.
-For a job whose Agreement the buyer already accepted, the buyer passes that
-Agreement's `generatedAt` as `WireJobContext.agreedAt` (`agreedAt` to
-`verifyEndpointProof` and request-kind `signWireEnvelope`): its requests,
-including payment, delivery and readback, are signed while the document says
-`ready: false`, and the Listing's window must hold `agreedAt` instead of now
-(its last instant included, as the fixed-price exchange requires of `generatedAt`).
-A reader therefore returns an ended window as it is; it still throws for a
-revoked, missing or unavailable Listing, and every other proof check applies.
+For a job whose commitment has finalized, the buyer passes the exact value
+`commitFixedPriceAgreement` returned (`FinalizedAgreementCommitment`) as
+`commitment` to `signWireRequest`, request-kind `signWireEnvelope` and
+`verifyEndpointProof`. Only that value counts: the commitment gate verified
+both Agreement signatures, the commitment record and its finalized receipt,
+and the SDK keeps a private record of each result it returned, so a copy, a
+caller-built value or a stated time is refused
+(`continuation_commitment_invalid`). At signing it must name the request's
+job, Agreement hash, buyer, seller and Listing pin (`verifyEndpointProof`,
+which has no request, compares the seller and pin; signing compares the
+rest). Then the payment, delivery and
+readback routes (`payments`, `bundles/request`, `bundles/countersignature`,
+`agreements/state`, `bundles/buyer-copy`) are signed while the document says
+`ready: false`, and the Listing's window must hold the commitment's receipt
+time `committedAt` instead of now, its last instant included (DACS-3 §8.5.2
+check 6, `notAfter >= committedAt`). The Agreement's own `generatedAt` is
+never compared, so a backdated one extends nothing, and a `committedAt` more
+than 30 s after the signer's clock is refused. A proposal, commitment or
+context request is always a new purchase. A reader therefore returns an ended
+window as it is; it still throws for a revoked, missing or unavailable
+Listing, and every other proof check applies.
+
+A buyer's proof can still say `ready: true` for up to ten minutes after the
+seller drains, so the seller enforces its own current state: `checkWireRequest`
+requires `ready` (whether it accepts new purchases now) on the proposals route
+and refuses a new proposal while it is `false` (`seller_not_ready`, 503).
 
 `capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
 `pay-dem`; `did:demos:agent` claims; delivery through Demos storage at
@@ -637,12 +659,14 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype) |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
-| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`; no request is signed for a new purchase (a job without `agreedAt`) |
+| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a new proposal |
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
 | `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}`, or with a malformed one |
 | `peer_job_mismatch`, `peer_agreement_mismatch` (409) | the signed `jobId` or `agreementHash` is not the one the host retained |
 | `seller_replay_guard_required`, `seller_replay_guard_invalid` (500) | an effect route checked without `reserveRequest`, or with one that returned anything but `true` or `false` |
 | `peer_request_replayed` (409) | the host's journal already holds the request's reservation key |
+| `seller_readiness_required` (500) | a new proposal checked without the seller's own `ready`, or with anything but a boolean |
+| `continuation_commitment_invalid` (500) | a `commitment` that is not a value the SDK's commitment gate returned, that names another job, Agreement, buyer, seller or Listing pin, or whose `committedAt` is more than 30 s after the signer's clock |
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
 | `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |
 | `peer_envelope_too_large` (500), `peer_response_too_large` (503), `body_too_large` (413) | a signer given a header, response body or request body over the limits; nothing is signed |
@@ -766,8 +790,9 @@ returned by `verifyEndpointProof`, the selected `publicEndpoint`, and `now`. A c
 The proof must still be unexpired, under the buyer's same binding,
 for the selected seller, Listing pin and byte-exact endpoint, with a current
 authenticated eligibility decision from the retained reader; for a new
-purchase it must also be ready and inside the Listing's window (a job with
-`agreedAt` continues; see the endpoint proof section). Signing-byte
+purchase it must also be ready and inside the Listing's window (a continuing
+request with the job's finalized `commitment` continues; see the endpoint
+proof section). Signing-byte
 helpers describe transport bytes; purchase preparation uses the gated signers.
 
 Expired session delegations are accepted only on the declared read routes.
