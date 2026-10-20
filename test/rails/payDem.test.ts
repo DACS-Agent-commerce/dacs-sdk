@@ -357,6 +357,58 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       });
     });
 
+    // A client that journals these prepared transfers, then reports the failure.
+    const journalingClient = (
+      failureProof: unknown,
+      journaledTransfers: ReadonlyArray<{ txHash: string; nonce: number }>,
+    ): DemosNativeClient => ({
+      address: PAYER,
+      async transfer(args) {
+        for (const prepared of journaledTransfers) {
+          await args.journalPreparedTransfer?.({
+            ...prepared,
+            payer: PAYER,
+            payee: RECIPIENT,
+            amountOs: "1500000000",
+            network: "demos:testnet",
+          });
+        }
+        return {
+          ok: false, state: "failed", hash: TX_HASH, blockNumber: 7, failureProof,
+        } as unknown as DemosTransferResult;
+      },
+    });
+
+    test("a proof carrying the journaled signed nonce is a permanent failure", async () => {
+      const journal = vi.fn(async () => undefined);
+      await expect(payDemSettleCore(
+        params({ journalPreparedTransfer: journal }),
+        journalingClient(failedProof(), [{ txHash: TX_HASH, nonce: 9 }]),
+      )).resolves.toMatchObject({ ok: false, errorClass: "permanent", failureProof: failedProof() });
+      expect(journal).toHaveBeenCalledTimes(1);
+    });
+
+    test.each([
+      ["another nonce than the journaled one", [{ txHash: TX_HASH, nonce: 10 }]],
+      ["no journaled transfer", []],
+      ["a journaled transfer for another hash", [{ txHash: OTHER_TX_HASH, nonce: 9 }]],
+      ["two different journaled transfers", [
+        { txHash: TX_HASH, nonce: 9 },
+        { txHash: TX_HASH, nonce: 10 },
+      ]],
+    ])("a failed record with %s is not permanent", async (_case, journaled) => {
+      await expect(payDemSettleCore(
+        params({ journalPreparedTransfer: async () => undefined }),
+        journalingClient(failedProof(), journaled),
+      )).resolves.toEqual({
+        ok: false,
+        txHash: TX_HASH,
+        chainId: "demos:testnet",
+        payer: PAYER,
+        payee: RECIPIENT,
+      });
+    });
+
     test.each([
       ["an indeterminate state", { state: "indeterminate" }],
       ["an included state", { state: "included" }],
@@ -1146,6 +1198,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       ["another payee", { failureProof: failureProof({ payee: OTHER_HEX }) }],
       ["an extra proof key", { failureProof: { ...failureProof(), extra: 1 } }],
       ["a permanent class without proof", { failureProof: undefined }],
+      ["a proof without a permanent class", { errorClass: undefined }],
     ];
     const withoutUndefined = (value: Record<string, unknown>) =>
       Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));

@@ -299,7 +299,11 @@ export interface DemosTransferResult {
    * status index fails closed.
    */
   execution?: "executed";
-  /** Bound terminal failed record; a status-index failure alone cannot issue it. */
+  /**
+   * Bound terminal failed record; a status-index failure alone cannot issue it.
+   * With a per-settlement `journalPreparedTransfer`, its hash and nonce must be
+   * the transfer the client journaled, or the failure is not permanent.
+   */
   failureProof?: DemosFailedRecordProof;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
@@ -536,6 +540,26 @@ export async function payDemSettleCore(
         "journalPreparedTransfer",
         "pay-dem per-settlement prepared-transfer journal",
       );
+  // A per-settlement journal is how this core learns the signed nonce: keep
+  // what the client journaled so a failure proof must carry that exact nonce.
+  // `null` means the client journaled two different transfers.
+  let journaled: Readonly<{ txHash: string | null; nonce: unknown }> | null | undefined;
+  const invocationJournal = journalPreparedTransfer === undefined
+    ? undefined
+    : async (prepared: Readonly<PayDemPreparedTransfer>) => {
+        const entry = {
+          txHash: canonicalDemosTxHash(
+            stableDataProperty(prepared, "txHash", "pay-dem prepared transfer").value,
+          ),
+          nonce: stableDataProperty(prepared, "nonce", "pay-dem prepared transfer").value,
+        };
+        await journalPreparedTransfer(prepared);
+        journaled = journaled === undefined ||
+            (journaled !== null && journaled.txHash === entry.txHash &&
+              journaled.nonce === entry.nonce)
+          ? entry
+          : null;
+      };
   const fenceProperty = stableDataProperty(
     params,
     "assertCurrentBeforeBroadcast",
@@ -606,7 +630,9 @@ export async function payDemSettleCore(
     amountOs,
     ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
     ...(recovery === undefined ? {} : { recovery }),
-    ...(journalPreparedTransfer === undefined ? {} : { journalPreparedTransfer }),
+    ...(invocationJournal === undefined
+      ? {}
+      : { journalPreparedTransfer: invocationJournal }),
     ...(assertCurrentBeforeBroadcast === undefined
       ? {}
       : { assertCurrentBeforeBroadcast }),
@@ -688,8 +714,14 @@ export async function payDemSettleCore(
       errorClass: "permanent" as const, failureProof,
       blockNumber, txRefKind: "demos",
     };
+    // With a per-settlement journal, the proof must carry the nonce journaled
+    // for this hash before broadcast. Without one, the nonce is the client's
+    // statement (createPayDemRail fills it from the signed transaction).
     if (okProperty.value === false && state === "failed" &&
-        hasDefinitiveDemosFailure(failed, amount, chainId)) {
+        hasDefinitiveDemosFailure(failed, amount, chainId) &&
+        (invocationJournal === undefined ||
+          (journaled != null && journaled.txHash === txHash &&
+            journaled.nonce === (failureProof as { nonce: unknown }).nonce))) {
       return failed as PayDemRailResult;
     }
     return {
