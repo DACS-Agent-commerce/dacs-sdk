@@ -1,5 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
+import { inMemoryJournalForTest } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
 import { acceptedPurchase, commitPurchase, seededParty, type AcceptedPurchase } from "./commitmentFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
@@ -302,7 +303,7 @@ describe("a purchase the buyer already committed continues while the seller drai
   /** The seller opens and checks the request and answers it; the buyer verifies the answer. */
   async function reachesSeller(x: ReturnType<typeof world>, sent: { payload: w.WireRequestPayload; header: string }, now: number) {
     const opened = w.openWireEnvelope(sent.header, "request", x.context);
-    expect(w.checkWireRequest(opened, { reserveRequest: () => true, retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now }).readbackOnly).toBe(false);
+    expect(w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now }).readbackOnly).toBe(false);
     const answer = await w.signWireResponse(sent.payload, 200, "{}", { ...x.context, signer: x.seller, now });
     expect(w.verifyWireResponse(sent.payload, { ...x.context, header: answer, status: 200, body: Buffer.from("{}"), now }).principal).toBe(x.seller.claim);
   }
@@ -406,34 +407,47 @@ describe("a purchase the buyer already committed continues while the seller drai
   });
 });
 
-describe("the seller's own drain state at a new proposal", () => {
-  it("a ready: true proof kept after the seller drains is refused at the seller for a new proposal, with the same code", async () => {
+describe("the seller's own drain state at a new purchase", () => {
+  const P = w.DACS_SELLER_HTTP_PATHS;
+  /** A buyer that verified discovery while the seller was ready, and the seller's check of what it signs, by the seller's own `ready`. */
+  async function drained() {
     const x = world(), now = NOW + 5000;
     const bytes = await w.signDiscoveryDocument(x.discovery, x.seller, x.binding, LOCAL);
     const endpointProof = w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW });
     expect(endpointProof.ready).toBe(true);
     // The seller drains after the buyer verified discovery; the buyer's proof still says ready, so it signs.
-    let reservations = 0;
+    const counter = { reservations: 0 };
     const atSeller = (sent: { payload: w.WireRequestPayload; header: string }, extra: object) => {
       const opened = w.openWireEnvelope(sent.header, "request", x.context);
-      return (ready: unknown) => w.checkWireRequest(opened, { reserveRequest: () => { reservations++; return true; }, artifacts: agreementFixture(opened), retained: retainedFixture(opened),
+      return (ready: unknown) => w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(() => { counter.reservations++; return true; }), artifacts: agreementFixture(opened), retained: retainedFixture(opened),
         ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now, ...extra, ...(ready === missing ? {} : { ready }) } as w.RequestCheck);
     };
-    const direct = atSeller(await w.signWireRequest({ ...x.input, path: w.DACS_SELLER_HTTP_PATHS.proposals, endpointProof, now }), {});
     const delegation = signed(x.delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer);
-    const delegated = atSeller(await w.signWireRequest({ ...x.input, signer: x.session, delegation, path: w.DACS_SELLER_HTTP_PATHS.proposals, endpointProof, now }), { requireDelegation: true });
-    for (const check of [direct, delegated]) {
+    const checks = async (path: string) => [
+      atSeller(await w.signWireRequest({ ...x.input, path, endpointProof, now }), {}),
+      atSeller(await w.signWireRequest({ ...x.input, signer: x.session, delegation, path, endpointProof, now }), { requireDelegation: true }),
+    ];
+    return { checks, counter };
+  }
+  // Every route the buyer signs as a new purchase (discovery.ts CONTINUING_PATHS names the others).
+  it.each([P.proposals, P.commitments, P.commitmentSignature, P.context])("a ready: true proof kept after the seller drains is refused at the seller on %s, direct and delegated, with the same code", async (path) => {
+    const { checks, counter } = await drained();
+    const [direct, delegated] = await checks(path);
+    for (const check of [direct!, delegated!]) {
       await expect(Promise.resolve().then(() => check(false))).rejects.toMatchObject({ code: "seller_not_ready", status: 503, category: "transient" });
-      // The seller's own state is required for a new proposal.
+      // The seller's own state is required for a new purchase.
       for (const ready of [missing, null, "false", 0]) await refuses(() => check(ready), "seller_readiness_required", 500);
     }
-    expect(reservations).toBe(0);
-    expect(direct(true).readbackOnly).toBe(false);
-    expect(delegated(true).readbackOnly).toBe(false);
-    expect(reservations).toBe(2);
-    // Other routes do not read it: a drained seller still takes a committed purchase's payment and its readback.
-    for (const path of [w.DACS_SELLER_HTTP_PATHS.payments, w.DACS_SELLER_HTTP_PATHS.state]) {
-      expect(atSeller(await w.signWireRequest({ ...x.input, path, endpointProof, now }), {})(false).readbackOnly).toBe(false);
+    // Refused before any reservation.
+    expect(counter.reservations).toBe(0);
+    expect(direct!(true).readbackOnly).toBe(false);
+    expect(delegated!(true).readbackOnly).toBe(false);
+    expect(counter.reservations).toBe(2);
+  });
+  it("other routes do not read it: a drained seller still takes a committed purchase's payment, delivery and readback", async () => {
+    const { checks } = await drained();
+    for (const path of [P.payments, P.bundleRequest, P.bundleCountersignature, P.state, P.bundleBuyerCopy]) {
+      for (const check of await checks(path)) for (const ready of [false, missing]) expect(check(ready).readbackOnly).toBe(false);
     }
   });
 });
@@ -549,7 +563,7 @@ describe("request and response byte budgets and the discovery Listing count", ()
     for (const n of [maxRequestBodyBytes, maxRequestBodyBytes + 1]) {
       const text = body(n);
       const opened = w.openWireEnvelope(header(signed({ ...x.request, bodyHash: sha(text) }, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context);
-      const check = () => w.checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
+      const check = () => w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
       if (n === maxRequestBodyBytes) expect(Object.keys(check().body)).toEqual(["p"]);
       else await expect(Promise.resolve().then(() => { check(); effects++; })).rejects.toMatchObject({ code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" });
     }
@@ -577,7 +591,7 @@ describe("request and response byte budgets and the discovery Listing count", ()
     const x = world();
     const overRequest = Buffer.from(body(maxRequestBodyBytes + 1)), overResponse = Buffer.from(body(maxResponseBodyBytes + 1));
     // Not an opened envelope, and not a signed header: the size is refused first, so neither is examined.
-    const seller = (rawBody: Uint8Array) => () => w.checkWireRequest({} as never, { reserveRequest: () => true, ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody, now: NOW, retained: { jobId: JOB, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } });
+    const seller = (rawBody: Uint8Array) => () => w.checkWireRequest({} as never, { requestJournal: inMemoryJournalForTest(), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody, now: NOW, retained: { jobId: JOB, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } });
     const buyer = (b: Uint8Array) => () => w.verifyWireResponse(x.request, { ...x.context, header: "not a header", status: 200, body: b, now: NOW });
     const overRequestError = { code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" };
     const overResponseError = { code: "response_json_rejected", status: 502, detail: "BYTE-LIMIT-EXCEEDED" };
@@ -681,7 +695,7 @@ describe("expired session authority at every seller route", () => {
     const request = { ...x.request, path: route.path };
     const h = header({ ...signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.session), delegation });
     const opened = w.openWireEnvelope(h, "request", { ...x.context, requireDelegation: true });
-    const check = () => w.checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true });
+    const check = () => w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true });
     let effects = 0;
     if (route.effect === "effect") await refuses(() => { check(); effects++; }, "peer_delegation_expired");
     else expect(check()).toMatchObject({ readbackOnly: true, body: {} });

@@ -239,12 +239,16 @@ below):
    entries fails with `peer_delegation_agreement_required`. For an initial
    proposal, the host supplies the admitted proposal draft; it must not
    substitute request-derived scope for its retained Agreement.
-3. On the proposals route, `checkWireRequest` then requires the seller's own
-   current `ready` and refuses a new proposal while it is `false`
-   (`seller_not_ready`, 503), before any reservation; other routes do not
-   read it.
+3. On every route that starts or commits a purchase (proposals, commitments,
+   commitment signature, context), `checkWireRequest` then requires the
+   seller's own current `ready` and refuses the request while it is `false`
+   (`seller_not_ready`, 503), before any reservation; the payment, delivery
+   and read routes do not read it.
    Before returning a checked body on an effect route, `checkWireRequest`
-   requires `reserveRequest`. The host must atomically and durably claim its
+   requires `requestJournal`, a plain object `{ durable: true, reserve }`.
+   `durable: true` is the host's statement that `reserve` does what follows; a
+   bare callback, an in-memory set or any journal without it is refused
+   (`seller_replay_guard_required`) and never called. The host must atomically and durably claim its
    `key` (SHA-256 of canonical `{buyer, seller, profile, nonce}`) across workers
    and restarts, retain `requestHash`, `expiresAt` and `retainUntil`, and return `true` only
    after the new reservation commits. It returns `false` for an already claimed
@@ -253,9 +257,9 @@ below):
    own clock. A worker refuses the request as `peer_expired` from `expiresAt`
    by its clock, and its clock may lag the journal's; the journal may drop the
    key at `retainUntil` only when every worker's clock is within 30 s of it. Never release it after an ambiguous or
-   failed effect. Recovery uses declared read routes. Missing hooks fail with
+   failed effect. Recovery uses declared read routes. A missing journal fails with
    `seller_replay_guard_required`; non-boolean results, including promises, fail
-   with `seller_replay_guard_invalid`. The hook is synchronous and must finish
+   with `seller_replay_guard_invalid`. `reserve` is synchronous and must finish
    its durable write before returning. Read routes need no reservation. All
    authentication, body, retained-Agreement, scope and deadline checks precede
    this callback. The wire has no journal and cannot test one: a request
@@ -372,8 +376,9 @@ Listing, and every other proof check applies.
 
 A buyer's proof can still say `ready: true` for up to ten minutes after the
 seller drains, so the seller enforces its own current state: `checkWireRequest`
-requires `ready` (whether it accepts new purchases now) on the proposals route
-and refuses a new proposal while it is `false` (`seller_not_ready`, 503).
+requires `ready` (whether it accepts new purchases now) on the proposal,
+commitment, commitment-signature and context routes and refuses each while it
+is `false` (`seller_not_ready`, 503).
 
 `capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
 `pay-dem`; `did:demos:agent` claims; delivery through Demos storage at
@@ -659,13 +664,13 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype) |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
-| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a new proposal |
+| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a proposal, commitment, commitment-signature or context request |
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
 | `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}`, or with a malformed one |
 | `peer_job_mismatch`, `peer_agreement_mismatch` (409) | the signed `jobId` or `agreementHash` is not the one the host retained |
-| `seller_replay_guard_required`, `seller_replay_guard_invalid` (500) | an effect route checked without `reserveRequest`, or with one that returned anything but `true` or `false` |
+| `seller_replay_guard_required`, `seller_replay_guard_invalid` (500) | an effect route checked without a `requestJournal` that declares `durable: true` and has a `reserve` function, or with one whose `reserve` returned anything but `true` or `false` |
 | `peer_request_replayed` (409) | the host's journal already holds the request's reservation key |
-| `seller_readiness_required` (500) | a new proposal checked without the seller's own `ready`, or with anything but a boolean |
+| `seller_readiness_required` (500) | a proposal, commitment, commitment-signature or context request checked without the seller's own `ready`, or with anything but a boolean |
 | `continuation_commitment_invalid` (500) | a `commitment` that is not a value the SDK's commitment gate returned, that names another job, Agreement, buyer, seller or Listing pin, or whose `committedAt` is more than 30 s after the signer's clock |
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
 | `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |

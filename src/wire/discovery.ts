@@ -158,9 +158,10 @@ interface ContinuedRequest { path: string; jobId: string; agreementHash: string;
 /**
  * Effect routes that continue a committed purchase: its payment and delivery.
  * With the read routes (its readback), the only ones a commitment continues;
- * a proposal, commitment or context request never does.
+ * a proposal, commitment or context request never does. The seller's
+ * readiness check (checkWireRequest) classifies routes by this same list.
  */
-const CONTINUING_PATHS: readonly string[] = [DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature];
+export const CONTINUING_PATHS: readonly string[] = [DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature];
 
 /**
  * The time that continues a committed purchase: the receipt time of the job's

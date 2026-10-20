@@ -1,4 +1,5 @@
 import { fixtureBinder } from "./authorityFixture.js";
+import { inMemoryJournalForTest } from "./requestJournalFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 // Replays vectors/dacs-seller-http-v1.json. Each negative must fail with its
@@ -182,7 +183,7 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
       // retained: the job, Agreement hash and parties the seller host kept (the file's job); a vector may give another, or "omitted".
       const retained = input.retained === "omitted" ? undefined
         : input.retained ?? { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller };
-      const { readbackOnly } = wire.checkWireRequest(subject, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained,
+      const { readbackOnly } = wire.checkWireRequest(subject, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened), retained,
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
         method: input.method ?? "POST", path: input.path, rawBody, now: file.now,
         requireDelegation: Object.hasOwn(input, "checkRequireDelegation") ? input.checkRequireDelegation : input.requireDelegation,

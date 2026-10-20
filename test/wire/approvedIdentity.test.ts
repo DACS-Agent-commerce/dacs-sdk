@@ -1,5 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
+import { inMemoryJournalForTest } from "./requestJournalFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // 2026-10-15 approval through the real approval module. No mock or replacement approval.
@@ -73,7 +74,7 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
     expect(bb.profile).toEqual(sb.profile);
     const { payload, header } = await request(buyer, seller, bb, buyerLocal);
     const opened = openWireEnvelope(header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
-    checkWireRequest(opened, { reserveRequest: () => true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.claim, seller: seller.claim }, seller: seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(BODY), now: NOW, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
+    checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.claim, seller: seller.claim }, seller: seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(BODY), now: NOW, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
     const response = await signWireResponse(opened.payload, 200, "{}", { signer: seller, binding: sb, local: sellerLocal, now: NOW, purchaseProfile: sb.profile });
     expect(verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: buyerLocal }).principal).toBe(seller.claim);
     expect(buyer.calls + seller.calls).toBe(2);

@@ -1,5 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
+import { inMemoryJournalForTest } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Two parties never share a clock. A signer stamps expiresAt (or notBefore)
@@ -72,7 +73,7 @@ const buyerSigns = (w: World, now: number, change: Record<string, unknown> = {})
 function sellerCheck(w: World, header: string, now: number, change: Partial<RequestCheck> = {}, requireDelegation = false) {
   const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation });
   return { opened, check: () => checkWireRequest(opened, {
-    reserveRequest: () => true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN,
+    requestJournal: inMemoryJournalForTest(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN,
     method: "POST", path: opened.payload.path, rawBody: Buffer.from(TEXT), now, binding: w.sellerBinding, local: RPC_B,
     purchaseProfile: w.sellerBinding.profile, requireDelegation, ...change,
   }) };
@@ -101,7 +102,7 @@ describe("a delegation's expiry under clock difference", () => {
     }
     const reserveRequest = vi.fn(() => true);
     const { header } = await buyerSigns(w, buyerNow, { signer: w.session, delegation });
-    expect(await code(() => sellerCheck(w, header, sellerNow, { reserveRequest }, true).check())).toBe("peer_delegation_expired");
+    expect(await code(() => sellerCheck(w, header, sellerNow, { requestJournal: inMemoryJournalForTest(reserveRequest) }, true).check())).toBe("peer_delegation_expired");
     expect(reserveRequest).not.toHaveBeenCalled();
   });
 });
@@ -204,7 +205,7 @@ describe("the replay journal's retention under clock difference", () => {
     const w = world();
     const { header, payload } = await buyerSigns(w, NOW);
     const seen: WireRequestReservation[] = [];
-    sellerCheck(w, header, NOW, { reserveRequest: (r) => { seen.push(r); return true; } }).check();
+    sellerCheck(w, header, NOW, { requestJournal: inMemoryJournalForTest((r) => { seen.push(r); return true; }) }).check();
     expect(seen).toHaveLength(1);
     expect(seen[0]).toEqual({ key: expect.any(String), requestHash: expect.any(String), expiresAt: payload.expiresAt, retainUntil: payload.expiresAt + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs });
     expect(Object.isFrozen(seen[0])).toBe(true);
@@ -222,11 +223,11 @@ describe("the replay journal's retention under clock difference", () => {
       journal.set(r.key, r.retainUntil);
       return true;
     };
-    expect(sellerCheck(w, header, NOW, { reserveRequest: journalFor(NOW) }).check().readbackOnly).toBe(false);
+    expect(sellerCheck(w, header, NOW, { requestJournal: inMemoryJournalForTest(journalFor(NOW)) }).check().readbackOnly).toBe(false);
     // The worker's last accepting instant: its clock is still before expiresAt, the journal's is 30 s past it.
     const last = payload.expiresAt - 1;
-    expect(await code(() => sellerCheck(w, header, last, { reserveRequest: journalFor(last) }).check())).toBe("peer_request_replayed");
-    expect(await code(() => sellerCheck(w, header, payload.expiresAt, { reserveRequest: journalFor(payload.expiresAt) }).check())).toBe("peer_expired");
+    expect(await code(() => sellerCheck(w, header, last, { requestJournal: inMemoryJournalForTest(journalFor(last)) }).check())).toBe("peer_request_replayed");
+    expect(await code(() => sellerCheck(w, header, payload.expiresAt, { requestJournal: inMemoryJournalForTest(journalFor(payload.expiresAt)) }).check())).toBe("peer_expired");
   });
 });
 
@@ -244,7 +245,7 @@ describe("a direct request and the host's retained Agreement", () => {
     const { header } = await buyerSigns(w, NOW);
     let reserved = 0;
     const { opened } = sellerCheck(w, header, NOW);
-    const run = sellerCheck(w, header, NOW, { artifacts: artifact(opened, change(w)), reserveRequest: () => { reserved += 1; return true; } });
+    const run = sellerCheck(w, header, NOW, { artifacts: artifact(opened, change(w)), requestJournal: inMemoryJournalForTest(() => { reserved += 1; return true; }) });
     expect(await code(run.check)).toBe("peer_agreement_party_mismatch");
     expect(reserved).toBe(0);
   });

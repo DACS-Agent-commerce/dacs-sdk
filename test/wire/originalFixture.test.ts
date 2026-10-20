@@ -1,5 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
+import { inMemoryJournalForTest } from "./requestJournalFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
 import { sha256ProvenanceFile } from "./provenanceFixture.js";
 // Compares the SDK wire with the original plugin wire captured from frontend
@@ -64,7 +65,7 @@ function sellerVerdict(c: any): string {
   return code(() => {
     const body = c.bodyText ?? `{"jobId":"${scope.jobId}"}`;
     const opened = openWireEnvelope(c.header, "request", { binding: sellerBinding, local: adapted.localBindings.seller, purchaseProfile: sellerBinding.profile, requireDelegation: c.requireDelegation ?? false });
-    checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened),
+    checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened),
       retained: { jobId: scope.jobId, agreementHash: scope.agreementHash, buyer: adapted.parties.buyer, seller: adapted.parties.seller },
       seller: c.server?.seller === "other" ? adapted.parties.other : adapted.parties.seller,
       listingPin: c.server?.listingPin ?? scope.listingPin, method: "POST", path: scope.path, rawBody: Buffer.from(body),

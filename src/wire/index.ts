@@ -57,6 +57,7 @@ export {
   type OpenedEnvelope,
   type OpenEnvelopeOptions,
   type RequestCheck,
+  type WireRequestJournal,
   type WireRequestReservation,
   type WireRetainedAgreement,
   type SigningContext,

@@ -13,9 +13,9 @@
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
-import { assertEndpointProof, type EndpointProof } from "./discovery.js";
+import { assertEndpointProof, CONTINUING_PATHS, type EndpointProof } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isReadRoute } from "./routes.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
@@ -254,26 +254,41 @@ export interface RequestCheck {
    */
   artifacts?: readonly unknown[];
   /**
-   * Required for effect routes. Atomically and durably reserve this key before
-   * returning true; return false if already reserved, even for the same hash.
-   * Share the journal across workers/restarts and retain the reservation until
-   * retainUntil (expiresAt + maxClockSkewMs) by the journal's clock: a worker
-   * refuses the request as expired from expiresAt by its own clock, and its
-   * clock may lag the journal's. A failed/ambiguous effect must not release it. This synchronous
-   * hook must finish its durable write before returning; promises are refused.
-   * The wire has no journal: a checked effect request authorizes no effect
-   * until the host's journal passes restart and concurrent-worker tests (a TP-1
-   * composition qualification entry).
+   * Required for effect routes: the host's durable request journal. Anything
+   * else, a bare callback or a journal without `durable: true` included, is
+   * refused (`seller_replay_guard_required`) before it is called.
    */
-  reserveRequest?: (reservation: WireRequestReservation) => boolean;
+  requestJournal?: WireRequestJournal;
   /**
-   * Required on the proposals route: whether this seller accepts new
-   * purchases now, from its own current state (the `ready` it would publish).
-   * A buyer's endpoint proof can still say `ready: true` for up to ten
-   * minutes after the seller drains, so a new proposal is refused here
-   * (`seller_not_ready`, 503). Other routes do not read it.
+   * Required on every route that starts or commits a purchase (proposals,
+   * commitments, commitment signature, context): whether this seller accepts
+   * new purchases now, from its own current state (the `ready` it would
+   * publish). A buyer's endpoint proof can still say `ready: true` for up to
+   * ten minutes after the seller drains, so such a request is refused here
+   * (`seller_not_ready`, 503). The payment, delivery and read routes continue
+   * a committed purchase and do not read it.
    */
   ready?: boolean;
+}
+
+/**
+ * The seller host's request journal, a plain object. `durable: true` is the
+ * host's statement that `reserve` atomically and durably reserves the key
+ * before returning true, and returns false if it is already reserved, even for
+ * the same hash. Share the journal across workers/restarts and retain the
+ * reservation until retainUntil (expiresAt + maxClockSkewMs) by the journal's
+ * clock: a worker refuses the request as expired from expiresAt by its own
+ * clock, and its clock may lag the journal's. A failed/ambiguous effect must
+ * not release it. `reserve` is synchronous and must finish its durable write
+ * before returning; promises are refused. An in-memory set or a callback is
+ * not durable: the wire refuses a journal that does not declare itself so. The
+ * wire has no journal: a checked effect request authorizes no effect until
+ * the host's journal passes restart and concurrent-worker tests (a TP-1
+ * composition qualification entry).
+ */
+export interface WireRequestJournal {
+  readonly durable: true;
+  reserve(reservation: WireRequestReservation): boolean;
 }
 
 /** What the seller host retained for a job: never taken from the request it is compared with. */
@@ -309,23 +324,29 @@ export function messageLifetime(override: unknown, code: string, max: number = D
   return ms;
 }
 
-const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "reserveRequest", "ready"] as const;
+const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready"] as const;
 
-/** A new proposal is admitted only while the seller accepts new purchases by its own current state, never a buyer's kept proof. */
-function admitNewProposal(request: WireRequestPayload, ready: unknown): void {
-  if (request.path !== DACS_SELLER_HTTP_PATHS.proposals) return;
+/**
+ * A request that starts or commits a purchase (every effect route the buyer
+ * does not sign as a continuation) is admitted only while the seller accepts
+ * new purchases by its own current state, never a buyer's kept proof.
+ */
+function admitNewPurchase(request: WireRequestPayload, ready: unknown): void {
+  if (isReadRoute(request.path) || CONTINUING_PATHS.includes(request.path)) return;
   if (typeof ready !== "boolean") fail("seller_readiness_required", 500);
   if (!ready) fail("seller_not_ready", 503);
 }
 
-function reserveEffectRequest(request: WireRequestPayload, reserve: RequestCheck["reserveRequest"]): void {
+function reserveEffectRequest(request: WireRequestPayload, journal: unknown): void {
   if (isReadRoute(request.path)) return;
-  if (typeof reserve !== "function") fail("seller_replay_guard_required", 500);
+  // Only a journal that declares itself durable reserves an effect: a bare callback or an undeclared store is never called.
+  const { durable, reserve } = isRecord(journal) ? ownedFields(journal, ["durable", "reserve"]) : { durable: undefined, reserve: undefined };
+  if (durable !== true || typeof reserve !== "function") fail("seller_replay_guard_required", 500);
   const { buyer, seller, profile, nonce } = request;
   const reservation = deepFreeze({ key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })),
     requestHash: wireRequestHash(request), expiresAt: request.expiresAt,
     retainUntil: request.expiresAt + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs });
-  const result = reserve(reservation);
+  const result = (reserve as WireRequestJournal["reserve"]).call(journal, reservation);
   if (result === false) fail("peer_request_replayed", 409);
   if (result !== true) fail("seller_replay_guard_invalid", 500);
 }
@@ -394,8 +415,8 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
     }
   }
   if (!delegation) {
-    admitNewProposal(request, c.ready);
-    reserveEffectRequest(request, c.reserveRequest);
+    admitNewPurchase(request, c.ready);
+    reserveEffectRequest(request, c.requestJournal);
     return { body, readbackOnly: false };
   }
   if (retainedArtifacts.length === 0) fail("peer_delegation_agreement_required", 409);
@@ -406,8 +427,8 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   }
   verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
   if (c.now < delegation.payload.expiresAt && request.expiresAt <= delegation.payload.expiresAt) {
-    admitNewProposal(request, c.ready);
-    reserveEffectRequest(request, c.reserveRequest);
+    admitNewPurchase(request, c.ready);
+    reserveEffectRequest(request, c.requestJournal);
     return { body, readbackOnly: false };
   }
   // An expired delegation, or a request that outlives a live one, authenticates readback only. The buyer

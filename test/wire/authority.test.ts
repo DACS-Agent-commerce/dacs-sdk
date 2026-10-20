@@ -4,6 +4,7 @@ import * as wire from "../../src/wire/index.js";
 import { assertEndpointProof } from "../../src/wire/discovery.js";
 import { canonicalize } from "../../src/canonical/index.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
+import { inMemoryJournalForTest } from "./requestJournalFixture.js";
 
 const local = { endpoint: "https://unverified.example/", transportAuthority: "test", connectionId: "generation-1" };
 const jobId = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -71,7 +72,7 @@ async function boundaries(x: ReturnType<typeof world>) {
     ["request open", () => wire.openWireEnvelope(requestHeader, "request", context)],
     ["retained request admission", () => wire.checkWireRequest(opened, { ...context, seller: x.seller.claim,
       retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.request.buyer, seller: x.request.seller }, listingPin: x.request.listingPin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now,
-      reserveRequest: () => { reservations++; return true; } })],
+      requestJournal: inMemoryJournalForTest(() => { reservations++; return true; }) })],
     ["delegation verifier", () => wire.verifySellerSessionDelegation(delegation, { ...context, jobId, time: now })],
     ["response verifier", () => wire.verifyWireResponse(x.request, { ...context, header: response, status: 200, body: Buffer.from("{}"), now })],
     ["discovery verifier", () => wire.verifyEndpointProof(discovery, proofOptions)],

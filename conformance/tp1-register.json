@@ -312,7 +312,7 @@
       "evidence": [ { "source": "plugin implementation (not public)", "provenance": "prov-08" } ]
     },
     {
-      "subject": "consumer: seller host request reservation journal for checkWireRequest's reserveRequest: atomic across workers, retained across restarts until expiresAt, never released after a failed or ambiguous effect; a checked effect request authorizes no effect until restart and concurrent-worker tests pass",
+      "subject": "consumer: seller host request reservation journal for checkWireRequest's requestJournal: atomic across workers, retained across restarts until expiresAt, never released after a failed or ambiguous effect; a checked effect request authorizes no effect until restart and concurrent-worker tests pass",
       "result": "not checked",
       "rows": [],
       "pinnedBy": ["src/wire/envelope.ts", "test/wire/launchReview.test.ts"],
