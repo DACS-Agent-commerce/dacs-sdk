@@ -48,6 +48,38 @@ const DEMOS_FAILED_RECORD_STATUS = "failed";
 const sdkRecordReadingClients = new WeakSet<object>();
 const sdkRecordReadingSettles = new WeakSet<object>();
 const sdkRecordReadingSubmissions = new WeakSet<object>();
+/**
+ * Fresh successes `payDemSettleCore` returned for the SDK's own client, frozen,
+ * each with the exact transfer terms that client signed. Private like the sets
+ * above: a copy, a caller-built object or a relabelled result is not in it.
+ */
+const sdkRecordVerifiedResults = new WeakMap<object, Readonly<PayDemRecordVerifiedTransfer>>();
+
+/** The exact transfer an SDK record-verified pay-dem success settled. */
+export interface PayDemRecordVerifiedTransfer {
+  /** Native payer and payee: 64 lowercase hex characters, no `0x`. */
+  readonly payer: string;
+  readonly payee: string;
+  /** Integer OS base units. */
+  readonly amountOs: string;
+  readonly network: string;
+  /** The recovery context's settlement key, when the settle carried one. */
+  readonly settlementKey?: string;
+}
+
+/**
+ * The transfer terms of `result` when it is a fresh success that
+ * `createPayDemRail`'s own settle returned after reading and binding the
+ * node's executed transaction record itself (#338); otherwise `undefined`.
+ * Read-only: a host accepting any `PayDemRail` checks this, never the
+ * result's `execution` string, before it settles anything on the payment.
+ */
+export function payDemRecordVerifiedTransfer(
+  result: unknown,
+): Readonly<PayDemRecordVerifiedTransfer> | undefined {
+  // WeakMap#get answers undefined for any value it cannot hold.
+  return sdkRecordVerifiedResults.get(result as object);
+}
 
 /**
  * @internal Whether `submission` is a `payDemSettle` submission around
@@ -55,8 +87,8 @@ const sdkRecordReadingSubmissions = new WeakSet<object>();
  * node record it read. Read-only: there is no way to add a source.
  */
 export function isRecordVerifiedSource(submission: unknown): boolean {
-  return typeof submission === "function" &&
-    sdkRecordReadingSubmissions.has(submission);
+  // WeakSet#has answers false for any value it cannot hold.
+  return sdkRecordReadingSubmissions.has(submission as object);
 }
 
 type AnyMethod = (...args: never[]) => unknown;
@@ -810,22 +842,35 @@ export async function payDemSettleCore(
     };
   }
 
-  return {
-    ok: true,
-    execution: "executed",
+  const executed = Object.freeze({
+    ok: true as const,
+    execution: "executed" as const,
     txHash,
     chainId,
     payer,
     payee: recipient,
     // §9.5.9: Demos inclusion is BFT-final, so the confirmed execution is
     // final at this inclusion block; the `demos` txRef carries that block.
-    finality: { model: "bft-final" },
+    finality: Object.freeze({ model: "bft-final" as const }),
     blockNumber: blockNumber as number,
-    txRefKind: "demos",
+    txRefKind: "demos" as const,
     ...(totalDebitOs === undefined
       ? {}
       : { networkFeeOs: (totalDebitOs - amountOs).toString() }),
-  };
+  });
+  // Frozen, so a holder cannot change the hash or block after it is listed.
+  const verifiedPayer = normalizeDemosNativeAddress(payer);
+  const verifiedPayee = normalizeDemosNativeAddress(recipient);
+  if (verifiedPayer !== null && verifiedPayee !== null) {
+    sdkRecordVerifiedResults.set(executed, Object.freeze({
+      payer: verifiedPayer,
+      payee: verifiedPayee,
+      amountOs: amountOs.toString(),
+      network: chainId,
+      ...(recovery === undefined ? {} : { settlementKey: recovery.settlementKey }),
+    }));
+  }
+  return executed;
 }
 
 export interface PayDemRailConfig {
@@ -2242,10 +2287,10 @@ function captureFreshPayDemResult(
   if (!captured.ok && execution !== undefined) {
     throw new DacsError("failed pay-dem settlement must not attest successful execution");
   }
-  if (!recordRead && (captured.ok || captured.errorClass !== undefined)) {
-    // The SDK did not read this record (#338): a custom rail's success or
-    // failure proof is its statement. Keep only the transaction identity, so
-    // the intent stays held for reconciliation and nothing is final.
+  if (!recordRead) {
+    // The SDK did not read this record (#338): a custom rail's success,
+    // failure proof, block and fee are its statements. Keep only the
+    // transaction identity, so the intent stays held and nothing is final.
     return {
       ok: false,
       txHash: captured.txHash,

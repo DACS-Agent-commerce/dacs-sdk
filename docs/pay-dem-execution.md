@@ -133,9 +133,14 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).
 
-Which capabilities the SDK built is kept private to the rails module, keyed
-by object identity. No file in the package exports a way to add to it; the
-only export is a read-only check the settlement store uses.
+Which capabilities the SDK built, and which successes its own client
+returned, is kept private to the rails module, keyed by object identity. No
+file in the package exports a way to add to it. The only exports are two
+read-only checks: one the settlement store uses, and
+`payDemRecordVerifiedTransfer`, which gives the exact transfer terms (payer,
+payee, `amountOs`, network and recovery settlement key) of a frozen success
+`createPayDemRail`'s settle returned, and `undefined` for anything else,
+including a copy of that success.
 
 The settlement store records a bound permanent failure as the definitive
 outcome for that key only when it comes from `payDemSettle` over the rail
@@ -152,12 +157,16 @@ fresh settlement and on recovery. It treats it as a transaction-bearing
 non-success: the hash is bound for anti-replay,
 the outcome is recorded, and the session stops as indeterminate.
 
-The dacs-node buyer track requires `execution: "executed"` on fresh rail
-results before it settles the wallet authority or publishes a payment notice.
-Its default runtime rail also reports success only after the SDK's Demos
-adapter reconciles the wallet journal to `canonical-confirmed`, which needs a
-`confirmed` record it read; a rail injected into the buyer track directly is
-the host's statement.
+The dacs-node buyer track settles the wallet authority and publishes a
+payment notice for a fresh rail result only when `payDemRecordVerifiedTransfer`
+lists it with this payment's payer, payee, amount, network and settlement key,
+and its hash is the one this invocation journaled. Any other success,
+including an injected rail's `execution: "executed"`, a copy of the SDK
+rail's result, or the SDK rail's result for another transfer, leaves the
+payment indeterminate with the wallet reservation retained. A rail that
+relays the SDK rail's own result object unchanged, such as the default
+runtime rail, keeps it. That default rail also reports success only after the
+SDK's Demos adapter reconciles the wallet journal to `canonical-confirmed`.
 Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
 no attestation, so an operator reconciler must return `completed` only after
 reading a bound `confirmed` record.

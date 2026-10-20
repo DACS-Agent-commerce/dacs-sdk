@@ -29,6 +29,7 @@ interface ForgeryReport {
   importErrors: Array<{ file: string; error: string }>;
   brandExports: string[];
   vouchExports: string[];
+  verifiedForgeries: unknown[];
   failure: { first: unknown; second: unknown; railCalls: number };
   coreSuccess: unknown;
   bridgeSuccess: unknown;
@@ -78,7 +79,12 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     expect(report.importErrors.map(({ file }) => file)
       .filter((file) => /^dist\/(?:index|agent\/|rails\/)/.test(file))).toEqual([]);
     expect(report.vouchExports).toEqual([]);
-    expect(report.brandExports).toContain("dist/rails/payDem.js#isRecordVerifiedSource");
+    // Exactly the two read-only checks, whatever the export syntax.
+    expect(report.brandExports.filter((entry) => entry.startsWith("dist/rails/payDem.js#")).sort())
+      .toEqual([
+        "dist/rails/payDem.js#isRecordVerifiedSource",
+        "dist/rails/payDem.js#payDemRecordVerifiedTransfer",
+      ]);
   });
 
   it("holds a custom rail's bound failure proof instead of keeping it as definitive", () => {
@@ -93,5 +99,9 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     expect(report.coreSuccess).toEqual(HELD);
     expect(report.bridgeSuccess).toEqual(HELD);
     expect(report.railSuccess).toEqual(HELD);
+  });
+
+  it("reports no forged, copied or custom-client success as SDK record-verified", () => {
+    expect(report.verifiedForgeries).toEqual([null, null, null]);
   });
 });

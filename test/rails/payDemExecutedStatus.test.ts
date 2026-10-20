@@ -5,10 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
+  settlementKey,
 } from "../../src/rails/idempotency.js";
 import {
   createPayDemRail,
   observeDemosExecutionByHash,
+  payDemRecordVerifiedTransfer,
   payDemSettle,
   type PayDemSettlementReconcile,
   type PayDemSettlementRecoveryContext,
@@ -199,6 +201,61 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
+
+  // A host that accepts any PayDemRail settles a payment only on this lookup,
+  // never on the result's `execution` string.
+  it("lists its frozen success with the exact transfer terms it signed", async () => {
+    const payDem = await rail();
+    const recovery = {
+      railId: "demos-native:DEM",
+      jobId: "job-verified",
+      phaseIndex: 0,
+      settlementKey: settlementKey("demos-native:DEM", "job-verified", 0),
+      network: "demos",
+      payer: WALLET.slice(2),
+      payee: PAYEE_HEX,
+      amountOs: AMOUNT_OS,
+    };
+    const result = await payDem.settle({
+      recipient: RECIPIENT,
+      amount: AMOUNT_OS,
+      recovery,
+    });
+
+    expect(payDemRecordVerifiedTransfer(result)).toEqual({
+      payer: WALLET.slice(2),
+      payee: PAYEE_HEX,
+      amountOs: AMOUNT_OS,
+      network: "demos",
+      settlementKey: recovery.settlementKey,
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.finality)).toBe(true);
+    expect(payDemRecordVerifiedTransfer({ ...result })).toBeUndefined();
+    expect(payDemRecordVerifiedTransfer(structuredClone(result))).toBeUndefined();
+  });
+
+  it.each([
+    ["failed", "permanent failure"],
+    ["pending", "held result"],
+  ])("lists no %s record's %s", async (status) => {
+    sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+      record.status = status;
+    }));
+    const payDem = await rail();
+
+    const result = await payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS });
+
+    expect(result.ok).toBe(false);
+    expect(payDemRecordVerifiedTransfer(result)).toBeUndefined();
+  });
+
+  it.each([undefined, null, 0, "result", Symbol("result"), {}])(
+    "lists nothing for %s",
+    (value) => {
+      expect(payDemRecordVerifiedTransfer(value)).toBeUndefined();
+    },
+  );
 
   it("accepts a record that keeps the signed wire amount and numeric nonce", async () => {
     sdk.getTxByHash.mockImplementation(recordReturning((record) => {
