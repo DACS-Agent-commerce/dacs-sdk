@@ -2117,7 +2117,9 @@ function validateSettlementResultBinding(
     );
   }
   // A failed-record proof is native DEM only and must carry this request's
-  // exact OS amount, on fresh settlement and on recovery.
+  // exact OS amount, on fresh settlement and on recovery. The request carries
+  // no network, so the proof is bound to the result's own chainId here;
+  // payDemSettle and the settlement store bind it to the configured network.
   if (result.errorClass !== undefined || result.failureProof !== undefined) {
     const amountOs = payDemRequestAmountOs(request);
     if (amountOs === null ||

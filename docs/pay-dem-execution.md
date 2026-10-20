@@ -33,8 +33,10 @@ A record binds when its `hash` is the signed hash, its `status` is literal
 `content` is a `native` body with the signed `nonce`, no `custom_charges`,
 the payer in `from` or `from_ed25519_address` (every one present must match),
 `to` and `amount` for this payee and amount, and `data` of
-`["native", {nativeOperation: "send", args: [payee, amount]}]`. Other fields, such as `signature`, `gcr_edits` or `attrs`, are not
-read.
+`["native", {nativeOperation: "send", args: [payee, amount]}]`. Other fields,
+such as `signature`, `gcr_edits` or `attrs`, are not compared, but the whole
+record must still be canonical JSON: a record with, for example, an integer
+above `Number.MAX_SAFE_INTEGER` anywhere in it is malformed and read again.
 
 Indeterminate is `ok: false` with the signed hash retained, so the settlement
 intent stays held. No outcome ever causes a second broadcast.
@@ -57,14 +59,19 @@ sees its result.
 
 ## Contracts for custom clients, rails and reconcilers
 
+The SDK reads the node itself only inside `createPayDemRail`. A custom
+`DemosNativeClient`, `PayDemRail` or `PayDemSettlementReconcile` is the
+integrator's own chain access, so what it returns is its statement: the SDK
+checks the statement's shape and bindings, but cannot authenticate it.
+
 - A `DemosNativeClient` resolves `ok: true, state: "included",
   execution: "executed"` only after it has read and bound a `confirmed`
   record. Without `execution: "executed"`, `payDemSettleCore` reports not-ok
-  and mints no finality. A `failed` result is permanent only with a
-  `failureProof` whose hash, block, payer, payee and amount match the
-  payment. Its `nonce` is checked against the transfer the client journaled
-  when the caller passes a per-settlement `journalPreparedTransfer`; without
-  one, the nonce is the client's statement, as `execution` is.
+  and mints no finality. A `failed` result carries `errorClass: "permanent"`
+  only with a `failureProof` whose hash, block, payer, payee and amount match
+  the payment. Its `nonce` is checked against the transfer the client
+  journaled when the caller passes a per-settlement `journalPreparedTransfer`;
+  without one, the nonce is the client's statement, as `execution` is.
   `createPayDemRail` fills it from the signed transaction.
 - A `PayDemRail` returns `PayDemRailResult`: success carries
   `execution: "executed"`, and a failure never carries `execution`.
@@ -77,8 +84,15 @@ sees its result.
   durable outcome and a reconciliation that disagree on the transaction, the
   block, success or any failure-proof field, the nonce included, are refused.
 
-The settlement store persists a bound permanent failure as the definitive
-outcome for that key. It never permits a replacement payment.
+The settlement store records a bound permanent failure as the definitive
+outcome for that key only when it comes from `payDemSettle` over the rail
+`createPayDemRail` returned, whose proof the SDK built from the record it
+read. A failure proof from any other source, including a custom rail, a rail
+that wraps the SDK rail's `settle`, or a reconciler, is returned to the caller
+but leaves the intent held: it is never a durable verdict and never permits a
+second broadcast. Neither outcome ever permits a replacement payment. The
+proof type is internal; a custom reconciler can name it as
+`PayDemReconciledFailure["failureProof"]`.
 
 `runSession` accepts the permanent failure only for a `pay-dem` request in
 DEM, with a bound proof whose `amountOs` is the request's amount in OS, on

@@ -614,9 +614,16 @@ under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
 amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
 `PayDemSettlementRecoveryContext` and must return either an exact
-`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
-when authoritative observation proves no transfer for that tuple landed. A
-non-final observation must throw. Even authoritative absence does not revoke a
+`PayDemReconciledSettlement` (including the observed `amountOs`) with
+`execution: "executed"` only after reading the node's transaction record for
+the hash and finding it `confirmed` for this payer, payee and amount; a
+`PayDemReconciledFailure` for a bound `failed` record; or `null` only when
+authoritative observation proves no transfer for that tuple landed. A status
+index reporting `included` is not execution, so a reconciled success without
+`execution: "executed"` is refused, and a reconciled failure never becomes the
+recorded outcome by itself. A non-final observation must throw. See
+[`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
+and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory
