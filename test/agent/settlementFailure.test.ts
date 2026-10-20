@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -31,10 +31,13 @@ interface Fixture {
     reportedVersion: string;
     reportedCommit: string;
     sourcePin: string;
+    buildMetadataRead: string;
     versionEnvelope: { version: string; commit: string };
     networkInfoEnvelope: {
       response: {
-        nodeVersion: { version: string; commit: string; branch: string; dirty: boolean };
+        nodeVersion: {
+          version: string; commit: string; branch: string; dirty: boolean; builtAt: string;
+        };
       };
     };
   };
@@ -129,6 +132,8 @@ describe("node2 failed-record fixture", () => {
     // A recapture from a clean build records its commit as the pin and updates
     // this test; while the build is dirty the fixture must say it has none.
     expect(source.sourcePin).toMatch(/^none: node2 reports a dirty build/);
+    // The label dates the envelopes by the build that served them.
+    expect(source.buildMetadataRead).toContain(`builtAt ${nodeVersion.builtAt}`);
   });
 
   it("records the encodings the proof is projected from", () => {
@@ -357,5 +362,111 @@ describe("hasDefinitiveDemosFailure", () => {
     const { amountOs, ...own } = PROOF;
     const proof = Object.assign(Object.create({ amountOs }), own, { extra: 1 });
     expect(check({ failureProof: proof })).toBe(false);
+  });
+
+  // The snapshot drops a plain object's prototype, so only a polluted
+  // Object.prototype can still supply a missing key; the owned-key checks
+  // must refuse it.
+  it.each([
+    ["result ok", "ok", false, (): Record<string, unknown> => {
+      const result: Record<string, unknown> = failedResult();
+      delete result.ok;
+      return result;
+    }],
+    ["proof amountOs", "amountOs", AMOUNT, (): Record<string, unknown> => {
+      const { amountOs: _amount, ...proof } = PROOF;
+      return { ...failedResult(), failureProof: { ...proof, extra: 1 } };
+    }],
+  ])("refuses a %s that resolves only through Object.prototype", (_name, key, value, build) => {
+    Object.defineProperty(Object.prototype, key, { value, configurable: true });
+    try {
+      expect(hasDefinitiveDemosFailure(build() as Result, AMOUNT, NETWORK)).toBe(false);
+    } finally {
+      delete (Object.prototype as Record<string, unknown>)[key];
+    }
+  });
+
+  it.each([
+    ["Date result", () => Object.assign(new Date(0), failedResult())],
+    ["class-instance result", () => Object.assign(new (class Result {})(), failedResult())],
+    ["Date proof", () => ({ ...failedResult(), failureProof: Object.assign(new Date(0), PROOF) })],
+    ["class-instance proof", () => ({
+      ...failedResult(), failureProof: Object.assign(new (class Proof {})(), PROOF),
+    })],
+    ["throwing accessor in the result", () => Object.defineProperty(failedResult(), "payer", {
+      get() { throw new Error("accessor ran"); }, enumerable: true,
+    })],
+    ["result accessor returning the bound payer", () => Object.defineProperty(failedResult(), "payer", {
+      get: () => PROOF.payer, enumerable: true,
+    })],
+    ["throwing accessor in the proof", () => ({
+      ...failedResult(),
+      failureProof: Object.defineProperty({ ...PROOF }, "nonce", {
+        get() { throw new Error("accessor ran"); }, enumerable: true,
+      }),
+    })],
+    ["pass-through proxy result", () => new Proxy(failedResult(), {})],
+    ["proxy result whose ownKeys throws", () => new Proxy(failedResult(), {
+      ownKeys() { throw new Error("trap ran"); },
+    })],
+    ["pass-through proxy proof", () => ({ ...failedResult(), failureProof: new Proxy({ ...PROOF }, {}) })],
+    ["proxy proof whose ownKeys throws", () => ({
+      ...failedResult(),
+      failureProof: new Proxy({ ...PROOF }, { ownKeys() { throw new Error("trap ran"); } }),
+    })],
+    ["revoked proxy result", () => {
+      const { proxy, revoke } = Proxy.revocable(failedResult(), {});
+      revoke();
+      return proxy;
+    }],
+    ["revoked proxy proof", () => {
+      const { proxy, revoke } = Proxy.revocable({ ...PROOF }, {});
+      revoke();
+      return { ...failedResult(), failureProof: proxy };
+    }],
+    ["symbol key in the result", () => ({ ...failedResult(), [Symbol("extra")]: 1 })],
+    ["symbol key in the proof", () => ({
+      ...failedResult(), failureProof: { ...PROOF, [Symbol("extra")]: 1 },
+    })],
+    ["non-enumerable extra key in the result", () => Object.defineProperty(failedResult(), "extra", {
+      value: 1,
+    })],
+    ["non-enumerable extra key in the proof", () => ({
+      ...failedResult(),
+      failureProof: Object.defineProperty({ ...PROOF }, "extra", { value: 1 }),
+    })],
+    ["non-enumerable finality", () => Object.defineProperty(failedResult(), "finality", {
+      value: "bft-final",
+    })],
+  ])("refuses a %s without throwing", (_name, build) => {
+    expect(hasDefinitiveDemosFailure(build() as unknown as Result, AMOUNT, NETWORK)).toBe(false);
+  });
+
+  it("accepts a deeply frozen or null-prototype result, as a rail may return", () => {
+    const frozen = failedResult();
+    Object.freeze(frozen.failureProof);
+    expect(hasDefinitiveDemosFailure(Object.freeze(frozen), AMOUNT, NETWORK)).toBe(true);
+    const bare = Object.assign(Object.create(null) as Record<string, unknown>, failedResult(), {
+      failureProof: Object.assign(Object.create(null) as Record<string, unknown>, PROOF),
+    });
+    expect(hasDefinitiveDemosFailure(bare as Result, AMOUNT, NETWORK)).toBe(true);
+  });
+});
+
+describe("hasDefinitiveDemosFailure contract limits", () => {
+  // It checks shape and bindings, not authenticity: a self-consistent proof that
+  // no node served still passes. Until a rail builds proofs from authenticated
+  // node records, no production module may consume the check.
+  it("accepts an invented, self-consistent proof, so it is not an authentication", () => {
+    const invented = { ...PROOF, txHash: "ab".repeat(32), nonce: 1, blockNumber: 2 };
+    expect(check({ txHash: invented.txHash, blockNumber: 2, failureProof: invented })).toBe(true);
+  });
+
+  it("is imported by no module in src", () => {
+    const root = new URL("../../src/", import.meta.url);
+    const importers = (readdirSync(root, { recursive: true }) as string[])
+      .filter((file) => file.endsWith(".ts") && !file.endsWith("settlementFailure.ts"))
+      .filter((file) => /settlementFailure/.test(readFileSync(new URL(file, root), "utf8")));
+    expect(importers).toEqual([]);
   });
 });

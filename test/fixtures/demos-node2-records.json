@@ -6,7 +6,7 @@
     "sourcePin": "none: node2 reports a dirty build (nodeVersion.dirty is true), so the reported commit is the nearest source, not the deployed source; the tests use only these recorded envelopes",
     "read": "2026-10-15, read-only nodeCall; raw JSON-RPC envelopes as served",
     "note": "demosdk's getTxByHash resolves the envelope's response member (nodeCall unwraps response.data.response).",
-    "buildMetadataRead": "2026-10-18, read-only; reported commit is not an exact deployed-source pin because nodeVersion.dirty is true",
+    "buildMetadataRead": "versionEnvelope and networkInfoEnvelope: read-only, 2026-10-18 by 15:33Z, when node2 ran the dirty build with builtAt 2026-10-14T16:45:24Z; node2 was rebuilt from the same dirty commit at 2026-10-18T15:59:30Z (seen 2026-10-20) and the envelopes are kept as recorded; reported commit is not an exact deployed-source pin because nodeVersion.dirty is true",
     "versionNote": "GET /version reports 0.9.9 RC and getNetworkInfo nodeVersion reports 0.9.8 for the same dirty build; these are recorded responses, not a source pin",
     "failedStatusRead": "2026-10-19, read-only getTransactionStatus for the failed hash: the node reports a stored failed transaction as included",
     "versionEnvelope": {
