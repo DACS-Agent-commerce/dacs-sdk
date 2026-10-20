@@ -106,10 +106,23 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   form (64 lower-case hex digits, no `0x`). It returns the node's record for
   that hash and, whenever it can load one, the prepared-transfer journal entry
   for that hash as `preparedTransfer`. The hash counts for this payment only
-  through the SDK's own record of that hash for the key: the outcome a
-  `createIdempotencyStore` rail log recorded under these exact terms, or a
-  result this bridge submitted or already bound through an audit. Otherwise
-  the audit is refused.
+  through the SDK's own record that this key signed it: the key's attempt
+  record, or a result this bridge submitted and the attempt record accepted.
+  Otherwise the audit is refused. Every audit reads the attempt record, and a
+  record naming another hash refuses it, whatever the bridge holds in memory.
+- The attempt record is written through the settlement fence's
+  `recordAttempt`, which a `createIdempotencyStore` store provides when its
+  `SettlementLog` implements the optional `putAttempt`/`readAttempt` pair (the
+  in-memory log does). The rail records the signed hash before its one
+  broadcast and does not broadcast when the record is refused; `payDemSettle`
+  also records any hash a rail returns before the store persists or returns
+  it, and a refused write fails the call and leaves the hash unbound. A custom
+  rail must record the exact hash it will return before it broadcasts: the
+  bridge's write after the return cannot cover a crash in between. The write is
+  compare-and-set under the submit generation and the record never changes. A
+  crash after broadcast, a timeout or an ambiguous result therefore still lets
+  a restarted process audit the payment. A durable log needs the pair: over a
+  log without it, audits after a restart fail closed.
 
   A supplied entry is always checked: it must name that hash, the same payer,
   payee, OS amount and network, a `recovery` tuple equal to this rail, job and
@@ -117,19 +130,21 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   than the amount; a permanent failure's proof must also carry the journaled
   nonce. The entry is the reconciler's object, not the one the rail wrote
   before broadcast, so it can refuse an audit but never counts the hash on its
-  own. Neither does an injected store's `readOutcome` or a reconciler's answer
-  to a lookup by key alone. The reconciler throws when a loaded entry
-  conflicts with the record and never returns `null` for the retained hash.
-  An audit fails closed once the SDK record is lost, whether or not the rail
-  has `journalPreparedTransfer`. The rail log keeps definitive outcomes only,
-  so an ambiguous result (a signed hash with no finalized record) is bound
-  only by the bridge that saw it, and after a restart its audit fails closed.
+  own. Nor does an injected store's records, or any rail-log outcome, which a
+  key-only restart reconciliation can have written. The reconciler throws
+  when a loaded entry conflicts with the record and never returns `null` for
+  the retained hash.
 
   A recovered success carries the fee of the record the SDK read (its
   `transaction_fee`, integer OS) as `networkFeeOs`; a reconciler may omit it,
   and one that reports another fee is refused. `runSession` re-asserts a saved
   fee, so a record with another fee, or none, leaves the saved success
   unresolved (not completed, never reported unpaid).
+- A restart without history reconciles in the store. With an attempt record
+  the reconciler receives its hash as `txHash`, and any other transaction is
+  refused; a failure the SDK read for that hash is final. Without one, the
+  reconciler's answer for the key is still read by the SDK, but a failure
+  found that way is held, and the saved outcome never binds a later audit.
 - `runSession` takes a native success or permanent failure as final only from
   this `payDemSettle` adapter (directly, from `settleFromRail`, or through
   `Agent.runSession`), recognised by identity; a wrapper or a `.bind()` copy
@@ -144,10 +159,14 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).
 
 Which capabilities the SDK built (its client, its rail's `settle` and record
-reader, `payDemSettle`'s submissions and the adapters it returned) is kept
-private to the rails module, keyed by object identity. No file in the package
-exports a way to add to it; the only exports are read-only checks the
-settlement store and `runSession` use.
+reader, `payDemSettle`'s submissions and the adapters it returned), and which
+successes its own client returned, is kept private to the rails module, keyed
+by object identity. No file in the package exports a way to add to it. The
+only exports are read-only checks: the ones the settlement store and
+`runSession` use, and `payDemRecordVerifiedTransfer`, which gives the exact
+transfer terms (payer, payee, `amountOs`, network and recovery settlement
+key) of a frozen success `createPayDemRail`'s settle returned, and
+`undefined` for anything else, including a copy of that success.
 
 The settlement store records a bound permanent failure as the definitive
 outcome for that key only when it comes from `payDemSettle` over the rail
@@ -169,12 +188,16 @@ indeterminate instead of reporting it again. A failure read for a saved
 success, a bound permanent one included, is refused instead: the session
 stops and the saved success stays in place (PC-7).
 
-The dacs-node buyer track requires `execution: "executed"` on fresh rail
-results before it settles the wallet authority or publishes a payment notice.
-Its default runtime rail also reports success only after the SDK's Demos
-adapter reconciles the wallet journal to `canonical-confirmed`, which needs a
-`confirmed` record it read; a rail injected into the buyer track directly is
-the host's statement.
+The dacs-node buyer track settles the wallet authority and publishes a
+payment notice for a fresh rail result only when `payDemRecordVerifiedTransfer`
+lists it with this payment's payer, payee, amount, network and settlement key,
+and its hash is the one this invocation journaled. Any other success,
+including an injected rail's `execution: "executed"`, a copy of the SDK
+rail's result, or the SDK rail's result for another transfer, leaves the
+payment indeterminate with the wallet reservation retained. A rail that
+relays the SDK rail's own result object unchanged, such as the default
+runtime rail, keeps it. That default rail also reports success only after the
+SDK's Demos adapter reconciles the wallet journal to `canonical-confirmed`.
 Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
 no attestation, so an operator reconciler must return `completed` only after
 reading a bound `confirmed` record.

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { demosNode, nodeRecord, sdkPayDemRail } from "../fixtures/demosNodeMock.js";
+import { demosNode, nodeRecord, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
-  (await import("../fixtures/demosNodeMock.js")).demosWebsdkMock);
+  (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
 beforeEach(() => demosNode.reset());
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
@@ -180,9 +180,13 @@ async function demAudit(
     bindingVersion: "1", railId: "pay-dem", jobId: "job-1", phaseIndex: 0, phase: "pay-dem",
     amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer: "ab".repeat(32), payee,
     network: "demos", finality: { model: "bft-final" },
-  }, async () => ({ ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32), payee,
-    blockNumber, txRefKind: "demos", finality: { model: "bft-final" },
-    ...(paid.networkFeeOs === undefined ? {} : { networkFeeOs: paid.networkFeeOs }) }));
+  }, async (fence) => {
+    // The rail records the signed hash under its generation before it returns.
+    await fence?.recordAttempt?.("cd".repeat(32));
+    return { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32), payee,
+      blockNumber, txRefKind: "demos", finality: { model: "bft-final" },
+      ...(paid.networkFeeOs === undefined ? {} : { networkFeeOs: paid.networkFeeOs }) };
+  });
   demosNode.address = payer;
   demosNode.records.set("cd".repeat(32), nodeRecord({
     txHash: "cd".repeat(32), payer, payee, amountOs: "1000000000", feeOs: read.networkFeeOs, blockNumber,
@@ -1740,7 +1744,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(resumed.settleCalls.n).toBe(0);
     if (via !== "payDemSettle") {
       await expect(run).rejects.toThrow(via === "lost rail log"
-        ? "pay-dem reconciliation must return the prepared-transfer journal entry for the retained transaction"
+        ? "no SDK record binds the retained transaction"
         : "resumeSettlement is not the payDemSettle adapter, so it is not called");
       expect(reads).toBe(via === "lost rail log" ? 1 : 0);
       expect([...kv]).toEqual(evidence);
@@ -1859,7 +1863,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       } else {
         // Without the SDK's own record the hash is unbound: held, never re-sent.
         await expect(run).rejects.toThrow(
-          "pay-dem reconciliation must return the prepared-transfer journal entry for the retained transaction",
+          "no SDK record binds the retained transaction",
         );
         expect(await store.load("job-1")).toEqual(before);
         expect([...kv]).toEqual(evidence);
@@ -1921,7 +1925,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         if (via === "payDemSettle") await expect(result).resolves.toMatchObject({ outcome: "completed" });
         else {
           await expect(result).rejects.toThrow(via === "lost rail log"
-            ? "pay-dem reconciliation must return the prepared-transfer journal entry for the retained transaction"
+            ? "no SDK record binds the retained transaction"
             : "resumeSettlement is not the payDemSettle adapter, so it is not called");
         }
       }
@@ -2071,7 +2075,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         store: createIdempotencyStore(createInMemorySettlementLog()), reconcile,
       }) });
       await expect(runSessionCore(third.listingRef, demTerms, third.deps, "job-1"))
-        .rejects.toThrow("prepared-transfer journal entry for the retained transaction");
+        .rejects.toThrow("no SDK record binds the retained transaction");
       expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ txHash }));
       expect(demosNode.transfers).toBe(0);
       expect(demosNode.broadcasts).toBe(0);

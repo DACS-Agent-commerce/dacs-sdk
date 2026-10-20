@@ -645,10 +645,28 @@ as not found; `getTransactionStatus` lower-cases hex but rejects a `0x` prefix,
 so a reader that mixes them can see `included` with no record. The reconciler
 returns the node's record for that hash and, whenever it can load one, the
 original prepared-transfer journal entry for that hash as `preparedTransfer`.
+
 The SDK counts the retained hash for this payment only through its own record
-of that hash for this key, and refuses the audit otherwise. That record is the
-outcome a `createIdempotencyStore` rail log recorded under these exact terms,
-or a result this bridge submitted or already bound through an audit.
+that this key signed it, and refuses the audit otherwise. That record is the
+key's attempt record, or a result this bridge submitted that the attempt record
+accepted (or whose fence keeps no record). Every audit reads the attempt record,
+and a record naming another hash refuses it, whatever this bridge holds in
+memory. A
+`createIdempotencyStore` store hands its settlement fence a `recordAttempt`
+method when its `SettlementLog` implements the optional `putAttempt` and
+`readAttempt` pair (the in-memory log does). `createPayDemRail` records the
+signed hash through it before its one broadcast and does not broadcast if the
+record is refused. `payDemSettle` also records any hash a rail returns before
+the store persists or returns it; when that write is refused the call fails
+and the hash stays unbound. A custom rail must call `fence.recordAttempt` with
+the exact hash it will return before it broadcasts, and must not broadcast
+when it rejects: the bridge's own write after the rail returns cannot cover a
+crash between that broadcast and the return. The record is compare-and-set
+under the submit generation and never changes, so after a crash, a timeout or
+an ambiguous result a restarted process can still audit the payment and never
+fails, resubmits or reports unpaid a final one (DACS-4 §9.5.1 PC-7). A durable
+log needs the attempt pair for restart audits: one without it keeps working for
+fresh settlement, but after a restart its audits fail closed.
 
 A supplied entry is always checked as well. It must name the retained hash, the
 same payer, payee, OS amount and network, a `recovery` tuple equal to this rail,
@@ -656,22 +674,26 @@ job and phase, and (when present) a known denomination and debit bounds no
 lower than the amount; for a permanent failure its nonce must also be the
 proof's nonce. The entry is the reconciler's object, not the one the rail wrote
 before broadcast, so it can refuse an audit but never counts the hash on its
-own. An injected store's `readOutcome` can likewise refuse an audit that
-contradicts it but never counts the hash, and neither does a reconciler's
-answer to a lookup by key alone.
+own. Nor does an injected store's records, or any rail-log outcome: a restart
+reconciliation can have written that outcome from a lookup by key alone.
 
-So another job's transfer of the same amount to the same payee is never counted
-for this one, even when the reconciler returns an entry naming this job. The
-reconciler throws when the entry it loads conflicts with the node's record, and
-never returns `null` for the retained hash. An audit fails closed once the SDK
-record is lost, whether or not the rail has `journalPreparedTransfer`. The rail
-log keeps definitive outcomes only, so an ambiguous result (a signed hash with
-no finalized record, such as a timeout) is bound only by the bridge that saw it:
-after a restart its audit fails closed. A restart reconciliation without history
-may return the entry too; it is checked the same way and never persisted. A payment that the bridge, its rail log or the session
-already recorded as successful is never reported unpaid: a reconciliation that
+So an audit never counts another job's transfer of the same amount to the same
+payee for this one, even when the reconciler returns an entry naming this job.
+The reconciler throws when the entry it loads conflicts with the node's record,
+and never returns `null` for the retained hash.
+
+A restart without history (the lease expired and the session holds no hash)
+reconciles in the store. When the key has an attempt record, the reconciler
+receives its hash as `txHash` and any other transaction is refused. Without
+one, the SDK still accepts the reconciler's answer for the key and saves it, so
+that path trusts the reconciler to look up this exact payment. That saved
+outcome never binds a later audit. A supplied entry is checked on this path
+too and never persisted. A payment that the bridge, its rail log or the
+session already recorded as successful is never reported unpaid: a reconciliation that
 contradicts it is refused rather than returned as a permanent failure (DACS-4
-§9.5.1 PC-7).
+§9.5.1 PC-7). The SDK's own record is only as trustworthy as the host's
+`SettlementLog`: the store checks every record's key and binding hash, but
+it cannot detect a log that forges them.
 
 Every pay-DEM settlement request must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the

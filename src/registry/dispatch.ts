@@ -307,10 +307,10 @@ function captureSettlementStore(
     "once",
     "pay-dem settlement store once",
   );
-  const lookup = stableDispatchProperty(source, "readOutcome", "pay-dem settlement store readOutcome");
   // A `createIdempotencyStore` lookup is a closure over its own log; passing it
   // unbound keeps the provenance `payDemSettle` checks before it lets that
-  // lookup's recorded outcome bind a retained hash.
+  // store's attempt record bind a retained hash.
+  const lookup = stableDispatchProperty(source, "readOutcome", "pay-dem settlement store readOutcome");
   const readOutcome = lookup.found && isBindingCheckedOutcomeLookup(lookup.value)
     ? lookup.value as NonNullable<SettlementIdempotencyStore["readOutcome"]>
     : optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
@@ -318,10 +318,16 @@ function captureSettlementStore(
         "readOutcome",
         "pay-dem settlement store readOutcome",
       );
+  // Another store's attempt lookup is never consulted, so it is not passed on.
+  const attempt = stableDispatchProperty(source, "readAttempt", "pay-dem settlement store readAttempt");
+  const readAttempt = attempt.found && isBindingCheckedOutcomeLookup(attempt.value)
+    ? attempt.value as NonNullable<SettlementIdempotencyStore["readAttempt"]>
+    : undefined;
   const wrapper: SettlementIdempotencyStore = {
     once: (key, binding, submit, reconcile) =>
       once(key, binding, submit, reconcile),
     ...(readOutcome === undefined ? {} : { readOutcome }),
+    ...(readAttempt === undefined ? {} : { readAttempt }),
   };
   return Object.freeze(wrapper);
 }

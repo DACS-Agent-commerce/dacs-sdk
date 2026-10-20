@@ -558,6 +558,51 @@ describe("createPayDemRail nonce coordination", () => {
     ]);
   });
 
+  it("records the signed hash through the settlement fence before broadcast, and never broadcasts when that fails", async () => {
+    const order: string[] = [];
+    const rail = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret" });
+    sdk.broadcast.mockImplementation(async () => {
+      order.push("broadcast");
+      return { response: { hash: TX_HASH } };
+    });
+    const fence = (recordAttempt: (txHash: string) => Promise<void>) => ({
+      owner: "payment-worker",
+      generation: 3,
+      settlementKey: "pay-dem:job-recorded:0",
+      bindingHash: "ab".repeat(32),
+      async assertCurrent() {
+        order.push("generation-fence");
+      },
+      recordAttempt,
+    });
+    const recorded = vi.fn(async (txHash: string) => {
+      order.push(`record:${txHash}`);
+    });
+    await expect(rail.settle({
+      recipient: RECIPIENT,
+      amount: "1000000000",
+      journalPreparedTransfer: async () => {
+        order.push("journal");
+      },
+    }, fence(recorded))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(order).toEqual([
+      "generation-fence",
+      "journal",
+      `record:${TX_HASH}`,
+      "generation-fence",
+      "broadcast",
+    ]);
+    expect(recorded).toHaveBeenCalledTimes(1);
+
+    order.length = 0;
+    sdk.broadcast.mockClear();
+    await expect(rail.settle({ recipient: RECIPIENT, amount: "1000000000" }, fence(async () => {
+      throw new DacsError("settlement already records another transaction");
+    }))).rejects.toThrow(/already records another transaction/);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
   it("does not broadcast when the prepared-transfer fence rejects", async () => {
     const rail = await createPayDemRail({
       rpc: "https://node.test",

@@ -5,10 +5,10 @@ import {
   type AuthenticatedListing,
 } from "../../src/agent/Agent.js";
 import type { SettleRequest } from "../../src/agent/runSessionCore.js";
-import { demosNode, sdkPayDemRail } from "../fixtures/demosNodeMock.js";
+import { demosNode, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
-  (await import("../fixtures/demosNodeMock.js")).demosWebsdkMock);
+  (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
 beforeEach(() => demosNode.reset());
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {

@@ -1,167 +1,185 @@
+import { vi } from "vitest";
+
+import { createPayDemRail, type PayDemRailConfig } from "../../src/rails/payDem.js";
+
 /**
- * A scripted Demos node behind `@kynesyslabs/demosdk/websdk`, so tests can run
- * the SDK's own rail (`createPayDemRail`): the only rail whose verdicts, fresh
- * or recovered, are final, because it reads the node's transaction record
- * itself (#338). A test file wires it with
- *
- *   vi.mock("@kynesyslabs/demosdk/websdk", async () =>
- *     (await import("../fixtures/demosNodeMock.js")).demosWebsdkMock);
- *
- * and scripts the wallet, the next signed transfer and the records the node
- * serves through `demosNode`.
+ * A mocked Demos node for tests that need `createPayDemRail`'s own settle: the
+ * only rail whose success and failure the SDK reports as final, because it
+ * reads and binds the node's transaction record itself (#338). A test file
+ * installs the module mock with
+ * `vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule())`
+ * and calls {@link resetDemosNode} in `beforeEach`.
  */
-import { createPayDemRail, type PayDemRail } from "../../src/rails/payDem.js";
-
-type NodeRecord = Record<string, unknown>;
-
 export const demosNode = {
-  /** The wallet `getAddress` reports: the payer of every transfer. */
-  address: "ab".repeat(32),
-  /** The hash, nonce and block the next signed transfer gets. */
-  nextHash: "cd".repeat(32),
-  nonce: 9,
-  blockNumber: 42,
-  /** The `transaction_fee.network_fee` (OS) of a signed transfer, if any. */
-  feeOs: undefined as string | undefined,
-  /** The record status a broadcast transfer ends with. */
-  recordStatus: "confirmed",
-  postFork: true,
-  /** `getTxByHash` replies by hash; a missing hash is not found (`null`). */
-  records: new Map<string, unknown>(),
-  /** Replaces the `getTxByHash` reply for every hash when set. */
-  reply: undefined as ((hash: string) => unknown) | undefined,
-  /** Awaited before each transfer is signed (a spy, or a gate). */
-  onTransfer: undefined as (() => unknown) | undefined,
-  transfers: 0,
-  broadcasts: 0,
-  reads: [] as string[],
-  reset(): void {
-    this.address = "ab".repeat(32);
-    this.nextHash = "cd".repeat(32);
-    this.nonce = 9;
-    this.blockNumber = 42;
-    this.feeOs = undefined;
-    this.recordStatus = "confirmed";
-    this.postFork = true;
-    this.records = new Map();
-    this.reply = undefined;
-    this.onTransfer = undefined;
-    this.transfers = 0;
-    this.broadcasts = 0;
-    this.reads = [];
-  },
+  broadcast: vi.fn(),
+  confirm: vi.fn(),
+  connect: vi.fn(),
+  connectWallet: vi.fn(),
+  getNetworkInfo: vi.fn(),
+  getTxByHash: vi.fn(),
+  nodeCall: vi.fn(),
+  transfer: vi.fn(),
+  waitForNonce: vi.fn(),
 };
 
-/** A native transfer body as the node serves it (nonce as a decimal string). */
-export function nodeRecord(input: {
+/**
+ * What the node serves: the signer, the signed hash and nonce, the inclusion
+ * block and the record status. Successive transfers sign `txHash`, then each of
+ * `laterTxHashes`, at consecutive nonces from `nonce`.
+ */
+export interface DemosNodeScript {
+  payer: string;
   txHash: string;
+  laterTxHashes: readonly string[];
+  nonce: number;
+  blockNumber: number;
+  recordStatus: "confirmed" | "failed" | "pending";
+}
+
+/** Change the status the node's record of a signed transfer carries from now on. */
+export function setNodeRecordStatus(recordStatus: DemosNodeScript["recordStatus"]): void {
+  script = { ...script, recordStatus };
+}
+
+let script: DemosNodeScript = {
+  payer: "", txHash: "", laterTxHashes: [], nonce: 0, blockNumber: 0, recordStatus: "confirmed",
+};
+let signed: string[] = [];
+let served = new Map<string, unknown>();
+
+export function demosSdkModule() {
+  return {
+    Demos: class MockDemos {
+      readonly tx = { confirm: demosNode.confirm };
+      readonly broadcast = demosNode.broadcast;
+      readonly connect = demosNode.connect;
+      readonly connectWallet = demosNode.connectWallet;
+      readonly getNetworkInfo = demosNode.getNetworkInfo;
+      readonly getTxByHash = demosNode.getTxByHash;
+      readonly nodeCall = demosNode.nodeCall;
+      readonly transfer = demosNode.transfer;
+      readonly waitForNonce = demosNode.waitForNonce;
+
+      getAddress(): string {
+        return `0x${script.payer}`;
+      }
+    },
+  };
+}
+
+/** Reset the mocked node: it signs `txHash` at `nonce`, includes it at `blockNumber` and records it as `recordStatus`. */
+export function resetDemosNode(over: Pick<DemosNodeScript, "payer" | "txHash"> & Partial<DemosNodeScript>): void {
+  script = { laterTxHashes: [], nonce: 9, blockNumber: 42, recordStatus: "confirmed", ...over };
+  signed = [];
+  served = new Map();
+  for (const method of Object.values(demosNode)) method.mockReset();
+  demosNode.connect.mockResolvedValue(undefined);
+  demosNode.connectWallet.mockResolvedValue(undefined);
+  demosNode.getNetworkInfo.mockResolvedValue({ forks: { osDenomination: { activated: true } } });
+  demosNode.transfer.mockImplementation(async (to: string, amountOs: bigint) => {
+    const index = signed.length;
+    const hash = index === 0 ? script.txHash : script.laterTxHashes[index - 1] ?? script.txHash;
+    signed.push(hash);
+    return {
+      hash,
+      content: {
+        type: "native",
+        from: `0x${script.payer}`,
+        to,
+        amount: amountOs.toString(),
+        nonce: script.nonce + index,
+        data: ["native", { nativeOperation: "send", args: [to, amountOs.toString()] }],
+      },
+    };
+  });
+  demosNode.confirm.mockImplementation(async (tx: { hash: string; content: object }) => ({
+    response: { data: { transaction: { hash: tx.hash, content: { ...tx.content } } } },
+  }));
+  demosNode.broadcast.mockImplementation(async () => ({
+    result: 200,
+    response: { hash: signed.at(-1) ?? script.txHash },
+  }));
+  demosNode.nodeCall.mockResolvedValue({ state: "included", blockNumber: script.blockNumber });
+  demosNode.getTxByHash.mockImplementation(async (hash: string) => {
+    if (served.has(hash)) return served.get(hash);
+    const call = [...demosNode.broadcast.mock.calls].reverse().find((args) =>
+      (args[0] as { response: { data: { transaction: { hash: string } } } }).response.data.transaction.hash === hash);
+    if (call === undefined) return null;
+    const transaction = (call[0] as {
+      response: { data: { transaction: { content: { nonce: number } } } };
+    }).response.data.transaction;
+    return {
+      ...transaction,
+      content: { ...transaction.content, nonce: String(transaction.content.nonce) },
+      status: script.recordStatus,
+      blockNumber: script.blockNumber,
+    };
+  });
+  demosNode.waitForNonce.mockResolvedValue(undefined);
+}
+
+/** The SDK's own rail over the mocked node. */
+export const sdkRail = (over: Partial<PayDemRailConfig> = {}) => createPayDemRail({
+  rpc: "https://node.test",
+  secret: "test-secret",
+  inclusionPollIntervalMs: 1,
+  statusRequestTimeoutMs: 50,
+  transactionRecordTimeoutMs: 200,
+  ...over,
+});
+
+/**
+ * The SDK's own rail for a process that may only audit or reconcile. Only the
+ * SDK rail reads the node's record, so only its bridge finishes a recovered
+ * verdict (#338); a transfer it signs calls `submit`, which fails the test.
+ */
+export async function sdkAuditRail(over: Partial<PayDemRailConfig> = {}) {
+  return { rail: await sdkRail(over), submit: forbidTransfers() };
+}
+
+/** From now on, a transfer signed over the mocked node calls the returned spy, which fails the test. */
+export function forbidTransfers() {
+  const submit = vi.fn((): never => { throw new Error("must never submit a retained transfer"); });
+  const sign = demosNode.transfer.getMockImplementation()!;
+  demosNode.transfer.mockImplementation((...args: unknown[]) => {
+    submit();
+    return sign(...args);
+  });
+  return submit;
+}
+
+/** Native transfers the SDK rail signed over the mocked node. */
+export const sdkTransfers = () => demosNode.transfer.mock.calls.length;
+
+/**
+ * Serve the node's record for `txHash` as a native transfer from `payer` to
+ * `payee`: for a hash no transfer over this mock signed, such as a retained
+ * hash a restarted process audits.
+ */
+export function serveNodeRecord(txHash: string, over: {
   payer: string;
   payee: string;
-  amountOs: string;
+  amountOs?: string;
   nonce?: number;
   blockNumber?: number;
-  status?: string;
+  status?: "confirmed" | "failed" | "pending";
   feeOs?: string;
-}): NodeRecord {
-  return {
-    hash: input.txHash,
+}): void {
+  const amountOs = over.amountOs ?? "1000000000";
+  served.set(txHash, {
+    hash: txHash,
     content: {
-      ...transferContent(input.payer, input.payee, input.amountOs, input.nonce ?? 9, input.feeOs),
-      nonce: String(input.nonce ?? 9),
+      type: "native",
+      from: `0x${over.payer}`,
+      to: over.payee,
+      amount: amountOs,
+      nonce: String(over.nonce ?? script.nonce),
+      data: ["native", { nativeOperation: "send", args: [over.payee, amountOs] }],
+      ...(over.feeOs === undefined
+        ? {}
+        : { transaction_fee: { network_fee: over.feeOs, rpc_fee: "0", additional_fee: "0" } }),
     },
-    status: input.status ?? "confirmed",
-    blockNumber: input.blockNumber ?? 42,
-  };
-}
-
-function transferContent(
-  payer: string,
-  payee: string,
-  amountOs: string,
-  nonce: number,
-  feeOs: string | undefined,
-): NodeRecord {
-  return {
-    type: "native",
-    from: payer,
-    to: payee,
-    amount: amountOs,
-    nonce,
-    data: ["native", { nativeOperation: "send", args: [payee, amountOs] }],
-    ...(feeOs === undefined
-      ? {}
-      : { transaction_fee: { network_fee: feeOs, rpc_fee: "0", additional_fee: "0" } }),
-  };
-}
-
-class MockDemos {
-  readonly tx = {
-    confirm: async (signed: { hash: string; content: NodeRecord }) => ({
-      response: { data: { transaction: { hash: signed.hash, content: { ...signed.content } } } },
-    }),
-  };
-
-  async connect(): Promise<void> {}
-  async connectWallet(): Promise<void> {}
-  getAddress(): string {
-    return demosNode.address;
-  }
-  async getNetworkInfo(): Promise<unknown> {
-    return { forks: { osDenomination: { activated: demosNode.postFork } } };
-  }
-  async transfer(to: string, amountOs: bigint): Promise<unknown> {
-    demosNode.transfers += 1;
-    await demosNode.onTransfer?.();
-    return {
-      hash: demosNode.nextHash,
-      content: transferContent(
-        demosNode.address, to, amountOs.toString(), demosNode.nonce, demosNode.feeOs,
-      ),
-    };
-  }
-  async broadcast(validity: {
-    response: { data: { transaction: { hash: string; content: NodeRecord } } };
-  }): Promise<unknown> {
-    demosNode.broadcasts += 1;
-    const { hash, content } = validity.response.data.transaction;
-    demosNode.records.set(hash, {
-      hash,
-      content: { ...content, nonce: String(content.nonce) },
-      status: demosNode.recordStatus,
-      blockNumber: demosNode.blockNumber,
-    });
-    return { result: 200, response: { hash } };
-  }
-  async nodeCall(message: string, args: { hash: string }): Promise<unknown> {
-    if (message !== "getTransactionStatus") throw new Error(`unexpected nodeCall ${message}`);
-    return demosNode.records.has(args.hash)
-      ? { state: "included", blockNumber: demosNode.blockNumber }
-      : { result: 404, response: null };
-  }
-  async getTxByHash(hash: string): Promise<unknown> {
-    demosNode.reads.push(hash);
-    if (demosNode.reply !== undefined) return demosNode.reply(hash);
-    return demosNode.records.get(hash) ?? null;
-  }
-  async waitForNonce(): Promise<void> {}
-}
-
-export const demosWebsdkMock = { Demos: MockDemos };
-
-/** The SDK's own rail over the scripted node, with test-sized timeouts. */
-export function sdkPayDemRail(
-  network?: string,
-  config: Partial<Parameters<typeof createPayDemRail>[0]> = {},
-): Promise<PayDemRail> {
-  return createPayDemRail({
-    rpc: "https://node.test",
-    secret: "test-wallet",
-    ...(network === undefined ? {} : { network }),
-    inclusionTimeoutMs: 500,
-    inclusionPollIntervalMs: 1,
-    statusRequestTimeoutMs: 50,
-    transactionRecordTimeoutMs: 200,
-    nonceVisibilityTimeoutMs: 10,
-    ...config,
+    status: over.status ?? script.recordStatus,
+    blockNumber: over.blockNumber ?? script.blockNumber,
   });
 }

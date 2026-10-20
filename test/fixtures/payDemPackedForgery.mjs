@@ -75,6 +75,18 @@ const forgedClient = { address: PAYER, transfer: forgedTransfer };
 // A consumer's own recovery function, which must never pass as the SDK's
 // payDemSettle adapter: runSession completes a native verdict only from that.
 const forgedResume = async () => failedRecord();
+const forgedResult = Object.freeze({
+  ok: true,
+  execution: "executed",
+  txHash: TX_HASH,
+  chainId: "demos",
+  payer: PAYER,
+  payee: SELLER,
+  finality: Object.freeze({ model: "bft-final" }),
+  blockNumber: 42,
+  txRefKind: "demos",
+  networkFeeOs: "0",
+});
 
 // Offer every brand-shaped export the forged capabilities.
 const brandExports = [];
@@ -82,7 +94,9 @@ for (const [file, namespace] of modules) {
   for (const [name, value] of Object.entries(namespace)) {
     if (typeof value !== "function" || !BRAND_NAME.test(name)) continue;
     brandExports.push(`${file}#${name}`);
-    for (const target of [forgedSettle, forgedRail, forgedTransfer, forgedClient, forgedResume]) {
+    for (const target of [
+      forgedSettle, forgedRail, forgedTransfer, forgedClient, forgedResume, forgedResult,
+    ]) {
       try {
         const out = value(target);
         if (out && typeof out.then === "function") await out.catch(() => undefined);
@@ -154,7 +168,21 @@ const railSuccess = await outcome(() => sdk.payDemSettle(
   { network: "demos" },
 )({ ...request, jobId: "forged-rail-success" }));
 
-// Forgery 3: no shipped export marks a consumer's function as the SDK
+// Forgery 3: a host that accepts any rail asks the SDK whether a success came
+// from its own record read. No forged or custom-client object may say yes.
+let coreResult;
+try {
+  coreResult = await sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    forgedClient,
+  );
+} catch {
+  coreResult = undefined;
+}
+const verifiedForgeries = [forgedResult, { ...forgedResult }, coreResult]
+  .map((value) => sdk.payDemRecordVerifiedTransfer(value) ?? null);
+
+// Forgery 4: no shipped export marks a consumer's function as the SDK
 // adapter, and neither a wrapper around a genuine adapter nor a bound copy of
 // one passes as it.
 const isAdapter = modules.get("dist/rails/payDem.js")?.isPayDemSettleAdapter;
@@ -167,7 +195,7 @@ const adapterMark = {
   bound: isAdapter?.(genuine.bind(null)) === true,
 };
 
-// Forgery 4: a reconciler's `execution: "executed"` through the genuine
+// Forgery 5: a reconciler's `execution: "executed"` through the genuine
 // adapter, over a rail the SDK did not build, must not mint a recovered
 // success: the SDK has no node read of its own behind it.
 let reconcilerCalls = 0;
@@ -207,6 +235,7 @@ process.stdout.write(`${JSON.stringify({
   coreSuccess,
   bridgeSuccess,
   railSuccess,
+  verifiedForgeries,
   adapterMark,
   reconciler: { fresh: reconcilerFresh, audit: reconcilerAudit, calls: reconcilerCalls },
 })}\n`);

@@ -4,6 +4,7 @@ import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import {
   TERMINAL_INCLUDED,
   createPayDemRail,
+  isRecordVerifiedSource,
   payDemSettleCore,
   payDemSettle,
   type DemosNativeClient,
@@ -18,6 +19,7 @@ import {
   settlementBindingHash,
   settlementKey,
   type SettlementBinding,
+  type SettlementIdempotencyStore,
   type SettlementLog,
 } from "../../src/rails/idempotency.js";
 import { baseUnits } from "../../src/canonical/index.js";
@@ -170,6 +172,8 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     expect(res.finality).toBeUndefined();
     expect(res.blockNumber).toBeUndefined();
     expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
+    // No optional hook key at all when the caller gave none.
+    expect(Object.keys(client.sent!).sort()).toEqual(["amountOs", "to"]);
   });
 
   test("checks the recovery generation immediately before native transfer", async () => {
@@ -725,6 +729,54 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     leaseDurationMs: 1,
   });
 
+  test("keeps only a custom rail's transaction identity on a non-final result", async () => {
+    const rail: PayDemRail = {
+      address: PAYER,
+      settle: async () => ({
+        ok: false,
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: SELLER_HEX,
+        blockNumber: 42,
+        txRefKind: "demos",
+        networkFeeOs: "1",
+      }),
+    };
+    await expect(payDemSettle(rail, { recipient: PAYEE_CLAIM, network: "demos" })(req()))
+      .resolves.toStrictEqual({
+        ok: false,
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: SELLER_HEX,
+      });
+  });
+
+  // The store sees the bridge's submission; only one around createPayDemRail's
+  // own settle may have its failure proof recorded as definitive.
+  test.each([
+    ["createPayDemRail's settle", true],
+    ["a custom rail", false],
+  ])("lets the store treat a submission around %s as record-verified: %s", async (
+    _source,
+    expected,
+  ) => {
+    const rail: PayDemRail = expected
+      ? await sdkRail()
+      : { address: PAYER, settle: (p) => payDemSettleCore(p, fakeClient()) };
+    let submitted: unknown;
+    const store = {
+      async once(_key: string, _binding: unknown, submit: () => Promise<SettleResult>) {
+        submitted = submit;
+        return submit();
+      },
+    } as unknown as SettlementIdempotencyStore;
+    await payDemSettle(rail, { recipient: PAYEE_CLAIM, network: "demos" }, { store })(req());
+    expect(typeof submitted).toBe("function");
+    expect(isRecordVerifiedSource(submitted)).toBe(expected);
+  });
+
   test("converts the agreement's DECIMAL DEM to integer OS base units (×10^9)", async () => {
     const res = await payDemSettle(await sdkRail(), {
       recipient: PAYEE_CLAIM,
@@ -889,8 +941,9 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       /cannot be authenticated after restart without reconciliation/],
     ["when reconciliation proves absence", async () => null,
       /contradicts reconciliation proof of absence/],
+    // The submit recorded its hash, so the reconciliation is checked against it first.
     ["when reconciliation returns another transaction", { txHash: OTHER_TX_HASH },
-      /does not match the authoritative reconciled transaction/],
+      /does not match the retained transaction/],
     ["when reconciliation returns another block", { blockNumber: 4243 },
       /does not match the authoritative reconciled transaction/],
     ["when reconciliation does not attest execution (#338)",

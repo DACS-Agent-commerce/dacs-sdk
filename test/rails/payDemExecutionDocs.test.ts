@@ -39,6 +39,16 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(readme).toContain("(docs/pay-dem-execution.md)");
   });
 
+  it("states the attempt-record contract for custom rails and durable logs", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    const readme = read("README.md").replace(/\s+/g, " ");
+    expect(doc).toContain("A custom rail must record the exact hash it will return before it broadcasts");
+    expect(readme).toContain("A custom rail must call `fence.recordAttempt` with the exact hash it will return before it broadcasts");
+    expect(doc).toContain("A durable log needs the pair");
+    expect(readme).toContain("A durable log needs the attempt pair for restart audits");
+    expect(doc).toContain("a refused write fails the call and leaves the hash unbound");
+  });
+
   it("says a failure proof from outside createPayDemRail never becomes the recorded outcome", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain(
@@ -52,6 +62,16 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else.");
     expect(doc).toContain("No file in the package exports a way to add to it");
     expect(doc).not.toMatch(/vouch/i);
+  });
+
+  it("says the buyer track settles only an SDK record-verified success", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    expect(doc).toContain(
+      "only when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee, amount, network and settlement key, and its hash is the one this invocation journaled",
+    );
+    expect(doc).not.toContain("the host's statement");
+    expect(read("packages/dacs-node/src/payDemPayment.ts"))
+      .toMatch(/payDemRecordVerifiedTransfer\(raw\)/);
   });
 
   it("says a recovered verdict is the SDK's own node read and only the adapter re-reads a saved one", () => {

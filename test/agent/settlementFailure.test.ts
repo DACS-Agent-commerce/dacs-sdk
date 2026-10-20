@@ -484,7 +484,9 @@ describe("hasDefinitiveDemosFailure contract limits", () => {
   it("keeps record-reading sources private to the pay-dem rail", () => {
     expect(sources.filter(({ text }) => /sdkRecordReading\w*\.add\(/.test(text)).map(({ file }) => file))
       .toEqual(["rails/payDem.ts"]);
-    expect(sources.filter(({ text }) => /export\s+(?:const|let|var|function)\s+\w*(?:[Vv]ouch|sdkRecordReading)/.test(text)))
+    expect(sources.filter(({ text }) => /sdkRecordVerifiedResults\.set\(/.test(text)).map(({ file }) => file))
+      .toEqual(["rails/payDem.ts"]);
+    expect(sources.filter(({ text }) => /export\s+(?:const|let|var|function)\s+\w*(?:[Vv]ouch|sdkRecordReading|sdkRecordVerified)/.test(text)))
       .toEqual([]);
     expect(sources.filter(({ text }) => /isRecordVerifiedSource\(/.test(text)).map(({ file }) => file).sort())
       .toEqual(["rails/idempotency.ts", "rails/payDem.ts"]);
