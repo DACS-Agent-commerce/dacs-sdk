@@ -10,6 +10,7 @@ import { canonicalize, DACS_STANDARD_PIN } from '@kynesyslabs/dacs';
 import * as seller from '../src/index.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
+import { SELLER_PROFILE } from '../src/dacs/session-admission.mjs';
 
 function sellerWorld() {
   const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12).toString('hex');
@@ -72,4 +73,15 @@ test('PROFILE.json names the Standard pin and the seller requirement the run tim
   const profile = JSON.parse(readFileSync(new URL('../PROFILE.json', import.meta.url), 'utf8'));
   assert.equal(profile.standardRevision, DACS_STANDARD_PIN);
   assert.equal(canonicalize(profile.sellerRequirement), canonicalize(SELLER_REQUIREMENT));
+  // The session admission requires both parties on exactly this profile.
+  assert.equal(canonicalize({ standardRevision: profile.standardRevision, documentVersions: profile.documentVersions }), canonicalize(SELLER_PROFILE));
+});
+
+test('a session admission is taken only by the native profile and only with both of its functions', async () => {
+  const w = sellerWorld(), native = { ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority };
+  for (const sessionAdmission of [{ admit: async () => null }, { resolveVetRecord: async () => null }, () => null]) {
+    await assert.rejects(seller.createSellerAgent({ ...native, sessionAdmission }), { name: 'TypeError', message: /sessionAdmission must expose admit and resolveVetRecord/ });
+  }
+  await assert.rejects(seller.createSellerAgent({ ...w.base, anchors: w.anchors, simulatedFixture: true, sessionAdmission: { admit: async () => null, resolveVetRecord: async () => null } }),
+    { name: 'TypeError', message: /simulated fixture profile takes no sessionAdmission/ });
 });

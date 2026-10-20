@@ -66,6 +66,7 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
   './purchase-protocol.mjs':protocol,
   './seller-proposal-time.mjs':await import('../../src/dacs/seller-proposal-time.mjs'),
   './rail-authority.mjs':await import('../../src/dacs/rail-authority.mjs'),
+  './session-admission.mjs':await import('../../src/dacs/session-admission.mjs'),
  };
  const module=new vm.SourceTextModule(readFileSync(new URL('../../src/dacs/seller-agent.mjs',import.meta.url),'utf8'));
  await module.link(async spec=>{const values=modules[spec];if(!values)throw new Error('missing isolated host capability '+spec);return new vm.SyntheticModule(Object.keys(values),function(){for(const [key,value] of Object.entries(values))this.setExport(key,value);});});await module.evaluate();

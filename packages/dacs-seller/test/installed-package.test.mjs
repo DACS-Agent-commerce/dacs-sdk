@@ -73,6 +73,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.match(out.refusedConfigurations.missingAgreementAnchor, /^TypeError: .*agreementAnchor/);
   assert.match(out.refusedConfigurations.missingDelivery, /^TypeError: .*requires nativeDemDelivery$/, 'the host starts only with the whole chain to delivery');
   assert.match(out.refusedConfigurations.missingRailAuthority, /^TypeError: .*requires railAuthority$/, 'the host selects its rail only from the steward-signed definition');
+  assert.match(out.refusedConfigurations.missingSessionAdmission, /^TypeError: .*requires sessionAdmission$/, 'the host opens sessions only under the seller\'s session admission');
   assert.match(out.refusedConfigurations.publicInterface, /^TypeError: .*loopback/);
   assert.match(out.refusedConfigurations.unknownOption, /^TypeError: .*anchors/);
   assert.match(out.refusedConfigurations.relativeDirectory, /^TypeError: .*dataDirectory/);
@@ -89,11 +90,15 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.deepEqual(out.refusals.unsigned, { status: 401, body: { error: 'peer_envelope_invalid', message: 'peer_envelope_invalid' } });
   assert.notEqual(out.refusals.unvettedProposal.disposition, 'complete', 'a proposal over synthetic Vet references is not signed');
   assert.equal(out.refusals.unvettedProposal.contribution, null);
+  assert.notEqual(out.refusals.fabricatedVetProposal.disposition, 'complete', 'a Vet reference no record backs is not signed');
+  assert.equal(out.refusals.fabricatedVetProposal.contribution, null);
+  assert.deepEqual(out.refusals.replayedPresentation, { name: 'SellerRefusedError', code: 'session_not_admitted', status: 409 }, 'a presentation is admitted only on the job its challenge was issued for');
   assert.deepEqual(out.refusals.contextChallenge, { status: 404, body: { error: 'not_found' } });
   for (const attempt of [out.refusals.secondHostSameDirectory, out.refusals.secondProcessSameDirectory]) {
     assert.match(attempt, /^Error: seller state directory is in use by another live operator process/, 'one live host owns the state');
   }
   assert.deepEqual(out.restart, { stateSameContribution: true, repeatSameContribution: true });
   assert.deepEqual(out.reached, [], 'negotiation reached no operator capability but the Vet context');
-  assert.deepEqual(out.vetContextJobs, ['vetted', 'unvetted'], 'every proposal takes its Agreement input from the Vet context');
+  assert.deepEqual(out.vetContextJobs, ['vetted', 'unvetted', 'fabricated'], 'every admitted proposal takes its Agreement input from the Vet context');
+  assert.deepEqual(out.admittedJobs, ['vetted', 'unvetted', 'fabricated', 'replayed'], 'every new session asks the session admission; the restarted one is in flight');
 });

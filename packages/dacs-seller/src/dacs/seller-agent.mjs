@@ -32,6 +32,7 @@ import {
   finalizeFixedPriceAgreementContributions,
   finalityCommitmentAddress,
   identityBundleHash,
+  isCanonicalBase64Url,
   isCanonicalJobId,
   isIdentityBundle,
   paymentEvidenceAddress,
@@ -47,6 +48,7 @@ import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
+import { sessionAdmissionConfig, sessionAdmissionProblem, vetRecordProblem, SELLER_PROFILE } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
@@ -131,10 +133,14 @@ export function buildReport({ agreement, listing, settlementId }) {
 // pinned rail: a commitment it could not settle would make the buyer pay for
 // nothing. No profile signs a completed DACS-5 bundle (the ST-11 finalizer is
 // not wired; bundle_finalization_unavailable).
+// The native profile opens a new session only under the operator's
+// `sessionAdmission` (session-admission.mjs): the exact profile of both
+// parties, a seller-issued challenge consumed by this presentation, a fresh
+// revocation reading of the Listing, and the Vet records the references name.
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, simulatedFixture = false }) {
+export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, simulatedFixture = false }) {
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
   if (typeof simulatedFixture !== 'boolean') throw new TypeError('simulatedFixture must be true or false');
   if (signatureBuyer !== null && !/^did:demos:agent:[0-9a-f]{64}$/.test(signatureBuyer)) throw new TypeError('signatureBuyer must be an admitted buyer claim or null');
@@ -176,6 +182,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const rail = railAuthorityConfig(railAuthority);
   if (rail && !nativeProfile) throw new TypeError('the simulated fixture profile takes no railAuthority; it uses only the simulated fixture rail');
   if (nativeProfile && !rail) throw new TypeError(`the native seller profile needs railAuthority: it selects ${DEM_RAIL.railId} only from its steward-signed definition`);
+  const admission = sessionAdmissionConfig(sessionAdmission);
+  if (admission && !nativeProfile) throw new TypeError('the simulated fixture profile takes no sessionAdmission');
   if (nativeProfile) anchors = NATIVE_PROFILE_FIXTURE;
   const settlementChain = nativeEvidence !== null && deliveryContext !== null && nativeDelivery !== null;
   // Checked before any session, signature, read or write. These profile gates
@@ -183,6 +191,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // seller-http.mjs SELLER_PRE_EFFECT_REFUSALS: definite no-effect refusals.
   const assertVetContext = () => {
     if (nativeProfile && !deliveryContext) throw new SellerAgentError('vet_context_required', 'the native seller profile signs an Agreement only with the authenticated Vet context (demDeliveryContext)', 503);
+  };
+  const assertSessionAdmission = () => {
+    if (nativeProfile && !admission) throw new SellerAgentError('session_admission_required', 'the native seller profile opens a session only under the seller\'s session admission (profile, challenge, revocation and Vet records)', 503);
   };
   const assertSettlementChain = () => {
     if (nativeProfile && !settlementChain) throw new SellerAgentError('settlement_profile_unavailable', 'the native seller profile commits and takes payment only with native payment evidence, the DEM delivery context and native DEM delivery', 503);
@@ -202,6 +213,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const retainedAdmission = durable?.context();
   // Historical admission captured once, atomically with the Listing bytes it
   // validated; payment intake replays exactly this result (never live state).
+  // It checks the Listing's own bytes, signature and rail only: the catalog row
+  // below is this seller's own, not a revocation reading. Whether the Listing
+  // is revoked is read for each new session from sessionAdmission.
   const admittedAt = retainedAdmission?.admittedAt ?? now();
   const validation = retainedAdmission?.validation ?? await validateSellerListing(listing, {
     now: () => admittedAt,
@@ -308,7 +322,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   function authenticateBuyerBundle(bundle) {
     if (!isIdentityBundle(bundle)) throw new SellerAgentError('buyer_bundle_invalid', 'buyer IdentityBundle is not normative');
     const proof = bundle.presentation?.kind === 'per-claim' && bundle.presentation.signatures.find((entry) => entry.ref === bundle.presentedBy);
-    const ok = proof && verifyComponent({
+    // CORE SIG-6: exactly the canonical unpadded Base64URL of 64 bytes.
+    const ok = proof && typeof proof.signature === 'string' && proof.signature.length === 86 && isCanonicalBase64Url(proof.signature) && verifyComponent({
       signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8'),
       signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature },
     });
@@ -321,11 +336,23 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const jobId = transportIdentity?.jobId;
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     assertVetContext();
+    assertSessionAdmission();
     assertBuyer(buyerIdentityBundle?.presentedBy,jobId,{proposal:true});
     authenticateBuyerBundle(buyerIdentityBundle);
     if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
     const existing = sessions.get(jobId);
     if (existing && existing.buyerBundleHash !== identityBundleHash(buyerIdentityBundle)) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
+    // A new session (not yet signed under its pin) is admitted before anything
+    // of it is kept, read, signed or sent; a session in flight continues.
+    if (nativeProfile && existing?.railPinSigned !== true) {
+      const query = { jobId, buyer: buyerIdentityBundle.presentedBy, buyerBundleHash: identityBundleHash(buyerIdentityBundle), sessionNonce: buyerIdentityBundle.sessionNonce,
+        seller: claim, listingPin: structuredClone(pin), profile: structuredClone(SELLER_PROFILE) };
+      let answer;
+      try { answer = await admission.admit(structuredClone(query)); }
+      catch (error) { throw new SellerAgentError('session_admission_unavailable', `the seller's session admission is unavailable: ${String(error?.message ?? error).slice(0, 180)}`, 503); }
+      const problem = sessionAdmissionProblem(answer, { ...query, now: now() });
+      if (problem) throw new SellerAgentError('session_not_admitted', problem, 409);
+    }
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
     // signed definition pinned before the Agreement is signed. The pin is in
     // flight only from the seller's signature (railPinSigned, saved before
@@ -369,6 +396,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             const notPerformed = agreementInput({ jobId, listing, buyerBundle: session.buyerBundle, generatedAt });
             if (['buyer', 'seller'].some((role) => resolved.input[role].vetRecordRef.contentHash === notPerformed[role].vetRecordRef.contentHash)) {
               return { disposition: 'rejected', reason: 'the Vet context names the not-performed Vet references' };
+            }
+            // DACS-2 §7.7.1: a reference is relied on only through the record it names.
+            if (!retained) {
+              for (const [role, party, bundle] of [['buyer', session.buyerBundle.presentedBy, session.buyerBundle], ['seller', claim, sellerBundle]]) {
+                const ref = resolved.input[role].vetRecordRef;
+                let record;
+                try { record = await admission.resolveVetRecord(structuredClone({ jobId, role, party, ref })); }
+                catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
+                const problem = vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), orchestrator: claim });
+                if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
+              }
             }
             session.demDeliveryContext = structuredClone(resolved);
             persist(session);

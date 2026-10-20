@@ -421,7 +421,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
         if (occupied && occupied.effect !== effectKey) fail('peer_operation_conflict', 409);
         const existing = get('SELECT * FROM peer_effects WHERE effect = ?', effectKey);
         // Fresh nonces for retained effects are read-only, including uncertainty.
-        if (existing) return existing.state === 'complete' ? { disposition: 'cached', status: existing.status, text: existing.response } : { disposition: 'uncertain', effectKey, owner: existing.owner };
+        // The exception is an effect the agent answered as not final yet
+        // (finish with retry): it runs again under the same effect and slot, so
+        // the agent's own retained work decides, and another body still conflicts.
+        const retry = existing?.state === 'retry' && !contextStep;
+        if (existing && !retry) return existing.state === 'complete' ? { disposition: 'cached', status: existing.status, text: existing.response } : { disposition: 'uncertain', effectKey, owner: existing.owner };
         const time = now();
         if (!uint(time)) fail('peer_clock_invalid', 503);
         const retired = [];
@@ -434,7 +438,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
         // pending effects remain fenced, even after request expiry.
         const reclaimable = `SELECT n.nonce FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
           LEFT JOIN peer_effects e ON e.effect = n.effect WHERE r.expires_at <= ?
-          AND (e.state = 'complete' OR (e.effect IS NULL AND n.response IS NOT NULL))`;
+          AND (e.state = 'complete' OR (e.state = 'retry' AND n.response IS NOT NULL) OR (e.effect IS NULL AND n.response IS NOT NULL))`;
         const expired = get('SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time).n;
         if (get('SELECT COUNT(*) AS n FROM peer_nonces').n - expired >= maxRecords) fail('peer_store_capacity', 503);
         if (get('SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE buyer = ? AND created_at > ?', p.buyer, time - nonceWindowMs).n >= maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
@@ -468,6 +472,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
         run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)', nonce, p.buyer, time, p.expiresAt);
         if (contextStep) run('INSERT INTO peer_context_admissions VALUES (?, ?, ?, ?, ?, ?, ?)', p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), p.agreementHash, effectKey, admittedAt);
         const owner = randomBytes(24).toString('hex');
+        if (retry) {
+          run('UPDATE peer_effects SET owner = ?, state = ?, status = NULL, response = NULL WHERE effect = ?', owner, 'pending', effectKey);
+          return { disposition: 'perform', effectKey, owner, readOnly: false, retried: true };
+        }
         run('INSERT INTO peer_effects VALUES (?, ?, ?, NULL, NULL)', effectKey, owner, 'pending');
         run('INSERT INTO peer_effect_jobs VALUES (?, ?)', effectKey, p.jobId);
         if (!READ_ROUTES.has(p.path) && !occupied) run('INSERT INTO peer_slots VALUES (?, ?)', slot, effectKey);
@@ -498,8 +506,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
       const row = admissions ? get("SELECT e.status, e.response FROM peer_context_admissions a JOIN peer_effects e ON e.effect = a.effect WHERE a.job = ? AND e.state = 'complete'", jobId) : null;
       return row ? { status: row.status, text: row.response } : null;
     },
-    finish(reservation, status, text, { noEffect = false } = {}) {
+    // noEffect: a definite answer that started nothing (its rows go). retry:
+    // a 200 answer the agent marks as not final yet; its effect stays bound to
+    // its slot and runs again on a fresh nonce (reserve). Otherwise complete.
+    finish(reservation, status, text, { noEffect = false, retry = false } = {}) {
       if (Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_response_too_large', 503);
+      if (retry && (noEffect || reservation.readOnly || status !== 200)) fail('peer_store_conflict', 503);
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (!current || current.owner !== reservation.owner || current.state !== 'pending') fail('peer_store_conflict', 503);
@@ -516,7 +528,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
           // any other live/read/uncertain effect still refers to this job.
           if (identity && reclaimableJobs(1, identity.job).length) run('DELETE FROM peer_jobs WHERE job = ?', identity.job);
         } else {
-          run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', status >= 500 ? 'uncertain' : 'complete', status, text, reservation.effectKey);
+          run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', retry ? 'retry' : status >= 500 ? 'uncertain' : 'complete', status, text, reservation.effectKey);
         }
       });
     },

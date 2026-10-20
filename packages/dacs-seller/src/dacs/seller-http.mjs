@@ -17,11 +17,22 @@ export const loopbackSocket = (address) => address === '127.0.0.1' || address ==
 // signature or send of its operation. They are definite refusals that keep no
 // effect in the journal, so a request refused while the operator's
 // configuration was incomplete runs once it is complete. A new gate goes here.
-export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required', 'settlement_profile_unavailable', 'rail_unavailable', 'native_evidence_required', 'bundle_finalization_unavailable']);
+export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required', 'session_admission_required', 'settlement_profile_unavailable', 'rail_unavailable', 'native_evidence_required', 'bundle_finalization_unavailable']);
 // These seller-agent errors occur before an external effect. Any other error
 // may follow an effect and stays uncertain; in particular, commitment_failed
-// is deliberately absent: a write may have happened.
-const NO_EFFECT_ERRORS = new Set(['buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', ...SELLER_PRE_EFFECT_REFUSALS]);
+// is deliberately absent: a write may have happened. A session the seller's
+// admission did not admit (or could not answer for) kept nothing either.
+const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', ...SELLER_PRE_EFFECT_REFUSALS]);
+
+// Payment answers that are not final are never cached as final. Before the
+// evidence checkpoint the agent keeps nothing and answers `indeterminate`
+// (for example a transfer not yet included): a no-effect answer, so the same
+// claim reaches intake again. After it, the agent retains its work and its
+// next call reads back first, so a `held` evidence answer or a delivery that
+// is not done yet runs the route again (journal retry), never a resend.
+const PAYMENT_PATH = '/dacs/v1/payments';
+const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
+  (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
 
 const ROUTES = {
   '/dacs/v1/agreements/proposals': (agent, body) => agent.receiveProposal(body),
@@ -156,7 +167,9 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const answer = await route(agent, body);
       const text = JSON.stringify(answer);
       // A resumed context step has written before: no answer of it deletes its records.
-      if (authentication) authentication.store.finish(reservation, 200, text, { noEffect: !reservation.resumed && answer?.code !== 'party_vet_non_pass' && (answer?.status === 'rejected' || answer?.disposition === 'rejected') });
+      const payment = req.url === PAYMENT_PATH;
+      const noEffect = !reservation?.resumed && answer?.code !== 'party_vet_non_pass' && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate'));
+      if (authentication) authentication.store.finish(reservation, 200, text, { noEffect, retry: payment && !noEffect && paymentPending(answer) });
       if (contextStep) await context.settled(reservation.contextHold);
       return await send(res, 200, answer, request, { text: await pointed(200, text, request?.jobId ?? body.jobId, req.url) });
     } catch (error) {

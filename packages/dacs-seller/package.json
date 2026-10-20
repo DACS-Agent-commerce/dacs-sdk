@@ -43,6 +43,7 @@
     "src/dacs/seller-http.mjs",
     "src/dacs/seller-proposal-time.mjs",
     "src/dacs/seller-transport-auth.mjs",
+    "src/dacs/session-admission.mjs",
     "src/dacs/wallet-transactions.mjs",
     "src/devnet-demo/agreement-context.mjs",
     "src/devnet-demo/artifact-anchor.mjs",

@@ -29,6 +29,8 @@ const host = await startSellerHost({
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
+  sessionAdmission,      // { admit(query), resolveVetRecord(query) }: the seller-owned session admission
+                         // (profile, challenge, revocation, Vet records; src/dacs/session-admission.mjs)
 });
 // host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
 ```
@@ -60,7 +62,13 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   and body, for this seller and Listing; unsigned or mismatched requests are
   refused before the agent runs. Effects are journaled before they run, so a
   restarted host answers a completed request again and never repeats an
-  uncertain one.
+  uncertain one. A payment answer that is not final is not cached as final:
+  an `indeterminate` answer before the evidence checkpoint (a transfer not yet
+  included, for example) keeps nothing, so the same claim reaches payment
+  intake again; after the checkpoint a `held` answer, or a delivery that is not
+  done yet, runs the agent's retained work again on the buyer's next request
+  (which reads back first and never resends), and a different claim for the
+  job is still refused (`peer_operation_conflict`).
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
@@ -82,9 +90,30 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   its retry selects the rail again under the current authority. A pin the
   configured steward did not sign is refused, so a rotated steward key refuses
   sessions pinned under the old one until that key is configured again.
-- The profile gates (`vet_context_required`, `settlement_profile_unavailable`,
-  `rail_unavailable`, `native_evidence_required`,
-  `bundle_finalization_unavailable`) refuse before any read, write, signature
+- It opens a new session only under `sessionAdmission`, before anything of it
+  is kept, read, signed or sent. Its `admit` answer must bind the exact job,
+  buyer, buyer bundle and Listing pin, and must carry three things:
+  - both parties configured for this package's exact profile (the Standard
+    commit and the complete document tuple in PROFILE.json; CORE §11.1.2);
+  - the challenge the seller issued for this job, equal to the bundle's
+    `sessionNonce` and consumed by this attempt (CORE SN-1..SN-4);
+  - a revocation reading of the Listing, `active` and at most five minutes
+    old (DACS-1 RB-5/RB-6).
+
+  Anything missing, malformed, duplicated or different is refused
+  (`session_not_admitted`), and an `admit` that throws is refused too
+  (`session_admission_unavailable`). Neither refusal keeps an effect. Each Vet
+  reference the context gives is relied on only through the record
+  `resolveVetRecord` returns. That record must be a CompositeVerificationRecord
+  with the reference's exact hash, signed by this seller as orchestrator, for
+  this job, party and bundle, with a `pass` decision (DACS-2 §7.7.1). A session
+  in flight, signed under its pin, continues without a new admission. The agent
+  itself never makes up a revocation reading: its startup check reads only the
+  Listing's own bytes, signature and rail.
+- The profile gates (`vet_context_required`, `session_admission_required`,
+  `settlement_profile_unavailable`, `rail_unavailable`,
+  `native_evidence_required`, `bundle_finalization_unavailable`) refuse before
+  any read, write, signature
   or send, and the transport answers them as definite refusals that keep no
   effect in the journal: once the operator completes the configuration, the
   same request runs.
@@ -103,8 +132,8 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   check): the ST-11 finalizer, which needs finalized and independently
   resolved Vet, commitment, settlement and bundle records, is not part of this
   package. The session ends at delivery.
-- It does not mount the Vet and Agreement context route: its challenge
-  issuance limits are not settled (`ADMISSION.md`).
+- It does not mount the Vet and Agreement context route itself: the challenge
+  a session needs comes from the operator's `sessionAdmission`.
 - The devnet source transport, wallet custody and the wallet journal are not
   part of this package. The kit builders that need them (the devnet artifact
   anchor, issued-write readback and the source mode of native payment

@@ -13,7 +13,7 @@ const files = [
   'd5-recovery.test.mjs', 'canonical-job-boundaries.test.mjs', 'bilateral-vet.test.mjs', 'party-vet-store.test.mjs',
   'seller-raw-json.test.mjs', 'devnet-storage-write-recovery.test.mjs',
   'settlement-collisions.test.mjs', 'seller-lifecycle-gates.test.mjs', 'provenance-checkout.test.mjs',
-  'demos-claims.test.mjs', 'seller-substrate-profile.test.mjs', 'seller-settlement-profile.test.mjs', 'seller-http-roundtrip.test.mjs', 'installed-package.test.mjs',
+  'demos-claims.test.mjs', 'seller-substrate-profile.test.mjs', 'seller-settlement-profile.test.mjs', 'seller-http-roundtrip.test.mjs', 'seller-payment-retry.test.mjs', 'installed-package.test.mjs',
 ];
 // Packing and installing the core and seller tarballs needs more time.
 const timeouts: Record<string, number> = {'installed-package.test.mjs': 420000};

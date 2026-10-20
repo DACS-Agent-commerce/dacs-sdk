@@ -1,7 +1,15 @@
 {
   "profile": "dacs-seller:experimental-fixed-price-dem:v1",
   "standardRevision": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
-  "normativeAuthority": "DACS-Standard at standardRevision for the native host profile (startSellerHost), which stops at delivery and signs no completed DACS-5 bundle, with one exception: the host does not mount the context route, so it admits a proposal within the seller's clock window without a seller-issued one-use context challenge. The simulated fixture profile (createSellerAgent with simulatedFixture: true) is test-only and not covered: it does not perform DACS-2 Vet and uses an unsigned in-code rail",
+  "documentVersions": {
+    "CORE": "0.3",
+    "DACS-1": "0.7",
+    "DACS-2": "0.6",
+    "DACS-3": "0.5",
+    "DACS-4": "0.8",
+    "DACS-5": "0.5"
+  },
+  "normativeAuthority": "DACS-Standard at standardRevision (the JID-1 corrective candidate tuple in documentVersions) for the native host profile (startSellerHost), which stops at delivery and signs no completed DACS-5 bundle. Each new session is opened only under the operator's seller-owned sessionAdmission: both participants on this exact profile, a seller-issued challenge consumed by the presentation, a fresh active revocation reading of the Listing and the Vet records the Agreement references. The simulated fixture profile (createSellerAgent with simulatedFixture: true) is test-only and not covered: it does not perform DACS-2 Vet and uses an unsigned in-code rail",
   "qualification": "unsupported pending complete host integration and deployment qualification",
   "sellerRequirement": {
     "requirementVersion": "1",

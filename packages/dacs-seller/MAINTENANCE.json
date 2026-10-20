@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "1462af04de23e0fab65668ba48cbdaec5857cfc69ad682e8494d64ee7ff47bef",
+      "sha256": "a33172b54e1e66e9228ecacb727d2113c60a99dc227744360b3481b7577b32ec",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -22,13 +22,13 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-http.mjs",
       "originalSha256": "5b306bb8da34a8d2ace2d179d3e51daf64ca7a24072970eb3044e1456b91ead9",
-      "sha256": "18e67724bd21380d0fd591958459e600cca2a59cd88234d38943128f6eb069b5",
+      "sha256": "864ff70a03392b26e5d1426a8e453318e906aadaaf484f8b2ee8fbdd9c6a904f",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-transport-auth.mjs",
       "originalSha256": "82c5b7dbdd866cad0d601325d05680db2503ce87d7ff1346d6e06eb9683b645f",
-      "sha256": "920c5f68aae9bc1bbca4492c8270d3f40a4f5845a788383cc2a6859bb734059f",
+      "sha256": "c987c0eff6333febd8f8e9249327ab4d37edccb49b29eac2b7bdff8f935f395d",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -136,7 +136,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/seller-agent-isolated-fixture.mjs",
       "originalSha256": null,
-      "sha256": "6f9f062e4ba46537a74f70f35b820d73c15458079e3156c72326eca112a60e06",
+      "sha256": "849f75030b35a99ce955270d3b93d9dfa359656fbc4fe8f24b1a21ef52048e9f",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -304,7 +304,7 @@
     {
       "path": "packages/dacs-seller/src/host.mjs",
       "originalSha256": null,
-      "sha256": "dea6620e22b1945c45e9e71021fda25b9cbb3652ab6dbc537ee39a74aebdf87a",
+      "sha256": "b0dcabbb44379c2e81a06120e942eb1c9d5baa0dcd9d0a8543423e82e78093d8",
       "reason": "Seller run time: standalone host and public entry (README.md)."
     },
     {
@@ -358,13 +358,13 @@
     {
       "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
       "originalSha256": null,
-      "sha256": "8689c23c47256fe6554e3a3eed0ee17e79c2d75b525ee01b06ceb495c003c831",
+      "sha256": "c3c2079edc62d013dbf0bd761cb4a78c20778a3e2cfe88a85bf627cfeaa2b7e0",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/installed-package.test.mjs",
       "originalSha256": null,
-      "sha256": "05e3235ceb9fc2d209198c07880214760c78aa66f0c920903e14c2c7e2fe47d9",
+      "sha256": "cf471232b96c2ac7252d143c9c3bebffeeb03924cbc56a93aa65789c6b1d1ba3",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -376,13 +376,13 @@
     {
       "path": "packages/dacs-seller/test/seller-substrate-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "b81490ed9b0462ee1082295d5540375ca000822689d6e1a44f4e5127d7209801",
+      "sha256": "e79caea95ca76b6160f189be3e50d3e06a8584f751e1f5cc54f0f267f340b8f7",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "2f1f61e6bd6685a8e91c12ad168209a5ba2e69c60a92876db5821f80fdb2fb25",
+      "sha256": "1b7f0a49f78978753a6e9f9c264c06ef0419eaf32cd0ff7bff59ee8d4e8b5138",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -408,6 +408,24 @@
       "originalSha256": null,
       "sha256": "28b27254f7e9618dae6863e79e3eb439b16760f76f58aae4d075dccb13f8dae5",
       "reason": "Seller rail authority coverage: TEST steward and signed DEM rail definition."
+    },
+    {
+      "path": "packages/dacs-seller/src/dacs/session-admission.mjs",
+      "originalSha256": null,
+      "sha256": "c32d19a7dff47bd43b04cef0c3d0a7a88f2658cc292eac93d19cc2ad37d4102e",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/helpers/session-admission-fixture.mjs",
+      "originalSha256": null,
+      "sha256": "946868b1a4c612865379354176b53199b3ba683e069357d71cf52632192c7ff7",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-payment-retry.test.mjs",
+      "originalSha256": null,
+      "sha256": "fed36fab692b73826a32f1cd79877de4fd8be6489ed2b7af98a47b0fb24d4128",
+      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     }
   ]
 }
