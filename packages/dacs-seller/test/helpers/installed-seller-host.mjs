@@ -75,6 +75,11 @@ assert.equal((await seller.validateListing(listing, { now: () => now, revocation
 const reached = [];
 const refuse = (name) => async () => { reached.push(name); throw new Error(`${name} is not reached while negotiating`); };
 const buyerBundle = identityFor(buyerKey, now);
+// The seller admits one session per nonce: each job that must reach the Vet context presents its own bundle.
+const ownBundles = new Map();
+const bundleFor = (jobId) => ownBundles.get(jobId) ?? buyerBundle;
+// The nonce hashes the presentation time, so each bundle is presented a millisecond earlier than the last.
+const ownBundle = (jobId) => { ownBundles.set(jobId, identityFor(buyerKey, now - ownBundles.size - 1)); return ownBundles.get(jobId); };
 // The operator's seller-owned session admission: the counterparty-verified
 // CompositeVerificationRecords it keeps (DACS-2 §7.7.2: the buyer's signed by
 // the seller, the seller's by the buyer), one challenge it issued per job (the
@@ -84,7 +89,7 @@ const vetRecords = new Map(), challenges = new Map(), admissionCalls = [];
 const verifierOf = (party) => (party === sellerKey.claim ? buyerKey : sellerKey);
 const vetRef = async (jobId, party, bundle) => {
   const verifier = verifierOf(party);
-  const record = await core.signComponentArtifact({ recordVersion: '1', jobId, evaluatedParty: party, bundleHash: core.identityBundleHash(bundle), requirementHash: core.sha256Hex(`installed-requirement:${jobId}`),
+  const record = await core.signComponentArtifact({ recordVersion: '1', jobId, evaluatedParty: party, bundleHash: core.identityBundleHash(bundle), requirementHash: core.sha256Hex(core.canonicalize(listing.buyerRequirement)),
     freshness: [], supplementary: [], dealSpecific: [], overallDecision: 'pass', generatedAt: now }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: verifier.claim, sign: verifier.sign });
   vetRecords.set(core.contentHash(record), record);
   return { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.contentHash(record), signer: verifier.claim };
@@ -103,21 +108,24 @@ const sessionAdmission = {
 // The Agreement derivation input both parties use, with the Vet references.
 const inputs = new Map();
 const vettedInput = (jobId) => inputs.get(jobId) ?? inputs.set(jobId, (async () => {
-  const input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
-  return { ...input, buyer: { ...input.buyer, vetRecordRef: await vetRef(jobId, buyerKey.claim, buyerBundle) }, seller: { ...input.seller, vetRecordRef: await vetRef(jobId, sellerKey.claim, listing.seller.identity) } };
+  const input = seller.agreementInput({ jobId, listing, buyerBundle: bundleFor(jobId), generatedAt: now });
+  return { ...input, buyer: { ...input.buyer, vetRecordRef: await vetRef(jobId, buyerKey.claim, bundleFor(jobId)) }, seller: { ...input.seller, vetRecordRef: await vetRef(jobId, sellerKey.claim, listing.seller.identity) } };
 })()).get(jobId);
 // A Vet context that names a hash with no record behind it.
 const fabricatedInput = (jobId) => {
-  const input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
+  const input = seller.agreementInput({ jobId, listing, buyerBundle: bundleFor(jobId), generatedAt: now });
   const ref = (party) => ({ anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.sha256Hex(`installed-vet:${jobId}:${party}`), signer: verifierOf(party).claim });
   return { ...input, buyer: { ...input.buyer, vetRecordRef: ref(buyerKey.claim) }, seller: { ...input.seller, vetRecordRef: ref(sellerKey.claim) } };
 };
 const fabricatedJobs = new Set();
+// One requirement invocation per party Vet record, each naming the evaluated party's counterparty as verifier.
+const invocationsFor = (input) => [['buyer', buyerKey.claim], ['seller', sellerKey.claim]].map(([role, evaluatedParty]) => ({
+  vetRecordRef: input[role].vetRecordRef, evaluatedParty, requirement: structuredClone(listing.buyerRequirement), verifier: verifierOf(evaluatedParty).claim, freshness: [], dealSpecific: [] }));
 const vetContextCalls = [];
 const capabilities = () => ({
   nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: refuse('nativePaymentEvidence.anchorEvidence'), fetchImpl: refuse('nativePaymentEvidence.fetch') }),
   demDeliveryContext: createDemDeliveryContext({ authority: 'TEST-installed-package', resolveBuyer: refuse('demDeliveryContext.resolveBuyer'),
-    resolveSeller: async ({ jobId }) => { vetContextCalls.push(jobId); return { disposition: 'present', value: { input: fabricatedJobs.has(jobId) ? fabricatedInput(jobId) : await vettedInput(jobId), vetRequirements: [] } }; } }),
+    resolveSeller: async ({ jobId }) => { vetContextCalls.push(jobId); const input = fabricatedJobs.has(jobId) ? fabricatedInput(jobId) : await vettedInput(jobId); return { disposition: 'present', value: { input, vetRequirements: invocationsFor(input) } }; } }),
   nativeDemDelivery: createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', submit: refuse('nativeDemDelivery.submit'), reconcile: refuse('nativeDemDelivery.reconcile'),
     read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt') }),
   buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
@@ -164,14 +172,19 @@ const proposalFor = async (input) => {
 const jobId = core.generateCanonicalJobId();
 const { plan, buyerContribution, proposal, transportIdentity } = await proposalFor(await vettedInput(jobId));
 // The same buyer on another job, over the synthetic not-performed Vet references.
-const unvetted = await proposalFor(seller.agreementInput({ jobId: core.generateCanonicalJobId(), listing, buyerBundle, generatedAt: now }));
+const unvettedJobId = core.generateCanonicalJobId();
+ownBundle(unvettedJobId);
+const unvetted = await proposalFor(seller.agreementInput({ jobId: unvettedJobId, listing, buyerBundle: bundleFor(unvettedJobId), generatedAt: now }));
 // The same buyer on another job, whose Vet context names hashes no record backs.
 const fabricatedJobId = core.generateCanonicalJobId();
 fabricatedJobs.add(fabricatedJobId);
+ownBundle(fabricatedJobId);
 const fabricated = await proposalFor(fabricatedInput(fabricatedJobId));
-// The same presentation replayed on a job the seller issued it no challenge for.
-const replayed = await proposalFor(await vettedInput(core.generateCanonicalJobId()));
-for (const id of [jobId, unvetted.transportIdentity.jobId, fabricatedJobId]) challenges.set(id, buyerBundle.sessionNonce);
+// A fresh presentation on a job the seller issued it no challenge for.
+const replayedJobId = core.generateCanonicalJobId();
+ownBundle(replayedJobId);
+const replayed = await proposalFor(await vettedInput(replayedJobId));
+for (const id of [jobId, unvettedJobId, fabricatedJobId]) challenges.set(id, bundleFor(id).sessionNonce);
 const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: seller.createSellerTransportClientAuth({
   buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin, agreementHash }) }) });
 // Independent of the package: node:crypto against the seller's own key.
@@ -198,11 +211,11 @@ out.stateSameContribution = core.canonicalize(state.contribution) === core.canon
 out.refusals = {
   otherListingPin: await refusedCode(() => clientFor(host.url, { ...pin, contentHash: '0'.repeat(64) }).propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle })),
   unsigned: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/proposals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) }); return { status: response.status, body: await response.json() }; })(),
-  unvettedProposal: await (async () => { try { const answer = await clientFor(host.url, pin, unvetted.plan.agreementHash).propose({ proposal: unvetted.proposal, transportIdentity: unvetted.transportIdentity, buyerIdentityBundle: buyerBundle });
+  unvettedProposal: await (async () => { try { const answer = await clientFor(host.url, pin, unvetted.plan.agreementHash).propose({ proposal: unvetted.proposal, transportIdentity: unvetted.transportIdentity, buyerIdentityBundle: bundleFor(unvettedJobId) });
     return { disposition: answer.disposition ?? null, contribution: answer.contribution ?? null }; } catch (error) { return { name: error.name, code: error.code ?? null, contribution: null }; } })(),
-  fabricatedVetProposal: await (async () => { try { const answer = await clientFor(host.url, pin, fabricated.plan.agreementHash).propose({ proposal: fabricated.proposal, transportIdentity: fabricated.transportIdentity, buyerIdentityBundle: buyerBundle });
+  fabricatedVetProposal: await (async () => { try { const answer = await clientFor(host.url, pin, fabricated.plan.agreementHash).propose({ proposal: fabricated.proposal, transportIdentity: fabricated.transportIdentity, buyerIdentityBundle: bundleFor(fabricatedJobId) });
     return { disposition: answer.disposition ?? null, contribution: answer.contribution ?? null }; } catch (error) { return { name: error.name, code: error.code ?? null, contribution: null }; } })(),
-  replayedPresentation: await refusedCode(() => clientFor(host.url, pin, replayed.plan.agreementHash).propose({ proposal: replayed.proposal, transportIdentity: replayed.transportIdentity, buyerIdentityBundle: buyerBundle })),
+  replayedPresentation: await refusedCode(() => clientFor(host.url, pin, replayed.plan.agreementHash).propose({ proposal: replayed.proposal, transportIdentity: replayed.transportIdentity, buyerIdentityBundle: bundleFor(replayedJobId) })),
   contextChallenge: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/context/challenge`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); return { status: response.status, body: await response.json() }; })(),
   secondHostSameDirectory: await refusal({ signer, listing, dataDirectory, ...capabilities() }),
   secondProcessSameDirectory: JSON.parse(spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--second', dataDirectory], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: 60000 }).stdout.trim().split('\n').at(-1)).secondProcess,
