@@ -645,16 +645,24 @@ original prepared-transfer journal entry for that hash as `preparedTransfer`.
 
 The SDK counts the retained hash for this payment only through its own record
 that this key signed it, and refuses the audit otherwise. That record is the
-key's attempt record, or a result this bridge submitted or already bound. A
+key's attempt record, or a result this bridge submitted that the attempt record
+accepted (or whose fence keeps no record). Every audit reads the attempt record,
+and a record naming another hash refuses it, whatever this bridge holds in
+memory. A
 `createIdempotencyStore` store hands its settlement fence a `recordAttempt`
 method when its `SettlementLog` implements the optional `putAttempt` and
 `readAttempt` pair (the in-memory log does). `createPayDemRail` records the
 signed hash through it before its one broadcast and does not broadcast if the
 record is refused. `payDemSettle` also records any hash a rail returns before
-the store persists or returns it. The record is compare-and-set under the
-submit generation and never changes, so after a crash, a timeout or an
-ambiguous result a restarted process still finishes a final payment
-(DACS-4 §9.5.1 PC-7). A durable log without the attempt pair keeps working for
+the store persists or returns it; when that write is refused the call fails
+and the hash stays unbound. A custom rail must call `fence.recordAttempt` with
+the exact hash it will return before it broadcasts, and must not broadcast
+when it rejects: the bridge's own write after the rail returns cannot cover a
+crash between that broadcast and the return. The record is compare-and-set
+under the submit generation and never changes, so after a crash, a timeout or
+an ambiguous result a restarted process can still audit the payment and never
+fails, resubmits or reports unpaid a final one (DACS-4 §9.5.1 PC-7). A durable
+log needs the attempt pair for restart audits: one without it keeps working for
 fresh settlement, but after a restart its audits fail closed.
 
 A supplied entry is always checked as well. It must name the retained hash, the

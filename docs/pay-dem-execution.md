@@ -93,18 +93,22 @@ checks the statement's shape and bindings, but cannot authenticate it.
   that hash and, whenever it can load one, the prepared-transfer journal entry
   for that hash as `preparedTransfer`. The hash counts for this payment only
   through the SDK's own record that this key signed it: the key's attempt
-  record, or a result this bridge submitted or already bound. Otherwise the
-  audit is refused.
+  record, or a result this bridge submitted and the attempt record accepted.
+  Otherwise the audit is refused. Every audit reads the attempt record, and a
+  record naming another hash refuses it, whatever the bridge holds in memory.
 - The attempt record is written through the settlement fence's
   `recordAttempt`, which a `createIdempotencyStore` store provides when its
   `SettlementLog` implements the optional `putAttempt`/`readAttempt` pair (the
   in-memory log does). The rail records the signed hash before its one
   broadcast and does not broadcast when the record is refused; `payDemSettle`
   also records any hash a rail returns before the store persists or returns
-  it. The write is compare-and-set under the submit generation and the record
-  never changes. A crash after broadcast, a timeout or an ambiguous result
-  therefore still lets a restarted process finish a final payment. Over a log
-  without the pair, audits after a restart fail closed.
+  it, and a refused write fails the call and leaves the hash unbound. A custom
+  rail must record the exact hash it will return before it broadcasts: the
+  bridge's write after the return cannot cover a crash in between. The write is
+  compare-and-set under the submit generation and the record never changes. A
+  crash after broadcast, a timeout or an ambiguous result therefore still lets
+  a restarted process audit the payment. A durable log needs the pair: over a
+  log without it, audits after a restart fail closed.
 
   A supplied entry is always checked: it must name that hash, the same payer,
   payee, OS amount and network, a `recovery` tuple equal to this rail, job and

@@ -191,9 +191,9 @@ export interface SettlementLog {
    * first record needs the exact current unexpired generation (`stale`
    * otherwise). After that the record never changes or disappears: the same
    * hash again is `existing`, any other hash or binding is `conflict`.
-   * Optional, but a log provides both attempt methods or neither. Without
-   * them a pay-dem audit after a restart cannot bind its retained hash and
-   * fails closed.
+   * Optional, but a log provides both attempt methods or neither, and a
+   * durable log needs them: without them a pay-dem audit after a restart
+   * cannot bind its retained hash and fails closed.
    */
   putAttempt?(input: Readonly<{
     key: string;

@@ -39,6 +39,16 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(readme).toContain("(docs/pay-dem-execution.md)");
   });
 
+  it("states the attempt-record contract for custom rails and durable logs", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    const readme = read("README.md").replace(/\s+/g, " ");
+    expect(doc).toContain("A custom rail must record the exact hash it will return before it broadcasts");
+    expect(readme).toContain("A custom rail must call `fence.recordAttempt` with the exact hash it will return before it broadcasts");
+    expect(doc).toContain("A durable log needs the pair");
+    expect(readme).toContain("A durable log needs the attempt pair for restart audits");
+    expect(doc).toContain("a refused write fails the call and leaves the hash unbound");
+  });
+
   it("says a failure proof from outside createPayDemRail never becomes the recorded outcome", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain(

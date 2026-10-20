@@ -2319,8 +2319,11 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * without them. It counts the retained hash only when the key's attempt
  * record in a `createIdempotencyStore` store (written through the fence's
  * `recordAttempt` by the rail before broadcast, or by this bridge when the
- * rail returns), or a result this bridge submitted or already bound, names
- * that hash. A rail-log outcome or an injected store's records never do, and
+ * rail returns), or a result this bridge submitted and that record accepted,
+ * names that hash. It always reads the record, which refuses another hash
+ * whatever this bridge holds. A custom rail must record the hash it returns
+ * before it broadcasts: the bridge's write after the return cannot cover a
+ * crash in between. A rail-log outcome or an injected store's records never do, and
  * neither does a prepared-transfer journal entry the reconciliation returns:
  * that entry is checked against this exact payment tuple and can refuse the
  * audit, but never counts the hash on its own. Once
@@ -2455,9 +2458,11 @@ export function payDemSettle(
   // outcome is independently reconciled against the full amount/address tuple
   // before reuse. This prevents a `(railId, jobId, phaseIndex)` collision from
   // inheriting a result for different committed terms. `boundToKey` is true
-  // only for a hash this bridge submitted or bound through its attempt record:
-  // a reconciler's answer, with or without a journal entry, may be another
-  // job's transfer of the same parties and amount.
+  // only for a hash this bridge submitted and the key's attempt record accepted
+  // (or that its fence has no record for), or that the record names: a
+  // reconciler's answer, with or without a journal entry, may be another job's
+  // transfer of the same parties and amount. The record, when the store keeps
+  // one, always overrides this cache.
   const authenticatedResults = new Map<
     string,
     Readonly<{
@@ -2658,9 +2663,10 @@ export function payDemSettle(
           return recorded === retainedTxHash;
         };
         const before = await readOutcome();
-        const recordedBefore =
-          (priorAuthenticated?.boundToKey === true && priorAuthenticated.result.txHash === retainedTxHash) ||
-          await attemptNames();
+        // The durable record is always checked, even when this bridge bound the
+        // hash itself: the record wins over anything held in memory.
+        const recordedBefore = await attemptNames() ||
+          (priorAuthenticated?.boundToKey === true && priorAuthenticated.result.txHash === retainedTxHash);
         const recovered = await reconcile(Object.freeze({ ...context, txHash: retainedTxHash }));
         if (recovered === null) {
           throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
@@ -2699,21 +2705,25 @@ export function payDemSettle(
           recovery: context,
         }, effectFence);
         const captured = captureFreshPayDemResult(submitted, context);
-        authenticatedResults.set(key, { context, result: captured, boundToKey: true });
+        // Keep what the rail reported so a later call cannot contradict it, but
+        // bind it to the key only once the attempt record accepted it.
+        authenticatedResults.set(key, { context, result: captured, boundToKey: false });
         // Record the hash durably before the store persists or returns it, so a
         // restart can bind it; `createPayDemRail` already did so before its
-        // broadcast. A refused record fails closed.
+        // broadcast. A refused record fails closed and leaves the hash unbound.
         if (captured.txHash.length > 0) await effectFence?.recordAttempt?.(captured.txHash);
+        authenticatedResults.set(key, { context, result: captured, boundToKey: true });
         return captured;
       };
       if (recordVerifiedRail) vouchRecordVerifiedSource(submit);
-      // A hash this bridge already bound for the key, or this key's attempt
-      // record names, stays bound when a later reconciliation confirms it. A
-      // reconciliation never binds one itself, even with a journal entry.
+      // A hash this key's attempt record names stays bound when a later
+      // reconciliation confirms it; without a record, so does one this bridge
+      // already bound. A reconciliation never binds one itself, even with a
+      // journal entry.
       const boundAfterReconciliation = (reconciled: SettleResult, recorded: string | null) => {
+        if (recorded !== null) return recorded === reconciled.txHash;
         const prior = authenticatedResults.get(key);
-        return recorded === reconciled.txHash ||
-          (prior?.boundToKey === true && prior.result.txHash === reconciled.txHash);
+        return prior?.boundToKey === true && prior.result.txHash === reconciled.txHash;
       };
       // A restart reconciliation asks for the exact recorded hash when this key
       // has one, and refuses any other transaction.
