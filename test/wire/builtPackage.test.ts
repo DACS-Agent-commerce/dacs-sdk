@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { signedAgreement } from "./commitmentFixture.js";
+import { signedAgreement, tp1Listing } from "./commitmentFixture.js";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const VECTORS = join(root, "vectors/dacs-seller-http-v1.json");
@@ -32,6 +32,8 @@ const placeholderSigner = (claim: string) => ({ claim, sign: () => new Uint8Arra
 // Generated a minute before the vectors' clock: the consumer's commitment finalizes after it (generatedAt <= committedAt).
 const AGREEMENT_TEMPLATE = JSON.stringify(signedAgreement({ buyer: placeholderSigner(PLACEHOLDER.buyer), seller: placeholderSigner(PLACEHOLDER.seller),
   jobId: vectorJob.jobId, listingPin: vectorJob.listingPin, generatedAt: vectorNow - 60_000 }).agreement);
+// The seller's signed Listing it is derived from, with the placeholder seller; the consumer names its own seller, pins it and signs it.
+const LISTING_TEMPLATE = JSON.stringify(tp1Listing({ seller: placeholderSigner(PLACEHOLDER.seller), listingId: vectorJob.listingPin.listingId }).listing);
 
 const CONSUMER = String.raw`
 import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -214,12 +216,18 @@ out.approvedIdentitySeller.exactOrNewPurchaseSignerCalls = sellerSigner.calls - 
 const distDir = dirname(dir);
 const walk = (d) => readdirSync(d).flatMap((f) => statSync(join(d, f)).isDirectory() ? walk(join(d, f)) : f.endsWith(".js") ? [join(d, f)] : []);
 const shippedJs = walk(distDir).map((f) => f.slice(distDir.length + 1)).sort();
-const drainedBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [file.job.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: false, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
-const drained = wire.verifyEndpointProof(drainedBytes, { readListingEligibility, readCommitmentReceipt: () => "valid", listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now });
-const facts = { jobId: file.job.jobId, agreementHash: file.job.agreementHash, listingRef: file.job.listingPin, buyer: signer.claim, seller: sellerSigner.claim, committedAt: 42 };
+// The seller's signed Listing (the template with this consumer's seller): its pin is the one the purchase names.
+const { contentHash } = await import("@kynesyslabs/dacs/canonical");
+const PLACEHOLDER = JSON.parse(process.argv[4]);
+const { signature: _listingPlaceholder, ...unsignedListing } = JSON.parse(readFileSync(new URL("./listing-template.json", import.meta.url), "utf8").replaceAll(PLACEHOLDER.seller, sellerSigner.claim));
+const listingPin = { listingId: unsignedListing.listingId, version: unsignedListing.listingVersion, contentHash: contentHash(unsignedListing) };
+const signedListing = { ...unsignedListing, signature: { algorithm: "ed25519", signer: sellerSigner.claim, value: sign(null, Buffer.from("dacs-listing:v1:" + listingPin.contentHash), sellerKeys.privateKey).toString("base64url") } };
+const drainedBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [listingPin], capabilities: wire.TP1_CAPABILITIES, ready: false, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
+const drained = wire.verifyEndpointProof(drainedBytes, { readListingEligibility, readCommitmentReceipt: () => "valid", listing: { seller: sellerSigner.claim, publicEndpoint, listingPin }, binding: bb, local: buyerLocal, now: file.now });
+const facts = { jobId: file.job.jobId, agreementHash: file.job.agreementHash, listingRef: listingPin, buyer: signer.claim, seller: sellerSigner.claim, committedAt: 42 };
 const received = (v) => { try { return v === undefined || v === null ? v : Buffer.from(JSON.stringify(v)); } catch { return v; } };
-const pay = (commitment, agreement, agreementHash = file.job.agreementHash) => payRaw(received(commitment), received(agreement), agreementHash);
-const payRaw = (commitment, agreement, agreementHash = file.job.agreementHash) => code(() => wire.signWireRequest({ endpointProof: drained, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/payments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash, profile: bb.profile }, now: file.now, commitment, agreement }));
+const pay = (commitment, agreement, agreementHash = file.job.agreementHash, listing = received(signedListing)) => payRaw(received(commitment), received(agreement), agreementHash, listing);
+const payRaw = (commitment, agreement, agreementHash = file.job.agreementHash, listing = received(signedListing)) => code(() => wire.signWireRequest({ endpointProof: drained, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/payments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin, agreementHash, profile: bb.profile }, now: file.now, commitment, agreement, signedListing: listing }));
 const within = (promise) => Promise.race([Promise.resolve(promise).catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 1000))]);
 out.commitmentForgery = { files: shippedJs.length, verifiedCommitmentModule: shippedJs.includes("negotiate/verifiedCommitment.js"), unimportable: [], vouchers: [], tried: 0, continued: [] };
 const signerCallsBeforeForgery = signer.calls;
@@ -243,17 +251,16 @@ for (const f of shippedJs) {
 }
 out.commitmentForgery.statedFacts = await pay(facts);
 out.commitmentForgery.signerCalls = signer.calls - signerCallsBeforeForgery;
-// The Agreement both parties signed (CA-7): the template with this consumer's parties, signed by each one's own key.
-const { contentHash } = await import("@kynesyslabs/dacs/canonical");
-const PLACEHOLDER = JSON.parse(process.argv[4]);
-const { signatures: _placeholders, ...unsignedAgreement } = JSON.parse(readFileSync(new URL("./agreement-template.json", import.meta.url), "utf8")
+// The Agreement both parties signed (CA-7): the template with this consumer's parties and Listing, signed by each one's own key.
+const { signatures: _placeholders, ...templateAgreement } = JSON.parse(readFileSync(new URL("./agreement-template.json", import.meta.url), "utf8")
   .replaceAll(PLACEHOLDER.buyer, signer.claim).replaceAll(PLACEHOLDER.seller, sellerSigner.claim));
+const unsignedAgreement = { ...templateAgreement, listingRef: listingPin };
 const agreementHash = contentHash(unsignedAgreement);
 const agreementBytes = Buffer.from("dacs-agreement:v1:" + agreementHash);
 const partySignature = (party, key) => ({ party, algorithm: "ed25519", value: sign(null, agreementBytes, key).toString("base64url") });
 const agreement = { ...unsignedAgreement, signatures: [partySignature(signer.claim, privateKey), partySignature(sellerSigner.claim, sellerKeys.privateKey)] };
 // Control: the seller's signed finality record for it with its finalized receipt, as bytes a buyer receives, continues.
-const unsignedRecord = { finalityCommitmentVersion: "1", jobId: file.job.jobId, agreementHash, listingRef: file.job.listingPin, parties: [signer.claim, sellerSigner.claim], pattern: "fixed-price", createdAt: file.now - 2000 };
+const unsignedRecord = { finalityCommitmentVersion: "1", jobId: file.job.jobId, agreementHash, listingRef: listingPin, parties: [signer.claim, sellerSigner.claim], pattern: "fixed-price", createdAt: file.now - 2000 };
 const recordValue = Buffer.from(sellerKeys.privateKey ? sign(null, Buffer.from("dacs-finality-commitment:v1:" + sha(canonicalize(unsignedRecord))), sellerKeys.privateKey) : []).toString("base64url");
 const signedRecord = { ...unsignedRecord, signature: { algorithm: "ed25519", signer: sellerSigner.claim, value: recordValue } };
 const anchorReceipt = { receiptVersion: "1", substrate: "demos:testnet", finalityProfile: "demos-bft-final", logicalAddress: "dacs3:commit:" + file.job.jobId, nativeAddress: "stor-commitment",
@@ -266,6 +273,11 @@ out.commitmentForgery.noAgreement = await pay(genuineCommitment, undefined, agre
 // The same genuine evidence as objects, not bytes the wire admitted (CF-5): refused.
 out.commitmentForgery.notAdmitted = await payRaw(genuineCommitment, received(agreement), agreementHash);
 out.commitmentForgery.agreementNotAdmitted = await payRaw(received(genuineCommitment), JSON.parse(JSON.stringify(agreement)), agreementHash);
+// The same genuine evidence with no Listing, the Listing as an object, or another of the seller's Listings: refused (its phase, window and deadline are read from it).
+out.commitmentForgery.noListing = await code(() => wire.signWireRequest({ endpointProof: drained, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/payments", jobId: file.job.jobId, text: "{}",
+  seller: sellerSigner.claim, job: { listingPin, agreementHash, profile: bb.profile }, now: file.now, commitment: received(genuineCommitment), agreement: received(agreement) }));
+out.commitmentForgery.listingNotAdmitted = await pay(genuineCommitment, agreement, agreementHash, JSON.parse(JSON.stringify(signedListing)));
+out.commitmentForgery.otherListing = await pay(genuineCommitment, agreement, agreementHash, received({ ...signedListing, listingId: "other-report" }));
 console.log(JSON.stringify(out));
 `;
 
@@ -276,6 +288,7 @@ let approvedCopy: Record<string, any> = {};
 function consume(dir: string, ...args: string[]): Record<string, any> {
   writeFileSync(join(dir, "consumer.mjs"), CONSUMER);
   writeFileSync(join(dir, "agreement-template.json"), AGREEMENT_TEMPLATE);
+  writeFileSync(join(dir, "listing-template.json"), LISTING_TEMPLATE);
   const run = spawnSync(process.execPath, ["consumer.mjs", VECTORS, args[0] ?? "", JSON.stringify(PLACEHOLDER), ...args.slice(1)], { cwd: dir, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
   if (run.status !== 0) throw new Error(`consumer failed (status ${run.status}, signal ${run.signal})\n${run.stderr}`);
   return JSON.parse(run.stdout);
@@ -379,6 +392,9 @@ describe("built @kynesyslabs/dacs/wire, as a consumer installs it", () => {
     expect(forgery.noAgreement).toBe("continuation_agreement_invalid");
     expect(forgery.notAdmitted).toBe("continuation_commitment_invalid");
     expect(forgery.agreementNotAdmitted).toBe("continuation_agreement_invalid");
+    expect(forgery.noListing).toBe("continuation_listing_invalid");
+    expect(forgery.listingNotAdmitted).toBe("continuation_listing_invalid");
+    expect(forgery.otherListing).toBe("continuation_listing_invalid");
     expect(shipped.journalProbeExported).toBe("undefined");
   });
 

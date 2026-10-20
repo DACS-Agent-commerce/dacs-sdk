@@ -1,9 +1,9 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
-import { COMMIT_PHASE, received, signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { ed25519KeyPair, received, signedAgreement, tp1Listing, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { spawn } from "node:child_process";
-import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { randomBytes, sign } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,12 +19,14 @@ const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const NOW = Date.UTC(2026, 9, 18);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
 const LOCAL = { endpoint: "https://rpc.journal.invalid/", transportAuthority: "test", connectionId: "1" };
-const PIN = { listingId: "report", version: 1, contentHash: "c".repeat(64) };
+// The seller's key is fixed, so its signed Listing, and the pin every request names, is a constant.
+const SELLER_SEED = 52;
+const { listing: LISTING, pin: PIN } = tp1Listing({ seller: party(SELLER_SEED), listingId: "report" });
 const P = wire.DACS_SELLER_HTTP_PATHS;
 const EFFECT_ROUTES = wire.DACS_SELLER_HTTP_ROUTES.filter((r) => r.auth === "signed" && r.effect === "effect").map((r) => r.path);
 const PAYMENT_AND_DELIVERY = [P.payments, P.bundleRequest] as const;
-function party() {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+function party(seed?: number) {
+  const { privateKey, publicKey } = ed25519KeyPair(seed);
   const key = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("hex");
   return { claim: `did:demos:agent:${key}`, key, sign: (bytes: Uint8Array) => sign(null, Buffer.from(bytes), privateKey) };
 }
@@ -32,7 +34,7 @@ const header = (value: unknown) => Buffer.from(canonicalize(value)).toString("ba
 /** A fresh request nonce: the reservation key is shared across routes, so each request needs its own. */
 const nonce = () => randomBytes(24).toString("base64url");
 function world() {
-  const buyer = party(), seller = party(), session = party();
+  const buyer = party(), seller = party(SELLER_SEED), session = party();
   const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
   const context = { binding, local: LOCAL, purchaseProfile: binding.profile };
   const { agreement, agreementHash } = signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN });
@@ -56,7 +58,7 @@ function world() {
   const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash, listingPin: PIN, committedAt: NOW - 5000 });
   // The seller is ready, so a route that starts a purchase reaches its reservation.
   const check = (path: string) => ({ ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true,
-    commitment: received(commitment), agreement: received(agreement), readCommitmentReceipt: validReceipt, commitPhase: COMMIT_PHASE });
+    commitment: received(commitment), agreement: received(agreement), readCommitmentReceipt: validReceipt, signedListing: received(LISTING) });
   return { seller, context, agreement, request, direct, delegated, artifact, retained, commitment, check };
 }
 
@@ -136,7 +138,7 @@ describe("the durable journal across a restart and concurrent workers", () => {
     mkdirSync(journal, { mode: 0o700 });
     const inputs = Object.fromEntries(Object.entries(lists).map(([name, requests]) => {
       const path = join(dir, `${name}.input.json`);
-      writeFileSync(path, JSON.stringify({ journal, leaseMs, now: NOW, local: LOCAL, seller: x.seller.claim, listingPin: PIN, retained: x.retained, commitment: x.commitment, agreement: x.agreement,
+      writeFileSync(path, JSON.stringify({ journal, leaseMs, now: NOW, local: LOCAL, seller: x.seller.claim, listingPin: PIN, retained: x.retained, commitment: x.commitment, agreement: x.agreement, signedListing: LISTING,
         requests: requests.map(({ payload, body }) => ({ path: payload.path, header: x.direct(payload), body })) }));
       return [name, path];
     }));

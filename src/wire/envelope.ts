@@ -104,6 +104,8 @@ export interface EnvelopeSigningContext extends SigningContext {
   commitment?: unknown;
   /** Required with `commitment`: the Agreement both parties signed that it commits (DACS-3 §8.6 CA-7). */
   agreement?: unknown;
+  /** Required with `commitment`: the Listing the purchase pins, as bytes or an admitted value (WireRequestInput.signedListing). */
+  signedListing?: unknown;
   /**
    * Required: the tuple the signer kept for this purchase, exactly the
    * binding's profile. `null` (none kept yet) only for a seller's answer to a
@@ -120,7 +122,7 @@ export interface EnvelopeSigningContext extends SigningContext {
  * header all come from those copies.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
-  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement"]) as Partial<EnvelopeSigningContext>;
+  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing"]) as Partial<EnvelopeSigningContext>;
   assertTp1Binding(binding, local);
   const payload = ownedArtifact(supplied, "peer_envelope_invalid", 500);
   if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
@@ -138,7 +140,7 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
   if (payload.kind === "request") assertEndpointProof(endpointProof, {
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
-    publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement,
+    publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement, signedListing,
   });
   assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");
@@ -296,13 +298,17 @@ export interface RequestCheck {
   /** The seller's SR-2 receipt reader for `commitment` (commitment.ts); required with it. */
   readCommitmentReceipt?: CommitmentReceiptReader;
   /**
-   * Required with `commitment`: the commit phase kind of the seller's own
-   * signed Listing (its pipeline), which selects the Agreement type before
-   * any signature is read (DACS-3 §8.5.2 check 9, CA-7). TP-1 continues only
-   * `commit-agreement`; another value, or none, is
+   * Required with `commitment`: the seller's own signed Listing that the
+   * request's Listing pin names, as its exact bytes or an admitted value, like
+   * `commitment`. The wire reads its commit phase (which selects the Agreement
+   * type before any signature is read: DACS-3 §8.5.2 check 9, CA-5, CA-7),
+   * validity window and deadlineSecAfterCommit from it, never from a host's
+   * statement of them, and refuses a commitment the Standard's post-finality
+   * checks 5 and 6 make invalid (commitment.ts). Another Listing, or none, is
+   * `continuation_listing_invalid`; a phase other than `commit-agreement` is
    * `continuation_phase_unsupported` (500).
    */
-  commitPhase?: string;
+  signedListing?: unknown;
   /**
    * Required on every route that starts or commits a purchase (proposals,
    * commitments, commitment signature, context): whether this seller accepts
@@ -335,7 +341,7 @@ export function messageLifetime(override: unknown, code: string, max: number = D
   return ms;
 }
 
-const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready", "commitment", "agreement", "readCommitmentReceipt", "commitPhase"] as const;
+const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready", "commitment", "agreement", "readCommitmentReceipt", "signedListing"] as const;
 
 /**
  * A request that starts or commits a purchase (every effect route the buyer
@@ -351,14 +357,14 @@ function admitNewPurchase(request: WireRequestPayload, ready: unknown): void {
 /**
  * A payment or delivery request continues only a purchase whose finalized
  * commitment the seller holds for exactly this job, Agreement, parties and
- * Listing, for an Agreement both parties signed, its receipt authenticated
- * now (commitment.ts).
+ * Listing, for an Agreement both parties signed, valid at its receipt time
+ * under the seller's own Listing, its receipt authenticated now (commitment.ts).
  */
 function admitContinuation(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): void {
   if (!isContinuingRoute(request.path)) return;
   if (c.commitment === null) fail("peer_agreement_uncommitted", 409);
   if (c.commitment === undefined) fail("seller_commitment_required", 500);
-  commitmentReceiptTime(c.commitment, c.agreement, c.readCommitmentReceipt, { seller: request.seller, listingPin, commitPhase: c.commitPhase, now: c.now,
+  commitmentReceiptTime(c.commitment, c.agreement, c.signedListing, c.readCommitmentReceipt, { seller: request.seller, listingPin, now: c.now,
     request: { jobId: request.jobId, agreementHash: request.agreementHash, buyer: request.buyer } });
 }
 

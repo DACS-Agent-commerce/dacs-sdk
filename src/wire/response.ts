@@ -77,10 +77,11 @@ export interface WireRequestInput extends SigningContext {
    * returned). The seller (TP-1's orchestrator) sends it; the result
    * commitFixedPriceAgreement returned, or a copy read again after a restart,
    * is checked the same way. A caller's object is refused. The wire first
-   * checks the Listing's commit phase (the eligibility reader's
-   * `commitPhase`), then the record, the seller's
-   * signature, `agreement` (both parties' signatures, CA-7) and the finalized
-   * receipt, and the receipt reader kept with
+   * checks `signedListing` (the Listing the purchase pins) and its own commit phase,
+   * then the record, the seller's
+   * signature, `agreement` (both parties' signatures, CA-7), the finalized
+   * receipt and the Listing's window and deadline at its receipt time
+   * (DACS-3 §8.5.2 checks 5 and 6), and the receipt reader kept with
    * `endpointProof` (verifyEndpointProof's `readCommitmentReceipt`)
    * authenticates it at every signing. The request then continues, so
    * `ready: false` does not refuse it and the Listing's window is compared at
@@ -90,6 +91,12 @@ export interface WireRequestInput extends SigningContext {
   commitment?: unknown;
   /** Required with `commitment`: the Agreement both parties signed that it commits (DACS-3 §8.6 CA-7), as bytes or an admitted value. */
   agreement?: unknown;
+  /**
+   * Required with `commitment`: the seller's signed Listing the purchase pins
+   * (the one the buyer's eligibility reader authenticated), as bytes or an
+   * admitted value. Its commit phase, window and deadline are read from it.
+   */
+  signedListing?: unknown;
   publicEndpoint: string;
   path: string;
   jobId: string;
@@ -104,7 +111,7 @@ export interface WireRequestInput extends SigningContext {
   nonce?: string;
 }
 
-const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "commitment", "agreement", "publicEndpoint", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
+const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "commitment", "agreement", "signedListing", "publicEndpoint", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
 
 /**
  * A wire refusal of the buyer's own delegation keeps its code and detail with
@@ -163,8 +170,8 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   };
   // Validate the complete payload before checking the purchase effect gate.
   wireRequestHash(payload);
-  assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, request: payload, commitment: input.commitment, agreement: input.agreement });
-  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now, commitment: input.commitment, agreement: input.agreement }, delegation) };
+  assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, request: payload, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing });
+  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing }, delegation) };
 }
 
 export interface WireResponseReceipt {

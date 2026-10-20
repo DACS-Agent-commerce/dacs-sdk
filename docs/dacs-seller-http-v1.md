@@ -8,9 +8,11 @@
 `@kynesyslabs/dacs/wire` defines the HTTPS wire between a buyer and a seller's
 own endpoint: the route table, the signed request and response envelopes, the
 seller session delegation, the discovery document and endpoint proof, their
-exact signing bytes, and validators. Its checks perform no I/O, and it has no
-HTTP server or client. Its one store is the seller's request journal
-(`openWireRequestJournal`), a local directory. The seller host (`@kynesyslabs/dacs-seller`) and the
+exact signing bytes, and validators. It has no HTTP server or client. Its one
+store, and its only I/O, is the seller's request journal
+(`openWireRequestJournal`), a local directory: on an effect route
+`checkWireRequest` writes and syncs journal entries synchronously, so it
+blocks the calling thread for those writes. The seller host (`@kynesyslabs/dacs-seller`) and the
 buyer client (`@kynesyslabs/dacs-client`) are its intended consumers.
 
 It is the wire the buyer plugins run today, ported from the plugin
@@ -251,11 +253,13 @@ below):
    finalized commitment, as the exact bytes the seller read itself
    (`commitment`), its SR-2 receipt reader (`readCommitmentReceipt`), the
    retained Agreement both parties signed (`agreement`, as bytes too), and
-   the commit phase of its own signed Listing (`commitPhase`, which must be
-   `commit-agreement`). It checks them exactly as
-   the buyer's signers do (see the endpoint proof section), against the
-   retained job, Agreement hash, parties and Listing pin, before any
-   reservation. `commitment: null`, the host's own reader having found none,
+   its own signed Listing that the request's pin names (`signedListing`, as
+   bytes too). The Listing's commit phase, validity window and
+   `deadlineSecAfterCommit` are read from that Listing, never from a host's
+   statement of them. It checks them as the buyer's signers do (see the
+   endpoint proof section), against the retained job, Agreement hash, parties
+   and Listing pin, before any reservation, including the Standard's
+   post-finality checks 5 and 6 at the receipt time. `commitment: null`, the host's own reader having found none,
    refuses the request as `peer_agreement_uncommitted` (409); omitted, it is
    `seller_commitment_required` (500).
    Before returning a checked body on an effect route, `checkWireRequest`
@@ -410,7 +414,8 @@ must return a current decision or throw; a Promise is refused.
 
 `ready: false` and the end of the Listing's window stop new purchases only.
 For a job whose commitment has finalized, the buyer passes the job's finality
-commitment as `commitment` to `signWireRequest`, request-kind
+commitment as `commitment`, with the signed Agreement (`agreement`) and the
+signed Listing it pins (`signedListing`), to `signWireRequest`, request-kind
 `signWireEnvelope` and `verifyEndpointProof`. In TP-1 the seller is the
 orchestrator (G3) and runs `commitFixedPriceAgreement`. It sends the result
 (`FinalizedAgreementCommitment`) and the Agreement to its buyer as JSON. Both
@@ -423,10 +428,20 @@ as admitted). A caller's object, a decoded string or a re-serialized copy is
 refused (`ARTIFACT-NOT-ADMITTED`), and bytes admission refuses (duplicate
 members, ill-formed UTF-8, an out-of-profile number, nesting past 128, a
 non-NFC value) keep admission's own detail. The wire checks the evidence
-itself, every time. First, the Listing's commit phase (the eligibility
-decision's `commitPhase`; the seller's own `commitPhase`) must be
-`commit-agreement`, before any signature is read
-(`continuation_phase_unsupported`). It checks the record's members
+itself, every time. First, the signed Listing the purchase pins, passed as
+`signedListing` with the commitment and admitted the same way. It must be a
+DACS-1 §6.3.4 Listing whose recomputed content hash, id and version are the
+Listing pin the request, the record and the Agreement name. That hash omits
+the Listing's signature, so the content is authenticated by the Agreement both
+parties signed and the record the seller signed over it. It must be presented
+by the seller, carry a positive `deadlineSecAfterCommit`, not be auto-accept,
+and select one fixed-price commitment: exactly one `negotiate-fixed-price`
+phase, directly followed by the only commit phase. Otherwise it is
+`continuation_listing_invalid`. That commit phase must be `commit-agreement`,
+before any signature is read (`continuation_phase_unsupported`; DACS-3 §8.5.2
+check 9, CA-5). The eligibility decision's `commitPhase` gates new purchases
+only; no phase a host states selects a continuation's Agreement type. It
+checks the record's members
 (`finalityCommitmentVersion` `"1"`,
 `fixed-price`), the job, the Agreement hash, the Listing pin and the parties
 `[buyer, seller]`. It checks the record's Ed25519 signature under
@@ -460,8 +475,15 @@ time `committedAt` instead of now, its last instant included (DACS-3 §8.5.2
 check 6, `notAfter >= committedAt`). The Agreement's own `generatedAt` never
 stands in for `committedAt`, so a backdated one extends nothing; a
 `committedAt` before it (the gate's `generatedAt <= committedAt`) or more
-than 30 s after the signer's clock is refused. A proposal, commitment or
-context request is always a new purchase. A reader therefore returns an ended
+than 30 s after the signer's clock is refused. Once `committedAt` is known,
+the wire re-evaluates DACS-3 §8.5.2 checks 5 and 6 from the signed Listing,
+as the SDK's commitment gate does after finality (:659-661): a commitment
+whose receipt time precedes the Listing's `notBefore` or follows its
+`notAfter`, or whose Agreement `terms.deadline` is past `committedAt +
+deadlineSecAfterCommit`, is invalid (`continuation_commitment_invalid`). This
+holds on every seller route and at both buyer signers, so a record the gate
+anchored and then refused after finality, read back later, continues nothing.
+A proposal, commitment or context request is always a new purchase. A reader therefore returns an ended
 window as it is; it still throws for a revoked, missing or unavailable
 Listing, and every other proof check applies.
 

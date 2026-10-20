@@ -3,8 +3,10 @@
 // whose finalized receipt time the test chooses. As in TP-1 (G3), the seller
 // is the orchestrator and signs the commitment. The anchor reader and the
 // signature verifier are test-only; production installs authenticated ones.
-// signedAgreement and wireCommitment make the same evidence for a test's own
-// parties, job and literal Listing pin.
+// tp1Listing, signedAgreement and wireCommitment make the same evidence for a
+// test's own parties and job: the seller's signed Listing (whose pin every
+// continuation names), the Agreement and the commitment.
+import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import type { CommitmentReceiptReader, ListingPin } from "../../src/wire/index.js";
 import {
   commitFixedPriceAgreement, contentHash, deriveFixedPriceAgreement, ed25519Sign, ed25519Verify, privateKeyFromSeed,
@@ -22,8 +24,26 @@ export const validReceipt: CommitmentReceiptReader = () => "valid";
  */
 export const received = (value: unknown): unknown => (value === undefined || value === null ? value : Buffer.from(JSON.stringify(value), "utf8"));
 
-/** The Listing commit phase TP-1 continues: the seller's own Listing's, in every seller check. */
+/** The Listing commit phase TP-1 continues: the one tp1Listing's pipeline selects. */
 export const COMMIT_PHASE = "commit-agreement";
+
+/**
+ * An Ed25519 key pair: random, or fixed by `seed` (the byte repeated as its
+ * 32-byte seed). A test file's seller is fixed, so the pin of its signed
+ * Listing is a module constant.
+ */
+export function ed25519KeyPair(seed?: number): { privateKey: KeyObject; publicKey: KeyObject } {
+  if (seed === undefined) return generateKeyPairSync("ed25519");
+  const privateKey = createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), Buffer.alloc(32, seed)]), format: "der", type: "pkcs8" });
+  return { privateKey, publicKey: createPublicKey(privateKey) };
+}
+
+/** A party with a fixed key, shaped like the tests' random parties. */
+export function fixedParty(byte: number) {
+  const { privateKey, publicKey } = ed25519KeyPair(byte);
+  const key = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("hex");
+  return { claim: `did:demos:agent:${key}`, key, sign: (bytes: Uint8Array) => sign(null, Buffer.from(bytes), privateKey) };
+}
 
 /** A party whose one key signs its Agreement, its commitment record or its wire messages; `calls` counts wire signatures. */
 export function seededParty(byte: number) {
@@ -41,6 +61,36 @@ const identity = (claim: string, at: number): IdentityBundle => ({
   presentation: { kind: "per-claim", signatures: [{ ref: claim, signature: "identity-proof" }] },
 });
 const vet = (locator: string, digit: string) => ({ anchor: { kind: "storage-program" as const, locator }, contentHash: digit.repeat(64) });
+
+/** A Listing validity wide enough for every test clock in 2026. */
+export const WIDE_VALIDITY = Object.freeze({ notBefore: Date.UTC(2026, 0, 1), notAfter: Date.UTC(2027, 0, 1) });
+
+/**
+ * The TP-1 fixed-price Listing `seller` signs (DACS-1 §6.3.4): negotiate
+ * fixed price, commit an Agreement, pay in DEM, deliver. Its pin is what every
+ * request, Agreement and commitment for it names, and continuations are given
+ * it as `signedListing`. `patch` changes members before it is signed.
+ */
+export function tp1Listing(options: {
+  seller: SyncSigner; listingId?: string; validity?: { notBefore: number; notAfter?: number }; publicEndpoint?: string; patch?: Record<string, unknown>;
+}): { listing: Listing; pin: ListingPin } {
+  const validity = options.validity ?? WIDE_VALIDITY;
+  const unsigned = {
+    dacsVersion: "1", listingVersion: 1, listingId: options.listingId ?? "report",
+    seller: { identity: identity(options.seller.claim, validity.notBefore), displayName: "Report", publicEndpoint: options.publicEndpoint ?? "https://seller.agreement.invalid" },
+    offering: { title: "Report", description: "A fixed-text report", category: "data.test", tags: ["report"],
+      deliverable: { kind: "attested-payload", payloadFormat: "text/plain", verificationMethod: { kind: "self-signed" } } },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
+    pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
+    acceptedRails: [DEM], terms: { deadlineSecAfterCommit: 600 }, validity: { ...validity },
+    ...options.patch,
+  } as Record<string, unknown>;
+  const hash = contentHash(unsigned);
+  const signature = { algorithm: "ed25519", signer: options.seller.claim, value: signNow(options.seller, Buffer.from(`dacs-listing:v1:${hash}`, "utf8")) };
+  const listing = { ...unsigned, signature } as unknown as Listing;
+  return { listing, pin: { listingId: listing.listingId, version: listing.listingVersion, contentHash: hash } };
+}
 
 export interface AcceptedPurchase {
   buyer: SeededParty;
@@ -132,29 +182,22 @@ const signNow = (party: SyncSigner, bytes: Uint8Array): string => {
 
 /**
  * An exact fixed-price Agreement for any job, Listing pin and parties, signed
- * by `signers` (default: the buyer and the seller). It is derived from a
- * Listing as the SDK derives one, then names `listingPin` (a test's literal
- * pin) and is signed under `dacs-agreement:v1:` over its content hash.
+ * by `signers` (default: the buyer and the seller). It is derived from the
+ * seller's tp1Listing as the SDK derives one, then names `listingPin` (that
+ * Listing's pin, or another a test names) and is signed under
+ * `dacs-agreement:v1:` over its content hash.
  * `patch` changes the draft before it is signed.
  */
 export function signedAgreement(options: {
   buyer: SyncSigner; seller: SyncSigner; jobId: string; listingPin: ListingPin; generatedAt?: number;
   signers?: { buyer: SyncSigner; seller: SyncSigner }; patch?: Record<string, unknown>;
+  /** The Listing to derive from (default: the seller's tp1Listing for the pin's id). */
+  listing?: { listing: Listing; pin: ListingPin };
 }): { agreement: AgreementArtifact; agreementHash: string } {
   // A minute before the tests' clock: the commitments they make finalize after it (generatedAt <= committedAt).
   const at = options.generatedAt ?? Date.UTC(2026, 9, 18) - 60_000;
-  const listing: Listing = {
-    dacsVersion: "1", listingVersion: 1, listingId: options.listingPin.listingId,
-    seller: { identity: identity(options.seller.claim, at), displayName: "Report", publicEndpoint: "https://seller.agreement.invalid" },
-    offering: { title: "Report", description: "A fixed-text report", category: "data.test", tags: ["report"],
-      deliverable: { kind: "attested-payload", payloadFormat: "text/plain", verificationMethod: { kind: "self-signed" } } },
-    buyerRequirement: { requirementVersion: "1", required: [] },
-    pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
-    pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
-    acceptedRails: [DEM], terms: { deadlineSecAfterCommit: 600 }, validity: { notBefore: at - 600_000, notAfter: at + 600_000 },
-    signature: { algorithm: "ed25519", signer: options.seller.claim, value: Buffer.alloc(64, 7).toString("base64url") },
-  };
-  const pin = { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing as unknown as Record<string, unknown>) };
+  // The seller's tp1Listing for the pin's id: with the pin it gives, the Agreement names exactly that Listing.
+  const { listing, pin } = options.listing ?? tp1Listing({ seller: options.seller, listingId: options.listingPin.listingId });
   const draft = deriveFixedPriceAgreement({
     jobId: options.jobId, verifiedListing: { disposition: "verified", listing, pin },
     buyer: { identityBundle: identity(options.buyer.claim, at), vetRecordRef: vet("buyer-vet", "a") },

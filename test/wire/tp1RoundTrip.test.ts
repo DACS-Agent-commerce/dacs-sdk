@@ -1,7 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
-import { COMMIT_PHASE, received, signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { ed25519KeyPair, received, signedAgreement, tp1Listing, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
@@ -10,7 +10,7 @@ import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from
 // and the buyer verifies those. Buyer and seller use different RPC endpoints
 // for the same (synthetic, test-only) identity record, approved only through
 // the test approval list (./testApproval.ts).
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/index.js";
@@ -29,14 +29,16 @@ const { testJournal, testJournals } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
-const PIN = { listingId: "round-trip-report", version: 1, contentHash: "c".repeat(64) };
+// The seller's key is fixed, so its signed Listing, and the pin every request names, is a constant.
+const SELLER_SEED = 55;
+const { listing: LISTING, pin: PIN } = tp1Listing({ seller: party(SELLER_SEED), listingId: "round-trip-report" });
 const ENDPOINT = "https://seller.round-trip.invalid";
 const RPC_A = { endpoint: "https://rpc-a.round-trip.invalid/", transportAuthority: "test-a", connectionId: "a-1" };
 const RPC_B = { endpoint: "https://rpc-b.round-trip.invalid/", transportAuthority: "test-b", connectionId: "b-1" };
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 
-function party(): WireSigner & { raw: string } {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+function party(seed?: number): WireSigner & { raw: string } {
+  const { privateKey, publicKey } = ed25519KeyPair(seed);
   const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
   registerDiscoverySigner({ claim: `did:demos:agent:${raw}`, sign: (bytes) => new Uint8Array(sign(null, Buffer.from(bytes), privateKey)) });
   return { claim: `did:demos:agent:${raw}`, raw, sign: (bytes) => new Uint8Array(sign(null, Buffer.from(bytes), privateKey)) };
@@ -56,7 +58,7 @@ const code = async (fn: () => unknown) => {
 };
 
 function world() {
-  const buyer = party(), seller = party(), session = party();
+  const buyer = party(), seller = party(SELLER_SEED), session = party();
   const record = synthetic("round-trip");
   const approvedRecordDigests = [digest(record)];
   const buyerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record, local: RPC_A }));
@@ -70,7 +72,7 @@ function world() {
 async function sellerReceives(w: ReturnType<typeof world>, header: string, text: string, requireDelegation = false) {
   const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation });
   checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation,
-    commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, commitPhase: COMMIT_PHASE });
+    commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, signedListing: received(LISTING) });
   return opened.payload;
 }
 
@@ -299,7 +301,7 @@ describe("the buyer's delegated session signer (signWireRequest)", () => {
     const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true });
     return checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim },
       seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW,
-      binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true, commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, commitPhase: COMMIT_PHASE });
+      binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true, commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, signedListing: received(LISTING) });
   };
 
   it("clamps a live request's expiry to its delegation's, and the seller accepts it", async () => {

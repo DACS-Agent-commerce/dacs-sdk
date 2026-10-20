@@ -148,8 +148,9 @@ export interface VerifiedListingEligibility extends VerifiedListingEndpoint {
  * Listing and its content hash before returning its selected terms. A missing,
  * revoked or unavailable Listing must throw its real error or return no
  * decision; an ended window is returned as it is, and the wire compares it.
- * The wire performs no I/O. Called at proof creation and again before each
- * request signature, so a cached success is never authoritative.
+ * The buyer's checks do no I/O of their own. Called at proof creation and
+ * again before each request signature, so a cached success is never
+ * authoritative.
  */
 export type ListingEligibilityReader = (scope: Readonly<VerifiedListingEndpoint & { now: number }>) => unknown;
 
@@ -177,26 +178,28 @@ export const isContinuingRoute = (path: string): boolean => listHas(CONTINUING_P
  * finalized commitment (`committedAt`, DACS-3 §8.6 CA-8), never a time the
  * caller states. `commitment` is the job's finality commitment as received
  * bytes or a value the wire admitted (the gate's result, the seller's copy,
- * or one read again after a restart); under the Listing's `commitPhase`, the
+ * or one read again after a restart). Under the commit phase of `signedListing`
+ * (the Listing the purchase pins, never the reader's statement of it), the
  * wire checks its record, the seller's signature, the signed Agreement it
- * commits (`agreement`: both parties' signatures, CA-7) and the finalized
- * receipt, and asks the buyer's receipt reader to authenticate it, every time
- * (commitment.ts). At signing it must name the request's job, Agreement hash
- * and buyer. At signing, a request on any other route is a new purchase:
- * undefined.
+ * commits (`agreement`: both parties' signatures, CA-7), the finalized
+ * receipt and the Listing's window and deadline at its receipt time (DACS-3
+ * §8.5.2 checks 5 and 6), and asks the buyer's receipt reader to authenticate
+ * it, every time (commitment.ts). At signing it must name the request's job,
+ * Agreement hash and buyer. At signing, a request on any other route is a new
+ * purchase: undefined.
  */
-function commitmentTime(commitment: unknown, agreement: unknown, reader: unknown, scope: { seller: string; listingPin: ListingPin; commitPhase: string; now: number; request?: ContinuedRequest }): number | undefined {
+function commitmentTime(commitment: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: { seller: string; listingPin: ListingPin; now: number; request?: ContinuedRequest }): number | undefined {
   const { request } = scope;
   if (commitment === undefined || (request && !isContinuingRoute(request.path) && !isReadRoute(request.path))) return undefined;
-  return commitmentReceiptTime(commitment, agreement, reader, { seller: scope.seller, listingPin: scope.listingPin, commitPhase: scope.commitPhase, now: scope.now,
+  return commitmentReceiptTime(commitment, agreement, listing, reader, { seller: scope.seller, listingPin: scope.listingPin, now: scope.now,
     ...(request ? { request: { jobId: request.jobId, agreementHash: request.agreementHash, buyer: request.buyer } } : {}) });
 }
 
 /**
  * The authenticated reader's decision for the Listing, its terms checked; its
  * window is checked by assertListingWindow once the commitment time is known.
- * The commit phase is read here, before any commitment, so it selects the
- * Agreement type the continuation must carry (CA-7).
+ * Its commit phase gates a new purchase; a continuation reads the phase from
+ * the Listing it is given (commitment.ts), never from this decision.
  */
 function readListingDecision(reader: unknown, listing: VerifiedListingEndpoint, now: number): VerifiedListingEligibility {
   if (typeof reader !== "function") fail("listing_eligibility_required", 500);
@@ -237,7 +240,7 @@ function assertListingWindow(decision: VerifiedListingEligibility, now: number, 
  * only: neither refuses a continuing request given the job's finalized
  * commitment (commitmentTime).
  */
-export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number; request: ContinuedRequest; commitment?: unknown; agreement?: unknown }): asserts proof is EndpointProof {
+export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number; request: ContinuedRequest; commitment?: unknown; agreement?: unknown; signedListing?: unknown }): asserts proof is EndpointProof {
   const kept = typeof proof === "object" && proof !== null ? proofGet(proofs, proof) : undefined;
   if (!kept || kept.binding !== scope.binding) fail("endpoint_proof_required", 500);
   const p = proof as EndpointProof;
@@ -246,7 +249,7 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
   // The buyer's own kept proof has lapsed: fetching discovery again clears it (transient), not the seller's fault.
   if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 503);
   const decision = readListingDecision(kept.readListingEligibility, kept.listing, scope.now);
-  const committedAt = commitmentTime(scope.commitment, scope.agreement, kept.readCommitmentReceipt, { ...scope, commitPhase: decision.commitPhase });
+  const committedAt = commitmentTime(scope.commitment, scope.agreement, scope.signedListing, kept.readCommitmentReceipt, scope);
   if (!p.ready && committedAt === undefined) fail("seller_not_ready", 503);
   assertListingWindow(decision, scope.now, committedAt);
   assertTp1Authority(scope.binding, scope.binding.local, [p.payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
@@ -260,18 +263,18 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
  * the buyer's own binding from bindTp1Profile and its current connection
  * (`local`). The options are read once (ownedFields) and the Listing copied.
  * `commitment` (a job's finalized commitment, as signing for that job takes
- * it, with `agreement`, the signed Agreement it commits) compares the
- * Listing's window at its receipt time. `readCommitmentReceipt`,
+ * it, with `agreement`, the signed Agreement it commits, and `signedListing`,
+ * the signed Listing it pins) compares the Listing's window at its receipt time. `readCommitmentReceipt`,
  * the buyer's own SR-2 receipt reader (commitment.ts), authenticates that
  * commitment here and is kept with the proof: purchase signing asks it again
  * for every continuing request. Without it no request continues a purchase.
  */
 export function verifyEndpointProof(bytes: Uint8Array, options: {
   listing: VerifiedListingEndpoint; binding: Tp1Binding; local: unknown; now: number; readListingEligibility: ListingEligibilityReader;
-  commitment?: unknown; agreement?: unknown; readCommitmentReceipt?: CommitmentReceiptReader;
+  commitment?: unknown; agreement?: unknown; signedListing?: unknown; readCommitmentReceipt?: CommitmentReceiptReader;
 }): EndpointProof {
-  const { listing: suppliedListing, binding, local, now, readListingEligibility, commitment, agreement, readCommitmentReceipt } =
-    ownedFields(options, ["listing", "binding", "local", "now", "readListingEligibility", "commitment", "agreement", "readCommitmentReceipt"]);
+  const { listing: suppliedListing, binding, local, now, readListingEligibility, commitment, agreement, signedListing, readCommitmentReceipt } =
+    ownedFields(options, ["listing", "binding", "local", "now", "readListingEligibility", "commitment", "agreement", "signedListing", "readCommitmentReceipt"]);
   assertTp1Binding(binding, local);
   let listing: VerifiedListingEndpoint;
   try { listing = snapshotWireJsonRead(suppliedListing, "verified Listing") as VerifiedListingEndpoint; }
@@ -297,7 +300,7 @@ export function verifyEndpointProof(bytes: Uint8Array, options: {
   if (!isUint(now) || p.issuedAt > now + ISSUED_SKEW_MS || p.expiresAt <= now) fail("discovery_expired", 502);
   const decision = readListingDecision(readListingEligibility, listing, now as number);
   assertListingWindow(decision, now as number,
-    commitmentTime(commitment, agreement, readCommitmentReceipt, { seller: listing.seller, listingPin: listing.listingPin, commitPhase: decision.commitPhase, now: now as number }));
+    commitmentTime(commitment, agreement, signedListing, readCommitmentReceipt, { seller: listing.seller, listingPin: listing.listingPin, now: now as number }));
   assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   const proof = deepFreeze({ payload: cloneJson(p), ready: p.ready });
   proofSet(proofs, proof, { binding: binding as Tp1Binding, listing: deepFreeze(listing), readListingEligibility: readListingEligibility as ListingEligibilityReader, readCommitmentReceipt });

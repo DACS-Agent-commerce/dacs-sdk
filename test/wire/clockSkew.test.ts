@@ -2,7 +2,7 @@ import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalDirectory, journalFixture, reservationsIn } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
-import { COMMIT_PHASE, received, signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { ed25519KeyPair, received, signedAgreement, tp1Listing, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Two parties never share a clock. A signer stamps expiresAt (or notBefore)
 // from its own clock and the receiver compares it with another, so every such
@@ -13,7 +13,7 @@ import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from
 // retained-state rule binds a direct request to the host's artifacts; a
 // delegation is verified whether or not the seller requires one; and a host's
 // own input faults are its own.
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
@@ -32,15 +32,17 @@ const { openJournal, testJournal, testJournals } = journalFixture(fixtureWire);
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
 const OTHER_JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4J";
-const PIN = { listingId: "clock-skew-report", version: 1, contentHash: "c".repeat(64) };
+// The seller's key is fixed, so its signed Listing, and the pin every request names, is a constant.
+const SELLER_SEED = 54;
+const { listing: LISTING, pin: PIN } = tp1Listing({ seller: party(SELLER_SEED), listingId: "clock-skew-report" });
 const RPC_A = { endpoint: "https://rpc-a.clock-skew.invalid/", transportAuthority: "test-a", connectionId: "a-1" };
 const RPC_B = { endpoint: "https://rpc-b.clock-skew.invalid/", transportAuthority: "test-b", connectionId: "b-1" };
 const TEXT = `{"jobId":"${JOB}"}`;
 const ANSWER = '{"status":"committed"}';
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 
-function party(): WireSigner & { raw: string } {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+function party(seed?: number): WireSigner & { raw: string } {
+  const { privateKey, publicKey } = ed25519KeyPair(seed);
   const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
   const signer = { claim: `did:demos:agent:${raw}`, sign: (bytes: Uint8Array) => new Uint8Array(sign(null, Buffer.from(bytes), privateKey)) };
   registerDiscoverySigner(signer);
@@ -49,7 +51,7 @@ function party(): WireSigner & { raw: string } {
 
 /** SYNTHETIC test-only identity record; not the approved record, not a Demos chain identity. */
 function world() {
-  const buyer = party(), seller = party(), session = party(), other = party();
+  const buyer = party(), seller = party(SELLER_SEED), session = party(), other = party();
   const record = {
     format: "dacs-testnet-identity-record/v1", recordId: "synthetic-test-only/clock-skew", network: "demos-testnet",
     chainIdentity: sha(`SYNTHETIC/clock-skew/${Math.random()}`), pinVersion: "synthetic-test-only/1",
@@ -79,7 +81,7 @@ function sellerCheck(w: World, header: string, now: number, change: Partial<Requ
   return { opened, check: () => checkWireRequest(opened, {
     requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN,
     method: "POST", path: opened.payload.path, rawBody: Buffer.from(TEXT), now, binding: w.sellerBinding, local: RPC_B,
-    purchaseProfile: w.sellerBinding.profile, requireDelegation, commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, commitPhase: COMMIT_PHASE, ...change,
+    purchaseProfile: w.sellerBinding.profile, requireDelegation, commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, signedListing: received(LISTING), ...change,
   }) };
 }
 

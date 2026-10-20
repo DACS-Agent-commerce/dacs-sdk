@@ -1,8 +1,8 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalDirectory, journalFixture, reservationsIn } from "./requestJournalFixture.js";
-import { COMMIT_PHASE, received, signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { ed25519KeyPair, received, signedAgreement, tp1Listing, validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { sign } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -15,9 +15,11 @@ const { openJournal, testJournals } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 18);
 const LOCAL = { endpoint: "https://rpc.review.invalid/", transportAuthority: "test", connectionId: "1" };
-const PIN = { listingId: "report", version: 1, contentHash: "c".repeat(64) };
-function party() {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+// The seller's key is fixed, so its signed Listing, and the pin every request names, is a constant.
+const SELLER_SEED = 53;
+const { listing: LISTING, pin: PIN } = tp1Listing({ seller: party(SELLER_SEED), listingId: "report" });
+function party(seed?: number) {
+  const { privateKey, publicKey } = ed25519KeyPair(seed);
   const key = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("hex");
   return { claim: `did:demos:agent:${key}`, key, sign: (bytes: Uint8Array) => sign(null, Buffer.from(bytes), privateKey) };
 }
@@ -25,7 +27,7 @@ const header = (value: unknown) => Buffer.from(canonicalize(value)).toString("ba
 /** Well-formed claims for retained records that are refused before their parties are compared. */
 const CLAIM_A = `did:demos:agent:${"1".repeat(64)}`, CLAIM_B = `did:demos:agent:${"2".repeat(64)}`;
 function world(path = "/dacs/v1/payments") {
-  const buyer = party(), seller = party(), session = party();
+  const buyer = party(), seller = party(SELLER_SEED), session = party();
   const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
   const context = { binding, local: LOCAL, purchaseProfile: binding.profile };
   const { agreement, agreementHash } = signedAgreement({ buyer, seller, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", listingPin: PIN });
@@ -50,7 +52,7 @@ function world(path = "/dacs/v1/payments") {
   // The job's finalized commitment, which the seller read itself: payment and delivery routes need it.
   const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: retained.jobId, agreementHash: retained.agreementHash, listingPin: PIN, committedAt: NOW - 5000 });
   const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true,
-    commitment: received(commitment), agreement: received(agreement), readCommitmentReceipt: validReceipt, commitPhase: COMMIT_PHASE };
+    commitment: received(commitment), agreement: received(agreement), readCommitmentReceipt: validReceipt, signedListing: received(LISTING) };
   return { buyer, seller, request, open, delegated, direct, artifact, check, context, signed, retained };
 }
 
