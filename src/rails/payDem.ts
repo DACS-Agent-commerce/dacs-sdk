@@ -18,6 +18,7 @@ import {
   type SettlementIdempotencyStore,
   type SettlementReconcile,
 } from "./idempotency.js";
+import { markPayDemSettleAdapter } from "./payDemAdapter.js";
 
 /** §9.5.9: the native asset this rail settles. */
 export const DEM_CURRENCY = "DEM";
@@ -2382,7 +2383,7 @@ export function payDemSettle(
   // Keep a slow submit/reconcile from being overtaken by another call for the
   // same effect. Different settlement keys remain independent.
   const operations = new Map<string, Promise<SettleResult>>();
-  return async (req) => {
+  return markPayDemSettleAdapter(async (req: SettleRequest): Promise<SettleResult> => {
     const {
       amount,
       asset,
@@ -2669,5 +2670,5 @@ export function payDemSettle(
     } finally {
       if (operations.get(key) === operation) operations.delete(key);
     }
-  };
+  });
 }

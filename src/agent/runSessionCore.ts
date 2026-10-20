@@ -19,6 +19,10 @@ import {
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { DEM_DECIMALS } from "../rails/payDem.js";
+import {
+  forwardPayDemSettleAdapter,
+  isPayDemSettleAdapter,
+} from "../rails/payDemAdapter.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
   isComponentSignature,
@@ -314,14 +318,17 @@ export interface SessionDeps {
    * nonce for a success: it requires the hash, network, parties, block,
    * txRefKind, finality and any saved `networkFeeOs` to match the saved
    * record (from signed evidence alone: the hash, network, payee, block,
-   * txRefKind and finality it carries), and a saved failure proof (nonce
+   * txRefKind and finality it carries, and the payer and any fee the session
+   * signed into it; evidence or an evidence checkpoint without that payer is
+   * held as indeterminate), and a saved failure proof (nonce
    * included) to be returned byte-for-byte; failure evidence without that
    * proof is held as indeterminate. Checking the node record against the retained
    * prepared-transfer journal, signed nonce included, is this implementation's
-   * job (`payDemSettle` gives its `reconcile` the retained hash for that). The
-   * session also trusts this seam's `ok: true` as it trusts `settle`'s:
-   * `payDemSettle` requires `execution: "executed"` from its reconciler, and a
-   * custom native implementation must apply the same check itself.
+   * job (`payDemSettle` gives its `reconcile` the retained hash for that). A
+   * recovered native success completes only when this seam is the SDK's
+   * `payDemSettle` adapter (directly, from `settleFromRail` or through
+   * `Agent.runSession`), which requires `execution: "executed"` from its
+   * reconciler; any other implementation's success is refused as indeterminate.
    *
    * `runSessionCore` deliberately does not call the ordinary `settle` seam under
    * an unresolved SessionStore intent because it cannot assume every implementation
@@ -624,6 +631,9 @@ interface AuthenticatedEvidenceSettlementOutcome {
   txRefKind: string;
   blockNumber?: number;
   ok: boolean;
+  /** Native DEM success only: the payer and any fee the signed evidence binds. */
+  payer?: string;
+  networkFeeOs?: string;
 }
 
 const isSettlementFinalityModel = (
@@ -1208,7 +1218,10 @@ function stableDataMethod<T>(
   if (typeof candidate !== "function" || nodeTypes.isProxy(candidate)) {
     throw new DacsError(`${label} must be a stable data method`);
   }
-  return Function.prototype.bind.call(candidate, source) as T;
+  return forwardPayDemSettleAdapter(
+    candidate,
+    Function.prototype.bind.call(candidate, source) as T,
+  );
 }
 
 function isSafeProtocolString(value: string): boolean {
@@ -2288,7 +2301,9 @@ function sameAuthenticatedEvidenceOutcome(
     left.chainId === right.chainId &&
     left.txRefKind === right.txRefKind &&
     left.blockNumber === right.blockNumber &&
-    left.ok === right.ok
+    left.ok === right.ok &&
+    left.payer === right.payer &&
+    left.networkFeeOs === right.networkFeeOs
   );
 }
 
@@ -2579,6 +2594,8 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         evidenceSigner,
         txRefKind,
         blockNumber,
+        payer,
+        networkFeeOs,
       } = data;
       const allowed = new Set([
         "outcomeSource",
@@ -2591,7 +2608,10 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         "txRefKind",
         "blockNumber",
         "ok",
+        "payer",
+        "networkFeeOs",
       ]);
+      const nativeSuccess = ok && phase === "pay-dem" && asset === "DEM";
       if (
         Object.keys(data).some((key) => !allowed.has(key)) ||
         typeof ok !== "boolean" ||
@@ -2607,7 +2627,13 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         txRefKind.length === 0 ||
         txRefKind.trim() !== txRefKind ||
         (blockNumber !== undefined &&
-          (!Number.isSafeInteger(blockNumber) || (blockNumber as number) < 0))
+          (!Number.isSafeInteger(blockNumber) || (blockNumber as number) < 0)) ||
+        (payer !== undefined &&
+          (!nativeSuccess || typeof payer !== "string" || payer.length === 0 ||
+            payer.trim() !== payer)) ||
+        (networkFeeOs !== undefined &&
+          (!nativeSuccess || typeof networkFeeOs !== "string" ||
+            !/^(?:0|[1-9][0-9]*)$/.test(networkFeeOs)))
       ) {
         return {
           status: "invalid",
@@ -2627,6 +2653,8 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           txRefKind,
           ...(typeof blockNumber === "number" ? { blockNumber } : {}),
           ok,
+          ...(typeof payer === "string" ? { payer } : {}),
+          ...(typeof networkFeeOs === "string" ? { networkFeeOs } : {}),
         },
       };
     }
@@ -4271,6 +4299,22 @@ export async function runSessionCore(
     );
   };
 
+  /**
+   * A recovered native success completes only through the SDK's `payDemSettle`
+   * adapter, which requires the reconciler's executed record and binds it to
+   * the prepared-transfer journal or this key's rail record. A custom
+   * callback's `ok: true` is a claim, not that proof.
+   */
+  const assertPayDemAdapterSuccess = (outcome: DurableSettlementOutcome): void => {
+    if (outcome.ok && isNativeSettlement(expectedSettlementBinding) &&
+        !isPayDemSettleAdapter(deps.resumeSettlement)) {
+      throw new CounterpartyError(
+        "native settlement recovery returned success from a resumeSettlement that is not the SDK's " +
+          "payDemSettle adapter; the payment remains indeterminate until that adapter re-reads it",
+      );
+    }
+  };
+
   const recoverRailOutcome = async (
     label: string,
     prior?: LegacyDurableSettlementOutcome | DurableSettlementOutcome,
@@ -4375,8 +4419,10 @@ export async function runSessionCore(
       }
     }
     // Existing signed evidence is immutable. Audit it without writing a second
-    // outcome underneath it; the caller refuses any contradiction.
+    // outcome underneath it; the caller refuses any contradiction, then checks
+    // the adapter.
     if (!persist) return outcome;
+    assertPayDemAdapterSuccess(outcome);
     if (prior && "outcomeSource" in prior &&
         ((outcome.ok && canReauthenticateNativeSuccess(prior, outcome)) ||
           canReauthenticateNativeFailure(prior, outcome))) {
@@ -4577,13 +4623,24 @@ export async function runSessionCore(
           ...finality,
           finalityObservedAt: settlement.finalityObservedAt ?? observedAt,
         };
+        // SDK operational extension retained inside the signed scope: without a
+        // rail checkpoint, only the evidence binds the payer and fee to audit.
+        const nativeParties = isNativeSettlement(expectedSettlementBinding)
+          ? {
+              dacsSdkSettlementPayer: settlement.payer,
+              ...(settlement.networkFeeOs === undefined
+                ? {}
+                : { dacsSdkNetworkFeeOs: settlement.networkFeeOs }),
+            }
+          : {};
         evidence = currentTxRef
-          ? { ...evidenceBase, outcome: "success", settlementFinality }
+          ? { ...evidenceBase, outcome: "success", settlementFinality, ...nativeParties }
           : {
               ...evidenceBase,
               phaseIndex: 0,
               outcome: "success",
               settlementFinality,
+              ...nativeParties,
             };
       }
       return signSessionArtifact(
@@ -4602,11 +4659,27 @@ export async function runSessionCore(
       evidenceValue,
     ) as unknown as SessionSettlementEvidence;
     settledOk = unsignedEvidence.outcome === "success";
+    const nativeSuccess = settledOk && isNativeSettlement(expectedSettlementBinding);
+    // The payer and any fee the session signed into native success evidence;
+    // evidence minted before they were bound carries neither.
+    const signedParties = unsignedEvidence as {
+      dacsSdkSettlementPayer?: unknown;
+      dacsSdkNetworkFeeOs?: unknown;
+    };
+    const signedPayer = signedParties.dacsSdkSettlementPayer;
+    const signedFee = signedParties.dacsSdkNetworkFeeOs;
 
-    if (settledOk && isNativeSettlement(expectedSettlementBinding)) {
+    if (nativeSuccess) {
       const tx = unsignedEvidence.paymentTxRefs?.[0];
       if (!tx) throw new CounterpartyError("saved native success evidence has no transaction reference");
       const identity = settlementIdentityFromTxRef(tx);
+      if ((signedPayer !== undefined &&
+            (typeof signedPayer !== "string" || signedPayer.length === 0)) ||
+          (signedFee !== undefined &&
+            (signedPayer === undefined || typeof signedFee !== "string" ||
+              !/^(?:0|[1-9][0-9]*)$/.test(signedFee)))) {
+        throw new CounterpartyError("saved native success evidence has a malformed payer or fee");
+      }
       let prior: LegacyDurableSettlementOutcome | DurableSettlementOutcome = {
         txHash: identity.txHash, chainId: identity.chainId, ok: true,
       };
@@ -4623,24 +4696,44 @@ export async function runSessionCore(
             throw new CounterpartyError("saved native success evidence conflicts with the durable outcome");
           }
           if (recorded.status === "current-rail") prior = recorded.outcome;
+          // An evidence checkpoint must carry the evidence's payer and fee;
+          // one written before they were bound cannot be audited.
+          if (recorded.status === "current-evidence" &&
+              (recorded.outcome.payer === undefined || recorded.outcome.payer !== signedPayer ||
+                recorded.outcome.networkFeeOs !== signedFee)) {
+            throw new CounterpartyError(
+              "saved native success evidence checkpoint does not bind the evidence's payer and fee; " +
+                "the payment remains indeterminate",
+            );
+          }
         }
+      }
+      // A rail checkpoint binds the payer and fee itself; otherwise only the
+      // signed evidence can, and without it nothing is re-read.
+      if (signedPayer === undefined && !("outcomeSource" in prior)) {
+        throw new CounterpartyError(
+          "saved native success evidence binds no payer and no rail checkpoint holds one; " +
+            "the payment remains indeterminate",
+        );
       }
       const authenticated = await recoverRailOutcome(
         "saved native success evidence requires execution reconciliation", prior, false,
       );
-      // Re-assert every chain fact the signed evidence claims: block, kind and
+      // Re-assert every chain fact the signed evidence claims: block, kind,
       // finality (minted from the rail's finality, provider-receipt when it
-      // reported none). The evidence carries no payer or fee; a rail checkpoint,
-      // when one exists, binds those above.
+      // reported none), and the payer and any fee it binds.
       const claimed = (unsignedEvidence as { settlementFinality?: SettlementFinality })
         .settlementFinality;
       const reread = settlementFinalityFromDurable(authenticated) ?? { model: "provider-receipt" };
       if (!authenticated.ok || authenticated.blockNumber !== identity.blockNumber ||
           authenticated.txRefKind !== identity.kind || claimed?.model !== reread.model ||
           claimed.finalityBlocks !== reread.finalityBlocks ||
-          claimed.finalityCommitmentLevel !== reread.finalityCommitmentLevel) {
+          claimed.finalityCommitmentLevel !== reread.finalityCommitmentLevel ||
+          (signedPayer !== undefined && authenticated.payer !== signedPayer) ||
+          (signedFee !== undefined && authenticated.networkFeeOs !== signedFee)) {
         throw new CounterpartyError("saved native success evidence contradicts chain execution");
       }
+      assertPayDemAdapterSuccess(authenticated);
     }
 
     // Without a SessionStore no failure proof outlives the run that minted the
@@ -4689,6 +4782,8 @@ export async function runSessionCore(
           ? { blockNumber: txIdentity.blockNumber }
           : {}),
         ok: settledOk,
+        ...(nativeSuccess && typeof signedPayer === "string" ? { payer: signedPayer } : {}),
+        ...(nativeSuccess && typeof signedFee === "string" ? { networkFeeOs: signedFee } : {}),
       };
 
       // Bind every authenticated tx identifier before declaring the phase

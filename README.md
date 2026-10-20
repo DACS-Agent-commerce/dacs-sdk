@@ -691,15 +691,20 @@ record with the same block, kind, parties, finality and any saved fee, and a
 permanent failure only when it returns the identical failure proof. From the
 signed evidence alone (no `SessionStore`, or one without that checkpoint), a
 success is kept only when the re-read matches the evidence's block, kind and
-finality and the request-bound payee; the evidence carries no payer or fee to
-compare. Failure evidence there has no proof to re-read, so it is held as
-indeterminate without a rail call. Absence, an indeterminate read, another hash
+finality, the request-bound payee, and the payer and any fee the session
+signed into the evidence (`dacsSdkSettlementPayer`, `dacsSdkNetworkFeeOs`).
+Evidence signed before those fields existed, or an evidence checkpoint without
+them, is held as indeterminate without a rail call. Failure evidence there has
+no proof to re-read, so it is held as indeterminate without a rail call too.
+Absence, an indeterminate read, another hash
 or any mismatch fails closed without paying again. A failure read for a saved
 success, a bound failed record included, is refused the same way: the session
 neither completes nor records the payment as failed, and the saved success
-stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7). The audit
-is as strong as the `resumeSettlement` it calls, which the session trusts as it
-trusts `settle`: wire `payDemSettle` with a `reconcile` that checks the node
+stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7). A
+recovered native success completes only when `resumeSettlement` is the SDK's
+`payDemSettle` adapter (directly, from `settleFromRail`, or passed through
+`Agent.runSession`); a success from any other implementation is held as
+indeterminate. Wire that adapter with a `reconcile` that checks the node
 record against the retained prepared-transfer journal (signed nonce included)
 and reports the record's network fee. Requiring a `confirmed` record is
 stricter than the pinned DACS-4 §9.5.9 text, which counts a terminal `included`

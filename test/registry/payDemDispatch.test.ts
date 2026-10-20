@@ -28,6 +28,10 @@ import type {
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
+import {
+  isPayDemSettleAdapter,
+  markPayDemSettleAdapter,
+} from "../../src/rails/payDemAdapter.js";
 import { contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -348,6 +352,16 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       { network: "demos", railId: DEM_RAIL_ID },
       {},
     );
+  });
+
+  test("keeps the payDemSettle adapter mark through the descriptor gate only", async () => {
+    mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle: vi.fn() });
+    const descriptor = await authenticatedDefinition();
+    const options = { demosRpc: "https://demos.example", demosSecret: "test-secret" };
+    mocks.payDemSettle.mockReturnValue(markPayDemSettleAdapter(vi.fn()));
+    expect(isPayDemSettleAdapter(await settleFromRail(descriptor, options))).toBe(true);
+    mocks.payDemSettle.mockReturnValue(vi.fn());
+    expect(isPayDemSettleAdapter(await settleFromRail(descriptor, options))).toBe(false);
   });
 
   test("captures recovery authorities before the optional peer connects", async () => {

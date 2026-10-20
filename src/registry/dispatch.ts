@@ -12,6 +12,7 @@ import {
   type PayDemPreparedTransfer,
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
+import { forwardPayDemSettleAdapter } from "../rails/payDemAdapter.js";
 import type {
   SettlementIdempotencyStore,
 } from "../rails/idempotency.js";
@@ -105,7 +106,8 @@ function bindDescriptorRequest(
   executor: (req: SettleRequest) => Promise<SettleResult>,
 ): (req: SettleRequest) => Promise<SettleResult> {
   const expectedPhase = descriptor.phaseHandler;
-  return async (req) => {
+  // The gate only forwards, so a pay-DEM adapter stays recognisable to runSession.
+  return forwardPayDemSettleAdapter(executor, async (req: SettleRequest): Promise<SettleResult> => {
     // Capture the two authority-bearing request fields once, then overwrite any
     // accessor/proxy values copied by the compatibility spread below. The rail
     // executor must receive the same descriptor id and phase that this gate
@@ -127,7 +129,7 @@ function bindDescriptorRequest(
       rail: requestRail,
       phase: requestPhase,
     });
-  };
+  });
 }
 
 async function enforceAvailability(

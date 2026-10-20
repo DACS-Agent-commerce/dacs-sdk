@@ -39,7 +39,12 @@ import {
 } from "../../src/agent/listingValidation.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
-import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
+import {
+  payDemSettle,
+  type PayDemRail,
+  type PayDemSettlementReconcile,
+} from "../../src/rails/payDem.js";
+import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
@@ -573,6 +578,79 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(submitted.recovery?.settlementKey).toBe(
       `demos:native:${submitted.recovery?.jobId}:0`,
     );
+  });
+
+  test("re-runs a completed pay-dem session only through the SDK adapter", async () => {
+    const { adapter, store } = memAdapter();
+    const ref = await anchorListing(store, sellerPriv, sellerDid, { notBefore: 1_700_000_000_000 },
+      "native DEM listing", { phase: "pay-dem", railId: "demos:native", currency: "DEM", price: "1" });
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
+      listingValidationDeps: {
+        ...listingValidationDeps(),
+        loadRailResolution: () => ({
+          trustPhase: "PA-1" as const,
+          trustPolicyAcceptsPA1: true,
+          registry: { state: "not-used" as const, entries: [], definitions: [] },
+          inCodeDefinitions: [{
+            railId: "demos:native",
+            railVersion: 1,
+            phaseHandler: "pay-dem",
+            governanceAnchoring: "in-code" as const,
+            signatureValid: true,
+          }],
+        }),
+      },
+    });
+    const txHash = "11".repeat(32);
+    const transfer = vi.fn(async ({ recipient, network }: Parameters<PayDemRail["settle"]>[0]) => ({
+      ok: true as const, execution: "executed" as const, txHash, chainId: network ?? "demos",
+      payer: buyerDid, payee: recipient, finality: { model: "bft-final" as const },
+      blockNumber: 42, txRefKind: "demos",
+    }));
+    const rail: PayDemRail = { address: buyerDid, settle: transfer };
+    const terms = {
+      price: { amount: "1", asset: "DEM", decimals: 9, rail: "demos:native" },
+      deliveryPhase: "deliver-attested-payload",
+      deliveryFormat: "application/json",
+    };
+    const first = await agent.runSession(ref, {
+      terms,
+      settle: payDemSettle(rail, { network: "demos:testnet" }),
+    });
+    expect(first.outcome).toBe("completed");
+    const rerun = (resumeSettlement: NonNullable<Parameters<typeof agent.runSession>[1]["resumeSettlement"]>) =>
+      agent.runSession(ref, {
+        jobId: first.jobId,
+        terms,
+        settle: async () => { throw new Error("must not pay again"); },
+        resumeSettlement,
+      });
+    // A constant callback echoing the anchored success is not a node read.
+    await expect(rerun(async (req) => ({
+      ok: true, txHash, chainId: "demos:testnet", payer: buyerHex, payee: req.expectedPayee,
+      finality: { model: "bft-final" }, blockNumber: 42, txRefKind: "demos",
+    }))).rejects.toThrow(/not the SDK's payDemSettle adapter; the payment remains indeterminate/);
+    // The adapter's reconciler reads the executed record and its journal entry.
+    const reconcile = vi.fn(async (context: Parameters<PayDemSettlementReconcile>[0]) => {
+      const tuple = { network: context.network, payer: context.payer, payee: context.payee,
+        amountOs: context.amountOs };
+      const retained = "txHash" in context ? context.txHash : "";
+      return { ok: true as const, execution: "executed" as const, txHash: retained,
+        chainId: context.network, payer: context.payer, payee: context.payee,
+        amountOs: context.amountOs, blockNumber: 42, txRefKind: "demos",
+        finality: { model: "bft-final" as const },
+        preparedTransfer: { ...tuple, txHash: retained, nonce: 9, recovery: { ...tuple,
+          railId: context.railId, jobId: context.jobId, phaseIndex: context.phaseIndex,
+          settlementKey: context.settlementKey } } };
+    });
+    await expect(rerun(payDemSettle(rail, { network: "demos:testnet" }, {
+      store: createIdempotencyStore(), reconcile,
+    }))).resolves.toEqual(first);
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(transfer).toHaveBeenCalledOnce();
   });
 
   test("a genuinely signed listing settles through the public runSession", async () => {

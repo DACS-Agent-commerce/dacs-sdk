@@ -62,6 +62,7 @@ import {
   type ClassifyCciTlsnDeps,
 } from "../identity/index.js";
 import { generateCanonicalJobId } from "../negotiate/jobId.js";
+import { forwardPayDemSettleAdapter } from "../rails/payDemAdapter.js";
 import type {
   DemosWriteEvidence,
   SubstrateAdapter,
@@ -203,7 +204,10 @@ function stableAgentMethod<T>(
   if (typeof candidate !== "function" || nodeTypes.isProxy(candidate)) {
     throw new DacsError(`${label} must be a stable function`);
   }
-  return isolateAgentCallback<T>(candidate as (...args: never[]) => unknown);
+  return forwardPayDemSettleAdapter(
+    candidate,
+    isolateAgentCallback<T>(candidate as (...args: never[]) => unknown),
+  );
 }
 
 interface CapturedAgentDemosCciConfig {
@@ -447,6 +451,8 @@ export interface RunSessionOptions {
    * outcome read-only (see `SessionDeps.resumeSettlement`). Must use the same
    * rail idempotency key and reconcile every ordered `req.priorAttempts` entry
    * before returning; a native transfer is never replaced by another hash.
+   * A native DEM success it returns completes only when this is the SDK's
+   * `payDemSettle` adapter (directly or from `settleFromRail`).
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
