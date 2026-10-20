@@ -104,7 +104,7 @@ GCR inclusion alone is not either proof. The returned runtime-branded record
 can be passed to `projectCciSupplementarySignals()` with explicit Nomis, Human
 Passport, and Ethos freshness ceilings; stale, expired, future-dated, and
 non-passing values are reported as omissions. The resulting signals are
-informational DACS-2 `supplementary` entries and never affect `overallDecision`.
+advisory DACS-2 `supplementary` entries and never affect `overallDecision`.
 `AgentConfig.demosCci` exposes the same captured capabilities through
 `agent.resolveAuthenticatedIdentity()`.
 
@@ -121,7 +121,7 @@ The normal durable path is `agent.partyVetWithNativeCciTlsn()`. It obtains the
 evaluation instant from the trusted Party Vet clock, independently matches the
 active-session nonce, journals qualification for deterministic restart/replay,
 and retains compact exact provenance in an SDK-reserved signal inside the
-signed CVR. The signal remains informational under DACS-2, while failed native
+signed CVR. The signal remains advisory under DACS-2, while failed native
 qualification is a mandatory precondition that prevents all Vet effects.
 
 The default Vet `ParserSpec` engine supports RFC 9535 JSONPath (including
