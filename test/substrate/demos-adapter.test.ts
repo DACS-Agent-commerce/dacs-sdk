@@ -8,6 +8,7 @@ import {
   DemosAdapter,
   createInMemoryDemosWriteJournal,
   type DemosAdapterConfig,
+  type DemosRawClient,
 } from "../../src/substrate/index.js";
 import {
   ed25519Verify,
@@ -426,6 +427,50 @@ describe("DemosAdapter", () => {
     await expect(
       adapter.findSubjectsByClaim(`cci-nomis:0x${"11".repeat(20)}`),
     ).rejects.toThrow(/not a reverse-resolvable/);
+  });
+
+  it("refuses a domain claim before calling the web2 reverse lookup (#339)", async () => {
+    const adapter = makeAdapter();
+    Object.assign(adapter, { connected: true });
+    const web2 = vi.spyOn(Identities.prototype, "getDemosIdsByWeb2Identity");
+
+    await expect(
+      adapter.findSubjectsByClaim("domain:alice.example"),
+    ).rejects.toThrow(/domain reverse lookup is not exposed/);
+    expect(web2).not.toHaveBeenCalled();
+  });
+
+  it("accepts network and address info shapes without an index signature (#339)", async () => {
+    // demosdk 4.0.18 returns concrete interfaces like these, with no index
+    // signature. `npm run typecheck` checks the assignments below.
+    interface StubForkStatus {
+      activationHeight: number | null;
+      activated: boolean;
+      currentHeight: number;
+    }
+    interface StubNetworkInfo {
+      forks: { osDenomination: StubForkStatus; signatureDomain?: StubForkStatus };
+      chainId?: number | null;
+    }
+    interface StubAddressInfo {
+      pubkey: string;
+      nonce: number;
+      balance: bigint;
+    }
+    const network: StubNetworkInfo = {
+      forks: {
+        osDenomination: { activationHeight: 10, activated: true, currentHeight: 12 },
+      },
+      chainId: null,
+    };
+    const account: StubAddressInfo = { pubkey: "ab".repeat(32), nonce: 3, balance: 7n };
+    const getNetworkInfo: DemosRawClient["getNetworkInfo"] =
+      async (): Promise<StubNetworkInfo | null> => network;
+    const getAddressInfo: DemosRawClient["getAddressInfo"] =
+      async (): Promise<StubAddressInfo | null> => account;
+
+    await expect(getNetworkInfo()).resolves.toBe(network);
+    await expect(getAddressInfo(account.pubkey)).resolves.toBe(account);
   });
 
   it("anchorWriteOnce returns only an exact existing envelope", async () => {

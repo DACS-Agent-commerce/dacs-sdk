@@ -1,0 +1,119 @@
+{
+  "set": "pay-dem-execution-v0.1",
+  "spec": "DACS-4 \u00a79.5.9; PC-4; PC-7",
+  "decisionModel": "Inclusion does not prove execution. A bound confirmed record passes; a bound failed record is permanent failure; incomplete or conflicting records remain indeterminate without rebroadcast.",
+  "count": 10,
+  "hash": "da86e204d737de2be908337e3395e3185c2103cbbcb43d2c493514c6ec68323c",
+  "vectors": [
+    {
+      "name": "included-confirmed",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "confirmed",
+        "recordNonce": 9,
+        "recordBlock": 42
+      },
+      "expected": "pass",
+      "executionState": "executed"
+    },
+    {
+      "name": "included-failed",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "failed",
+        "recordNonce": 9,
+        "recordBlock": 42
+      },
+      "expected": "fail",
+      "executionState": "failed"
+    },
+    {
+      "name": "included-pending",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "pending",
+        "recordNonce": 9,
+        "recordBlock": 42
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "included-alias",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "included",
+        "recordNonce": 9,
+        "recordBlock": 42
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "finalized-alias",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "finalized",
+        "recordNonce": 9,
+        "recordBlock": 42
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "failed-wrong-nonce",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "failed",
+        "recordNonce": 10,
+        "recordBlock": 42
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "failed-missing-nonce",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "failed",
+        "recordNonce": null,
+        "recordBlock": 42
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "failed-wrong-block",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "failed",
+        "recordNonce": 9,
+        "recordBlock": 43
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "confirmed-wrong-nonce",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "confirmed",
+        "recordNonce": 10,
+        "recordBlock": 42
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    },
+    {
+      "name": "confirmed-missing-nonce",
+      "input": {
+        "statusIndex": "included",
+        "recordStatus": "confirmed",
+        "recordNonce": null,
+        "recordBlock": 42
+      },
+      "expected": "indeterminate",
+      "executionState": "indeterminate"
+    }
+  ]
+}

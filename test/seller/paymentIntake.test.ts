@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
@@ -327,6 +327,7 @@ function makeContext(
       };
   const demosObservation: DemosTransferObservation = {
     status: "included",
+    execution: "executed",
     txHash: DEMOS_TX,
     payer: "aa".repeat(32),
     payee: "bb".repeat(32),
@@ -803,6 +804,56 @@ describe("SellerFulfilmentHandoff runtime guard", () => {
 });
 
 describe("verifySellerPaymentIntake", () => {
+  it("accepts the default observer's successful execution attestation", async () => {
+    const ctx = makeContext("pay-dem");
+    if (ctx.demosObservation.status !== "included") throw new Error("fixture");
+    ctx.demosObservation.execution = "executed";
+    ctx.demosObservation.nonce = 7;
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+    });
+  });
+
+  it.each([null, "7", -1, -0, 7.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects a malformed supplied record nonce %j before fulfilment", async (nonce) => {
+      const ctx = makeContext("pay-dem");
+      ctx.demosObservation = { ...ctx.demosObservation, nonce } as never;
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "error", reason: "demos-observation-invalid-result", fulfilment: "none",
+      });
+    },
+  );
+
+  it.each([undefined, "failed", "unknown", null, true, "confirmed"])(
+    "rejects an included observation with execution %s before fulfilment",
+    async (execution) => {
+      const ctx = makeContext("pay-dem");
+      ctx.demosObservation = { ...ctx.demosObservation, execution } as never;
+
+      const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+      expect(result).toMatchObject({
+        disposition: "error",
+        reason: "demos-observation-invalid-result",
+        fulfilment: "none",
+      });
+      expect(result.evidenceInput).toBeUndefined();
+    },
+  );
+
+  it("refuses a field-free included observation before claiming delivery", async () => {
+    const ctx = makeContext("pay-dem");
+    const store = ctx.deps.receiptStore;
+    const claim = vi.fn(store.claim.bind(store));
+    ctx.deps.receiptStore = { ...store, claim };
+    delete (ctx.demosObservation as { execution?: string }).execution;
+    const result = await verifySellerPaymentIntake(ctx.input, ctx.deps);
+    expect(result).toMatchObject({ disposition: "error", fulfilment: "none" });
+    expect(result.evidenceInput).toBeUndefined();
+    expect(claim).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "an explicitly undefined optional field",

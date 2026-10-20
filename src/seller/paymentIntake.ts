@@ -249,6 +249,14 @@ export type DemosTransferObservation =
   | { status: "failed" | "invalid"; reason?: string }
   | {
       status: "included";
+      /**
+       * Attest successful execution only after reading a `confirmed` record
+       * bound to this hash, nonce, block, payer, payee and amount. Inclusion
+       * alone is insufficient. Required before delivery or payment recovery accounting.
+       */
+      execution?: "executed";
+      /** Validated record nonce; required for buyer prepared-transfer recovery. */
+      nonce?: number;
       txHash: string;
       payer: string;
       payee: string;
@@ -1365,7 +1373,7 @@ function isDemosTransferObservationValue(
     return hasOnlyKeys(value, ["status", "reason"]) &&
       (value.reason === undefined || typeof value.reason === "string");
   }
-  return value.status === "included" && hasExactKeys(value, [
+  return value.status === "included" && value.execution === "executed" && hasExactKeys(value, [
     "status",
     "txHash",
     "payer",
@@ -1373,7 +1381,10 @@ function isDemosTransferObservationValue(
     "amountOs",
     "blockNumber",
     "includedAt",
+    "execution",
+    ...(Object.prototype.hasOwnProperty.call(value, "nonce") ? ["nonce"] : []),
   ]) &&
+    (value.nonce === undefined || isSafeUint(value.nonce)) &&
     typeof value.txHash === "string" &&
     typeof value.payer === "string" &&
     typeof value.payee === "string" &&
