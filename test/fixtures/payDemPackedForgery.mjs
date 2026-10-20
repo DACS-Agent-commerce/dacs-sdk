@@ -72,6 +72,18 @@ const forgedTransfer = async () => ({
   blockNumber: 42,
 });
 const forgedClient = { address: PAYER, transfer: forgedTransfer };
+const forgedResult = Object.freeze({
+  ok: true,
+  execution: "executed",
+  txHash: TX_HASH,
+  chainId: "demos",
+  payer: PAYER,
+  payee: SELLER,
+  finality: Object.freeze({ model: "bft-final" }),
+  blockNumber: 42,
+  txRefKind: "demos",
+  networkFeeOs: "0",
+});
 
 // Offer every brand-shaped export the forged capabilities.
 const brandExports = [];
@@ -79,7 +91,9 @@ for (const [file, namespace] of modules) {
   for (const [name, value] of Object.entries(namespace)) {
     if (typeof value !== "function" || !BRAND_NAME.test(name)) continue;
     brandExports.push(`${file}#${name}`);
-    for (const target of [forgedSettle, forgedRail, forgedTransfer, forgedClient]) {
+    for (const target of [
+      forgedSettle, forgedRail, forgedTransfer, forgedClient, forgedResult,
+    ]) {
       try {
         const out = value(target);
         if (out && typeof out.then === "function") await out.catch(() => undefined);
@@ -151,6 +165,20 @@ const railSuccess = await outcome(() => sdk.payDemSettle(
   { network: "demos" },
 )({ ...request, jobId: "forged-rail-success" }));
 
+// Forgery 3: a host that accepts any rail asks the SDK whether a success came
+// from its own record read. No forged or custom-client object may say yes.
+let coreResult;
+try {
+  coreResult = await sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    forgedClient,
+  );
+} catch {
+  coreResult = undefined;
+}
+const verifiedForgeries = [forgedResult, { ...forgedResult }, coreResult]
+  .map((value) => sdk.payDemRecordVerifiedTransfer(value) ?? null);
+
 process.stdout.write(`${JSON.stringify({
   shippedFiles: modules.size,
   importErrors,
@@ -160,4 +188,5 @@ process.stdout.write(`${JSON.stringify({
   coreSuccess,
   bridgeSuccess,
   railSuccess,
+  verifiedForgeries,
 })}\n`);

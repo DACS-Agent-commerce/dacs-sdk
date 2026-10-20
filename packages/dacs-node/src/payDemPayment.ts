@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import {
   combineWalletSpendEffectFenceV1,
+  payDemRecordVerifiedTransfer,
   settlementKey,
   type PayDemPreparedTransfer,
   type PayDemRail,
@@ -830,6 +831,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         let settlement: Readonly<SettleResult>;
         try {
           let preparedCheckpointed = false;
+          let preparedTxHash: string | undefined;
           let beginEffect: Promise<void> | undefined;
           const beginPreparedEffect = async (): Promise<void> => {
             if (!preparedCheckpointed) {
@@ -876,6 +878,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             journalPreparedTransfer: async (rawPrepared) => {
               const captured = capturePrepared(rawPrepared, payment);
               await fence.checkpoint(PREPARED_CHECKPOINT, captured);
+              preparedTxHash = captured.txHash;
               preparedCheckpointed = true;
             },
             assertCurrentBeforeBroadcast: async () => {
@@ -889,7 +892,16 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             );
           }
           await beginEffect;
-          if (!plainObject(raw) || raw.execution !== "executed") {
+          // #338: success needs the executed record the SDK rail read itself,
+          // for this payment's exact transfer and the hash journaled above. A
+          // rail's own `execution: "executed"` is its statement and stays held.
+          const verified = payDemRecordVerifiedTransfer(raw);
+          if (verified === undefined || !plainObject(raw) ||
+              raw.execution !== "executed" || raw.txHash !== preparedTxHash ||
+              verified.payer !== payment.payer || verified.payee !== payment.payee ||
+              verified.amountOs !== payment.amountOs ||
+              verified.network !== payment.network ||
+              verified.settlementKey !== payment.settlementKey) {
             throw new DacsPayDemBuyerPaymentError("pay-dem-chain-execution-unconfirmed");
           }
           const { execution: _execution, ...settlementData } = raw;

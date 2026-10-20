@@ -54,6 +54,16 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(doc).not.toMatch(/vouch/i);
   });
 
+  it("says the buyer track settles only an SDK record-verified success", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    expect(doc).toContain(
+      "only when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee, amount, network and settlement key, and its hash is the one this invocation journaled",
+    );
+    expect(doc).not.toContain("the host's statement");
+    expect(read("packages/dacs-node/src/payDemPayment.ts"))
+      .toMatch(/payDemRecordVerifiedTransfer\(raw\)/);
+  });
+
   it("dates the node2 build claims and keeps the fixture historical", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     const source = read("src/rails/payDem.ts").replace(/\s*\*\s*/g, " ");
