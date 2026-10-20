@@ -591,8 +591,8 @@ Immediately before settlement, the test atomically writes and syncs a permanent
 intent marker and never removes it. An ambiguous or merely unobserved settlement
 therefore blocks that run id from being submitted again even if its wallet or
 amount is changed. The guarantee is scoped to the same marker directory on the
-same host. It does not cover changing hosts or directories, deleting the ledger,
-or using ephemeral storage. Preserve and back up the directory with the
+same host: changing hosts or directories, deleting the ledger, or using
+ephemeral storage bypasses it. Preserve and back up the directory with the
 funded-run records; do not use a network filesystem unless its exclusive-create
 and fsync guarantees have been independently established. Use fresh dedicated
 wallets and a new run id only for a separately reconciled and approved attempt.
