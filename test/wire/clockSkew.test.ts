@@ -2,7 +2,7 @@ import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalDirectory, journalFixture, reservationsIn } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
-import { signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { COMMIT_PHASE, received, signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Two parties never share a clock. A signer stamps expiresAt (or notBefore)
 // from its own clock and the receiver compares it with another, so every such
@@ -16,7 +16,7 @@ import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
-import { canonicalize } from "../../src/canonical/index.js";
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
   checkWireRequest, DACS_SELLER_HTTP_LIMITS, openWireEnvelope, signSellerSessionDelegation, signWireResponse, verifyWireResponse,
   WireError, wireOperationId, wireRequestHash, type RequestCheck, type WireRequestPayload, type WireSigner,
@@ -59,7 +59,7 @@ function world() {
   const buyerBinding = withTestApproval(approved, () => bindTp1Fixture({ record, local: RPC_A }));
   const sellerBinding = withTestApproval(approved, () => bindTp1Fixture({ record, local: RPC_B }));
   // The job's finalized commitment and its signed Agreement, which the seller read itself: its payment route needs them.
-  const { agreement, agreementHash } = signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN, generatedAt: NOW });
+  const { agreement, agreementHash } = signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN, generatedAt: NOW - 3_660_000 });
   const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash, listingPin: PIN, committedAt: NOW - 3_600_000 });
   return { buyer, seller, session, other, buyerBinding, sellerBinding, commitment, agreement, agreementHash };
 }
@@ -79,7 +79,7 @@ function sellerCheck(w: World, header: string, now: number, change: Partial<Requ
   return { opened, check: () => checkWireRequest(opened, {
     requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN,
     method: "POST", path: opened.payload.path, rawBody: Buffer.from(TEXT), now, binding: w.sellerBinding, local: RPC_B,
-    purchaseProfile: w.sellerBinding.profile, requireDelegation, commitment: w.commitment, agreement: w.agreement, readCommitmentReceipt: validReceipt, ...change,
+    purchaseProfile: w.sellerBinding.profile, requireDelegation, commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: validReceipt, commitPhase: COMMIT_PHASE, ...change,
   }) };
 }
 
@@ -210,7 +210,10 @@ describe("the replay journal's retention under clock difference", () => {
     const { header, payload } = await buyerSigns(w, NOW);
     const directory = journalDirectory();
     sellerCheck(w, header, NOW, { requestJournal: openJournal(directory) }).check();
-    expect(reservationsIn(directory)).toEqual([{ key: expect.any(String), operationId: wireOperationId(payload), requestHash: wireRequestHash(payload) }]);
+    // The binding is the operation's first {profile, buyer, agreementHash}: a later request under another one is refused.
+    const { profile, buyer, agreementHash } = payload;
+    expect(reservationsIn(directory)).toEqual([{ key: expect.any(String), operationId: wireOperationId(payload),
+      binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wireRequestHash(payload) }]);
   });
 
   it("a journal 30 s ahead of a worker never drops a key: a replay the worker still accepts by its clock is refused", async () => {

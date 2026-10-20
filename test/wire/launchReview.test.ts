@@ -1,7 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalDirectory, journalFixture, reservationsIn } from "./requestJournalFixture.js";
-import { signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { COMMIT_PHASE, received, signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -50,7 +50,7 @@ function world(path = "/dacs/v1/payments") {
   // The job's finalized commitment, which the seller read itself: payment and delivery routes need it.
   const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: retained.jobId, agreementHash: retained.agreementHash, listingPin: PIN, committedAt: NOW - 5000 });
   const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true,
-    commitment, agreement, readCommitmentReceipt: validReceipt };
+    commitment: received(commitment), agreement: received(agreement), readCommitmentReceipt: validReceipt, commitPhase: COMMIT_PHASE };
   return { buyer, seller, request, open, delegated, direct, artifact, check, context, signed, retained };
 }
 
@@ -61,7 +61,9 @@ describe("effect request replay reservations", () => {
     const directory = journalDirectory();
     const check = { ...x.check, requestJournal: openJournal(directory) };
     expect(wire.checkWireRequest(x.open(), check)).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new", attempt: 0 }) });
-    expect(reservationsIn(directory)).toEqual([{ key: expect.any(String), operationId: wire.wireOperationId(x.request), requestHash: wire.wireRequestHash(x.request) }]);
+    const { profile, buyer, agreementHash } = x.request;
+    expect(reservationsIn(directory)).toEqual([{ key: expect.any(String), operationId: wire.wireOperationId(x.request),
+      binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wire.wireRequestHash(x.request) }]);
     expect(() => wire.checkWireRequest(x.open(), check)).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
     // Another worker opening another request under the same nonce uses the same journal directory.
     expect(() => wire.checkWireRequest(x.open({ ...x.request, expiresAt: NOW + 20_000 }), { ...check, requestJournal: openJournal(directory) })).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
@@ -86,7 +88,8 @@ describe("effect request replay reservations", () => {
     const { profile, jobId, agreementHash, path } = x.request;
     expect(reservationsIn(directory)).toEqual([{
       key: sha256Hex(canonicalize({ buyer: x.buyer.claim, seller: x.seller.claim, profile: x.request.profile, nonce: x.request.nonce })),
-      operationId: sha256Hex(canonicalize({ profile, seller: x.seller.claim, buyer: x.buyer.claim, jobId, agreementHash, path })),
+      operationId: sha256Hex(canonicalize({ seller: x.seller.claim, jobId, path })),
+      binding: sha256Hex(canonicalize({ profile, buyer: x.buyer.claim, agreementHash })),
       requestHash: wire.wireRequestHash(x.request),
     }]);
     expect(() => wire.checkWireRequest(x.delegated(), check)).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
@@ -130,6 +133,10 @@ describe("effect request replay reservations", () => {
       ["an outcome for another operation", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId: "f".repeat(64), attempt: 0, outcome: { status: 200, text: "{}" } })), "STORE-OUTCOME-INVALID"],
       ["an oversized outcome", (d) => writeFileSync(join(d, `o-${operationId}.done`), "x".repeat(2 * 512 * 1024 + 4097)), "STORE-ENTRY-TOO-LARGE"],
       ["an oversized attempt", (d) => writeFileSync(join(d, `o-${operationId}-0`), "x".repeat(4097)), "STORE-ENTRY-TOO-LARGE"],
+      // An attempt file the journal cannot read is not a lapsed lease: nothing is recovered from it.
+      ["an attempt that does not parse", (d) => writeFileSync(join(d, `o-${operationId}-0`), "{"), "STORE-ATTEMPT-INVALID"],
+      ["an attempt for another operation", (d) => writeFileSync(join(d, `o-${operationId}-0`), JSON.stringify({ operationId: "f".repeat(64), attempt: 0, requestHash: "a".repeat(64), leaseUntil: 0, binding: "b".repeat(64) })), "STORE-ATTEMPT-INVALID"],
+      ["an outcome with no attempt", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, text: "{}" } })), "STORE-ATTEMPT-MISSING"],
     ];
     for (const [name, plant, detail] of cases) {
       const directory = journalDirectory();
@@ -137,11 +144,8 @@ describe("effect request replay reservations", () => {
       expect(() => wire.checkWireRequest(x.open(), { ...x.check, requestJournal: openJournal(directory) }), name)
         .toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid", status: 500, detail }));
       expect(existsSync(join(directory, `k-${key}`)), name).toBe(true);
+      expect(existsSync(join(directory, `o-${operationId}-1`)), name).toBe(false);
     }
-    // An attempt file the journal cannot read holds nothing: the next request recovers it, and must reconcile.
-    const directory = journalDirectory();
-    writeFileSync(join(directory, `o-${operationId}-0`), "{");
-    expect(wire.checkWireRequest(x.open(), { ...x.check, requestJournal: openJournal(directory) }).effect).toMatchObject({ state: "recover", attempt: 1 });
   });
 });
 

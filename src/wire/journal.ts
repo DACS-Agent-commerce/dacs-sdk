@@ -9,8 +9,12 @@
 // synced before the call returns. A file published before a crash is there
 // after it.
 //
-// Each effect is a durable state machine keyed by its operation (one per job,
-// Agreement, parties and route; checkWireRequest computes it):
+// Each effect is a durable state machine keyed by its operation (one per
+// seller, job and route; checkWireRequest computes it). The first attempt also
+// records the operation's binding (the tuple, buyer and Agreement hash it was
+// first reserved under), and every later request for the operation must carry
+// the same one: a job whose retained Agreement, buyer or tuple changed gets
+// peer_operation_mismatch (409), never a second effect.
 //   no attempt         -> attempt 0 is published: "new" (run the effect)
 //   attempt n live     -> "pending" (seller_effect_pending, 503: retry later)
 //   attempt n ended    -> attempt n+1 is published: "recover" (an earlier
@@ -67,8 +71,10 @@ export interface WireRequestJournalOptions {
 export interface EffectReservation {
   /** SHA-256 of {buyer, seller, profile, nonce}. */
   key: string;
-  /** SHA-256 of {profile, seller, buyer, jobId, agreementHash, path}. */
+  /** SHA-256 of {seller, jobId, path}: fixed for the job and route. */
   operationId: string;
+  /** SHA-256 of {profile, buyer, agreementHash}: recorded with attempt 0 and compared on every later request. */
+  binding: string;
   requestHash: string;
 }
 
@@ -143,6 +149,21 @@ function readRecord(store: Store, name: string, maxBytes: number): JsonRecord | 
 
 const attemptName = (operationId: string, attempt: number) => `o-${operationId}-${attempt}`;
 const endedName = (operationId: string, attempt: number) => `o-${operationId}-${attempt}.end`;
+const ATTEMPT = ["operationId", "attempt", "requestHash", "leaseUntil", "binding"];
+
+/** An attempt record this journal published; anything else there is a corrupt store, never a lapsed lease. */
+function readAttempt(store: Store, operationId: string, attempt: number): JsonRecord {
+  const record = readRecord(store, attemptName(operationId, attempt), SMALL_FILE_BYTES);
+  if (!hasKeys(record, ATTEMPT) || record.operationId !== operationId || record.attempt !== attempt || !isHash(record.requestHash) ||
+      !isUint(record.leaseUntil) || !isHash(record.binding)) corrupt("STORE-ATTEMPT-INVALID");
+  return record!;
+}
+
+/** The operation was first reserved under `binding`; a request under another one runs nothing. */
+function assertBinding(store: Store, operationId: string, binding: string): void {
+  if (!exists(store, attemptName(operationId, 0))) corrupt("STORE-ATTEMPT-MISSING");
+  if (readAttempt(store, operationId, 0).binding !== binding) fail("peer_operation_mismatch", 409);
+}
 const outcomeName = (operationId: string) => `o-${operationId}.done`;
 
 function isOutcome(value: unknown): value is WireEffectOutcome {
@@ -167,10 +188,13 @@ function now(store: Store): number {
  * Open the journal in `directory`: an existing absolute directory, not a
  * symbolic link, owned by this process's user and writable by no one else.
  * Before it is returned, an exclusive publish is tried twice on it: the second
- * must be refused. Anything else is `seller_replay_guard_invalid` (500). Every
- * worker on the host opens the same directory.
+ * must be refused. Anything else, or Windows (no directory sync), is
+ * `seller_replay_guard_invalid` (500). Every worker on the host opens the same
+ * directory.
  */
 export function openWireRequestJournal(directory: string, options: WireRequestJournalOptions = {}): WireRequestJournal {
+  // Windows cannot open a directory to sync it, so a publish there is not durable.
+  if (process.platform === "win32") fail("seller_replay_guard_invalid", 500, "PLATFORM-UNSUPPORTED");
   if (typeof directory !== "string" || !isAbsolute(directory) || directory.includes("\0")) fail("seller_replay_guard_invalid", 500, "DIRECTORY-NOT-ABSOLUTE");
   const fields = ownedFields(options, ["leaseMs", "clock"]);
   const leaseMs = fields.leaseMs ?? 60_000, clock = fields.clock ?? Date.now;
@@ -207,26 +231,31 @@ function issue(store: Store, effect: WireEffect & { attempt: number }): WireEffe
 /** Reserve one effect request (envelope.ts): its nonce key, then its operation's next state. */
 export function reserveEffect(storeHandle: object, reservation: EffectReservation): WireEffect {
   const store = storeHandle as Store;
-  const { key, operationId, requestHash } = reservation;
-  if (!isHash(key) || !isHash(operationId) || !isHash(requestHash)) fail("wire_input_invalid", 500);
-  if (!publish(store, `k-${key}`, canonicalize({ key, operationId, requestHash }))) fail("peer_request_replayed", 409);
+  const { key, operationId, binding, requestHash } = reservation;
+  if (!isHash(key) || !isHash(operationId) || !isHash(binding) || !isHash(requestHash)) fail("wire_input_invalid", 500);
+  if (!publish(store, `k-${key}`, canonicalize({ key, operationId, binding, requestHash }))) fail("peer_request_replayed", 409);
   const at = now(store);
-  const lease = (attempt: number) => canonicalize({ operationId, attempt, requestHash, leaseUntil: at + store.leaseMs });
-  const completed = (): WireEffect => deepFreeze({ state: "completed" as const, operationId, outcome: readOutcome(store, operationId) });
+  const lease = (attempt: number) => canonicalize({ operationId, attempt, requestHash, leaseUntil: at + store.leaseMs, binding });
+  const completed = (): WireEffect => {
+    const outcome = readOutcome(store, operationId);
+    assertBinding(store, operationId, binding);
+    return deepFreeze({ state: "completed" as const, operationId, outcome });
+  };
   if (exists(store, outcomeName(operationId))) return completed();
   let next = 0;
   while (next < MAX_EFFECT_ATTEMPTS && exists(store, attemptName(operationId, next))) next++;
   if (next === 0) {
     if (publish(store, attemptName(operationId, 0), lease(0))) return issue(store, { state: "new", operationId, attempt: 0, leaseUntil: at + store.leaseMs });
+    // Another worker published attempt 0 first: its binding decides.
+    assertBinding(store, operationId, binding);
     return fail("seller_effect_pending", 503);
   }
+  assertBinding(store, operationId, binding);
   // The outcome may have been published while the attempts were counted.
   if (exists(store, outcomeName(operationId))) return completed();
   const latest = next - 1;
-  const held = readRecord(store, attemptName(operationId, latest), SMALL_FILE_BYTES);
-  // An attempt file is published whole; one this journal cannot read holds nothing.
-  const leaseUntil = hasKeys(held, ["operationId", "attempt", "requestHash", "leaseUntil"]) && isUint(held.leaseUntil) ? held.leaseUntil : 0;
-  if (!exists(store, endedName(operationId, latest)) && at < leaseUntil) fail("seller_effect_pending", 503);
+  const { leaseUntil } = readAttempt(store, operationId, latest);
+  if (!exists(store, endedName(operationId, latest)) && at < (leaseUntil as number)) fail("seller_effect_pending", 503);
   if (next >= MAX_EFFECT_ATTEMPTS) fail("seller_effect_unresolved", 500);
   if (!publish(store, attemptName(operationId, next), lease(next))) fail("seller_effect_pending", 503);
   return issue(store, { state: "recover", operationId, attempt: next, leaseUntil: at + store.leaseMs });

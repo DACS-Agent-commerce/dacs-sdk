@@ -97,6 +97,9 @@ export {
   type ListingEligibilityReader,
 } from "./discovery.js";
 export {
+  admitWireArtifact,
+  MAX_WIRE_ARTIFACT_BYTES,
+  TP1_COMMIT_PHASE,
   type CommitmentReceiptReader,
   type WireAnchoredCommitment,
 } from "./commitment.js";

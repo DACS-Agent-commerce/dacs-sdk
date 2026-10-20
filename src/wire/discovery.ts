@@ -9,7 +9,7 @@
 // the TP-1 restrictions as its capabilities.
 import { snapshotWireJsonRead } from "../canonical/snapshot.js";
 import { canonicalize } from "../canonical/jcs.js";
-import { commitmentReceiptTime, type CommitmentReceiptReader } from "./commitment.js";
+import { commitmentReceiptTime, TP1_COMMIT_PHASE, type CommitmentReceiptReader } from "./commitment.js";
 import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, TP1_CAPABILITIES, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_HTTP_V1, isReadRoute } from "./routes.js";
 import {
@@ -126,6 +126,12 @@ export interface EndpointProof {
 export interface VerifiedListingEligibility extends VerifiedListingEndpoint {
   pricingKind: "fixed";
   negotiation: "negotiate-fixed-price";
+  /**
+   * The commit phase kind of the Listing's pipeline. It selects the Agreement
+   * type a continuation must carry (DACS-3 §8.5.2 check 9, CA-7); TP-1
+   * commits only `commit-agreement` (an AgreementDocument).
+   */
+  commitPhase: typeof TP1_COMMIT_PHASE;
   rail: "pay-dem";
   delivery: typeof TP1_CAPABILITIES.delivery;
   service: { kind: "fixed-text" } | {
@@ -169,8 +175,9 @@ export const isContinuingRoute = (path: string): boolean => listHas(CONTINUING_P
 /**
  * The time that continues a committed purchase: the receipt time of the job's
  * finalized commitment (`committedAt`, DACS-3 §8.6 CA-8), never a time the
- * caller states. `commitment` is the job's finality commitment as data (the
- * gate's result, the seller's copy, or one read again after a restart); the
+ * caller states. `commitment` is the job's finality commitment as received
+ * bytes or a value the wire admitted (the gate's result, the seller's copy,
+ * or one read again after a restart); under the Listing's `commitPhase`, the
  * wire checks its record, the seller's signature, the signed Agreement it
  * commits (`agreement`: both parties' signatures, CA-7) and the finalized
  * receipt, and asks the buyer's receipt reader to authenticate it, every time
@@ -178,11 +185,37 @@ export const isContinuingRoute = (path: string): boolean => listHas(CONTINUING_P
  * and buyer. At signing, a request on any other route is a new purchase:
  * undefined.
  */
-function commitmentTime(commitment: unknown, agreement: unknown, reader: unknown, scope: { seller: string; listingPin: ListingPin; now: number; request?: ContinuedRequest }): number | undefined {
+function commitmentTime(commitment: unknown, agreement: unknown, reader: unknown, scope: { seller: string; listingPin: ListingPin; commitPhase: string; now: number; request?: ContinuedRequest }): number | undefined {
   const { request } = scope;
   if (commitment === undefined || (request && !isContinuingRoute(request.path) && !isReadRoute(request.path))) return undefined;
-  return commitmentReceiptTime(commitment, agreement, reader, { seller: scope.seller, listingPin: scope.listingPin, now: scope.now,
+  return commitmentReceiptTime(commitment, agreement, reader, { seller: scope.seller, listingPin: scope.listingPin, commitPhase: scope.commitPhase, now: scope.now,
     ...(request ? { request: { jobId: request.jobId, agreementHash: request.agreementHash, buyer: request.buyer } } : {}) });
+}
+
+/**
+ * The authenticated reader's decision for the Listing, its terms checked; its
+ * window is checked by assertListingWindow once the commitment time is known.
+ * The commit phase is read here, before any commitment, so it selects the
+ * Agreement type the continuation must carry (CA-7).
+ */
+function readListingDecision(reader: unknown, listing: VerifiedListingEndpoint, now: number): VerifiedListingEligibility {
+  if (typeof reader !== "function") fail("listing_eligibility_required", 500);
+  const scope = deepFreeze({ ...cloneJson(listing), now });
+  // Reader failures retain their cause (for example timeout, not-found or
+  // revocation). Only malformed or unsupported decisions get a wire error.
+  const decision = ownedArtifact((reader as ListingEligibilityReader)(scope), "listing_unsupported", 500) as unknown as VerifiedListingEligibility;
+  if (!hasKeys(decision, ["seller", "publicEndpoint", "listingPin", "pricingKind", "negotiation", "commitPhase", "rail", "delivery", "service", "output", "buyerRequestInput", "notBefore", "expiresAt"])) fail("listing_unsupported", 500);
+  if (decision.seller !== listing.seller || decision.publicEndpoint !== listing.publicEndpoint ||
+      !sameCanonical(decision.listingPin, listing.listingPin)) fail("listing_eligibility_mismatch", 500);
+  const service = decision.service;
+  const fixedText = hasKeys(service, ["kind"]) && service.kind === "fixed-text";
+  const module = hasKeys(service, ["kind", "configured", "pure", "deterministic", "synchronous"]) &&
+    service.kind === "pure-synchronous-text-module" && service.configured === true && service.pure === true &&
+    service.deterministic === true && service.synchronous === true;
+  if (decision.pricingKind !== "fixed" || decision.negotiation !== "negotiate-fixed-price" || decision.commitPhase !== TP1_COMMIT_PHASE ||
+      decision.rail !== "pay-dem" || !sameCanonical(decision.delivery, TP1_CAPABILITIES.delivery) || (!fixedText && !module) ||
+      !sameCanonical(decision.output, TP1_CAPABILITIES.output) || decision.buyerRequestInput !== false) fail("listing_unsupported", 500);
+  return decision;
 }
 
 /**
@@ -191,25 +224,9 @@ function commitmentTime(commitment: unknown, agreement: unknown, reader: unknown
  * check 6: `notAfter >= committedAt`), so its ending later stops new purchases
  * only. Omitted, it must hold `now`.
  */
-function assertListingEligibility(reader: unknown, listing: VerifiedListingEndpoint, now: number, committedAt?: number): asserts reader is ListingEligibilityReader {
-  if (typeof reader !== "function") fail("listing_eligibility_required", 500);
-  const scope = deepFreeze({ ...cloneJson(listing), now });
-  // Reader failures retain their cause (for example timeout, not-found or
-  // revocation). Only malformed or unsupported decisions get a wire error.
-  const decision = ownedArtifact(reader(scope), "listing_unsupported", 500) as unknown as VerifiedListingEligibility;
-  if (!hasKeys(decision, ["seller", "publicEndpoint", "listingPin", "pricingKind", "negotiation", "rail", "delivery", "service", "output", "buyerRequestInput", "notBefore", "expiresAt"])) fail("listing_unsupported", 500);
-  if (decision.seller !== listing.seller || decision.publicEndpoint !== listing.publicEndpoint ||
-      !sameCanonical(decision.listingPin, listing.listingPin)) fail("listing_eligibility_mismatch", 500);
-  const service = decision.service;
-  const fixedText = hasKeys(service, ["kind"]) && service.kind === "fixed-text";
-  const module = hasKeys(service, ["kind", "configured", "pure", "deterministic", "synchronous"]) &&
-    service.kind === "pure-synchronous-text-module" && service.configured === true && service.pure === true &&
-    service.deterministic === true && service.synchronous === true;
+function assertListingWindow(decision: VerifiedListingEligibility, now: number, committedAt?: number): void {
   const at = committedAt ?? now;
-  if (decision.pricingKind !== "fixed" || decision.negotiation !== "negotiate-fixed-price" || decision.rail !== "pay-dem" ||
-      !sameCanonical(decision.delivery, TP1_CAPABILITIES.delivery) || (!fixedText && !module) ||
-      !sameCanonical(decision.output, TP1_CAPABILITIES.output) || decision.buyerRequestInput !== false ||
-      !isUint(decision.notBefore) || !isUint(decision.expiresAt) || !isUint(now) ||
+  if (!isUint(decision.notBefore) || !isUint(decision.expiresAt) || !isUint(now) ||
       decision.notBefore > now || decision.notBefore > at ||
       (committedAt === undefined ? decision.expiresAt <= now : decision.expiresAt < committedAt)) fail("listing_unsupported", 500);
 }
@@ -228,9 +245,10 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
       !sameCanonical(kept.listing.listingPin, scope.listingPin)) fail("endpoint_proof_mismatch", 500);
   // The buyer's own kept proof has lapsed: fetching discovery again clears it (transient), not the seller's fault.
   if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 503);
-  const committedAt = commitmentTime(scope.commitment, scope.agreement, kept.readCommitmentReceipt, scope);
+  const decision = readListingDecision(kept.readListingEligibility, kept.listing, scope.now);
+  const committedAt = commitmentTime(scope.commitment, scope.agreement, kept.readCommitmentReceipt, { ...scope, commitPhase: decision.commitPhase });
   if (!p.ready && committedAt === undefined) fail("seller_not_ready", 503);
-  assertListingEligibility(kept.readListingEligibility, kept.listing, scope.now, committedAt);
+  assertListingWindow(decision, scope.now, committedAt);
   assertTp1Authority(scope.binding, scope.binding.local, [p.payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
 }
 
@@ -277,10 +295,11 @@ export function verifyEndpointProof(bytes: Uint8Array, options: {
   if (!p.listings.some((pin) => sameCanonical(pin, listing.listingPin))) fail("discovery_listing_missing", 502);
   if (!sameCanonical(p.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 502);
   if (!isUint(now) || p.issuedAt > now + ISSUED_SKEW_MS || p.expiresAt <= now) fail("discovery_expired", 502);
-  assertListingEligibility(readListingEligibility, listing, now as number,
-    commitmentTime(commitment, agreement, readCommitmentReceipt, { seller: listing.seller, listingPin: listing.listingPin, now: now as number }));
+  const decision = readListingDecision(readListingEligibility, listing, now as number);
+  assertListingWindow(decision, now as number,
+    commitmentTime(commitment, agreement, readCommitmentReceipt, { seller: listing.seller, listingPin: listing.listingPin, commitPhase: decision.commitPhase, now: now as number }));
   assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   const proof = deepFreeze({ payload: cloneJson(p), ready: p.ready });
-  proofSet(proofs, proof, { binding: binding as Tp1Binding, listing: deepFreeze(listing), readListingEligibility, readCommitmentReceipt });
+  proofSet(proofs, proof, { binding: binding as Tp1Binding, listing: deepFreeze(listing), readListingEligibility: readListingEligibility as ListingEligibilityReader, readCommitmentReceipt });
   return proof;
 }

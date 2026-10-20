@@ -50,7 +50,8 @@ it.skipIf(process.env.DACS_WIRE_JOURNAL_CHILD !== "1")(
       try {
         effect = wire.checkWireRequest(envelope, { ...context, requestJournal: journal, seller: input.seller, listingPin: input.listingPin,
           method: "POST", path, rawBody: Buffer.from(body), now: input.now, retained: input.retained,
-          commitment: input.commitment, agreement: input.agreement, readCommitmentReceipt: () => "valid" }).effect;
+          commitment: Buffer.from(JSON.stringify(input.commitment)), agreement: Buffer.from(JSON.stringify(input.agreement)),
+          readCommitmentReceipt: () => "valid", commitPhase: "commit-agreement" }).effect;
       } catch (error) {
         if (error instanceof wire.WireError) { verdicts.push(error.code); continue; }
         throw error;

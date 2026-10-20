@@ -248,9 +248,11 @@ below):
    and read routes do not read it.
    On the payment and delivery routes (`payments`, `bundles/request`,
    `bundles/countersignature`), `checkWireRequest` instead requires the job's
-   finalized commitment, as data the seller read itself (`commitment`), and
-   its SR-2 receipt reader (`readCommitmentReceipt`), and the retained
-   Agreement both parties signed (`agreement`). It checks them exactly as
+   finalized commitment, as the exact bytes the seller read itself
+   (`commitment`), its SR-2 receipt reader (`readCommitmentReceipt`), the
+   retained Agreement both parties signed (`agreement`, as bytes too), and
+   the commit phase of its own signed Listing (`commitPhase`, which must be
+   `commit-agreement`). It checks them exactly as
    the buyer's signers do (see the endpoint proof section), against the
    retained job, Agreement hash, parties and Listing pin, before any
    reservation. `commitment: null`, the host's own reader having found none,
@@ -276,9 +278,14 @@ below):
    profile, nonce}`). The same signed request again is
    `peer_request_replayed` (409), and the journal never drops a key. Each
    effect is an operation, one per job and route. Its `operationId`
-   (`wireOperationId`) is SHA-256 of canonical `{profile, seller, buyer,
-   jobId, agreementHash, path}`, so a fresh nonce or other incidental body
-   fields name the same operation.
+   (`wireOperationId`) is SHA-256 of canonical `{seller, jobId, path}`, so a
+   fresh nonce, other incidental body fields, or another Agreement hash,
+   buyer or tuple name the same operation. Its first attempt records the
+   operation's binding, SHA-256 of canonical `{profile, buyer,
+   agreementHash}`, and every later request for the operation must carry the
+   same one: a job whose retained Agreement, buyer or tuple changed is
+   refused (`peer_operation_mismatch`, 409) and never gets a second effect,
+   before or after its outcome and across a restart.
 
    The operation's state is durable. The checked request's `effect` is one
    of:
@@ -302,7 +309,10 @@ below):
    effect, so the next request recovers at once. An operation that reaches
    16 attempts with no outcome is `seller_effect_unresolved` (500) and needs
    an operator. An entry the journal did not write (not a file, too large, a
-   malformed outcome) fails closed (`seller_replay_guard_invalid`). Read
+   malformed outcome or attempt record, an outcome with no first attempt)
+   fails closed (`seller_replay_guard_invalid`); an unreadable attempt is
+   never taken as a lapsed lease. The journal refuses to open on Windows,
+   where a directory cannot be synced. Read
    routes need no reservation and have `effect: null`. All authentication,
    body, retained-Agreement, commitment, scope and deadline checks precede
    the reservation.
@@ -388,7 +398,9 @@ Do not construct this decision from discovery capabilities or other
 unverified seller input. Any network reads belong to the authenticated reader
 and require byte/list limits and deadlines before decoding.
 
-The wire checks fixed pricing, `negotiate-fixed-price`, `pay-dem`, Demos
+The wire checks fixed pricing, `negotiate-fixed-price`, the commit phase
+`commitPhase: "commit-agreement"` (DACS-3 §8.5.2 check 9: the only phase TP-1
+commits, whose artifact is an AgreementDocument), `pay-dem`, Demos
 storage delivery, the bounded synchronous report output and absence of buyer
 request input. The service must be `fixed-text` or an explicitly configured,
 pure, deterministic, synchronous text module. The reader is called at proof
@@ -401,14 +413,27 @@ For a job whose commitment has finalized, the buyer passes the job's finality
 commitment as `commitment` to `signWireRequest`, request-kind
 `signWireEnvelope` and `verifyEndpointProof`. In TP-1 the seller is the
 orchestrator (G3) and runs `commitFixedPriceAgreement`. It sends the result
-(`FinalizedAgreementCommitment`) to its buyer as JSON, and the buyer passes
-that parsed copy, or reads the same record again after a restart. The
-commitment is data: the wire checks the evidence itself, every time. It
-checks the record's members (`finalityCommitmentVersion` `"1"`,
+(`FinalizedAgreementCommitment`) and the Agreement to its buyer as JSON. Both
+are external DACS documents (CORE CF-5), so the wire admits each from its
+exact received bytes before anything reads it: the buyer passes those bytes
+(or the same record read again after a restart, as bytes), or a value the
+wire's own admission returned: `admitWireArtifact(bytes)`, or a member of a
+body `verifyWireResponse` or `checkWireRequest` admitted (frozen, and recorded
+as admitted). A caller's object, a decoded string or a re-serialized copy is
+refused (`ARTIFACT-NOT-ADMITTED`), and bytes admission refuses (duplicate
+members, ill-formed UTF-8, an out-of-profile number, nesting past 128, a
+non-NFC value) keep admission's own detail. The wire checks the evidence
+itself, every time. First, the Listing's commit phase (the eligibility
+decision's `commitPhase`; the seller's own `commitPhase`) must be
+`commit-agreement`, before any signature is read
+(`continuation_phase_unsupported`). It checks the record's members
+(`finalityCommitmentVersion` `"1"`,
 `fixed-price`), the job, the Agreement hash, the Listing pin and the parties
 `[buyer, seller]`. It checks the record's Ed25519 signature under
-`dacs-finality-commitment:v1:` by the seller. It checks that the receipt is
-`finalized` and `established`, at `dacs3:commit:{jobId}`, with the record's
+`dacs-finality-commitment:v1:` by the seller. It checks that the receipt is a
+CORE §5.1 AnchorReceipt and the transaction reference a DACS-4 §9.3 ChainTxRef
+(the commitment gate's own validators), `finalized` and `established`, at
+`dacs3:commit:{jobId}`, with the record's
 native address and content hash, and takes `committedAt` from its
 `blockRef.timestamp`. It checks the Agreement the record commits, passed as
 `agreement` with the commitment (DACS-3 §8.6 CA-7). It must be an exact
@@ -432,8 +457,9 @@ readback routes (`payments`, `bundles/request`, `bundles/countersignature`,
 `agreements/state`, `bundles/buyer-copy`) are signed while the document says
 `ready: false`, and the Listing's window must hold the commitment's receipt
 time `committedAt` instead of now, its last instant included (DACS-3 §8.5.2
-check 6, `notAfter >= committedAt`). The Agreement's own `generatedAt` is
-never compared, so a backdated one extends nothing, and a `committedAt` more
+check 6, `notAfter >= committedAt`). The Agreement's own `generatedAt` never
+stands in for `committedAt`, so a backdated one extends nothing; a
+`committedAt` before it (the gate's `generatedAt <= committedAt`) or more
 than 30 s after the signer's clock is refused. A proposal, commitment or
 context request is always a new purchase. A reader therefore returns an ended
 window as it is; it still throws for a revoked, missing or unavailable
@@ -740,11 +766,14 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `seller_replay_guard_invalid` (500) | a journal directory that is not absolute, missing, a link, owned by another user or writable by others, on which exclusive publishing fails, or holding an entry the journal did not write |
 | `peer_request_replayed` (409) | the journal already holds the request's nonce key: the same signed request again |
 | `seller_effect_pending` (503) | another attempt of the same operation (job and route) holds its live lease |
+| `peer_operation_mismatch` (409) | an effect request for a job and route whose operation was first reserved under another Agreement hash, buyer or tuple |
 | `seller_effect_unresolved` (500) | an operation reached 16 attempts with no outcome |
 | `seller_effect_conflict`, `seller_effect_superseded` (500) | `completeWireEffect` with an outcome other than the one recorded, or from an attempt a later one superseded |
 | `seller_readiness_required` (500) | a proposal, commitment, commitment-signature or context request checked without the seller's own `ready`, or with anything but a boolean |
-| `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, or with one that is not an exact fixed-price AgreementDocument, whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7) |
-| `continuation_commitment_invalid` (500) | a `commitment` whose record, seller signature or finalized receipt does not check, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
+| `continuation_phase_unsupported` (500) | a `commitment` checked under a Listing commit phase other than `commit-agreement`, or none (DACS-3 §8.5.2 check 9) |
+| `wire_artifact_rejected` (500) | `admitWireArtifact` given bytes CF-5 admission refuses; the detail is admission's own code |
+| `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with one that is not an exact fixed-price AgreementDocument (a payee-bound or identity-bound one included), whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7) |
+| `continuation_commitment_invalid` (500) | a `commitment` given as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or as bytes admission refuses; or whose record, seller signature or finalized receipt does not check, whose receipt is not a CORE §5.1 AnchorReceipt or whose transaction reference is not a ChainTxRef, whose receipt time is before the Agreement's `generatedAt`, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
 | `commitment_reader_required`, `commitment_reader_invalid` (500) | a `commitment` given without a receipt reader, or a reader that answered anything but a disposition (a promise included) |
 | `commitment_unverified` (503) | the receipt reader answered `indeterminate` or `error`: the commitment is not established, never final |
 | `seller_commitment_required` (500), `peer_agreement_uncommitted` (409) | a payment or delivery request checked without the job's commitment, or with `commitment: null` (the seller's own reader found none) |
@@ -886,7 +915,7 @@ read routes.
 ## Host validation requirements
 
 The transport capture comparisons supply host-owned Agreement context and a
-a test request journal separately from the immutable captured messages.
+test request journal separately from the immutable captured messages.
 These host requirements apply to both direct and delegated effect requests;
 acceptance of a captured signature alone does not authorize repeating an effect.
 The retained job and Agreement comparison is enforced by `checkWireRequest`

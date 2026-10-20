@@ -16,6 +16,15 @@ import {
 /** The test's SR-2 receipt reader: every receipt it is shown is authentic. Production reads the chain. */
 export const validReceipt: CommitmentReceiptReader = () => "valid";
 
+/**
+ * A commitment or Agreement as the exact bytes it is received as (CORE CF-5):
+ * the wire admits each from bytes. `undefined` and `null` stay as they are.
+ */
+export const received = (value: unknown): unknown => (value === undefined || value === null ? value : Buffer.from(JSON.stringify(value), "utf8"));
+
+/** The Listing commit phase TP-1 continues: the seller's own Listing's, in every seller check. */
+export const COMMIT_PHASE = "commit-agreement";
+
 /** A party whose one key signs its Agreement, its commitment record or its wire messages; `calls` counts wire signatures. */
 export function seededParty(byte: number) {
   const seed = Uint8Array.from(Buffer.alloc(32, byte));
@@ -132,7 +141,8 @@ export function signedAgreement(options: {
   buyer: SyncSigner; seller: SyncSigner; jobId: string; listingPin: ListingPin; generatedAt?: number;
   signers?: { buyer: SyncSigner; seller: SyncSigner }; patch?: Record<string, unknown>;
 }): { agreement: AgreementArtifact; agreementHash: string } {
-  const at = options.generatedAt ?? Date.UTC(2026, 9, 18);
+  // A minute before the tests' clock: the commitments they make finalize after it (generatedAt <= committedAt).
+  const at = options.generatedAt ?? Date.UTC(2026, 9, 18) - 60_000;
   const listing: Listing = {
     dacsVersion: "1", listingVersion: 1, listingId: options.listingPin.listingId,
     seller: { identity: identity(options.seller.claim, at), displayName: "Report", publicEndpoint: "https://seller.agreement.invalid" },

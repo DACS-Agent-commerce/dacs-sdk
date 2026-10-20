@@ -5,19 +5,50 @@
 // parties signed (DACS-3 §8.6 CA-7), the job's finality commitment record for
 // exactly that Agreement, signed by the TP-1 orchestrator (the seller, G3,
 // CA-6), and its finalized SR-2 receipt, authenticated by the actor's own
-// receipt reader. The commitment and Agreement are plain data: the result
-// commitFixedPriceAgreement returned, the copy a seller sends its buyer, or one
-// read again after a restart are checked the same way. Nothing marks a value
-// as verified, so there is nothing to forge.
+// receipt reader. The commitment and Agreement are external DACS documents
+// (CORE CF-5): each is given as its exact received bytes, admitted here, or as
+// a value the wire's own admission returned (admitWireArtifact, or part of an
+// admitted request or response body). The result commitFixedPriceAgreement
+// returned, the copy a seller sends its buyer, or one read again after a
+// restart are checked the same way, from bytes. Nothing marks a value as
+// verified, so there is nothing to forge.
+import { types } from "node:util";
+
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { isAgreementDocument } from "../artifacts/validators.js";
+import { isAgreementDocument, isChainTxRef, isReadableAnchorReceipt } from "../artifacts/validators.js";
 import { contentHash } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
-  cloneJson, deepFreeze, fail, hasKeys, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, sameCanonical, verifyEd25519, claimKey,
-  type JsonRecord, type ListingPin,
+  admitWireJson, cloneJson, deepFreeze, fail, hasKeys, isAdmittedValue, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, ownedBytes,
+  sameCanonical, sealAdmitted, verifyEd25519, claimKey, type JsonRecord, type ListingPin,
 } from "./validate.js";
+
+/** The most bytes one commitment or Agreement document may have (the response body bound). */
+export const MAX_WIRE_ARTIFACT_BYTES = DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes;
+
+/**
+ * CF-5 admission of one external DACS document (a commitment, an Agreement)
+ * from its exact received bytes: UTF-8, duplicate members, the number profile,
+ * nesting depth and NFC values, before anything parses it. Returns it frozen
+ * and recorded, so the continuation checks accept it as admitted. A refusal is
+ * `wire_artifact_rejected` (500) with the admission's own code as its detail.
+ */
+export function admitWireArtifact(bytes: Uint8Array): unknown {
+  const owned = ownedBytes(bytes, "wire_input_invalid", 500, { maxBytes: MAX_WIRE_ARTIFACT_BYTES, code: "wire_artifact_rejected", status: 500 });
+  return sealAdmitted(admitWireJson(owned, MAX_WIRE_ARTIFACT_BYTES, "wire_artifact_rejected", 500));
+}
+
+/** The admitted value of a continuation input: exact bytes, admitted now, or a value the wire admitted. Anything else is refused as `code`. */
+function admittedInput(value: unknown, code: string): unknown {
+  if (types.isUint8Array(value)) {
+    return admitWireJson(ownedBytes(value, code, 500, { maxBytes: MAX_WIRE_ARTIFACT_BYTES, code, status: 500 }), MAX_WIRE_ARTIFACT_BYTES, code, 500);
+  }
+  return isAdmittedValue(value) ? value : fail(code, 500, "ARTIFACT-NOT-ADMITTED");
+}
+
+/** DACS-3 §8.5.2 check 9: the only commit phase TP-1 continues, and the Agreement type it requires. */
+export const TP1_COMMIT_PHASE = "commit-agreement";
 
 /** CORE §B.7 `dacs-finality-commitment:v1:` (src/negotiate/commitment.ts FINALITY_COMMITMENT_SEPARATOR; test/wire/continuation.test.ts pins it). */
 export const FINALITY_COMMITMENT_DOMAIN = "dacs-finality-commitment:v1:";
@@ -45,6 +76,13 @@ export type CommitmentReceiptReader = (anchored: Readonly<WireAnchoredCommitment
 export interface CommitmentScope {
   seller: string;
   listingPin: ListingPin;
+  /**
+   * The commit phase kind of the authenticated Listing's pipeline (the
+   * buyer's eligibility reader; the seller's own Listing). It selects the
+   * Agreement type before any signature is read (DACS-3 §8.5.2 check 9,
+   * CA-7): TP-1 continues only `commit-agreement`, an AgreementDocument.
+   */
+  commitPhase: unknown;
   now: number;
   /** The job, Agreement hash and buyer a request names; omitted, the record's own are taken and checked at signing. */
   request?: { jobId: string; agreementHash: string; buyer: string };
@@ -59,16 +97,18 @@ const invalid = (): never => fail("continuation_commitment_invalid", 500);
 const agreementInvalid = (): never => fail("continuation_agreement_invalid", 500);
 
 /**
- * CA-7: the Agreement the record commits is one both parties signed. It must
- * be an exact DACS-3 §8.5 AgreementDocument derived from fixed price (TP-1
- * commits no payee-bound or other Agreement type). Its recomputed content hash
- * must be the record's `agreementHash`, and its job and Listing pin the
- * record's. Its buyer and seller (by role) must be the record's parties, in
- * that order. Its two signatures, one by each party, must verify under
- * `dacs-agreement:v1:` against each party's own key.
+ * CA-7: the Agreement the record commits is one both parties signed. The
+ * Listing's `commit-agreement` phase (checked first) requires an exact DACS-3
+ * §8.5 AgreementDocument, here derived from fixed price; a payee-bound or
+ * identity-bound document is the off-diagonal pairing and is refused. Its
+ * recomputed content hash must be the record's `agreementHash`, and its job
+ * and Listing pin the record's. Its buyer and seller (by role) must be the
+ * record's parties, in that order. Its two signatures, one by each party,
+ * must verify under `dacs-agreement:v1:` against each party's own key.
+ * Returns the Agreement's `generatedAt`.
  */
-function assertCommittedAgreement(value: unknown, record: JsonRecord): void {
-  const agreement = ownedArtifact(value, "continuation_agreement_invalid", 500) as JsonRecord;
+function assertCommittedAgreement(value: unknown, record: JsonRecord): number {
+  const agreement = ownedArtifact(admittedInput(value, "continuation_agreement_invalid"), "continuation_agreement_invalid", 500) as JsonRecord;
   if (!isAgreementDocument(agreement) || agreement.derivedFromPattern !== "fixed-price") agreementInvalid();
   const hash = contentHash(agreement);
   if (hash !== record.agreementHash || agreement.jobId !== record.jobId || !sameCanonical(agreement.listingRef, record.listingRef)) agreementInvalid();
@@ -83,27 +123,37 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): void {
     if (found.length !== 1 || found[0]!.algorithm !== "ed25519") agreementInvalid();
     if (!verifyEd25519(signed, Buffer.from(found[0]!.value as string, "base64url"), claimKey(claim))) agreementInvalid();
   }
+  return agreement.generatedAt as number;
 }
 
 /**
  * The receipt time (`committedAt`, DACS-3 §8.6 CA-8) of the job's finalized
- * commitment, from the evidence itself. Accepted: exactly the anchored members,
- * or a finality result as commitFixedPriceAgreement returns it, whose stated
- * address, Agreement hash and time must equal what the evidence gives. A
- * legacy record, a pending or unestablished receipt, a record for another job,
- * Agreement, Listing or party pair, a signer other than the seller, or a
- * receipt time more than the tolerated clock skew ahead is refused
- * (`continuation_commitment_invalid`). `agreement` is the signed Agreement
- * the record commits (CA-7, assertCommittedAgreement): absent, malformed,
- * another Agreement, or a party signature that does not verify is
- * `continuation_agreement_invalid`. The reader runs last, on an owned
- * frozen copy: "invalid" is refused the same way; "indeterminate" or "error"
- * is `commitment_unverified` (503: never final); any other answer, a promise
- * included, is `commitment_reader_invalid`.
+ * commitment, from the evidence itself. First, the Listing's commit phase must
+ * be `commit-agreement` (`continuation_phase_unsupported`, 500), before any
+ * signature is read. `value` and `agreement` are admitted (CF-5) before they
+ * are read: exact bytes, or a value the wire admitted; anything else, or bytes
+ * admission refuses, is the code below with the admission's detail.
+ * Accepted: exactly the anchored members, or a finality result as
+ * commitFixedPriceAgreement returns it, whose stated address, Agreement hash
+ * and time must equal what the evidence gives. A legacy record, a receipt that
+ * is not a CORE §5.1 AnchorReceipt or a transaction reference that is not a
+ * ChainTxRef, a pending or unestablished receipt, a record for another job,
+ * Agreement, Listing or party pair, a signer other than the seller, a receipt
+ * time before the Agreement's `generatedAt` or more than the tolerated clock
+ * skew ahead is refused (`continuation_commitment_invalid`). `agreement` is
+ * the signed Agreement the record commits (CA-7, assertCommittedAgreement):
+ * absent, malformed, another Agreement, or a party signature that does not
+ * verify is `continuation_agreement_invalid`. The reader runs last, on an
+ * owned frozen copy: "invalid" is refused the same way; "indeterminate" or
+ * "error" is `commitment_unverified` (503: never final); any other answer, a
+ * promise included, is `commitment_reader_invalid`.
  */
 export function commitmentReceiptTime(value: unknown, agreement: unknown, reader: unknown, scope: CommitmentScope): number {
   if (typeof reader !== "function") fail("commitment_reader_required", 500);
-  const c = ownedArtifact(value, "continuation_commitment_invalid", 500) as JsonRecord;
+  // DACS-3 §8.5.2 check 9 and CA-7: the authenticated Listing's phase selects the Agreement type before any
+  // signature or term is read. TP-1 continues only `commit-agreement`; another phase, or none, is refused.
+  if (scope.commitPhase !== TP1_COMMIT_PHASE) fail("continuation_phase_unsupported", 500);
+  const c = ownedArtifact(admittedInput(value, "continuation_commitment_invalid"), "continuation_commitment_invalid", 500) as JsonRecord;
   const stated = hasKeys(c, RESULT);
   if (!stated && !hasKeys(c, ANCHORED)) invalid();
   const record = c.record as JsonRecord;
@@ -122,10 +172,12 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, reader
   const signed = Buffer.from(`${FINALITY_COMMITMENT_DOMAIN}${contentHash(record)}`, "utf8");
   if (!verifyEd25519(signed, Buffer.from(signature.value as string, "base64url"), claimKey(scope.seller))) invalid();
   // CA-6 says who committed; CA-7 that both parties agreed to what was committed.
-  assertCommittedAgreement(agreement, record);
+  const generatedAt = assertCommittedAgreement(agreement, record);
   const receipt = c.anchorReceipt as JsonRecord;
   const blockRef = isRecord(receipt) ? receipt.blockRef : undefined;
   const logicalAddress = `dacs3:commit:${jobId}`;
+  // The commitment gate's own structural checks (CORE §5.1 receipt, DACS-4 §9.3 transaction reference) come first.
+  if (!isReadableAnchorReceipt(receipt) || !isChainTxRef(c.anchorTxRef)) invalid();
   if (!isRecord(c.anchorTxRef) || typeof c.nativeAddress !== "string" || c.nativeAddress.length === 0 || !isRecord(receipt) ||
       receipt.state !== "finalized" || receipt.observationDisposition !== "established" || receipt.logicalAddress !== logicalAddress ||
       receipt.nativeAddress !== c.nativeAddress || receipt.contentHash !== contentHash(record) ||
@@ -134,6 +186,8 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, reader
   // A stated result is the gate's own: its derived members must be what the evidence gives. A party never supplies the time.
   if (stated && (c.recordKind !== "finality" || c.logicalAddress !== logicalAddress || c.agreementHash !== record.agreementHash ||
       c.committedAt !== committedAt || typeof c.resumed !== "boolean")) invalid();
+  // A purchase is committed after its Agreement exists (the gate's generatedAt <= committedAt).
+  if (!isUint(generatedAt) || committedAt < generatedAt) invalid();
   if (!isUint(scope.now) || committedAt > scope.now + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs) invalid();
   const anchored = deepFreeze(cloneJson({ record, nativeAddress: c.nativeAddress, anchorTxRef: c.anchorTxRef, anchorReceipt: receipt })) as WireAnchoredCommitment;
   const verdict = (reader as CommitmentReceiptReader)(anchored);

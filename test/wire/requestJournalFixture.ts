@@ -22,7 +22,7 @@ export function journalDirectory(): string {
 }
 
 /** What one request reserved: its nonce key file's contents. */
-export interface KeptReservation { key: string; operationId: string; requestHash: string }
+export interface KeptReservation { key: string; operationId: string; binding: string; requestHash: string }
 
 /** Every reservation in a journal directory, in no particular order. */
 export function reservationsIn(directory: string): KeptReservation[] {

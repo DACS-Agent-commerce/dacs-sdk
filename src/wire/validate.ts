@@ -208,6 +208,32 @@ function assertNfc(value: unknown): void {
   }
 }
 
+// Every object and array inside a value the wire's own CF-5 admission returned
+// (admitWireArtifact, admitted request and response bodies), frozen. Methods
+// taken at module load (see profile.ts).
+const sealed = new WeakSet<object>();
+const sealedHas = uncurry(WeakSet.prototype.has) as (set: WeakSet<object>, value: object) => boolean;
+const sealedAdd = uncurry(WeakSet.prototype.add) as (set: WeakSet<object>, value: object) => unknown;
+
+/** Freeze an admitted value and record every container in it: what isAdmittedValue checks later. */
+export function sealAdmitted<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const item of Object.values(value)) sealAdmitted(item);
+    Object.freeze(value);
+    sealedAdd(sealed, value);
+  }
+  return value;
+}
+
+/**
+ * Whether `value` is (part of) a value the wire's own admission returned: the
+ * implementation-enforced guarantee CF-5 asks of a pre-parsed value. A caller's
+ * object, a copy or a re-serialised value is not.
+ */
+export function isAdmittedValue(value: unknown): boolean {
+  return value !== null && typeof value === "object" && sealedHas(sealed, value);
+}
+
 /**
  * CF-5 admission of one received wire input (D7), before canonicalization,
  * hashing, schema checks or signature verification. admitRawJson refuses

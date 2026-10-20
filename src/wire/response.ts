@@ -71,10 +71,14 @@ export interface WireRequestInput extends SigningContext {
   endpointProof: EndpointProof;
   /**
    * For a request that continues a committed purchase (its payment, delivery
-   * and readback routes): the job's finalized finality commitment, as data.
-   * The seller (TP-1's orchestrator) sends it; the result
+   * and readback routes): the job's finalized finality commitment, as the
+   * exact bytes received (CF-5), or a value the wire admitted
+   * (admitWireArtifact, or a member of the body verifyWireResponse
+   * returned). The seller (TP-1's orchestrator) sends it; the result
    * commitFixedPriceAgreement returned, or a copy read again after a restart,
-   * is checked the same way. The wire checks the record, the seller's
+   * is checked the same way. A caller's object is refused. The wire first
+   * checks the Listing's commit phase (the eligibility reader's
+   * `commitPhase`), then the record, the seller's
    * signature, `agreement` (both parties' signatures, CA-7) and the finalized
    * receipt, and the receipt reader kept with
    * `endpointProof` (verifyEndpointProof's `readCommitmentReceipt`)
@@ -84,7 +88,7 @@ export interface WireRequestInput extends SigningContext {
    * proposal, commitment or context request): a new purchase.
    */
   commitment?: unknown;
-  /** Required with `commitment`: the Agreement both parties signed that it commits (DACS-3 §8.6 CA-7). */
+  /** Required with `commitment`: the Agreement both parties signed that it commits (DACS-3 §8.6 CA-7), as bytes or an admitted value. */
   agreement?: unknown;
   publicEndpoint: string;
   path: string;

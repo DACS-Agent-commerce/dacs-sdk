@@ -4,7 +4,7 @@ import type { ListingEligibilityReader } from "../../src/wire/index.js";
 
 export const readFixtureListingEligibility: ListingEligibilityReader = (scope) => ({
   seller: scope.seller, publicEndpoint: scope.publicEndpoint, listingPin: { ...scope.listingPin },
-  pricingKind: "fixed", negotiation: "negotiate-fixed-price", rail: "pay-dem",
+  pricingKind: "fixed", negotiation: "negotiate-fixed-price", commitPhase: "commit-agreement", rail: "pay-dem",
   delivery: { channel: "demos-storage", address: "dacs4:deliverable:{jobId}" }, service: { kind: "fixed-text" }, output: { envelope: "dacs-chatgpt-plugin/devnet-purchased-report", reportVersion: "1", mediaType: "text/plain; charset=utf-8", maxCharacters: 16384, synchronous: true },
   buyerRequestInput: false, notBefore: 0, expiresAt: Number.MAX_SAFE_INTEGER,
 });

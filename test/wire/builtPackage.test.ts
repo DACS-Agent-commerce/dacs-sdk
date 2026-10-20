@@ -27,10 +27,11 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const VECTORS = join(root, "vectors/dacs-seller-http-v1.json");
 // An Agreement for the vectors' job and pin with placeholder parties; the consumer names its own and signs it.
 const PLACEHOLDER = { buyer: `did:demos:agent:${"1".repeat(64)}`, seller: `did:demos:agent:${"2".repeat(64)}` };
-const vectorJob = JSON.parse(readFileSync(VECTORS, "utf8")).job;
+const { job: vectorJob, now: vectorNow } = JSON.parse(readFileSync(VECTORS, "utf8"));
 const placeholderSigner = (claim: string) => ({ claim, sign: () => new Uint8Array(64) });
+// Generated a minute before the vectors' clock: the consumer's commitment finalizes after it (generatedAt <= committedAt).
 const AGREEMENT_TEMPLATE = JSON.stringify(signedAgreement({ buyer: placeholderSigner(PLACEHOLDER.buyer), seller: placeholderSigner(PLACEHOLDER.seller),
-  jobId: vectorJob.jobId, listingPin: vectorJob.listingPin }).agreement);
+  jobId: vectorJob.jobId, listingPin: vectorJob.listingPin, generatedAt: vectorNow - 60_000 }).agreement);
 
 const CONSUMER = String.raw`
 import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -83,7 +84,7 @@ const sellerLocal = file.localBindings.seller, buyerLocal = file.localBindings.b
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const signer = { claim: "did:demos:agent:" + publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"), calls: 0,
   sign(bytes) { signer.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), privateKey)); } };
-const readListingEligibility = (scope) => ({ seller: scope.seller, publicEndpoint: scope.publicEndpoint, listingPin: scope.listingPin, pricingKind: "fixed", negotiation: "negotiate-fixed-price", rail: "pay-dem", delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: 0, expiresAt: Number.MAX_SAFE_INTEGER });
+const readListingEligibility = (scope) => ({ seller: scope.seller, publicEndpoint: scope.publicEndpoint, listingPin: scope.listingPin, pricingKind: "fixed", negotiation: "negotiate-fixed-price", commitPhase: "commit-agreement", rail: "pay-dem", delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: 0, expiresAt: Number.MAX_SAFE_INTEGER });
 const signWith = (binding, local) => code(() => wire.signWireRequest({ signer, binding, local, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: file.parties.seller, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile }, now: file.now }));
 
 // Every verification entry point, on the vectors' correctly signed messages.
@@ -216,7 +217,9 @@ const shippedJs = walk(distDir).map((f) => f.slice(distDir.length + 1)).sort();
 const drainedBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [file.job.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: false, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
 const drained = wire.verifyEndpointProof(drainedBytes, { readListingEligibility, readCommitmentReceipt: () => "valid", listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now });
 const facts = { jobId: file.job.jobId, agreementHash: file.job.agreementHash, listingRef: file.job.listingPin, buyer: signer.claim, seller: sellerSigner.claim, committedAt: 42 };
-const pay = (commitment, agreement, agreementHash = file.job.agreementHash) => code(() => wire.signWireRequest({ endpointProof: drained, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/payments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash, profile: bb.profile }, now: file.now, commitment, agreement }));
+const received = (v) => { try { return v === undefined || v === null ? v : Buffer.from(JSON.stringify(v)); } catch { return v; } };
+const pay = (commitment, agreement, agreementHash = file.job.agreementHash) => payRaw(received(commitment), received(agreement), agreementHash);
+const payRaw = (commitment, agreement, agreementHash = file.job.agreementHash) => code(() => wire.signWireRequest({ endpointProof: drained, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/payments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash, profile: bb.profile }, now: file.now, commitment, agreement }));
 const within = (promise) => Promise.race([Promise.resolve(promise).catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 1000))]);
 out.commitmentForgery = { files: shippedJs.length, verifiedCommitmentModule: shippedJs.includes("negotiate/verifiedCommitment.js"), unimportable: [], vouchers: [], tried: 0, continued: [] };
 const signerCallsBeforeForgery = signer.calls;
@@ -255,11 +258,14 @@ const recordValue = Buffer.from(sellerKeys.privateKey ? sign(null, Buffer.from("
 const signedRecord = { ...unsignedRecord, signature: { algorithm: "ed25519", signer: sellerSigner.claim, value: recordValue } };
 const anchorReceipt = { receiptVersion: "1", substrate: "demos:testnet", finalityProfile: "demos-bft-final", logicalAddress: "dacs3:commit:" + file.job.jobId, nativeAddress: "stor-commitment",
   contentHash: sha(canonicalize(unsignedRecord)), transactionRef: { kind: "demos", value: "tx" }, writer: "w", state: "finalized", observationDisposition: "established", observedAt: file.now, blockRef: { id: "b", timestamp: file.now - 1000 }, evidence: { kind: "proof", value: "p" } };
-const genuineCommitment = JSON.parse(JSON.stringify({ record: signedRecord, nativeAddress: "stor-commitment", anchorTxRef: { kind: "storage-program", address: "stor-commitment" }, anchorReceipt }));
+const genuineCommitment = JSON.parse(JSON.stringify({ record: signedRecord, nativeAddress: "stor-commitment", anchorTxRef: { kind: "storage-program", address: "stor-commitment", writeTxHash: "c".repeat(64) }, anchorReceipt }));
 out.commitmentForgery.genuine = await pay(genuineCommitment, JSON.parse(JSON.stringify(agreement)), agreementHash);
 // The same anchored seller record, for an Agreement whose buyer signature is another key's, or with no Agreement: refused.
 out.commitmentForgery.buyerNeverSigned = await pay(genuineCommitment, { ...agreement, signatures: [partySignature(signer.claim, generateKeyPairSync("ed25519").privateKey), agreement.signatures[1]] }, agreementHash);
 out.commitmentForgery.noAgreement = await pay(genuineCommitment, undefined, agreementHash);
+// The same genuine evidence as objects, not bytes the wire admitted (CF-5): refused.
+out.commitmentForgery.notAdmitted = await payRaw(genuineCommitment, received(agreement), agreementHash);
+out.commitmentForgery.agreementNotAdmitted = await payRaw(received(genuineCommitment), JSON.parse(JSON.stringify(agreement)), agreementHash);
 console.log(JSON.stringify(out));
 `;
 
@@ -371,6 +377,8 @@ describe("built @kynesyslabs/dacs/wire, as a consumer installs it", () => {
     expect(forgery.genuine).toBe("ok");
     expect(forgery.buyerNeverSigned).toBe("continuation_agreement_invalid");
     expect(forgery.noAgreement).toBe("continuation_agreement_invalid");
+    expect(forgery.notAdmitted).toBe("continuation_commitment_invalid");
+    expect(forgery.agreementNotAdmitted).toBe("continuation_agreement_invalid");
     expect(shipped.journalProbeExported).toBe("undefined");
   });
 

@@ -22,7 +22,7 @@ import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./d
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
   isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedBytes, ownedConfig, ownedFields, ownedOrNothing, sameCanonical,
-  uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
+  sealAdmitted, uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 export interface WireRequestPayload {
@@ -98,8 +98,8 @@ export interface EnvelopeSigningContext extends SigningContext {
   now?: number;
   /**
    * A request continuing a committed purchase: the job's finalized commitment
-   * as data (WireRequestInput.commitment), authenticated by the receipt reader
-   * kept with the endpoint proof.
+   * as received bytes or an admitted value (WireRequestInput.commitment),
+   * authenticated by the receipt reader kept with the endpoint proof.
    */
   commitment?: unknown;
   /** Required with `commitment`: the Agreement both parties signed that it commits (DACS-3 §8.6 CA-7). */
@@ -276,9 +276,10 @@ export interface RequestCheck {
   requestJournal?: WireRequestJournal;
   /**
    * Required on the payment and delivery routes (CONTINUING_PATHS): the job's
-   * finalized commitment, as data the seller read itself (the result
-   * commitFixedPriceAgreement returned or a later read of the same record).
-   * The wire checks it against the retained job, Agreement, parties and
+   * finalized commitment, as the exact bytes the seller read itself (the
+   * result commitFixedPriceAgreement returned or a later read of the same
+   * record), or a value the wire admitted (admitWireArtifact); it is admitted
+   * (CF-5) before it is read. The wire checks it against the retained job, Agreement, parties and
    * Listing pin, and authenticates its receipt with `readCommitmentReceipt`,
    * for every request (commitment.ts). `null`, the host's own reader having
    * found no commitment, refuses the request as `peer_agreement_uncommitted`
@@ -287,12 +288,21 @@ export interface RequestCheck {
   commitment?: unknown;
   /**
    * Required with `commitment`: the retained Agreement both parties signed
-   * that it commits. Its hash, job, Listing, parties and both signatures are
-   * checked (DACS-3 §8.6 CA-7; `continuation_agreement_invalid`).
+   * that it commits, as bytes or an admitted value, like `commitment`. Its
+   * hash, job, Listing, parties and both signatures are checked (DACS-3 §8.6
+   * CA-7; `continuation_agreement_invalid`).
    */
   agreement?: unknown;
   /** The seller's SR-2 receipt reader for `commitment` (commitment.ts); required with it. */
   readCommitmentReceipt?: CommitmentReceiptReader;
+  /**
+   * Required with `commitment`: the commit phase kind of the seller's own
+   * signed Listing (its pipeline), which selects the Agreement type before
+   * any signature is read (DACS-3 §8.5.2 check 9, CA-7). TP-1 continues only
+   * `commit-agreement`; another value, or none, is
+   * `continuation_phase_unsupported` (500).
+   */
+  commitPhase?: string;
   /**
    * Required on every route that starts or commits a purchase (proposals,
    * commitments, commitment signature, context): whether this seller accepts
@@ -325,7 +335,7 @@ export function messageLifetime(override: unknown, code: string, max: number = D
   return ms;
 }
 
-const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready", "commitment", "agreement", "readCommitmentReceipt"] as const;
+const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready", "commitment", "agreement", "readCommitmentReceipt", "commitPhase"] as const;
 
 /**
  * A request that starts or commits a purchase (every effect route the buyer
@@ -348,7 +358,7 @@ function admitContinuation(request: WireRequestPayload, c: RequestCheck, listing
   if (!isContinuingRoute(request.path)) return;
   if (c.commitment === null) fail("peer_agreement_uncommitted", 409);
   if (c.commitment === undefined) fail("seller_commitment_required", 500);
-  commitmentReceiptTime(c.commitment, c.agreement, c.readCommitmentReceipt, { seller: request.seller, listingPin, now: c.now,
+  commitmentReceiptTime(c.commitment, c.agreement, c.readCommitmentReceipt, { seller: request.seller, listingPin, commitPhase: c.commitPhase, now: c.now,
     request: { jobId: request.jobId, agreementHash: request.agreementHash, buyer: request.buyer } });
 }
 
@@ -358,21 +368,24 @@ function effectJournal(request: WireRequestPayload, journal: unknown): object | 
 }
 
 /**
- * The effect's identity is its job's, not its body's: {profile, seller, buyer,
- * jobId, agreementHash, path}. A request with a fresh nonce, or with other
- * incidental body fields, for the same job and route is the same operation:
- * it gets the recorded outcome, never a second effect (journal.ts).
+ * The effect's identity is its job's and route's only: {seller, jobId, path}.
+ * A request with a fresh nonce, other incidental body fields, or another
+ * Agreement hash, buyer or tuple for the same job and route is the same
+ * operation. The journal records the binding the operation was first reserved
+ * under ({profile, buyer, agreementHash}) and refuses any other one
+ * (`peer_operation_mismatch`); the same binding gets the recorded outcome,
+ * never a second effect (journal.ts).
  */
-export function wireOperationId(request: Pick<WireRequestPayload, "profile" | "seller" | "buyer" | "jobId" | "agreementHash" | "path">): string {
-  const { profile, seller, buyer, jobId, agreementHash, path } = request;
-  return sha256Hex(canonicalize({ profile, seller, buyer, jobId, agreementHash, path }));
+export function wireOperationId(request: Pick<WireRequestPayload, "seller" | "jobId" | "path">): string {
+  const { seller, jobId, path } = request;
+  return sha256Hex(canonicalize({ seller, jobId, path }));
 }
 
 function reserveEffectRequest(request: WireRequestPayload, store: object | null): WireEffect | null {
   if (store === null) return null;
-  const { buyer, seller, profile, nonce } = request;
+  const { buyer, seller, profile, nonce, agreementHash } = request;
   return reserveEffect(store, { key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })), operationId: wireOperationId(request),
-    requestHash: wireRequestHash(request) });
+    binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wireRequestHash(request) });
 }
 
 /** Every per-request admission an effect needs, in order, then its reservation. */
@@ -473,11 +486,15 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   return { body, readbackOnly: true, effect: null };
 }
 
-/** CF-5 admission of a received request body (64 KiB); it must be a JSON object. */
+/**
+ * CF-5 admission of a received request body (64 KiB); it must be a JSON
+ * object. It is returned frozen and recorded as admitted, so an Agreement or
+ * commitment inside it is accepted as admitted (commitment.ts).
+ */
 export function admitWireRequestBody(rawBody: Uint8Array): JsonRecord {
   const body = admitWireJson(rawBody, DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes, "bad_json", 400);
   if (body === null || typeof body !== "object" || Array.isArray(body)) fail("bad_request", 400);
-  return body as JsonRecord;
+  return sealAdmitted(body as JsonRecord);
 }
 
 /**
@@ -492,9 +509,13 @@ export function admitOutgoingBody(text: string, maxBytes: number): Buffer {
   return bytes;
 }
 
-/** CF-5 admission of a received response body (512 KiB); it must be a JSON object. */
+/**
+ * CF-5 admission of a received response body (512 KiB); it must be a JSON
+ * object. It is returned frozen and recorded as admitted, so the commitment
+ * and Agreement a seller sends in it are accepted as admitted (commitment.ts).
+ */
 export function admitWireResponseBody(bytes: Uint8Array): JsonRecord {
   const body = admitWireJson(bytes, DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes, "response_json_rejected", 502);
   if (body === null || typeof body !== "object" || Array.isArray(body)) fail("response_json_rejected", 502, "NOT-AN-OBJECT");
-  return body as JsonRecord;
+  return sealAdmitted(body as JsonRecord);
 }

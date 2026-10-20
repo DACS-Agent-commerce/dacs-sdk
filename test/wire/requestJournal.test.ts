@@ -1,7 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
-import { signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { COMMIT_PHASE, received, signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -56,7 +56,7 @@ function world() {
   const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash, listingPin: PIN, committedAt: NOW - 5000 });
   // The seller is ready, so a route that starts a purchase reaches its reservation.
   const check = (path: string) => ({ ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true,
-    commitment, agreement, readCommitmentReceipt: validReceipt });
+    commitment: received(commitment), agreement: received(agreement), readCommitmentReceipt: validReceipt, commitPhase: COMMIT_PHASE });
   return { seller, context, agreement, request, direct, delegated, artifact, retained, commitment, check };
 }
 

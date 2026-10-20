@@ -25,7 +25,7 @@ async function world(change: Record<string, unknown> = {}) {
   const local = { endpoint: "https://rpc.eligibility.invalid/", transportAuthority: "test", connectionId: "1" };
   const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
   const selected = {
-    pricingKind: "fixed", negotiation: "negotiate-fixed-price", rail: "pay-dem",
+    pricingKind: "fixed", negotiation: "negotiate-fixed-price", commitPhase: "commit-agreement", rail: "pay-dem",
     delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output,
     buyerRequestInput: false, ...change,
   };
@@ -71,6 +71,11 @@ describe("authenticated Listing eligibility before purchase signing", () => {
   it.each([
     ["x402", { rail: "pay-x402" }], ["metered", { pricingKind: "metered" }],
     ["input-taking", { buyerRequestInput: true }], ["RFQ", { negotiation: "negotiate-rfq" }],
+    // DACS-3 §8.5.2 check 9: TP-1 commits only an AgreementDocument, so only a commit-agreement Listing is eligible.
+    ["payee-bound commitment", { commitPhase: "commit-payee-bound-agreement" }],
+    ["identity-bound commitment", { commitPhase: "commit-identity-bound-agreement" }],
+    ["identity-bound payee commitment", { commitPhase: "commit-identity-bound-payee-agreement" }],
+    ["no commit phase", { commitPhase: undefined }],
     ["external delivery", { delivery: { channel: "https", address: "https://delivery.invalid" } }],
     ["unknown service", { service: { kind: "remote-http" } }],
     ["unconfigured module", { service: { kind: "pure-synchronous-text-module", configured: false, pure: true, deterministic: true, synchronous: true } }],
