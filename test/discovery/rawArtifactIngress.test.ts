@@ -232,13 +232,24 @@ test.each(["swapped-native-slot", undefined])("public storage rejects mismatched
 });
 
 describe("restricted storage raw reads", () => {
+  // demosdk >=4.0.17 (`txSignaturePreimage.js`) refuses to sign bare 64-hex text
+  // unless `raw: true`; the peer range ^4.0.16 installs 4.0.18 today.
+  const strictDemosSignMessage = async (message: string, options?: { raw?: boolean; personal?: boolean }) => {
+    if (options?.raw !== true && options?.personal !== true && /^[0-9a-fA-F]{64}$/.test(message)) {
+      throw new Error("Refusing to sign a message that is a transaction's signing preimage");
+    }
+    return { type: "ed25519", data: "test-auth-signature" };
+  };
+
   test("uses demosdk timestamp-bound wallet headers and still rejects duplicate members", async () => {
-    const adapter = new DemosAdapter({ rpc: "https://offline.test" });
+    const adapter = new DemosAdapter({ rpc: "https://offline.test/" });
     vi.spyOn(adapter.raw, "walletConnected", "get").mockReturnValue(true);
     vi.spyOn(adapter.raw, "getAddress").mockReturnValue("buyer-public-address");
-    const sign = vi.spyOn(adapter.raw, "signMessage").mockResolvedValue({ data: "test-auth-signature" } as never);
-    const fetcher = vi.fn(async (_url: unknown, init?: RequestInit) => {
+    const sign = vi.spyOn(adapter.raw, "signMessage").mockImplementation(strictDemosSignMessage as never);
+    const fetcher = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(url).toBe("https://offline.test/storage-program/stor%2Fslot%3Aa");
       const headers = new Headers(init?.headers);
+      expect(headers.get("accept")).toBe("application/json");
       if (headers.get("identity") !== "ed25519:buyer-public-address" ||
           headers.get("signature") !== "test-auth-signature" || !headers.get("timestamp")) {
         return new Response(null, { status: 403 });
@@ -246,16 +257,47 @@ describe("restricted storage raw reads", () => {
       const { sha256Hex } = await import("../../src/canonical/hash.js");
       expect(sign).toHaveBeenLastCalledWith(
         sha256Hex(`${headers.get("identity")}:${headers.get("timestamp")}`),
-        { algorithm: "ed25519" },
+        { algorithm: "ed25519", raw: true },
       );
-      return new Response(envelope('{"restricted":true}'));
+      return new Response(Buffer.from(
+        '{"success":true,"storageAddress":"stor/slot:a","data":{"restricted":true}}'));
     });
     vi.stubGlobal("fetch", fetcher);
-    expect(await adapter.readAnchor(nativeAddress)).toEqual({ restricted: true });
-    fetcher.mockImplementationOnce(async () => new Response(envelope('{"x":1,"x":2}')));
-    await expect(adapter.readAnchor(nativeAddress)).rejects.toMatchObject({
+    expect(await adapter.readAnchor("stor/slot:a")).toEqual({ restricted: true });
+    expect(sign).toHaveBeenCalledOnce();
+    fetcher.mockImplementationOnce(async () => new Response(Buffer.from(
+      '{"success":true,"storageAddress":"stor/slot:a","data":{"x":1,"x":2}}')));
+    await expect(adapter.readAnchor("stor/slot:a")).rejects.toMatchObject({
       cause: { code: "DUPLICATE-MEMBER" },
     });
+  });
+
+  test("a signer that refuses the auth preimage fails the read closed, never as absence", async () => {
+    const adapter = new DemosAdapter({ rpc: "https://offline.test" });
+    vi.spyOn(adapter.raw, "walletConnected", "get").mockReturnValue(true);
+    vi.spyOn(adapter.raw, "getAddress").mockReturnValue("buyer-public-address");
+    vi.spyOn(adapter.raw, "signMessage").mockRejectedValue(new Error("signer refused"));
+    const fetcher = vi.fn(async () => new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(adapter.readAnchor(nativeAddress)).rejects.toMatchObject({
+      message: `read anchor ${nativeAddress} failed`, cause: { message: "signer refused" },
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  test("a 404 is absence and 403 or 400 stays indeterminate", async () => {
+    const adapter = new DemosAdapter({ rpc: "https://offline.test" });
+    const fetcher = vi.fn(async () => new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetcher);
+    expect(await adapter.readAnchor(nativeAddress)).toBeNull();
+    expect(fetcher).toHaveBeenLastCalledWith(
+      `https://offline.test/storage-program/${nativeAddress}`, expect.anything());
+    for (const status of [403, 400]) {
+      fetcher.mockImplementationOnce(async () => new Response(null, { status }));
+      await expect(adapter.readAnchor(nativeAddress)).rejects.toMatchObject({
+        cause: { message: `storage read HTTP ${status}` },
+      });
+    }
   });
 
   test("an anonymous restricted read remains indeterminate", async () => {

@@ -295,7 +295,10 @@ interface QueuedWrite<T> {
  */
 export interface DemosRawClient {
   readonly walletConnected: boolean;
-  signMessage(message: string, options: { algorithm: "ed25519" }): Promise<{ data: string }>;
+  signMessage(
+    message: string,
+    options: { algorithm: "ed25519"; raw?: boolean },
+  ): Promise<{ data: string }>;
   connect(rpc: string): Promise<boolean>;
   connectWallet(
     masterSeed: string | Uint8Array,
@@ -3917,8 +3920,11 @@ export class DemosAdapter implements SubstrateAdapter {
       if (this.#demos.walletConnected) {
         const identity = `ed25519:${this.#demos.getAddress()}`;
         const timestamp = Date.now().toString();
+        // The node verifies the bare sha256 hex. demosdk >=4.0.17 refuses to
+        // sign 64-hex text (a transaction preimage form) unless `raw` is set;
+        // 4.0.16 ignores the flag and signs the same bytes.
         const { data } = await this.#demos.signMessage(
-          sha256Hex(`${identity}:${timestamp}`), { algorithm: "ed25519" },
+          sha256Hex(`${identity}:${timestamp}`), { algorithm: "ed25519", raw: true },
         );
         headers.identity = identity;
         headers.signature = data;
