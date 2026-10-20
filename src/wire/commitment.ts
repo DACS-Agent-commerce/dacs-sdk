@@ -1,12 +1,16 @@
 // The finalized commitment a payment or delivery request continues (new).
 //
 // A committed purchase continues after its seller drains or its Listing ends
-// only on evidence the wire checks itself each time: the job's finality
-// commitment record, signed by the TP-1 orchestrator (the seller, G3), and its
-// finalized SR-2 receipt, authenticated by the actor's own receipt reader. The
-// commitment is plain data: the result commitFixedPriceAgreement returned, the
-// copy a seller sends its buyer, or one read again after a restart are checked
-// the same way. Nothing marks a value as verified, so there is nothing to forge.
+// only on evidence the wire checks itself each time: the Agreement both
+// parties signed (DACS-3 §8.6 CA-7), the job's finality commitment record for
+// exactly that Agreement, signed by the TP-1 orchestrator (the seller, G3,
+// CA-6), and its finalized SR-2 receipt, authenticated by the actor's own
+// receipt reader. The commitment and Agreement are plain data: the result
+// commitFixedPriceAgreement returned, the copy a seller sends its buyer, or one
+// read again after a restart are checked the same way. Nothing marks a value
+// as verified, so there is nothing to forge.
+import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import { isAgreementDocument } from "../artifacts/validators.js";
 import { contentHash } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
@@ -52,6 +56,34 @@ const RECORD = ["finalityCommitmentVersion", "jobId", "agreementHash", "listingR
 const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 
 const invalid = (): never => fail("continuation_commitment_invalid", 500);
+const agreementInvalid = (): never => fail("continuation_agreement_invalid", 500);
+
+/**
+ * CA-7: the Agreement the record commits is one both parties signed. It must
+ * be an exact DACS-3 §8.5 AgreementDocument derived from fixed price (TP-1
+ * commits no payee-bound or other Agreement type). Its recomputed content hash
+ * must be the record's `agreementHash`, and its job and Listing pin the
+ * record's. Its buyer and seller (by role) must be the record's parties, in
+ * that order. Its two signatures, one by each party, must verify under
+ * `dacs-agreement:v1:` against each party's own key.
+ */
+function assertCommittedAgreement(value: unknown, record: JsonRecord): void {
+  const agreement = ownedArtifact(value, "continuation_agreement_invalid", 500) as JsonRecord;
+  if (!isAgreementDocument(agreement) || agreement.derivedFromPattern !== "fixed-price") agreementInvalid();
+  const hash = contentHash(agreement);
+  if (hash !== record.agreementHash || agreement.jobId !== record.jobId || !sameCanonical(agreement.listingRef, record.listingRef)) agreementInvalid();
+  const parties = agreement.parties as JsonRecord[];
+  const claims = [parties.find((p) => p.role === "buyer")?.primaryClaim, parties.find((p) => p.role === "seller")?.primaryClaim];
+  const recordParties = record.parties as unknown[];
+  if (claims[0] !== recordParties[0] || claims[1] !== recordParties[1]) agreementInvalid();
+  const signed = Buffer.from(`${ARTIFACT_SEPARATORS.AgreementDocument}${hash}`, "utf8");
+  const signatures = agreement.signatures as JsonRecord[];
+  for (const claim of claims as string[]) {
+    const found = signatures.filter((s) => s.party === claim);
+    if (found.length !== 1 || found[0]!.algorithm !== "ed25519") agreementInvalid();
+    if (!verifyEd25519(signed, Buffer.from(found[0]!.value as string, "base64url"), claimKey(claim))) agreementInvalid();
+  }
+}
 
 /**
  * The receipt time (`committedAt`, DACS-3 §8.6 CA-8) of the job's finalized
@@ -61,12 +93,15 @@ const invalid = (): never => fail("continuation_commitment_invalid", 500);
  * legacy record, a pending or unestablished receipt, a record for another job,
  * Agreement, Listing or party pair, a signer other than the seller, or a
  * receipt time more than the tolerated clock skew ahead is refused
- * (`continuation_commitment_invalid`). The reader runs last, on an owned
+ * (`continuation_commitment_invalid`). `agreement` is the signed Agreement
+ * the record commits (CA-7, assertCommittedAgreement): absent, malformed,
+ * another Agreement, or a party signature that does not verify is
+ * `continuation_agreement_invalid`. The reader runs last, on an owned
  * frozen copy: "invalid" is refused the same way; "indeterminate" or "error"
  * is `commitment_unverified` (503: never final); any other answer, a promise
  * included, is `commitment_reader_invalid`.
  */
-export function commitmentReceiptTime(value: unknown, reader: unknown, scope: CommitmentScope): number {
+export function commitmentReceiptTime(value: unknown, agreement: unknown, reader: unknown, scope: CommitmentScope): number {
   if (typeof reader !== "function") fail("commitment_reader_required", 500);
   const c = ownedArtifact(value, "continuation_commitment_invalid", 500) as JsonRecord;
   const stated = hasKeys(c, RESULT);
@@ -86,6 +121,8 @@ export function commitmentReceiptTime(value: unknown, reader: unknown, scope: Co
       Buffer.from(signature.value, "base64url").toString("base64url") !== signature.value) invalid();
   const signed = Buffer.from(`${FINALITY_COMMITMENT_DOMAIN}${contentHash(record)}`, "utf8");
   if (!verifyEd25519(signed, Buffer.from(signature.value as string, "base64url"), claimKey(scope.seller))) invalid();
+  // CA-6 says who committed; CA-7 that both parties agreed to what was committed.
+  assertCommittedAgreement(agreement, record);
   const receipt = c.anchorReceipt as JsonRecord;
   const blockRef = isRecord(receipt) ? receipt.blockRef : undefined;
   const logicalAddress = `dacs3:commit:${jobId}`;

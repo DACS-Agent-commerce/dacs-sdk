@@ -1,74 +1,55 @@
-// Test-only request journals for checkWireRequest. Nothing here ships: the
-// composed seller host brings its own durable journal (a TP-1 composition
-// qualification entry), and qualifies it with qualifyWireRequestJournal.
-// Like fixtureBinder, journalFixture takes the wire module under test, so a
-// file that loads the wire after mocking its approval list (or loads the
-// built package) qualifies journals in that same module.
-import { closeSync, constants, fsyncSync, openSync, writeSync } from "node:fs";
+// Request journals for the wire tests: the shipped durable journal
+// (openWireRequestJournal), each in its own fresh temporary directory. There
+// is no in-memory journal and no hook: a test observes what was reserved by
+// reading the journal's own files. Like fixtureBinder, journalFixture takes
+// the wire module under test, so a file that loads the wire after mocking its
+// approval list (or loads the built package) opens journals in that module.
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type * as WireModule from "../../src/wire/index.js";
-import type { QualifiedWireRequestJournal, WireRequestJournal, WireRequestReservation } from "../../src/wire/index.js";
+import type { WireRequestJournal, WireRequestJournalOptions } from "../../src/wire/index.js";
 
-/**
- * One process's store shared by every handle `open` returns: it holds both
- * the key and the operationId, so it passes qualifyWireRequestJournal's probe.
- * It is not durable across a restart; tests that need that use directoryJournal.
- */
-export function memoryJournalOpener(): () => WireRequestJournal {
-  const held = new Set<string>();
-  return () => ({ durable: true, reserve({ key, operationId }) {
-    if (held.has(`key:${key}`) || held.has(`operation:${operationId}`)) return false;
-    held.add(`key:${key}`);
-    held.add(`operation:${operationId}`);
-    return true;
-  } });
+let root: string | undefined;
+/** A fresh directory for one journal, under one per-process root removed when the process exits. */
+export function journalDirectory(): string {
+  if (root === undefined) {
+    const made = mkdtempSync(join(tmpdir(), "dacs-wire-journal-"));
+    root = made;
+    process.once("exit", () => rmSync(made, { recursive: true, force: true }));
+  }
+  return mkdtempSync(join(root, "j-"));
 }
 
-/** Create `name` in `dir` with O_CREAT|O_EXCL, its contents and then the directory synced; false if it exists. */
-function createOnce(dir: string, name: string, contents: string): boolean {
-  let file: number;
-  try { file = openSync(join(dir, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return false; throw error; }
-  try { writeSync(file, contents); fsyncSync(file); } finally { closeSync(file); }
-  const directory = openSync(dir, constants.O_RDONLY);
-  try { fsyncSync(directory); } finally { closeSync(directory); }
-  return true;
+/** What one request reserved: its nonce key file's contents. */
+export interface KeptReservation { key: string; operationId: string; requestHash: string }
+
+/** Every reservation in a journal directory, in no particular order. */
+export function reservationsIn(directory: string): KeptReservation[] {
+  return readdirSync(directory).filter((name) => name.startsWith("k-"))
+    .map((name) => JSON.parse(readFileSync(join(directory, name), "utf8")) as KeptReservation);
 }
 
-/**
- * A durable journal over a local directory: one file per key and one per
- * operationId, each created with O_CREAT|O_EXCL and synced before `reserve`
- * returns true. Of processes racing on either, exactly one creates it; a file
- * created before a crash or restart is still there after it. A key whose
- * operation is already held stays reserved: the journal only ever refuses more.
- */
-export function directoryJournal(dir: string): WireRequestJournal {
-  return { durable: true, reserve(reservation) {
-    const contents = JSON.stringify(reservation);
-    return createOnce(dir, `key-${reservation.key}`, contents) && createOnce(dir, `operation-${reservation.operationId}`, contents);
-  } };
-}
-
-export function journalFixture(wire: Pick<typeof WireModule, "qualifyWireRequestJournal">) {
+export function journalFixture(wire: Pick<typeof WireModule, "openWireRequestJournal">) {
   return {
     /**
-     * An explicit opt-in for a test that checks one process's calls: a
-     * qualified journal over memoryJournalOpener. With `reserve`, the probe
-     * still runs against the shared store and every later reservation goes to
-     * `reserve` instead, so a test can count or refuse them.
+     * Journals for one test, each in a fresh directory, and every reservation
+     * made in any of them: what a test counts where it once counted calls.
      */
-    inMemoryJournalForTest(reserve?: (reservation: WireRequestReservation) => boolean): QualifiedWireRequestJournal {
-      const open = memoryJournalOpener();
-      let probing = true;
-      const journal = wire.qualifyWireRequestJournal(() => {
-        const store = open();
-        return { durable: true, reserve: (reservation) => (probing || !reserve ? store.reserve(reservation) : reserve(reservation)) };
-      }, Date.now());
-      probing = false;
-      return journal;
+    testJournals() {
+      const directories: string[] = [];
+      return {
+        open(options?: WireRequestJournalOptions): WireRequestJournal {
+          const directory = journalDirectory();
+          directories.push(directory);
+          return wire.openWireRequestJournal(directory, options);
+        },
+        reservations: (): KeptReservation[] => directories.flatMap(reservationsIn),
+      };
     },
-    /** directoryJournal, qualified as a host would at startup. */
-    qualifiedDirectoryJournal: (dir: string, now: number): QualifiedWireRequestJournal =>
-      wire.qualifyWireRequestJournal(() => directoryJournal(dir), now),
+    /** One journal in a fresh directory. */
+    testJournal: (options?: WireRequestJournalOptions): WireRequestJournal => wire.openWireRequestJournal(journalDirectory(), options),
+    /** The journal in `directory`, opened as each seller worker opens it at startup. */
+    openJournal: (directory: string, options?: WireRequestJournalOptions): WireRequestJournal => wire.openWireRequestJournal(directory, options),
   };
 }

@@ -13,20 +13,29 @@
 // network: endpoints are under .invalid and the wire does no I/O. The same
 // consumer imports every compiled file under dist/ by file path and tries to
 // make an object pass as a finalized commitment: no shipped function vouches
-// for one, and only a seller-signed record with its receipt continues a purchase.
+// for one, and only a seller-signed record with its receipt, for an Agreement
+// both parties signed, continues a purchase. Its journal is the shipped one.
 import { spawnSync } from "node:child_process";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { signedAgreement } from "./commitmentFixture.js";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const VECTORS = join(root, "vectors/dacs-seller-http-v1.json");
+// An Agreement for the vectors' job and pin with placeholder parties; the consumer names its own and signs it.
+const PLACEHOLDER = { buyer: `did:demos:agent:${"1".repeat(64)}`, seller: `did:demos:agent:${"2".repeat(64)}` };
+const vectorJob = JSON.parse(readFileSync(VECTORS, "utf8")).job;
+const placeholderSigner = (claim: string) => ({ claim, sign: () => new Uint8Array(64) });
+const AGREEMENT_TEMPLATE = JSON.stringify(signedAgreement({ buyer: placeholderSigner(PLACEHOLDER.buyer), seller: placeholderSigner(PLACEHOLDER.seller),
+  jobId: vectorJob.jobId, listingPin: vectorJob.listingPin }).agreement);
 
 const CONSUMER = String.raw`
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -81,9 +90,9 @@ const signWith = (binding, local) => code(() => wire.signWireRequest({ signer, b
 let effects = 0;
 const effect = (fn) => code(() => { fn(); effects += 1; });
 const decodedRequest = JSON.parse(b(vector["request/valid-direct"].header).toString("utf8"));
-// An in-memory journal over one shared store, qualified by the compiled probe: the explicit test opt-in, and the seller ready for a new purchase.
-const qualifiedJournal = () => { const held = new Set(); return wire.qualifyWireRequestJournal(() => ({ durable: true, reserve: ({ key, operationId }) => {
-  if (held.has("k" + key) || held.has("o" + operationId)) return false; held.add("k" + key); held.add("o" + operationId); return true; } }), file.now); };
+// The shipped durable journal, in a fresh directory, and the seller ready for a new purchase. No other journal is accepted.
+const qualifiedJournal = () => wire.openWireRequestJournal(mkdtempSync(join(tmpdir(), "dacs-consumer-journal-")));
+out.journalProbeExported = typeof wire.qualifyWireRequestJournal;
 const check = { requestJournal: qualifiedJournal(), ready: true, retained: { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller }, seller: file.parties.seller, listingPin: file.job.listingPin, method: "POST", path: vector["request/valid-direct"].path, rawBody: b(vector["request/valid-direct"].body), now: file.now, purchaseProfile: profile };
 async function verifyAll(sellerBinding, sLocal, buyerBinding, bLocal) {
   return {
@@ -207,7 +216,7 @@ const shippedJs = walk(distDir).map((f) => f.slice(distDir.length + 1)).sort();
 const drainedBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [file.job.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: false, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
 const drained = wire.verifyEndpointProof(drainedBytes, { readListingEligibility, readCommitmentReceipt: () => "valid", listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now });
 const facts = { jobId: file.job.jobId, agreementHash: file.job.agreementHash, listingRef: file.job.listingPin, buyer: signer.claim, seller: sellerSigner.claim, committedAt: 42 };
-const pay = (commitment) => code(() => wire.signWireRequest({ endpointProof: drained, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/payments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now, commitment }));
+const pay = (commitment, agreement, agreementHash = file.job.agreementHash) => code(() => wire.signWireRequest({ endpointProof: drained, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/payments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash, profile: bb.profile }, now: file.now, commitment, agreement }));
 const within = (promise) => Promise.race([Promise.resolve(promise).catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 1000))]);
 out.commitmentForgery = { files: shippedJs.length, verifiedCommitmentModule: shippedJs.includes("negotiate/verifiedCommitment.js"), unimportable: [], vouchers: [], tried: 0, continued: [] };
 const signerCallsBeforeForgery = signer.calls;
@@ -231,13 +240,26 @@ for (const f of shippedJs) {
 }
 out.commitmentForgery.statedFacts = await pay(facts);
 out.commitmentForgery.signerCalls = signer.calls - signerCallsBeforeForgery;
-// Control: the seller's signed finality record with its finalized receipt, as bytes a buyer receives, continues.
-const unsignedRecord = { finalityCommitmentVersion: "1", jobId: file.job.jobId, agreementHash: file.job.agreementHash, listingRef: file.job.listingPin, parties: [signer.claim, sellerSigner.claim], pattern: "fixed-price", createdAt: file.now - 2000 };
+// The Agreement both parties signed (CA-7): the template with this consumer's parties, signed by each one's own key.
+const { contentHash } = await import("@kynesyslabs/dacs/canonical");
+const PLACEHOLDER = JSON.parse(process.argv[4]);
+const { signatures: _placeholders, ...unsignedAgreement } = JSON.parse(readFileSync(new URL("./agreement-template.json", import.meta.url), "utf8")
+  .replaceAll(PLACEHOLDER.buyer, signer.claim).replaceAll(PLACEHOLDER.seller, sellerSigner.claim));
+const agreementHash = contentHash(unsignedAgreement);
+const agreementBytes = Buffer.from("dacs-agreement:v1:" + agreementHash);
+const partySignature = (party, key) => ({ party, algorithm: "ed25519", value: sign(null, agreementBytes, key).toString("base64url") });
+const agreement = { ...unsignedAgreement, signatures: [partySignature(signer.claim, privateKey), partySignature(sellerSigner.claim, sellerKeys.privateKey)] };
+// Control: the seller's signed finality record for it with its finalized receipt, as bytes a buyer receives, continues.
+const unsignedRecord = { finalityCommitmentVersion: "1", jobId: file.job.jobId, agreementHash, listingRef: file.job.listingPin, parties: [signer.claim, sellerSigner.claim], pattern: "fixed-price", createdAt: file.now - 2000 };
 const recordValue = Buffer.from(sellerKeys.privateKey ? sign(null, Buffer.from("dacs-finality-commitment:v1:" + sha(canonicalize(unsignedRecord))), sellerKeys.privateKey) : []).toString("base64url");
 const signedRecord = { ...unsignedRecord, signature: { algorithm: "ed25519", signer: sellerSigner.claim, value: recordValue } };
 const anchorReceipt = { receiptVersion: "1", substrate: "demos:testnet", finalityProfile: "demos-bft-final", logicalAddress: "dacs3:commit:" + file.job.jobId, nativeAddress: "stor-commitment",
   contentHash: sha(canonicalize(unsignedRecord)), transactionRef: { kind: "demos", value: "tx" }, writer: "w", state: "finalized", observationDisposition: "established", observedAt: file.now, blockRef: { id: "b", timestamp: file.now - 1000 }, evidence: { kind: "proof", value: "p" } };
-out.commitmentForgery.genuine = await pay(JSON.parse(JSON.stringify({ record: signedRecord, nativeAddress: "stor-commitment", anchorTxRef: { kind: "storage-program", address: "stor-commitment" }, anchorReceipt })));
+const genuineCommitment = JSON.parse(JSON.stringify({ record: signedRecord, nativeAddress: "stor-commitment", anchorTxRef: { kind: "storage-program", address: "stor-commitment" }, anchorReceipt }));
+out.commitmentForgery.genuine = await pay(genuineCommitment, JSON.parse(JSON.stringify(agreement)), agreementHash);
+// The same anchored seller record, for an Agreement whose buyer signature is another key's, or with no Agreement: refused.
+out.commitmentForgery.buyerNeverSigned = await pay(genuineCommitment, { ...agreement, signatures: [partySignature(signer.claim, generateKeyPairSync("ed25519").privateKey), agreement.signatures[1]] }, agreementHash);
+out.commitmentForgery.noAgreement = await pay(genuineCommitment, undefined, agreementHash);
 console.log(JSON.stringify(out));
 `;
 
@@ -247,7 +269,8 @@ let approvedCopy: Record<string, any> = {};
 
 function consume(dir: string, ...args: string[]): Record<string, any> {
   writeFileSync(join(dir, "consumer.mjs"), CONSUMER);
-  const run = spawnSync(process.execPath, ["consumer.mjs", VECTORS, ...args], { cwd: dir, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
+  writeFileSync(join(dir, "agreement-template.json"), AGREEMENT_TEMPLATE);
+  const run = spawnSync(process.execPath, ["consumer.mjs", VECTORS, args[0] ?? "", JSON.stringify(PLACEHOLDER), ...args.slice(1)], { cwd: dir, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
   if (run.status !== 0) throw new Error(`consumer failed (status ${run.status}, signal ${run.signal})\n${run.stderr}`);
   return JSON.parse(run.stdout);
 }
@@ -346,6 +369,9 @@ describe("built @kynesyslabs/dacs/wire, as a consumer installs it", () => {
     expect(forgery.statedFacts).toBe("continuation_commitment_invalid");
     expect(forgery.signerCalls).toBe(0);
     expect(forgery.genuine).toBe("ok");
+    expect(forgery.buyerNeverSigned).toBe("continuation_agreement_invalid");
+    expect(forgery.noAgreement).toBe("continuation_agreement_invalid");
+    expect(shipped.journalProbeExported).toBe("undefined");
   });
 
   it("refuses a forged binding, including one carrying only the vector's profile, at every verification entry point", () => {

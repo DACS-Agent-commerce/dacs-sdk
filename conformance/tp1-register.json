@@ -312,10 +312,10 @@
       "evidence": [ { "source": "plugin implementation (not public)", "provenance": "prov-08" } ]
     },
     {
-      "subject": "consumer: seller host request reservation journal for checkWireRequest's requestJournal: qualified by qualifyWireRequestJournal, atomic across workers on both the nonce key and the operationId, retained across restarts until retainUntil (expiresAt + maxClockSkewMs, 30 s), never released after a failed or ambiguous effect; a checked effect request authorizes no effect until restart and concurrent-worker tests pass",
+      "subject": "consumer: seller host request journal for checkWireRequest's requestJournal: the shipped openWireRequestJournal directory journal (restart and concurrent-worker tests run against it in test/wire/requestJournal.test.ts) on durable local storage shared by every worker of the host; each effect idempotent at its own sink by operationId, reconciled against its source of truth on recover, and its outcome recorded with completeWireEffect only after the effect's own write is durable",
       "result": "not checked",
       "rows": [],
-      "pinnedBy": ["src/wire/envelope.ts", "test/wire/launchReview.test.ts"],
+      "pinnedBy": ["src/wire/journal.ts", "test/wire/requestJournal.test.ts", "test/wire/launchReview.test.ts"],
       "evidence": []
     }
   ]

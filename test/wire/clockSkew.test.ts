@@ -1,14 +1,14 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { journalFixture } from "./requestJournalFixture.js";
+import { journalDirectory, journalFixture, reservationsIn } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
-import { validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Two parties never share a clock. A signer stamps expiresAt (or notBefore)
 // from its own clock and the receiver compares it with another, so every such
 // limit leaves DACS_SELLER_HTTP_LIMITS.maxClockSkewMs of room: signers give at
 // most maxSignedLifetimeMs (30 s), receivers accept up to maxMessageLifetimeMs
-// (60 s), and a journal keeps a reservation until retainUntil. At a
+// (60 s), and the journal never drops a reservation. At a
 // delegation's expiry a read route is answered by either clock. The same
 // retained-state rule binds a direct request to the host's artifacts; a
 // delegation is verified whether or not the seller requires one; and a host's
@@ -19,7 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import {
   checkWireRequest, DACS_SELLER_HTTP_LIMITS, openWireEnvelope, signSellerSessionDelegation, signWireResponse, verifyWireResponse,
-  WireError, type RequestCheck, type WireRequestPayload, type WireRequestReservation, type WireSigner,
+  WireError, wireOperationId, wireRequestHash, type RequestCheck, type WireRequestPayload, type WireSigner,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
 // test list (./testApproval.ts); no shipped module takes an approval list.
@@ -27,13 +27,12 @@ vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
-const { inMemoryJournalForTest } = journalFixture(fixtureWire);
+const { openJournal, testJournal, testJournals } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
 const OTHER_JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4J";
 const PIN = { listingId: "clock-skew-report", version: 1, contentHash: "c".repeat(64) };
-const AGREEMENT = "a".repeat(64);
 const RPC_A = { endpoint: "https://rpc-a.clock-skew.invalid/", transportAuthority: "test-a", connectionId: "a-1" };
 const RPC_B = { endpoint: "https://rpc-b.clock-skew.invalid/", transportAuthority: "test-b", connectionId: "b-1" };
 const TEXT = `{"jobId":"${JOB}"}`;
@@ -59,9 +58,10 @@ function world() {
   const approved = [sha(canonicalize(record))];
   const buyerBinding = withTestApproval(approved, () => bindTp1Fixture({ record, local: RPC_A }));
   const sellerBinding = withTestApproval(approved, () => bindTp1Fixture({ record, local: RPC_B }));
-  // The job's finalized commitment, which the seller read itself: its payment route needs it.
-  const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash: AGREEMENT, listingPin: PIN, committedAt: NOW - 3_600_000 });
-  return { buyer, seller, session, other, buyerBinding, sellerBinding, commitment };
+  // The job's finalized commitment and its signed Agreement, which the seller read itself: its payment route needs them.
+  const { agreement, agreementHash } = signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN, generatedAt: NOW });
+  const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash, listingPin: PIN, committedAt: NOW - 3_600_000 });
+  return { buyer, seller, session, other, buyerBinding, sellerBinding, commitment, agreement, agreementHash };
 }
 type World = ReturnType<typeof world>;
 
@@ -71,15 +71,15 @@ const code = async (fn: () => unknown) => {
 
 const buyerSigns = (w: World, now: number, change: Record<string, unknown> = {}) => signWireRequest({
   signer: w.buyer, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/payments", jobId: JOB, text: TEXT, seller: w.seller.claim,
-  job: { listingPin: PIN, agreementHash: AGREEMENT, profile: w.buyerBinding.profile }, now, ...change,
+  job: { listingPin: PIN, agreementHash: w.agreementHash, profile: w.buyerBinding.profile }, now, ...change,
 } as Parameters<typeof signWireRequest>[0]);
 
 function sellerCheck(w: World, header: string, now: number, change: Partial<RequestCheck> = {}, requireDelegation = false) {
   const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation });
   return { opened, check: () => checkWireRequest(opened, {
-    requestJournal: inMemoryJournalForTest(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN,
+    requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN,
     method: "POST", path: opened.payload.path, rawBody: Buffer.from(TEXT), now, binding: w.sellerBinding, local: RPC_B,
-    purchaseProfile: w.sellerBinding.profile, requireDelegation, commitment: w.commitment, readCommitmentReceipt: validReceipt, ...change,
+    purchaseProfile: w.sellerBinding.profile, requireDelegation, commitment: w.commitment, agreement: w.agreement, readCommitmentReceipt: validReceipt, ...change,
   }) };
 }
 
@@ -102,12 +102,12 @@ describe("a delegation's expiry under clock difference", () => {
     const buyerNow = NOW + 1_000, sellerNow = buyerNow - 5_000;
     for (const path of ["/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"]) {
       const { header } = await buyerSigns(w, buyerNow, { signer: w.session, delegation, path });
-      expect(sellerCheck(w, header, sellerNow, {}, true).check()).toEqual({ body: { jobId: JOB }, readbackOnly: true });
+      expect(sellerCheck(w, header, sellerNow, {}, true).check()).toEqual({ body: { jobId: JOB }, readbackOnly: true, effect: null });
     }
-    const reserveRequest = vi.fn(() => true);
+    const journals = testJournals();
     const { header } = await buyerSigns(w, buyerNow, { signer: w.session, delegation });
-    expect(await code(() => sellerCheck(w, header, sellerNow, { requestJournal: inMemoryJournalForTest(reserveRequest) }, true).check())).toBe("peer_delegation_expired");
-    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(await code(() => sellerCheck(w, header, sellerNow, { requestJournal: journals.open() }, true).check())).toBe("peer_delegation_expired");
+    expect(journals.reservations()).toHaveLength(0);
   });
 });
 
@@ -128,7 +128,7 @@ describe("a delegation sent to a seller that does not require one", () => {
     expect(sellerCheck(w, read.header, NOW).check().readbackOnly).toBe(true);
     // A request the session key signs without its delegation names the session key as buyer: the host's record refuses it.
     const bare = await buyerSigns(w, NOW, { signer: w.session });
-    const hostRecord = { jobId: JOB, agreementHash: AGREEMENT, buyer: w.buyer.claim, seller: w.seller.claim };
+    const hostRecord = { jobId: JOB, agreementHash: w.agreementHash, buyer: w.buyer.claim, seller: w.seller.claim };
     expect(await code(() => sellerCheck(w, bare.header, NOW, { retained: hostRecord, artifacts: [] }).check())).toBe("peer_agreement_party_mismatch");
   });
 });
@@ -193,7 +193,7 @@ describe("a seller answer under clock difference (the buyer's 60 s window, the s
 describe("a buyer request under clock difference (the seller's 60 s window, the buyer's 30 s lifetime)", () => {
   it.each([1000, 30_000])("a buyer clock %i ms ahead of the seller's: its default request is accepted", async (lead) => {
     const w = world();
-    expect(sellerCheck(w, (await buyerSigns(w, NOW + lead)).header, NOW).check()).toEqual({ body: { jobId: JOB }, readbackOnly: false });
+    expect(sellerCheck(w, (await buyerSigns(w, NOW + lead)).header, NOW).check()).toEqual({ body: { jobId: JOB }, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
   });
 
   it("a buyer lifetime above 30 s is refused before signing", async () => {
@@ -205,33 +205,25 @@ describe("a buyer request under clock difference (the seller's 60 s window, the 
 });
 
 describe("the replay journal's retention under clock difference", () => {
-  it("each reservation names retainUntil, expiresAt plus the skew allowance", async () => {
+  it("each reservation names its nonce key, its operation and its request hash", async () => {
     const w = world();
     const { header, payload } = await buyerSigns(w, NOW);
-    const seen: WireRequestReservation[] = [];
-    sellerCheck(w, header, NOW, { requestJournal: inMemoryJournalForTest((r) => { seen.push(r); return true; }) }).check();
-    expect(seen).toHaveLength(1);
-    expect(seen[0]).toEqual({ key: expect.any(String), operationId: expect.any(String), requestHash: expect.any(String), expiresAt: payload.expiresAt, retainUntil: payload.expiresAt + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs });
-    expect(Object.isFrozen(seen[0])).toBe(true);
+    const directory = journalDirectory();
+    sellerCheck(w, header, NOW, { requestJournal: openJournal(directory) }).check();
+    expect(reservationsIn(directory)).toEqual([{ key: expect.any(String), operationId: wireOperationId(payload), requestHash: wireRequestHash(payload) }]);
   });
 
-  it("a journal 30 s ahead of a worker, keeping keys until retainUntil by its own clock, refuses a replay the worker still accepts", async () => {
+  it("a journal 30 s ahead of a worker never drops a key: a replay the worker still accepts by its clock is refused", async () => {
     const w = world();
     const { header, payload } = await buyerSigns(w, NOW);
-    const journal = new Map<string, number>();
-    const journalAhead = DACS_SELLER_HTTP_LIMITS.maxClockSkewMs;
-    const journalFor = (workerNow: number) => (r: WireRequestReservation) => {
-      const journalNow = workerNow + journalAhead;
-      for (const [key, until] of journal) if (journalNow >= until) journal.delete(key);
-      if (journal.has(r.key)) return false;
-      journal.set(r.key, r.retainUntil);
-      return true;
-    };
-    expect(sellerCheck(w, header, NOW, { requestJournal: inMemoryJournalForTest(journalFor(NOW)) }).check().readbackOnly).toBe(false);
-    // The worker's last accepting instant: its clock is still before expiresAt, the journal's is 30 s past it.
+    const directory = journalDirectory();
+    const ahead = { clock: () => Date.now() + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs };
+    expect(sellerCheck(w, header, NOW, { requestJournal: openJournal(directory, ahead) }).check().readbackOnly).toBe(false);
+    // The worker's last accepting instant: its clock is still before expiresAt.
     const last = payload.expiresAt - 1;
-    expect(await code(() => sellerCheck(w, header, last, { requestJournal: inMemoryJournalForTest(journalFor(last)) }).check())).toBe("peer_request_replayed");
-    expect(await code(() => sellerCheck(w, header, payload.expiresAt, { requestJournal: inMemoryJournalForTest(journalFor(payload.expiresAt)) }).check())).toBe("peer_expired");
+    expect(await code(() => sellerCheck(w, header, last, { requestJournal: openJournal(directory, ahead) }).check())).toBe("peer_request_replayed");
+    expect(await code(() => sellerCheck(w, header, payload.expiresAt, { requestJournal: openJournal(directory, ahead) }).check())).toBe("peer_expired");
+    expect(reservationsIn(directory)).toHaveLength(1);
   });
 });
 
@@ -247,11 +239,11 @@ describe("a direct request and the host's retained Agreement", () => {
   ])("refuses a direct request when the retained Agreement names %s, before reservation", async (_name, change) => {
     const w = world();
     const { header } = await buyerSigns(w, NOW);
-    let reserved = 0;
+    const journals = testJournals();
     const { opened } = sellerCheck(w, header, NOW);
-    const run = sellerCheck(w, header, NOW, { artifacts: artifact(opened, change(w)), requestJournal: inMemoryJournalForTest(() => { reserved += 1; return true; }) });
+    const run = sellerCheck(w, header, NOW, { artifacts: artifact(opened, change(w)), requestJournal: journals.open() });
     expect(await code(run.check)).toBe("peer_agreement_party_mismatch");
-    expect(reserved).toBe(0);
+    expect(journals.reservations()).toHaveLength(0);
   });
 
   it("accepts a direct request whose retained Agreement names its own parties, in any order, and one with no artifacts", async () => {

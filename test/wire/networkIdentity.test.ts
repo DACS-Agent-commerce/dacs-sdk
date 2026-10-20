@@ -40,7 +40,7 @@ vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
-const { inMemoryJournalForTest } = journalFixture(fixtureWire);
+const { testJournal } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -161,7 +161,7 @@ describe("TP-1 network identity gate", () => {
     const text = `{"jobId":"${JOB}"}`;
     const { payload, header } = await signWireRequest({ signer: buyer.signer, binding: buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: seller.signer.claim, job: { listingPin: PIN, agreementHash: "a".repeat(64), profile: buyerBinding.profile }, now: NOW });
     const opened = openWireEnvelope(header, "request", { binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile });
-    checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, retained: { jobId: JOB, agreementHash: "a".repeat(64), buyer: buyer.signer.claim, seller: seller.signer.claim }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile });
+    checkWireRequest(opened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: "a".repeat(64), buyer: buyer.signer.claim, seller: seller.signer.claim }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile });
     const response = await signWireResponse(opened.payload, 200, "{}", { signer: seller.signer, binding: sellerBinding, local: RPC_B, now: NOW, purchaseProfile: sellerBinding.profile });
     expect(verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: buyerBinding, local: RPC_A }).principal).toBe(seller.signer.claim);
     expect(buyer.signer.calls + seller.signer.calls).toBe(2);
@@ -186,7 +186,7 @@ describe("TP-1 network identity gate", () => {
     const discovery = await signDiscoveryDocument(discoveryPayload, seller.signer, sellerBinding, RPC_B);
     const listing = { seller: seller.signer.claim, publicEndpoint: "https://seller.identity.invalid", listingPin: PIN };
     const effects = { count: 0 };
-    const check = { requestJournal: inMemoryJournalForTest(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.signer.claim, seller: seller.signer.claim }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, purchaseProfile: sellerBinding.profile };
+    const check = { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.signer.claim, seller: seller.signer.claim }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, purchaseProfile: sellerBinding.profile };
     /** Each verification entry point, with the given seller-side and buyer-side binding and connection. */
     const verifyAll = (sellerSide: [unknown, unknown], buyerSide: [unknown, unknown]) => {
       const [sb, sl] = sellerSide as [Tp1Binding, unknown], [bb, bl] = buyerSide as [Tp1Binding, unknown];
@@ -290,7 +290,7 @@ describe("TP-1 network identity gate", () => {
     // The exact tuple, or none kept yet for a new purchase, opens the request and signs the answer.
     for (const purchaseProfile of [w.sellerBinding.profile, null]) {
       const opened = openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile });
-      checkWireRequest(opened, { ...w.check, requestJournal: inMemoryJournalForTest(), binding: w.sellerBinding, local: RPC_B, purchaseProfile });
+      checkWireRequest(opened, { ...w.check, requestJournal: testJournal(), binding: w.sellerBinding, local: RPC_B, purchaseProfile });
       await signWireResponse(opened.payload, 200, "{}", { ...seller, now: NOW, purchaseProfile });
     }
     expect(w.signatures() - before).toBe(2);

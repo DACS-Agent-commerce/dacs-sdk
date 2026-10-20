@@ -47,7 +47,7 @@ export async function signWireResponse(supplied: WireRequestPayload, status: num
   // maxLifetimeMs is checkWireRequest's acceptance window, never an answer's lifetime: a context that names it is refused.
   if (window !== undefined) fail("seller_configuration_invalid", 500);
   const lifetimeMs = messageLifetime(override, "seller_configuration_invalid", DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs);
-  if (Buffer.byteLength(text) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) fail("peer_response_too_large", 503);
+  if (Buffer.byteLength(text) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) fail("peer_response_too_large", 500);
   const bytes = admitOutgoingBody(text, DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes);
   const payload: WireResponsePayload = {
     ...request, kind: "response", bodyHash: sha256Hex(bytes), expiresAt: (now as number) + lifetimeMs,
@@ -75,7 +75,8 @@ export interface WireRequestInput extends SigningContext {
    * The seller (TP-1's orchestrator) sends it; the result
    * commitFixedPriceAgreement returned, or a copy read again after a restart,
    * is checked the same way. The wire checks the record, the seller's
-   * signature and the finalized receipt, and the receipt reader kept with
+   * signature, `agreement` (both parties' signatures, CA-7) and the finalized
+   * receipt, and the receipt reader kept with
    * `endpointProof` (verifyEndpointProof's `readCommitmentReceipt`)
    * authenticates it at every signing. The request then continues, so
    * `ready: false` does not refuse it and the Listing's window is compared at
@@ -83,6 +84,8 @@ export interface WireRequestInput extends SigningContext {
    * proposal, commitment or context request): a new purchase.
    */
   commitment?: unknown;
+  /** Required with `commitment`: the Agreement both parties signed that it commits (DACS-3 §8.6 CA-7). */
+  agreement?: unknown;
   publicEndpoint: string;
   path: string;
   jobId: string;
@@ -97,7 +100,7 @@ export interface WireRequestInput extends SigningContext {
   nonce?: string;
 }
 
-const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "commitment", "publicEndpoint", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
+const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "commitment", "agreement", "publicEndpoint", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
 
 /**
  * A wire refusal of the buyer's own delegation keeps its code and detail with
@@ -133,7 +136,7 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   if (!isClaim(input.seller) || !isUint(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs) {
     throw new TypeError("buyer transport configuration is invalid");
   }
-  if (Buffer.byteLength(input.text) > DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes) fail("body_too_large", 413);
+  if (Buffer.byteLength(input.text) > DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes) fail("body_too_large", 500);
   const bytes = admitOutgoingBody(input.text, DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes);
   // The buyer's own delegation: a refusal of it is this host's fault (500), never the seller's.
   const delegation = input.delegation ? ownedArtifact(input.delegation, "peer_delegation_invalid", 500) as SellerSessionDelegation : null;
@@ -156,8 +159,8 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   };
   // Validate the complete payload before checking the purchase effect gate.
   wireRequestHash(payload);
-  assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, request: payload, commitment: input.commitment });
-  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now, commitment: input.commitment }, delegation) };
+  assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, request: payload, commitment: input.commitment, agreement: input.agreement });
+  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now, commitment: input.commitment, agreement: input.agreement }, delegation) };
 }
 
 export interface WireResponseReceipt {

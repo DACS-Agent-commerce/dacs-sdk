@@ -25,7 +25,7 @@ it("a wire refusal blames the counterparty, with its stable code and status", ()
 // A host's own setup fault (500) or a state that may clear (503) never blames the peer.
 it.each([
   ["seller_replay_guard_required", 500, "permanent"], ["seller_retained_agreement_required", 500, "permanent"],
-  ["tp1_binding_required", 500, "permanent"], ["seller_not_ready", 503, "transient"], ["peer_response_too_large", 503, "transient"],
+  ["tp1_binding_required", 500, "permanent"], ["seller_not_ready", 503, "transient"], ["peer_response_too_large", 500, "permanent"], ["body_too_large", 500, "permanent"],
   ["peer_signature_invalid", 401, "counterparty"], ["bad_json", 400, "counterparty"], ["peer_expired", 408, "counterparty"],
   ["peer_request_replayed", 409, "counterparty"], ["peer_agreement_party_mismatch", 409, "counterparty"], ["discovery_invalid", 502, "counterparty"],
 ] as const)("%s (%i) is blamed as %s", (code, status, category) => {
@@ -267,12 +267,18 @@ describe("import closure", () => {
       }
     };
     visit(new URL("../../src/wire/index.ts", import.meta.url));
-    expect([...external].sort()).toEqual(["node:crypto", "node:util"]);
+    // Node built-ins only. node:fs and node:path are the request journal's local directory (journal.ts); node:net
+    // and node:url only parse claim hosts (identity/domainHost.ts: isIP, domainToASCII) for the Agreement validator (CA-7).
+    expect([...external].sort()).toEqual(["node:crypto", "node:fs", "node:net", "node:path", "node:url", "node:util"]);
     expect([...seen].map((href) => href.replace(/^.*\/src\//, "")).sort()).toEqual([
-      "canonical/hash.ts", "canonical/jcs.ts", "canonical/rawJson.ts", "canonical/snapshot.ts", "crypto/ed25519.ts", "errors.ts",
-      "negotiate/jobId.ts", "wire/approval.ts", "wire/commitment.ts", "wire/delegation.ts", "wire/discovery.ts", "wire/envelope.ts", "wire/index.ts", "wire/profile.ts",
+      "artifacts/registry.ts", "artifacts/signatures.ts", "artifacts/types.ts", "artifacts/validators.ts",
+      "canonical/addressing.ts", "canonical/decimal.ts", "canonical/hash.ts", "canonical/index.ts", "canonical/jcs.ts", "canonical/rawJson.ts", "canonical/snapshot.ts",
+      "crypto/ed25519.ts", "crypto/index.ts", "crypto/signing.ts", "errors.ts", "identity/claimReference.ts", "identity/domainHost.ts",
+      "negotiate/jobId.ts", "wire/approval.ts", "wire/commitment.ts", "wire/delegation.ts", "wire/discovery.ts", "wire/envelope.ts", "wire/index.ts", "wire/journal.ts", "wire/profile.ts",
       "wire/response.ts", "wire/routes.ts", "wire/validate.ts",
     ]);
+    const fileUsers = [...seen].filter((href) => /from\s+["']node:(fs|path)["']/.test(readFileSync(new URL(href), "utf8")));
+    expect(fileUsers.map((href) => href.replace(/^.*\/src\//, ""))).toEqual(["wire/journal.ts"]);
   });
 });
 

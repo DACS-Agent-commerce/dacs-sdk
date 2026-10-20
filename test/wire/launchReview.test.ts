@@ -1,16 +1,17 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { journalFixture } from "./requestJournalFixture.js";
-import { validReceipt, wireCommitment } from "./commitmentFixture.js";
+import { journalDirectory, journalFixture, reservationsIn } from "./requestJournalFixture.js";
+import { signedAgreement, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
 import { walletSignatureBytes } from "../../src/wire/validate.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
-const { inMemoryJournalForTest } = journalFixture(fixtureWire);
+const { openJournal, testJournals } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 18);
 const LOCAL = { endpoint: "https://rpc.review.invalid/", transportAuthority: "test", connectionId: "1" };
@@ -27,9 +28,10 @@ function world(path = "/dacs/v1/payments") {
   const buyer = party(), seller = party(), session = party();
   const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
   const context = { binding, local: LOCAL, purchaseProfile: binding.profile };
+  const { agreement, agreementHash } = signedAgreement({ buyer, seller, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", listingPin: PIN });
   const request: wire.WireRequestPayload = {
     version: "1", kind: "request", method: "POST", path, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
-    buyer: buyer.claim, seller: seller.claim, bodyHash: sha256Hex("{}"), listingPin: PIN, agreementHash: "a".repeat(64),
+    buyer: buyer.claim, seller: seller.claim, bodyHash: sha256Hex("{}"), listingPin: PIN, agreementHash,
     nonce: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX", expiresAt: NOW + 30_000, profile: binding.profile,
   };
   const signed = (payload: unknown, signer: ReturnType<typeof party>, domain: string) => ({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString("base64url") });
@@ -44,105 +46,102 @@ function world(path = "/dacs/v1/payments") {
   /** The buyer-signed (undelegated) request header. */
   const direct = () => header(signed(request, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request));
   /** What the seller host retained for the job: its own record, not read from the request. */
-  const retained = { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), buyer: buyer.claim, seller: seller.claim };
+  const retained = { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash, buyer: buyer.claim, seller: seller.claim };
   // The job's finalized commitment, which the seller read itself: payment and delivery routes need it.
   const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: retained.jobId, agreementHash: retained.agreementHash, listingPin: PIN, committedAt: NOW - 5000 });
   const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true,
-    commitment, readCommitmentReceipt: validReceipt };
+    commitment, agreement, readCommitmentReceipt: validReceipt };
   return { buyer, seller, request, open, delegated, direct, artifact, check, context, signed, retained };
 }
 
 describe("effect request replay reservations", () => {
-  it.each(["/dacs/v1/payments", "/dacs/v1/commitments"])("%s requires a durable reservation and refuses replays across reopen and nonce reuse", (path) => {
+  it.each(["/dacs/v1/payments", "/dacs/v1/commitments"])("%s requires the SDK's journal and refuses replays across reopen and nonce reuse", (path) => {
     const x = world(path);
     expect(() => wire.checkWireRequest(x.open(), x.check)).toThrowError(expect.objectContaining({ code: "seller_replay_guard_required" }));
-    const journal = new Set<string>();
-    const reserveRequest = vi.fn(({ key }: { key: string }) => {
-      if (journal.has(key)) return false;
-      journal.add(key); return true;
-    });
-    const check = { ...x.check, requestJournal: inMemoryJournalForTest(reserveRequest) };
-    expect(wire.checkWireRequest(x.open(), check)).toEqual({ body: {}, readbackOnly: false });
-    expect(reserveRequest).toHaveBeenCalledWith(expect.objectContaining({ requestHash: wire.wireRequestHash(x.request), expiresAt: x.request.expiresAt }));
+    const directory = journalDirectory();
+    const check = { ...x.check, requestJournal: openJournal(directory) };
+    expect(wire.checkWireRequest(x.open(), check)).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new", attempt: 0 }) });
+    expect(reservationsIn(directory)).toEqual([{ key: expect.any(String), operationId: wire.wireOperationId(x.request), requestHash: wire.wireRequestHash(x.request) }]);
     expect(() => wire.checkWireRequest(x.open(), check)).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
-    // A new validator opening another request under the same nonce uses the host's same journal.
-    expect(() => wire.checkWireRequest(x.open({ ...x.request, expiresAt: NOW + 20_000 }), { ...check, requestJournal: inMemoryJournalForTest(({ key }) => !journal.has(key)) })).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
-    expect(wire.checkWireRequest(x.open({ ...x.request, nonce: "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA" }), check).readbackOnly).toBe(false);
+    // Another worker opening another request under the same nonce uses the same journal directory.
+    expect(() => wire.checkWireRequest(x.open({ ...x.request, expiresAt: NOW + 20_000 }), { ...check, requestJournal: openJournal(directory) })).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
+    // A fresh nonce is the same operation, still held by its first attempt.
+    expect(() => wire.checkWireRequest(x.open({ ...x.request, nonce: "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA" }), check)).toThrowError(expect.objectContaining({ code: "seller_effect_pending", status: 503 }));
   });
 
   it("does not reserve invalid requests or require reservations for read routes", () => {
-    const x = world(), reserveRequest = vi.fn(() => true);
-    expect(() => wire.checkWireRequest(x.open(), { ...x.check, rawBody: Buffer.from('{"changed":true}'), requestJournal: inMemoryJournalForTest(reserveRequest) })).toThrow();
-    expect(reserveRequest).not.toHaveBeenCalled();
+    const x = world(), reserveRequest = testJournals();
+    expect(() => wire.checkWireRequest(x.open(), { ...x.check, rawBody: Buffer.from('{"changed":true}'), requestJournal: reserveRequest.open() })).toThrow();
+    expect(reserveRequest.reservations()).toHaveLength(0);
     const read = world("/dacs/v1/agreements/state");
     expect(wire.checkWireRequest(read.open(), read.check).readbackOnly).toBe(false);
   });
 
   it("reserves a live delegated effect request once and refuses its replay", () => {
-    const x = world(), journal = new Set<string>();
+    const x = world();
     expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [x.artifact] })).toThrowError(expect.objectContaining({ code: "seller_replay_guard_required" }));
-    const reserveRequest = vi.fn(({ key }: { key: string }) => {
-      if (journal.has(key)) return false;
-      journal.add(key); return true;
-    });
-    const check = { ...x.check, artifacts: [x.artifact], requestJournal: inMemoryJournalForTest(reserveRequest) };
-    expect(wire.checkWireRequest(x.delegated(), check)).toEqual({ body: {}, readbackOnly: false });
-    expect(reserveRequest).toHaveBeenCalledTimes(1);
+    const directory = journalDirectory();
+    const check = { ...x.check, artifacts: [x.artifact], requestJournal: openJournal(directory) };
+    expect(wire.checkWireRequest(x.delegated(), check)).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
     const { profile, jobId, agreementHash, path } = x.request;
-    expect(reserveRequest).toHaveBeenCalledWith({
+    expect(reservationsIn(directory)).toEqual([{
       key: sha256Hex(canonicalize({ buyer: x.buyer.claim, seller: x.seller.claim, profile: x.request.profile, nonce: x.request.nonce })),
-      operationId: sha256Hex(canonicalize({ profile, seller: x.seller.claim, buyer: x.buyer.claim, jobId, agreementHash, path, body: sha256Hex("{}") })),
-      requestHash: wire.wireRequestHash(x.request), expiresAt: x.request.expiresAt,
-      retainUntil: x.request.expiresAt + wire.DACS_SELLER_HTTP_LIMITS.maxClockSkewMs,
-    });
+      operationId: sha256Hex(canonicalize({ profile, seller: x.seller.claim, buyer: x.buyer.claim, jobId, agreementHash, path })),
+      requestHash: wire.wireRequestHash(x.request),
+    }]);
     expect(() => wire.checkWireRequest(x.delegated(), check)).toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
-    expect(reserveRequest).toHaveBeenCalledTimes(2);
+    expect(reservationsIn(directory)).toHaveLength(1);
   });
 
-  it("names the host journal's restart and concurrent-worker tests as the gate for any effect", () => {
-    // The wire has no journal; its effect verdict counts only once the composed host's journal is qualified.
+  it("names the shipped journal, and the host's effect handling around it, in the register and the guide", () => {
     const text = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
     const gate = JSON.parse(text("conformance/tp1-register.json")).qualification
-      .filter((q: { subject: string }) => q.subject.startsWith("consumer: seller host request reservation journal"));
+      .filter((q: { subject: string }) => q.subject.startsWith("consumer: seller host request journal"));
     expect(gate).toHaveLength(1);
     expect(gate[0].result).toBe("not checked");
-    expect(gate[0].subject).toContain("authorizes no effect until restart and concurrent-worker tests pass");
-    // Retained until retainUntil, the instant the guide and code name, never only until expiresAt.
-    expect(gate[0].subject).toContain("until retainUntil (expiresAt + maxClockSkewMs, 30 s)");
-    expect(gate[0].subject).not.toMatch(/until expiresAt\b/);
-    expect(gate[0].subject).toContain("qualifyWireRequestJournal");
+    expect(gate[0].subject).toContain("openWireRequestJournal");
+    expect(gate[0].subject).toContain("completeWireEffect");
+    expect(gate[0].subject).not.toContain("qualifyWireRequestJournal");
     const guide = text("docs/dacs-seller-http-v1.md").replace(/\s+/g, " ");
-    expect(guide).toContain("authorizes no effect until the composed host's journal passes restart and concurrent-worker tests");
+    expect(guide).toContain("the only journal `checkWireRequest` accepts");
+    expect(guide).not.toContain("qualifyWireRequestJournal");
     expect(guide).not.toContain("Host duty");
   });
 
-  // The seller refuses a request from the instant now === expiresAt, so a journal that drops each key at its
-  // expiresAt (TTL semantics) never sees the replay that would otherwise land in that millisecond.
-  it.each(["direct", "delegated"] as const)("a %s replay at exactly expiresAt is expired, not re-reserved, under a journal that drops keys at expiresAt", (mode) => {
-    const x = world(), journal = new Map<string, number>();
-    let clock = NOW;
-    const reserveRequest = vi.fn(({ key, expiresAt }: wire.WireRequestReservation) => {
-      for (const [held, until] of journal) if (until <= clock) journal.delete(held);
-      if (journal.has(key)) return false;
-      journal.set(key, expiresAt); return true;
-    });
-    const at = (now: number) => ({ ...x.check, now, requestJournal: inMemoryJournalForTest(reserveRequest), ...(mode === "delegated" ? { artifacts: [x.artifact] } : {}) });
+  // The journal never drops a key, and the seller refuses a request from the instant now === expiresAt.
+  it.each(["direct", "delegated"] as const)("a %s replay is refused while it is live and expired from expiresAt", (mode) => {
+    const x = world();
+    const directory = journalDirectory();
+    const at = (now: number) => ({ ...x.check, now, requestJournal: openJournal(directory), ...(mode === "delegated" ? { artifacts: [x.artifact] } : {}) });
     const opened = () => (mode === "delegated" ? x.delegated() : x.open());
-    expect(wire.checkWireRequest(opened(), at(clock))).toEqual({ body: {}, readbackOnly: false });
-    expect(reserveRequest).toHaveBeenCalledTimes(1);
-    clock = x.request.expiresAt - 1;
-    expect(() => wire.checkWireRequest(opened(), at(clock))).toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
-    expect(reserveRequest).toHaveBeenCalledTimes(2);
-    clock = x.request.expiresAt;
-    expect(() => wire.checkWireRequest(opened(), at(clock))).toThrowError(expect.objectContaining({ code: "peer_expired", status: 408 }));
-    expect(reserveRequest).toHaveBeenCalledTimes(2);
-    // At that instant the journal drops every key it holds, so it alone would accept the replay: the expiry check refuses it.
-    expect([...journal.values()].every((until) => until <= clock)).toBe(true);
+    expect(wire.checkWireRequest(opened(), at(NOW)).readbackOnly).toBe(false);
+    expect(() => wire.checkWireRequest(opened(), at(x.request.expiresAt - 1))).toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
+    expect(() => wire.checkWireRequest(opened(), at(x.request.expiresAt))).toThrowError(expect.objectContaining({ code: "peer_expired", status: 408 }));
+    expect(reservationsIn(directory)).toHaveLength(1);
   });
 
-  it.each([undefined, null, 1, "true", Promise.resolve(true)])("a reservation result of %s never grants an effect", (result) => {
+  it("fails closed on a journal entry it did not write: not a file, too large, or a malformed outcome", () => {
     const x = world();
-    expect(() => wire.checkWireRequest(x.open(), { ...x.check, requestJournal: inMemoryJournalForTest((() => result) as never) })).toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid" }));
+    const key = sha256Hex(canonicalize({ buyer: x.buyer.claim, seller: x.seller.claim, profile: x.request.profile, nonce: x.request.nonce }));
+    const operationId = wire.wireOperationId(x.request);
+    const cases: Array<[string, (directory: string) => void, string]> = [
+      ["a directory where an attempt belongs", (d) => mkdirSync(join(d, `o-${operationId}-0`)), "STORE-ENTRY-NOT-FILE"],
+      ["a malformed outcome", (d) => writeFileSync(join(d, `o-${operationId}.done`), '{"outcome":"paid"}'), "STORE-OUTCOME-INVALID"],
+      ["an outcome for another operation", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId: "f".repeat(64), attempt: 0, outcome: { status: 200, text: "{}" } })), "STORE-OUTCOME-INVALID"],
+      ["an oversized outcome", (d) => writeFileSync(join(d, `o-${operationId}.done`), "x".repeat(2 * 512 * 1024 + 4097)), "STORE-ENTRY-TOO-LARGE"],
+      ["an oversized attempt", (d) => writeFileSync(join(d, `o-${operationId}-0`), "x".repeat(4097)), "STORE-ENTRY-TOO-LARGE"],
+    ];
+    for (const [name, plant, detail] of cases) {
+      const directory = journalDirectory();
+      plant(directory);
+      expect(() => wire.checkWireRequest(x.open(), { ...x.check, requestJournal: openJournal(directory) }), name)
+        .toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid", status: 500, detail }));
+      expect(existsSync(join(directory, `k-${key}`)), name).toBe(true);
+    }
+    // An attempt file the journal cannot read holds nothing: the next request recovers it, and must reconcile.
+    const directory = journalDirectory();
+    writeFileSync(join(directory, `o-${operationId}-0`), "{");
+    expect(wire.checkWireRequest(x.open(), { ...x.check, requestJournal: openJournal(directory) }).effect).toMatchObject({ state: "recover", attempt: 1 });
   });
 });
 
@@ -151,10 +150,10 @@ describe("exchange and delegation scope bindings", () => {
     ["path", { path: "/dacs/v1/payments" }],
     ["method", { method: "GET" }],
   ])("refuses a request signed for another %s before reservation", (_name, change) => {
-    const x = world("/dacs/v1/agreements/state"), reserveRequest = vi.fn(() => true);
-    expect(wire.checkWireRequest(x.open(), { ...x.check, requestJournal: inMemoryJournalForTest(reserveRequest) }).readbackOnly).toBe(false);
-    expect(() => wire.checkWireRequest(x.open(), { ...x.check, ...change, requestJournal: inMemoryJournalForTest(reserveRequest) })).toThrowError(expect.objectContaining({ code: "peer_request_mismatch" }));
-    expect(reserveRequest).not.toHaveBeenCalled();
+    const x = world("/dacs/v1/agreements/state"), reserveRequest = testJournals();
+    expect(wire.checkWireRequest(x.open(), { ...x.check, requestJournal: reserveRequest.open() }).readbackOnly).toBe(false);
+    expect(() => wire.checkWireRequest(x.open(), { ...x.check, ...change, requestJournal: reserveRequest.open() })).toThrowError(expect.objectContaining({ code: "peer_request_mismatch" }));
+    expect(reserveRequest.reservations()).toHaveLength(0);
   });
 
   // A host may require the delegation at one entry point only: each must refuse a buyer-signed request on its own.
@@ -166,14 +165,14 @@ describe("exchange and delegation scope bindings", () => {
   });
 
   it("checkWireRequest alone refuses a buyer-signed request when it requires a delegation, before reservation", () => {
-    const x = world(), reserveRequest = vi.fn(() => true);
-    expect(() => wire.checkWireRequest(x.open(), { ...x.check, requireDelegation: true, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+    const x = world(), reserveRequest = testJournals();
+    expect(() => wire.checkWireRequest(x.open(), { ...x.check, requireDelegation: true, requestJournal: reserveRequest.open() }))
       .toThrowError(expect.objectContaining({ code: "peer_delegation_required", status: 401 }));
-    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(reserveRequest.reservations()).toHaveLength(0);
     // Controls: the same request without the requirement, and a delegated one with it, each reserve once.
-    expect(wire.checkWireRequest(x.open(), { ...x.check, requestJournal: inMemoryJournalForTest(reserveRequest) }).readbackOnly).toBe(false);
-    expect(wire.checkWireRequest(x.delegated(), { ...x.check, requireDelegation: true, artifacts: [x.artifact], requestJournal: inMemoryJournalForTest(reserveRequest) }).readbackOnly).toBe(false);
-    expect(reserveRequest).toHaveBeenCalledTimes(2);
+    expect(wire.checkWireRequest(x.open(), { ...x.check, requestJournal: reserveRequest.open() }).readbackOnly).toBe(false);
+    expect(wire.checkWireRequest(x.delegated(), { ...x.check, requireDelegation: true, artifacts: [x.artifact], requestJournal: reserveRequest.open() }).readbackOnly).toBe(false);
+    expect(reserveRequest.reservations()).toHaveLength(2);
   });
 
   it("refuses a delegation another wallet signed, under a request naming the buyer", () => {
@@ -190,17 +189,17 @@ describe("exchange and delegation scope bindings", () => {
 
 describe("delegated Agreement context", () => {
   it.each([[undefined], [[]], [[null]]])("refuses missing Agreement context %j before reserving an effect", (artifacts) => {
-    const x = world(), reserveRequest = vi.fn(() => true);
-    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts, requestJournal: inMemoryJournalForTest(reserveRequest) })).toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_required" }));
-    expect(reserveRequest).not.toHaveBeenCalled();
+    const x = world(), reserveRequest = testJournals();
+    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts, requestJournal: reserveRequest.open() })).toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_required" }));
+    expect(reserveRequest.reservations()).toHaveLength(0);
   });
 
   it("binds a delegated request to the host's retained parties and deadline before reservation", () => {
-    const x = world(), reserveRequest = vi.fn(() => true), opened = x.delegated();
-    expect(() => wire.checkWireRequest(opened, { ...x.check, artifacts: [{ ...x.artifact, terms: { deadline: NOW + 59_999 } }], requestJournal: inMemoryJournalForTest(reserveRequest) })).toThrowError(expect.objectContaining({ code: "peer_delegation_deadline" }));
-    expect(() => wire.checkWireRequest(opened, { ...x.check, artifacts: [{ ...x.artifact, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4J" }], requestJournal: inMemoryJournalForTest(reserveRequest) })).toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
-    expect(reserveRequest).not.toHaveBeenCalled();
-    expect(wire.checkWireRequest(opened, { ...x.check, artifacts: [x.artifact], requestJournal: inMemoryJournalForTest(reserveRequest) }).readbackOnly).toBe(false);
+    const x = world(), reserveRequest = testJournals(), opened = x.delegated();
+    expect(() => wire.checkWireRequest(opened, { ...x.check, artifacts: [{ ...x.artifact, terms: { deadline: NOW + 59_999 } }], requestJournal: reserveRequest.open() })).toThrowError(expect.objectContaining({ code: "peer_delegation_deadline" }));
+    expect(() => wire.checkWireRequest(opened, { ...x.check, artifacts: [{ ...x.artifact, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4J" }], requestJournal: reserveRequest.open() })).toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
+    expect(reserveRequest.reservations()).toHaveLength(0);
+    expect(wire.checkWireRequest(opened, { ...x.check, artifacts: [x.artifact], requestJournal: reserveRequest.open() }).readbackOnly).toBe(false);
   });
 
   it.each([
@@ -210,19 +209,19 @@ describe("delegated Agreement context", () => {
     ["no seller party", (b: unknown) => [b]],
     ["the parties' roles swapped", (b: any, s: any) => [{ ...b, role: "seller" }, { ...s, role: "buyer" }]],
   ])("refuses a retained Agreement naming %s before reservation", (_name, parties) => {
-    const x = world(), reserveRequest = vi.fn(() => true), [b, s] = x.artifact.parties;
-    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], requestJournal: inMemoryJournalForTest(reserveRequest) }))
+    const x = world(), reserveRequest = testJournals(), [b, s] = x.artifact.parties;
+    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], requestJournal: reserveRequest.open() }))
       .toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
-    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(reserveRequest.reservations()).toHaveLength(0);
   });
 
   it("accepts a delegated request expiring exactly at its delegation only when it names the retained Agreement", () => {
-    const x = world(), reserveRequest = vi.fn(() => true), artifacts = [x.artifact];
+    const x = world(), reserveRequest = testJournals(), artifacts = [x.artifact];
     const signed = { ...x.request, expiresAt: NOW + 60_000 };
-    expect(() => wire.checkWireRequest(x.delegated({ ...signed, agreementHash: "b".repeat(64) }), { ...x.check, artifacts, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+    expect(() => wire.checkWireRequest(x.delegated({ ...signed, agreementHash: "b".repeat(64) }), { ...x.check, artifacts, requestJournal: reserveRequest.open() }))
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
-    expect(reserveRequest).not.toHaveBeenCalled();
-    expect(wire.checkWireRequest(x.delegated(signed), { ...x.check, artifacts, requestJournal: inMemoryJournalForTest(reserveRequest) }).readbackOnly).toBe(false);
+    expect(reserveRequest.reservations()).toHaveLength(0);
+    expect(wire.checkWireRequest(x.delegated(signed), { ...x.check, artifacts, requestJournal: reserveRequest.open() }).readbackOnly).toBe(false);
   });
 
   it.each([
@@ -230,21 +229,21 @@ describe("delegated Agreement context", () => {
     ["a null entry first", (b: unknown, s: unknown) => [null, b, s]],
   ])("finds each party by role, not by position (%s)", (_name, parties) => {
     const x = world(), [b, s] = x.artifact.parties;
-    expect(wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], requestJournal: inMemoryJournalForTest() }).readbackOnly).toBe(false);
+    expect(wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], requestJournal: testJournals().open() }).readbackOnly).toBe(false);
   });
 
   it("refuses a retained Agreement without terms with its own code, before reservation", () => {
-    const x = world(), reserveRequest = vi.fn(() => true), { terms: _terms, ...withoutTerms } = x.artifact;
-    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [withoutTerms], requestJournal: inMemoryJournalForTest(reserveRequest) }))
+    const x = world(), reserveRequest = testJournals(), { terms: _terms, ...withoutTerms } = x.artifact;
+    expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [withoutTerms], requestJournal: reserveRequest.open() }))
       .toThrowError(expect.objectContaining({ code: "peer_delegation_deadline", status: 409 }));
-    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(reserveRequest.reservations()).toHaveLength(0);
   });
 
   it("accepts a delegated request that expires exactly when its delegation does", () => {
     // world()'s delegation expires at NOW + 60 000; a request outliving it is refused (request/delegated-outlives-delegation).
-    const x = world(), reserveRequest = vi.fn(() => true), artifacts = [x.artifact];
-    expect(wire.checkWireRequest(x.delegated({ ...x.request, expiresAt: NOW + 60_000 }), { ...x.check, artifacts, requestJournal: inMemoryJournalForTest(reserveRequest) }).readbackOnly).toBe(false);
-    expect(reserveRequest).toHaveBeenCalledTimes(1);
+    const x = world(), reserveRequest = testJournals(), artifacts = [x.artifact];
+    expect(wire.checkWireRequest(x.delegated({ ...x.request, expiresAt: NOW + 60_000 }), { ...x.check, artifacts, requestJournal: reserveRequest.open() }).readbackOnly).toBe(false);
+    expect(reserveRequest.reservations()).toHaveLength(1);
   });
 });
 
@@ -255,24 +254,24 @@ describe("the job and Agreement the host retained", () => {
   // Agreements are public on testnet (G1): another key that knows the job and its hash signs a direct request as buyer.
   it.each([...effects, "/dacs/v1/bundles/request", "/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"])(
     "%s: a non-party's correctly signed direct request is refused by the retained parties alone, with no artifacts and no reservation", (path) => {
-      const x = world(path), mallory = party(), reserveRequest = vi.fn(() => true);
+      const x = world(path), mallory = party(), reserveRequest = testJournals();
       const signedHeader = x.signed({ ...x.request, buyer: mallory.claim }, mallory, wire.DACS_SELLER_HTTP_DOMAINS.request);
       const opened = wire.openWireEnvelope(Buffer.from(canonicalize(signedHeader)).toString("base64url"), "request", x.context);
-      expect(() => wire.checkWireRequest(opened, { ...x.check, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+      expect(() => wire.checkWireRequest(opened, { ...x.check, requestJournal: reserveRequest.open() }))
         .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
       // The host's record is what is compared: the job's own buyer is refused under another retained buyer or seller.
-      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: { ...x.retained, buyer: mallory.claim }, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: { ...x.retained, buyer: mallory.claim }, requestJournal: reserveRequest.open() }))
         .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
-      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: { ...x.retained, seller: mallory.claim }, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: { ...x.retained, seller: mallory.claim }, requestJournal: reserveRequest.open() }))
         .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
-      expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [x.artifact], retained: { ...x.retained, buyer: mallory.claim }, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+      expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [x.artifact], retained: { ...x.retained, buyer: mallory.claim }, requestJournal: reserveRequest.open() }))
         .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
-      expect(reserveRequest).not.toHaveBeenCalled();
-      expect(wire.checkWireRequest(x.open(), { ...x.check, requestJournal: inMemoryJournalForTest(reserveRequest) }).readbackOnly).toBe(false);
+      expect(reserveRequest.reservations()).toHaveLength(0);
+      expect(wire.checkWireRequest(x.open(), { ...x.check, requestJournal: reserveRequest.open() }).readbackOnly).toBe(false);
     });
 
   it.each(effects)("%s: a correctly signed direct request naming another Agreement or job makes no reservation", (path) => {
-    const x = world(path), reserveRequest = vi.fn(() => true), check = { ...x.check, requestJournal: inMemoryJournalForTest(reserveRequest) };
+    const x = world(path), reserveRequest = testJournals(), check = { ...x.check, requestJournal: reserveRequest.open() };
     expect(() => wire.checkWireRequest(x.open({ ...x.request, agreementHash: "b".repeat(64) }), check))
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
     expect(() => wire.checkWireRequest(x.open({ ...x.request, jobId: OTHER_JOB }), check))
@@ -280,20 +279,20 @@ describe("the job and Agreement the host retained", () => {
     // The host's record is what is compared: the same signed request is refused under another retained hash.
     expect(() => wire.checkWireRequest(x.open(), { ...check, retained: { ...x.retained, agreementHash: "b".repeat(64) } }))
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
-    expect(reserveRequest).not.toHaveBeenCalled();
-    expect(wire.checkWireRequest(x.open(), check)).toEqual({ body: {}, readbackOnly: false });
-    expect(reserveRequest).toHaveBeenCalledTimes(1);
+    expect(reserveRequest.reservations()).toHaveLength(0);
+    expect(wire.checkWireRequest(x.open(), check)).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
+    expect(reserveRequest.reservations()).toHaveLength(1);
   });
 
   it.each(effects)("%s: a delegated request naming another Agreement or job makes no reservation", (path) => {
-    const x = world(path), reserveRequest = vi.fn(() => true), check = { ...x.check, artifacts: [x.artifact], requestJournal: inMemoryJournalForTest(reserveRequest) };
+    const x = world(path), reserveRequest = testJournals(), check = { ...x.check, artifacts: [x.artifact], requestJournal: reserveRequest.open() };
     expect(() => wire.checkWireRequest(x.delegated({ ...x.request, agreementHash: "b".repeat(64) }), check))
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
     expect(() => wire.checkWireRequest(x.delegated({ ...x.request, jobId: OTHER_JOB }), check))
       .toThrowError(expect.objectContaining({ code: "peer_job_mismatch", status: 409 }));
-    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(reserveRequest.reservations()).toHaveLength(0);
     expect(wire.checkWireRequest(x.delegated(), check).readbackOnly).toBe(false);
-    expect(reserveRequest).toHaveBeenCalledTimes(1);
+    expect(reserveRequest.reservations()).toHaveLength(1);
   });
 
   it.each(["/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"])("%s: read routes compare it too, including expired-delegation readback", (path) => {
@@ -323,22 +322,22 @@ describe("the job and Agreement the host retained", () => {
     ["a string", "a".repeat(64)],
   ])("refuses a retained Agreement %s, on effect and read routes, before reservation", (_name, retained) => {
     for (const path of [...effects, "/dacs/v1/agreements/state"]) {
-      const x = world(path), reserveRequest = vi.fn(() => true);
-      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: retained as never, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+      const x = world(path), reserveRequest = testJournals();
+      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: retained as never, requestJournal: reserveRequest.open() }))
         .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
-      expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [x.artifact], retained: retained as never, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+      expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [x.artifact], retained: retained as never, requestJournal: reserveRequest.open() }))
         .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
-      expect(reserveRequest).not.toHaveBeenCalled();
+      expect(reserveRequest.reservations()).toHaveLength(0);
     }
   });
 
   it("reads the retained Agreement once, as data", () => {
-    const x = world(), reserveRequest = vi.fn(() => true);
+    const x = world(), reserveRequest = testJournals();
     let reads = 0;
     const retained = { jobId: x.retained.jobId, buyer: x.retained.buyer, seller: x.retained.seller, get agreementHash() { return ++reads === 1 ? x.retained.agreementHash : "b".repeat(64); } };
-    expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained, requestJournal: inMemoryJournalForTest(reserveRequest) }))
+    expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained, requestJournal: reserveRequest.open() }))
       .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
-    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(reserveRequest.reservations()).toHaveLength(0);
   });
 });
 
@@ -353,10 +352,10 @@ describe("body admission refuses JSON that is not an object", () => {
   });
 
   it("refuses a correctly signed non-object request body before reservation", () => {
-    const x = world(), reserveRequest = vi.fn(() => true);
-    expect(() => wire.checkWireRequest(x.open({ ...x.request, bodyHash: sha256Hex("[]") }), { ...x.check, rawBody: Buffer.from("[]"), requestJournal: inMemoryJournalForTest(reserveRequest) }))
+    const x = world(), reserveRequest = testJournals();
+    expect(() => wire.checkWireRequest(x.open({ ...x.request, bodyHash: sha256Hex("[]") }), { ...x.check, rawBody: Buffer.from("[]"), requestJournal: reserveRequest.open() }))
       .toThrowError(expect.objectContaining({ code: "bad_request", status: 400 }));
-    expect(reserveRequest).not.toHaveBeenCalled();
+    expect(reserveRequest.reservations()).toHaveLength(0);
   });
 
   it("names an outgoing admission failure as the signer's own, with zero signatures", async () => {

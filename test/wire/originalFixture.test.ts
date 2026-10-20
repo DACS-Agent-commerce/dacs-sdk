@@ -27,7 +27,7 @@ import { withTestApproval } from "./testApproval.js";
 import { envelopeSignatureBytes, verifyEd25519 } from "../../src/wire/validate.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
-const { inMemoryJournalForTest } = journalFixture(fixtureWire);
+const { testJournal } = journalFixture(fixtureWire);
 
 const ORIGINAL_PATH = new URL("./fixtures/plugin-wire-82bf8c4.original.json", import.meta.url);
 const PRE_REVISION_PATH = new URL("./fixtures/plugin-wire-82bf8c4.tp1-adapted.json", import.meta.url);
@@ -66,7 +66,7 @@ function sellerVerdict(c: any): string {
   return code(() => {
     const body = c.bodyText ?? `{"jobId":"${scope.jobId}"}`;
     const opened = openWireEnvelope(c.header, "request", { binding: sellerBinding, local: adapted.localBindings.seller, purchaseProfile: sellerBinding.profile, requireDelegation: c.requireDelegation ?? false });
-    checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened),
+    checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened),
       retained: { jobId: scope.jobId, agreementHash: scope.agreementHash, buyer: adapted.parties.buyer, seller: adapted.parties.seller },
       seller: c.server?.seller === "other" ? adapted.parties.other : adapted.parties.seller,
       listingPin: c.server?.listingPin ?? scope.listingPin, method: "POST", path: scope.path, rawBody: Buffer.from(body),

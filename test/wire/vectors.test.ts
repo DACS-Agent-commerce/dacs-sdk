@@ -28,7 +28,7 @@ const impl = process.env.DACS_WIRE_IMPL;
 vi.doMock(impl ? impl.replace(/index\.ts$/, "approval.ts") : "../../src/wire/approval.js", () => import("./testApproval.js"));
 const wire = (await import(impl ?? "../../src/wire/index.js")) as typeof WireModule;
 const bindTp1Fixture = fixtureBinder(wire);
-const { inMemoryJournalForTest } = journalFixture(wire);
+const { testJournal } = journalFixture(wire);
 const { signRequestWithProof, registerDiscoverySigner } = await import("./requestFixture.js");
 
 interface Vector {
@@ -184,7 +184,7 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
       // retained: the job, Agreement hash and parties the seller host kept (the file's job); a vector may give another, or "omitted".
       const retained = input.retained === "omitted" ? undefined
         : input.retained ?? { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller };
-      const { readbackOnly } = wire.checkWireRequest(subject, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened), retained,
+      const { readbackOnly } = wire.checkWireRequest(subject, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained,
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
         method: input.method ?? "POST", path: input.path, rawBody, now: file.now,
         requireDelegation: Object.hasOwn(input, "checkRequireDelegation") ? input.checkRequireDelegation : input.requireDelegation,

@@ -7,7 +7,7 @@ import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
 
 const local = { endpoint: "https://unverified.example/", transportAuthority: "test", connectionId: "generation-1" };
-const { inMemoryJournalForTest } = journalFixture(wire);
+const { testJournals } = journalFixture(wire);
 const jobId = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
 const now = Date.UTC(2026, 9, 18);
 const modules = { CORE: "0.3", "DACS-1": "0.7", "DACS-2": "0.6", "DACS-3": "0.5", "DACS-4": "0.8", "DACS-5": "0.5" };
@@ -62,7 +62,7 @@ async function boundaries(x: ReturnType<typeof world>) {
   const signing = { ...context, signer: x.buyer, endpointProof, publicEndpoint, now };
   const requestInput = { ...signing, seller: x.seller.claim, path: x.request.path, jobId, text: "{}",
     job: { listingPin: x.request.listingPin, agreementHash: x.request.agreementHash, profile: x.binding.profile } };
-  let reservations = 0;
+  const journals = testJournals();
   const calls: Array<[string, () => unknown]> = [
     ["request signer", () => wire.signWireRequest(requestInput)],
     ["envelope signer", () => wire.signWireEnvelope(x.request, signing)],
@@ -73,7 +73,7 @@ async function boundaries(x: ReturnType<typeof world>) {
     ["request open", () => wire.openWireEnvelope(requestHeader, "request", context)],
     ["retained request admission", () => wire.checkWireRequest(opened, { ...context, seller: x.seller.claim,
       retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.request.buyer, seller: x.request.seller }, listingPin: x.request.listingPin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now,
-      requestJournal: inMemoryJournalForTest(() => { reservations++; return true; }) })],
+      requestJournal: journals.open() })],
     ["delegation verifier", () => wire.verifySellerSessionDelegation(delegation, { ...context, jobId, time: now })],
     ["response verifier", () => wire.verifyWireResponse(x.request, { ...context, header: response, status: 200, body: Buffer.from("{}"), now })],
     ["discovery verifier", () => wire.verifyEndpointProof(discovery, proofOptions)],
@@ -81,7 +81,7 @@ async function boundaries(x: ReturnType<typeof world>) {
       seller: x.seller.claim, listingPin: x.request.listingPin, publicEndpoint, now, request: x.request })],
   ];
   x.buyer.calls = x.seller.calls = 0;
-  return { calls, reservations: () => reservations, discoveryPayload, signing, requestInput, delegationPayload };
+  return { calls, reservations: () => journals.reservations().length, discoveryPayload, signing, requestInput, delegationPayload };
 }
 
 async function rejectsEveryBoundary(x: ReturnType<typeof world>, entries: Awaited<ReturnType<typeof boundaries>>, code: string) {

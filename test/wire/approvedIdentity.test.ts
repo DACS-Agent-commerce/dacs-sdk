@@ -18,7 +18,7 @@ import {
 } from "../../src/wire/index.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
-const { inMemoryJournalForTest } = journalFixture(fixtureWire);
+const { testJournal } = journalFixture(fixtureWire);
 
 const RECORD = TP1_APPROVED_IDENTITY_RECORD;
 const DIGEST = "c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd";
@@ -75,7 +75,7 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
     expect(bb.profile).toEqual(sb.profile);
     const { payload, header } = await request(buyer, seller, bb, buyerLocal);
     const opened = openWireEnvelope(header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
-    checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.claim, seller: seller.claim }, seller: seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(BODY), now: NOW, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
+    checkWireRequest(opened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.claim, seller: seller.claim }, seller: seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(BODY), now: NOW, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
     const response = await signWireResponse(opened.payload, 200, "{}", { signer: seller, binding: sb, local: sellerLocal, now: NOW, purchaseProfile: sb.profile });
     expect(verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: buyerLocal }).principal).toBe(seller.claim);
     expect(buyer.calls + seller.calls).toBe(2);

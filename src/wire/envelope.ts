@@ -10,13 +10,12 @@
 // connection and the tuple the actor kept for the purchase; checkWireRequest
 // takes only an envelope openWireEnvelope verified; every caller-built payload
 // and options object is read once, into an owned copy.
-import { randomBytes } from "node:crypto";
-
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { commitmentReceiptTime, type CommitmentReceiptReader } from "./commitment.js";
 import { assertEndpointProof, isContinuingRoute, type EndpointProof } from "./discovery.js";
+import { journalStore, reserveEffect, type WireEffect, type WireRequestJournal } from "./journal.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
@@ -103,6 +102,8 @@ export interface EnvelopeSigningContext extends SigningContext {
    * kept with the endpoint proof.
    */
   commitment?: unknown;
+  /** Required with `commitment`: the Agreement both parties signed that it commits (DACS-3 §8.6 CA-7). */
+  agreement?: unknown;
   /**
    * Required: the tuple the signer kept for this purchase, exactly the
    * binding's profile. `null` (none kept yet) only for a seller's answer to a
@@ -119,7 +120,7 @@ export interface EnvelopeSigningContext extends SigningContext {
  * header all come from those copies.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
-  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment"]) as Partial<EnvelopeSigningContext>;
+  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement"]) as Partial<EnvelopeSigningContext>;
   assertTp1Binding(binding, local);
   const payload = ownedArtifact(supplied, "peer_envelope_invalid", 500);
   if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
@@ -137,7 +138,7 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
   if (payload.kind === "request") assertEndpointProof(endpointProof, {
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
-    publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment,
+    publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement,
   });
   assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");
@@ -268,12 +269,11 @@ export interface RequestCheck {
    */
   artifacts?: readonly unknown[];
   /**
-   * Required for effect routes: the journal qualifyWireRequestJournal returned.
-   * Anything else, a bare callback or a journal object that declares itself
-   * durable included, is refused (`seller_replay_guard_required`) before it is
-   * called.
+   * Required for effect routes: the journal openWireRequestJournal returned
+   * (journal.ts). Anything else, a host's own journal object included, is
+   * refused (`seller_replay_guard_required`) before anything is reserved.
    */
-  requestJournal?: QualifiedWireRequestJournal;
+  requestJournal?: WireRequestJournal;
   /**
    * Required on the payment and delivery routes (CONTINUING_PATHS): the job's
    * finalized commitment, as data the seller read itself (the result
@@ -285,6 +285,12 @@ export interface RequestCheck {
    * (409); omitted is `seller_commitment_required` (500).
    */
   commitment?: unknown;
+  /**
+   * Required with `commitment`: the retained Agreement both parties signed
+   * that it commits. Its hash, job, Listing, parties and both signatures are
+   * checked (DACS-3 §8.6 CA-7; `continuation_agreement_invalid`).
+   */
+  agreement?: unknown;
   /** The seller's SR-2 receipt reader for `commitment` (commitment.ts); required with it. */
   readCommitmentReceipt?: CommitmentReceiptReader;
   /**
@@ -299,30 +305,6 @@ export interface RequestCheck {
   ready?: boolean;
 }
 
-/**
- * The seller host's request journal, as `open` (qualifyWireRequestJournal)
- * returns it. `reserve` must atomically and durably reserve both the
- * reservation's `key` and its `operationId` before returning true, and return
- * false if either is already reserved, even for the same request. Share the
- * journal across workers and restarts and retain both until retainUntil
- * (expiresAt + maxClockSkewMs) by the journal's clock: a worker refuses the
- * request as expired from expiresAt by its own clock, and its clock may lag
- * the journal's. Keep `operationId` for as long as the job's effects matter:
- * it is what stops a request with a fresh nonce from repeating an effect. A
- * failed or ambiguous effect must not release either. `reserve` is
- * synchronous and must finish its durable write before returning; promises
- * are refused. The wire has no journal of its own.
- */
-export interface WireRequestJournal {
-  readonly durable: true;
-  reserve(reservation: WireRequestReservation): boolean;
-}
-
-/** A journal that passed qualifyWireRequestJournal's probe; only that function makes one. */
-export interface QualifiedWireRequestJournal {
-  readonly qualified: true;
-}
-
 /** What the seller host retained for a job: never taken from the request it is compared with. */
 export interface WireRetainedAgreement {
   jobId: string;
@@ -330,26 +312,6 @@ export interface WireRetainedAgreement {
   /** The job's buyer and seller claims, from the host's own record: a request from anyone else is refused. */
   buyer: string;
   seller: string;
-}
-
-export interface WireRequestReservation {
-  /** SHA-256 of {buyer, seller, profile, nonce}; shared across jobs and routes. */
-  readonly key: string;
-  /**
-   * SHA-256 of the effect: {profile, seller, buyer, jobId, agreementHash, path,
-   * body}, `body` the SHA-256 of the admitted body's canonical form. A request
-   * with a fresh nonce for the same effect has the same operationId and is
-   * refused, whatever its encoding; its result is read back on the read routes.
-   */
-  readonly operationId: string;
-  readonly requestHash: string;
-  readonly expiresAt: number;
-  /**
-   * expiresAt + maxClockSkewMs: the journal keeps the key until this instant
-   * by its own clock, so a worker whose clock is up to maxClockSkewMs behind
-   * the journal's, and still accepts the request, finds it reserved.
-   */
-  readonly retainUntil: number;
 }
 
 /**
@@ -363,57 +325,7 @@ export function messageLifetime(override: unknown, code: string, max: number = D
   return ms;
 }
 
-const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready", "commitment", "readCommitmentReceipt"] as const;
-
-// Each journal handle qualifyWireRequestJournal returned, with the journal it
-// probed. Methods taken at module load (see profile.ts).
-type KeptJournal = { journal: object; reserve: (reservation: WireRequestReservation) => unknown };
-const journals = new WeakMap<object, KeptJournal>();
-const journalGet = uncurry(WeakMap.prototype.get) as (map: typeof journals, key: object) => KeptJournal | undefined;
-const journalSet = uncurry(WeakMap.prototype.set) as (map: typeof journals, key: object, value: KeptJournal) => unknown;
-
-function journalOf(value: unknown): KeptJournal {
-  // Read once, so a class instance with a `reserve` method is a journal too.
-  const journal = typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
-  const durable = journal?.durable, reserve = journal?.reserve;
-  if (durable !== true || typeof reserve !== "function") fail("seller_replay_guard_required", 500);
-  return { journal: journal as object, reserve: reserve as KeptJournal["reserve"] };
-}
-
-/**
- * Qualify the seller host's journal before any effect route uses it: a
- * persistence probe, run once at startup. `open` must return a new handle on
- * the same shared, durable store each time it is called (as a restarted or
- * second worker would open it). The probe opens two; a reservation made
- * through one must be refused through the other, and a reservation holding an
- * already reserved key or operationId must be refused. An in-memory set per
- * handle, a journal keyed only by nonce or only by operation, or `open`
- * returning the same object fails (`seller_replay_guard_invalid`, with the
- * probe that failed). The probe writes three reservations with random keys,
- * retained until `now` + maxClockSkewMs. It cannot show that the store
- * survives a process restart: that remains the host's composition test.
- */
-export function qualifyWireRequestJournal(open: () => WireRequestJournal, now: number): QualifiedWireRequestJournal {
-  if (typeof open !== "function") fail("seller_replay_guard_required", 500);
-  if (!isUint(now)) fail("wire_input_invalid", 500);
-  const first = journalOf(open()), second = journalOf(open());
-  if (first.journal === second.journal) fail("seller_replay_guard_invalid", 500, "SAME-HANDLE");
-  const fresh = () => randomBytes(32).toString("hex");
-  const probe = (key: string, operationId: string): WireRequestReservation =>
-    deepFreeze({ key, operationId, requestHash: fresh(), expiresAt: now, retainUntil: now + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs });
-  const key = fresh(), operationId = fresh();
-  const expect = (kept: KeptJournal, reservation: WireRequestReservation, want: boolean, detail: string) => {
-    const got = kept.reserve.call(kept.journal, reservation);
-    if (got !== want) fail("seller_replay_guard_invalid", 500, typeof got === "boolean" ? detail : "NOT-BOOLEAN");
-  };
-  expect(first, probe(key, operationId), true, "PROBE-NOT-RESERVED");
-  expect(second, probe(key, operationId), false, "NOT-SHARED");
-  expect(second, probe(fresh(), operationId), false, "OPERATION-NOT-KEYED");
-  expect(first, probe(key, fresh()), false, "NONCE-NOT-KEYED");
-  const handle = Object.freeze({ qualified: true as const });
-  journalSet(journals, handle, second);
-  return handle;
-}
+const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready", "commitment", "agreement", "readCommitmentReceipt"] as const;
 
 /**
  * A request that starts or commits a purchase (every effect route the buyer
@@ -429,42 +341,46 @@ function admitNewPurchase(request: WireRequestPayload, ready: unknown): void {
 /**
  * A payment or delivery request continues only a purchase whose finalized
  * commitment the seller holds for exactly this job, Agreement, parties and
- * Listing, its receipt authenticated now (commitment.ts).
+ * Listing, for an Agreement both parties signed, its receipt authenticated
+ * now (commitment.ts).
  */
 function admitContinuation(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): void {
   if (!isContinuingRoute(request.path)) return;
   if (c.commitment === null) fail("peer_agreement_uncommitted", 409);
   if (c.commitment === undefined) fail("seller_commitment_required", 500);
-  commitmentReceiptTime(c.commitment, c.readCommitmentReceipt, { seller: request.seller, listingPin, now: c.now,
+  commitmentReceiptTime(c.commitment, c.agreement, c.readCommitmentReceipt, { seller: request.seller, listingPin, now: c.now,
     request: { jobId: request.jobId, agreementHash: request.agreementHash, buyer: request.buyer } });
 }
 
-/** The qualified journal an effect route needs, before anything about the request is admitted; null on a read route. */
-function effectJournal(request: WireRequestPayload, journal: unknown): KeptJournal | null {
-  if (isReadRoute(request.path)) return null;
-  const kept = typeof journal === "object" && journal !== null ? journalGet(journals, journal) : undefined;
-  if (!kept) return fail("seller_replay_guard_required", 500);
-  return kept;
+/** The journal an effect route needs, before anything about the request is admitted; null on a read route. */
+function effectJournal(request: WireRequestPayload, journal: unknown): object | null {
+  return isReadRoute(request.path) ? null : journalStore(journal);
 }
 
-function reserveEffectRequest(request: WireRequestPayload, kept: KeptJournal | null, body: JsonRecord): void {
-  if (kept === null) return;
-  const { buyer, seller, profile, nonce, jobId, agreementHash, path } = request;
-  const reservation = deepFreeze({ key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })),
-    operationId: sha256Hex(canonicalize({ profile, seller, buyer, jobId, agreementHash, path, body: sha256Hex(canonicalize(body)) })),
-    requestHash: wireRequestHash(request), expiresAt: request.expiresAt,
-    retainUntil: request.expiresAt + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs });
-  const result = kept.reserve.call(kept.journal, reservation);
-  if (result === false) fail("peer_request_replayed", 409);
-  if (result !== true) fail("seller_replay_guard_invalid", 500);
+/**
+ * The effect's identity is its job's, not its body's: {profile, seller, buyer,
+ * jobId, agreementHash, path}. A request with a fresh nonce, or with other
+ * incidental body fields, for the same job and route is the same operation:
+ * it gets the recorded outcome, never a second effect (journal.ts).
+ */
+export function wireOperationId(request: Pick<WireRequestPayload, "profile" | "seller" | "buyer" | "jobId" | "agreementHash" | "path">): string {
+  const { profile, seller, buyer, jobId, agreementHash, path } = request;
+  return sha256Hex(canonicalize({ profile, seller, buyer, jobId, agreementHash, path }));
+}
+
+function reserveEffectRequest(request: WireRequestPayload, store: object | null): WireEffect | null {
+  if (store === null) return null;
+  const { buyer, seller, profile, nonce } = request;
+  return reserveEffect(store, { key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })), operationId: wireOperationId(request),
+    requestHash: wireRequestHash(request) });
 }
 
 /** Every per-request admission an effect needs, in order, then its reservation. */
-function admitEffect(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin, body: JsonRecord): void {
-  const kept = effectJournal(request, c.requestJournal);
+function admitEffect(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): WireEffect | null {
+  const store = effectJournal(request, c.requestJournal);
   admitNewPurchase(request, c.ready);
   admitContinuation(request, c, listingPin);
-  reserveEffectRequest(request, kept, body);
+  return reserveEffectRequest(request, store);
 }
 
 export interface CheckedWireRequest {
@@ -475,6 +391,12 @@ export interface CheckedWireRequest {
    * reach only declared read routes; effect routes are refused by this check.
    */
   readbackOnly: boolean;
+  /**
+   * The effect route's operation, from the request journal (journal.ts):
+   * `new` or `recover` (run, or first reconcile, then completeWireEffect) or
+   * `completed` (answer with its outcome; run nothing). `null` on a read route.
+   */
+  effect: WireEffect | null;
 }
 
 /**
@@ -531,8 +453,7 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
     }
   }
   if (!delegation) {
-    admitEffect(request, c, listingPin, body);
-    return { body, readbackOnly: false };
+    return { body, readbackOnly: false, effect: admitEffect(request, c, listingPin) };
   }
   if (retainedArtifacts.length === 0) fail("peer_delegation_agreement_required", 409);
   for (const artifact of retainedArtifacts) {
@@ -542,15 +463,14 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   }
   verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
   if (c.now < delegation.payload.expiresAt && request.expiresAt <= delegation.payload.expiresAt) {
-    admitEffect(request, c, listingPin, body);
-    return { body, readbackOnly: false };
+    return { body, readbackOnly: false, effect: admitEffect(request, c, listingPin) };
   }
   // An expired delegation, or a request that outlives a live one, authenticates readback only. The buyer
   // picks readback by its own clock, which may run ahead of this one: a read route is answered either way.
   // A nonce reservation never extends expired delegation authority.
   // Refuse effect routes rather than returning a flag a host could overlook.
   if (!isReadRoute(request.path)) fail("peer_delegation_expired", 408);
-  return { body, readbackOnly: true };
+  return { body, readbackOnly: true, effect: null };
 }
 
 /** CF-5 admission of a received request body (64 KiB); it must be a JSON object. */

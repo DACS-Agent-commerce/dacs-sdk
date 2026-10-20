@@ -8,8 +8,9 @@
 `@kynesyslabs/dacs/wire` defines the HTTPS wire between a buyer and a seller's
 own endpoint: the route table, the signed request and response envelopes, the
 seller session delegation, the discovery document and endpoint proof, their
-exact signing bytes, and validators. It has no I/O: no HTTP server or client,
-no storage, no journal. The seller host (`@kynesyslabs/dacs-seller`) and the
+exact signing bytes, and validators. Its checks perform no I/O, and it has no
+HTTP server or client. Its one store is the seller's request journal
+(`openWireRequestJournal`), a local directory. The seller host (`@kynesyslabs/dacs-seller`) and the
 buyer client (`@kynesyslabs/dacs-client`) are its intended consumers.
 
 It is the wire the buyer plugins run today, ported from the plugin
@@ -39,7 +40,8 @@ not yet independently checked (composition checks qualify it).
 The SDK implements one buyer-to-seller transport, `dacs-seller-http/v1`,
 without a fallback to the plugin signing domains. Its definitions and validators
 ship in the existing core package as `@kynesyslabs/dacs/wire` (`./wire`);
-HTTP hosting, clients and durable journals belong to their consuming packages.
+HTTP hosting and clients belong to their consuming packages. The seller's durable
+request journal ships here (`openWireRequestJournal`).
 The only supported profile is experimental TP-1 on the approved Demos testnet
 identity. This change does not enable a mainnet identity or a mainnet release.
 
@@ -79,7 +81,7 @@ route (`findDacsSellerHttpRoute`).
 | Response body | 512 KiB |
 | Receiver's window (`expiresAt - now` by the receiver's clock) | at most 60 s, as in the plugin; the seller's override (`checkWireRequest`'s `maxLifetimeMs`) must be an integer from 1 to 60,000 ms or the call fails with `seller_configuration_invalid`. The buyer's window for answers is 60 s. A seller window below the buyer's request lifetime plus the clock difference refuses honest requests |
 | Signer's lifetime (`expiresAt - now` by the signer's clock) | **new:** at most 30 s (`maxSignedLifetimeMs`), default 30 s, for requests (`signWireRequest`'s `lifetimeMs`; above it is a `TypeError`) and answers (`signWireResponse`'s `lifetimeMs`; above it, or a `maxLifetimeMs` given to `signWireResponse`, fails with `seller_configuration_invalid`) |
-| Clock difference tolerated (`maxClockSkewMs`) | **new:** 30 s. A signer's 30 s lifetime inside a receiver's 60 s window passes with the signer's clock up to 30 s ahead of or behind the receiver's (less transit time); a buyer backdates a delegation's `notBefore` by 30 s; a reservation is kept until `retainUntil` (`expiresAt` + 30 s). The plugin signed 60 s answers into a 60 s window, so any seller clock lead refused every answer after the seller had acted |
+| Clock difference tolerated (`maxClockSkewMs`) | **new:** 30 s. A signer's 30 s lifetime inside a receiver's 60 s window passes with the signer's clock up to 30 s ahead of or behind the receiver's (less transit time); a buyer backdates a delegation's `notBefore` by 30 s; the request journal never drops a reservation, so no journal clock can release one a worker still accepts. The plugin signed 60 s answers into a 60 s window, so any seller clock lead refused every answer after the seller had acted |
 | Envelope header | at most 4,096 base64url characters |
 | Seller session delegation | at most 24 h (`expiresAt - notBefore`) |
 | Discovery document | at most 16 KiB, valid at most 10 minutes (new) |
@@ -225,7 +227,7 @@ below):
    signed `jobId` or `agreementHash` that differs fails with `peer_job_mismatch`
    or `peer_agreement_mismatch` (409), and a signed `buyer` or `seller` that
    differs fails with `peer_agreement_party_mismatch` (409). These refusals
-   come before the delegation scope, the reservation callback and any returned
+   come before the delegation scope, the reservation and any returned
    body, so a correctly signed request naming another job, Agreement or party
    never reaches a handler. Agreements are public on testnet (G1): the
    retained parties, not the artifacts, are what refuse another key that knows
@@ -247,48 +249,70 @@ below):
    On the payment and delivery routes (`payments`, `bundles/request`,
    `bundles/countersignature`), `checkWireRequest` instead requires the job's
    finalized commitment, as data the seller read itself (`commitment`), and
-   its SR-2 receipt reader (`readCommitmentReceipt`). It checks them exactly as
+   its SR-2 receipt reader (`readCommitmentReceipt`), and the retained
+   Agreement both parties signed (`agreement`). It checks them exactly as
    the buyer's signers do (see the endpoint proof section), against the
    retained job, Agreement hash, parties and Listing pin, before any
    reservation. `commitment: null`, the host's own reader having found none,
    refuses the request as `peer_agreement_uncommitted` (409); omitted, it is
    `seller_commitment_required` (500).
    Before returning a checked body on an effect route, `checkWireRequest`
-   requires `requestJournal`: the handle `qualifyWireRequestJournal(open, now)`
-   returned. The host calls it once at startup. `open` returns a new handle
-   `{ durable: true, reserve }` on the same shared store each time it is called,
-   as a restarted or second worker would open it. The probe opens two handles. A
-   reservation made through one must be refused through the other, and a
-   reservation holding an already reserved `key` or `operationId` must be
-   refused. An in-memory set per handle, a store keyed by only one of the two,
-   or `open` returning the same object fails (`seller_replay_guard_invalid`,
-   naming the probe). A journal object passed directly, even one that declares
-   `durable: true`, is refused (`seller_replay_guard_required`) and never
-   called. The host must atomically and durably claim both the reservation's
-   `key` (SHA-256 of canonical `{buyer, seller, profile, nonce}`) and its
-   `operationId` (SHA-256 of canonical `{profile, seller, buyer, jobId,
-   agreementHash, path, body}`, where `body` is the SHA-256 of the admitted
-   body's canonical form) across workers and restarts. It retains
-   `requestHash`, `expiresAt` and `retainUntil`, and returns `true` only after
-   the new reservation commits. It returns `false` if either is already
-   claimed: an identical retry, or a fresh nonce for the same effect however
-   its body is encoded (`peer_request_replayed`, HTTP 409). Keep the key until
-   `retainUntil` (`expiresAt` + 30 s) by the journal's own clock, and the
-   operation for as long as the job's effects matter. A worker refuses the request as `peer_expired` from `expiresAt`
-   by its clock, and its clock may lag the journal's; the journal may drop the
-   key at `retainUntil` only when every worker's clock is within 30 s of it. Never release either after an ambiguous or
-   failed effect. Recovery uses declared read routes. A missing journal fails with
-   `seller_replay_guard_required`; non-boolean results, including promises, fail
-   with `seller_replay_guard_invalid`. `reserve` is synchronous and must finish
-   its durable write before returning. Read routes need no reservation. All
-   authentication, body, retained-Agreement, commitment, scope and deadline
-   checks precede the reservation. The probe cannot show that a store survives
-   a process restart, so a request
-   `checkWireRequest` returned for an effect route authorizes no effect until
-   the composed host's journal passes restart and concurrent-worker tests (a
-   reservation made before a restart refuses the replay after it; of workers
-   racing on one key or operation, exactly one gets `true`). That gate is a `not checked`
-   entry in the TP-1 register's composition qualification list.
+   requires `requestJournal`: the handle `openWireRequestJournal(directory)`
+   returned, the only journal `checkWireRequest` accepts. Any other object, a
+   host's own journal that declares itself durable included, is refused
+   (`seller_replay_guard_required`) before anything is reserved. The journal
+   is a local directory that every worker of the seller host opens at
+   startup. It must be an existing absolute directory, not a link, owned by
+   the host's user and writable by no one else; otherwise it is refused
+   (`seller_replay_guard_invalid`). Each entry is written under a temporary
+   name, synced, then published with `link()`, and the directory is synced
+   before the call returns. Publishing is atomic and exclusive: of workers
+   racing on one entry, exactly one publishes it. So an entry published
+   before a crash or restart is still there after it.
+   `test/wire/requestJournal.test.ts` kills workers (SIGKILL) and races two
+   worker processes against it.
+
+   Each request publishes its key (SHA-256 of canonical `{buyer, seller,
+   profile, nonce}`). The same signed request again is
+   `peer_request_replayed` (409), and the journal never drops a key. Each
+   effect is an operation, one per job and route. Its `operationId`
+   (`wireOperationId`) is SHA-256 of canonical `{profile, seller, buyer,
+   jobId, agreementHash, path}`, so a fresh nonce or other incidental body
+   fields name the same operation.
+
+   The operation's state is durable. The checked request's `effect` is one
+   of:
+   - `new`: no attempt has run. Run the effect.
+   - `recover`: an earlier attempt's lease ended with no outcome, and this
+     attempt now holds the operation alone. That earlier attempt may have
+     acted, so check the effect's own source of truth (the chain, the
+     delivery store) before acting.
+   - `completed`: the outcome is recorded. Answer with it, signed again for
+     this request, and run nothing. It is the answer this seller gave, not a
+     new reading: where it states chain or delivery state, check that again
+     at its source before answering.
+
+   While an attempt's lease (60 s by default) is live, another request for
+   the operation is `seller_effect_pending` (503: retry later). Once the
+   effect's own write is durable, the handler records its outcome with
+   `completeWireEffect(journal, effect, { status, text })`. The outcome is
+   kept once (a different one is `seller_effect_conflict`), and only the
+   latest attempt may record it (`seller_effect_superseded`).
+   `completeWireEffect(journal, effect, null)` ends an attempt that caused no
+   effect, so the next request recovers at once. An operation that reaches
+   16 attempts with no outcome is `seller_effect_unresolved` (500) and needs
+   an operator. An entry the journal did not write (not a file, too large, a
+   malformed outcome) fails closed (`seller_replay_guard_invalid`). Read
+   routes need no reservation and have `effect: null`. All authentication,
+   body, retained-Agreement, commitment, scope and deadline checks precede
+   the reservation.
+
+   The host must still do three things: keep the directory on durable local
+   storage shared by all its workers; make each effect idempotent at its own
+   sink by `operationId`, because a worker that overruns its lease may still
+   be running when another recovers; and reconcile on `recover`. That
+   composition is a `not checked` entry in the TP-1 register's composition
+   qualification list.
 4. `signWireResponse(request, status, text, ctx)`: the kept tuple, before the
    request or the body is read; the retained request's complete shape and hash;
    the lifetime override; the body's size and
@@ -386,7 +410,14 @@ checks the record's members (`finalityCommitmentVersion` `"1"`,
 `dacs-finality-commitment:v1:` by the seller. It checks that the receipt is
 `finalized` and `established`, at `dacs3:commit:{jobId}`, with the record's
 native address and content hash, and takes `committedAt` from its
-`blockRef.timestamp`. Last, it asks `readCommitmentReceipt` (the buyer's own
+`blockRef.timestamp`. It checks the Agreement the record commits, passed as
+`agreement` with the commitment (DACS-3 §8.6 CA-7). It must be an exact
+fixed-price AgreementDocument whose recomputed content hash is the record's
+`agreementHash`, with the record's job, Listing pin and parties (by role),
+and with an Ed25519 signature by each party under `dacs-agreement:v1:`. A
+seller-signed record for an Agreement the buyer never signed is therefore
+refused (`continuation_agreement_invalid`), at both buyer signers and on
+every seller route. Last, it asks `readCommitmentReceipt` (the buyer's own
 SR-2 reader, given to `verifyEndpointProof` and kept with the proof) to
 authenticate the receipt against the chain. A legacy record, a pending
 receipt, another signer, a stated time the receipt does not give, or a
@@ -606,8 +637,9 @@ in `src/` or `dist/`. Tests need bindings for synthetic records, so they
 replace `src/wire/approval.ts` with `test/wire/testApproval.ts` through
 `vi.mock`, and call the same `bindTp1Profile`. `test/wire/wire.test.ts` pins
 that only `profile.ts` imports the approval module in `src/`, `packages/` and
-`scripts/`. `test/wire/builtPackage.test.ts` builds the package, installs it
-for a consumer in a separate Node process, imports every compiled wire module
+`scripts/`. `test/wire/builtPackage.test.ts` builds the package, copies the
+compiled output into a scratch `node_modules` for a consumer in a separate
+Node process, imports every compiled wire module
 by its resolved file path, and checks that none offers an approval, that the
 consumer's own attempts give zero signatures, that every reachable function's
 result is refused as a binding, and that every verification entry point
@@ -704,16 +736,21 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
 | `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}`, or with a malformed one |
 | `peer_job_mismatch`, `peer_agreement_mismatch` (409) | the signed `jobId` or `agreementHash` is not the one the host retained |
-| `seller_replay_guard_required`, `seller_replay_guard_invalid` (500) | an effect route checked without a `requestJournal` that `qualifyWireRequestJournal` returned, or `open` returning a journal without `durable: true` and a `reserve` function; a journal that fails the probe, or whose `reserve` returned anything but `true` or `false` |
-| `peer_request_replayed` (409) | the host's journal already holds the request's reservation key or its operation |
+| `seller_replay_guard_required` (500) | an effect route checked without a `requestJournal` that `openWireRequestJournal` returned, or `completeWireEffect` given another object |
+| `seller_replay_guard_invalid` (500) | a journal directory that is not absolute, missing, a link, owned by another user or writable by others, on which exclusive publishing fails, or holding an entry the journal did not write |
+| `peer_request_replayed` (409) | the journal already holds the request's nonce key: the same signed request again |
+| `seller_effect_pending` (503) | another attempt of the same operation (job and route) holds its live lease |
+| `seller_effect_unresolved` (500) | an operation reached 16 attempts with no outcome |
+| `seller_effect_conflict`, `seller_effect_superseded` (500) | `completeWireEffect` with an outcome other than the one recorded, or from an attempt a later one superseded |
 | `seller_readiness_required` (500) | a proposal, commitment, commitment-signature or context request checked without the seller's own `ready`, or with anything but a boolean |
+| `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, or with one that is not an exact fixed-price AgreementDocument, whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7) |
 | `continuation_commitment_invalid` (500) | a `commitment` whose record, seller signature or finalized receipt does not check, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
 | `commitment_reader_required`, `commitment_reader_invalid` (500) | a `commitment` given without a receipt reader, or a reader that answered anything but a disposition (a promise included) |
 | `commitment_unverified` (503) | the receipt reader answered `indeterminate` or `error`: the commitment is not established, never final |
 | `seller_commitment_required` (500), `peer_agreement_uncommitted` (409) | a payment or delivery request checked without the job's commitment, or with `commitment: null` (the seller's own reader found none) |
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
 | `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |
-| `peer_envelope_too_large` (500), `peer_response_too_large` (503), `body_too_large` (413) | a signer given a header, response body or request body over the limits; nothing is signed |
+| `peer_envelope_too_large`, `peer_response_too_large`, `body_too_large` (500) | a signer given a header, response body or request body over the limits: its own input, never the peer's fault; nothing is signed |
 | `peer_signer_wrong` | a response signed by someone other than the expected seller, or a signer whose claim is not the answer's seller |
 
 The plugin capture does not contain the codes in the rows above from
@@ -841,20 +878,20 @@ helpers describe transport bytes; purchase preparation uses the gated signers.
 
 Expired session delegations are accepted only on the declared read routes.
 `checkWireRequest` refuses every effect route with `peer_delegation_expired`
-before returning a body to a handler. Journaled replay on effect routes is
-unavailable until a seller journal adapter can enforce that mode; hosts must
-not bypass this refusal to recover journaled effects.
+before returning a body to a handler, so a recorded outcome is answered
+again only under a live delegation. After expiry, recovery uses the declared
+read routes.
 
 
 ## Host validation requirements
 
 The transport capture comparisons supply host-owned Agreement context and a
-test reservation callback separately from the immutable captured messages.
+a test request journal separately from the immutable captured messages.
 These host requirements apply to both direct and delegated effect requests;
 acceptance of a captured signature alone does not authorize repeating an effect.
 The retained job and Agreement comparison is enforced by `checkWireRequest`
-itself on every request. The library performs no storage itself: production
-hosts must implement the atomic durable reservation contract above and qualify
-it with `qualifyWireRequestJournal`, and the composition qualification gate
-above decides whether it survives restarts. A process-local set does not meet
-it.
+itself on every request. The only store is the request journal above
+(`openWireRequestJournal`). No host journal, and no process-local set, is
+accepted. The composition qualification gate above covers what the host
+adds around it: durable local storage, reconciling on `recover`, and
+recording each outcome with `completeWireEffect`.

@@ -3,6 +3,8 @@
 // whose finalized receipt time the test chooses. As in TP-1 (G3), the seller
 // is the orchestrator and signs the commitment. The anchor reader and the
 // signature verifier are test-only; production installs authenticated ones.
+// signedAgreement and wireCommitment make the same evidence for a test's own
+// parties, job and literal Listing pin.
 import type { CommitmentReceiptReader, ListingPin } from "../../src/wire/index.js";
 import {
   commitFixedPriceAgreement, contentHash, deriveFixedPriceAgreement, ed25519Sign, ed25519Verify, privateKeyFromSeed,
@@ -110,6 +112,54 @@ export async function commitPurchase(p: AcceptedPurchase, committedAt: number): 
     createdAt: p.agreement.generatedAt,
     commitmentSigner: { algorithm: "ed25519", signer: p.orchestrator.claim, sign: p.orchestrator.signBytes },
   }, provider, verifySignature);
+}
+
+type SyncSigner = { claim: string; signBytes?: (bytes: Uint8Array) => Uint8Array | Buffer; sign(bytes: Uint8Array): Uint8Array | Buffer | string | Promise<Uint8Array | string> };
+const signNow = (party: SyncSigner, bytes: Uint8Array): string => {
+  const value = (party.signBytes ?? party.sign.bind(party))(bytes);
+  if (value instanceof Promise) throw new Error("signedAgreement needs a synchronous signer");
+  return typeof value === "string" ? value : Buffer.from(value).toString("base64url");
+};
+
+/**
+ * An exact fixed-price Agreement for any job, Listing pin and parties, signed
+ * by `signers` (default: the buyer and the seller). It is derived from a
+ * Listing as the SDK derives one, then names `listingPin` (a test's literal
+ * pin) and is signed under `dacs-agreement:v1:` over its content hash.
+ * `patch` changes the draft before it is signed.
+ */
+export function signedAgreement(options: {
+  buyer: SyncSigner; seller: SyncSigner; jobId: string; listingPin: ListingPin; generatedAt?: number;
+  signers?: { buyer: SyncSigner; seller: SyncSigner }; patch?: Record<string, unknown>;
+}): { agreement: AgreementArtifact; agreementHash: string } {
+  const at = options.generatedAt ?? Date.UTC(2026, 9, 18);
+  const listing: Listing = {
+    dacsVersion: "1", listingVersion: 1, listingId: options.listingPin.listingId,
+    seller: { identity: identity(options.seller.claim, at), displayName: "Report", publicEndpoint: "https://seller.agreement.invalid" },
+    offering: { title: "Report", description: "A fixed-text report", category: "data.test", tags: ["report"],
+      deliverable: { kind: "attested-payload", payloadFormat: "text/plain", verificationMethod: { kind: "self-signed" } } },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
+    pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
+    acceptedRails: [DEM], terms: { deadlineSecAfterCommit: 600 }, validity: { notBefore: at - 600_000, notAfter: at + 600_000 },
+    signature: { algorithm: "ed25519", signer: options.seller.claim, value: Buffer.alloc(64, 7).toString("base64url") },
+  };
+  const pin = { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing as unknown as Record<string, unknown>) };
+  const draft = deriveFixedPriceAgreement({
+    jobId: options.jobId, verifiedListing: { disposition: "verified", listing, pin },
+    buyer: { identityBundle: identity(options.buyer.claim, at), vetRecordRef: vet("buyer-vet", "a") },
+    seller: { identityBundle: identity(options.seller.claim, at), vetRecordRef: vet("seller-vet", "b") },
+    selectedRail: DEM, generatedAt: at,
+  });
+  const unsigned = { ...draft, listingRef: { ...options.listingPin }, ...options.patch } as Record<string, unknown>;
+  const agreementHash = contentHash(unsigned);
+  const bytes = Buffer.from(`dacs-agreement:v1:${agreementHash}`, "utf8");
+  const signers = options.signers ?? { buyer: options.buyer, seller: options.seller };
+  const agreement = { ...unsigned, signatures: [
+    { party: options.buyer.claim, algorithm: "ed25519", value: signNow(signers.buyer, bytes) },
+    { party: options.seller.claim, algorithm: "ed25519", value: signNow(signers.seller, bytes) },
+  ] } as unknown as AgreementArtifact;
+  return { agreement, agreementHash };
 }
 
 /**

@@ -2,7 +2,7 @@ import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
-import { acceptedPurchase, commitPurchase, seededParty, validReceipt, wireCommitment, type AcceptedPurchase } from "./commitmentFixture.js";
+import { acceptedPurchase, commitPurchase, seededParty, signedAgreement, validReceipt, wireCommitment, type AcceptedPurchase } from "./commitmentFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -11,7 +11,7 @@ import * as w from "../../src/wire/index.js";
 import { isListingPin } from "../../src/wire/validate.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
-const { inMemoryJournalForTest } = journalFixture(fixtureWire);
+const { testJournal, testJournals } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 18);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -24,14 +24,18 @@ function party() {
   const raw = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("hex");
   return { raw, claim: `did:demos:agent:${raw}`, calls: 0, sign(bytes: Uint8Array) { this.calls++; return sign(null, Buffer.from(bytes), privateKey); } };
 }
-/** Fresh parties and a literal Agreement hash, or the parties, pin and Agreement of a purchase both parties signed. */
+/** Fresh parties and an Agreement they signed for the literal pin, or the parties, pin and Agreement of a purchase both parties signed. */
 function world(purchase?: AcceptedPurchase) {
   const buyer = purchase?.buyer ?? party(), seller = purchase?.seller ?? party(), session = party();
   const pin = purchase?.pin ?? PIN;
+  const signedHere = purchase ? undefined : signedAgreement({ buyer, seller, jobId: JOB, listingPin: PIN });
+  // Signing that Agreement is no wire signature: the tests count those.
+  buyer.calls = 0; seller.calls = 0;
+  const agreement = purchase?.agreement ?? signedHere!.agreement;
   const binding = bindTp1Fixture({ record: w.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
   const request: w.WireRequestPayload = {
     version: "1", kind: "request", method: "POST", path: "/dacs/v1/commitments", bodyHash: sha("{}"), jobId: JOB,
-    buyer: buyer.claim, seller: seller.claim, listingPin: pin, agreementHash: purchase?.agreementHash ?? "a".repeat(64), nonce: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX", expiresAt: NOW + 30_000, profile: binding.profile,
+    buyer: buyer.claim, seller: seller.claim, listingPin: pin, agreementHash: purchase?.agreementHash ?? signedHere!.agreementHash, nonce: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX", expiresAt: NOW + 30_000, profile: binding.profile,
   };
   const delegation: w.SellerSessionDelegationPayload = {
     version: "1", kind: "seller-session-delegation", buyer: buyer.claim, seller: seller.claim, sessionPublicKey: session.raw,
@@ -43,7 +47,7 @@ function world(purchase?: AcceptedPurchase) {
   };
   const context = { binding, local: LOCAL, purchaseProfile: binding.profile };
   const input = { signer: buyer, binding, local: LOCAL, seller: seller.claim, jobId: JOB, path: request.path, text: "{}", job: { listingPin: pin, agreementHash: request.agreementHash, profile: binding.profile }, now: NOW, publicEndpoint: ENDPOINT };
-  return { buyer, seller, session, binding, pin, request, delegation, discovery, context, input };
+  return { buyer, seller, session, binding, pin, agreement, request, delegation, discovery, context, input };
 }
 // Independent wire encoders intentionally do not call the SDK's shape/signing helpers.
 function signed<T>(payload: T, domain: string, signer: w.WireSigner) {
@@ -51,6 +55,8 @@ function signed<T>(payload: T, domain: string, signer: w.WireSigner) {
   return { payload, signature };
 }
 const header = (v: unknown) => Buffer.from(canonicalize(v)).toString("base64url");
+/** The same base64url signature with its first byte's low bit flipped. */
+const flip = (value: string) => { const bytes = Buffer.from(value, "base64url"); bytes[0]! ^= 1; return bytes.toString("base64url"); };
 const missing = Symbol("missing");
 const invalidIds: Array<[string, unknown]> = [
   ["missing", missing], ["null", null], ["number", 42], ["object", {}], ["empty", ""], ["garbage", "garbage"],
@@ -294,18 +300,18 @@ describe("a purchase the buyer already committed continues while the seller drai
   }
   async function proof(x: ReturnType<typeof world>, ready: boolean, now = NOW, extra: object = {}) {
     const bytes = await w.signDiscoveryDocument({ ...x.discovery, ready, expiresAt: NOW + 600_000 }, x.seller, x.binding, LOCAL);
-    return w.verifyEndpointProof(bytes, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: x.pin }, binding: x.binding, local: LOCAL, now, ...extra });
+    return w.verifyEndpointProof(bytes, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: x.pin }, binding: x.binding, local: LOCAL, now, agreement: x.agreement, ...extra });
   }
   /** Both buyer signers, for a payment. */
   const signers = (x: ReturnType<typeof world>, extra: object, endpointProof: w.EndpointProof, now: number) => [
-    () => w.signWireRequest({ ...x.input, path: "/dacs/v1/payments", endpointProof, now, ...extra } as w.WireRequestInput),
-    () => w.signWireEnvelope({ ...x.request, path: "/dacs/v1/payments" }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, ...extra } as w.EnvelopeSigningContext),
+    () => w.signWireRequest({ ...x.input, path: "/dacs/v1/payments", endpointProof, now, agreement: x.agreement, ...extra } as w.WireRequestInput),
+    () => w.signWireEnvelope({ ...x.request, path: "/dacs/v1/payments" }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, agreement: x.agreement, ...extra } as w.EnvelopeSigningContext),
   ] as const;
   /** The seller opens and checks the request against its own copy of the commitment and answers it; the buyer verifies the answer. */
   async function reachesSeller(x: ReturnType<typeof world>, sent: { payload: w.WireRequestPayload; header: string }, now: number, commitment: unknown) {
     const opened = w.openWireEnvelope(sent.header, "request", x.context);
-    expect(w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now,
-      commitment: JSON.parse(JSON.stringify(commitment)), readCommitmentReceipt: validReceipt }).readbackOnly).toBe(false);
+    expect(w.checkWireRequest(opened, { requestJournal: testJournal(), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now,
+      commitment: JSON.parse(JSON.stringify(commitment)), agreement: JSON.parse(JSON.stringify(x.agreement)), readCommitmentReceipt: validReceipt }).readbackOnly).toBe(false);
     const answer = await w.signWireResponse(sent.payload, 200, "{}", { ...x.context, signer: x.seller, now });
     expect(w.verifyWireResponse(sent.payload, { ...x.context, header: answer, status: 200, body: Buffer.from("{}"), now }).principal).toBe(x.seller.claim);
   }
@@ -316,13 +322,13 @@ describe("a purchase the buyer already committed continues while the seller drai
     }
     // A proposal, commitment or context request is a new purchase even with the job's commitment.
     for (const path of STARTING) {
-      await refuses(() => w.signWireRequest({ ...x.input, path, endpointProof, commitment, now }), "seller_not_ready", 503);
-      await refuses(() => w.signWireEnvelope({ ...x.request, path }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, commitment }), "seller_not_ready", 503);
+      await refuses(() => w.signWireRequest({ ...x.input, path, endpointProof, commitment, agreement: x.agreement, now }), "seller_not_ready", 503);
+      await refuses(() => w.signWireEnvelope({ ...x.request, path }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, commitment, agreement: x.agreement }), "seller_not_ready", 503);
     }
     await refuses(() => w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now }), "seller_not_ready", 503);
     expect(x.buyer.calls).toBe(0);
-    for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment, now }), now, commitment);
-    await w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, commitment });
+    for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment, agreement: x.agreement, now }), now, commitment);
+    await w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, commitment, agreement: x.agreement });
     expect(x.buyer.calls).toBe(CONTINUING.length + 1);
   });
   it("an ended Listing window refuses a new purchase as before, and one committed inside it is signed, checked and answered", async () => {
@@ -330,16 +336,16 @@ describe("a purchase the buyer already committed continues while the seller drai
     for (const path of [...STARTING, ...CONTINUING]) {
       await refuses(() => w.signWireRequest({ ...x.input, path, endpointProof: kept, now: ENDED }), "listing_unsupported", 500);
     }
-    for (const path of STARTING) await refuses(() => w.signWireRequest({ ...x.input, path, endpointProof: kept, commitment, now: ENDED }), "listing_unsupported", 500);
+    for (const path of STARTING) await refuses(() => w.signWireRequest({ ...x.input, path, endpointProof: kept, commitment, agreement: x.agreement, now: ENDED }), "listing_unsupported", 500);
     await refuses(() => w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof: kept, publicEndpoint: ENDPOINT, now: ENDED }), "listing_unsupported", 500);
     // Verifying discovery again, as after the ten-minute document lapses.
     await refuses(() => proof(x, true, ENDED), "listing_unsupported", 500);
     expect(x.buyer.calls).toBe(0);
     const again = await proof(x, true, ENDED, { commitment }), drained = await proof(x, false, ENDED, { commitment });
     for (const endpointProof of [kept, again, drained]) {
-      for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment, now: ENDED }), ENDED, commitment);
+      for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment, agreement: x.agreement, now: ENDED }), ENDED, commitment);
     }
-    await w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof: again, publicEndpoint: ENDPOINT, now: ENDED, commitment });
+    await w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof: again, publicEndpoint: ENDPOINT, now: ENDED, commitment, agreement: x.agreement });
     expect(x.buyer.calls).toBe(3 * CONTINUING.length + 1);
     // A proof verified for the committed job is no proof for a new purchase.
     await refuses(() => w.signWireRequest({ ...x.input, path: STARTING[0], endpointProof: again, now: ENDED }), "listing_unsupported", 500);
@@ -349,7 +355,7 @@ describe("a purchase the buyer already committed continues while the seller drai
   it("a committed purchase still needs a commitment time inside the window, and every other proof check", async () => {
     const purchase = await accepted(NOW - 2000), x = world(purchase), endpointProof = await proof(x, false);
     const pay = async (committedAt: number, patch: Partial<w.WireRequestInput> = {}) =>
-      w.signWireRequest({ ...x.input, path: "/dacs/v1/payments", endpointProof, commitment: await commitPurchase(purchase, committedAt), now: ENDED, ...patch });
+      w.signWireRequest({ ...x.input, path: "/dacs/v1/payments", endpointProof, commitment: await commitPurchase(purchase, committedAt), agreement: x.agreement, now: ENDED, ...patch });
     // Committed before the Listing's window opened, or after it ended; its first and last instants hold (notAfter >= committedAt).
     for (const committedAt of [NOW - 1001, NOW + 60_001]) await refuses(() => pay(committedAt), "listing_unsupported", 500);
     expect(x.buyer.calls).toBe(0);
@@ -379,6 +385,9 @@ describe("a purchase the buyer already committed continues while the seller drai
     const forgeries = [COMMITTED, null, {}, { committedAt: COMMITTED }, { ...commitment, committedAt: COMMITTED - 1 },
       { ...commitment, recordKind: "legacy" }, { ...commitment, legacySignature: record.signature },
       { ...commitment, record: { ...record, createdAt: record.createdAt + 1 } },
+      // The seller's signature itself: one bit flipped, or all A, with every other member right.
+      { ...commitment, record: { ...record, signature: { ...(record.signature as object), value: flip((record.signature as { value: string }).value) } } },
+      { ...commitment, record: { ...record, signature: { ...(record.signature as object), value: "A".repeat(86) } } },
       { ...commitment, anchorReceipt: { ...receipt, state: "included" } }, { ...commitment, anchorReceipt: { ...receipt, observationDisposition: "indeterminate" } },
       { ...commitment, anchorReceipt: { ...receipt, blockRef: { ...block, timestamp: COMMITTED - 1 } } }];
     for (const forged of forgeries) {
@@ -393,7 +402,7 @@ describe("a purchase the buyer already committed continues while the seller drai
     // A real commitment for another job and Agreement continues neither this job's payment nor its readback.
     const otherCommitment = await commitPurchase(await accepted(NOW, "01K7FZ8Q9W3V5T2R1N0M8K6J4J"), COMMITTED);
     for (const sign of signers(x, { commitment: otherCommitment }, drained, now)) await refuses(sign, "continuation_commitment_invalid", 500);
-    await refuses(() => w.signWireRequest({ ...x.input, path: "/dacs/v1/agreements/state", endpointProof: kept, commitment: otherCommitment, now: ENDED }), "continuation_commitment_invalid", 500);
+    await refuses(() => w.signWireRequest({ ...x.input, path: "/dacs/v1/agreements/state", endpointProof: kept, commitment: otherCommitment, agreement: x.agreement, now: ENDED }), "continuation_commitment_invalid", 500);
     // Nor does one for another of the seller's Listings refresh this proof, or this one a proof whose Listing names another seller.
     const foreign = await commitPurchase(await accepted(NOW, JOB, "other-report"), COMMITTED);
     await refuses(() => proof(x, true, ENDED, { commitment: foreign }), "continuation_commitment_invalid", 500);
@@ -427,10 +436,11 @@ describe("the seller's own drain state at a new purchase", () => {
     const endpointProof = w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW });
     expect(endpointProof.ready).toBe(true);
     // The seller drains after the buyer verified discovery; the buyer's proof still says ready, so it signs.
-    const counter = { reservations: 0 };
+    const journals = testJournals();
+    const counter = { get reservations() { return journals.reservations().length; } };
     const atSeller = (sent: { payload: w.WireRequestPayload; header: string }, extra: object) => {
       const opened = w.openWireEnvelope(sent.header, "request", x.context);
-      return (ready: unknown) => w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(() => { counter.reservations++; return true; }), artifacts: agreementFixture(opened), retained: retainedFixture(opened),
+      return (ready: unknown) => w.checkWireRequest(opened, { requestJournal: journals.open(), artifacts: agreementFixture(opened), retained: retainedFixture(opened),
         ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now, ...extra, ...(ready === missing ? {} : { ready }) } as w.RequestCheck);
     };
     const delegation = signed(x.delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer);
@@ -457,9 +467,9 @@ describe("the seller's own drain state at a new purchase", () => {
   });
   it("other routes do not read it: a drained seller still takes a committed purchase's payment, delivery and readback", async () => {
     const { x, checks } = await drained();
-    const commitment = wireCommitment({ seller: x.seller, buyer: x.buyer.claim, jobId: JOB, agreementHash: "a".repeat(64), listingPin: PIN, committedAt: NOW });
+    const commitment = wireCommitment({ seller: x.seller, buyer: x.buyer.claim, jobId: JOB, agreementHash: x.request.agreementHash, listingPin: PIN, committedAt: NOW });
     for (const path of [P.payments, P.bundleRequest, P.bundleCountersignature, P.state, P.bundleBuyerCopy]) {
-      for (const check of await checks(path, { commitment, readCommitmentReceipt: validReceipt })) for (const ready of [false, missing]) expect(check(ready).readbackOnly).toBe(false);
+      for (const check of await checks(path, { commitment, agreement: x.agreement, readCommitmentReceipt: validReceipt })) for (const ready of [false, missing]) expect(check(ready).readbackOnly).toBe(false);
     }
   });
 });
@@ -569,13 +579,13 @@ describe("request and response byte budgets and the discovery Listing count", ()
     x.buyer.calls = 0;
     await w.signWireRequest({ ...x.input, text: body(maxRequestBodyBytes), endpointProof });
     expect(x.buyer.calls).toBe(1);
-    await refuses(() => w.signWireRequest({ ...x.input, text: body(maxRequestBodyBytes + 1), endpointProof }), "body_too_large", 413);
+    await refuses(() => w.signWireRequest({ ...x.input, text: body(maxRequestBodyBytes + 1), endpointProof }), "body_too_large", 500);
     expect(x.buyer.calls).toBe(1);
     let effects = 0;
     for (const n of [maxRequestBodyBytes, maxRequestBodyBytes + 1]) {
       const text = body(n);
       const opened = w.openWireEnvelope(header(signed({ ...x.request, bodyHash: sha(text) }, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context);
-      const check = () => w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
+      const check = () => w.checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW });
       if (n === maxRequestBodyBytes) expect(Object.keys(check().body)).toEqual(["p"]);
       else await expect(Promise.resolve().then(() => { check(); effects++; })).rejects.toMatchObject({ code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" });
     }
@@ -588,7 +598,7 @@ describe("request and response byte budgets and the discovery Listing count", ()
     const ctx = { ...x.context, signer: x.seller, now: NOW };
     const exact = await w.signWireResponse(x.request, 200, body(maxResponseBodyBytes), ctx);
     expect(x.seller.calls).toBe(1);
-    await refuses(() => w.signWireResponse(x.request, 200, body(maxResponseBodyBytes + 1), ctx), "peer_response_too_large", 503);
+    await refuses(() => w.signWireResponse(x.request, 200, body(maxResponseBodyBytes + 1), ctx), "peer_response_too_large", 500);
     expect(x.seller.calls).toBe(1);
     const received = (h: string, text: string) => ({ ...x.context, header: h, status: 200, body: Buffer.from(text), now: NOW });
     expect(w.verifyWireResponse(x.request, received(exact, body(maxResponseBodyBytes))).body).toEqual({ p: "x".repeat(maxResponseBodyBytes - 8) });
@@ -603,7 +613,7 @@ describe("request and response byte budgets and the discovery Listing count", ()
     const x = world();
     const overRequest = Buffer.from(body(maxRequestBodyBytes + 1)), overResponse = Buffer.from(body(maxResponseBodyBytes + 1));
     // Not an opened envelope, and not a signed header: the size is refused first, so neither is examined.
-    const seller = (rawBody: Uint8Array) => () => w.checkWireRequest({} as never, { requestJournal: inMemoryJournalForTest(), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody, now: NOW, retained: { jobId: JOB, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } });
+    const seller = (rawBody: Uint8Array) => () => w.checkWireRequest({} as never, { requestJournal: testJournal(), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody, now: NOW, retained: { jobId: JOB, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } });
     const buyer = (b: Uint8Array) => () => w.verifyWireResponse(x.request, { ...x.context, header: "not a header", status: 200, body: b, now: NOW });
     const overRequestError = { code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" };
     const overResponseError = { code: "response_json_rejected", status: 502, detail: "BYTE-LIMIT-EXCEEDED" };
@@ -707,7 +717,7 @@ describe("expired session authority at every seller route", () => {
     const request = { ...x.request, path: route.path };
     const h = header({ ...signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.session), delegation });
     const opened = w.openWireEnvelope(h, "request", { ...x.context, requireDelegation: true });
-    const check = () => w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true });
+    const check = () => w.checkWireRequest(opened, { requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true });
     let effects = 0;
     if (route.effect === "effect") await refuses(() => { check(); effects++; }, "peer_delegation_expired");
     else expect(check()).toMatchObject({ readbackOnly: true, body: {} });

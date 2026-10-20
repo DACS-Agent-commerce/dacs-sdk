@@ -1,6 +1,7 @@
 // @kynesyslabs/dacs/wire: the dacs-seller-http/v1 wire and testnet profile
-// TP-1. Definitions, signing bytes and validators only; no I/O, storage or
-// HTTP server. See docs/dacs-seller-http-v1.md and docs/testnet-profile-tp1.md.
+// TP-1. Definitions, signing bytes and validators, with no I/O or HTTP server;
+// the one store is the seller's request journal (journal.ts), a local
+// directory. See docs/dacs-seller-http-v1.md and docs/testnet-profile-tp1.md.
 export {
   DACS_SELLER_HTTP_V1,
   DACS_SELLER_HTTP_HEADER,
@@ -50,7 +51,7 @@ export {
   signWireEnvelope,
   openWireEnvelope,
   checkWireRequest,
-  qualifyWireRequestJournal,
+  wireOperationId,
   admitWireRequestBody,
   admitWireResponseBody,
   type CheckedWireRequest,
@@ -58,9 +59,6 @@ export {
   type OpenedEnvelope,
   type OpenEnvelopeOptions,
   type RequestCheck,
-  type QualifiedWireRequestJournal,
-  type WireRequestJournal,
-  type WireRequestReservation,
   type WireRetainedAgreement,
   type SigningContext,
   type WireKind,
@@ -102,6 +100,15 @@ export {
   type CommitmentReceiptReader,
   type WireAnchoredCommitment,
 } from "./commitment.js";
+export {
+  MAX_EFFECT_ATTEMPTS,
+  openWireRequestJournal,
+  completeWireEffect,
+  type WireEffect,
+  type WireEffectOutcome,
+  type WireRequestJournal,
+  type WireRequestJournalOptions,
+} from "./journal.js";
 export {
   WireError,
   admitWireJson,
