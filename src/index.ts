@@ -309,6 +309,7 @@ export {
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
   demosWriteEvidenceBindsReceiptContent,
+  demosTransactionContentMatches,
   demosWriteEvidenceToAnchorReceipt,
   type DemosAnchorReceiptProof,
   type DemosPortableAnchorReceiptInput,

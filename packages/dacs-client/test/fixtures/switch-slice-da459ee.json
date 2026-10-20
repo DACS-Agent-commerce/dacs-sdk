@@ -1,0 +1,385 @@
+{
+  "generatedFrom": "da459ee: src/config.mjs and deploy/env-contract.json",
+  "by": "node scripts/config-equivalence-migration.mjs --write-fixture",
+  "switches": {
+    "DACS_SHOWCASE_RECEIPT": {
+      "configKey": "showcaseReceipt",
+      "contract": {
+        "kind": "enum",
+        "values": [
+          "off",
+          "on"
+        ],
+        "default": "off",
+        "deployValue": "off",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "error": "ConfigError: DACS_SHOWCASE_RECEIPT must be off or on"
+        },
+        "1": {
+          "error": "ConfigError: DACS_SHOWCASE_RECEIPT must be off or on"
+        },
+        "(unset)": {
+          "value": "off"
+        },
+        "": {
+          "error": "ConfigError: DACS_SHOWCASE_RECEIPT must be off or on"
+        },
+        "true": {
+          "error": "ConfigError: DACS_SHOWCASE_RECEIPT must be off or on"
+        },
+        "off": {
+          "value": "off"
+        },
+        "on": {
+          "value": "on"
+        },
+        "ON": {
+          "error": "ConfigError: DACS_SHOWCASE_RECEIPT must be off or on"
+        },
+        "bogus": {
+          "error": "ConfigError: DACS_SHOWCASE_RECEIPT must be off or on"
+        }
+      }
+    },
+    "DACS_SELLER_WRITE_BATCHES": {
+      "configKey": "sellerWriteBatches",
+      "contract": {
+        "kind": "enum",
+        "values": [
+          "off",
+          "on"
+        ],
+        "default": "off",
+        "deployValue": "off",
+        "note": "on is refused by loadConfig (and createApp) pending native SDK preparation and batch transport integration",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "error": "ConfigError: DACS_SELLER_WRITE_BATCHES must be off or on"
+        },
+        "1": {
+          "error": "ConfigError: DACS_SELLER_WRITE_BATCHES must be off or on"
+        },
+        "(unset)": {
+          "value": "off"
+        },
+        "": {
+          "error": "ConfigError: DACS_SELLER_WRITE_BATCHES must be off or on"
+        },
+        "true": {
+          "error": "ConfigError: DACS_SELLER_WRITE_BATCHES must be off or on"
+        },
+        "off": {
+          "value": "off"
+        },
+        "on": {
+          "error": "ConfigError: DACS_SELLER_WRITE_BATCHES=on is held until native SDK preparation and batch transport integration are reviewed"
+        },
+        "ON": {
+          "error": "ConfigError: DACS_SELLER_WRITE_BATCHES must be off or on"
+        },
+        "bogus": {
+          "error": "ConfigError: DACS_SELLER_WRITE_BATCHES must be off or on"
+        }
+      }
+    },
+    "DACS_PORTAL_AUTO_ADVANCE": {
+      "configKey": "portalAutoAdvance",
+      "contract": {
+        "kind": "enum",
+        "values": [
+          "off",
+          "on"
+        ],
+        "default": "off",
+        "deployValue": "off",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "error": "ConfigError: DACS_PORTAL_AUTO_ADVANCE must be off or on"
+        },
+        "1": {
+          "error": "ConfigError: DACS_PORTAL_AUTO_ADVANCE must be off or on"
+        },
+        "(unset)": {
+          "value": "off"
+        },
+        "": {
+          "error": "ConfigError: DACS_PORTAL_AUTO_ADVANCE must be off or on"
+        },
+        "true": {
+          "error": "ConfigError: DACS_PORTAL_AUTO_ADVANCE must be off or on"
+        },
+        "off": {
+          "value": "off"
+        },
+        "on": {
+          "value": "on"
+        },
+        "ON": {
+          "error": "ConfigError: DACS_PORTAL_AUTO_ADVANCE must be off or on"
+        },
+        "bogus": {
+          "error": "ConfigError: DACS_PORTAL_AUTO_ADVANCE must be off or on"
+        }
+      }
+    },
+    "DACS_DELIVERY_DEADLINE_WATCH": {
+      "configKey": "deliveryDeadlineWatch",
+      "contract": {
+        "kind": "enum",
+        "values": [
+          "off",
+          "on"
+        ],
+        "default": "off",
+        "deployValue": "off",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "error": "ConfigError: DACS_DELIVERY_DEADLINE_WATCH must be off or on"
+        },
+        "1": {
+          "error": "ConfigError: DACS_DELIVERY_DEADLINE_WATCH must be off or on"
+        },
+        "(unset)": {
+          "value": "off"
+        },
+        "": {
+          "error": "ConfigError: DACS_DELIVERY_DEADLINE_WATCH must be off or on"
+        },
+        "true": {
+          "error": "ConfigError: DACS_DELIVERY_DEADLINE_WATCH must be off or on"
+        },
+        "off": {
+          "value": "off"
+        },
+        "on": {
+          "value": "on"
+        },
+        "ON": {
+          "error": "ConfigError: DACS_DELIVERY_DEADLINE_WATCH must be off or on"
+        },
+        "bogus": {
+          "error": "ConfigError: DACS_DELIVERY_DEADLINE_WATCH must be off or on"
+        }
+      }
+    },
+    "DACS_SHOWCASE_WALKTHROUGH": {
+      "configKey": "showcaseWalkthrough",
+      "contract": {
+        "kind": "enum",
+        "values": [
+          "off",
+          "on"
+        ],
+        "default": "off",
+        "deployValue": "off",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "error": "ConfigError: DACS_SHOWCASE_WALKTHROUGH must be off or on"
+        },
+        "1": {
+          "error": "ConfigError: DACS_SHOWCASE_WALKTHROUGH must be off or on"
+        },
+        "(unset)": {
+          "value": "off"
+        },
+        "": {
+          "error": "ConfigError: DACS_SHOWCASE_WALKTHROUGH must be off or on"
+        },
+        "true": {
+          "error": "ConfigError: DACS_SHOWCASE_WALKTHROUGH must be off or on"
+        },
+        "off": {
+          "value": "off"
+        },
+        "on": {
+          "value": "on"
+        },
+        "ON": {
+          "error": "ConfigError: DACS_SHOWCASE_WALKTHROUGH must be off or on"
+        },
+        "bogus": {
+          "error": "ConfigError: DACS_SHOWCASE_WALKTHROUGH must be off or on"
+        }
+      }
+    },
+    "DACS_SHOWCASE_LEDGER": {
+      "configKey": "showcaseLedger",
+      "contract": {
+        "kind": "flag",
+        "default": "0",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "value": false
+        },
+        "1": {
+          "value": true
+        },
+        "(unset)": {
+          "value": false
+        },
+        "": {
+          "value": false
+        },
+        "true": {
+          "value": false
+        },
+        "off": {
+          "value": false
+        },
+        "on": {
+          "value": false
+        },
+        "ON": {
+          "value": false
+        },
+        "bogus": {
+          "value": false
+        }
+      }
+    },
+    "DACS_SHOWCASE_PUBLICATION_VIEW": {
+      "configKey": "showcasePublicationView",
+      "contract": {
+        "kind": "flag",
+        "default": "0",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "value": false
+        },
+        "1": {
+          "value": true
+        },
+        "(unset)": {
+          "value": false
+        },
+        "": {
+          "value": false
+        },
+        "true": {
+          "value": false
+        },
+        "off": {
+          "value": false
+        },
+        "on": {
+          "value": false
+        },
+        "ON": {
+          "value": false
+        },
+        "bogus": {
+          "value": false
+        }
+      }
+    },
+    "DACS_WALLET_EXTENSION_PROBE": {
+      "configKey": "walletExtensionProbe",
+      "contract": {
+        "kind": "flag",
+        "default": "0",
+        "note": "Owner-run portal discovery and sign-only probes; never enables extension purchases",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "value": false
+        },
+        "1": {
+          "value": true
+        },
+        "(unset)": {
+          "value": false
+        },
+        "": {
+          "value": false
+        },
+        "true": {
+          "value": false
+        },
+        "off": {
+          "value": false
+        },
+        "on": {
+          "value": false
+        },
+        "ON": {
+          "value": false
+        },
+        "bogus": {
+          "value": false
+        }
+      }
+    },
+    "DACS_READBACK_CACHE": {
+      "configKey": "readbackCache",
+      "contract": {
+        "kind": "flag",
+        "default": "0",
+        "deployValue": "0",
+        "operator": true
+      },
+      "outcomes": {
+        "0": {
+          "value": false
+        },
+        "1": {
+          "value": true
+        },
+        "(unset)": {
+          "value": false
+        },
+        "": {
+          "value": false
+        },
+        "true": {
+          "value": false
+        },
+        "off": {
+          "value": false
+        },
+        "on": {
+          "value": false
+        },
+        "ON": {
+          "value": false
+        },
+        "bogus": {
+          "value": false
+        }
+      }
+    }
+  },
+  "precedence": {
+    "invalid": [
+      "DACS_SHOWCASE_RECEIPT",
+      "DACS_SELLER_WRITE_BATCHES",
+      "DACS_PORTAL_AUTO_ADVANCE",
+      "DACS_DELIVERY_DEADLINE_WATCH",
+      "DACS_SHOWCASE_WALKTHROUGH"
+    ],
+    "heldOrInvalid": [
+      "DACS_SHOWCASE_RECEIPT",
+      "DACS_SELLER_WRITE_BATCHES",
+      "DACS_PORTAL_AUTO_ADVANCE",
+      "DACS_DELIVERY_DEADLINE_WATCH",
+      "DACS_SHOWCASE_WALKTHROUGH"
+    ]
+  },
+  "checkedAfterCookieKeys": true,
+  "checkedBeforeIdentityWrites": true
+}

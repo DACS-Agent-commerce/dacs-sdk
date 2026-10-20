@@ -1,0 +1,10 @@
+{
+  "name": "@kynesyslabs/dacs-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Client delta snapshot. Exports remain disabled pending package boundary review; purchase hold and D11 prerequisites are recorded in HOLD.json.",
+  "exports": {},
+  "scripts": {
+    "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
+  }
+}

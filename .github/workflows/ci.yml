@@ -21,6 +21,8 @@ jobs:
     name: build-test (node ${{ matrix.node-version }})
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -45,6 +47,10 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check held client snapshot and native authorization contracts
+        if: matrix.node-version == '22'
+        run: npm test --workspace @kynesyslabs/dacs-client
 
       - name: Build Node host kit
         run: npm run host:build
