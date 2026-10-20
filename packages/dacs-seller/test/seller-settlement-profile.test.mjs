@@ -46,11 +46,16 @@ async function world(t) {
   // (DACS-2 §7.7.2) the seller's session admission keeps, at the canonical
   // composite addresses.
   const synthetic = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
-  const vetted = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle) },
-    seller: { ...synthetic.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity) } };
+  const vetted = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
+    seller: { ...synthetic.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: listing.buyerRequirement }) } };
   // The not-performed references with each counterparty verifier named, as a context could return them.
   const signedSynthetic = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: { ...synthetic.buyer.vetRecordRef, signer: sellerKey.claim } },
     seller: { ...synthetic.seller, vetRecordRef: { ...synthetic.seller.vetRecordRef, signer: buyerKey.claim } } };
+  // The delivery runner's Vet requirement invocations for a context input: one
+  // per party record, evaluating that party, naming its counterparty verifier
+  // and the requirement the record hashes (the Listing's buyer requirement).
+  const invocationsFor = (input) => [['buyer', buyerKey.claim, sellerKey.claim], ['seller', sellerKey.claim, buyerKey.claim]].map(([role, evaluatedParty, verifier]) => ({
+    vetRecordRef: structuredClone(input[role].vetRecordRef), evaluatedParty, requirement: structuredClone(listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] }));
   const capabilities = {
     signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
@@ -63,15 +68,15 @@ async function world(t) {
   };
   const chain = {
     nativePaymentEvidence: () => createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: refuse('anchorEvidence'), fetchImpl: refuse('fetch') }),
-    demDeliveryContext: (input = vetted, vetRequirements = []) => createDemDeliveryContext({ authority: 'TEST-settlement-profile', resolveBuyer: refuse('resolveBuyer'),
+    demDeliveryContext: (input = vetted, vetRequirements = invocationsFor(input)) => createDemDeliveryContext({ authority: 'TEST-settlement-profile', resolveBuyer: refuse('resolveBuyer'),
       resolveSeller: async () => { reached.push('resolveSeller'); return { disposition: 'present', value: { input: structuredClone(input), vetRequirements: structuredClone(vetRequirements) } }; } }),
     nativeDemDelivery: () => createNativeDemDeliveryCapability({ authority: 'TEST-settlement-profile', submit: refuse('submit'), reconcile: refuse('reconcile'), read: refuse('read'), verifyReceipt: refuse('deliveryVerifyReceipt') }),
   };
-  const proposalFor = async (input) => {
+  const proposalFor = async (input, proposalJobId = jobId) => {
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(input));
     const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
     const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
-    const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
+    const transportIdentity = { jobId: proposalJobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
     return { proposal, transportIdentity, buyerIdentityBundle: buyerBundle };
   };
   const payment = { jobId, txHash: 'a'.repeat(64), payerPayingKey: buyerKey.claim };
@@ -398,10 +403,10 @@ test('a Vet reference is signed only through the passing record of this job, par
   const fabricated = { ...w.vetted.buyer.vetRecordRef, contentHash: core.sha256Hex(`installed-vet:${w.jobId}:${buyer}`) };
   const refs = {
     'no record behind the hash': ['buyer', fabricated],
-    'a failing decision': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { decision: 'fail' })],
-    'another signer': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { signer: other })],
-    'another job': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { recordJobId: core.generateCanonicalJobId() })],
-    'another bundle': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { bundleHash: core.sha256Hex('another bundle') })],
+    'a failing decision': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, decision: 'fail' })],
+    'another signer': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, signer: other })],
+    'another job': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, recordJobId: core.generateCanonicalJobId() })],
+    'another bundle': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, bundleHash: core.sha256Hex('another bundle') })],
   };
   // DACS-2 §7.7.2: the seller's record is the buyer's to verify and the buyer's
   // the seller's. A party's own signature is refused at the reference, before
@@ -409,9 +414,9 @@ test('a Vet reference is signed only through the passing record of this job, par
   // record it names when the party signed that record itself.
   const notCounterparty = /^DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: (buyer|seller) Vet ref is not signed by its counterparty verifier$/;
   const counterpartyRefs = {
-    'a seller record the seller signed as its own verifier': ['seller', await w.admission.vetRecord(w.jobId, sellerClaim, sellerBundle, { verifier: w.sellerKey }), notCounterparty],
-    'a buyer record the buyer signed as its own verifier': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { verifier: w.buyerKey }), notCounterparty],
-    'a seller record the seller signed, under a reference naming the buyer': ['seller', await w.admission.vetRecord(w.jobId, sellerClaim, sellerBundle, { signer: w.sellerKey }),
+    'a seller record the seller signed as its own verifier': ['seller', await w.admission.vetRecord(w.jobId, sellerClaim, sellerBundle, { requirement: w.listing.buyerRequirement, verifier: w.sellerKey }), notCounterparty],
+    'a buyer record the buyer signed as its own verifier': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, verifier: w.buyerKey }), notCounterparty],
+    'a seller record the seller signed, under a reference naming the buyer': ['seller', await w.admission.vetRecord(w.jobId, sellerClaim, sellerBundle, { requirement: w.listing.buyerRequirement, signer: w.sellerKey }),
       /^VET_RECORD_UNVERIFIED: seller: the Vet record is not signed by its counterparty verifier$/],
   };
   for (const [label, [role, ref, reason]] of Object.entries({ ...refs, ...counterpartyRefs })) {
@@ -427,20 +432,31 @@ test('a Vet reference is signed only through the passing record of this job, par
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
-// The delivery audit source carries the Vet context's requirement invocations;
-// core's delivery runner takes one only for a party's record, evaluating that
-// party and naming its counterparty verifier. Any other is refused before the
-// seller signs, never after payment.
-test('a Vet context whose requirement invocations do not name the record\'s party and its counterparty verifier is not signed', async (t) => {
+// The delivery audit source carries the Vet context's requirement invocations.
+// The seller runs core's own delivery predicate on them before it signs
+// (sellerFulfilmentVetRequirementsViolation): one invocation per party record,
+// evaluating that party, naming its counterparty verifier, the Listing's buyer
+// requirement for the buyer's record and every required claim covered. A
+// context the delivery runner would refuse after payment is refused here.
+test('a Vet context whose requirement invocations the delivery runner would refuse is not signed', async (t) => {
   const w = await world(t), buyer = w.buyerKey.claim, sellerClaim = w.sellerKey.claim;
-  const invocation = (role, evaluatedParty, verifier, vetRecordRef = w.vetted[role].vetRecordRef) => ({ vetRecordRef: structuredClone(vetRecordRef), evaluatedParty,
-    requirement: structuredClone(w.listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] });
+  const invocation = (role, evaluatedParty, verifier, vetRecordRef = w.vetted[role].vetRecordRef, requirement = w.listing.buyerRequirement) => ({ vetRecordRef: structuredClone(vetRecordRef), evaluatedParty,
+    requirement: structuredClone(requirement), verifier, freshness: [], dealSpecific: [] });
   const buyerInvocation = invocation('buyer', buyer, sellerClaim), sellerInvocation = invocation('seller', sellerClaim, buyer);
+  const otherRequirement = { ...structuredClone(w.listing.buyerRequirement), preferredPresentation: w.listing.buyerRequirement.preferredPresentation === 'any' ? 'per-claim' : 'any' };
+  const uncovered = { ...structuredClone(w.listing.buyerRequirement), required: [{ scheme: 'test-claim', verificationRequired: true }] };
   const refused = {
+    'no invocation': [],
+    'one record without its invocation': [buyerInvocation],
+    'the buyer invocation twice': [buyerInvocation, structuredClone(buyerInvocation)],
+    'a third invocation': [buyerInvocation, sellerInvocation, structuredClone(sellerInvocation)],
     'the seller as verifier of its own record': [buyerInvocation, invocation('seller', sellerClaim, sellerClaim)],
     'the buyer as verifier of its own record': [invocation('buyer', buyer, buyer), sellerInvocation],
     'another evaluated party': [invocation('buyer', sellerClaim, buyer), sellerInvocation],
     'a record the Agreement does not reference': [buyerInvocation, invocation('seller', sellerClaim, buyer, { ...w.vetted.seller.vetRecordRef, contentHash: core.sha256Hex('TEST another record') })],
+    'a buyer requirement other than the Listing\'s': [invocation('buyer', buyer, sellerClaim, undefined, otherRequirement), sellerInvocation],
+    'a required claim no result covers': [buyerInvocation, invocation('seller', sellerClaim, buyer, undefined, uncovered)],
+    'an invocation that is not the exact shape': [{ ...buyerInvocation, extra: true }, sellerInvocation],
   };
   for (const [label, vetRequirements] of Object.entries({ ...refused, 'each record\'s party and counterparty verifier': [buyerInvocation, sellerInvocation] })) {
     const agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(w.vetted, vetRequirements) }));
@@ -449,8 +465,52 @@ test('a Vet context whose requirement invocations do not name the record\'s part
     if (!(label in refused)) { assert.equal(answer.disposition, 'complete', label); continue; }
     assert.equal(answer.disposition, 'rejected', label);
     assert.equal(answer.contribution, undefined, `${label}: no seller contribution is issued`);
-    assert.match(answer.reason, /^VET_RECORD_UNVERIFIED: a Vet requirement invocation does not name its party's record, that party and its counterparty verifier$/, label);
+    assert.match(answer.reason, /^VET_RECORD_UNVERIFIED: (the Vet requirement invocations|a Vet requirement invocation) /, label);
   }
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+// DACS-2 §7.7.1: a record backs its reference only for the exact requirement
+// it hashes, here the Listing's buyer requirement, whoever signed it.
+test('a passing, counterparty-signed Vet record over another requirement is not signed', async (t) => {
+  const w = await world(t), buyer = w.buyerKey.claim, sellerClaim = w.sellerKey.claim, sellerBundle = w.listing.seller.identity;
+  const other = { ...structuredClone(w.listing.buyerRequirement), preferredPresentation: w.listing.buyerRequirement.preferredPresentation === 'any' ? 'per-claim' : 'any' };
+  const records = {
+    'a buyer record over another requirement': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: other })],
+    'a seller record over another requirement': ['seller', await w.admission.vetRecord(w.jobId, sellerClaim, sellerBundle, { requirement: other })],
+    'a buyer record with a made-up requirement hash': ['buyer', await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement,
+      requirementHash: core.sha256Hex(`requirement:${w.jobId}:${sellerClaim}`) })],
+  };
+  for (const [label, [role, ref]] of Object.entries(records)) {
+    const input = { ...w.vetted, [role]: { ...w.vetted[role], vetRecordRef: ref } };
+    const agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(input) }));
+    const answer = await agent.receiveProposal(await w.proposalFor(input));
+    agent.close();
+    assert.equal(answer.disposition, 'rejected', label);
+    assert.equal(answer.contribution, undefined, `${label}: no seller contribution is issued`);
+    assert.equal(answer.reason, `VET_RECORD_UNVERIFIED: ${role}: the Vet record does not verify against its requirement (invalid: requirement-hash-mismatch)`, label);
+  }
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+// CORE SN-4: a presentation nonce admits one session. The host binds it to the
+// job that first presented it, whatever the operator's admission answers (this
+// fixture echoes any nonce as issued and consumed), and the binding is kept
+// with that session, so a restart keeps it too.
+test('a buyer presentation that admitted one session is refused for another job, also after a restart, before the admission is asked', async (t) => {
+  const w = await world(t), durableDirectory = w.dir(), otherJob = core.generateCanonicalJobId();
+  const admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
+  const first = await seller.createSellerAgent(complete(w, { durableDirectory }));
+  assert.equal((await first.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
+  const replay = async (agent) => refused(async () => agent.receiveProposal(await w.proposalFor({ ...w.vetted, jobId: otherJob }, otherJob)));
+  const asked = admits();
+  assert.deepEqual(await replay(first), { code: 'session_not_admitted', status: 409 });
+  first.close();
+  const restarted = await seller.createSellerAgent(complete(w, { durableDirectory }));
+  t.after(() => restarted.close());
+  assert.deepEqual(await replay(restarted), { code: 'session_not_admitted', status: 409 }, 'after a restart');
+  assert.equal(admits(), asked, 'the operator admission is not asked for the replayed nonce');
+  assert.equal(restarted.stageOf(otherJob), null, 'no session is kept for the replay');
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 

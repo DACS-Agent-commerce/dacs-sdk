@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "108ce21b70b49379c3c73b3bdceaa55bb2eb00233ed042cd0cf8a875e0120d9a",
+      "sha256": "cbc245fc695ce53ce82bb88d5b069beae68fcf1b2a05d9ea2b4c6134de82c390",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -382,7 +382,7 @@
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "975fd340964fec72daeb54459c7deabfb2e9484628db015330277038027e54ab",
+      "sha256": "d567b42a387acef0f5b0e16b4ea22fd564ae472c9c25232d58f6bde2d79a2ac5",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -412,13 +412,13 @@
     {
       "path": "packages/dacs-seller/src/dacs/session-admission.mjs",
       "originalSha256": null,
-      "sha256": "3ca7a18485f9fdd74c4a25cf270a91676a9b1009432be93d9e90115feb0fe790",
+      "sha256": "b950f5d00ff9ddfb796942ed6d986c22268b439a7c15f69de72c34afdbd44d4f",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/helpers/session-admission-fixture.mjs",
       "originalSha256": null,
-      "sha256": "15f7ec69eaff0280e94450b996df7d394b398b1d41dd422ab5ccbdaa28e84a51",
+      "sha256": "c28f64d1f93e92e7ab43fe1f1d6aa37dc379e6a57ce337d62fe455bc590102a4",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -430,7 +430,7 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "6a292541b6481434e012f95a2832373b8295ef8c88f36e346fff36758d16bc1f",
+      "sha256": "faffd280d47321bce13b4124640cc84bc9f76313ca32cca98202471834f315f7",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     }
   ]

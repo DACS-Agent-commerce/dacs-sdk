@@ -12,16 +12,18 @@
 //      * CORE §11.1.2(3): both participants are configured for this exact
 //        corrective profile (the Standard commit and the complete tuple);
 //      * CORE SN-1..SN-4, DACS-1 §6.3.2: the bundle's sessionNonce is the
-//        challenge the seller issued for this job, consumed by this attempt;
+//        challenge the seller issued for this job, consumed by this attempt
+//        (the agent itself also refuses a nonce another job's session took);
 //      * DACS-1 RB-5/RB-6, LR-3: a fresh revocation reading of this Listing is
 //        `active` (revoked or unknown refuses the new session).
 //  - resolveVetRecord({ jobId, role, party, ref }) answers the
 //    CompositeVerificationRecord the Vet reference names (DACS-2 §7.7.1): its
 //    exact hash, the signature of the party's counterparty verifier (DACS-2
 //    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
-//    the job, the evaluated party, its bundle and a passing decision are
-//    checked here.
-import { ARTIFACT_SEPARATORS, canonicalize, contentHash, isCanonicalBase64Url, isCompositeVerificationRecord, signedBytes } from '@kynesyslabs/dacs';
+//    the job, the evaluated party, its bundle, a passing decision and, under
+//    the SDK's strict verifier, the requirement invocation's exact
+//    `requirementHash` and replayed aggregation are checked here.
+import { ARTIFACT_SEPARATORS, canonicalize, contentHash, isCanonicalBase64Url, isCompositeVerificationRecord, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 
 // PROFILE.json: the exact corrective profile this package implements (the
@@ -61,14 +63,29 @@ export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash,
   return null;
 }
 
-// The reason a resolved Vet record does not back its reference, or null.
-// `verifier` is the evaluated party's counterparty (DACS-2 §7.7.2).
-export function vetRecordProblem(record, { ref, jobId, party, bundleHash, verifier }) {
+// The reason a resolved Vet record does not back its reference and the
+// requirement invocation that names it, or null. `verifier` is the evaluated
+// party's counterparty (DACS-2 §7.7.2). DACS-2 §7.7.1: the record must hash
+// the invocation's exact BundleRequirement (`requirementHash`) and its
+// decision must replay from the invocation's expected results under the core
+// strict verifier. No VerifyResult resolver is configured, so a requirement
+// whose decision needs a result body is unresolved and refused.
+export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, verifier, invocation, now }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
   if (record.signature.signer !== verifier || ref.signer !== verifier || !isCanonicalBase64Url(record.signature.value)
       || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
+  if (!object(invocation)) return 'the Vet record has no requirement invocation';
+  let strict;
+  try {
+    strict = await verifyCompositeVerificationRecord(record,
+      { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: invocation.freshness, dealSpecific: invocation.dealSpecific },
+      { nowMs: now, resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
+        resolvePublicKey: (signature) => (signature.signer === verifier ? verifier : null), verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }),
+        verifyAuthorityAttestation: () => 'unresolved' });
+  } catch (error) { return `the Vet record does not verify against its requirement: ${String(error?.message ?? error).slice(0, 120)}`; }
+  if (strict?.status !== 'valid') return `the Vet record does not verify against its requirement (${strict?.status ?? 'missing'}: ${strict?.code ?? 'unknown'})`;
   return null;
 }

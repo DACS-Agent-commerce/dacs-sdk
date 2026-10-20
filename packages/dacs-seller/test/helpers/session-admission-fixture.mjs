@@ -1,22 +1,27 @@
-// A seller-owned session admission for tests: it issues one challenge per job
-// (the bundle's sessionNonce must be it), reads the Listing as active, admits
-// both parties under the package's exact profile, and keeps the
-// counterparty-verified CompositeVerificationRecords its Vet references name
-// (DACS-2 §7.7.2: the buyer's record signed by the seller, the seller's by the buyer).
+// A seller-owned session admission for tests: it answers that the bundle's
+// sessionNonce is the challenge it issued and consumed for the job (it keeps
+// no ledger; the host itself refuses a nonce another session took), reads the
+// Listing as active, admits both parties under the package's exact profile,
+// and keeps the counterparty-verified CompositeVerificationRecords its Vet
+// references name (DACS-2 §7.7.2: the buyer's record signed by the seller, the
+// seller's by the buyer). Each record hashes the exact BundleRequirement it
+// evaluated (`requirement`, DACS-2 §7.7.1) and has no results, so it passes
+// only a requirement with no required claim.
 // `overrides` replaces parts of an admitted answer to build refusal vectors.
 import * as core from '@kynesyslabs/dacs';
 import { SELLER_PROFILE } from '../../src/dacs/session-admission.mjs';
 
 export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.now() }) {
   const records = new Map(), calls = [];
+  let made = 0;
   // The reference names the party's verifier (by default its counterparty) at
   // the job's canonical address; the options build records that do not back it.
-  // A record's hash leaves out its signature, so records by different signers
-  // differ in content: one never replaces another here.
-  const vetRecord = async (jobId, party, bundle, { decision = 'pass', verifier = party === seller.claim ? buyer : seller, signer = verifier, recordJobId = jobId,
-    bundleHash = core.identityBundleHash(bundle) } = {}) => {
-    const unsigned = { recordVersion: '1', jobId: recordJobId, evaluatedParty: party, bundleHash, requirementHash: core.sha256Hex(`requirement:${jobId}:${signer.claim}`),
-      freshness: [], supplementary: [], dealSpecific: [], overallDecision: decision, generatedAt: now() };
+  // A record's hash leaves out its signature, so each record gets its own
+  // generatedAt: one never replaces another here.
+  const vetRecord = async (jobId, party, bundle, { requirement, decision = 'pass', verifier = party === seller.claim ? buyer : seller, signer = verifier, recordJobId = jobId,
+    bundleHash = core.identityBundleHash(bundle), requirementHash = core.sha256Hex(core.canonicalize(requirement)) } = {}) => {
+    const unsigned = { recordVersion: '1', jobId: recordJobId, evaluatedParty: party, bundleHash, requirementHash,
+      freshness: [], supplementary: [], dealSpecific: [], overallDecision: decision, generatedAt: now() - made++ };
     const record = await core.signComponentArtifact(unsigned, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: signer.claim, sign: signer.sign });
     const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.contentHash(record), signer: verifier.claim };
     records.set(ref.contentHash, record);

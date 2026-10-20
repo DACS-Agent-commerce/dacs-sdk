@@ -31,13 +31,18 @@ function key() {
     sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey),
     signWallet: (message) => `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}` };
 }
-const identityFor = (party, presentedAt) => {
-  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'host-native-delivery' });
+const identityFor = (party, presentedAt, sessionSeed = 'host-native-delivery') => {
+  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
 };
 
 // One Demos node: confirmed blocks bound to the fixture chain identity, native
 // DEM transfers, signed storage CREATEs and the name index over them.
+// A scripted fixture, not node2's answers: node2 answers a genesis read
+// (`getBlockByNumber {blockNumber:0}`) and a missing `getTxByHash` with 400,
+// its `GET /storage-program` omits `createdByTx`/`interactionTxs`, its blocks
+// carry `validation_data: {signatures}`, and its name index shows a program
+// only once its block is applied. Build no live test on these shapes.
 function demosNode() {
   const ID = DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
   const blocks = [{ number: 0, status: 'confirmed', hash: ID, content: { timestamp: 0, ordered_transactions: [] }, validation_data: { simulated: true, chainIdentity: ID } }];
@@ -115,7 +120,10 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 
 // `schemaUrl: false`: the Listing's deliverable names no schema, so the SDK
 // runs no schema verifier over the prepared Deliverable.
-async function world(t, { deliverableProducer = null, schemaUrl = true } = {}) {
+// `idempotentWallet: false`: the seller wallet signs a new CREATE on every
+// anchorEvidence call, as a plain Demos wallet does (the node checks only the
+// nonce-derived storage address, so a second CREATE under one name lands).
+async function world(t, { deliverableProducer = null, schemaUrl = true, idempotentWallet = true } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks 2 s apart).
@@ -126,7 +134,12 @@ async function world(t, { deliverableProducer = null, schemaUrl = true } = {}) {
     category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
   if (!schemaUrl) delete draft.offering.deliverable.schemaUrl;
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
-  const buyerBundle = identityFor(buyerKey, now);
+  // One buyer presentation per job: CORE SN-4, a session nonce admits one session.
+  const buyerBundles = new Map();
+  const buyerBundleFor = (jobId) => {
+    if (!buyerBundles.has(jobId)) buyerBundles.set(jobId, identityFor(buyerKey, now, `host-native-delivery:${jobId}`));
+    return buyerBundles.get(jobId);
+  };
   // What each operator capability did. `faults` script the next answers;
   // `beforeDeliveryReconcile` runs before the delivery capability reconciles.
   const effects = { anchorEvidence: [], deliverySubmit: [], published: [] };
@@ -137,9 +150,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true } = {}) {
   const inputs = new Map();
   const vettedInput = async (jobId) => {
     if (!inputs.has(jobId)) {
-      const input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
-      inputs.set(jobId, { ...input, buyer: { ...input.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle) },
-        seller: { ...input.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity) } });
+      const buyerBundle = buyerBundleFor(jobId), input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
+      inputs.set(jobId, { ...input, buyer: { ...input.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
+        seller: { ...input.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: listing.buyerRequirement }) } });
     }
     return clone(inputs.get(jobId));
   };
@@ -180,22 +193,27 @@ async function world(t, { deliverableProducer = null, schemaUrl = true } = {}) {
     verifyReceipt: async ({ logicalAddress, artifact, artifactKind, receipt, signedProjection }) =>
       node.reader.verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter: sellerKey.claim, artifactKind, signedProjection }),
   };
-  // The seller wallet's payment-evidence anchor. PC-7(b): idempotent on the
-  // dacs4:payment address, so a retry gets the earlier CREATE, never a second.
-  // `fail`: refused before anything was signed; `lost`: written, answer lost;
-  // `other`: the wallet writes seller-signed evidence naming another transfer.
+  // The seller wallet's payment-evidence anchor. PC-7(b): by default idempotent
+  // on the dacs4:payment address, so a retry gets the earlier CREATE, never a
+  // second (`idempotentWallet: false` writes a new one on every call).
+  // `fail`: answers { status: 'refused' }, nothing signed; `throw`: throws
+  // before signing, which the agent cannot tell from a lost answer; `lost`:
+  // written, then the answer is lost (a throw); `other`: the wallet writes
+  // seller-signed evidence naming another transfer.
   const nativePaymentEvidence = createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl,
     anchorEvidence: async (input) => {
       effects.anchorEvidence.push(input.logicalAddress);
       const fault = faults.anchorEvidence.shift();
-      if (fault === 'fail') throw Object.assign(new Error('TEST wallet refused before signing'), { code: 'TEST-wallet-refused' });
+      if (fault === 'fail') return { status: 'refused', reason: 'TEST wallet refused before signing' };
+      if (fault === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
       let artifact = input.artifact;
       if (fault === 'other') {
         const { signature: _signature, ...unsigned } = clone(artifact);
         unsigned.paymentTxRefs = [{ ...unsigned.paymentTxRefs[0], txHash: 'd4'.repeat(32) }];
         artifact = await core.signComponentArtifact(unsigned, core.ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: sellerKey.claim, sign: sellerKey.sign });
       }
-      writeOnce(input.logicalAddress, artifact, 'SettlementEvidence');
+      if (!idempotentWallet && signedCreates.has(input.logicalAddress)) signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact, artifactKind: 'SettlementEvidence' }));
+      else writeOnce(input.logicalAddress, artifact, 'SettlementEvidence');
       if (fault === 'lost') throw new Error('TEST wallet answer lost after the CREATE');
       return { status: 'submitted', txHash: signedCreates.get(input.logicalAddress).hash };
     },
@@ -255,7 +273,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true } = {}) {
     const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
     const client = () => seller.createSellerAgentClient({ url: host.url, authentication: seller.createSellerTransportClientAuth({
       buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock }) });
-    const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
+    const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundleFor(jobId) });
     assert.equal(answer.disposition, 'complete', 'the seller signs the vetted Agreement');
     const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
@@ -313,7 +331,7 @@ test('a payment-evidence anchor that failed is sent again on the buyer\'s next c
   const held = await p.claim(tx);
   assert.equal(held.status, 'held', shown(held));
   assert.equal(held.readback, 'absent');
-  assert.equal(held.anchorError?.code, 'TEST-wallet-refused');
+  assert.equal(held.anchorOutcome, 'refused');
   assert.equal(w.createsAt(address), 0);
   const answer = await p.claim(tx);
   assert.equal(answer.status, 'payment-evidenced', shown(answer));
@@ -373,6 +391,53 @@ test('a confirmed anchor is not sent again when the name index later reads it ab
   assert.equal((await p.claim(tx)).status, 'payment-evidenced');
   assert.deepEqual(w.effects.anchorEvidence, [address]);
   assert.equal(w.createsAt(address), 1);
+});
+
+// DACS-4 PC-7(b) is write-once and a name-index miss is no proof of absence
+// (CORE §5.1): the node answers its name search only for programs already
+// applied in a block and rejects only an existing storage address, which is
+// nonce-derived, so a second CREATE under the same name lands. With a plain
+// wallet, an anchor that was sent (or whose answer was lost) and does not read
+// back yet is waited for, never sent again.
+for (const [label, fault] of [['an anchor the wallet sent', undefined], ['an anchor whose answer was lost after the write', 'lost']]) {
+  test(`${label} is not sent again while the name index lags: one CREATE (DACS-4 PC-7(b) write-once)`, async (t) => {
+    const w = await world(t, { idempotentWallet: false });
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
+    w.node.faults.indexEmpty = (programName) => programName === name;
+    if (fault) w.faults.anchorEvidence.push(fault);
+    for (const claim of [1, 2, 3]) {
+      const held = await p.claim(tx);
+      assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
+      assert.equal(held.readback, 'indeterminate', `claim ${claim}: an index miss after a send is not absence`);
+      assert.equal(held.anchorOutcome, fault ? 'unknown' : 'sent');
+    }
+    await w.restart();
+    assert.equal((await p.claim(tx)).status, 'held', 'nor after a restart');
+    assert.deepEqual(w.effects.anchorEvidence, [address], 'the wallet is asked once');
+    assert.equal(w.createsAt(address), 1, 'one CREATE at the payment address');
+    // The index catches up: the one CREATE reads back and the order goes on.
+    w.node.faults.indexEmpty = () => false;
+    const answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', shown(answer));
+    assert.equal(typeof answer.delivery, 'object');
+    assert.deepEqual(w.effects.anchorEvidence, [address]);
+    assert.equal(w.createsAt(address), 1);
+  });
+}
+
+test('a wallet that throws is not a refusal: the anchor is not sent again on an absent readback', async (t) => {
+  const w = await world(t, { idempotentWallet: false });
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.anchorEvidence.push('throw');
+  const held = await p.claim(tx);
+  assert.equal(held.status, 'held', shown(held));
+  assert.equal(held.anchorError?.code, 'TEST-wallet-failed', 'the wallet error keeps its cause');
+  assert.equal(held.anchorOutcome, 'unknown');
+  const again = await p.claim(tx);
+  assert.equal(again.status, 'held', shown(again));
+  assert.equal(again.readback, 'indeterminate');
+  assert.deepEqual(w.effects.anchorEvidence, [address], 'only a { status: \'refused\' } answer lets the anchor be sent again');
+  assert.equal(w.createsAt(address), 0);
 });
 
 // Settlement credit (SB-2): one transfer claimed by two jobs gives neither

@@ -38,6 +38,7 @@ import {
   paymentEvidenceAddress,
   respondToFixedPriceAgreementProposalDurable,
   runDurableFulfilmentToDeliveryReady,
+  sellerFulfilmentVetRequirementsViolation,
   sha256Hex,
   signComponentArtifact,
   verifySellerPaymentIntake,
@@ -135,8 +136,10 @@ export function buildReport({ agreement, listing, settlementId }) {
 // not wired; bundle_finalization_unavailable).
 // The native profile opens a new session only under the operator's
 // `sessionAdmission` (session-admission.mjs): the exact profile of both
-// parties, a seller-issued challenge consumed by this presentation, a fresh
-// revocation reading of the Listing, and the Vet records the references name.
+// parties, a seller-issued challenge consumed by this presentation (the agent
+// binds each presentation nonce to one job itself), a fresh revocation
+// reading of the Listing, and the Vet records the references name, checked
+// strictly against the requirement invocations the delivery runner checks.
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
@@ -345,6 +348,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // A new session (not yet signed under its pin) is admitted before anything
     // of it is kept, read, signed or sent; a session in flight continues.
     if (nativeProfile && existing?.railPinSigned !== true) {
+      // CORE SN-4: a presentation nonce admits one session, whatever the
+      // operator's admission answers. The host binds it to the job that first
+      // presented it; that session is kept durably, so a restart keeps the
+      // binding. Checked again after the admission call, with no await before
+      // the session is kept, so a concurrent job cannot take the same nonce.
+      const nonceTaken = () => [...sessions.values()].some((entry) => entry.jobId !== jobId && entry.buyerBundle?.sessionNonce === buyerIdentityBundle.sessionNonce);
+      const refuseTakenNonce = () => { if (nonceTaken()) throw new SellerAgentError('session_not_admitted', 'the presentation nonce already admitted another session', 409); };
+      refuseTakenNonce();
       const query = { jobId, buyer: buyerIdentityBundle.presentedBy, buyerBundleHash: identityBundleHash(buyerIdentityBundle), sessionNonce: buyerIdentityBundle.sessionNonce,
         seller: claim, listingPin: structuredClone(pin), profile: structuredClone(SELLER_PROFILE) };
       let answer;
@@ -352,6 +363,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       catch (error) { throw new SellerAgentError('session_admission_unavailable', `the seller's session admission is unavailable: ${String(error?.message ?? error).slice(0, 180)}`, 503); }
       const problem = sessionAdmissionProblem(answer, { ...query, now: now() });
       if (problem) throw new SellerAgentError('session_not_admitted', problem, 409);
+      refuseTakenNonce();
     }
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
     // signed definition pinned before the Agreement is signed. The pin is in
@@ -397,6 +409,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             if (['buyer', 'seller'].some((role) => resolved.input[role].vetRecordRef.contentHash === notPerformed[role].vetRecordRef.contentHash)) {
               return { disposition: 'rejected', reason: 'the Vet context names the not-performed Vet references' };
             }
+            // The delivery audit source carries these invocations. The core
+            // delivery runner's own predicate refuses here, before signing,
+            // what it would refuse at delivery after payment: one invocation
+            // per party record, that party, its counterparty verifier, the
+            // Listing's buyer requirement and every required claim covered. A
+            // retained context is checked again: it may predate this check.
+            const invocationProblem = sellerFulfilmentVetRequirementsViolation(resolved.vetRequirements, { jobId, buyerRequirement: listing.buyerRequirement,
+              buyer: { primaryClaim: session.buyerBundle.presentedBy, vetRecordRef: resolved.input.buyer.vetRecordRef },
+              seller: { primaryClaim: claim, vetRecordRef: resolved.input.seller.vetRecordRef } });
+            if (invocationProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${invocationProblem}` };
             // DACS-2 §7.7.1: a reference is relied on only through the record it names.
             // §7.7.2: each party's record is verified by its counterparty, the
             // buyer's by the seller and the seller's by the buyer.
@@ -404,18 +426,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sellerBundle, session.buyerBundle.presentedBy]];
               for (const [role, party, bundle, verifier] of parties) {
                 const ref = resolved.input[role].vetRecordRef;
+                const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
                 let record;
                 try { record = await admission.resolveVetRecord(structuredClone({ jobId, role, party, ref })); }
                 catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
-                const problem = vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier });
+                const problem = await vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now });
                 if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
-              }
-              // The delivery audit source carries these invocations; the delivery
-              // runner takes one only for a party's record, evaluating that party
-              // and naming its counterparty verifier.
-              const bound = (invocation) => parties.find(([role]) => invocation?.vetRecordRef !== undefined && canonicalize(invocation.vetRecordRef) === canonicalize(resolved.input[role].vetRecordRef));
-              if (resolved.vetRequirements.some((invocation) => { const entry = bound(invocation); return !entry || invocation.evaluatedParty !== entry[1] || invocation.verifier !== entry[3]; })) {
-                return { disposition: 'rejected', reason: 'VET_RECORD_UNVERIFIED: a Vet requirement invocation does not name its party\'s record, that party and its counterparty verifier' };
               }
             }
             session.demDeliveryContext = structuredClone(resolved);
@@ -1095,8 +1111,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   // Reduce a retained native-evidence checkpoint only from independently
   // authenticated, read-only authorities. In particular, this reduction never
-  // calls anchorEvidence (only submitNativePaymentEvidence sends it again, on
-  // a proven absence) and neither an old HTTP response nor the signed seller
+  // calls anchorEvidence (only submitNativePaymentEvidence sends it again,
+  // after an attempt that cannot have written it) and neither an old HTTP response nor the signed seller
   // snapshot is treated as a receipt/public projection.
   async function reduceNativeEvidenceWork(session, work, { jobId, txHash, payerPayingKey }) {
     const terms = agreementTerms(session.agreement), hash = String(txHash).toLowerCase(), intake = work?.intake;
@@ -1280,7 +1296,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       step = 'work-checkpoint';
       const work = session.nativeEvidenceWork = { txHash: hash, payerPayingKey, agreementHash: contentHash(session.agreement), commitmentHash: contentHash(session.commitment.record),
         listingPin: pin, intake: JSON.parse(JSON.stringify(intake)), evidence, address: paymentEvidenceAddress(jobId, terms.rail, terms.paymentPhaseIndex),
-        anchorAttempt: 'readback-first-retry', anchorAttempts: 0 };
+        anchorAttempt: 'readback-first-retry', anchorAttempts: 0, anchorOutcome: 'not-sent' };
       session.stage = 'native-payment-evidence-held'; persist(session);
       return { work };
     } catch (error) {
@@ -1292,14 +1308,19 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   // One call of the operator's wallet anchor with the exact retained evidence,
-  // under the job lock and settlement credit, its attempt kept before the call.
+  // under the job lock and settlement credit, its attempt kept before the call
+  // as `anchorOutcome: 'unknown'`. Only an answer { status: 'refused', reason }
+  // (the wallet signed and sent nothing) makes it 'refused'; any other answer
+  // is 'sent', and a throw or a crash during the call leaves it 'unknown'.
   async function anchorNativePaymentEvidence(session, work) {
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
     work.anchorAttempts = (work.anchorAttempts ?? 1) + 1;
+    work.anchorOutcome = 'unknown';
     persist(session);
     try {
       const answer = await nativeEvidence.anchorEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId: session.jobId, receiptContentHash: work.intake.evidenceHash });
       work.anchorAnswer = JSON.parse(JSON.stringify(answer ?? null));
+      work.anchorOutcome = answer?.status === 'refused' ? 'refused' : 'sent';
       delete work.anchorError;
     } catch (error) { work.anchorError = { code: error.code ?? 'unknown', message: String(error.message).slice(0, 240) }; }
     persist(session);
@@ -1309,13 +1330,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // SDK SettlementEvidence is preserved byte-for-byte; no artifactType is
   // invented to satisfy a wallet bridge. Retain an issued attempt BEFORE the
   // wallet boundary. Every later call or restart reads back first. DACS-4
-  // PC-7(b): an anchor that failed, was lost or never ran (a crash after the
-  // checkpoint) is sent again with the same bytes, but only when the readback
-  // proved it absent, at most once per call and never in the call of the first
-  // attempt. An unknown readback sends nothing. Once a readback authenticated
-  // it (work.nativeReceipt), it is never sent again. The operator's
-  // anchorEvidence must be idempotent on the dacs4:payment address: a write
-  // that landed but is not yet indexed is returned again, never created twice.
+  // PC-7(b), write-once: the anchor is sent again with the same bytes only
+  // when no attempt can have written it, that is when the last attempt never
+  // ran (a crash after the checkpoint, 'not-sent') or the wallet refused it
+  // before signing ('refused'), and the readback finds nothing; at most once
+  // per call and never in the call of the first attempt. A name-index miss is
+  // no proof of absence (CORE §5.1): after an attempt that was sent or whose
+  // outcome is unknown (a throw, a crash during the call), the readback is
+  // only waited for and nothing is sent again, so a write that landed but is
+  // not indexed yet is never created twice. An unknown readback sends nothing.
+  // Once a readback authenticated it (work.nativeReceipt), it is never sent again.
   async function submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence }) {
     if (!nativeEvidence || requestedEvidence !== NATIVE_PAYMENT_EVIDENCE) throw new SellerAgentError('native_evidence_held', 'the explicit native evidence capability/terms are absent');
     if (!session.commitment || !session.agreementAnchor) throw new SellerAgentError('not_committed', 'native Agreement and seller commitment must be retained');
@@ -1343,15 +1367,21 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (recovered) return recovered;
     }
     let read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
-    if (retry && read.disposition === 'absent') {
+    if (retry && read.disposition === 'absent' && ['not-sent', 'refused'].includes(work.anchorOutcome)) {
       await anchorNativePaymentEvidence(session, work);
       read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
+    }
+    // An anchor that may have been written and is not read back yet is
+    // pending, not absent: the index has not shown it.
+    if (read.disposition === 'absent' && !['not-sent', 'refused'].includes(work.anchorOutcome)) {
+      read = { ...read, disposition: 'indeterminate', reason: `native-payment-evidence-anchor-${work.anchorOutcome === 'sent' ? 'sent' : 'outcome-unknown'}-not-read-back` };
     }
     if (read.disposition === 'present') return advanceAuthenticatedNativeDelivery(session, work, read);
     return { status: read.disposition === 'rejected' ? 'rejected' : 'held', reason: read.reason ?? 'native-evidence-readback-incomplete',
       ...(work.anchorError ? { anchorError: work.anchorError } : {}),
       evidenceAddress: work.address, evidenceHash: work.intake.evidenceHash, intake: 'pinned-SDK-verified-on-owned-fixture', readback: read.disposition,
       ...(read.nativeReadStatus ? { nativeReadStatus:read.nativeReadStatus } : {}), ...(read.code ? { nativeReadCode:read.code } : {}), anchorAttempt: work.anchorAttempt, anchorAttempts: work.anchorAttempts,
+      anchorOutcome: work.anchorOutcome ?? 'unknown',
       limits: 'fixture Listing admission/rail/commitment; SDK one-node included view, not independent finality; delivery/Vet/ST11/completion held' };
   }
 

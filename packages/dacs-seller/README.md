@@ -70,14 +70,19 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   (which reads back first), and a different claim for the job is still
   refused (`peer_operation_conflict`).
 - Payment evidence is anchored through the operator's
-  `nativePaymentEvidence` `anchorEvidence` (DACS-4 PC-7(b)). An anchor that
-  failed, was lost or never ran is sent again with the same bytes on the
-  buyer's next claim (or after a restart), but only when the readback proves
-  it absent: at most once per request, never in the request of the first
-  attempt, and never once a readback has authenticated it. An unknown
-  readback sends nothing. `anchorEvidence` must be idempotent on the
-  `dacs4:payment:…` address: when a write it made has landed but does not
-  read back yet, it returns that write and never creates a second one.
+  `nativePaymentEvidence` `anchorEvidence` (DACS-4 PC-7(b), write-once). The
+  agent keeps each attempt before it calls the wallet. It sends the same
+  bytes again on the buyer's next claim (or after a restart) only when no
+  attempt can have written them: the last attempt never reached the wallet
+  (a crash after the evidence checkpoint), or the wallet answered
+  `{ status: "refused", reason }`, which must mean it signed and sent
+  nothing. It also needs a readback that finds nothing: at most once per
+  request, never in the request of the first attempt, and never once a
+  readback has authenticated it. A name-index miss is no proof that nothing
+  landed (CORE §5.1): after any other answer, a throw, or a crash during the
+  call, the agent only reads back and holds the claim (`readback:
+  "indeterminate"`, `anchorOutcome: "sent"` or `"unknown"`) until the write
+  reads back; it never sends it again. An unknown readback sends nothing.
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
@@ -105,7 +110,11 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   - both parties configured for this package's exact profile (the Standard
     commit and the complete document tuple in PROFILE.json; CORE §11.1.2);
   - the challenge the seller issued for this job, equal to the bundle's
-    `sessionNonce` and consumed by this attempt (CORE SN-1..SN-4);
+    `sessionNonce` and consumed by this attempt (CORE SN-1..SN-4). The agent
+    itself also binds each nonce to the first job that presented it (kept
+    with that session, so across a restart): the same nonce for another job
+    is refused before `admit` is asked. Issuance and the revocation reading
+    remain the operator's own answers;
   - a revocation reading of the Listing, `active` and at most five minutes
     old (DACS-1 RB-5/RB-6).
 
@@ -118,10 +127,18 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   `pass` decision (DACS-2 §7.7.1). It must be signed by the party's
   counterparty verifier, which the reference names as `signer` (DACS-2
   §7.7.2): the buyer's record by this seller, the seller's own record by the
-  buyer. Each Vet requirement invocation the context gives must name one of
-  these records, evaluate its party and name that counterparty as verifier,
-  as the SDK delivery runner checks in the audit source; otherwise the
-  Agreement is not signed. A session
+  buyer. The context's Vet requirement invocations go into the delivery
+  audit source, so the agent checks them with the SDK delivery runner's own
+  check (`sellerFulfilmentVetRequirementsViolation`) before it signs: exactly
+  one per record, evaluating its party, naming that counterparty as
+  verifier, the Listing's `buyerRequirement` for the buyer's record, and
+  every required claim covered by a result for this job. Each record must
+  also pass the SDK's strict CompositeVerificationRecord check against its
+  invocation: its `requirementHash` is the hash of that exact requirement
+  and its decision replays from the invocation's results (DACS-2 §7.7.1).
+  This package resolves no VerifyResult, so a requirement with a required
+  claim is refused. Otherwise the Agreement is not signed, before any
+  payment. A session
   in flight, signed under its pin, continues without a new admission. The agent
   itself never makes up a revocation reading: its startup check reads only the
   Listing's own bytes, signature and rail.
