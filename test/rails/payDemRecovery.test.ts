@@ -380,6 +380,26 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     expect(reconcile).toHaveBeenCalledTimes(2);
   });
 
+  // The cached-outcome path: a store answers another writer's failure for this
+  // key after this bridge's own record-verified success, and the
+  // reconciliation agrees with that failure. The success still stands.
+  test("a cached failure the reconciliation agrees with cannot demote this bridge's success", async () => {
+    let cached: SettleResult | undefined;
+    const store = {
+      once: vi.fn(async (_key: string, _binding: unknown, run: () => Promise<SettleResult>) => cached ?? run()),
+      readOutcome: vi.fn(async () => null),
+    };
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
+    const settle = payDemSettle(await sdkRail(), { network: "demos" }, { store: store as never, reconcile });
+    const { priorAttempts: _history, ...fresh } = request();
+    await expect(settle(fresh)).resolves.toMatchObject({ ok: true, txHash });
+    const { amountOs: _amount, preparedTransfer: _journal, ...storedFailure } = failed();
+    cached = storedFailure as SettleResult;
+    await expect(settle(fresh)).rejects.toThrow(demoted);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
+  });
+
   test("another writer's reconciled failure cannot demote this bridge's success", async () => {
     const log = createInMemorySettlementLog();
     let now = 1_000;

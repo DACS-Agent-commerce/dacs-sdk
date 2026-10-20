@@ -365,6 +365,55 @@ describe("pay-dem serializes calls for one settlement key", () => {
     expect(sdkTransfers()).toBe(1);
   });
 
+  test("a slow call on one key does not delay a call on another key", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const rail = {
+      address: payer,
+      settle: vi.fn(async (params: { recovery?: { jobId: string } }) => {
+        if (params.recovery?.jobId === "job-slow") await gate;
+        return { ok: false, txHash: params.recovery?.jobId === "job-slow" ? hashA : hashB, payer, payee, chainId: "demos" };
+      }),
+    };
+    const settle = payDemSettle(rail as never, {}, { store: createIdempotencyStore() });
+    const slow = settle({ ...request, jobId: "job-slow" });
+    await expect(settle({ ...request, jobId: "job-fast" })).resolves.toMatchObject({ txHash: hashB });
+    release();
+    await expect(slow).resolves.toMatchObject({ txHash: hashA });
+  });
+
+  test("a third call waits for the second even after the first has finished", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const order: string[] = [];
+    let calls = 0;
+    const rail = {
+      address: payer,
+      settle: vi.fn(async () => {
+        const call = ++calls;
+        order.push(`start ${call}`);
+        if (call === 2) await gate;
+        order.push(`end ${call}`);
+        return { ok: false, txHash: hashA, payer, payee, chainId: "demos" };
+      }),
+    };
+    // A store that runs every call, so only the bridge orders them.
+    const store = {
+      once: vi.fn(async (_key: string, _binding: unknown, run: () => Promise<SettleResult>) => run()),
+      readOutcome: vi.fn(async () => null),
+    };
+    const settle = payDemSettle(rail as never, {}, { store: store as never });
+    const first = settle(request);
+    const second = settle(request);
+    await first;
+    const third = settle(request);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toEqual(["start 1", "end 1", "start 2"]);
+    release();
+    await Promise.all([second, third]);
+    expect(order).toEqual(["start 1", "end 1", "start 2", "end 2", "start 3", "end 3"]);
+  });
+
   test("a failed earlier audit does not reject the call queued behind it", async () => {
     const cause = new Error("journal read timed out");
     let finish!: () => void;
