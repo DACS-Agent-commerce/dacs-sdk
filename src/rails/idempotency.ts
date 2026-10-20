@@ -196,7 +196,9 @@ export interface SettlementIdempotencyStore {
    * Read and validate a recorded outcome under these exact terms, without
    * claiming an intent. Required for native retained-transaction audits:
    * `payDemSettle` refuses a request carrying `priorAttempts` without it.
-   * `null` means no recorded outcome, never permission to submit again.
+   * `null` means no recorded outcome, never permission to submit again. Only
+   * the lookup `createIdempotencyStore` returns can bind a retained hash to its
+   * payment in place of the prepared-transfer journal entry.
    */
   readOutcome?(
     key: string,
@@ -774,10 +776,32 @@ function captureReplayAuthorization(
   });
 }
 
+// The `readOutcome` closures `createIdempotencyStore` built. Each checks the
+// recorded outcome's key and binding hash against the exact requested terms.
+const bindingCheckedOutcomeLookups = new WeakSet<object>();
+
+/**
+ * Internal (not re-exported): true only for a `readOutcome` that
+ * `createIdempotencyStore` returned, so a recorded outcome it answers is bound
+ * to the requested key and terms by this module rather than by the caller.
+ */
+export function isBindingCheckedOutcomeLookup(value: unknown): boolean {
+  return typeof value === "function" && bindingCheckedOutcomeLookups.has(value);
+}
+
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),
   options: Readonly<SettlementIdempotencyStoreOptions> = {},
+): SettlementIdempotencyStore {
+  const store = buildIdempotencyStore(log, options);
+  bindingCheckedOutcomeLookups.add(store.readOutcome!);
+  return store;
+}
+
+function buildIdempotencyStore(
+  log: SettlementLog,
+  options: Readonly<SettlementIdempotencyStoreOptions>,
 ): SettlementIdempotencyStore {
   const policy = storeOptions(options);
   const durable = captureSettlementLog(log);

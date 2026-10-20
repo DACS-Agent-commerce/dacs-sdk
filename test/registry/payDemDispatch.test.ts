@@ -22,9 +22,11 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   evmErc20Settle: mocks.evmErc20Settle,
 }));
 
-import type {
-  SettlementBinding,
-  SettlementIdempotencyStore,
+import {
+  createIdempotencyStore,
+  isBindingCheckedOutcomeLookup,
+  type SettlementBinding,
+  type SettlementIdempotencyStore,
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
@@ -514,6 +516,37 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       .resolves.toEqual(outcome);
     expect(poison).not.toHaveBeenCalled();
     expect(store.keys).toEqual(["rail:job:4"]);
+  });
+
+  test("passes on an SDK store's own outcome lookup and binds an injected one", async () => {
+    const sdkStore = createIdempotencyStore();
+    const injected = {
+      keys: [] as string[],
+      once: vi.fn(),
+      // Uses its receiver, so it must stay bound to the store.
+      readOutcome: vi.fn(async function (this: { keys: string[] }, key: string) {
+        this.keys.push(key);
+        return null;
+      }),
+    };
+    mocks.createPayDemRail.mockResolvedValue({});
+    mocks.payDemSettle.mockReturnValue(vi.fn());
+    const descriptor = await authenticatedDefinition();
+    for (const settlementStore of [sdkStore, injected]) {
+      await settleFromRail(descriptor, {
+        demosRpc: "https://demos.example",
+        demosSecret: "test-secret",
+        payDem: { settlementStore },
+      });
+    }
+    const [sdkCaptured, injectedCaptured] = mocks.payDemSettle.mock.calls.map((call) => call[2].store!);
+    // payDemSettle lets only the SDK's lookup bind a retained hash without a journal entry.
+    expect(sdkCaptured.readOutcome).toBe(sdkStore.readOutcome);
+    expect(isBindingCheckedOutcomeLookup(sdkCaptured.readOutcome)).toBe(true);
+    expect(isBindingCheckedOutcomeLookup(injectedCaptured.readOutcome)).toBe(false);
+    await expect(injectedCaptured.readOutcome!("rail:job:4", storeBinding())).resolves.toBeNull();
+    expect(injected.readOutcome).toHaveBeenCalledWith("rail:job:4", storeBinding());
+    expect(injected.keys).toEqual(["rail:job:4"]);
   });
 
   test("retains a class store receiver across restart-style dispatch reconstruction", async () => {
