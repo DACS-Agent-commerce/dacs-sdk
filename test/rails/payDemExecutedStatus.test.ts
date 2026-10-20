@@ -975,4 +975,3 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 });
-

@@ -57,42 +57,49 @@ demosdk's transport retries a connection error or a 502 to 504 up to four
 times inside one read, so one read can take several seconds before the SDK
 sees its result.
 
-## Contracts for custom clients, rails and reconcilers
+## Custom clients, rails and reconcilers
 
-The SDK reads the node itself only inside `createPayDemRail`. A custom
-`DemosNativeClient`, `PayDemRail` or `PayDemSettlementReconcile` is the
-integrator's own chain access, so what it returns is its statement: the SDK
-checks the statement's shape and bindings, but cannot authenticate it.
+The SDK reads the node itself only inside `createPayDemRail`, so only that
+rail's verdicts are final. A custom `DemosNativeClient` or `PayDemRail` is the
+integrator's own chain access: what it returns is its statement, which the SDK
+cannot authenticate, so a fresh result from it never becomes a final verdict.
 
-- A `DemosNativeClient` resolves `ok: true, state: "included",
-  execution: "executed"` only after it has read and bound a `confirmed`
-  record. Without `execution: "executed"`, `payDemSettleCore` reports not-ok
-  and mints no finality. A `failed` result carries `errorClass: "permanent"`
-  only with a `failureProof` whose hash, block, payer, payee and amount match
-  the payment. Its `nonce` is checked against the transfer the client
-  journaled when the caller passes a per-settlement `journalPreparedTransfer`;
-  without one, the nonce is the client's statement, as `execution` is.
-  `createPayDemRail` fills it from the signed transaction.
-- A `PayDemRail` returns `PayDemRailResult`: success carries
-  `execution: "executed"`, and a failure never carries `execution`.
-  `payDemSettle` refuses a success without the attestation and a failure proof
-  that does not bind the payment, and holds the intent in both cases. It has
-  no signed nonce of its own, so a rail's proof nonce is the rail's statement.
+- `payDemSettleCore` with a custom `DemosNativeClient` reports
+  `ok: true`, `bft-final` finality, or a permanent failure only for the client
+  `createPayDemRail` builds. Any other client's result, including
+  `ok: true, state: "included", execution: "executed"` and a bound
+  `failureProof`, is held: `ok: false` with the signed hash and nothing else.
+  A malformed result still throws.
+- `payDemSettle` treats a `PayDemRail` the same way. Only the `settle`
+  function `createPayDemRail` returned (also when a caller places it on its
+  own object) yields success or a permanent failure. Any other rail's success
+  or failure proof, including a wrapper that relays the SDK rail's genuine
+  result, is held as `ok: false` with the hash: never persisted as the
+  outcome, and the next call for the key needs reconciliation. A success
+  without `execution: "executed"`, a failure that carries `execution`, and a
+  failure proof that does not bind the payment are refused, and the intent is
+  held in each case.
 - A `PayDemSettlementReconcile` returns a `PayDemReconciledSettlement` with
-  `execution: "executed"` only after the same record read, or a
-  `PayDemReconciledFailure` for a bound `failed` record. After a restart, a
-  durable outcome and a reconciliation that disagree on the transaction, the
-  block, success or any failure-proof field, the nonce included, are refused.
+  `execution: "executed"` only after reading and binding a `confirmed`
+  record, or a `PayDemReconciledFailure` for a bound `failed` record. The
+  reconciler is still the integrator's statement: it recovers a held intent
+  after a restart, and the SDK checks its shape and bindings only. After a
+  restart, a durable outcome and a reconciliation that disagree on the
+  transaction, the block, success or any failure-proof field, the nonce
+  included, are refused.
+
+Which capabilities the SDK built is kept private to the rails module, keyed
+by object identity. No file in the package exports a way to add to it; the
+only export is a read-only check the settlement store uses.
 
 The settlement store records a bound permanent failure as the definitive
 outcome for that key only when it comes from `payDemSettle` over the rail
 `createPayDemRail` returned, whose proof the SDK built from the record it
 read. A failure proof from any other source, including a custom rail, a rail
-that wraps the SDK rail's `settle`, or a reconciler, is returned to the caller
-but leaves the intent held: it is never a durable verdict and never permits a
-second broadcast. Neither outcome ever permits a replacement payment. The
-proof type is internal; a custom reconciler can name it as
-`PayDemReconciledFailure["failureProof"]`.
+that wraps the SDK rail's `settle`, or a reconciler, leaves the intent held:
+it is never a durable verdict and never permits a second broadcast. Neither
+outcome ever permits a replacement payment. The proof type is internal; a
+custom reconciler can name it as `PayDemReconciledFailure["failureProof"]`.
 
 `runSession` accepts the permanent failure only for a `pay-dem` request in
 DEM, with a bound proof whose `amountOs` is the request's amount in OS, on
@@ -102,6 +109,10 @@ the outcome is recorded, and the session stops as indeterminate.
 
 The dacs-node buyer track requires `execution: "executed"` on fresh rail
 results before it settles the wallet authority or publishes a payment notice.
+Its default runtime rail also reports success only after the SDK's Demos
+adapter reconciles the wallet journal to `canonical-confirmed`, which needs a
+`confirmed` record it read; a rail injected into the buyer track directly is
+the host's statement.
 Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
 no attestation, so an operator reconciler must return `completed` only after
 reading a bound `confirmed` record.
@@ -121,7 +132,7 @@ transaction yet.
 ## Node semantics
 
 These were read from kynesyslabs/node `stabilisation@61b8e75` and
-`stabilisation@52e2e569`:
+`stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308`:
 
 - `getTransactionStatus` reports `included` for every stored row, failed ones
   too, and never reports `failed`;
@@ -131,12 +142,17 @@ These were read from kynesyslabs/node `stabilisation@61b8e75` and
 - not-found is `{result: 400, response: "error"}` at 61b8e75 and
   `{result: 404, response: null}` at 52e2e569.
 
-The default `testnet` branch has no `getTransactionStatus`, so against such a
-node the rail never observes inclusion and stays indeterminate.
+The default `testnet` branch had no `getTransactionStatus` when read on
+2026-10-20, so against such a node the rail never observes inclusion and stays
+indeterminate.
 
-node2 reports 61b8e75, but its `getNetworkInfo` marks the build `dirty`, so its
-deployed bytes are not pinned to that commit, and its build time has changed
-between reads. The fixture is a set of envelopes node2 served on the dates it
-records, not a pin of a deployment. The rail does not depend on that build:
-a record without the fields listed above, or with any of them different,
-is indeterminate.
+From 2026-10-15 until early on 2026-10-20 node2 reported 61b8e75, and its
+`getNetworkInfo` marks the build `dirty`, so its deployed bytes were not pinned
+to that commit, and its build time changed between reads. Later on 2026-10-20
+node2 reported `11e7c8207732e25035de5a04cab25c5346046493` at `GET /version`,
+again from a dirty build, after a chain reset: it no longer serves the
+recorded hashes. The
+fixture is therefore a historical set of envelopes node2 served on the dates it
+records, not a pin of a deployment, and cannot be re-read today. The rail does
+not depend on that build: a record without the fields listed above, or with
+any of them different, is indeterminate.

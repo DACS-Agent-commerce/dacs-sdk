@@ -42,7 +42,25 @@ describe("pay-dem execution docs match the code (#338)", () => {
   it("says a failure proof from outside createPayDemRail never becomes the recorded outcome", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain(
-      "A failure proof from any other source, including a custom rail, a rail that wraps the SDK rail's `settle`, or a reconciler, is returned to the caller but leaves the intent held",
+      "A failure proof from any other source, including a custom rail, a rail that wraps the SDK rail's `settle`, or a reconciler, leaves the intent held",
     );
+  });
+
+  it("says only createPayDemRail's verdicts are final and nothing exports a way to vouch", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    expect(doc).toContain("The SDK reads the node itself only inside `createPayDemRail`, so only that rail's verdicts are final.");
+    expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else.");
+    expect(doc).toContain("No file in the package exports a way to add to it");
+    expect(doc).not.toMatch(/vouch/i);
+  });
+
+  it("dates the node2 build claims and keeps the fixture historical", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    const source = read("src/rails/payDem.ts").replace(/\s*\*\s*/g, " ");
+    expect(doc).not.toMatch(/node2 reports [0-9a-f]{7}/);
+    expect(source).not.toMatch(/node2 reports [0-9a-f]{7}/);
+    expect(doc).toContain("Later on 2026-10-20 node2 reported `11e7c8207732e25035de5a04cab25c5346046493`");
+    expect(doc).toContain("`stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308`");
+    expect(source).toContain("stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308");
   });
 });
