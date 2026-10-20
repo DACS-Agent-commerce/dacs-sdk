@@ -63,6 +63,14 @@ an entry cannot reuse an exact top-level §8.5 term member name:
 | Member names | `__proto__`, `constructor`, and `prototype` are refused at any depth | Inert as JSON, but they rebind prototypes in a consumer that merges entries by assignment |
 | U+0000 | Refused in every string value and member name, at any depth | Demos node `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` stores anchored data in a PostgreSQL `jsonb` column, which rejects U+0000, so such an Agreement could be co-signed but never anchored |
 
+Only `deriveFixedPriceAgreement` applies this profile.
+`createFixedPriceAgreementSigningPlan` and `signFixedPriceAgreement` take a
+draft as given and apply the reader checks (the signing plan also refuses
+numbers that are not safe integers), so a draft built by hand can carry an
+un-namespaced key, an oversized or over-deep record, a prototype member name,
+or U+0000, and such an Agreement may not anchor. Build drafts with
+`deriveFixedPriceAgreement`.
+
 **Consumers must never read a §8.5 term from `additionalTerms`.** The
 Agreement's price, rail, deadline, payout, deliverable, and Vet result are the
 §8.5 members outside `additionalTerms`, and nothing else. The shadowing rule
@@ -89,9 +97,12 @@ deriveFixedPriceAgreement({
 `respondToFixedPriceAgreementProposalDurable` re-derives the plan from the
 seller's own `resolveAuthenticatedAgreementContext` result, including its
 `additionalTerms`, and accepts the proposal only if that plan equals the
-offered one exactly. A buyer entry the seller context lacks, a seller entry the
-buyer omitted, or a single differing byte rejects the proposal at the `context`
-stage before any seller signature. The query's `candidateDraft` shows the
+offered one exactly. Both plans are canonical, so the comparison is of
+canonical values: string values compare after NFC normalisation (CORE §B.2
+CF-1), and member names compare exactly as written. A buyer entry the seller
+context lacks, a seller entry the buyer omitted, or any difference in a
+canonical value or member name rejects the proposal at the `context` stage
+before any seller signature. The query's `candidateDraft` shows the
 buyer's proposed entries; a resolver may read them as untrusted input, but it
 must return only entries that seller policy admits (known key, schema, limits,
 recomputed hashes). Copying them unchecked signs whatever the buyer wrote.

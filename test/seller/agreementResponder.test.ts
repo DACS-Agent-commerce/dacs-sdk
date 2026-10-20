@@ -1056,6 +1056,42 @@ describe("seller responder with fixed-price additionalTerms", () => {
       expect(h.state.calls.publication).toBe(0);
     });
 
+    test("NFC-equal values are co-signed; a differently spelled member name is not", async () => {
+      // CORE CF-1 normalises string values to NFC but leaves member names as
+      // written, so the plans compare canonical values, not raw bytes.
+      const decomposed = "Café";
+      const composed = "Café";
+      const equal = await respond(
+        jobId,
+        payeeBound,
+        { "acme:place:v1": { name: decomposed } },
+        { "acme:place:v1": { name: composed } },
+      );
+      expect(equal.result.disposition).toBe("complete");
+      if (equal.result.disposition !== "complete") return;
+      const agreement = await finalizeFixedPriceAgreementContributions(
+        equal.h.request.plan,
+        [equal.h.request.buyerContribution, equal.result.result.sellerContribution],
+        equal.h.durability.verifyContribution,
+      );
+      expect(agreement.terms.additionalTerms).toEqual({ "acme:place:v1": { name: composed } });
+      expect(equal.h.state.calls.signature).toBe(1);
+
+      const renamed = await respond(
+        jobId,
+        payeeBound,
+        { "acme:place:v1": { [decomposed]: true } },
+        { "acme:place:v1": { [composed]: true } },
+      );
+      expect(renamed.result).toMatchObject({
+        disposition: "rejected",
+        stage: "context",
+        reason: "proposal plan differs from the independently derived seller agreement",
+      });
+      expect(renamed.h.state.calls.signature).toBe(0);
+      expect(renamed.h.state.calls.publication).toBe(0);
+    });
+
     test("a seller context whose own terms break the profile is rejected", async () => {
       const { h, result } = await respond(jobId, payeeBound, terms, {
         ...terms,

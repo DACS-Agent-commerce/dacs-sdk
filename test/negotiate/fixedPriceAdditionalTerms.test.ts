@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -31,6 +32,7 @@ import {
   SELLER_SEED,
   input,
   payeeBoundInput,
+  rail,
 } from "./fixedPriceFixtures.js";
 
 // sha256(JCS(draft)) of every fixture, recorded from SDK main d1f0e60 before
@@ -63,6 +65,23 @@ const SERVICE_REQUEST_TERMS = {
   [REQUEST_KEY]: {
     request: REQUEST,
     requestHash: sha256Hex(canonicalize(REQUEST)),
+  },
+};
+
+// An extension entry restating every §8.5 payment and delivery term with a
+// contrary value. Only the outer terms may decide price, rail, deadline,
+// payout, deliverable or metered quantity.
+const CONTRARY_KEY = "acme:quoted-terms:v1";
+const CONTRARY_TERMS = {
+  [CONTRARY_KEY]: {
+    price: { amount: "0", currency: "DEM" },
+    rail: { railId: "demos-native:DEM", railVersion: 9 },
+    deadline: 0,
+    deliverable: { deliverableType: "other", hash: "0".repeat(64) },
+    payoutBindings: [
+      { railId: "demos-native:DEM", phaseIndex: 2, payeeAddress: "0xattacker" },
+    ],
+    meteredQuantity: { quantity: "999", unit: "request" },
   },
 };
 
@@ -148,6 +167,13 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
     }
   });
 
+  test("the published file allowlist ships the guide the JSDoc cites", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { files?: string[] };
+    expect(manifest.files).toContain("docs/fixed-price-agreement.md");
+  });
+
   test("an explicit undefined is refused like every other optional input member", () => {
     expect(() => deriveFixedPriceAgreement(withTerms(input(), undefined)))
       .toThrow(/fixed-price agreement input is not stable canonical JSON/);
@@ -203,6 +229,21 @@ describe("fixed-price additionalTerms (DACS-3 §8.5)", () => {
     expect(contentHash(first as unknown as Record<string, unknown>)).not.toBe(
       contentHash(second as unknown as Record<string, unknown>),
     );
+  });
+
+  test("string values are NFC-normalised and member names kept as written (CORE CF-1)", () => {
+    const decomposed = "Café";
+    const composed = "Café";
+    const derive = (terms: Record<string, unknown>) =>
+      deriveFixedPriceAgreement(withTerms(input(), terms));
+    const draft = derive({ "acme:place:v1": { [decomposed]: decomposed } });
+    expect(draft.terms.additionalTerms).toEqual({
+      "acme:place:v1": { [decomposed]: composed },
+    });
+    expect(draftHash(draft))
+      .toBe(draftHash(derive({ "acme:place:v1": { [decomposed]: composed } })));
+    expect(draftHash(draft))
+      .not.toBe(draftHash(derive({ "acme:place:v1": { [composed]: composed } })));
   });
 
   test("the derived draft owns its copy of the caller's terms", () => {
@@ -529,6 +570,112 @@ describe("fixed-price Agreement readers with additionalTerms", () => {
       }
     },
   );
+
+  test.each(VARIANTS)(
+    "%s: nested look-alike §8.5 terms in additionalTerms change no term or binding",
+    async (_name, build) => {
+      const verifiedListing = build().verifiedListing;
+      const baseDraft = deriveFixedPriceAgreement(build());
+      const baseline = validateFixedPriceAgreementBinding({
+        agreement: await sign(baseDraft),
+        verifiedListing,
+        committedAt: NOW,
+      });
+      const draft = deriveFixedPriceAgreement(withTerms(build(), CONTRARY_TERMS));
+      const { additionalTerms, ...outer } = draft.terms as typeof draft.terms & {
+        additionalTerms?: unknown;
+      };
+      expect(additionalTerms).toEqual(CONTRARY_TERMS);
+      expect(canonicalize(outer)).toBe(canonicalize(baseDraft.terms));
+
+      const signed = await sign(draft);
+      expect(isAgreementArtifact(signed)).toBe(true);
+      const binding = validateFixedPriceAgreementBinding({
+        agreement: signed,
+        verifiedListing,
+        committedAt: NOW,
+      });
+      expect(binding.agreementHash).toBe(
+        contentHash(signed as unknown as Record<string, unknown>),
+      );
+      expect(binding.agreementHash).not.toBe(baseline.agreementHash);
+      expect({ ...binding, agreementHash: baseline.agreementHash }).toEqual(baseline);
+    },
+  );
+
+  // Each outer term is forged while additionalTerms carries an exact copy of
+  // the valid outer terms. Both parties sign, so only the outer terms decide.
+  const OUTER_FORGERIES: Array<
+    [string, (terms: Record<string, unknown>) => void, RegExp, boolean]
+  > = [
+    ["price amount", (terms) => {
+      terms.price = { amount: "0.5", currency: "USDC" };
+    }, /agreement price is not the exact fixed-price Listing term/, false],
+    ["price currency", (terms) => {
+      terms.price = { amount: "1", currency: "DEM" };
+    }, /agreement price currency does not match the Listing/, false],
+    ["rail", (terms) => {
+      terms.rail = { ...rail, railId: "x402:other" };
+    }, /agreement rail is not an exact acceptedRails member/, false],
+    ["deliverable", (terms) => {
+      terms.deliverable = {
+        ...(terms.deliverable as Record<string, unknown>),
+        hash: "0".repeat(64),
+      };
+    }, /agreement deliverable does not match the pinned Listing/, false],
+    ["deadline", (terms) => {
+      terms.deadline = NOW + 600_000 + 1;
+    }, /agreement deadline exceeds the authenticated finality Listing limit/, false],
+    ["payout phase", (terms) => {
+      (terms.payoutBindings as Array<{ phaseIndex: number }>)[0]!.phaseIndex = 3;
+    }, /payee-bound agreement does not exactly cover the Listing pay phases/, true],
+  ];
+
+  describe.each(VARIANTS)("%s with a forged outer term", (name, build) => {
+    const payeeBound = name === "PayeeBoundAgreementDocument";
+    test.each(OUTER_FORGERIES.filter(([, , , payeeOnly]) => !payeeOnly || payeeBound))(
+      "is refused when only the outer %s is wrong",
+      async (_term, forge, error) => {
+        const honest = deriveFixedPriceAgreement(build());
+        const draft = deriveFixedPriceAgreement(withTerms(build(), {
+          [CONTRARY_KEY]: structuredClone(honest.terms),
+        }));
+        forge(draft.terms as unknown as Record<string, unknown>);
+        const signed = await sign(draft);
+        expect(isAgreementArtifact(signed)).toBe(true);
+        expect(
+          (signed.terms.additionalTerms![CONTRARY_KEY] as Record<string, unknown>),
+        ).toEqual(honest.terms);
+        expect(() => validateFixedPriceAgreementBinding({
+          agreement: signed,
+          verifiedListing: build().verifiedListing,
+          committedAt: NOW,
+        })).toThrow(error);
+      },
+    );
+  });
+
+  test("a metered Agreement is priced from the outer meteredQuantity only", async () => {
+    const build = FIXTURES.metered!;
+    const honest = deriveFixedPriceAgreement(build());
+    const spoofed = await sign(deriveFixedPriceAgreement(withTerms(build(), CONTRARY_TERMS)));
+    expect(() => validateFixedPriceAgreementBinding({
+      agreement: spoofed,
+      verifiedListing: build().verifiedListing,
+      committedAt: NOW,
+    })).not.toThrow();
+
+    const draft = deriveFixedPriceAgreement(withTerms(build(), {
+      [CONTRARY_KEY]: structuredClone(honest.terms),
+    }));
+    (draft.terms.meteredQuantity as { quantity: string }).quantity = "5";
+    const forged = await sign(draft);
+    expect(() => validateFixedPriceAgreementBinding({
+      agreement: forged,
+      verifiedListing: build().verifiedListing,
+      committedAt: NOW,
+    })).toThrow(/metered-total-mismatch/);
+  });
 
   test("readers keep the Standard's open record: profile limits bind producers only", async () => {
     // §8.5 allows any Record, and CORE §B.2 admits in-bound fractions. An
