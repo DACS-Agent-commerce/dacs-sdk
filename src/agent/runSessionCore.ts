@@ -319,7 +319,9 @@ export interface SessionDeps {
    * txRefKind, finality and any saved `networkFeeOs` to match the saved
    * record (from signed evidence alone: the hash, network, payee, block,
    * txRefKind and finality it carries, and the payer and any fee the session
-   * signed into it; evidence or an evidence checkpoint without that payer is
+   * signed into it, or for evidence signed before that payer existed, the
+   * payer the `payDemSettle` rail log binds and its evidence checkpoint then
+   * records; an evidence checkpoint without the payer the evidence signed is
    * held as indeterminate), and a saved failure proof (nonce
    * included) to be returned byte-for-byte; failure evidence without that
    * proof is held as indeterminate. Checking the node record against the retained
@@ -4668,6 +4670,12 @@ export async function runSessionCore(
     };
     const signedPayer = signedParties.dacsSdkSettlementPayer;
     const signedFee = signedParties.dacsSdkNetworkFeeOs;
+    // The payer and fee the audit re-asserts: the signed ones, or for evidence
+    // signed before they were bound, those its evidence checkpoint recorded
+    // from the SDK adapter's first re-read.
+    let boundPayer: unknown = signedPayer;
+    let boundFee: unknown = signedFee;
+    let evidenceCheckpoint = false;
 
     if (nativeSuccess) {
       const tx = unsignedEvidence.paymentTxRefs?.[0];
@@ -4696,26 +4704,29 @@ export async function runSessionCore(
             throw new CounterpartyError("saved native success evidence conflicts with the durable outcome");
           }
           if (recorded.status === "current-rail") prior = recorded.outcome;
-          // An evidence checkpoint must carry the evidence's payer and fee;
-          // one written before they were bound cannot be audited.
-          if (recorded.status === "current-evidence" &&
-              (recorded.outcome.payer === undefined || recorded.outcome.payer !== signedPayer ||
-                recorded.outcome.networkFeeOs !== signedFee)) {
-            throw new CounterpartyError(
-              "saved native success evidence checkpoint does not bind the evidence's payer and fee; " +
-                "the payment remains indeterminate",
-            );
+          // An evidence checkpoint must carry the payer and fee the evidence
+          // signed. For evidence that signed none, the checkpoint's own (if
+          // any) bind every later re-read; one without them, written before
+          // they existed, is left as it is and binds nothing.
+          if (recorded.status === "current-evidence") {
+            evidenceCheckpoint = true;
+            if (signedPayer !== undefined
+              ? recorded.outcome.payer !== signedPayer || recorded.outcome.networkFeeOs !== signedFee
+              : recorded.outcome.payer === undefined && recorded.outcome.networkFeeOs !== undefined) {
+              throw new CounterpartyError(
+                "saved native success evidence checkpoint does not bind the evidence's payer and fee; " +
+                  "the payment remains indeterminate",
+              );
+            }
+            boundPayer = recorded.outcome.payer;
+            boundFee = recorded.outcome.networkFeeOs;
           }
         }
       }
-      // A rail checkpoint binds the payer and fee itself; otherwise only the
-      // signed evidence can, and without it nothing is re-read.
-      if (signedPayer === undefined && !("outcomeSource" in prior)) {
-        throw new CounterpartyError(
-          "saved native success evidence binds no payer and no rail checkpoint holds one; " +
-            "the payment remains indeterminate",
-        );
-      }
+      // Without a signed payer or a checkpoint holding one, only the SDK
+      // adapter's re-read can bind it: its retained-hash audit succeeds only
+      // through the SDK's own rail log for this key, whose binding names the
+      // paying wallet. Any other success is refused below.
       const authenticated = await recoverRailOutcome(
         "saved native success evidence requires execution reconciliation", prior, false,
       );
@@ -4729,11 +4740,15 @@ export async function runSessionCore(
           authenticated.txRefKind !== identity.kind || claimed?.model !== reread.model ||
           claimed.finalityBlocks !== reread.finalityBlocks ||
           claimed.finalityCommitmentLevel !== reread.finalityCommitmentLevel ||
-          (signedPayer !== undefined && authenticated.payer !== signedPayer) ||
-          (signedFee !== undefined && authenticated.networkFeeOs !== signedFee)) {
+          (boundPayer !== undefined && authenticated.payer !== boundPayer) ||
+          (boundFee !== undefined && authenticated.networkFeeOs !== boundFee)) {
         throw new CounterpartyError("saved native success evidence contradicts chain execution");
       }
       assertPayDemAdapterSuccess(authenticated);
+      if (boundPayer === undefined && !evidenceCheckpoint && !("outcomeSource" in prior)) {
+        boundPayer = authenticated.payer;
+        boundFee = authenticated.networkFeeOs;
+      }
     }
 
     // Without a SessionStore no failure proof outlives the run that minted the
@@ -4782,8 +4797,8 @@ export async function runSessionCore(
           ? { blockNumber: txIdentity.blockNumber }
           : {}),
         ok: settledOk,
-        ...(nativeSuccess && typeof signedPayer === "string" ? { payer: signedPayer } : {}),
-        ...(nativeSuccess && typeof signedFee === "string" ? { networkFeeOs: signedFee } : {}),
+        ...(nativeSuccess && typeof boundPayer === "string" ? { payer: boundPayer } : {}),
+        ...(nativeSuccess && typeof boundFee === "string" ? { networkFeeOs: boundFee } : {}),
       };
 
       // Bind every authenticated tx identifier before declaring the phase

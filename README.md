@@ -693,9 +693,10 @@ pinned. No-repayment across a whole-process crash additionally requires a durabl
 alone cannot prove whether a lost rail response moved value. The legacy native-ref
 input remains available for callers with a separate trusted pin.
 
-A saved native DEM outcome is not reused on trust. Every resume, including a
-re-run of a completed session, calls `resumeSettlement` once as a read-only audit
-of the retained transaction hash. With the session's rail checkpoint in the
+A saved native DEM outcome is not reused on trust. A resume that holds one,
+including a re-run of a completed session, calls `resumeSettlement` once as a
+read-only audit of the retained transaction hash, except in the cases below
+that are held without a rail call. With the session's rail checkpoint in the
 `SessionStore`, a success is kept only when the rail re-reads a `confirmed`
 record with the same block, kind, parties, finality and any saved fee, and a
 permanent failure only when it returns the identical failure proof. From the
@@ -703,9 +704,16 @@ signed evidence alone (no `SessionStore`, or one without that checkpoint), a
 success is kept only when the re-read matches the evidence's block, kind and
 finality, the request-bound payee, and the payer and any fee the session
 signed into the evidence (`dacsSdkSettlementPayer`, `dacsSdkNetworkFeeOs`).
-Evidence signed before those fields existed, or an evidence checkpoint without
-them, is held as indeterminate without a rail call. Failure evidence there has
-no proof to re-read, so it is held as indeterminate without a rail call too.
+Evidence signed before those fields existed is audited the same way, and its
+payer is the one the `payDemSettle` rail log recorded for the job's settlement
+key (that log's binding names the paying wallet; the audit fails closed when
+the record did not survive). A `SessionStore` then records the payer and fee
+of that first re-read beside the evidence, and later resumes must repeat them;
+an evidence checkpoint written before payers were bound is left as it is, and
+every resume re-reads through the rail log. Held as indeterminate without a
+rail call: an evidence checkpoint without the payer and fee the evidence
+signed, and failure evidence without a `SessionStore` (it has no proof to
+re-read).
 Absence, an indeterminate read, another hash
 or any mismatch fails closed without paying again. A failure read for a saved
 success, a bound failed record included, is refused the same way: the session
