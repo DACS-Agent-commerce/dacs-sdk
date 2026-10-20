@@ -1247,6 +1247,8 @@ export {
   createInMemorySettlementLog,
   settlementBindingHash,
   settlementKey,
+  type SettlementAttemptRecord,
+  type SettlementAttemptWrite,
   type SettlementBinding,
   type SettlementEffectFence,
   type SettlementIdempotencyStore,
