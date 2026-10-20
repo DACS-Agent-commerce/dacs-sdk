@@ -1,7 +1,6 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
-import { vouchRecordVerifiedSource } from "../../src/agent/settlementFailure.js";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
@@ -13,6 +12,10 @@ import {
   type PayDemSettlementAuditContext,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
+import { demosNode, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import { seedSdkOutcome } from "../fixtures/settlementOutcomeSeed.js";
+
+vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
 
 type ReconcileContext = Parameters<PayDemSettlementReconcile>[0];
 
@@ -20,6 +23,7 @@ const txHash = "12".repeat(32);
 const payer = "ab".repeat(32);
 const payee = "cd".repeat(32);
 const payeeClaim = `did:demos:agent:${payee}`;
+beforeEach(() => resetDemosNode({ payer, txHash }));
 const prior = (ok = true): SettlementRecoveryAttempt => ({ txHash, chainId: "demos", ok });
 const request = (priorAttempts: readonly SettlementRecoveryAttempt[] = [prior()]): SettleRequest => ({
   rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "retained-native",
@@ -58,12 +62,15 @@ function fixture(
 // own record of the hash for the key, which an audit needs to count it.
 async function settledLog(outcome: ReturnType<typeof executed> | ReturnType<typeof failed>, network = "demos") {
   const log = createInMemorySettlementLog();
-  const { amountOs: _amount, preparedTransfer: _journal, ...result } = outcome;
+  const { amountOs: _amount, preparedTransfer: _journal, ...rest } = outcome;
+  const { execution: _execution, ...result } = rest as typeof rest & { execution?: unknown };
   const { priorAttempts: _history, ...fresh } = request();
-  // Stands in for createPayDemRail, so a failed outcome is recorded.
-  const settle = vouchRecordVerifiedSource(async () => ({ ...result, chainId: network }));
-  await payDemSettle({ address: payer, settle }, { network },
-    { store: createIdempotencyStore(log) })(fresh);
+  const settle = async () => ({ ...rest, chainId: network });
+  // A caller's rail is held, with the hash recorded; the outcome is then
+  // written as createPayDemRail's own settle would have left it.
+  await seedSdkOutcome(log, { ...result, chainId: network }, () =>
+    payDemSettle({ address: payer, settle }, { network },
+      { store: createIdempotencyStore(log) })(fresh));
   return log;
 }
 
@@ -274,14 +281,10 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
   });
 
   test("an in-process authenticated success is rechecked by a later audit but never demoted", async () => {
-    const submit = vi.fn(async () => {
-      const { amountOs: _amount, preparedTransfer: _journal, ...result } = executed();
-      return result;
-    });
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
     const store = createIdempotencyStore();
     const once = vi.spyOn(store, "once");
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    const settle = payDemSettle(await sdkRail(), { network: "demos" }, { store, reconcile });
     const { priorAttempts: _history, ...fresh } = request();
     await expect(settle(fresh)).resolves.toMatchObject({ ok: true });
     for (const req of [request([prior(false)]), request(), fresh]) {
@@ -290,7 +293,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     // The contradiction was not recorded: a confirming audit still reports A paid.
     reconcile.mockImplementation(async () => executed());
     await expect(settle(fresh)).resolves.toMatchObject({ ok: true, txHash, blockNumber: 42 });
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
     expect(once).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledTimes(4);
   });
@@ -362,9 +365,8 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     const putOutcome = vi.spyOn(log, "putOutcome").mockRejectedValueOnce(lost);
     let now = 1_000;
     const store = createIdempotencyStore(log, { now: () => now, leaseDurationMs: 1_000 });
-    const submit = vi.fn(async () => ({ ...storedSuccess, execution: "executed" as const }));
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    const settle = payDemSettle(await sdkRail(), { network: "demos" }, { store, reconcile });
     const { priorAttempts: _history, ...fresh } = request();
     await expect(settle(fresh)).rejects.toBe(lost);
     now += 2_000;
@@ -374,7 +376,7 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     now += 2_000;
     await expect(settle(fresh)).resolves.toMatchObject({ ok: true, txHash });
     await expect(store.readOutcome!(key, binding)).resolves.toEqual(storedSuccess);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
     expect(reconcile).toHaveBeenCalledTimes(2);
   });
 
@@ -386,14 +388,15 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     let started!: () => void;
     const submitted = new Promise<void>((resolve) => { started = resolve; });
     const gate = new Promise<void>((resolve) => { finish = resolve; });
-    const submit = vi.fn(async () => {
+    // The rail has recorded its hash and broadcast; it waits for inclusion.
+    demosNode.nodeCall.mockImplementation(async () => {
       started();
       await gate;
-      return { ...storedSuccess, execution: "executed" as const };
+      return { state: "included", blockNumber: 42 };
     });
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
-    const settle = payDemSettle({ address: payer, settle: submit },
-      {}, { store: createIdempotencyStore(log, { ...options, owner: "a" }), reconcile });
+    const settle = payDemSettle(await sdkRail(), { network: "demos" },
+      { store: createIdempotencyStore(log, { ...options, owner: "a" }), reconcile });
     const { priorAttempts: _history, ...fresh } = request();
     const slow = settle(fresh);
     await submitted;
@@ -404,12 +407,13 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
       {}, { store: createIdempotencyStore(log, { ...options, owner: "b" }), reconcile });
     await expect(other(fresh)).rejects.toThrow(/reconciliation was not definitive/);
     finish();
-    // The superseded generation can no longer record its hash, so nothing is persisted.
-    await expect(slow).rejects.toThrow(/attempt was produced by a stale generation/);
+    // The rail recorded its hash under its own generation before it broadcast;
+    // the superseded generation can no longer write the outcome.
+    await expect(slow).rejects.toThrow(/outcome was produced by a stale generation/);
     // The other writer's lease has expired too: the reconciled failure is
     // refused against the success this bridge authenticated.
     now += 2_000;
     await expect(settle(fresh)).rejects.toThrow(demoted);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
   });
 });

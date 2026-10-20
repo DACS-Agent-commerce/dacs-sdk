@@ -621,7 +621,10 @@ the hash and finding it `confirmed` for this payer, payee and amount; a
 authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
-recorded outcome by itself. A non-final observation must throw. See
+recorded outcome by itself. A non-final observation must throw. Only the rail
+`createPayDemRail` returns reads the node's record itself, so a custom
+`DemosNativeClient` or `PayDemRail` result is held as `ok: false` with its
+hash and never becomes a final success or permanent failure. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize

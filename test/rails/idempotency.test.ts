@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
-import { vouchRecordVerifiedSource } from "../../src/agent/settlementFailure.js";
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
 import {
   createIdempotencyStore,
@@ -889,21 +888,12 @@ describe("pay-dem terminal-failure proof binding", () => {
     }).filter(([, value]) => value !== undefined),
   ) as unknown as SettleResult;
 
-  test("persists a record-verified failed record as definitive and reuses it without resubmitting", async () => {
-    const log = createInMemorySettlementLog();
-    const store = createIdempotencyStore(log);
-    const submit = vouchRecordVerifiedSource(vi.fn(async () => failed()));
-    await expect(store.once(DEM_KEY, demBinding(), submit)).resolves.toEqual(failed());
-    const restarted = createIdempotencyStore(log);
-    await expect(restarted.once(DEM_KEY, demBinding(), submit)).resolves.toEqual(failed());
-    await expect(restarted.readOutcome!(DEM_KEY, demBinding())).resolves.toEqual(failed());
-    expect(submit).toHaveBeenCalledTimes(1);
-  });
-
   // The proof checks shape and bindings, not origin. One no node served, from
   // a caller's own submission, must keep the attempt held: never a durable
-  // verdict and never a second submission.
-  test("keeps an invented, self-consistent proof from an unvouched submission held", async () => {
+  // verdict and never a second submission. Only payDemSettle's submission
+  // around createPayDemRail's own settle is record-verified; the persisted
+  // case is pinned with that rail in payDemExecutedStatus.test.ts.
+  test("keeps an invented, self-consistent proof from a caller's submission held", async () => {
     const log = createInMemorySettlementLog();
     const putOutcome = vi.spyOn(log, "putOutcome");
     const invented = failed({

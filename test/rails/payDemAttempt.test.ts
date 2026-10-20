@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest } from "../../src/agent/runSessionCore.js";
 import {
@@ -15,11 +15,15 @@ import {
   type PayDemSettlementAuditContext,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
+import { resetDemosNode, sdkRail } from "../fixtures/demosNodeMock.js";
+
+vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
 
 const hashA = "56".repeat(32);
 const hashB = "78".repeat(32);
 const payer = "ab".repeat(32);
 const payee = "cd".repeat(32);
+beforeEach(() => resetDemosNode({ payer, txHash: hashA }));
 const claim = `did:demos:agent:${payee}`;
 const request = (jobId: string, txHash?: string, ok = false): SettleRequest => ({
   rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId, amount: "1", asset: "DEM",
@@ -273,9 +277,9 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
       releaseIntent: (input) => memory.releaseIntent(input),
     };
     const run = processes(legacy);
-    const { amountOs: _amount, ...result } = executed(hashA);
-    const rail: PayDemRail = { address: payer, settle: vi.fn(async () => result) };
-    await expect(payDemSettle(rail, {}, { store: run.store("A") })(request("job-a")))
+    // The SDK's own rail reports a final success, but the log cannot record its hash.
+    const rail = await sdkRail();
+    await expect(payDemSettle(rail, { network: "demos" }, { store: run.store("A") })(request("job-a")))
       .resolves.toMatchObject({ ok: true, txHash: hashA });
 
     run.restart();

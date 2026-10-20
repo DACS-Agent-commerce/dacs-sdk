@@ -1,10 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
-import { hasDefinitiveDemosFailure, vouchRecordVerifiedSource } from "../../src/agent/settlementFailure.js";
+import { hasDefinitiveDemosFailure } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog,
   type SettlementBinding } from "../../src/rails/idempotency.js";
 import { payDemSettle, payDemSettleCore,
   type PayDemRailResult } from "../../src/rails/payDem.js";
+import { resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+
+vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
 
 const txHash = "ab".repeat(32);
 const payer = "11".repeat(32);
@@ -18,6 +21,11 @@ const binding: SettlementBinding = { bindingVersion: "1", railId: "pay-dem",
   agreementAsset: "DEM", settlementAsset: "DEM", payer, payee, network: "demos",
   finality: { model: "bft-final" } };
 const key = "pay-dem:failure-proof:0";
+// The node signs `txHash` at the proof's nonce and records it `failed` in the
+// proof's block: createPayDemRail's own settle reads and binds that record, so
+// its proof is the only one the store may keep as the definitive outcome.
+beforeEach(() => resetDemosNode({ payer, txHash, nonce: proof.nonce, blockNumber: proof.blockNumber,
+  recordStatus: "failed" }));
 
 describe("terminal failed Demos record", () => {
   it.each(["", " demos", "demos ", "de\u0301mos"])(
@@ -33,31 +41,23 @@ describe("terminal failed Demos record", () => {
     expect(hasDefinitiveDemosFailure({ ...failure, txHash: hash,
       failureProof: { ...proof, txHash: hash } }, proof.amountOs, "demos")).toBe(false);
   });
-  it("persists a record-verified permanent result and reuses it after a store restart without submission", async () => {
+  it.each(["demos", "demos:testnet"])("classifies and persists a record-verified failed record on %s and reuses it after a store restart without submission", async (network) => {
     const log = createInMemorySettlementLog();
-    const submit = vouchRecordVerifiedSource(vi.fn(async () => failure));
-    await expect(createIdempotencyStore(log).once(key, binding, submit)).resolves.toEqual(failure);
-    const forbidden = vi.fn(async () => { throw new Error("must not submit or reconcile"); });
-    await expect(createIdempotencyStore(log).once(key, binding, forbidden, forbidden))
-      .resolves.toEqual(failure);
-    expect(submit).toHaveBeenCalledTimes(1);
-    expect(forbidden).not.toHaveBeenCalled();
-  });
-
-  it.each(["demos", "demos:testnet"])("classifies and persists a bound failed record on %s", async (network) => {
-    const transfer = vi.fn(async () => ({ ok: false, hash: txHash, state: "failed",
-      blockNumber: 42, failureProof: proof }));
-    const result = await payDemSettleCore({ recipient: payee, amount: proof.amountOs, network },
-      { address: payer, transfer } as never);
-    expect(result).toEqual({ ...failure, chainId: network });
-    const log = createInMemorySettlementLog();
-    await expect(createIdempotencyStore(log).once(key, { ...binding, network },
-      vouchRecordVerifiedSource(async () => result)))
-      .resolves.toEqual(result);
-    const forbidden = vi.fn(async () => { throw new Error("must not submit"); });
-    await expect(createIdempotencyStore(log).once(key, { ...binding, network }, forbidden))
-      .resolves.toEqual(result);
-    expect(forbidden).not.toHaveBeenCalled();
+    const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
+      payee: `did:demos:agent:${payee}`, expectedPayee: payee, jobId: "failure-proof", phaseIndex: 0 };
+    const rail = await sdkRail();
+    const result = await payDemSettle(rail, { network }, { store: createIdempotencyStore(log) })(request);
+    expect(result).toMatchObject({ ...failure, chainId: network });
+    await expect(createIdempotencyStore(log).readOutcome!(key, { ...binding, network }))
+      .resolves.toMatchObject({ ...failure, chainId: network });
+    // A restarted bridge authenticates the durable outcome by reconciliation.
+    const reconcile = vi.fn(async () => ({ ...failure, chainId: network, amountOs: proof.amountOs,
+      ok: false as const, errorClass: "permanent" as const, failureProof: proof }));
+    const restarted = payDemSettle(rail, { network },
+      { store: createIdempotencyStore(log), reconcile });
+    await expect(restarted(request)).resolves.toEqual(result);
+    expect(sdkTransfers()).toBe(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
   });
 
   it("refuses failure reconciliation from a different configured network", async () => {
@@ -115,17 +115,16 @@ describe("terminal failed Demos record", () => {
     const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
       payee: `did:demos:agent:${payee}`, expectedPayee: payee,
       jobId: "failure-proof", phaseIndex: 0 };
-    const submit = vouchRecordVerifiedSource(vi.fn(async () => failure));
-    await payDemSettle({ address: payer, settle: submit }, {},
-      { store: createIdempotencyStore(log) })(request);
-    const restarted = payDemSettle({ address: payer, settle: submit }, {}, {
+    const rail = await sdkRail();
+    await payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(log) })(request);
+    const restarted = payDemSettle(rail, { network: "demos" }, {
       store: createIdempotencyStore(log),
       reconcile: async () => ({ ok: true, txHash, payer, payee, chainId: "demos",
         execution: "executed", amountOs: proof.amountOs, blockNumber: 42,
         finality: { model: "bft-final" }, txRefKind: "demos" }),
     });
     await expect(restarted(request)).rejects.toThrow(/contradicts the authoritative reconciled outcome/);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
   });
 
   it.each([

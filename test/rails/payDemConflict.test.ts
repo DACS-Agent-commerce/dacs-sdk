@@ -1,15 +1,21 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
-import { vouchRecordVerifiedSource } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog, type SettlementBinding } from "../../src/rails/idempotency.js";
-import { type PayDemRail, type PayDemSettlementReconcile, payDemSettle } from "../../src/rails/payDem.js";
+import { type PayDemSettlementReconcile, payDemSettle } from "../../src/rails/payDem.js";
+import { demosNode, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import { seedSdkOutcome } from "../fixtures/settlementOutcomeSeed.js";
+
+vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
 
 const hashA = "12".repeat(32);
 const hashB = "34".repeat(32);
 const payer = "ab".repeat(32);
 const payee = "cd".repeat(32);
 const claim = `did:demos:agent:${payee}`;
+// The node signs hash A at nonce 9 and includes it at block 42; the SDK's own
+// rail reads that record, so its verdict is the one this bridge may keep final.
+beforeEach(() => resetDemosNode({ payer, txHash: hashA }));
 const request: SettleRequest = {
   rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "conflicting-native",
   amount: "1", asset: "DEM", payee: claim, expectedPayee: claim,
@@ -25,10 +31,6 @@ const executed = (txHash = hashA) => ({
   blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
   execution: "executed" as const, preparedTransfer: journal(txHash),
 });
-const freshSuccess = () => {
-  const { amountOs: _amount, preparedTransfer: _journal, ...result } = executed();
-  return result;
-};
 const failed = (txHash = hashB) => ({
   ok: false as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
   blockNumber: 42, txRefKind: "demos", errorClass: "permanent" as const,
@@ -59,22 +61,20 @@ describe("pay-dem cross-store transaction identity", () => {
     "retains paid A or quarantines B (restart=$restart, B executed=$bExecuted)",
     async ({ restart, bExecuted }) => {
       const log = createInMemorySettlementLog();
-      const submit = vi.fn(async () => {
-        const { amountOs: _amount, preparedTransfer: _journal, ...result } = executed();
-        return result;
-      });
       const reconcile = vi.fn(async () => bExecuted ? executed(hashB) : failed());
       const store = createIdempotencyStore(log);
-      const rail = { address: payer, settle: submit };
-      const settle = payDemSettle(rail, {}, { store, reconcile });
+      const rail = await sdkRail();
+      const settle = payDemSettle(rail, { network: "demos" }, { store, reconcile });
       await expect(settle(request)).resolves.toMatchObject({ ok: true, txHash: hashA });
-      const audit = restart ? payDemSettle(rail, {}, { store: createIdempotencyStore(log), reconcile }) : settle;
+      const audit = restart
+        ? payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(log), reconcile })
+        : settle;
       // The bridge's authenticated A, or the rail log's A after a restart,
       // refuses history B before any chain read.
       await expect(audit({ ...request, priorAttempts: [{ txHash: hashB, chainId: "demos", ok: true }] }))
         .rejects.toThrow(/retained transaction conflicts with the rail outcome/);
       expect(reconcile).not.toHaveBeenCalled();
-      expect(submit).toHaveBeenCalledTimes(1);
+      expect(sdkTransfers()).toBe(1);
       await expect(createIdempotencyStore(log).readOutcome!("pay-dem:conflicting-native:0", binding))
         .resolves.toMatchObject({ ok: true, txHash: hashA });
     },
@@ -90,27 +90,26 @@ describe("pay-dem retained identity conflict quarantine", () => {
       const claimIntent = vi.spyOn(log, "claimIntent");
       const putOutcome = vi.spyOn(log, "putOutcome");
       const store = createIdempotencyStore(log);
-      // Stands in for createPayDemRail, so a failed outcome is recorded.
-      const submit = vouchRecordVerifiedSource(vi.fn<PayDemRail["settle"]>(async () => {
-        if (paid) return freshSuccess();
-        const { amountOs: _amount, preparedTransfer: _journal, ...result } = failed(hashA);
-        return result;
-      }));
+      // createPayDemRail over a node that records hash A paid or failed, so its
+      // failed outcome is recorded.
+      resetDemosNode({ payer, txHash: hashA, recordStatus: paid ? "confirmed" : "failed" });
       const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
-      const rail = { address: payer, settle: submit };
-      const settle = payDemSettle(rail, {}, { store, reconcile });
+      const rail = await sdkRail();
+      const settle = payDemSettle(rail, { network: "demos" }, { store, reconcile });
       await settle(request);
       expect(claimIntent).toHaveBeenCalledTimes(1);
       expect(putOutcome).toHaveBeenCalledTimes(1);
       claimIntent.mockClear();
       putOutcome.mockClear();
-      const resumed = restart ? payDemSettle(rail, {}, { store: createIdempotencyStore(log), reconcile }) : settle;
+      const resumed = restart
+        ? payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(log), reconcile })
+        : settle;
       await expect(resumed(history())).rejects.toThrow(/conflicts with the rail outcome/);
       await expect(resumed(history())).rejects.toThrow(/different.*transaction|conflicts/);
       expect(reconcile).not.toHaveBeenCalled();
       expect(claimIntent).not.toHaveBeenCalled();
       expect(putOutcome).not.toHaveBeenCalled();
-      expect(submit).toHaveBeenCalledTimes(1);
+      expect(sdkTransfers()).toBe(1);
       await expect(store.readOutcome!("pay-dem:conflicting-native:0", binding))
         .resolves.toEqual(stored(paid ? executed() : failed(hashA)));
       // Correct history still audits A. A conflict never clears its identity.
@@ -141,12 +140,14 @@ describe("pay-dem retained identity conflict quarantine", () => {
   ])("cannot replace a permanent proof with %s", async (change, message) => {
     const log = createInMemorySettlementLog();
     const putOutcome = vi.spyOn(log, "putOutcome");
+    // This key's own submit records its hash; the failure is then persisted as
+    // createPayDemRail's own record-verified settle would have left it.
+    await seedSdkOutcome(log, stored(failed(hashA)), () =>
+      createIdempotencyStore(log).once("pay-dem:conflicting-native:0", binding, async (fence) => {
+        await fence!.recordAttempt!(hashA);
+        return stored(failed(hashA));
+      }));
     const store = createIdempotencyStore(log);
-    // This key's own record-verified submit records its hash, then the failure.
-    await store.once("pay-dem:conflicting-native:0", binding, vouchRecordVerifiedSource(async (fence) => {
-      await fence!.recordAttempt!(hashA);
-      return stored(failed(hashA));
-    }));
     putOutcome.mockClear();
     const reply = change === "success" ? executed() : {
       ...failed(hashA), ...(change === "block" ? { blockNumber: 43 } : {}),
@@ -164,12 +165,14 @@ describe("pay-dem retained identity conflict quarantine", () => {
 
   test.each([true, false])("keeps a stored permanent failure and refuses a reconciled failure that carries fee fields (history=%s)", async (withHistory) => {
     const log = createInMemorySettlementLog();
+    // This key's own submit records its hash; the failure is then persisted as
+    // createPayDemRail's own record-verified settle would have left it.
+    await seedSdkOutcome(log, stored(failed(hashA)), () =>
+      createIdempotencyStore(log).once("pay-dem:conflicting-native:0", binding, async (fence) => {
+        await fence!.recordAttempt!(hashA);
+        return stored(failed(hashA));
+      }));
     const store = createIdempotencyStore(log);
-    // This key's own record-verified submit records its hash, then the failure.
-    await store.once("pay-dem:conflicting-native:0", binding, vouchRecordVerifiedSource(async (fence) => {
-      await fence!.recordAttempt!(hashA);
-      return stored(failed(hashA));
-    }));
     const putOutcome = vi.spyOn(log, "putOutcome");
     const submit = vi.fn();
     // Same transaction, block and proof; a failure carries no fee fields.
@@ -232,11 +235,16 @@ describe("pay-dem retained identity conflict quarantine", () => {
     let started!: () => void;
     const submitted = new Promise<void>((resolve) => { started = resolve; });
     const gate = new Promise<void>((resolve) => { finish = resolve; });
-    const submit = vi.fn(async () => { started(); await gate; return freshSuccess(); });
+    // The rail has recorded its hash and broadcast; it waits for inclusion.
+    demosNode.nodeCall.mockImplementation(async () => {
+      started();
+      await gate;
+      return { state: "included", blockNumber: 42 };
+    });
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
     const store = createIdempotencyStore();
     const once = vi.spyOn(store, "once");
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    const settle = payDemSettle(await sdkRail(), { network: "demos" }, { store, reconcile });
     const fresh = settle(request);
     await submitted;
     const audit = expect(settle(history())).rejects.toThrow(/conflicts with the rail outcome/);
@@ -245,7 +253,7 @@ describe("pay-dem retained identity conflict quarantine", () => {
     await audit;
     expect(reconcile).not.toHaveBeenCalled();
     expect(once).toHaveBeenCalledTimes(1);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
   });
 
   test("keeps a success another bridge records for the retained hash during the audit", async () => {
@@ -336,10 +344,15 @@ describe("pay-dem serializes calls for one settlement key", () => {
     let started!: () => void;
     const submitted = new Promise<void>((resolve) => { started = resolve; });
     const gate = new Promise<void>((resolve) => { finish = resolve; });
-    const submit = vi.fn(async () => { started(); await gate; return freshSuccess(); });
+    // The rail has recorded its hash and broadcast; it waits for inclusion.
+    demosNode.nodeCall.mockImplementation(async () => {
+      started();
+      await gate;
+      return { state: "included", blockNumber: 42 };
+    });
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
     const store = unwaitingStore();
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: store as never, reconcile });
+    const settle = payDemSettle(await sdkRail(), { network: "demos" }, { store: store as never, reconcile });
     const fresh = settle(request);
     await submitted;
     const audit = expect(settle(history())).rejects.toThrow(/conflicts with the rail outcome/);
@@ -349,7 +362,7 @@ describe("pay-dem serializes calls for one settlement key", () => {
     await expect(fresh).resolves.toMatchObject({ txHash: hashA, ok: true });
     await audit;
     expect(reconcile).not.toHaveBeenCalled();
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
   });
 
   test("a failed earlier audit does not reject the call queued behind it", async () => {
@@ -359,13 +372,12 @@ describe("pay-dem serializes calls for one settlement key", () => {
     const reconcile = vi.fn<PayDemSettlementReconcile>()
       .mockImplementationOnce(async () => { await gate; throw cause; })
       .mockImplementation(async () => executed());
-    const submit = vi.fn(async () => freshSuccess());
     const store = unwaitingStore();
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: store as never, reconcile });
+    const settle = payDemSettle(await sdkRail(), { network: "demos" }, { store: store as never, reconcile });
     // This bridge paid A itself, so its own record binds A to the key.
     await expect(settle(request)).resolves.toMatchObject({ ok: true, txHash: hashA });
     store.once.mockClear();
-    submit.mockClear();
+    const transfers = sdkTransfers();
     const first = expect(settle(history(hashA, false))).rejects.toBe(cause);
     const second = settle(history(hashA, false));
     await new Promise((resolve) => setImmediate(resolve));
@@ -375,6 +387,6 @@ describe("pay-dem serializes calls for one settlement key", () => {
     await expect(second).resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(reconcile).toHaveBeenCalledTimes(2);
     expect(store.once).not.toHaveBeenCalled();
-    expect(submit).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(transfers);
   });
 });

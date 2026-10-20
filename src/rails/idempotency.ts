@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
-import {
-  hasDefinitiveDemosFailure,
-  isRecordVerifiedSource,
-} from "../agent/settlementFailure.js";
+import { hasDefinitiveDemosFailure } from "../agent/settlementFailure.js";
+// The rails module owns the private set of SDK record-reading submissions; this
+// read-only predicate is the only way to consult it. The import is cyclic
+// (payDem imports this module) and is used only at call time.
+import { isRecordVerifiedSource } from "./payDem.js";
 import type { SettleResult } from "../agent/runSessionCore.js";
 import {
   canonicalize,
@@ -722,9 +723,10 @@ export function settlementKey(railId: string, jobId: string, phaseIndex: number)
 
 /**
  * A success with a hash is definitive. A bound terminal failure is definitive
- * only when `recordVerified`: the submission is one the SDK vouched for, whose
- * proof it built from a node record it read itself. A proof from a caller's
- * rail, submission or reconciler is a statement, so its intent stays held.
+ * only when `recordVerified`: the submission is `payDemSettle`'s around
+ * `createPayDemRail`'s own settle, whose proof the SDK built from a node record
+ * it read itself. A proof from a caller's rail, submission or reconciler is a
+ * statement, so its intent stays held.
  */
 function isDefinitive(
   result: Readonly<SettleResult>,
