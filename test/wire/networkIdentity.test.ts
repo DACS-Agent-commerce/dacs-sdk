@@ -1,6 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Network identity gate with instrumented signers and transports. Missing
@@ -40,6 +40,7 @@ vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
+const { inMemoryJournalForTest } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -289,7 +290,7 @@ describe("TP-1 network identity gate", () => {
     // The exact tuple, or none kept yet for a new purchase, opens the request and signs the answer.
     for (const purchaseProfile of [w.sellerBinding.profile, null]) {
       const opened = openWireEnvelope(w.header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile });
-      checkWireRequest(opened, { ...w.check, binding: w.sellerBinding, local: RPC_B, purchaseProfile });
+      checkWireRequest(opened, { ...w.check, requestJournal: inMemoryJournalForTest(), binding: w.sellerBinding, local: RPC_B, purchaseProfile });
       await signWireResponse(opened.payload, 200, "{}", { ...seller, now: NOW, purchaseProfile });
     }
     expect(w.signatures() - before).toBe(2);

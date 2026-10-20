@@ -1,8 +1,8 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
-import { acceptedPurchase, commitPurchase, seededParty, type AcceptedPurchase } from "./commitmentFixture.js";
+import { acceptedPurchase, commitPurchase, seededParty, validReceipt, wireCommitment, type AcceptedPurchase } from "./commitmentFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import * as w from "../../src/wire/index.js";
 import { isListingPin } from "../../src/wire/validate.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
+const { inMemoryJournalForTest } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 18);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -293,17 +294,18 @@ describe("a purchase the buyer already committed continues while the seller drai
   }
   async function proof(x: ReturnType<typeof world>, ready: boolean, now = NOW, extra: object = {}) {
     const bytes = await w.signDiscoveryDocument({ ...x.discovery, ready, expiresAt: NOW + 600_000 }, x.seller, x.binding, LOCAL);
-    return w.verifyEndpointProof(bytes, { readListingEligibility: windowed, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: x.pin }, binding: x.binding, local: LOCAL, now, ...extra });
+    return w.verifyEndpointProof(bytes, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: x.pin }, binding: x.binding, local: LOCAL, now, ...extra });
   }
   /** Both buyer signers, for a payment. */
   const signers = (x: ReturnType<typeof world>, extra: object, endpointProof: w.EndpointProof, now: number) => [
     () => w.signWireRequest({ ...x.input, path: "/dacs/v1/payments", endpointProof, now, ...extra } as w.WireRequestInput),
     () => w.signWireEnvelope({ ...x.request, path: "/dacs/v1/payments" }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, ...extra } as w.EnvelopeSigningContext),
   ] as const;
-  /** The seller opens and checks the request and answers it; the buyer verifies the answer. */
-  async function reachesSeller(x: ReturnType<typeof world>, sent: { payload: w.WireRequestPayload; header: string }, now: number) {
+  /** The seller opens and checks the request against its own copy of the commitment and answers it; the buyer verifies the answer. */
+  async function reachesSeller(x: ReturnType<typeof world>, sent: { payload: w.WireRequestPayload; header: string }, now: number, commitment: unknown) {
     const opened = w.openWireEnvelope(sent.header, "request", x.context);
-    expect(w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now }).readbackOnly).toBe(false);
+    expect(w.checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now,
+      commitment: JSON.parse(JSON.stringify(commitment)), readCommitmentReceipt: validReceipt }).readbackOnly).toBe(false);
     const answer = await w.signWireResponse(sent.payload, 200, "{}", { ...x.context, signer: x.seller, now });
     expect(w.verifyWireResponse(sent.payload, { ...x.context, header: answer, status: 200, body: Buffer.from("{}"), now }).principal).toBe(x.seller.claim);
   }
@@ -319,7 +321,7 @@ describe("a purchase the buyer already committed continues while the seller drai
     }
     await refuses(() => w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now }), "seller_not_ready", 503);
     expect(x.buyer.calls).toBe(0);
-    for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment, now }), now);
+    for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment, now }), now, commitment);
     await w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, commitment });
     expect(x.buyer.calls).toBe(CONTINUING.length + 1);
   });
@@ -335,7 +337,7 @@ describe("a purchase the buyer already committed continues while the seller drai
     expect(x.buyer.calls).toBe(0);
     const again = await proof(x, true, ENDED, { commitment }), drained = await proof(x, false, ENDED, { commitment });
     for (const endpointProof of [kept, again, drained]) {
-      for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment, now: ENDED }), ENDED);
+      for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment, now: ENDED }), ENDED, commitment);
     }
     await w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof: again, publicEndpoint: ENDPOINT, now: ENDED, commitment });
     expect(x.buyer.calls).toBe(3 * CONTINUING.length + 1);
@@ -360,7 +362,7 @@ describe("a purchase the buyer already committed continues while the seller drai
     const revoked = new Error("Listing revoked");
     let reads = 0;
     const bytes = await w.signDiscoveryDocument({ ...x.discovery, expiresAt: NOW + 600_000 }, x.seller, x.binding, LOCAL);
-    const read = w.verifyEndpointProof(bytes, { readListingEligibility: (scope) => { if (reads++) throw revoked; return windowed(scope); }, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: x.pin }, binding: x.binding, local: LOCAL, now: NOW });
+    const read = w.verifyEndpointProof(bytes, { readListingEligibility: (scope) => { if (reads++) throw revoked; return windowed(scope); }, readCommitmentReceipt: validReceipt, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: x.pin }, binding: x.binding, local: LOCAL, now: NOW });
     await expect(pay(COMMITTED, { endpointProof: read })).rejects.toBe(revoked);
     expect(x.buyer.calls).toBe(0);
   });
@@ -372,13 +374,22 @@ describe("a purchase the buyer already committed continues while the seller drai
     await refuses(signers(x, { agreedAt: COMMITTED }, drained, now)[1], "seller_not_ready", 503);
     await refuses(signers(x, { agreedAt: COMMITTED }, kept, ENDED)[1], "listing_unsupported", 500);
     await refuses(() => proof(x, true, ENDED, { agreedAt: COMMITTED }), "listing_unsupported", 500);
-    // Forged: anything but the exact value the commitment gate returned, a faithful copy of it included.
-    for (const forged of [COMMITTED, null, {}, { committedAt: COMMITTED }, { ...commitment }, structuredClone(commitment), JSON.parse(JSON.stringify(commitment))]) {
+    // Forged: no evidence, a stated time, or the gate's result with a member changed (its record, receipt or stated facts).
+    const receipt = commitment.anchorReceipt, block = receipt.blockRef!, record = commitment.record as { signature: unknown; createdAt: number };
+    const forgeries = [COMMITTED, null, {}, { committedAt: COMMITTED }, { ...commitment, committedAt: COMMITTED - 1 },
+      { ...commitment, recordKind: "legacy" }, { ...commitment, legacySignature: record.signature },
+      { ...commitment, record: { ...record, createdAt: record.createdAt + 1 } },
+      { ...commitment, anchorReceipt: { ...receipt, state: "included" } }, { ...commitment, anchorReceipt: { ...receipt, observationDisposition: "indeterminate" } },
+      { ...commitment, anchorReceipt: { ...receipt, blockRef: { ...block, timestamp: COMMITTED - 1 } } }];
+    for (const forged of forgeries) {
       for (const sign of [...signers(x, { commitment: forged }, drained, now), ...signers(x, { commitment: forged }, kept, ENDED)]) {
         await refuses(sign, "continuation_commitment_invalid", 500);
       }
       await refuses(() => proof(x, true, ENDED, { commitment: forged }), "continuation_commitment_invalid", 500);
     }
+    // A commitment signed by anyone but the seller, TP-1's orchestrator, continues nothing.
+    const notSeller = wireCommitment({ seller: { claim: x.buyer.claim, sign: purchase.buyer.signBytes }, buyer: x.buyer.claim, jobId: JOB, agreementHash: purchase.agreementHash, listingPin: x.pin, committedAt: COMMITTED, signer: x.seller.claim });
+    for (const sign of signers(x, { commitment: notSeller }, drained, now)) await refuses(sign, "continuation_commitment_invalid", 500);
     // A real commitment for another job and Agreement continues neither this job's payment nor its readback.
     const otherCommitment = await commitPurchase(await accepted(NOW, "01K7FZ8Q9W3V5T2R1N0M8K6J4J"), COMMITTED);
     for (const sign of signers(x, { commitment: otherCommitment }, drained, now)) await refuses(sign, "continuation_commitment_invalid", 500);
@@ -423,11 +434,11 @@ describe("the seller's own drain state at a new purchase", () => {
         ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now, ...extra, ...(ready === missing ? {} : { ready }) } as w.RequestCheck);
     };
     const delegation = signed(x.delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer);
-    const checks = async (path: string) => [
-      atSeller(await w.signWireRequest({ ...x.input, path, endpointProof, now }), {}),
-      atSeller(await w.signWireRequest({ ...x.input, signer: x.session, delegation, path, endpointProof, now }), { requireDelegation: true }),
+    const checks = async (path: string, extra: object = {}) => [
+      atSeller(await w.signWireRequest({ ...x.input, path, endpointProof, now }), extra),
+      atSeller(await w.signWireRequest({ ...x.input, signer: x.session, delegation, path, endpointProof, now }), { requireDelegation: true, ...extra }),
     ];
-    return { checks, counter };
+    return { x, checks, counter };
   }
   // Every route the buyer signs as a new purchase (discovery.ts CONTINUING_PATHS names the others).
   it.each([P.proposals, P.commitments, P.commitmentSignature, P.context])("a ready: true proof kept after the seller drains is refused at the seller on %s, direct and delegated, with the same code", async (path) => {
@@ -445,9 +456,10 @@ describe("the seller's own drain state at a new purchase", () => {
     expect(counter.reservations).toBe(2);
   });
   it("other routes do not read it: a drained seller still takes a committed purchase's payment, delivery and readback", async () => {
-    const { checks } = await drained();
+    const { x, checks } = await drained();
+    const commitment = wireCommitment({ seller: x.seller, buyer: x.buyer.claim, jobId: JOB, agreementHash: "a".repeat(64), listingPin: PIN, committedAt: NOW });
     for (const path of [P.payments, P.bundleRequest, P.bundleCountersignature, P.state, P.bundleBuyerCopy]) {
-      for (const check of await checks(path)) for (const ready of [false, missing]) expect(check(ready).readbackOnly).toBe(false);
+      for (const check of await checks(path, { commitment, readCommitmentReceipt: validReceipt })) for (const ready of [false, missing]) expect(check(ready).readbackOnly).toBe(false);
     }
   });
 });

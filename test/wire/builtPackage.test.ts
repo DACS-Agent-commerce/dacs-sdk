@@ -10,7 +10,10 @@
 // build, whose approval.js alone is replaced by the SYNTHETIC vector record's
 // digest, shows the compiled verifiers also refuse a changed connection and an
 // envelope that openWireEnvelope did not verify. Nothing here reaches a
-// network: endpoints are under .invalid and the wire does no I/O.
+// network: endpoints are under .invalid and the wire does no I/O. The same
+// consumer imports every compiled file under dist/ by file path and tries to
+// make an object pass as a finalized commitment: no shipped function vouches
+// for one, and only a seller-signed record with its receipt continues a purchase.
 import { spawnSync } from "node:child_process";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +25,7 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const VECTORS = join(root, "vectors/dacs-seller-http-v1.json");
 
 const CONSUMER = String.raw`
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -78,8 +81,10 @@ const signWith = (binding, local) => code(() => wire.signWireRequest({ signer, b
 let effects = 0;
 const effect = (fn) => code(() => { fn(); effects += 1; });
 const decodedRequest = JSON.parse(b(vector["request/valid-direct"].header).toString("utf8"));
-// An in-memory journal declared durable: the explicit test opt-in, and the seller ready for a new purchase.
-const check = { requestJournal: { durable: true, reserve: () => true }, ready: true, retained: { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller }, seller: file.parties.seller, listingPin: file.job.listingPin, method: "POST", path: vector["request/valid-direct"].path, rawBody: b(vector["request/valid-direct"].body), now: file.now, purchaseProfile: profile };
+// An in-memory journal over one shared store, qualified by the compiled probe: the explicit test opt-in, and the seller ready for a new purchase.
+const qualifiedJournal = () => { const held = new Set(); return wire.qualifyWireRequestJournal(() => ({ durable: true, reserve: ({ key, operationId }) => {
+  if (held.has("k" + key) || held.has("o" + operationId)) return false; held.add("k" + key); held.add("o" + operationId); return true; } }), file.now); };
+const check = { requestJournal: qualifiedJournal(), ready: true, retained: { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller }, seller: file.parties.seller, listingPin: file.job.listingPin, method: "POST", path: vector["request/valid-direct"].path, rawBody: b(vector["request/valid-direct"].body), now: file.now, purchaseProfile: profile };
 async function verifyAll(sellerBinding, sLocal, buyerBinding, bLocal) {
   return {
     openWireEnvelope: await effect(() => wire.openWireEnvelope(vector["request/valid-direct"].header, "request", { binding: sellerBinding, local: sLocal, purchaseProfile: profile })),
@@ -158,7 +163,7 @@ const endpointProof = wire.verifyEndpointProof(discoveryBytes, { readListingElig
 sellerSigner.calls = 0;
 const approvedRequest = await wire.signWireRequest({ endpointProof, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now });
 const approvedOpened = wire.openWireEnvelope(approvedRequest.header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
-wire.checkWireRequest(approvedOpened, { requestJournal: { durable: true, reserve: () => true }, ready: true, retained: { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: signer.claim, seller: sellerSigner.claim }, seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
+wire.checkWireRequest(approvedOpened, { requestJournal: qualifiedJournal(), ready: true, retained: { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: signer.claim, seller: sellerSigner.claim }, seller: sellerSigner.claim, listingPin: file.job.listingPin, method: "POST", path: approvedRequest.payload.path, rawBody: Buffer.from("{}"), now: file.now, binding: sb, local: sellerLocal, purchaseProfile: sb.profile });
 const approvedResponse = await wire.signWireResponse(approvedOpened.payload, 200, "{}", { signer: sellerSigner, binding: sb, local: sellerLocal, now: file.now, purchaseProfile: sb.profile });
 const receipt = wire.verifyWireResponse(approvedRequest.payload, { header: approvedResponse, status: 200, body: Buffer.from("{}"), now: file.now, binding: bb, local: buyerLocal });
 out.approvedIdentity = { recordDigest: bb.recordDigest, sameProfile: canonicalize(bb.profile) === canonicalize(sb.profile), differentEndpoints: bb.local.endpoint !== sb.local.endpoint, verifiedSeller: receipt.principal === sellerSigner.claim, signatures: signer.calls + sellerSigner.calls };
@@ -191,6 +196,48 @@ for (const purchaseProfile of [sb.profile, null]) {
   await wire.signWireResponse(payload, 200, "{}", { signer: sellerSigner, binding: sb, local: sellerLocal, now: file.now, purchaseProfile });
 }
 out.approvedIdentitySeller.exactOrNewPurchaseSignerCalls = sellerSigner.calls - sellerCallsBefore;
+
+// A continuation needs the job's finalized commitment. Every compiled file under dist/, imported by file path:
+// none exports a helper that vouches for one, and nothing any of them returns, nor any object one was handed,
+// continues a payment while the seller drains. The receipt reader says "valid" to everything, so only the
+// evidence the wire checks itself stands between a forgery and a payment.
+const distDir = dirname(dir);
+const walk = (d) => readdirSync(d).flatMap((f) => statSync(join(d, f)).isDirectory() ? walk(join(d, f)) : f.endsWith(".js") ? [join(d, f)] : []);
+const shippedJs = walk(distDir).map((f) => f.slice(distDir.length + 1)).sort();
+const drainedBytes = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: bb.profile, seller: sellerSigner.claim, publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [file.job.listingPin], capabilities: wire.TP1_CAPABILITIES, ready: false, issuedAt: file.now, expiresAt: file.now + 60_000 }, sellerSigner, sb, sellerLocal);
+const drained = wire.verifyEndpointProof(drainedBytes, { readListingEligibility, readCommitmentReceipt: () => "valid", listing: { seller: sellerSigner.claim, publicEndpoint, listingPin: file.job.listingPin }, binding: bb, local: buyerLocal, now: file.now });
+const facts = { jobId: file.job.jobId, agreementHash: file.job.agreementHash, listingRef: file.job.listingPin, buyer: signer.claim, seller: sellerSigner.claim, committedAt: 42 };
+const pay = (commitment) => code(() => wire.signWireRequest({ endpointProof: drained, publicEndpoint, signer, binding: bb, local: buyerLocal, path: "/dacs/v1/payments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now, commitment }));
+const within = (promise) => Promise.race([Promise.resolve(promise).catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 1000))]);
+out.commitmentForgery = { files: shippedJs.length, verifiedCommitmentModule: shippedJs.includes("negotiate/verifiedCommitment.js"), unimportable: [], vouchers: [], tried: 0, continued: [] };
+const signerCallsBeforeForgery = signer.calls;
+for (const f of shippedJs) {
+  // A file whose optional dependency this bare consumer lacks cannot be imported by it either.
+  let mod;
+  try { mod = await import(pathToFileURL(join(distDir, f)).href); } catch { out.commitmentForgery.unimportable.push(f); continue; }
+  for (const [name, value] of Object.entries(mod)) {
+    if (typeof value !== "function") continue;
+    if (/^(record|vouch|register|mark)|verified.*commitment/i.test(name)) out.commitmentForgery.vouchers.push(f + ":" + name);
+    if (!/record|vouch|register|mark|commit|verif/i.test(name) || !/^(negotiate|wire)\//.test(f)) continue;
+    for (const args of [[{}, facts], [facts], [{ ...facts }, { ...facts }]]) {
+      const held = args.filter((a) => typeof a === "object");
+      const result = await within((async () => value(...args))());
+      for (const candidate of [...held, ...(result && typeof result === "object" ? [result] : [])]) {
+        out.commitmentForgery.tried += 1;
+        if ((await pay(candidate)) === "ok") out.commitmentForgery.continued.push(f + ":" + name);
+      }
+    }
+  }
+}
+out.commitmentForgery.statedFacts = await pay(facts);
+out.commitmentForgery.signerCalls = signer.calls - signerCallsBeforeForgery;
+// Control: the seller's signed finality record with its finalized receipt, as bytes a buyer receives, continues.
+const unsignedRecord = { finalityCommitmentVersion: "1", jobId: file.job.jobId, agreementHash: file.job.agreementHash, listingRef: file.job.listingPin, parties: [signer.claim, sellerSigner.claim], pattern: "fixed-price", createdAt: file.now - 2000 };
+const recordValue = Buffer.from(sellerKeys.privateKey ? sign(null, Buffer.from("dacs-finality-commitment:v1:" + sha(canonicalize(unsignedRecord))), sellerKeys.privateKey) : []).toString("base64url");
+const signedRecord = { ...unsignedRecord, signature: { algorithm: "ed25519", signer: sellerSigner.claim, value: recordValue } };
+const anchorReceipt = { receiptVersion: "1", substrate: "demos:testnet", finalityProfile: "demos-bft-final", logicalAddress: "dacs3:commit:" + file.job.jobId, nativeAddress: "stor-commitment",
+  contentHash: sha(canonicalize(unsignedRecord)), transactionRef: { kind: "demos", value: "tx" }, writer: "w", state: "finalized", observationDisposition: "established", observedAt: file.now, blockRef: { id: "b", timestamp: file.now - 1000 }, evidence: { kind: "proof", value: "p" } };
+out.commitmentForgery.genuine = await pay(JSON.parse(JSON.stringify({ record: signedRecord, nativeAddress: "stor-commitment", anchorTxRef: { kind: "storage-program", address: "stor-commitment" }, anchorReceipt })));
 console.log(JSON.stringify(out));
 `;
 
@@ -286,6 +333,19 @@ describe("built @kynesyslabs/dacs/wire, as a consumer installs it", () => {
     expect(shipped.reachableAsBinding.signed).toBe(0);
     expect(shipped.reachableAsBinding.verified).toBe(0);
     expect(shipped.signatures).toBe(0);
+  });
+
+  it("no compiled file vouches for a commitment: nothing reachable by file path continues a payment without the seller's signed, finalized record", () => {
+    const forgery = shipped.commitmentForgery;
+    expect(forgery.files).toBeGreaterThan(100);
+    expect(forgery.verifiedCommitmentModule).toBe(false);
+    expect(forgery.unimportable.filter((f: string) => /^(negotiate|wire)\//.test(f))).toEqual([]);
+    expect(forgery.vouchers).toEqual([]);
+    expect(forgery.tried).toBeGreaterThan(0);
+    expect(forgery.continued).toEqual([]);
+    expect(forgery.statedFacts).toBe("continuation_commitment_invalid");
+    expect(forgery.signerCalls).toBe(0);
+    expect(forgery.genuine).toBe("ok");
   });
 
   it("refuses a forged binding, including one carrying only the vector's profile, at every verification entry point", () => {

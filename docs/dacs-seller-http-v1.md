@@ -244,29 +244,50 @@ below):
    seller's own current `ready` and refuses the request while it is `false`
    (`seller_not_ready`, 503), before any reservation; the payment, delivery
    and read routes do not read it.
+   On the payment and delivery routes (`payments`, `bundles/request`,
+   `bundles/countersignature`), `checkWireRequest` instead requires the job's
+   finalized commitment, as data the seller read itself (`commitment`), and
+   its SR-2 receipt reader (`readCommitmentReceipt`). It checks them exactly as
+   the buyer's signers do (see the endpoint proof section), against the
+   retained job, Agreement hash, parties and Listing pin, before any
+   reservation. `commitment: null`, the host's own reader having found none,
+   refuses the request as `peer_agreement_uncommitted` (409); omitted, it is
+   `seller_commitment_required` (500).
    Before returning a checked body on an effect route, `checkWireRequest`
-   requires `requestJournal`, a plain object `{ durable: true, reserve }`.
-   `durable: true` is the host's statement that `reserve` does what follows; a
-   bare callback, an in-memory set or any journal without it is refused
-   (`seller_replay_guard_required`) and never called. The host must atomically and durably claim its
-   `key` (SHA-256 of canonical `{buyer, seller, profile, nonce}`) across workers
-   and restarts, retain `requestHash`, `expiresAt` and `retainUntil`, and return `true` only
-   after the new reservation commits. It returns `false` for an already claimed
-   key, including an identical retry (`peer_request_replayed`, HTTP 409). Keep
-   the reservation until `retainUntil` (`expiresAt` + 30 s) by the journal's
-   own clock. A worker refuses the request as `peer_expired` from `expiresAt`
+   requires `requestJournal`: the handle `qualifyWireRequestJournal(open, now)`
+   returned. The host calls it once at startup. `open` returns a new handle
+   `{ durable: true, reserve }` on the same shared store each time it is called,
+   as a restarted or second worker would open it. The probe opens two handles. A
+   reservation made through one must be refused through the other, and a
+   reservation holding an already reserved `key` or `operationId` must be
+   refused. An in-memory set per handle, a store keyed by only one of the two,
+   or `open` returning the same object fails (`seller_replay_guard_invalid`,
+   naming the probe). A journal object passed directly, even one that declares
+   `durable: true`, is refused (`seller_replay_guard_required`) and never
+   called. The host must atomically and durably claim both the reservation's
+   `key` (SHA-256 of canonical `{buyer, seller, profile, nonce}`) and its
+   `operationId` (SHA-256 of canonical `{profile, seller, buyer, jobId,
+   agreementHash, path, body}`, where `body` is the SHA-256 of the admitted
+   body's canonical form) across workers and restarts. It retains
+   `requestHash`, `expiresAt` and `retainUntil`, and returns `true` only after
+   the new reservation commits. It returns `false` if either is already
+   claimed: an identical retry, or a fresh nonce for the same effect however
+   its body is encoded (`peer_request_replayed`, HTTP 409). Keep the key until
+   `retainUntil` (`expiresAt` + 30 s) by the journal's own clock, and the
+   operation for as long as the job's effects matter. A worker refuses the request as `peer_expired` from `expiresAt`
    by its clock, and its clock may lag the journal's; the journal may drop the
-   key at `retainUntil` only when every worker's clock is within 30 s of it. Never release it after an ambiguous or
+   key at `retainUntil` only when every worker's clock is within 30 s of it. Never release either after an ambiguous or
    failed effect. Recovery uses declared read routes. A missing journal fails with
    `seller_replay_guard_required`; non-boolean results, including promises, fail
    with `seller_replay_guard_invalid`. `reserve` is synchronous and must finish
    its durable write before returning. Read routes need no reservation. All
-   authentication, body, retained-Agreement, scope and deadline checks precede
-   this callback. The wire has no journal and cannot test one: a request
+   authentication, body, retained-Agreement, commitment, scope and deadline
+   checks precede the reservation. The probe cannot show that a store survives
+   a process restart, so a request
    `checkWireRequest` returned for an effect route authorizes no effect until
    the composed host's journal passes restart and concurrent-worker tests (a
    reservation made before a restart refuses the replay after it; of workers
-   racing on one key, exactly one gets `true`). That gate is a `not checked`
+   racing on one key or operation, exactly one gets `true`). That gate is a `not checked`
    entry in the TP-1 register's composition qualification list.
 4. `signWireResponse(request, status, text, ctx)`: the kept tuple, before the
    request or the body is read; the retained request's complete shape and hash;
@@ -352,17 +373,30 @@ endpoint proof does not retain an authoritative eligibility verdict. A reader
 must return a current decision or throw; a Promise is refused.
 
 `ready: false` and the end of the Listing's window stop new purchases only.
-For a job whose commitment has finalized, the buyer passes the exact value
-`commitFixedPriceAgreement` returned (`FinalizedAgreementCommitment`) as
-`commitment` to `signWireRequest`, request-kind `signWireEnvelope` and
-`verifyEndpointProof`. Only that value counts: the commitment gate verified
-both Agreement signatures, the commitment record and its finalized receipt,
-and the SDK keeps a private record of each result it returned, so a copy, a
-caller-built value or a stated time is refused
-(`continuation_commitment_invalid`). At signing it must name the request's
-job, Agreement hash, buyer, seller and Listing pin (`verifyEndpointProof`,
-which has no request, compares the seller and pin; signing compares the
-rest). Then the payment, delivery and
+For a job whose commitment has finalized, the buyer passes the job's finality
+commitment as `commitment` to `signWireRequest`, request-kind
+`signWireEnvelope` and `verifyEndpointProof`. In TP-1 the seller is the
+orchestrator (G3) and runs `commitFixedPriceAgreement`. It sends the result
+(`FinalizedAgreementCommitment`) to its buyer as JSON, and the buyer passes
+that parsed copy, or reads the same record again after a restart. The
+commitment is data: the wire checks the evidence itself, every time. It
+checks the record's members (`finalityCommitmentVersion` `"1"`,
+`fixed-price`), the job, the Agreement hash, the Listing pin and the parties
+`[buyer, seller]`. It checks the record's Ed25519 signature under
+`dacs-finality-commitment:v1:` by the seller. It checks that the receipt is
+`finalized` and `established`, at `dacs3:commit:{jobId}`, with the record's
+native address and content hash, and takes `committedAt` from its
+`blockRef.timestamp`. Last, it asks `readCommitmentReceipt` (the buyer's own
+SR-2 reader, given to `verifyEndpointProof` and kept with the proof) to
+authenticate the receipt against the chain. A legacy record, a pending
+receipt, another signer, a stated time the receipt does not give, or a
+reader answer of `"invalid"` is refused
+(`continuation_commitment_invalid`). `"indeterminate"` or `"error"` is
+`commitment_unverified` (503): never final. With no reader, nothing
+continues (`commitment_reader_required`). At signing it must name the
+request's job, Agreement hash, buyer, seller and Listing pin
+(`verifyEndpointProof`, which has no request, compares the seller and pin;
+signing compares the rest). Then the payment, delivery and
 readback routes (`payments`, `bundles/request`, `bundles/countersignature`,
 `agreements/state`, `bundles/buyer-copy`) are signed while the document says
 `ready: false`, and the Listing's window must hold the commitment's receipt
@@ -378,7 +412,9 @@ A buyer's proof can still say `ready: true` for up to ten minutes after the
 seller drains, so the seller enforces its own current state: `checkWireRequest`
 requires `ready` (whether it accepts new purchases now) on the proposal,
 commitment, commitment-signature and context routes and refuses each while it
-is `false` (`seller_not_ready`, 503).
+is `false` (`seller_not_ready`, 503). On the payment and delivery routes it
+requires the job's finalized commitment instead, checked the same way with
+the seller's own receipt reader.
 
 `capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
 `pay-dem`; `did:demos:agent` claims; delivery through Demos storage at
@@ -661,17 +697,20 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `tp1_binding_required`, `tp1_local_binding_changed`, `tp1_local_binding_invalid` | signing or verifying without a binding from `bindTp1Profile`, or on a changed connection |
 | `tp1_authority_required`, `tp1_connection_unverified`, `tp1_participant_profile_mismatch` | missing trusted reader, unauthenticated/changed active connection, or mismatched authenticated participant/session profile and module evidence |
 | `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
-| `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype) |
+| `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal` |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
 | `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a proposal, commitment, commitment-signature or context request |
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
 | `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}`, or with a malformed one |
 | `peer_job_mismatch`, `peer_agreement_mismatch` (409) | the signed `jobId` or `agreementHash` is not the one the host retained |
-| `seller_replay_guard_required`, `seller_replay_guard_invalid` (500) | an effect route checked without a `requestJournal` that declares `durable: true` and has a `reserve` function, or with one whose `reserve` returned anything but `true` or `false` |
-| `peer_request_replayed` (409) | the host's journal already holds the request's reservation key |
+| `seller_replay_guard_required`, `seller_replay_guard_invalid` (500) | an effect route checked without a `requestJournal` that `qualifyWireRequestJournal` returned, or `open` returning a journal without `durable: true` and a `reserve` function; a journal that fails the probe, or whose `reserve` returned anything but `true` or `false` |
+| `peer_request_replayed` (409) | the host's journal already holds the request's reservation key or its operation |
 | `seller_readiness_required` (500) | a proposal, commitment, commitment-signature or context request checked without the seller's own `ready`, or with anything but a boolean |
-| `continuation_commitment_invalid` (500) | a `commitment` that is not a value the SDK's commitment gate returned, that names another job, Agreement, buyer, seller or Listing pin, or whose `committedAt` is more than 30 s after the signer's clock |
+| `continuation_commitment_invalid` (500) | a `commitment` whose record, seller signature or finalized receipt does not check, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
+| `commitment_reader_required`, `commitment_reader_invalid` (500) | a `commitment` given without a receipt reader, or a reader that answered anything but a disposition (a promise included) |
+| `commitment_unverified` (503) | the receipt reader answered `indeterminate` or `error`: the commitment is not established, never final |
+| `seller_commitment_required` (500), `peer_agreement_uncommitted` (409) | a payment or delivery request checked without the job's commitment, or with `commitment: null` (the seller's own reader found none) |
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
 | `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |
 | `peer_envelope_too_large` (500), `peer_response_too_large` (503), `body_too_large` (413) | a signer given a header, response body or request body over the limits; nothing is signed |
@@ -815,6 +854,7 @@ These host requirements apply to both direct and delegated effect requests;
 acceptance of a captured signature alone does not authorize repeating an effect.
 The retained job and Agreement comparison is enforced by `checkWireRequest`
 itself on every request. The library performs no storage itself: production
-hosts must implement the atomic durable reservation contract above, and the
-composition qualification gate above decides whether they do. A
-process-local set does not meet it.
+hosts must implement the atomic durable reservation contract above and qualify
+it with `qualifyWireRequestJournal`, and the composition qualification gate
+above decides whether it survives restarts. A process-local set does not meet
+it.

@@ -50,7 +50,6 @@ import {
   type VerifiedListingInput,
 } from "./fixedPrice.js";
 import { requireCanonicalJobId } from "./jobId.js";
-import { recordVerifiedAgreementCommitment } from "./verifiedCommitment.js";
 import {
   assertAlternativePaymentCommitmentAuthority,
   type AlternativePaymentAuthorizationInput,
@@ -1713,32 +1712,22 @@ async function verifyAnchoredCommitment(
     committedAt,
     resumed: options.resumed,
   };
-  const result: FinalizedAgreementCommitment =
-    recordKind === "legacy"
-      ? (snapshotCanonicalJson(
-          {
-            ...common,
-            recordKind,
-            record: commitmentRecord,
-            legacySignature,
-            resumed: true,
-          },
-          "finalized legacy agreement commitment result",
-        ) as FinalizedLegacyAgreementCommitment)
-      : (snapshotCanonicalJson(
-          { ...common, recordKind, record: commitmentRecord },
-          "finalized agreement commitment result",
-        ) as FinalizedFinalityAgreementCommitment);
-  // What was verified, for a consumer that takes this exact result as authority.
-  recordVerifiedAgreementCommitment(result, {
-    jobId: commitmentRecord.jobId,
-    agreementHash: binding.agreementHash,
-    listingRef: binding.pin,
-    buyer: input.session.buyer.primaryClaim,
-    seller: input.session.seller.primaryClaim,
-    committedAt,
-  });
-  return result;
+  if (recordKind === "legacy") {
+    return snapshotCanonicalJson(
+      {
+        ...common,
+        recordKind,
+        record: commitmentRecord,
+        legacySignature,
+        resumed: true,
+      },
+      "finalized legacy agreement commitment result",
+    ) as FinalizedLegacyAgreementCommitment;
+  }
+  return snapshotCanonicalJson(
+    { ...common, recordKind, record: commitmentRecord },
+    "finalized agreement commitment result",
+  ) as FinalizedFinalityAgreementCommitment;
 }
 
 async function commitAgreementForPattern(

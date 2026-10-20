@@ -1,6 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // 2026-10-15 approval through the real approval module. No mock or replacement approval.
@@ -18,6 +18,7 @@ import {
 } from "../../src/wire/index.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
+const { inMemoryJournalForTest } = journalFixture(fixtureWire);
 
 const RECORD = TP1_APPROVED_IDENTITY_RECORD;
 const DIGEST = "c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd";

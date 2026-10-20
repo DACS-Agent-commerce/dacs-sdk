@@ -1,6 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
+import { validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
@@ -24,6 +25,7 @@ vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
+const { inMemoryJournalForTest } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -60,12 +62,15 @@ function world() {
   const approvedRecordDigests = [digest(record)];
   const buyerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record, local: RPC_A }));
   const sellerBinding = withTestApproval(approvedRecordDigests, () => bindTp1Fixture({ record, local: RPC_B }));
-  return { buyer, seller, session, record, approvedRecordDigests, buyerBinding, sellerBinding };
+  // The job's finalized commitment, which the seller read itself: payment and delivery routes need it.
+  const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash: AGREEMENT, listingPin: PIN, committedAt: NOW - 60_000 });
+  return { buyer, seller, session, record, approvedRecordDigests, buyerBinding, sellerBinding, commitment };
 }
 
 async function sellerReceives(w: ReturnType<typeof world>, header: string, text: string, requireDelegation = false) {
   const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation });
-  checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation });
+  checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation,
+    commitment: w.commitment, readCommitmentReceipt: validReceipt });
   return opened.payload;
 }
 
@@ -294,7 +299,7 @@ describe("the buyer's delegated session signer (signWireRequest)", () => {
     const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true });
     return checkWireRequest(opened, { requestJournal: inMemoryJournalForTest(), ready: true, artifacts: agreementFixture(opened), retained: { jobId: JOB, agreementHash: AGREEMENT, buyer: w.buyer.claim, seller: w.seller.claim },
       seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW,
-      binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true });
+      binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true, commitment: w.commitment, readCommitmentReceipt: validReceipt });
   };
 
   it("clamps a live request's expiry to its delegation's, and the seller accepts it", async () => {

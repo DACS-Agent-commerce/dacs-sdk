@@ -1,6 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
+import { validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,6 +13,7 @@ import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
+const { inMemoryJournalForTest, qualifiedDirectoryJournal } = journalFixture(fixtureWire);
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 const NOW = Date.UTC(2026, 9, 18);
@@ -33,8 +35,8 @@ function world() {
   const buyer = party(), seller = party(), session = party();
   const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
   const context = { binding, local: LOCAL, purchaseProfile: binding.profile };
-  const request = (path: string, nonce = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX"): wire.WireRequestPayload => ({
-    version: "1", kind: "request", method: "POST", path, jobId: JOB, buyer: buyer.claim, seller: seller.claim, bodyHash: sha256Hex("{}"),
+  const request = (path: string, nonce = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX", body = "{}"): wire.WireRequestPayload => ({
+    version: "1", kind: "request", method: "POST", path, jobId: JOB, buyer: buyer.claim, seller: seller.claim, bodyHash: sha256Hex(body),
     listingPin: PIN, agreementHash: "a".repeat(64), nonce, expiresAt: NOW + 30_000, profile: binding.profile,
   });
   const signed = (payload: unknown, signer: ReturnType<typeof party>, domain: string) => ({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString("base64url") });
@@ -49,13 +51,16 @@ function world() {
   const artifact = { jobId: JOB, listingRef: PIN, parties: [{ role: "buyer", primaryClaim: buyer.claim }, { role: "seller", primaryClaim: seller.claim }], terms: { deadline: NOW + 60_000 } };
   /** What the seller host retained for the job: its own record, not read from the request. */
   const retained = { jobId: JOB, agreementHash: "a".repeat(64), buyer: buyer.claim, seller: seller.claim };
+  /** The job's finalized commitment, which the seller read itself: payment and delivery routes need it. */
+  const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash: "a".repeat(64), listingPin: PIN, committedAt: NOW - 5000 });
   // The seller is ready, so a route that starts a purchase reaches its reservation.
-  const check = (path: string) => ({ ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true });
-  return { seller, context, request, direct, delegated, artifact, retained, check };
+  const check = (path: string) => ({ ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true,
+    commitment, readCommitmentReceipt: validReceipt });
+  return { seller, context, request, direct, delegated, artifact, retained, commitment, check };
 }
 
-describe("an effect route without a journal declared durable", () => {
-  // Each differs from an accepted journal only in not declaring itself durable; none is ever called.
+describe("an effect route without a qualified journal", () => {
+  // None passed qualifyWireRequestJournal, a journal that declares itself durable included; none is ever called.
   const undeclared = (stub: () => boolean): Array<[string, object]> => [
     ["the earlier reserveRequest callback", { reserveRequest: stub }],
     ["a bare callback", { requestJournal: stub }],
@@ -64,8 +69,9 @@ describe("an effect route without a journal declared durable", () => {
     ['durable: "true"', { requestJournal: { durable: "true", reserve: stub } }],
     ["durable: 1", { requestJournal: { durable: 1, reserve: stub } }],
     ["a declaration with no reserve", { requestJournal: { durable: true, reserveRequest: stub } }],
+    ["a journal that declares itself durable but was never qualified", { requestJournal: { durable: true, reserve: stub } }],
   ];
-  it.each(EFFECT_ROUTES)("%s refuses an in-memory stub unless a test opts in, direct and delegated", (path) => {
+  it.each(EFFECT_ROUTES)("%s refuses an unqualified journal unless a test opts in, direct and delegated", (path) => {
     const x = world();
     const journal = new Set<string>();
     const stub = vi.fn(() => { journal.add("reserved"); return true; });
@@ -118,13 +124,13 @@ describe("a durable journal across a restart and concurrent workers", () => {
     }
   }
   /** A journal directory and the signed requests a worker checks, with the seller's own record. */
-  function prepare(x: ReturnType<typeof world>, lists: Record<string, wire.WireRequestPayload[]>) {
+  function prepare(x: ReturnType<typeof world>, lists: Record<string, Array<{ payload: wire.WireRequestPayload; body: string }>>) {
     const dir = mkdtempSync(join(tmpdir(), "dacs-wire-journal-"));
     scratch.push(dir);
     const inputs = Object.fromEntries(Object.entries(lists).map(([name, requests]) => {
       const path = join(dir, `${name}.input.json`);
-      writeFileSync(path, JSON.stringify({ journal: dir, now: NOW, local: LOCAL, seller: x.seller.claim, listingPin: PIN, retained: x.retained,
-        requests: requests.map((payload) => ({ path: payload.path, header: x.direct(payload) })) }));
+      writeFileSync(path, JSON.stringify({ journal: dir, now: NOW, local: LOCAL, seller: x.seller.claim, listingPin: PIN, retained: x.retained, commitment: x.commitment,
+        requests: requests.map(({ payload, body }) => ({ path: payload.path, header: x.direct(payload), body })) }));
       return [name, path];
     }));
     return { dir, inputs };
@@ -132,7 +138,7 @@ describe("a durable journal across a restart and concurrent workers", () => {
 
   it("a repeated payment or delivery request is refused after the worker that reserved it is killed and another starts", async () => {
     const x = world();
-    const { dir, inputs } = prepare(x, { requests: PAYMENT_AND_DELIVERY.map((path) => x.request(path, nonce())) });
+    const { dir, inputs } = prepare(x, { requests: PAYMENT_AND_DELIVERY.map((path) => ({ payload: x.request(path, nonce()), body: "{}" })) });
     const first = worker(inputs.requests!, join(dir, "first.json"), { DACS_WIRE_JOURNAL_HOLD: "1" });
     await appears(join(dir, "first.json"), first);
     expect(first.verdicts()).toEqual(["ok", "ok"]);
@@ -146,7 +152,11 @@ describe("a durable journal across a restart and concurrent workers", () => {
 
   it("of two workers checking the same payment and delivery requests at once, exactly one accepts each", async () => {
     const x = world();
-    const requests = Array.from({ length: 16 }, () => PAYMENT_AND_DELIVERY.map((path) => x.request(path, nonce()))).flat();
+    // Each its own effect (its own body), so the race is on each one's key and operation.
+    const requests = Array.from({ length: 16 }, (_, i) => PAYMENT_AND_DELIVERY.map((path) => {
+      const body = JSON.stringify({ n: i });
+      return { payload: x.request(path, nonce(), body), body };
+    })).flat();
     // The two workers take the requests in opposite orders, so they meet partway.
     const { dir, inputs } = prepare(x, { forward: requests, backward: [...requests].reverse() });
     const go = join(dir, "go");
@@ -160,4 +170,20 @@ describe("a durable journal across a restart and concurrent workers", () => {
     expect(forward).toHaveLength(requests.length);
     for (const [i, verdict] of forward.entries()) expect([verdict, backward[i]].sort()).toEqual(["ok", "peer_request_replayed"]);
   }, 120_000);
+});
+
+describe("a durable journal keyed by operation across a restart", () => {
+  const scratch: string[] = [];
+  afterEach(() => { for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+  it("a fresh nonce for an effect a crashed worker reserved is refused by the worker that replaces it", () => {
+    const x = world();
+    const dir = mkdtempSync(join(tmpdir(), "dacs-wire-operation-"));
+    scratch.push(dir);
+    const check = (path: string) => wire.checkWireRequest(wire.openWireEnvelope(x.direct(x.request(path, nonce())), "request", x.context),
+      { ...x.check(path), requestJournal: qualifiedDirectoryJournal(dir, NOW) });
+    for (const path of PAYMENT_AND_DELIVERY) expect(check(path).readbackOnly).toBe(false);
+    // A second journal handle over the same directory stands for the restarted worker.
+    for (const path of PAYMENT_AND_DELIVERY) expect(() => check(path)).toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
+  });
 });

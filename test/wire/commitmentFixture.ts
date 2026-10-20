@@ -1,13 +1,18 @@
 // A committed purchase for the wire tests, made by the SDK's own commitment
 // gate: a Listing, an Agreement both parties signed, and a finality commitment
-// whose finalized receipt time the test chooses. The anchor reader and the
+// whose finalized receipt time the test chooses. As in TP-1 (G3), the seller
+// is the orchestrator and signs the commitment. The anchor reader and the
 // signature verifier are test-only; production installs authenticated ones.
+import type { CommitmentReceiptReader, ListingPin } from "../../src/wire/index.js";
 import {
   commitFixedPriceAgreement, contentHash, deriveFixedPriceAgreement, ed25519Sign, ed25519Verify, privateKeyFromSeed,
   publicKeyFromSeed, rawPublicKey, signFixedPriceAgreement,
   type AgreementArtifact, type CommitmentSignatureVerifier, type FinalityCommitmentProvider, type FinalizedAgreementCommitment,
   type IdentityBundle, type Listing,
 } from "../../src/index.js";
+
+/** The test's SR-2 receipt reader: every receipt it is shown is authentic. Production reads the chain. */
+export const validReceipt: CommitmentReceiptReader = () => "valid";
 
 /** A party whose one key signs its Agreement, its commitment record or its wire messages; `calls` counts wire signatures. */
 export function seededParty(byte: number) {
@@ -29,6 +34,7 @@ const vet = (locator: string, digit: string) => ({ anchor: { kind: "storage-prog
 export interface AcceptedPurchase {
   buyer: SeededParty;
   seller: SeededParty;
+  /** TP-1's orchestrator: the seller itself (G3). */
   orchestrator: SeededParty;
   listing: Listing;
   pin: { listingId: string; version: number; contentHash: string };
@@ -43,7 +49,7 @@ export interface AcceptedPurchase {
  * test names; the wire's Listing reader gives the window it compares.
  */
 export async function acceptedPurchase(options: { jobId: string; generatedAt: number; validity: { notBefore: number; notAfter: number }; publicEndpoint: string; listingId?: string }): Promise<AcceptedPurchase> {
-  const buyer = seededParty(41), seller = seededParty(42), orchestrator = seededParty(43);
+  const buyer = seededParty(41), seller = seededParty(42), orchestrator = seller;
   const at = options.validity.notBefore;
   const listing: Listing = {
     dacsVersion: "1", listingVersion: 1, listingId: options.listingId ?? "report",
@@ -104,4 +110,41 @@ export async function commitPurchase(p: AcceptedPurchase, committedAt: number): 
     createdAt: p.agreement.generatedAt,
     commitmentSigner: { algorithm: "ed25519", signer: p.orchestrator.claim, sign: p.orchestrator.signBytes },
   }, provider, verifySignature);
+}
+
+/**
+ * A finality commitment for any job, Agreement hash and Listing pin, as data
+ * in the shape commitFixedPriceAgreement returns: its record signed by
+ * `seller` (TP-1's orchestrator) and a finalized receipt at `committedAt`.
+ * For seller-side tests whose Agreement is a literal hash. `patch` changes the
+ * record before it is signed, `receipt` the receipt after.
+ */
+export function wireCommitment(options: {
+  seller: { claim: string; sign(bytes: Uint8Array): Uint8Array | string | Promise<Uint8Array | string> };
+  buyer: string; jobId: string; agreementHash: string; listingPin: ListingPin; committedAt: number;
+  signer?: string; patch?: Record<string, unknown>; receipt?: Record<string, unknown>;
+}) {
+  const unsigned = {
+    finalityCommitmentVersion: "1", jobId: options.jobId, agreementHash: options.agreementHash, listingRef: { ...options.listingPin },
+    parties: [options.buyer, options.seller.claim], pattern: "fixed-price", createdAt: options.committedAt - 1000, ...options.patch,
+  };
+  const hash = contentHash(unsigned as Record<string, unknown>);
+  const signature = options.seller.sign(Buffer.from(`dacs-finality-commitment:v1:${hash}`, "utf8"));
+  if (signature instanceof Promise) throw new Error("wireCommitment needs a synchronous signer");
+  const value = typeof signature === "string" ? signature : Buffer.from(signature).toString("base64url");
+  const record = { ...unsigned, signature: { algorithm: "ed25519", signer: options.signer ?? options.seller.claim, value } };
+  const logicalAddress = `dacs3:commit:${options.jobId}`;
+  const anchorReceipt = {
+    receiptVersion: "1", substrate: "demos:testnet", finalityProfile: "demos-bft-final", logicalAddress,
+    nativeAddress: "stor-commitment", contentHash: contentHash(record as Record<string, unknown>),
+    transactionRef: { kind: "demos", value: "commitment-write-tx" }, writer: "demos-writer", nonce: "1",
+    state: "finalized", observationDisposition: "established", observedAt: options.committedAt + 1000,
+    blockRef: { id: "block-1", height: "1", timestamp: options.committedAt }, evidence: { kind: "demos-finality-proof", value: "proof-1" },
+    ...options.receipt,
+  };
+  return {
+    logicalAddress, nativeAddress: "stor-commitment", agreementHash: options.agreementHash,
+    anchorTxRef: { kind: "storage-program", address: "stor-commitment", writeTxHash: "c".repeat(64) },
+    anchorReceipt, committedAt: options.committedAt, resumed: false, recordKind: "finality", record,
+  };
 }

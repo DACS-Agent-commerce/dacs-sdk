@@ -1,6 +1,7 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
+import { validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import * as wire from "../../src/wire/index.js";
 import { walletSignatureBytes } from "../../src/wire/validate.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
+const { inMemoryJournalForTest } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 18);
 const LOCAL = { endpoint: "https://rpc.review.invalid/", transportAuthority: "test", connectionId: "1" };
@@ -43,7 +45,10 @@ function world(path = "/dacs/v1/payments") {
   const direct = () => header(signed(request, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request));
   /** What the seller host retained for the job: its own record, not read from the request. */
   const retained = { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), buyer: buyer.claim, seller: seller.claim };
-  const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true };
+  // The job's finalized commitment, which the seller read itself: payment and delivery routes need it.
+  const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: retained.jobId, agreementHash: retained.agreementHash, listingPin: PIN, committedAt: NOW - 5000 });
+  const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true,
+    commitment, readCommitmentReceipt: validReceipt };
   return { buyer, seller, request, open, delegated, direct, artifact, check, context, signed, retained };
 }
 
@@ -83,8 +88,10 @@ describe("effect request replay reservations", () => {
     const check = { ...x.check, artifacts: [x.artifact], requestJournal: inMemoryJournalForTest(reserveRequest) };
     expect(wire.checkWireRequest(x.delegated(), check)).toEqual({ body: {}, readbackOnly: false });
     expect(reserveRequest).toHaveBeenCalledTimes(1);
+    const { profile, jobId, agreementHash, path } = x.request;
     expect(reserveRequest).toHaveBeenCalledWith({
       key: sha256Hex(canonicalize({ buyer: x.buyer.claim, seller: x.seller.claim, profile: x.request.profile, nonce: x.request.nonce })),
+      operationId: sha256Hex(canonicalize({ profile, seller: x.seller.claim, buyer: x.buyer.claim, jobId, agreementHash, path, body: sha256Hex("{}") })),
       requestHash: wire.wireRequestHash(x.request), expiresAt: x.request.expiresAt,
       retainUntil: x.request.expiresAt + wire.DACS_SELLER_HTTP_LIMITS.maxClockSkewMs,
     });
@@ -100,6 +107,10 @@ describe("effect request replay reservations", () => {
     expect(gate).toHaveLength(1);
     expect(gate[0].result).toBe("not checked");
     expect(gate[0].subject).toContain("authorizes no effect until restart and concurrent-worker tests pass");
+    // Retained until retainUntil, the instant the guide and code name, never only until expiresAt.
+    expect(gate[0].subject).toContain("until retainUntil (expiresAt + maxClockSkewMs, 30 s)");
+    expect(gate[0].subject).not.toMatch(/until expiresAt\b/);
+    expect(gate[0].subject).toContain("qualifyWireRequestJournal");
     const guide = text("docs/dacs-seller-http-v1.md").replace(/\s+/g, " ");
     expect(guide).toContain("authorizes no effect until the composed host's journal passes restart and concurrent-worker tests");
     expect(guide).not.toContain("Host duty");

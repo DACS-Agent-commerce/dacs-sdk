@@ -71,14 +71,18 @@ export interface WireRequestInput extends SigningContext {
   endpointProof: EndpointProof;
   /**
    * For a request that continues a committed purchase (its payment, delivery
-   * and readback routes): the job's finalized commitment, exactly the
-   * FinalizedAgreementCommitment commitFixedPriceAgreement returned. The
-   * request then continues, so `ready: false` does not refuse it and the
-   * Listing's window is compared at the commitment's receipt time, not now.
-   * Omitted, or on any other route (a proposal, commitment or context
-   * request): a new purchase.
+   * and readback routes): the job's finalized finality commitment, as data.
+   * The seller (TP-1's orchestrator) sends it; the result
+   * commitFixedPriceAgreement returned, or a copy read again after a restart,
+   * is checked the same way. The wire checks the record, the seller's
+   * signature and the finalized receipt, and the receipt reader kept with
+   * `endpointProof` (verifyEndpointProof's `readCommitmentReceipt`)
+   * authenticates it at every signing. The request then continues, so
+   * `ready: false` does not refuse it and the Listing's window is compared at
+   * the commitment's receipt time, not now. Omitted, or on any other route (a
+   * proposal, commitment or context request): a new purchase.
    */
-  commitment?: object;
+  commitment?: unknown;
   publicEndpoint: string;
   path: string;
   jobId: string;

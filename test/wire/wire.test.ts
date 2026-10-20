@@ -270,7 +270,7 @@ describe("import closure", () => {
     expect([...external].sort()).toEqual(["node:crypto", "node:util"]);
     expect([...seen].map((href) => href.replace(/^.*\/src\//, "")).sort()).toEqual([
       "canonical/hash.ts", "canonical/jcs.ts", "canonical/rawJson.ts", "canonical/snapshot.ts", "crypto/ed25519.ts", "errors.ts",
-      "negotiate/jobId.ts", "negotiate/verifiedCommitment.ts", "wire/approval.ts", "wire/delegation.ts", "wire/discovery.ts", "wire/envelope.ts", "wire/index.ts", "wire/profile.ts",
+      "negotiate/jobId.ts", "wire/approval.ts", "wire/commitment.ts", "wire/delegation.ts", "wire/discovery.ts", "wire/envelope.ts", "wire/index.ts", "wire/profile.ts",
       "wire/response.ts", "wire/routes.ts", "wire/validate.ts",
     ]);
   });

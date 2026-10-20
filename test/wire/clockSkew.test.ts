@@ -1,7 +1,8 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
+import { validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Two parties never share a clock. A signer stamps expiresAt (or notBefore)
 // from its own clock and the receiver compares it with another, so every such
@@ -26,6 +27,7 @@ vi.mock("../../src/wire/approval.js", () => import("./testApproval.js"));
 import { withTestApproval } from "./testApproval.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
+const { inMemoryJournalForTest } = journalFixture(fixtureWire);
 
 const NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
@@ -57,7 +59,9 @@ function world() {
   const approved = [sha(canonicalize(record))];
   const buyerBinding = withTestApproval(approved, () => bindTp1Fixture({ record, local: RPC_A }));
   const sellerBinding = withTestApproval(approved, () => bindTp1Fixture({ record, local: RPC_B }));
-  return { buyer, seller, session, other, buyerBinding, sellerBinding };
+  // The job's finalized commitment, which the seller read itself: its payment route needs it.
+  const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash: AGREEMENT, listingPin: PIN, committedAt: NOW - 3_600_000 });
+  return { buyer, seller, session, other, buyerBinding, sellerBinding, commitment };
 }
 type World = ReturnType<typeof world>;
 
@@ -75,7 +79,7 @@ function sellerCheck(w: World, header: string, now: number, change: Partial<Requ
   return { opened, check: () => checkWireRequest(opened, {
     requestJournal: inMemoryJournalForTest(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN,
     method: "POST", path: opened.payload.path, rawBody: Buffer.from(TEXT), now, binding: w.sellerBinding, local: RPC_B,
-    purchaseProfile: w.sellerBinding.profile, requireDelegation, ...change,
+    purchaseProfile: w.sellerBinding.profile, requireDelegation, commitment: w.commitment, readCommitmentReceipt: validReceipt, ...change,
   }) };
 }
 
@@ -207,7 +211,7 @@ describe("the replay journal's retention under clock difference", () => {
     const seen: WireRequestReservation[] = [];
     sellerCheck(w, header, NOW, { requestJournal: inMemoryJournalForTest((r) => { seen.push(r); return true; }) }).check();
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toEqual({ key: expect.any(String), requestHash: expect.any(String), expiresAt: payload.expiresAt, retainUntil: payload.expiresAt + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs });
+    expect(seen[0]).toEqual({ key: expect.any(String), operationId: expect.any(String), requestHash: expect.any(String), expiresAt: payload.expiresAt, retainUntil: payload.expiresAt + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs });
     expect(Object.isFrozen(seen[0])).toBe(true);
   });
 

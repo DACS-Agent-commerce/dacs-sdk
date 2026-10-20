@@ -1,6 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
 import { sha256ProvenanceFile } from "./provenanceFixture.js";
 // Compares the SDK wire with the original plugin wire captured from frontend
@@ -27,6 +27,7 @@ import { withTestApproval } from "./testApproval.js";
 import { envelopeSignatureBytes, verifyEd25519 } from "../../src/wire/validate.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
+const { inMemoryJournalForTest } = journalFixture(fixtureWire);
 
 const ORIGINAL_PATH = new URL("./fixtures/plugin-wire-82bf8c4.original.json", import.meta.url);
 const PRE_REVISION_PATH = new URL("./fixtures/plugin-wire-82bf8c4.tp1-adapted.json", import.meta.url);

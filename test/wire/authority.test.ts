@@ -4,9 +4,10 @@ import * as wire from "../../src/wire/index.js";
 import { assertEndpointProof } from "../../src/wire/discovery.js";
 import { canonicalize } from "../../src/canonical/index.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
 
 const local = { endpoint: "https://unverified.example/", transportAuthority: "test", connectionId: "generation-1" };
+const { inMemoryJournalForTest } = journalFixture(wire);
 const jobId = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
 const now = Date.UTC(2026, 9, 18);
 const modules = { CORE: "0.3", "DACS-1": "0.7", "DACS-2": "0.6", "DACS-3": "0.5", "DACS-4": "0.8", "DACS-5": "0.5" };

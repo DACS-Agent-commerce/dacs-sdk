@@ -50,6 +50,7 @@ export {
   signWireEnvelope,
   openWireEnvelope,
   checkWireRequest,
+  qualifyWireRequestJournal,
   admitWireRequestBody,
   admitWireResponseBody,
   type CheckedWireRequest,
@@ -57,6 +58,7 @@ export {
   type OpenedEnvelope,
   type OpenEnvelopeOptions,
   type RequestCheck,
+  type QualifiedWireRequestJournal,
   type WireRequestJournal,
   type WireRequestReservation,
   type WireRetainedAgreement,
@@ -96,6 +98,10 @@ export {
   type VerifiedListingEligibility,
   type ListingEligibilityReader,
 } from "./discovery.js";
+export {
+  type CommitmentReceiptReader,
+  type WireAnchoredCommitment,
+} from "./commitment.js";
 export {
   WireError,
   admitWireJson,

@@ -1,5 +1,5 @@
 import { fixtureBinder } from "./authorityFixture.js";
-import { inMemoryJournalForTest } from "./requestJournalFixture.js";
+import { journalFixture } from "./requestJournalFixture.js";
 import { agreementFixture } from "./agreementFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 // Replays vectors/dacs-seller-http-v1.json. Each negative must fail with its
@@ -28,6 +28,7 @@ const impl = process.env.DACS_WIRE_IMPL;
 vi.doMock(impl ? impl.replace(/index\.ts$/, "approval.ts") : "../../src/wire/approval.js", () => import("./testApproval.js"));
 const wire = (await import(impl ?? "../../src/wire/index.js")) as typeof WireModule;
 const bindTp1Fixture = fixtureBinder(wire);
+const { inMemoryJournalForTest } = journalFixture(wire);
 const { signRequestWithProof, registerDiscoverySigner } = await import("./requestFixture.js");
 
 interface Vector {
