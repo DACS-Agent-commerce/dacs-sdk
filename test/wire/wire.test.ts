@@ -147,9 +147,9 @@ describe("TESTNET_PROFILE_TP1", () => {
 
   it("pins the approved record and limits current guarantees to the wire", () => {
     expect(TESTNET_PROFILE_TP1.network.identityRecord).toBe(TP1_APPROVED_IDENTITY_RECORD);
-    expect(TESTNET_PROFILE_TP1.network.approvedIdentityRecordDigests).toEqual(["c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd"]);
+    expect(TESTNET_PROFILE_TP1.network.approvedIdentityRecordDigests).toEqual(["5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330"]);
     expect(TESTNET_PROFILE_TP1.network.refusedChainIdentities).toEqual([]);
-    expect(TESTNET_PROFILE_TP1.network.status).toMatch(/record approved on 2026-10-15 at 16:41Z pinned/);
+    expect(TESTNET_PROFILE_TP1.network.status).toMatch(/record approved on 2026-10-20 pinned/);
     expect(TESTNET_PROFILE_TP1.network.composition).toContain("broadcast refusal is not checked");
     expect(JSON.stringify(TESTNET_PROFILE_TP1)).not.toContain("834375ad6381d9eedbaea18bfe841416fe680e00fa74b09ab711fde45d08e8e2");
   });

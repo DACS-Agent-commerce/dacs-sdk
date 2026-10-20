@@ -1,9 +1,10 @@
-// Approved on 2026-10-15 at 16:41Z.
+// Approved on 2026-10-20.
 // SHA-256 of the canonical TP1_APPROVED_IDENTITY_RECORD in profile.ts:
-// recordId and pinVersion dacs-demos-testnet-identity/2026-10-15;
+// recordId and pinVersion dacs-demos-testnet-identity/2026-10-20;
 // sourceKind confirmed-block-one-predecessor, including its documented fallback.
+// The 2026-10-15 record (chain 83082fbb…) is no longer listed, so it is refused.
 // Approval is held only in SDK source. No caller can extend this frozen list.
 // Synthetic tests replace this module (test/wire/testApproval.ts).
 export const TP1_APPROVED_IDENTITY_RECORD_DIGESTS: readonly string[] = Object.freeze([
-  "c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd",
+  "5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330",
 ]);

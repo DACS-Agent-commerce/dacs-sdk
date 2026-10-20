@@ -3,7 +3,7 @@ import { fixtureBinder } from "./authorityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
-// 2026-10-15 approval through the real approval module. No mock or replacement approval.
+// 2026-10-20 approval through the real approval module. No mock or replacement approval.
 // The supplied decision record is used offline; generated keys and .invalid
 // endpoints test wire admission only, not retained chain-effect adapters.
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
@@ -21,7 +21,24 @@ const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { testJournal } = journalFixture(fixtureWire);
 
 const RECORD = TP1_APPROVED_IDENTITY_RECORD;
-const DIGEST = "c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd";
+const DIGEST = "5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330";
+// The record approved on 2026-10-15 for the chain node2 served before its 2026-10-20 rebuild. No longer approved.
+const PREVIOUS_CHAIN = "83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4";
+const PREVIOUS_RECORD = {
+  format: "dacs-testnet-identity-record/v1",
+  recordId: "dacs-demos-testnet-identity/2026-10-15",
+  network: "demos-testnet",
+  chainIdentity: PREVIOUS_CHAIN,
+  pinVersion: "dacs-demos-testnet-identity/2026-10-15",
+  provenance: {
+    approvedBy: "the owner",
+    approvedAt: "2026-10-15T16:41:00Z",
+    source: "Approved Demos testnet identity record (2026-10-15T16:41:00Z)",
+    sourceKind: "confirmed-block-one-predecessor",
+    documentation: "Demos testnet nodes do not serve block 0 (`getBlockByNumber` 0 returns 400). The chain identity is block 1's `content.previousHash`, checked against the approved record `dacs-demos-testnet-identity/2026-10-15`.",
+  },
+} as const;
+const PREVIOUS_DIGEST = "c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd";
 const NOW = Date.UTC(2026, 9, 15, 17);
 const JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4H";
 const PIN = { listingId: "approved-identity", version: 1, contentHash: "d".repeat(64) };
@@ -40,6 +57,7 @@ function party() {
     return new Uint8Array(sign(null, Buffer.from(bytes), privateKey));
   } };
 }
+const changed = (patch: Record<string, unknown>) => ({ ...RECORD, ...patch });
 const refusal = async (fn: () => unknown) => {
   try { await fn(); return "ok"; } catch (e) { if (e instanceof WireError) return e.code; throw e; }
 };
@@ -53,19 +71,40 @@ async function request(buyer: ReturnType<typeof party>, seller: ReturnType<typeo
   return signWireRequest({ signer: buyer, binding, local, path: "/dacs/v1/commitments", jobId: JOB, text: BODY, seller: seller.claim, job: { ...job, profile: (binding as Tp1Binding | undefined)?.profile as Tp1WireProfile }, now: NOW });
 }
 
-describe("identity approved on 2026-10-15 using shipped approval", () => {
+describe("identity approved on 2026-10-20 using shipped approval", () => {
   it("pins the complete canonical record, including provenance and fallback documentation", () => {
-    expect(RECORD.recordId).toBe("dacs-demos-testnet-identity/2026-10-15");
-    expect(RECORD.chainIdentity).toBe("83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4");
+    expect(RECORD.recordId).toBe("dacs-demos-testnet-identity/2026-10-20");
+    expect(RECORD.chainIdentity).toBe("d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc");
     expect(RECORD.pinVersion).toBe(RECORD.recordId);
-    expect(RECORD.provenance).toMatchObject({ approvedBy: "the owner", approvedAt: "2026-10-15T16:41:00Z", sourceKind: "confirmed-block-one-predecessor" });
-    expect(RECORD.provenance.documentation).toBe("Demos testnet nodes do not serve block 0 (`getBlockByNumber` 0 returns 400). The chain identity is block 1's `content.previousHash`, checked against the approved record `dacs-demos-testnet-identity/2026-10-15`.");
+    expect(RECORD.provenance).toMatchObject({ approvedBy: "the owner", approvedAt: "2026-10-20", sourceKind: "confirmed-block-one-predecessor" });
+    expect(RECORD.provenance.documentation).toBe("Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: \"0\"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-20`.");
     expect(hash(canonicalize(RECORD))).toBe(DIGEST);
     expect(TP1_APPROVED_IDENTITY_RECORD_DIGESTS).toEqual([DIGEST]);
     expect(Object.isFrozen(RECORD) && Object.isFrozen(RECORD.provenance)).toBe(true);
     expect(RECORD).not.toHaveProperty("endpoint");
     expect(RECORD).not.toHaveProperty("transportAuthority");
     expect(bindTp1Fixture({ record: RECORD, local: A }).recordDigest).toBe(DIGEST);
+  });
+
+  it("binds the 2026-10-20 chain and refuses the 2026-10-15 record and its chain before signing", async () => {
+    expect(hash(canonicalize(PREVIOUS_RECORD))).toBe(PREVIOUS_DIGEST);
+    expect(TP1_APPROVED_IDENTITY_RECORD_DIGESTS).not.toContain(PREVIOUS_DIGEST);
+    const bound = bindTp1Fixture({ record: structuredClone(RECORD), local: A });
+    expect(bound.profile).toMatchObject({ chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc", pinVersion: "dacs-demos-testnet-identity/2026-10-20" });
+    expect(bound.recordDigest).toBe(DIGEST);
+    const buyer = party(), seller = party();
+    await request(buyer, seller, bound, A);
+    expect(buyer.calls).toBe(1);
+    // The previous record exactly as approved, and the previous chain under the current record's other fields.
+    for (const record of [PREVIOUS_RECORD, changed({ chainIdentity: PREVIOUS_CHAIN }), changed({ recordId: PREVIOUS_RECORD.recordId, pinVersion: PREVIOUS_RECORD.pinVersion, chainIdentity: PREVIOUS_CHAIN })]) {
+      let sends = 0;
+      expect(await refusal(async () => {
+        await request(buyer, seller, bindTp1Fixture({ record, local: A }), A);
+        sends += 1;
+      }), record.recordId).toBe("tp1_identity_unapproved");
+      expect(sends).toBe(0);
+    }
+    expect(buyer.calls + seller.calls).toBe(1);
   });
 
   it.each([[A, B], [B, A]])("signs and verifies requests and responses in both directions with different RPC bindings (%j)", async (buyerLocal, sellerLocal) => {
@@ -93,7 +132,6 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
     expect(buyer.calls + seller.calls).toBe(2);
   });
 
-  const changed = (patch: Record<string, unknown>) => ({ ...RECORD, ...patch });
   it.each([
     ["missing record", undefined, "tp1_identity_record_missing"],
     ["missing identity", changed({ chainIdentity: undefined }), "tp1_identity_pin_missing"],
@@ -101,6 +139,8 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
     ["fixture identity", changed({ chainIdentity: TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES[0] }), "tp1_identity_fixture"],
     ["mocked mainnet labelled testnet", changed({ chainIdentity: hash("MOCKED-MAINNET/test-only") }), "tp1_identity_unapproved"],
     ["unknown identity", changed({ chainIdentity: hash("SYNTHETIC/unknown") }), "tp1_identity_unapproved"],
+    ["the 2026-10-15 record, no longer approved", PREVIOUS_RECORD, "tp1_identity_unapproved"],
+    ["the 2026-10-15 chain under the current record", changed({ chainIdentity: PREVIOUS_CHAIN }), "tp1_identity_unapproved"],
     ["wrong record identifier", changed({ recordId: "unknown-record" }), "tp1_identity_unapproved"],
     ["wrong pin version", changed({ pinVersion: "unknown-pin/1" }), "tp1_identity_unapproved"],
     ["changed provenance", changed({ provenance: { ...RECORD.provenance, source: "unknown source" } }), "tp1_identity_unapproved"],
@@ -145,15 +185,17 @@ describe("identity approved on 2026-10-15 using shipped approval", () => {
     });
   }
 
-  it("refuses a peer with a mismatched identity under an otherwise valid signature", async () => {
+  it("refuses a peer with a mismatched identity, including the 2026-10-15 chain, under an otherwise valid signature", async () => {
     const buyer = party(), seller = party();
     const bb = bindTp1Fixture({ record: RECORD, local: A });
     const sb = bindTp1Fixture({ record: RECORD, local: B });
     const { header } = await request(buyer, seller, bb, A);
     const envelope = JSON.parse(Buffer.from(header, "base64url").toString("utf8")) as { payload: WireRequestPayload; signature: string };
-    envelope.payload.profile = { ...bb.profile, chainIdentity: hash("SYNTHETIC/peer-other-chain") };
-    envelope.signature = Buffer.from(buyer.sign(Buffer.from(`dacs-seller-http:v1:request:${canonicalize(envelope.payload)}`))).toString("base64url");
-    expect(await refusal(() => openWireEnvelope(Buffer.from(canonicalize(envelope)).toString("base64url"), "request", { binding: sb, local: B, purchaseProfile: sb.profile }))).toBe("tp1_profile_mismatch");
+    for (const other of [{ chainIdentity: hash("SYNTHETIC/peer-other-chain") }, { chainIdentity: PREVIOUS_CHAIN }, { chainIdentity: PREVIOUS_CHAIN, pinVersion: PREVIOUS_RECORD.pinVersion }]) {
+      envelope.payload.profile = { ...bb.profile, ...other };
+      envelope.signature = Buffer.from(buyer.sign(Buffer.from(`dacs-seller-http:v1:request:${canonicalize(envelope.payload)}`))).toString("base64url");
+      expect(await refusal(() => openWireEnvelope(Buffer.from(canonicalize(envelope)).toString("base64url"), "request", { binding: sb, local: B, purchaseProfile: sb.profile })), JSON.stringify(other)).toBe("tp1_profile_mismatch");
+    }
   });
 
   it("the seller opens no request and signs no answer unless the tuple it kept for the purchase is given and exactly its own", async () => {

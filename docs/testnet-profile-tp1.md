@@ -31,42 +31,63 @@ The machine-readable record is `TESTNET_PROFILE_TP1` in
 | Identifier | `dacs-testnet-tp1` |
 | Revision | `TP-1` (later revisions are new values, each with its own base; see [Revisions](#revisions)) |
 | Base | Proposed reference revision: DACS-Standard `next` `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`, subject to Composition qualification; tuple CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5 (`spec/PROFILE.md:43-50` at `d45c0a2`) |
-| Network | Demos testnet only. approved identity record `dacs-demos-testnet-identity/2026-10-15`, approved by the owner on 2026-10-15 at 16:41Z: chain identity `83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4`, pin version `dacs-demos-testnet-identity/2026-10-15`, source kind `confirmed-block-one-predecessor`. The wire refuses unapproved identities before signing; broadcast refusal in the intended composition is not checked (see "Blocked" below) |
+| Network | Demos testnet only. approved identity record `dacs-demos-testnet-identity/2026-10-20`, approved by the owner on 2026-10-20: chain identity `d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc`, pin version `dacs-demos-testnet-identity/2026-10-20`, source kind `confirmed-block-one-predecessor`. The wire refuses unapproved identities before signing, including the previous record `dacs-demos-testnet-identity/2026-10-15`; broadcast refusal in the intended composition is not checked (see "Blocked" below) |
 | Capability | FP-DEM with these restrictions: `negotiate-fixed-price`, `pay-dem`, delivery through Demos storage at `dacs4:deliverable:{jobId}` (`spec/DACS-4-SETTLE.md:839` at `d45c0a2`); `fixed-text` and explicitly configured pure, deterministic, synchronous text modules only, in the bounded UTF-8 report envelope the buyer plugins produce and read today (at most 16,384 characters, synchronous only: `TP1_CAPABILITIES` in `src/wire/profile.ts`, pinned by `test/wire/wire.test.ts`; that the plugins' producer accepts only this is taken from the plugin implementation and not yet independently checked, composition checks qualify it); no buyer request input. Any other Listing is refused before approval or signing; buyers provide an authenticated, content-hash-bound `readListingEligibility` decision to `verifyEndpointProof` before approval, and the wire rechecks selected terms before each request signature |
 | Wire | [`dacs-seller-http/v1`](dacs-seller-http-v1.md): buyer-initiated HTTPS, discovery at `/.well-known/dacs-seller.json` |
 | Claims | `did:demos:agent:<64 lowercase hex>` for both parties |
 
 The approved record is `TP1_APPROVED_IDENTITY_RECORD` in `src/wire/profile.ts`.
-Its canonical SHA-256 is `c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd`,
+Its canonical SHA-256 is `5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330`,
 pinned in `TP1_APPROVED_IDENTITY_RECORD_DIGESTS` in `src/wire/approval.ts`.
 The SDK representation adds `format` and uses the pin version as `recordId`;
-`approvedBy` is "the owner", `approvedAt` is `2026-10-15T16:41:00Z`, and
-`source` is "Approved Demos testnet identity record (2026-10-15T16:41:00Z)". Provenance also
+`approvedBy` is "the owner", `approvedAt` is `2026-10-20`, and
+`source` is "Approved Demos testnet identity record (2026-10-20)". Provenance also
 includes the source kind above and the exact fallback documentation:
 
-> Demos testnet nodes do not serve block 0 (`getBlockByNumber` 0 returns 400). The chain identity is block 1's `content.previousHash`, checked against the approved record `dacs-demos-testnet-identity/2026-10-15`.
+> Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: "0"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-20`.
 
-Correction to the quoted historical provenance: numeric `blockNumber: 0`
-returns RPC `result: 400` inside HTTP 200, while string `blockNumber: "0"`
-returns genesis successfully. The quote and approved record digest remain
-unchanged; the node limitation concerns the numeric argument only.
+Numeric `blockNumber: 0` returns RPC `result: 400` inside HTTP 200, while
+string `blockNumber: "0"` returns genesis successfully; the node limitation
+concerns the numeric argument only.
+
+**Previous record, no longer approved.** The record
+`dacs-demos-testnet-identity/2026-10-15` (chain identity
+`83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4`, canonical
+SHA-256 `c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd`,
+approved on 2026-10-15 at 16:41Z) named the chain node2 served until its
+2026-10-20 rebuild. node2 now serves another chain: block 1's
+`content.previousHash` and the string-zero genesis hash are both
+`d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc`. The owner
+approved that identity on 2026-10-20. The SDK's approval list names only the
+new record, so a binding to the previous record is refused
+(`tp1_identity_unapproved`) before any signature. The register keeps the
+previous record under `network.previousRecords`. Its fallback text said nodes
+"do not serve block 0"; only the numeric argument is refused, and the new
+record's text says so.
 
 Node inspection baseline: `kynesyslabs/node` commit
-`61b8e75aa8db5e408c49e1c3a89db4d673f45578`, version `0.9.8`.
+`11e7c8207732e25035de5a04cab25c5346046493`, version `0.9.8`. The deployment
+reports `dirty: true`, so this commit is an inspection baseline only; it does
+not identify what node2 runs.
 The timestamped, read-only node2 request/response fixtures and SHA-256 manifest
-are in [`conformance/tp1-node-observations`](../conformance/tp1-node-observations/manifest.json).
-On 2026-10-18 the deployment reported branch `stabilisation`,
-`builtAt: 2026-10-14T16:45:24Z`, and **`dirty: true`**. No deployment
+are in [`conformance/tp1-node-observations`](../conformance/tp1-node-observations/manifest-2026-10-20.json).
+On 2026-10-20 the deployment reported branch `stabilisation`,
+`builtAt: 2026-10-20T11:09:32Z`, and **`dirty: true`**. No deployment
 artifact digest or overlay was supplied. This source commit is an immutable
 inspection baseline, not a pin of the deployment's executable bytes; node
 composition qualification remains open until those bytes can be identified.
-node2 was rebuilt after this capture: a read-only `getNetworkInfo` on
-2026-10-19 reported the same source commit, still `dirty: true`, with
-`builtAt: 2026-10-18T15:59:30Z`. The fixtures describe the build that ran
-when they were captured, not necessarily the one running now.
-Observed: genesis availability with string zero, block one's predecessor,
-missing-transaction RPC refusal, and missing status `unknown`. Inferred from
-[`chainTransactions.ts` at that source commit](https://github.com/kynesyslabs/node/blob/61b8e75aa8db5e408c49e1c3a89db4d673f45578/src/libs/blockchain/chainTransactions.ts#L96-L109):
+The 2026-10-18 captures of the previous chain are kept unchanged as history
+([manifest](../conformance/tp1-node-observations/manifest.json)). That build
+reported source commit `61b8e75aa8db5e408c49e1c3a89db4d673f45578`,
+`builtAt: 2026-10-14T16:45:24Z` and `dirty: true`; a read-only
+`getNetworkInfo` on 2026-10-19 reported the same commit rebuilt at
+`2026-10-18T15:59:30Z`. The fixtures describe the build that ran when they
+were captured, not necessarily the one running now.
+Observed on 2026-10-20: genesis availability with string zero, block one's
+predecessor, and numeric-zero refusal. Observed on 2026-10-18 only:
+missing-transaction RPC refusal and missing status `unknown`. Inferred from
+[`chainTransactions.ts` at the baseline commit](https://github.com/kynesyslabs/node/blob/11e7c8207732e25035de5a04cab25c5346046493/src/libs/blockchain/chainTransactions.ts#L96-L109),
+which is byte-identical to the file at `61b8e75`:
 a stored transaction is labelled `included` without checking execution.
 The same handler's comment (lines 93-94) says execution failures are not
 recorded and surface as `unknown`; it does not establish that failed
@@ -81,7 +102,7 @@ owner for the build observed by these fixtures:
   bundle, with the artifact retained for inspection. A source archive's digest
   or the fixture hashes alone does not identify the deployed runtime.
 - The complete source tree for that artifact, including the dirty overlay on
-  `61b8e75aa8db5e408c49e1c3a89db4d673f45578`, and its dependency lockfile and
+  `11e7c8207732e25035de5a04cab25c5346046493`, and its dependency lockfile and
   build inputs. The overlay must be retained under an immutable reference or
   content digest; the reported source commit alone is insufficient.
 - A deployment record binding that artifact and source tree to node2 and the
@@ -96,8 +117,10 @@ that build; the missing-transaction fixtures do not establish it. Until then,
 `nodeObservationEvidence.deploymentQualified` remains `false`, the deployment
 digest and overlay remain unknown, and the source-inference labels remain.
 
-The decision record supplies this pin independently of the endpoint being
-admitted. The identity decision did not depend on these later read-only node observations. `endpoint` and `transportAuthority`
+The owner's decision supplies this pin independently of the endpoint being
+admitted; the wire never takes it from an RPC. The 2026-10-20 reads record
+what node2 reported when the decision was checked; they are evidence for it,
+not an input to the gate. `endpoint` and `transportAuthority`
 are per actor for each connection and are excluded from the approved record.
 
 The pin alone does not establish what runs: the SDK's vector pin is `d45c0a2`

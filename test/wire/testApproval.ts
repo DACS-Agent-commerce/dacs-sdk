@@ -1,5 +1,5 @@
 // Test-only approval of SYNTHETIC identity records. The SDK's list
-// (src/wire/approval.ts) pins the approval from 2026-10-15 and no shipped module takes another.
+// (src/wire/approval.ts) pins the approval from 2026-10-20 and no shipped module takes another.
 // A test file that needs a synthetic binding replaces that module with this
 // one, before the wire is loaded:
 //

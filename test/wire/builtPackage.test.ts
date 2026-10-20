@@ -179,6 +179,20 @@ wire.checkWireRequest(approvedOpened, { requestJournal: qualifiedJournal(), read
 const approvedResponse = await wire.signWireResponse(approvedOpened.payload, 200, "{}", { signer: sellerSigner, binding: sb, local: sellerLocal, now: file.now, purchaseProfile: sb.profile });
 const receipt = wire.verifyWireResponse(approvedRequest.payload, { header: approvedResponse, status: 200, body: Buffer.from("{}"), now: file.now, binding: bb, local: buyerLocal });
 out.approvedIdentity = { recordDigest: bb.recordDigest, sameProfile: canonicalize(bb.profile) === canonicalize(sb.profile), differentEndpoints: bb.local.endpoint !== sb.local.endpoint, verifiedSeller: receipt.principal === sellerSigner.claim, signatures: signer.calls + sellerSigner.calls };
+// The 2026-10-15 record, for the chain node2 served before its 2026-10-20 rebuild: the shipped approval refuses it.
+const tick = String.fromCharCode(96);
+const previousRecord = { format: approvedRecord.format, recordId: "dacs-demos-testnet-identity/2026-10-15", network: "demos-testnet",
+  chainIdentity: "83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4", pinVersion: "dacs-demos-testnet-identity/2026-10-15",
+  provenance: { approvedBy: "the owner", approvedAt: "2026-10-15T16:41:00Z", source: "Approved Demos testnet identity record (2026-10-15T16:41:00Z)", sourceKind: "confirmed-block-one-predecessor",
+    documentation: "Demos testnet nodes do not serve block 0 (" + tick + "getBlockByNumber" + tick + " 0 returns 400). The chain identity is block 1's " + tick + "content.previousHash" + tick + ", checked against the approved record " + tick + "dacs-demos-testnet-identity/2026-10-15" + tick + "." } };
+const callsBeforePrevious = signer.calls;
+out.previousIdentity = {
+  boundChain: bb.profile.chainIdentity,
+  digest: sha(canonicalize(previousRecord)),
+  record: await code(async () => wire.signWireRequest({ signer, binding: bindTp1Fixture({ record: previousRecord, local: buyerLocal }), local: buyerLocal, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: sellerSigner.claim, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile: bb.profile }, now: file.now })),
+  chain: await code(() => bindTp1Fixture({ record: { ...approvedRecord, chainIdentity: previousRecord.chainIdentity }, local: buyerLocal })),
+  signatures: signer.calls - callsBeforePrevious,
+};
 // The approved tuple in the compiled package, and its refusals under the shipped approval.
 const { revision: _revision, ...preRevision } = bb.profile;
 const resigned = (p) => Buffer.from(canonicalize({ payload: p, signature: Buffer.from(signer.sign(Buffer.from("dacs-seller-http:v1:request:" + canonicalize(p)))).toString("base64url") })).toString("base64url");
@@ -323,19 +337,27 @@ describe("built @kynesyslabs/dacs/wire, as a consumer installs it", () => {
     expect(Object.values(shipped.deepImports)).toEqual(Array(4).fill("ERR_PACKAGE_PATH_NOT_EXPORTED"));
   });
 
-  it("ships no approval injection: no compiled module or declaration names one, and approval.js holds only the SDK's frozen 2026-10-15 approval list", () => {
+  it("ships no approval injection: no compiled module or declaration names one, and approval.js holds only the SDK's frozen 2026-10-20 approval list", () => {
     expect(shipped.files).toContain("approval.js");
     expect(shipped.filesNamingTestApproval).toEqual([]);
-    expect(shipped.approvalModule).toEqual({ names: ["TP1_APPROVED_IDENTITY_RECORD_DIGESTS"], list: ["c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd"], frozen: true, sameAsWire: true });
+    expect(shipped.approvalModule).toEqual({ names: ["TP1_APPROVED_IDENTITY_RECORD_DIGESTS"], list: ["5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330"], frozen: true, sameAsWire: true });
     expect(shipped.functionsBeyondWire.filter((f: string) => /^(approval|profile)\.js:/.test(f))).toEqual([]);
     expect(shipped.functionsBeyondWire.some((f: string) => /bind|approv/i.test(f))).toBe(false);
   });
 
-  it("the shipped approval from 2026-10-15 binds two endpoints and verifies request and response signatures", () => {
-    expect(shipped.approvedIdentity).toEqual({ recordDigest: "c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd", sameProfile: true, differentEndpoints: true, verifiedSeller: true, signatures: 2 });
+  it("the shipped approval from 2026-10-20 binds two endpoints and verifies request and response signatures", () => {
+    expect(shipped.approvedIdentity).toEqual({ recordDigest: "5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330", sameProfile: true, differentEndpoints: true, verifiedSeller: true, signatures: 2 });
   });
 
-  it("the shipped 2026-10-15 approval binding carries the tuple (identifier, revision, base) and refuses a missing or other revision and a pre-revision kept tuple", () => {
+  it("the shipped approval binds node2's 2026-10-20 chain and refuses the 2026-10-15 record and its chain before signing", () => {
+    expect(shipped.previousIdentity).toEqual({
+      boundChain: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc",
+      digest: "c4e63ad6a75207c57c9342ed2c4fe38619c2b7cba17610753fbad2d5b4cc3cbd",
+      record: "tp1_identity_unapproved", chain: "tp1_identity_unapproved", signatures: 0,
+    });
+  });
+
+  it("the shipped 2026-10-20 approval binding carries the tuple (identifier, revision, base) and refuses a missing or other revision and a pre-revision kept tuple", () => {
     expect(shipped.approvedIdentityTuple).toEqual({
       tuple: ["dacs-testnet-tp1", "TP-1", "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20"],
       revisionMissing: "tp1_profile_revision_missing", revisionUnknown: "tp1_profile_revision_unknown", keptPreRevision: "tp1_purchase_profile_mismatch",

@@ -1,8 +1,9 @@
 // Testnet profile TP-1 and the network identity gate in front of every wire
 // signature.
 //
-// The immutable Demos testnet identity record was approved on 2026-10-15
-// at 16:41Z. Approval is held in SDK source
+// The immutable Demos testnet identity record was approved on 2026-10-20,
+// when node2 began serving a new chain; the 2026-10-15 record is no longer
+// approved. Approval is held in SDK source
 // (./approval.ts) and never taken from the caller. No network label, fixture
 // constant or value observed from an RPC can stand in for it.
 import { canonicalize } from "../canonical/jcs.js";
@@ -67,16 +68,16 @@ export const TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES: readonly string[] = Object.fr
 /** SDK representation of the approved record; actor-local fields are excluded. */
 export const TP1_APPROVED_IDENTITY_RECORD = deepFreeze({
   format: "dacs-testnet-identity-record/v1",
-  recordId: "dacs-demos-testnet-identity/2026-10-15",
+  recordId: "dacs-demos-testnet-identity/2026-10-20",
   network: "demos-testnet",
-  chainIdentity: "83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4",
-  pinVersion: "dacs-demos-testnet-identity/2026-10-15",
+  chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc",
+  pinVersion: "dacs-demos-testnet-identity/2026-10-20",
   provenance: {
     approvedBy: "the owner",
-    approvedAt: "2026-10-15T16:41:00Z",
-    source: "Approved Demos testnet identity record (2026-10-15T16:41:00Z)",
+    approvedAt: "2026-10-20",
+    source: "Approved Demos testnet identity record (2026-10-20)",
     sourceKind: "confirmed-block-one-predecessor",
-    documentation: "Demos testnet nodes do not serve block 0 (`getBlockByNumber` 0 returns 400). The chain identity is block 1's `content.previousHash`, checked against the approved record `dacs-demos-testnet-identity/2026-10-15`.",
+    documentation: "Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: \"0\"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-20`.",
   },
 } satisfies TestnetIdentityRecord);
 
@@ -101,7 +102,7 @@ export const TESTNET_PROFILE_TP1 = deepFreeze({
     identityRecordFormat: TP1_IDENTITY_RECORD_FORMAT,
     approvedIdentityRecordDigests: TP1_APPROVED_IDENTITY_RECORD_DIGESTS,
     refusedChainIdentities: TP1_REFUSED_CHAIN_IDENTITIES,
-    status: "record approved on 2026-10-15 at 16:41Z pinned; composition qualification remains pending",
+    status: "record approved on 2026-10-20 pinned; composition qualification remains pending",
   },
   capabilities: TP1_CAPABILITIES,
   wire: { transport: DACS_SELLER_HTTP_V1, discoveryPath: DACS_SELLER_DISCOVERY_PATH },
