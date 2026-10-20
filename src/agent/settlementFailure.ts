@@ -24,9 +24,10 @@ export function payDemRequestAmountOs(
 /**
  * A rail's projection of a terminal failed Demos record. The rail must build it
  * from the node's `getTxByHash` record only after matching the signed
- * hash/nonce, inclusion block and native body; the pay-dem rail builds it that
- * way and carries it on `SettleResult` as `failureProof`. It describes failure
- * of this attempt; it never authorizes a replacement debit.
+ * hash/nonce, inclusion block and native body; `createPayDemRail` builds it
+ * that way and carries it on `SettleResult` as `failureProof`. A custom client,
+ * rail or reconciler can return one too, but that is only its statement. It
+ * describes failure of this attempt; it never authorizes a replacement debit.
  *
  * Fields are projections of the node's `getTxByHash` record, in canonical form:
  * `txHash`, `payer` and `payee` are 64 lower-case hex without `0x` (the node
@@ -63,10 +64,36 @@ type DemosFailureResult = {
 };
 
 /**
+ * Settle functions, and the store submissions wrapping them, whose failure
+ * proofs the SDK built itself from a node record it read and bound. Keyed by
+ * function identity, which a caller cannot forge.
+ */
+const recordVerifiedSources = new WeakSet<object>();
+
+/**
+ * @internal Record that `source` returns a failure proof only after the SDK
+ * read the node's record for the signed hash and bound it to the prepared
+ * transfer. Only `createPayDemRail`'s settle and `payDemSettle`'s submission
+ * around it qualify. Not exported from the package roots.
+ */
+export function vouchRecordVerifiedSource<T extends object>(source: T): T {
+  recordVerifiedSources.add(source);
+  return source;
+}
+
+/** @internal Whether `source` was vouched for by {@link vouchRecordVerifiedSource}. */
+export function isRecordVerifiedSource(source: unknown): boolean {
+  return (typeof source === "function" ||
+      (typeof source === "object" && source !== null)) &&
+    recordVerifiedSources.has(source);
+}
+
+/**
  * Check that a failed result carries a well-formed failure proof bound to it.
  * This checks shape and bindings only; it does not authenticate the proof
- * against the node, so `true` may be acted on only for a proof the caller's
- * own rail built as described on {@link DemosFailedRecordProof}.
+ * against the node. A proof acts as a definitive outcome only when it came
+ * from a source vouched for by {@link vouchRecordVerifiedSource}; from any
+ * other source it is a statement and the settlement intent stays held.
  *
  * The input is first copied as data-only JSON, so proxies, accessors, exotic
  * prototypes (`Date`, class instances), symbol or non-enumerable keys and

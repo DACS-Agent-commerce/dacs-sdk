@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import {
   hasDefinitiveDemosFailure,
+  isRecordVerifiedSource,
+  vouchRecordVerifiedSource,
   type DemosFailedRecordProof,
 } from "../../src/agent/settlementFailure.js";
 import {
@@ -455,18 +457,47 @@ describe("hasDefinitiveDemosFailure", () => {
 
 describe("hasDefinitiveDemosFailure contract limits", () => {
   // It checks shape and bindings, not authenticity: a self-consistent proof that
-  // no node served still passes. Until a rail builds proofs from authenticated
-  // node records, no production module may consume the check.
+  // no node served still passes. A proof may become a definitive outcome only
+  // from a source the SDK vouched for (createPayDemRail, which reads and binds
+  // the node record itself); idempotency.test.ts and payDem.test.ts pin that an
+  // invented proof from any other source stays held.
   it("accepts an invented, self-consistent proof, so it is not an authentication", () => {
     const invented = { ...PROOF, txHash: "ab".repeat(32), nonce: 1, blockNumber: 2 };
     expect(check({ txHash: invented.txHash, blockNumber: 2, failureProof: invented })).toBe(true);
   });
 
-  it("is imported by no module in src", () => {
-    const root = new URL("../../src/", import.meta.url);
-    const importers = (readdirSync(root, { recursive: true }) as string[])
-      .filter((file) => file.endsWith(".ts") && !file.endsWith("settlementFailure.ts"))
-      .filter((file) => /settlementFailure/.test(readFileSync(new URL(file, root), "utf8")));
-    expect(importers).toEqual([]);
+  const root = new URL("../../src/", import.meta.url);
+  const sources = (readdirSync(root, { recursive: true }) as string[])
+    .filter((file) => file.endsWith(".ts") && !file.endsWith("settlementFailure.ts"))
+    .map((file) => ({ file: file.replaceAll("\\", "/"), text: readFileSync(new URL(file, root), "utf8") }));
+
+  // Each importer has a reason: the session boundary checks the proof's shape
+  // and request amount, the store persists one only from a vouched submission,
+  // and the pay-dem rail builds and vouches for proofs from node records.
+  it("is imported only by the session boundary, the settlement store and the pay-dem rail", () => {
+    expect(sources.filter(({ text }) => /settlementFailure/.test(text)).map(({ file }) => file).sort())
+      .toEqual(["agent/runSessionCore.ts", "rails/idempotency.ts", "rails/payDem.ts"]);
+  });
+
+  it("is vouched for only by the pay-dem rail, and only the store acts on the voucher", () => {
+    expect(sources.filter(({ text }) => /vouchRecordVerifiedSource\(/.test(text)).map(({ file }) => file))
+      .toEqual(["rails/payDem.ts"]);
+    expect(sources.filter(({ text }) => /isRecordVerifiedSource\(/.test(text)).map(({ file }) => file).sort())
+      .toEqual(["rails/idempotency.ts", "rails/payDem.ts"]);
+  });
+});
+
+describe("record-verified failure sources", () => {
+  it("vouches only for the exact function it marked", () => {
+    const settle = async () => undefined;
+    expect(isRecordVerifiedSource(settle)).toBe(false);
+    expect(vouchRecordVerifiedSource(settle)).toBe(settle);
+    expect(isRecordVerifiedSource(settle)).toBe(true);
+    expect(isRecordVerifiedSource(settle.bind(null))).toBe(false);
+    expect(isRecordVerifiedSource(async () => undefined)).toBe(false);
+  });
+
+  it.each([undefined, null, 0, "settle", Symbol("settle")])("refuses %s", (value) => {
+    expect(isRecordVerifiedSource(value)).toBe(false);
   });
 });

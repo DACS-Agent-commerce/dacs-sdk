@@ -1,6 +1,11 @@
 import { types as nodeTypes } from "node:util";
 
-import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
+import {
+  hasDefinitiveDemosFailure,
+  isRecordVerifiedSource,
+  vouchRecordVerifiedSource,
+  type DemosFailedRecordProof,
+} from "../agent/settlementFailure.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits, canonicalize } from "../canonical/index.js";
 import {
@@ -70,6 +75,21 @@ function stableMethod<T extends AnyMethod>(
   key: string,
   label: string,
 ): T {
+  // Never consult a caller-controlled own `.bind` property on the
+  // capability. Capture the exact function while preserving class/private
+  // receivers through the intrinsic Function.prototype operation.
+  return Function.prototype.bind.call(
+    stableMethodTarget(source, key, label),
+    source,
+  ) as T;
+}
+
+/** The exact data-property function {@link stableMethod} binds, unbound. */
+function stableMethodTarget(
+  source: unknown,
+  key: string,
+  label: string,
+): AnyMethod {
   if (
     (typeof source !== "object" && typeof source !== "function") ||
     source === null ||
@@ -91,10 +111,7 @@ function stableMethod<T extends AnyMethod>(
       ) {
         throw new DacsError(`${label} must be a stable method`);
       }
-      // Never consult a caller-controlled own `.bind` property on the
-      // capability. Capture the exact function while preserving class/private
-      // receivers through the intrinsic Function.prototype operation.
-      return Function.prototype.bind.call(descriptor.value, source) as T;
+      return descriptor.value as AnyMethod;
     }
     cursor = Object.getPrototypeOf(cursor) as object | null;
   }
@@ -265,7 +282,9 @@ export interface PayDemReconciledSettlement extends SettleResult {
  * status index for a transaction whose record `failed` (#338), so inclusion
  * alone must not be returned as a settlement. A bound `failed` record may
  * return `PayDemReconciledFailure` with a permanent class and exact failure
- * proof. Indeterminate or non-final observations must throw.
+ * proof. It can confirm a durable failure `createPayDemRail` recorded, but is
+ * never itself recorded as the definitive outcome: a held intent stays held.
+ * Indeterminate or non-final observations must throw.
  */
 export interface PayDemReconciledFailure extends SettleResult {
   ok: false;
@@ -1757,8 +1776,8 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           failureProof: {
             kind: "demos-failed-record",
             txHash, nonce: signedNonce, blockNumber: terminal.blockNumber,
-            payer: normalizeDemosNativeAddress(address)!,
-            payee: normalizeDemosNativeAddress(to)!, amountOs: amountOs.toString(),
+            payer: canonicalPayer, payee: canonicalPayee,
+            amountOs: amountOs.toString(),
           },
           message: "pay-dem transaction was included but its record reports it failed",
         };
@@ -1794,27 +1813,30 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     },
   };
 
+  const settle: PayDemRail["settle"] = async (params, effectFence) => {
+    const invocationJournal = stableDataProperty(
+      params,
+      "journalPreparedTransfer",
+      "pay-dem per-settlement prepared-transfer journal",
+    );
+    if (journalPreparedTransfer !== undefined && invocationJournal.found &&
+        invocationJournal.value !== undefined) {
+      throw new DacsError(
+        "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
+      );
+    }
+    return payDemSettleCore(
+      params,
+      client,
+      network ?? "demos",
+      effectFence,
+    );
+  };
+  // This settle's failure proofs come only from the record it read above, so
+  // payDemSettle may let the settlement store keep one as the definitive outcome.
   return {
     address: client.address,
-    settle: async (params, effectFence) => {
-      const invocationJournal = stableDataProperty(
-        params,
-        "journalPreparedTransfer",
-        "pay-dem per-settlement prepared-transfer journal",
-      );
-      if (journalPreparedTransfer !== undefined && invocationJournal.found &&
-          invocationJournal.value !== undefined) {
-        throw new DacsError(
-          "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
-        );
-      }
-      return payDemSettleCore(
-        params,
-        client,
-        network ?? "demos",
-        effectFence,
-      );
-    },
+    settle: vouchRecordVerifiedSource(settle),
   };
 }
 
@@ -2149,11 +2171,19 @@ export function payDemSettle(
   if (payerAddress === null) {
     throw new DacsError("pay-dem rail returned an invalid native payer address");
   }
-  const railSettle = stableMethod<PayDemRail["settle"]>(
+  const railSettleTarget = stableMethodTarget(
     rail,
     "settle",
     "pay-dem rail settle",
   );
+  const railSettle = Function.prototype.bind.call(
+    railSettleTarget,
+    rail,
+  ) as PayDemRail["settle"];
+  // Only createPayDemRail's own settle reads and binds the failed record
+  // itself. Another rail's failure proof is its statement: the store keeps the
+  // intent held instead of recording a permanent outcome.
+  const recordVerifiedRail = isRecordVerifiedSource(railSettleTarget);
   const reconcileProperty = stableDataProperty(
     opts,
     "reconcile",
@@ -2303,6 +2333,7 @@ export function payDemSettle(
       authenticatedResults.set(key, { context, result: captured });
       return captured;
     };
+    if (recordVerifiedRail) vouchRecordVerifiedSource(submit);
     const reconcileForStore: SettlementReconcile | undefined = reconcile === undefined
       ? undefined
       : async (reconcileKey) => {

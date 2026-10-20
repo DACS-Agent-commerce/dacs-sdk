@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
@@ -8,6 +8,11 @@ import {
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+} from "../../src/rails/idempotency.js";
+import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { isSettlementEvidence } from "../../src/artifacts/validators.js";
 import type {
@@ -1133,6 +1138,33 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
         .rejects.toThrow(/does not bind the requested pay-dem amount/);
       expect(await outcomes(store)).toHaveLength(1);
+    });
+
+    // The proof binds shape, not origin: one no node served, from a custom
+    // rail, must leave the settlement intent held and never be recorded as
+    // the definitive outcome, so a restarted session cannot reuse or resend.
+    test("keeps an invented proof from a custom pay-dem rail held, not a durable verdict", async () => {
+      const store = createInMemorySessionStore();
+      const kv = await demKv();
+      const log = createInMemorySettlementLog();
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      const rail: PayDemRail = {
+        address: PAYER_HEX,
+        settle: vi.fn(async () => failedRecord(payeeHex) as Awaited<ReturnType<PayDemRail["settle"]>>),
+      };
+      const settle = payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+      });
+      const first = await makeDeps(store, { kv, settle });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow(/remains indeterminate/);
+      expect(putOutcome).not.toHaveBeenCalled();
+
+      const resumed = await makeDeps(store, { kv, resumeSettlement: settle });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .rejects.toThrow(/refusing to resubmit/);
+      expect(rail.settle).toHaveBeenCalledTimes(1);
+      expect(putOutcome).not.toHaveBeenCalled();
     });
 
     test("refuses a failed-record proof on a session that is not a DEM payment", async () => {
