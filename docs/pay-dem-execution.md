@@ -68,19 +68,28 @@ sees its result.
   for it, even when the rail log lost its record, and requires both
   `settlementStore.readOutcome` and `reconcile`. The reconciler then receives a
   `PayDemSettlementAuditContext` with `txHash`, the retained hash in canonical
-  form (64 lower-case hex digits, no `0x`). It must load the prepared-transfer
-  journal entry for that hash, bind the record to it, and return the entry as
-  `preparedTransfer`. The audit is refused unless the entry names that hash,
-  the same payer, payee, OS amount and network, a `recovery` tuple equal
-  to this rail, job and phase, and (when present) a known denomination and
-  debit bounds no lower than the amount; a permanent failure's proof must also
-  carry the journaled nonce. The entry may be left out only when the bridge's
-  own record already names that hash for the key: the rail log's outcome under
-  these exact terms, or a result this bridge produced or reconciled. A payment
-  from a rail without `journalPreparedTransfer` stays auditable while its rail
-  log holds the outcome, and fails closed once that record is lost. The
-  reconciler throws when the journal is missing or conflicting and never
-  returns `null` for a hash it cannot tie to the journal.
+  form (64 lower-case hex digits, no `0x`). It returns the node's record for
+  that hash and, whenever it can load one, the prepared-transfer journal entry
+  for that hash as `preparedTransfer`. The hash counts for this payment only
+  through the SDK's own record of that hash for the key: the outcome a
+  `createIdempotencyStore` rail log recorded under these exact terms, or a
+  result this bridge submitted or already bound through an audit. Otherwise
+  the audit is refused.
+
+  A supplied entry is always checked: it must name that hash, the same payer,
+  payee, OS amount and network, a `recovery` tuple equal to this rail, job and
+  phase, and (when present) a known denomination and debit bounds no lower
+  than the amount; a permanent failure's proof must also carry the journaled
+  nonce. The entry is the reconciler's object, not the one the rail wrote
+  before broadcast, so it can refuse an audit but never counts the hash on its
+  own. Neither does an injected store's `readOutcome` or a reconciler's answer
+  to a lookup by key alone. The reconciler throws when a loaded entry
+  conflicts with the record and never returns `null` for the retained hash.
+  An audit fails closed once the SDK record is lost, whether or not the rail
+  has `journalPreparedTransfer`. The rail log keeps definitive outcomes only,
+  so an ambiguous result (a signed hash with no finalized record) is bound
+  only by the bridge that saw it, and after a restart its audit fails closed.
+
   A success for a record that debits a network fee also carries it
   as `networkFeeOs` (total debit minus amount, integer OS): `runSession`
   re-asserts a saved fee, so an audit that omits it leaves the saved success

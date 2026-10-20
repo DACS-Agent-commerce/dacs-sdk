@@ -13,8 +13,9 @@ import {
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
 import { forwardPayDemSettleAdapter } from "../rails/payDemAdapter.js";
-import type {
-  SettlementIdempotencyStore,
+import {
+  isBindingCheckedOutcomeLookup,
+  type SettlementIdempotencyStore,
 } from "../rails/idempotency.js";
 import {
   isAuthenticatedRailDefinition,
@@ -308,11 +309,17 @@ function captureSettlementStore(
     "once",
     "pay-dem settlement store once",
   );
-  const readOutcome = optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
-    source,
-    "readOutcome",
-    "pay-dem settlement store readOutcome",
-  );
+  const lookup = stableDispatchProperty(source, "readOutcome", "pay-dem settlement store readOutcome");
+  // A `createIdempotencyStore` lookup is a closure over its own log; passing it
+  // unbound keeps the provenance `payDemSettle` checks before it lets that
+  // lookup's recorded outcome bind a retained hash.
+  const readOutcome = lookup.found && isBindingCheckedOutcomeLookup(lookup.value)
+    ? lookup.value as NonNullable<SettlementIdempotencyStore["readOutcome"]>
+    : optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
+        source,
+        "readOutcome",
+        "pay-dem settlement store readOutcome",
+      );
   const wrapper: SettlementIdempotencyStore = {
     once: (key, binding, submit, reconcile) =>
       once(key, binding, submit, reconcile),

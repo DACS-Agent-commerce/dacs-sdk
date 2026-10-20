@@ -633,22 +633,32 @@ audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plu
 `0x`). `getTxByHash` matches that stored form exactly and answers any other form
 as not found; `getTransactionStatus` lower-cases hex but rejects a `0x` prefix,
 so a reader that mixes them can see `included` with no record. The reconciler
-must load the original prepared-transfer journal entry for that hash, bind the
-node's record to it, and return the entry as `preparedTransfer`. The SDK refuses
-the audit unless that entry names the retained hash, the same payer, payee, OS
-amount and network, a `recovery` tuple equal to this rail, job and phase, and
-(when present) a known denomination and debit bounds no lower than the amount;
-for a permanent failure its nonce must also be the proof's nonce. So another
-job's transfer of the same amount to the same payee is never counted for this
-one. The entry may be left out only when the bridge's own record already names
-the retained hash for this key: the rail log's outcome under these exact terms,
-or a result this bridge produced or reconciled. That keeps a payment made by a
-rail with no `journalPreparedTransfer` auditable while its rail log holds the
-outcome; once that record is lost, its audit fails closed. The reconciler must
-throw when the journal is missing or conflicting, and never return `null` for a
-hash it cannot tie to the journal. A restart
-reconciliation without history may return the entry too; it is checked the same
-way and never persisted. A payment that the bridge, its rail log or the session
+returns the node's record for that hash and, whenever it can load one, the
+original prepared-transfer journal entry for that hash as `preparedTransfer`.
+The SDK counts the retained hash for this payment only through its own record
+of that hash for this key, and refuses the audit otherwise. That record is the
+outcome a `createIdempotencyStore` rail log recorded under these exact terms,
+or a result this bridge submitted or already bound through an audit.
+
+A supplied entry is always checked as well. It must name the retained hash, the
+same payer, payee, OS amount and network, a `recovery` tuple equal to this rail,
+job and phase, and (when present) a known denomination and debit bounds no
+lower than the amount; for a permanent failure its nonce must also be the
+proof's nonce. The entry is the reconciler's object, not the one the rail wrote
+before broadcast, so it can refuse an audit but never counts the hash on its
+own. An injected store's `readOutcome` can likewise refuse an audit that
+contradicts it but never counts the hash, and neither does a reconciler's
+answer to a lookup by key alone.
+
+So another job's transfer of the same amount to the same payee is never counted
+for this one, even when the reconciler returns an entry naming this job. The
+reconciler throws when the entry it loads conflicts with the node's record, and
+never returns `null` for the retained hash. An audit fails closed once the SDK
+record is lost, whether or not the rail has `journalPreparedTransfer`. The rail
+log keeps definitive outcomes only, so an ambiguous result (a signed hash with
+no finalized record, such as a timeout) is bound only by the bridge that saw it:
+after a restart its audit fails closed. A restart reconciliation without history
+may return the entry too; it is checked the same way and never persisted. A payment that the bridge, its rail log or the session
 already recorded as successful is never reported unpaid: a reconciliation that
 contradicts it is refused rather than returned as a permanent failure (DACS-4
 §9.5.1 PC-7).
