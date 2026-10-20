@@ -1,0 +1,228 @@
+{
+  "capturedAt": "2026-10-08T13:23:19.462Z",
+  "directoryOrigin": "https://directory.v2.agentcommerce.network",
+  "rpcUrl": "https://node2.demos.sh",
+  "summary": {
+    "listingId": "pennybrief-ai-cost-radar",
+    "version": 1,
+    "contentHash": "253effa4a8b532d53401e1bfa7c678901551a73fbf596fdabcafcb1bee5250f3",
+    "anchor": {
+      "kind": "storage-program",
+      "locator": "stor-cd914344fc1f3e4079f60dfefcf7bd3036f2c525"
+    },
+    "seller": {
+      "primaryClaim": "did:demos:agent:cb1e43bcfa63523bdc14875a178612e8bddcd0f25ed61a87bce8fa0d8bbc7fea"
+    },
+    "offering": {
+      "category": "services.market-report"
+    },
+    "pricing": {
+      "kind": "fixed",
+      "priceHint": "34",
+      "currency": "DEM"
+    },
+    "status": "active",
+    "catalogObservedAt": 1791465353595
+  },
+  "storageProgram": {
+    "success": true,
+    "storageAddress": "stor-cd914344fc1f3e4079f60dfefcf7bd3036f2c525",
+    "owner": "0xcb1e43bcfa63523bdc14875a178612e8bddcd0f25ed61a87bce8fa0d8bbc7fea",
+    "programName": "dacs1%3Adid%3Ademos%3Aagent%3Acb1e43bcfa63523bdc14875a178612e8bddcd0f25ed61a87bce8fa0d8bbc7fea%3Apennybrief-ai-cost-radar%3Av1",
+    "encoding": "json",
+    "data": {
+      "terms": {
+        "cancellationPolicy": "pre-commit",
+        "deadlineSecAfterCommit": 3600,
+        "transcriptDisclosurePolicy": "encrypted-anchored-recommended"
+      },
+      "seller": {
+        "identity": {
+          "claims": [
+            {
+              "ref": "did:demos:agent:cb1e43bcfa63523bdc14875a178612e8bddcd0f25ed61a87bce8fa0d8bbc7fea"
+            }
+          ],
+          "presentedAt": 1790337958000,
+          "presentedBy": "did:demos:agent:cb1e43bcfa63523bdc14875a178612e8bddcd0f25ed61a87bce8fa0d8bbc7fea",
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:agent:cb1e43bcfa63523bdc14875a178612e8bddcd0f25ed61a87bce8fa0d8bbc7fea",
+                "signature": "zPsbzHguRjPB7SEnc5sDBj4Q9vJ2cuCg_CdrO59kXnX7xBKhFRJi8sQ0XMRLx_G4jhiNpcCocjCk-ZT1UJmtBA"
+              }
+            ]
+          },
+          "sessionNonce": "ff96d488bdc1e356720c8bf0562f870e21f2783323e495e01f6378d912bed0a4",
+          "bundleVersion": "1"
+        },
+        "displayName": "PennyBrief Research",
+        "publicEndpoint": "https://pennybrief.v2.agentcommerce.network/agent"
+      },
+      "pricing": {
+        "kind": "fixed",
+        "price": {
+          "amount": "34",
+          "currency": "DEM"
+        }
+      },
+      "offering": {
+        "tags": [
+          "report",
+          "research",
+          "fixed-price",
+          "fictional-fixture"
+        ],
+        "title": "AI Infrastructure Cost Radar",
+        "report": {
+          "price": {
+            "amount": "34",
+            "currency": "DEM"
+          },
+          "title": "AI Infrastructure Cost Radar",
+          "detail": {
+            "format": "markdown",
+            "topics": [
+              "ai-infrastructure"
+            ],
+            "coverage": [
+              "global"
+            ],
+            "fulfilment": "simulated local report preview",
+            "maxLicense": "internal-use",
+            "methodology": "synthetic public-price snapshot",
+            "estimatedPages": 12,
+            "dataFreshnessHours": 48
+          },
+          "offerId": "pennybrief-ai-cost-radar",
+          "evidence": {
+            "cci": {
+              "claims": [],
+              "detail": "No CCI-shaped label or authenticated CCI evidence is attached.",
+              "status": "absent",
+              "authenticated": false
+            },
+            "notice": "Offline fictional fixture — never treat these labels as a claim about a real supplier or report.",
+            "fictional": true,
+            "reputation": {
+              "label": "limited synthetic history",
+              "detail": "Synthetic category history used only by this deterministic demo ranker; it is not public reputation evidence.",
+              "status": "synthetic-fixture",
+              "disputed": 2,
+              "completed": 12
+            },
+            "supplierName": "PennyBrief Research",
+            "identityControl": {
+              "detail": "A fixture supplier identifier is present, but no live key-control or identity check was performed.",
+              "status": "not-authenticated"
+            }
+          },
+          "supplierId": "pennybrief"
+        },
+        "category": "services.market-report",
+        "deliverable": {
+          "kind": "storage-program",
+          "schemaUrl": "urn:dacs-demo:v2:synthetic-public-delivery:v1",
+          "accessModel": "public"
+        },
+        "description": "Fixed-price fictional market-report capability. Delivery is a public synthetic demo artifact, never a real report or private customer data. synthetic public-price snapshot",
+        "marketBinding": {
+          "offerId": "pennybrief-ai-cost-radar",
+          "scenarioId": "reports",
+          "supplierId": "pennybrief",
+          "publicOffer": {
+            "price": {
+              "amount": "34",
+              "currency": "DEM"
+            },
+            "title": "AI Infrastructure Cost Radar",
+            "detail": {
+              "format": "markdown",
+              "topics": [
+                "ai-infrastructure"
+              ],
+              "coverage": [
+                "global"
+              ],
+              "fulfilment": "simulated local report preview",
+              "maxLicense": "internal-use",
+              "methodology": "synthetic public-price snapshot",
+              "estimatedPages": 12,
+              "dataFreshnessHours": 48
+            },
+            "offerId": "pennybrief-ai-cost-radar",
+            "evidence": {
+              "cci": {
+                "claims": [],
+                "detail": "No CCI-shaped label or authenticated CCI evidence is attached.",
+                "status": "absent",
+                "authenticated": false
+              },
+              "notice": "Offline fictional fixture — never treat these labels as a claim about a real supplier or report.",
+              "fictional": true,
+              "reputation": {
+                "label": "limited synthetic history",
+                "detail": "Synthetic category history used only by this deterministic demo ranker; it is not public reputation evidence.",
+                "status": "synthetic-fixture",
+                "disputed": 2,
+                "completed": 12
+              },
+              "supplierName": "PennyBrief Research",
+              "identityControl": {
+                "detail": "A fixture supplier identifier is present, but no live key-control or identity check was performed.",
+                "status": "not-authenticated"
+              }
+            },
+            "supplierId": "pennybrief"
+          },
+          "localOfferHash": "643ea45e6a16b45ceaab3ea87ae80c2082457d23d201bbc5b7012de76791ea1c"
+        }
+      },
+      "pipeline": [
+        {
+          "kind": "negotiate-fixed-price"
+        },
+        {
+          "kind": "commit-payee-bound-agreement"
+        },
+        {
+          "kind": "pay-dem",
+          "parameters": {
+            "rail": "demos-native:DEM"
+          }
+        },
+        {
+          "kind": "deliver-storage-program"
+        }
+      ],
+      "validity": {
+        "notAfter": 1792929958000,
+        "notBefore": 1790337958000
+      },
+      "listingId": "pennybrief-ai-cost-radar",
+      "signature": {
+        "value": "Wj0ann28F1SFLJJHuL9-EKvXsFQ6viDc3T1aWgpVJct7yNm7eYvfEjoIg43vSLsTJJgEb8a00oOhy6dBqTBpBg",
+        "signer": "did:demos:agent:cb1e43bcfa63523bdc14875a178612e8bddcd0f25ed61a87bce8fa0d8bbc7fea",
+        "algorithm": "ed25519"
+      },
+      "dacsVersion": "1",
+      "acceptedRails": [
+        {
+          "railId": "demos-native:DEM",
+          "railVersion": 1
+        }
+      ],
+      "listingVersion": 1,
+      "buyerRequirement": {
+        "required": [],
+        "requirementVersion": "1",
+        "preferredPresentation": "any"
+      },
+      "requiredCapabilities": [
+        "SR-1",
+        "SR-2"
+      ]
+    }
+  }
+}

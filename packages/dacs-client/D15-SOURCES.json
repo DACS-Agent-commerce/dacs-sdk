@@ -1,0 +1,77 @@
+{
+  "sourceCommit": "02f7070ddff7bf9e94ffd9a953ccc2f0af56caba",
+  "sourceRepository": "DACS-Agent-commerce/frontend",
+  "sourceFiles": [
+    "http-mcp/src/dacs/buyer-chain-readback.mjs",
+    "http-mcp/src/dacs/dem-delivery-consumer.mjs",
+    "http-mcp/src/dacs/demos-sr2-adapter.mjs",
+    "http-mcp/src/dacs/demos-sr2-wallet-bridge.mjs",
+    "http-mcp/src/dacs/native-payment-evidence-consumer.mjs",
+    "http-mcp/src/dacs/protocol-purchases.mjs",
+    "http-mcp/src/devnet-demo/commitment-consumer.mjs"
+  ],
+  "tests": [
+    "http-mcp/test/buyer-chain-readback-final-hold.test.mjs",
+    "http-mcp/test/buyer-chain-readback-unit.test.mjs",
+    "http-mcp/test/buyer-chain-readback.test.mjs",
+    "http-mcp/test/dacs-demos-sr2-wallet.test.mjs",
+    "http-mcp/test/dacs-demos-sr2.test.mjs",
+    "http-mcp/test/ops-health.test.mjs",
+    "http-mcp/test/helpers/devnet-live-composition-app.mjs",
+    "http-mcp/test/helpers/devnet-live-composition-transport.mjs",
+    "http-mcp/test/agreement-anchor-node-junk.test.mjs",
+    "http-mcp/test/buyer-chain-readback-unmarked-invalid.test.mjs",
+    "http-mcp/test/commitment-consumer-proof-indeterminate.test.mjs",
+    "http-mcp/test/commitment-node-junk-purchase-chain-readback.test.mjs",
+    "http-mcp/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs",
+    "http-mcp/test/commitment-node-junk-purchase-cos.test.mjs",
+    "http-mcp/test/commitment-node-junk-purchase.test.mjs",
+    "http-mcp/test/commitment-node-junk-reader.test.mjs",
+    "http-mcp/test/helpers/commitment-node-junk-purchase.mjs",
+    "http-mcp/test/helpers/commitment-node-junk.mjs",
+    "http-mcp/test/commitment-contradiction-classifier.test.mjs"
+  ],
+  "notes": [
+    "D9 removed the seller-journal reader; port its pure classifiers and use them on chain-reader resume.",
+    "Classifier tests port only the 17 cases for the retained classifier APIs; journal-reader cases refer to the deleted D9 API.",
+    "In the changed unit file, remove the obsolete off/on switch test (D9).",
+    "The new purchase-integrity harness uses the historical frontend database and operations code only under test; no source adapter is wired.",
+    "commitment-consumer-proof-indeterminate and commitment-node-junk-reader exercise the deleted seller-journal API and are carried as source test evidence only; destination cases use buyer-chain-indeterminate and pure classifiers."
+  ],
+  "testOnlyHelpers": [
+    {
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sourcePath": "http-mcp/src/store/database.mjs",
+      "sourceBlob": "3e0795a5e682b986e9a84fb003075ba09d1415b9",
+      "destination": "test/helpers/purchase-integrity-database.mjs",
+      "destinationBlob": "4fd59007caab514e62aaf8b58505c1ab72af7d21",
+      "adaptation": "Test-only header added; database and nested-transaction implementation bytes otherwise unchanged."
+    },
+    {
+      "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+      "sourcePath": "http-mcp/src/operations.mjs",
+      "sourceBlob": "04016e7459b47fa4e3070d823c908d51ab17f8ec",
+      "destination": "test/helpers/purchase-integrity-operations.mjs",
+      "destinationBlob": "6e9b5e8a34479e881392588612cc264be7e1e87b",
+      "adaptation": "Test-only header; operations imports point to copied helpers and destination error type. No application adapter is wired."
+    }
+  ],
+  "destinationAdaptations": [
+    {
+      "path": "src/dacs/buyer-chain-readback.mjs",
+      "what": "Use the ported pure commitment classifiers during chain-reader resume. This changes the destination beyond the source the source change diff: unmarked SDK permanent faults before commitment authentication stay indeterminate. The deleted journal reader is not restored."
+    },
+    {
+      "paths": [
+        "src/dacs/seller-sr2-agreement-consumer.mjs",
+        "src/dacs/native-agreement-payment-consumer.mjs",
+        "src/dacs/protocol-purchases.mjs"
+      ],
+      "what": "Review correction: unmarked Agreement read/recheck errors stay indeterminate, and the authentication mark crosses the payment gate before any verified delivery is lowered."
+    },
+    {
+      "path": "src/dacs/native-payment-evidence-consumer.mjs",
+      "what": "Beyond the source the source change diff: a mismatch found only by a fresh single-node transfer read is indeterminate and carries no authentication mark. This preserves already verified delivery. Receipt and authenticated evidence contradictions retain rejection. Regression cases cover first read and retained delivery for six tuple fields."
+    }
+  ]
+}
