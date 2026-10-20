@@ -24,7 +24,7 @@ import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./d
 import { assertPurchaseProfile, assertTp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
-  fail, isClaim, isUint, ownedArtifact, ownedBytes, ownedConfig, ownedFields, sameCanonical, type JsonRecord, type ListingPin, type WireSigner,
+  fail, isClaim, isUint, ownedArtifact, ownedBytes, ownedConfig, ownedFields, sameCanonical, WireError, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 /**
@@ -86,6 +86,20 @@ export interface WireRequestInput extends SigningContext {
 const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "publicEndpoint", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
 
 /**
+ * A wire refusal of the buyer's own delegation keeps its code and detail with
+ * status 500 (`permanent`). A 500 or 503 refusal, and any error a trusted
+ * reader throws, passes unchanged, so its cause is kept.
+ */
+function ownDelegation<T>(verify: () => T): T {
+  try {
+    return verify();
+  } catch (error) {
+    if (error instanceof WireError && error.status !== 500 && error.status !== 503) fail(error.code, 500, error.detail);
+    throw error;
+  }
+}
+
+/**
  * Build and sign one purchase request after endpoint verification. An expired
  * delegation can sign readback requests; seller checks refuse effect routes. The input is read once (ownedFields), and its job
  * and delegation copied once: the delegation copy is verified, bounds the
@@ -107,11 +121,12 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   }
   if (Buffer.byteLength(input.text) > DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes) fail("body_too_large", 413);
   const bytes = admitOutgoingBody(input.text, DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes);
-  const delegation = input.delegation ? ownedArtifact(input.delegation, "peer_delegation_invalid") as SellerSessionDelegation : null;
+  // The buyer's own delegation: a refusal of it is this host's fault (500), never the seller's.
+  const delegation = input.delegation ? ownedArtifact(input.delegation, "peer_delegation_invalid", 500) as SellerSessionDelegation : null;
   let buyer = claim;
   let delegatedUntil: number | null = null;
   if (delegation) {
-    const d = verifySellerSessionDelegation(delegation, { binding, local, seller: input.seller, listingPin: job.listingPin, jobId: input.jobId, time: now, allowExpired: true, ...(job.deadline === undefined ? {} : { deadline: job.deadline }) });
+    const d = ownDelegation(() => verifySellerSessionDelegation(delegation, { binding, local, seller: input.seller, listingPin: job.listingPin, jobId: input.jobId, time: now, allowExpired: true, ...(job.deadline === undefined ? {} : { deadline: job.deadline }) }));
     if (claim !== `did:demos:agent:${d.sessionPublicKey}`) throw new TypeError("session signing key differs from the buyer delegation");
     buyer = d.buyer;
     delegatedUntil = d.expiresAt;
@@ -164,7 +179,8 @@ export function verifyWireResponse(suppliedRequest: WireRequestPayload, supplied
   const request = ownedArtifact(suppliedRequest, "peer_envelope_invalid", 500) as WireRequestPayload;
   assertPurchaseProfile(request?.profile, received.binding, 500);
   const expectedRequestHash = wireRequestHash(request);
-  const responseBytes = ownedBytes(received.body);
+  // Over 512 KiB is refused as admission refuses it, before the body is copied or the header is read.
+  const responseBytes = ownedBytes(received.body, "wire_input_invalid", 500, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes, code: "response_json_rejected", status: 502 });
   const { payload: response, authenticationHash } = openWireEnvelope(received.header, "response", { binding: received.binding, local: received.local, purchaseProfile: request.profile, principal: request.seller });
   const body = admitWireResponseBody(responseBytes);
   const { kind, bodyHash, expiresAt, requestHash, status, ...identity } = response;

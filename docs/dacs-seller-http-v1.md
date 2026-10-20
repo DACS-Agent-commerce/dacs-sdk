@@ -109,7 +109,8 @@ as its prefix. The Standard does not standardise this transport yet. CORE
 SIG-4 (`spec/CORE.md:590` at `d45c0a2`) gives an artifact kind outside the
 registry the form `dacs-x-<kind>:v<version>:`. These domains do not take
 that form, because the SDK reads SIG-4 as covering artifact kinds, not
-transport messages. The Standard has not ruled on this, and the register
+transport messages. They also sign `domain ‖ canonical(payload)`, not
+§B.7's `separator ‖ artifact_hash`. The Standard has not ruled on this, and the register
 records it as G12. Making it normative is a separate proposal to the Standard
 until the Standard adopts it, this document is the SDK's own
 description. There is no compatibility arm for the old plugin domains.
@@ -406,7 +407,10 @@ exactly the profile of every message for that purchase (`assertPurchaseProfile`;
 - `signWireEnvelope`, which both signers call and which is exported, takes the
   same required `purchaseProfile` and checks it before the profile and before
   its signer. `null` passes only for a response (a seller's answer to a new
-  purchase); a request is never signed without a kept tuple.
+  purchase); a request is never signed without a kept tuple. It signs the
+  `expiresAt` the payload carries: the 30 s signer lifetime is applied by
+  `signWireRequest` and `signWireResponse`, so a host that calls
+  `signWireEnvelope` directly must bound `expiresAt` itself.
 
 With one revision defined, a message naming any other revision is unknown.
 When a later SDK defines another revision, a party that selected or kept
@@ -515,7 +519,11 @@ one owned, data-only copy at entry and checks and uses only that copy.
   Listing is copied with `snapshotWireJsonRead`, which preserves its endpoint
   bytes without NFC normalization and refuses the same non-data inputs.
   Body bytes are copied once through the typed array's own slots. The body
-  that is admitted is then the body that is hashed.
+  that is admitted is then the body that is hashed. A received body longer
+  than its limit (64 KiB for a request, 512 KiB for an answer, by the view's
+  own length) is refused as its admission refuses it (`bad_json` or
+  `response_json_rejected`, detail `BYTE-LIMIT-EXCEEDED`) before it is
+  copied, and so before any other check of that call.
 - **What is not copied:** a binding and an opened envelope are proved by
   membership in a set the SDK holds, and are frozen. A signer is a callback:
   its `claim` is read once and `sign` called once.
@@ -596,7 +604,10 @@ configuration or input (`permanent`), 503 a state that may clear
 (`transient`), and any other status the counterparty's. So the actor's own
 kept tuple (`tp1_purchase_profile_mismatch`), a payload a signer built
 itself, such as an answer status outside 200-599 (`peer_envelope_invalid`),
-are 500, and signing under an endpoint proof whose document has since expired
+a delegation or discovery document a signer was given to sign
+(`peer_delegation_invalid`, `discovery_invalid`), and a refusal of the
+buyer's own delegation in `signWireRequest` (its code kept, such as
+`peer_delegation_mismatch`) are 500, and signing under an endpoint proof whose document has since expired
 (`discovery_expired`) is 503: fetch discovery again. New codes:
 
 | Code | Meaning |

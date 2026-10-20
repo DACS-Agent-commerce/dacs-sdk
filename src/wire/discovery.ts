@@ -92,7 +92,11 @@ export async function signDiscoveryDocument(supplied: DiscoveryPayload, signer: 
   assertPeerProfile((payload as unknown as JsonRecord | null)?.profile, binding, 500);
   if (!sameCanonical(payload.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 500);
   if (signer.claim !== payload.seller) fail("discovery_signer_wrong", 500);
+  // A document this signer built is its own fault (500); a received one is the seller's (502).
+  if (!payloadValid(payload)) fail("discovery_invalid", 500);
   const signingBytes = discoverySigningBytes(payload);
+  // Defence in depth: the field bounds keep the largest valid document under 16 KiB (test/wire/admission.test.ts),
+  // so this refuses only if those bounds are widened without the buyer's limit.
   if (Buffer.byteLength(canonicalize({ payload, signature: "A".repeat(86) })) > DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes) fail("discovery_too_large", 500);
   assertTp1Authority(binding, local, [payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
   const signature = envelopeSignatureBytes(await signer.sign(signingBytes), "discovery_signature_invalid").toString("base64url");

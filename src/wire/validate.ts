@@ -104,15 +104,30 @@ export function ownedFields<K extends string>(value: unknown, keys: readonly K[]
   }
   return fields;
 }
-/** One copy of caller bytes, taken through the typed array's own slots; anything but a Uint8Array is refused. */
-export function ownedBytes(value: unknown, code = "wire_input_invalid", status = 500): Buffer {
+/** A received input's byte bound and the refusal its admission gives past it. */
+export interface ByteLimit {
+  maxBytes: number;
+  code: string;
+  status: number;
+}
+/**
+ * One copy of caller bytes, taken through the typed array's own slots; anything but a Uint8Array is refused.
+ * With `limit`, a view longer than `limit.maxBytes` is refused as its admission would refuse it
+ * (`BYTE-LIMIT-EXCEEDED`), before a byte is copied. The length is the view's internal one, never a
+ * `byteLength` an instance or subclass defines.
+ */
+export function ownedBytes(value: unknown, code = "wire_input_invalid", status = 500, limit?: ByteLimit): Buffer {
   if (!types.isUint8Array(value)) return fail(code, status);
+  if (limit !== undefined && viewByteLength(value) > limit.maxBytes) return fail(limit.code, limit.status, "BYTE-LIMIT-EXCEEDED");
   const copy = new Uint8Array(value);
   return Buffer.from(copy.buffer, copy.byteOffset, copy.byteLength);
 }
 /** `method` taken at module load: a later patch of its prototype does not change what it does here. */
 export const uncurry = <A extends unknown[], R>(method: (...args: A) => R) =>
   Function.prototype.call.bind(method) as unknown as (self: unknown, ...args: A) => R;
+const viewByteLength = uncurry(
+  Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype) as object, "byteLength")!.get as () => number,
+);
 
 export interface ListingPin {
   listingId: string;
@@ -143,6 +158,7 @@ export function verifyEd25519(message: Uint8Array, signature: Uint8Array, keyHex
 /** Transport and discovery signatures: 64 raw bytes, canonical base64url, or (0x)hex. */
 export function envelopeSignatureBytes(signature: unknown, code = "peer_signature_invalid"): Buffer {
   if (types.isUint8Array(signature)) {
+    if (viewByteLength(signature) !== 64) return fail(code);
     const bytes = ownedBytes(signature, code, 401);
     return bytes.length === 64 ? bytes : fail(code);
   }

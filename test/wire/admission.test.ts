@@ -61,6 +61,18 @@ function replaceId<T extends { jobId: string }>(p: T, value: unknown): T {
 const refuses = async (fn: () => unknown, code: string, status?: number) => {
   await expect(Promise.resolve().then(fn)).rejects.toMatchObject({ code, ...(status === undefined ? {} : { status }) });
 };
+/** A binding whose trusted reader records each participant/session read (a read with a sessionId). */
+function countingBinding() {
+  const record = w.TP1_APPROVED_IDENTITY_RECORD;
+  const profile = { id: w.TP1_PROFILE_ID, revision: w.TP1_PROFILE_REVISION, base: w.TP1_BASE_REVISION, chainIdentity: record.chainIdentity, pinVersion: record.pinVersion };
+  const sessions: Array<string | null> = [];
+  const readAuthority: w.Tp1AuthorityReader = (scope) => {
+    if (scope.sessionId !== null) sessions.push(scope.sessionId);
+    return { local: { ...scope.local }, chainIdentity: profile.chainIdentity, provenance: "test-only-independent-authority/v1",
+      sessionId: scope.sessionId, participants: scope.participants.map((claim) => ({ claim, profile, modules: w.TESTNET_PROFILE_TP1.tuple })) };
+  };
+  return { binding: w.bindTp1Profile({ record, local: LOCAL, readAuthority }), sessions };
+}
 
 describe("wire canonical job-ID admission", () => {
   it.each(invalidIds)("rejects %s before signing, hashing or seller effects", async (_name, id) => {
@@ -82,6 +94,25 @@ describe("wire canonical job-ID admission", () => {
     await refuses(() => w.signWireResponse(request, 200, "{}", { ...x.context, signer: x.seller, now: NOW }), "peer_envelope_invalid", 500);
     await refuses(() => w.verifyWireResponse(request, { ...x.context, header: responseHeader, status: 200, body: Buffer.from("{}"), now: NOW }), "peer_envelope_invalid", 500);
     expect(effects + x.buyer.calls + x.seller.calls).toBe(0);
+  });
+  it.each(invalidIds)("refuses %s before any participant or session read, direct or delegated", async (_name, id) => {
+    const x = world(), counted = countingBinding();
+    const context = { binding: counted.binding, local: LOCAL, purchaseProfile: counted.binding.profile };
+    const request = replaceId(x.request, id), delegation = replaceId(x.delegation, id);
+    const requestHeader = header(signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer));
+    const delegated = signed(delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer);
+    // A canonical delegation for the canonical job: without signWireRequest's own job-ID check, its scope check would read the session and refuse as a mismatch.
+    const canonicalDelegation = signed(x.delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer);
+    const input = { ...x.input, binding: counted.binding, job: { ...x.input.job, profile: counted.binding.profile }, jobId: id } as unknown as w.WireRequestInput;
+    counted.sessions.length = 0;
+    x.buyer.calls = x.session.calls = 0;
+    await refuses(() => w.openWireEnvelope(requestHeader, "request", context), "peer_envelope_invalid", 401);
+    await refuses(() => w.verifySellerSessionDelegation(delegated, { binding: counted.binding, local: LOCAL }), "peer_delegation_invalid", 401);
+    await refuses(() => w.signSellerSessionDelegation(delegation, x.buyer, counted.binding, LOCAL), "peer_delegation_invalid", 500);
+    await refuses(() => w.signWireRequest(input), "peer_envelope_invalid", 500);
+    await refuses(() => w.signWireRequest({ ...input, signer: x.session, delegation: canonicalDelegation }), "peer_envelope_invalid", 500);
+    expect(counted.sessions).toEqual([]);
+    expect(x.buyer.calls + x.session.calls).toBe(0);
   });
   it.each(["kind", "version", "bodyHash", "seller", "nonce", "listingPin"])("response boundaries refuse malformed retained %s before signing or reading the answer", async (field) => {
     const x = world();
@@ -300,7 +331,8 @@ describe("wire format discriminators", () => {
     expect(signedBy(document, D.discovery, x.seller.claim)).toBe(true);
     x.seller.calls = 0;
     await refuses(async () => w.signWireRequest({ ...x.input, endpointProof: verifyProof(x, Buffer.from(canonicalize(document))) }), "discovery_invalid", 502);
-    await refuses(() => w.signDiscoveryDocument(payload, x.seller, x.binding, LOCAL), "discovery_invalid", 502);
+    // The signer's own document is its own fault (500); the same bytes received are the seller's (502).
+    await refuses(() => w.signDiscoveryDocument(payload, x.seller, x.binding, LOCAL), "discovery_invalid", 500);
     await refuses(() => w.discoverySigningBytes(payload), "discovery_invalid", 502);
     expect(x.buyer.calls + x.seller.calls).toBe(0);
   });
@@ -375,6 +407,26 @@ describe("request and response byte budgets and the discovery Listing count", ()
       .rejects.toMatchObject({ code: "response_json_rejected", status: 502, detail: "BYTE-LIMIT-EXCEEDED" });
   });
 
+  it("refuses a received body over its limit by the view's own length, before copying it or checking anything else", async () => {
+    const x = world();
+    const overRequest = Buffer.from(body(maxRequestBodyBytes + 1)), overResponse = Buffer.from(body(maxResponseBodyBytes + 1));
+    // Not an opened envelope, and not a signed header: the size is refused first, so neither is examined.
+    const seller = (rawBody: Uint8Array) => () => w.checkWireRequest({} as never, { reserveRequest: () => true, ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody, now: NOW, retained: { jobId: JOB, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } });
+    const buyer = (b: Uint8Array) => () => w.verifyWireResponse(x.request, { ...x.context, header: "not a header", status: 200, body: b, now: NOW });
+    const overRequestError = { code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" };
+    const overResponseError = { code: "response_json_rejected", status: 502, detail: "BYTE-LIMIT-EXCEEDED" };
+    await expect(Promise.resolve().then(seller(overRequest))).rejects.toMatchObject(overRequestError);
+    await expect(Promise.resolve().then(buyer(overResponse))).rejects.toMatchObject(overResponseError);
+    // A view that declares a smaller byteLength of its own is measured by its internal length.
+    const lying = (bytes: Buffer) => Object.defineProperty(new Uint8Array(bytes), "byteLength", { value: 2 });
+    await expect(Promise.resolve().then(seller(lying(overRequest)))).rejects.toMatchObject(overRequestError);
+    await expect(Promise.resolve().then(buyer(lying(overResponse)))).rejects.toMatchObject(overResponseError);
+    // A small view of a larger allocation is charged its own length only.
+    const view = Buffer.concat([Buffer.from("{}"), overResponse]).subarray(0, 2);
+    await refuses(seller(view), "peer_request_unverified", 500);
+    await refuses(buyer(view), "peer_envelope_invalid", 401);
+  });
+
   it.each([[0, "refused"], [1, "accepted"], [32, "accepted"], [33, "refused"]] as const)("a discovery document listing %i pins is %s at its signer and at the buyer", async (count, outcome) => {
     const x = world(), accepted = outcome === "accepted";
     const listings = Array.from({ length: count }, (_, i) => (i === 0 ? PIN : { ...PIN, listingId: `report-${i}` }));
@@ -388,9 +440,52 @@ describe("request and response byte budgets and the discovery Listing count", ()
       expect(x.seller.calls).toBe(1);
     } else {
       await refuses(verifyIt, "discovery_invalid", 502);
-      await refuses(() => w.signDiscoveryDocument(payload, x.seller, x.binding, LOCAL), "discovery_invalid", 502);
+      await refuses(() => w.signDiscoveryDocument(payload, x.seller, x.binding, LOCAL), "discovery_invalid", 500);
       expect(x.seller.calls).toBe(0);
     }
+  });
+});
+
+describe("signer-side refusals", () => {
+  it("refuses a widened capability set or another signer's claim before the discovery signer is called", async () => {
+    const x = world();
+    const widened = { ...x.discovery, capabilities: { ...w.TP1_CAPABILITIES, output: { ...w.TP1_CAPABILITIES.output, maxCharacters: 16385 } } } as unknown as w.DiscoveryPayload;
+    x.buyer.calls = x.seller.calls = 0;
+    await refuses(() => w.signDiscoveryDocument(widened, x.seller, x.binding, LOCAL), "discovery_capabilities_unsupported", 500);
+    await refuses(() => w.signDiscoveryDocument(x.discovery, x.buyer, x.binding, LOCAL), "discovery_signer_wrong", 500);
+    expect(x.buyer.calls + x.seller.calls).toBe(0);
+  });
+  it("refuses an answer signer that is not the request's seller before it is called", async () => {
+    const x = world();
+    x.buyer.calls = x.seller.calls = 0;
+    await refuses(() => w.signWireResponse(x.request, 200, "{}", { ...x.context, signer: x.buyer, now: NOW }), "peer_signer_wrong", 500);
+    expect(x.buyer.calls + x.seller.calls).toBe(0);
+  });
+  it("blames a refusal of the buyer's own delegation on the buyer (500), keeping its code; the seller keeps the peer status", async () => {
+    const x = world();
+    const D = w.DACS_SELLER_HTTP_DOMAINS;
+    const own = (d: unknown) => w.signWireRequest({ ...x.input, signer: x.session, delegation: d } as unknown as w.WireRequestInput);
+    const sessionSigned = signed(x.request, D.request, x.session);
+    const atSeller = (d: unknown) => w.openWireEnvelope(header({ ...sessionSigned, delegation: d }), "request", x.context);
+    const cases: Array<[unknown, string, number]> = [
+      [signed({ ...x.delegation, seller: party().claim }, D.delegation, x.buyer), "peer_delegation_mismatch", 409],
+      [signed({ ...x.delegation, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4J" }, D.delegation, x.buyer), "peer_delegation_mismatch", 409],
+      [signed({ ...x.delegation, notBefore: NOW + 1000, expiresAt: NOW + 60_000 }, D.delegation, x.buyer), "peer_delegation_expired", 408],
+      [{ ...signed(x.delegation, D.delegation, x.buyer), signature: `0x${"0".repeat(128)}` }, "peer_delegation_signature_invalid", 401],
+      [signed({ ...x.delegation, profile: { ...x.binding.profile, pinVersion: "other" } }, D.delegation, x.buyer), "tp1_profile_mismatch", 409],
+      [{ payload: x.delegation }, "peer_delegation_invalid", 401],
+    ];
+    x.session.calls = 0;
+    for (const [delegation, code, peerStatus] of cases) {
+      await expect(Promise.resolve().then(() => own(delegation))).rejects.toMatchObject({ code, status: 500, category: "permanent" });
+      // Only the job and session scope differ between the buyer's call and the seller's; the seller's own refusal keeps the peer's status.
+      if (code !== "peer_delegation_mismatch" && code !== "peer_delegation_expired") {
+        await expect(Promise.resolve().then(() => atSeller(delegation))).rejects.toMatchObject({ code, status: peerStatus, category: "counterparty" });
+      }
+    }
+    const getter = Object.defineProperty({ payload: x.delegation }, "signature", { enumerable: true, get() { throw new Error("must not run"); } });
+    await expect(Promise.resolve().then(() => own(getter))).rejects.toMatchObject({ code: "peer_delegation_invalid", status: 500 });
+    expect(x.session.calls).toBe(0);
   });
 });
 

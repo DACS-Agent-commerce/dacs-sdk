@@ -188,7 +188,7 @@ const MUTANTS = [
     ["wire/envelope.ts", 'const copy = ownedArtifact(request, "peer_envelope_invalid", 500);', "const copy = request;"],
   ], ["signing/response-request-changes-between-reads"]),
   MF("request delegation owned copy (with the envelope's)", [
-    ["wire/response.ts", 'input.delegation ? ownedArtifact(input.delegation, "peer_delegation_invalid") as SellerSessionDelegation : null', "input.delegation ? input.delegation as SellerSessionDelegation : null"],
+    ["wire/response.ts", 'input.delegation ? ownedArtifact(input.delegation, "peer_delegation_invalid", 500) as SellerSessionDelegation : null', "input.delegation ? input.delegation as SellerSessionDelegation : null"],
     ["wire/envelope.ts", 'suppliedDelegation ? ownedArtifact(suppliedDelegation, "peer_delegation_invalid", 500) : null', "suppliedDelegation ?? null"],
   ], ["signing/request-delegation-edited-while-signing"]),
   M("check takes only a verified envelope", "wire/envelope.ts", "openedBinding(opened, envelope) !== c.binding ||", "", ["request/check-unopened-envelope", "request/check-copied-envelope", "request/check-other-binding"]),

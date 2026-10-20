@@ -39,13 +39,14 @@ export interface SellerSessionDelegation {
 
 const FIELDS = ["version", "kind", "buyer", "sessionPublicKey", "seller", "listingPin", "jobId", "notBefore", "expiresAt", "profile"];
 
-function payloadBytes(p: unknown): Buffer {
+/** `status`: 401 for a received delegation, 500 for the wallet side's own payload. */
+function payloadBytes(p: unknown, status = 401): Buffer {
   if (!hasKeys(p, FIELDS) || p.version !== "1" || p.kind !== "seller-session-delegation" ||
       !isClaim(p.buyer) || !isClaim(p.seller) || p.buyer === p.seller ||
       typeof p.sessionPublicKey !== "string" || !HASH.test(p.sessionPublicKey) || !isListingPin(p.listingPin) ||
       !isCanonicalJobId(p.jobId) || !isUint(p.notBefore) || !isUint(p.expiresAt) || p.expiresAt <= p.notBefore ||
       p.expiresAt - p.notBefore > DACS_SELLER_HTTP_LIMITS.maxDelegationLifetimeMs || !isTp1WireProfile(p.profile)) {
-    return fail("peer_delegation_invalid");
+    return fail("peer_delegation_invalid", status);
   }
   return Buffer.from(`${DACS_SELLER_HTTP_DOMAINS.delegation}${canonicalize(p)}`, "utf8");
 }
@@ -55,7 +56,7 @@ function ownedSigning(supplied: unknown, binding: Tp1Binding, local: unknown): {
   assertTp1Binding(binding, local);
   const payload = ownedArtifact(supplied, "peer_delegation_invalid", 500) as SellerSessionDelegationPayload;
   assertPeerProfile((payload as unknown as JsonRecord | null)?.profile, binding, 500);
-  const bytes = payloadBytes(payload);
+  const bytes = payloadBytes(payload, 500);
   assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   return { payload, bytes };
 }

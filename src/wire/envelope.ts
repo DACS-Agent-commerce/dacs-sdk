@@ -341,7 +341,8 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   const retained = c.retained === undefined ? undefined : ownedConfig(c.retained, "seller_retained_agreement_required") as JsonRecord;
   const artifacts = (c.artifacts === undefined ? [] : ownedArtifact(c.artifacts, "wire_input_invalid", 500)) as unknown[];
   if (!Array.isArray(artifacts)) fail("wire_input_invalid", 500);
-  const rawBody = ownedBytes(c.rawBody);
+  // Over 64 KiB is refused as admission refuses it, before the body is copied or anything else is checked.
+  const rawBody = ownedBytes(c.rawBody, "wire_input_invalid", 500, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes, code: "bad_json", status: 400 });
   if (typeof envelope !== "object" || envelope === null || openedBinding(opened, envelope) !== c.binding ||
       envelope.payload?.kind !== "request") fail("peer_request_unverified", 500);
   // openWireEnvelope checked the kept tuple and the request's own; the tuple kept now is checked again.
