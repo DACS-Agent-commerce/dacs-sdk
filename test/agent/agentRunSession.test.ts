@@ -44,7 +44,7 @@ import {
   type PayDemRail,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
-import { createIdempotencyStore } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
@@ -616,9 +616,11 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       deliveryPhase: "deliver-attested-payload",
       deliveryFormat: "application/json",
     };
+    // The buyer's durable rail log: the restarted process reopens the same log.
+    const railLog = createInMemorySettlementLog();
     const first = await agent.runSession(ref, {
       terms,
-      settle: payDemSettle(rail, { network: "demos:testnet" }),
+      settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(railLog) }),
     });
     expect(first.outcome).toBe("completed");
     const rerun = (resumeSettlement: NonNullable<Parameters<typeof agent.runSession>[1]["resumeSettlement"]>) =>
@@ -647,7 +649,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           settlementKey: context.settlementKey } } };
     });
     await expect(rerun(payDemSettle(rail, { network: "demos:testnet" }, {
-      store: createIdempotencyStore(), reconcile,
+      store: createIdempotencyStore(railLog), reconcile,
     }))).resolves.toEqual(first);
     expect(reconcile).toHaveBeenCalledOnce();
     expect(transfer).toHaveBeenCalledOnce();

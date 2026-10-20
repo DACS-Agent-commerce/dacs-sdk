@@ -94,6 +94,14 @@ sees its result.
   as `networkFeeOs` (total debit minus amount, integer OS): `runSession`
   re-asserts a saved fee, so an audit that omits it leaves the saved success
   unresolved (not completed, never reported unpaid).
+- `runSession` completes a recovered native success only when its
+  `resumeSettlement` is this `payDemSettle` adapter (directly, from
+  `settleFromRail`, or through `Agent.runSession`); a success from any other
+  implementation, a wrapper around the adapter included, is held as
+  indeterminate. That shows the audit above ran: the retained hash is bound by
+  the SDK's own rail record and re-read by the reconciler you wired. It does
+  not make that reconciler a trusted node reader; wire one that reads the node
+  you trust.
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).

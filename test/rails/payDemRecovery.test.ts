@@ -78,7 +78,7 @@ async function signedOnly(reconcile: PayDemSettlementReconcile) {
   return { settle, once, submit };
 }
 
-describe("pay-dem retained transaction recovery is read-only even with an empty rail log", () => {
+describe("pay-dem retained transaction recovery is read-only over the rail log that recorded it", () => {
   test.each([true, false].flatMap((ok) => ["executed", "failed"].map((outcome) => ({ ok, outcome }))))(
     "audits prior ok=$ok as $outcome on repeat and restart without claiming an effect",
     async ({ ok, outcome }) => {
