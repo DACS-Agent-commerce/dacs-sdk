@@ -154,11 +154,17 @@ describe.skipIf(!haveVectors)("verifySettlementEvidence — current-profile fixt
       .resolves.toEqual({ decision: "pass", reasons: [] });
   });
 
-  it("allows an optional reference issuer distinct from the evidence orchestrator", async () => {
+  it("binds an optional reference signer to the evidence signer's CF-3 identity", async () => {
     const context = paymentAuthenticatedContext();
-    context.attestationRef = { ...context.attestationRef, signer: "did:demos:other" };
-    await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
-      .resolves.toEqual({ decision: "pass", reasons: [] });
+    // DACS-2 §7.5.2(3): a signer that did not sign the attestation is a mismatch.
+    for (const signer of ["did:demos:other", "did:demos:validator-set"]) {
+      context.attestationRef = { ...context.attestationRef, signer };
+      await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
+        .resolves.toEqual({
+          decision: "fail",
+          reasons: ["attestationRef.signer does not match the evidence signer"],
+        });
+    }
     context.attestationRef = { ...context.attestationRef, signer: `${ORCH}?role=seller` };
     await expect(verifySettlementEvidence(paymentFx.evidence, context, deps))
       .resolves.toEqual({ decision: "pass", reasons: [] });

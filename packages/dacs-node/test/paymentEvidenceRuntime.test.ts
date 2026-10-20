@@ -19,9 +19,11 @@ import {
   createPaymentEvidenceAnchorCompletion,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
+  paymentEvidenceAnchorCompletionHash,
   type FixedPriceX402OrderInput,
   type FixedPriceX402ProtocolBinding,
   type FixedPriceX402TrackOperationInput,
+  type PaymentEvidenceAnchorCompletion,
   type PaymentEvidenceAnchorRequest,
 } from "@kynesyslabs/dacs/commerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -476,11 +478,20 @@ describe("live payment-evidence runtime", () => {
         `did:demos:agent:${"9".repeat(64)}?role=publisher`,
         BUYER,
       ]) {
-        const forged = createPaymentEvidenceAnchorCompletion({
+        // The core builder refuses this signer, so forge the wire message.
+        expect(() => createPaymentEvidenceAnchorCompletion({
           request,
           ...anchored,
           evidenceRef: { ...anchored.evidenceRef, signer },
-        });
+        })).toThrow(/does not bind the request/);
+        const forged = structuredClone(createPaymentEvidenceAnchorCompletion({
+          request, ...anchored,
+        })) as { -readonly [K in keyof PaymentEvidenceAnchorCompletion]:
+          PaymentEvidenceAnchorCompletion[K] };
+        forged.evidenceRef = { ...forged.evidenceRef, signer };
+        forged.completionHash = paymentEvidenceAnchorCompletionHash(forged);
+        forged.messageId =
+          `dacs-sdk:x402:payment-evidence-anchor-completion:${forged.completionHash}`;
         await expect(runtime.handleMessage(
           authenticated("payment-evidence-completion", forged, BUYER, SELLER),
           { role: "seller" } as DacsLiveRoleInboundOperationContextV1,

@@ -11,8 +11,9 @@ For a failed settlement, retain the exact handler result in the authenticated
 `SessionSettlementContext.phaseResult`, for example
 `{ ok: false, errorClass: "substrate" }`. Its error class must be one of
 `permanent`, `transient`, `counterparty`, `substrate`, or
-`settlement-atomicity`. A missing failure result is `indeterminate`: the signed
-free-text evidence reason cannot substitute for a handler classification.
+`settlement-atomicity`. A missing failure result is a configuration `error`:
+the signed free-text evidence reason cannot substitute for a handler
+classification, and retrying cannot supply the missing input.
 Successful contexts may also supply the exact result and transaction refs;
 when supplied they must agree with the signed evidence.
 

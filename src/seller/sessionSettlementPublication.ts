@@ -21,6 +21,7 @@ import {
 } from "../canonical/index.js";
 import { isCanonicalJobId } from "../artifacts/validators.js";
 import { signedBytes } from "../crypto/index.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   type FinalizedSessionSettlement,
   type SessionSettlementDisposition,
@@ -195,8 +196,9 @@ export interface SellerSessionSettlementPublicationDeps {
     expectedWriter: Readonly<SellerSessionSettlementAnchorWriter>;
   }>): Promise<SellerSessionSettlementAnchorResult>;
   /**
-   * Authenticate the binding-native finalized receipt and any reference issuer
-   * according to the attestation method. The issuer need not author the evidence.
+   * Authenticate the binding-native finalized receipt. The core has already
+   * required any reference signer to be the evidence signer; this callback
+   * cannot admit another issuer.
    */
   verifyAnchorReceipt(input: Readonly<{
     effectId: string;
@@ -1150,6 +1152,10 @@ export async function publishSellerSessionSettlement(
   if (evidenceRef.anchor.kind !== "storage-program" ||
       evidenceRef.anchor.locator !== logicalAddress ||
       evidenceRef.contentHash !== evidenceHash ||
+      // DACS-2 §7.5.2(3): the anchor writer supplies this reference, so a
+      // signer it names must have the evidence signer's CF-3 identity.
+      (evidenceRef.signer !== undefined &&
+        !sameCanonicalClaimIdentity(evidenceRef.signer, evidence.signature.signer)) ||
       anchorReceipt.logicalAddress !== logicalAddress ||
       anchorReceipt.contentHash !== evidenceHash ||
       anchorReceipt.writer !== deps.anchorWriter.primaryClaim ||

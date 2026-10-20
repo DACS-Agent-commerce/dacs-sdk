@@ -102,14 +102,13 @@ while the buyer owns the PC-7 Demos write. The track becomes final only after
 the exact evidence, buyer-written receipt and independently resolved readback
 have all passed the SDK publisher's checks.
 
-The built-in Demos seller receipt verifiers support an omitted reference signer
-or a signer with the authenticated evidence author's CORE CF-3 identity.
-Advisory ClaimReference parameters do not change that identity; their exact
-canonical bytes remain in messages and retained references. They reject a
-distinct issuer because the Demos receipt alone does not authenticate that
-issuer. Applications using independent issuers must supply method-specific
-`verifyAnchorReceipt` callbacks for completion and settlement publication that
-authenticate the issuer proof as well as the finalized receipt.
+A payment-evidence reference may omit its signer or name a signer with the
+evidence author's CORE CF-3 identity. Advisory ClaimReference parameters do not
+change that identity; their exact canonical bytes remain in messages and
+retained references. Any other signer is rejected by the core handshake,
+settlement publication and settlement verifier before a `verifyAnchorReceipt`
+callback runs (DACS-2 §7.5.2(3)), so a custom callback cannot admit a distinct
+issuer. The built-in Demos receipt verifiers repeat the same check.
 
 Live buyer and seller databases also expose `createHttpInboxStore()` and
 `createHttpOutboxStore()`. The inbox atomically retains the complete canonical

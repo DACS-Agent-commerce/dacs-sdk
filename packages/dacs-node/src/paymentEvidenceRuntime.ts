@@ -721,8 +721,8 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
   const store = context.database.createPaymentEvidenceHandshakeStore();
   const retryDelayMs = timing(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS);
   const verifyAnchorReceipt = options.verifyAnchorReceipt ?? (async ({ request, completion }) => {
-    // The native receipt authenticates the writer; it supplies no independent
-    // issuer proof. Custom verifiers can support such proofs explicitly.
+    // The core handshake already requires any reference signer to be the
+    // evidence signer (DACS-2 §7.5.2(3)); this repeats it for direct callers.
     if (completion.evidenceRef.signer !== undefined &&
         !sameCanonicalClaimIdentity(
           completion.evidenceRef.signer, request.evidence.signature.signer,

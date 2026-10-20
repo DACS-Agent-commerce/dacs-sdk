@@ -19,6 +19,7 @@ import {
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceX402ProtocolBindingHash,
   fixedPricePayDemProtocolBindingHash,
+  paymentEvidenceAnchorCompletionHash,
   paymentEvidenceHandshakeScopeHash,
   type BuyerPaymentEvidenceHandshakeOptions,
   type FixedPriceX402ProtocolBinding,
@@ -297,58 +298,68 @@ async function queueRequest(
 }
 
 describe("actor-separated payment-evidence handshake", () => {
-  it.each(["valid", "buyer-invalid", "seller-invalid"] as const)(
-    "authenticates a distinct attestation issuer on both completion paths (%s)", async (mode) => {
-      const issuer = "did:example:independent-issuer";
+  it.each([`${SELLER}?role=seller`, undefined])(
+    "accepts a reference signer with the evidence signer's identity (%s) on both completion paths",
+    async (signer) => {
       const verifySeller = vi.fn<SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(
-        ({ request, completion }) => {
-          expect(completion.evidenceRef.signer).toBe(issuer);
-          expect(request.evidence.signature.signer).toBe(SELLER);
-          expect(completion.anchorReceipt.writer).toBe(BUYER);
-          return mode === "seller-invalid"
-            ? { disposition: "invalid", reason: "issuer proof invalid" }
-            : { disposition: "valid" };
-        },
+        () => ({ disposition: "valid" }),
       );
       const sellerHandshake = seller(undefined, undefined, verifySeller);
       const candidate = await queueRequest(sellerHandshake);
       const anchored = finalAnchor(candidate);
-      anchored.evidenceRef.signer = issuer;
-      const verifyReceipt = vi.fn<BuyerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(({ request, completion }) => {
-        expect(completion.evidenceRef.signer).toBe(issuer);
-        expect(request.evidence.signature.signer).toBe(SELLER);
-        expect(completion.anchorReceipt.writer).toBe(BUYER);
-        return mode === "buyer-invalid"
-          ? { disposition: "invalid" as const, reason: "issuer proof invalid" }
-          : { disposition: "valid" as const };
-      });
-      const { handshake } = buyer({
-        anchor: vi.fn(() => ({ disposition: "anchored", ...anchored })), verifyReceipt,
-      });
+      if (signer === undefined) delete anchored.evidenceRef.signer;
+      else anchored.evidenceRef.signer = signer;
+      const { handshake } = buyer({ anchor: vi.fn(() => ({ disposition: "anchored", ...anchored })) });
       await handshake.receiveRequest(candidate, {});
       expect((await handshake.runPending()).items).toEqual([{
-        messageId: candidate.messageId,
-        status: mode === "buyer-invalid" ? "operator-action" : "completed",
-        ...(mode === "buyer-invalid" ? { reasonCode: "receipt-invalid" } : {}),
+        messageId: candidate.messageId, status: "completed",
       }]);
-      expect(verifyReceipt).toHaveBeenCalledOnce();
-      const completions = (await handshake.claimOutboundCompletions()).items;
-      if (mode === "buyer-invalid") {
-        expect(completions).toEqual([]);
-        expect(verifySeller).not.toHaveBeenCalled();
-        return;
-      }
-      expect(completions).toHaveLength(1);
-      const completion = completions[0]!.completion;
-      expect(completion.evidenceRef.signer).toBe(issuer);
-      if (mode === "seller-invalid") {
-        await expect(sellerHandshake.receiveCompletion(completion, {})).rejects.toThrow(
-          "completion invalid",
-        );
-      } else {
-        await expect(sellerHandshake.receiveCompletion(completion, {})).resolves.toBe("accepted");
-      }
+      const completion = (await handshake.claimOutboundCompletions()).items[0]!.completion;
+      expect(completion.evidenceRef.signer).toBe(signer);
+      await expect(sellerHandshake.receiveCompletion(completion, {})).resolves.toBe("accepted");
       expect(verifySeller).toHaveBeenCalledOnce();
+    },
+  );
+
+  // DACS-2 §7.5.2(3): the referenced attestation is the seller-signed evidence,
+  // so a reference naming any other signer is rejected even when the
+  // integrator's receipt verifier would pass it.
+  it.each(["did:example:independent-issuer", BUYER])(
+    "rejects a reference signer %s that did not sign the evidence on both completion paths",
+    async (issuer) => {
+      const verifySeller = vi.fn<SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(
+        () => ({ disposition: "valid" }),
+      );
+      const sellerHandshake = seller(undefined, undefined, verifySeller);
+      const candidate = await queueRequest(sellerHandshake);
+      const forged = finalAnchor(candidate);
+      forged.evidenceRef.signer = issuer;
+      const verifyReceipt = vi.fn(() => ({ disposition: "valid" as const }));
+      const forgedBuyer = buyer({
+        anchor: vi.fn(() => ({ disposition: "anchored", ...forged })), verifyReceipt,
+      });
+      await forgedBuyer.handshake.receiveRequest(candidate, {});
+      const run = await forgedBuyer.handshake.runPending().then(
+        (page) => page.items, (error: unknown) => error,
+      );
+      expect(run).not.toEqual([expect.objectContaining({ status: "completed" })]);
+      expect(verifyReceipt).not.toHaveBeenCalled();
+      expect((await forgedBuyer.handshake.claimOutboundCompletions()).items).toEqual([]);
+
+      // A peer that builds the completion itself still cannot get the seller
+      // to accept the substituted signer.
+      const honest = buyer();
+      await honest.handshake.receiveRequest(candidate, {});
+      await honest.handshake.runPending();
+      const completion = structuredClone(
+        (await honest.handshake.claimOutboundCompletions()).items[0]!.completion,
+      ) as { -readonly [K in keyof PaymentEvidenceAnchorCompletion]: PaymentEvidenceAnchorCompletion[K] };
+      completion.evidenceRef = { ...completion.evidenceRef, signer: issuer };
+      completion.completionHash = paymentEvidenceAnchorCompletionHash(completion);
+      completion.messageId =
+        `dacs-sdk:x402:payment-evidence-anchor-completion:${completion.completionHash}`;
+      await expect(sellerHandshake.receiveCompletion(completion, {})).rejects.toThrow();
+      expect(verifySeller).not.toHaveBeenCalled();
     },
   );
 

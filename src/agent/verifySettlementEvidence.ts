@@ -944,6 +944,12 @@ async function evaluateSettlementEvidence(
     );
   } else {
     const signer = sig.signer;
+    // DACS-2 §7.5.2(3): the attestation is this signed evidence, so a named
+    // reference signer that did not sign it is a mismatch.
+    if (ctx.attestationRef?.signer !== undefined &&
+        !sameCanonicalClaimIdentity(signer, ctx.attestationRef.signer)) {
+      fail("attestationRef.signer does not match the evidence signer");
+    }
     if (!isCanonicalClaimReference(signer)) {
       fail("evidence signer MUST be a canonical ClaimReference");
     }

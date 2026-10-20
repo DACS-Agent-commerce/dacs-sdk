@@ -354,6 +354,32 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(authenticateContext).not.toHaveBeenCalled();
   });
 
+  // CORE JID-1/JID-3: refuse before resolver activity or PC-2 derivation.
+  it.each([
+    "01jz0000000000000000000360",
+    "job-315-a",
+    "01JZ000000000000000000036\u212A",
+    "01JZ0000000000000000000360 ",
+    "",
+  ])("rejects malformed context jobId %j before authentication", async (jobId) => {
+    const { settlement, proof } = fixture();
+    const callbacks = {
+      authenticateContext: vi.fn(() => ({ disposition: "pass" as const })),
+      verifyEvidenceAnchor: vi.fn(() => ({ disposition: "pass" as const })),
+      resolveNativeProof: vi.fn(() => ({ disposition: "present" as const, artifact: proof })),
+      revalidateSettlement: vi.fn(() => ({ disposition: "pass" as const, outcome: "success" as const })),
+      resolvePublicKey: vi.fn(async () => new Uint8Array(PUBLIC_KEY)),
+    };
+    const { resolvePublicKey, ...rest } = callbacks;
+    const result = await verifyFinalizedSessionSettlement(
+      { ...context(), jobId },
+      { ...settlement, evidence: { ...settlement.evidence, jobId } } as never,
+      provider(proof, { ...rest, evidence: { ...provider(proof).evidence, resolvePublicKey } } as never),
+    );
+    expect(result).toEqual({ disposition: "error", reason: "settlement context is not exact canonical data" });
+    for (const callback of Object.values(callbacks)) expect(callback).not.toHaveBeenCalled();
+  });
+
   it.each([null, { ok: "true" }, { ok: true, extra: 1 }])(
     "rejects malformed phaseResult %j before authentication", async (phaseResult) => {
       const { settlement, proof } = fixture();
@@ -500,8 +526,9 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("does not fabricate a failure class from the evidence reason", async () => {
     const { settlement, proof } = fixture({ outcome: "failure" });
+    // A missing caller input never arrives on retry: configuration error.
     await expect(verifyFinalizedSessionSettlement(context(), settlement, provider(proof)))
-      .resolves.toEqual({ disposition: "indeterminate", reason: "authenticated failure phase result is unavailable" });
+      .resolves.toEqual({ disposition: "error", reason: "authenticated failure phase result is unavailable" });
     await expect(verifyFinalizedSessionSettlement({ ...context(), phaseResult: {
       ok: false, errorClass: "provider rejected settlement",
     } }, settlement, provider(proof)))
@@ -684,15 +711,34 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(settlement.evidence.signature.signer).toBe(authenticatedContext.orchestrator);
   });
 
-  it("allows an attestation issuer distinct from the evidence signer and receipt writer", async () => {
+  // DACS-2 §7.5.2(3): a reference signer must sign the referenced evidence. An
+  // authenticated receipt does not authenticate a different issuer.
+  it.each([
+    "did:demos:validator-set",
+    `did:demos:agent:${"9".repeat(64)}`,
+    "did:demos:buyer",
+  ])("rejects reference signer %s that did not sign the evidence", async (signer) => {
     const { settlement, proof } = fixture();
-    settlement.evidenceRef.signer = "did:demos:validator-set";
-    await expect(verifyFinalizedSessionSettlement(context(), settlement, provider(proof)))
-      .resolves.toMatchObject({ disposition: "verified" });
-    settlement.anchorReceipt.writer = "did:demos:validator-set";
-    await expect(verifyFinalizedSessionSettlement(context(), settlement, provider(proof)))
-      .resolves.toMatchObject({ disposition: "rejected" });
+    settlement.evidenceRef.signer = signer;
+    const verifyEvidenceAnchor = vi.fn(() => ({ disposition: "pass" as const }));
+    expect(await verifyFinalizedSessionSettlement(
+      context(), settlement, provider(proof, { verifyEvidenceAnchor }),
+    )).toEqual({
+      disposition: "rejected",
+      reason: "settlement evidence reference signer did not sign the evidence",
+    });
+    expect(verifyEvidenceAnchor).not.toHaveBeenCalled();
   });
+
+  it.each([ORCHESTRATOR, `${ORCHESTRATOR}?role=seller`, undefined])(
+    "accepts reference signer %s with the evidence signer's CF-3 identity", async (signer) => {
+      const { settlement, proof } = fixture();
+      if (signer === undefined) delete settlement.evidenceRef.signer;
+      else settlement.evidenceRef.signer = signer;
+      await expect(verifyFinalizedSessionSettlement(context(), settlement, provider(proof)))
+        .resolves.toMatchObject({ disposition: "verified" });
+    },
+  );
 
   it("rejects a receipt writer outside the authenticated orchestrator/payer actors", async () => {
     const { settlement, proof } = fixture();

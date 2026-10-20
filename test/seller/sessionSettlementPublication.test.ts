@@ -516,7 +516,7 @@ describe("publishSellerSessionSettlement", () => {
     expect(replayResult.effectId).toBe(firstResult.effectId);
   });
 
-  it.each([ORCHESTRATOR, "did:demos:independent-issuer"])(
+  it.each([ORCHESTRATOR, `${ORCHESTRATOR}?role=seller`])(
     "keeps seller evidence authority with an authenticated buyer anchor and issuer %s", async (issuer) => {
     const h = harness();
     let observedWriter: unknown;
@@ -557,24 +557,23 @@ describe("publishSellerSessionSettlement", () => {
     expect(expectedReceiptWriter).toBe(BUYER);
   });
 
-  it("requires receipt authentication for an independent attestation issuer", async () => {
+  // DACS-2 §7.5.2(3): the anchor writer returns the reference, so a signer it
+  // names must be the evidence signer before any receipt callback can pass it.
+  it.each(["did:demos:independent-issuer", BUYER, "did:demos:validator-set"])(
+    "rejects a reference signer %s that did not sign the evidence", async (issuer) => {
     const h = harness();
     const anchor = h.deps.anchorEvidence;
     h.deps.anchorEvidence = async (input) => {
       const result = await anchor(input);
       if (result.disposition !== "anchored") return result;
-      return { ...result, evidenceRef: {
-        ...result.evidenceRef, signer: "did:demos:independent-issuer",
-      } };
+      return { ...result, evidenceRef: { ...result.evidenceRef, signer: issuer } };
     };
-    const verifyReceipt = vi.fn(() => ({
-      disposition: "fail" as const, reason: "attestation issuer proof invalid",
-    }));
+    const verifyReceipt = vi.fn(() => ({ disposition: "pass" as const }));
     h.deps.verifyAnchorReceipt = verifyReceipt;
     expect(await publishSellerSessionSettlement(request(h), h.deps)).toMatchObject({
-      disposition: "rejected", reason: expect.stringContaining("attestation issuer proof invalid"),
+      disposition: "rejected", reason: "publication lacks the exact finalized evidence binding",
     });
-    expect(verifyReceipt).toHaveBeenCalledOnce();
+    expect(verifyReceipt).not.toHaveBeenCalled();
   });
 
   it("rejects a buyer anchor lane absent from the consumed authenticated handoff", async () => {
