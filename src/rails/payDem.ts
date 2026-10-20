@@ -1,6 +1,11 @@
 import { types as nodeTypes } from "node:util";
 
-import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
+import {
+  hasDefinitiveDemosFailure,
+  isRecordVerifiedSource,
+  vouchRecordVerifiedSource,
+  type DemosFailedRecordProof,
+} from "../agent/settlementFailure.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits, canonicalize } from "../canonical/index.js";
 import {
@@ -71,6 +76,21 @@ function stableMethod<T extends AnyMethod>(
   key: string,
   label: string,
 ): T {
+  // Never consult a caller-controlled own `.bind` property on the
+  // capability. Capture the exact function while preserving class/private
+  // receivers through the intrinsic Function.prototype operation.
+  return Function.prototype.bind.call(
+    stableMethodTarget(source, key, label),
+    source,
+  ) as T;
+}
+
+/** The exact data-property function {@link stableMethod} binds, unbound. */
+function stableMethodTarget(
+  source: unknown,
+  key: string,
+  label: string,
+): AnyMethod {
   if (
     (typeof source !== "object" && typeof source !== "function") ||
     source === null ||
@@ -92,10 +112,7 @@ function stableMethod<T extends AnyMethod>(
       ) {
         throw new DacsError(`${label} must be a stable method`);
       }
-      // Never consult a caller-controlled own `.bind` property on the
-      // capability. Capture the exact function while preserving class/private
-      // receivers through the intrinsic Function.prototype operation.
-      return Function.prototype.bind.call(descriptor.value, source) as T;
+      return descriptor.value as AnyMethod;
     }
     cursor = Object.getPrototypeOf(cursor) as object | null;
   }
@@ -305,7 +322,9 @@ export interface PayDemReconciledSettlement extends SettleResult {
  * status index for a transaction whose record `failed` (#338), so inclusion
  * alone must not be returned as a settlement. A bound `failed` record may
  * return `PayDemReconciledFailure` with a permanent class and exact failure
- * proof. Indeterminate or non-final observations must throw.
+ * proof. It can confirm a durable failure `createPayDemRail` recorded, but is
+ * never itself recorded as the definitive outcome: a held intent stays held.
+ * Indeterminate or non-final observations must throw.
  */
 export interface PayDemReconciledFailure extends SettleResult {
   ok: false;
@@ -344,7 +363,11 @@ export interface DemosTransferResult {
    * status index fails closed.
    */
   execution?: "executed";
-  /** Bound terminal failed record; a status-index failure alone cannot issue it. */
+  /**
+   * Bound terminal failed record; a status-index failure alone cannot issue it.
+   * With a per-settlement `journalPreparedTransfer`, its hash and nonce must be
+   * the transfer the client journaled, or the failure is not permanent.
+   */
   failureProof?: DemosFailedRecordProof;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
@@ -588,6 +611,26 @@ export async function payDemSettleCore(
         "journalPreparedTransfer",
         "pay-dem per-settlement prepared-transfer journal",
       );
+  // A per-settlement journal is how this core learns the signed nonce: keep
+  // what the client journaled so a failure proof must carry that exact nonce.
+  // `null` means the client journaled two different transfers.
+  let journaled: Readonly<{ txHash: string | null; nonce: unknown }> | null | undefined;
+  const invocationJournal = journalPreparedTransfer === undefined
+    ? undefined
+    : async (prepared: Readonly<PayDemPreparedTransfer>) => {
+        const entry = {
+          txHash: canonicalDemosTxHash(
+            stableDataProperty(prepared, "txHash", "pay-dem prepared transfer").value,
+          ),
+          nonce: stableDataProperty(prepared, "nonce", "pay-dem prepared transfer").value,
+        };
+        await journalPreparedTransfer(prepared);
+        journaled = journaled === undefined ||
+            (journaled !== null && journaled.txHash === entry.txHash &&
+              journaled.nonce === entry.nonce)
+          ? entry
+          : null;
+      };
   const fenceProperty = stableDataProperty(
     params,
     "assertCurrentBeforeBroadcast",
@@ -658,7 +701,9 @@ export async function payDemSettleCore(
     amountOs,
     ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
     ...(recovery === undefined ? {} : { recovery }),
-    ...(journalPreparedTransfer === undefined ? {} : { journalPreparedTransfer }),
+    ...(invocationJournal === undefined
+      ? {}
+      : { journalPreparedTransfer: invocationJournal }),
     ...(assertCurrentBeforeBroadcast === undefined
       ? {}
       : { assertCurrentBeforeBroadcast }),
@@ -740,8 +785,14 @@ export async function payDemSettleCore(
       errorClass: "permanent" as const, failureProof,
       blockNumber, txRefKind: "demos",
     };
+    // With a per-settlement journal, the proof must carry the nonce journaled
+    // for this hash before broadcast. Without one, the nonce is the client's
+    // statement (createPayDemRail fills it from the signed transaction).
     if (okProperty.value === false && state === "failed" &&
-        hasDefinitiveDemosFailure(failed, amount, chainId)) {
+        hasDefinitiveDemosFailure(failed, amount, chainId) &&
+        (invocationJournal === undefined ||
+          (journaled != null && journaled.txHash === txHash &&
+            journaled.nonce === (failureProof as { nonce: unknown }).nonce))) {
       return failed as PayDemRailResult;
     }
     return {
@@ -1780,8 +1831,8 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           failureProof: {
             kind: "demos-failed-record",
             txHash, nonce: signedNonce, blockNumber: terminal.blockNumber,
-            payer: normalizeDemosNativeAddress(address)!,
-            payee: normalizeDemosNativeAddress(to)!, amountOs: amountOs.toString(),
+            payer: canonicalPayer, payee: canonicalPayee,
+            amountOs: amountOs.toString(),
           },
           message: "pay-dem transaction was included but its record reports it failed",
         };
@@ -1817,27 +1868,30 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     },
   };
 
+  const settle: PayDemRail["settle"] = async (params, effectFence) => {
+    const invocationJournal = stableDataProperty(
+      params,
+      "journalPreparedTransfer",
+      "pay-dem per-settlement prepared-transfer journal",
+    );
+    if (journalPreparedTransfer !== undefined && invocationJournal.found &&
+        invocationJournal.value !== undefined) {
+      throw new DacsError(
+        "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
+      );
+    }
+    return payDemSettleCore(
+      params,
+      client,
+      network ?? "demos",
+      effectFence,
+    );
+  };
+  // This settle's failure proofs come only from the record it read above, so
+  // payDemSettle may let the settlement store keep one as the definitive outcome.
   return {
     address: client.address,
-    settle: async (params, effectFence) => {
-      const invocationJournal = stableDataProperty(
-        params,
-        "journalPreparedTransfer",
-        "pay-dem per-settlement prepared-transfer journal",
-      );
-      if (journalPreparedTransfer !== undefined && invocationJournal.found &&
-          invocationJournal.value !== undefined) {
-        throw new DacsError(
-          "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
-        );
-      }
-      return payDemSettleCore(
-        params,
-        client,
-        network ?? "demos",
-        effectFence,
-      );
-    },
+    settle: vouchRecordVerifiedSource(settle),
   };
 }
 
@@ -1878,7 +1932,8 @@ function sameFailureProof(left: SettleResult, right: SettleResult): boolean {
 /**
  * Whether two results for the same transaction and block report the same
  * outcome: success, or failure under the same canonical proof. Fee accounting
- * and other presentation fields are not part of a failed record's identity.
+ * and other presentation fields are not part of a success's identity; a failure
+ * carries none, and a result that presents them is refused on capture.
  */
 function sameSettledOutcome(left: SettleResult, right: SettleResult): boolean {
   return left.ok === right.ok &&
@@ -2369,11 +2424,19 @@ export function payDemSettle(
   if (payerAddress === null) {
     throw new DacsError("pay-dem rail returned an invalid native payer address");
   }
-  const railSettle = stableMethod<PayDemRail["settle"]>(
+  const railSettleTarget = stableMethodTarget(
     rail,
     "settle",
     "pay-dem rail settle",
   );
+  const railSettle = Function.prototype.bind.call(
+    railSettleTarget,
+    rail,
+  ) as PayDemRail["settle"];
+  // Only createPayDemRail's own settle reads and binds the failed record
+  // itself. Another rail's failure proof is its statement: the store keeps the
+  // intent held instead of recording a permanent outcome.
+  const recordVerifiedRail = isRecordVerifiedSource(railSettleTarget);
   const reconcileProperty = stableDataProperty(
     opts,
     "reconcile",
@@ -2643,6 +2706,7 @@ export function payDemSettle(
         if (captured.txHash.length > 0) await effectFence?.recordAttempt?.(captured.txHash);
         return captured;
       };
+      if (recordVerifiedRail) vouchRecordVerifiedSource(submit);
       // A hash this bridge already bound for the key, or this key's attempt
       // record names, stays bound when a later reconciliation confirms it. A
       // reconciliation never binds one itself, even with a journal entry.

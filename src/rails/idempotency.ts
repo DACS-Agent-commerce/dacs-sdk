@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
-import { hasDefinitiveDemosFailure } from "../agent/settlementFailure.js";
+import {
+  hasDefinitiveDemosFailure,
+  isRecordVerifiedSource,
+} from "../agent/settlementFailure.js";
 import type { SettleResult } from "../agent/runSessionCore.js";
 import {
   canonicalize,
@@ -717,8 +720,20 @@ export function settlementKey(railId: string, jobId: string, phaseIndex: number)
   return `${railId}:${jobId}:${phaseIndex}`;
 }
 
-function isDefinitive(result: Readonly<SettleResult>): boolean {
-  return (result.ok && result.txHash.trim().length > 0) || hasDefinitiveDemosFailure(result);
+/**
+ * A success with a hash is definitive. A bound terminal failure is definitive
+ * only when `recordVerified`: the submission is one the SDK vouched for, whose
+ * proof it built from a node record it read itself. A proof from a caller's
+ * rail, submission or reconciler is a statement, so its intent stays held.
+ */
+function isDefinitive(
+  result: Readonly<SettleResult>,
+  binding: Readonly<SettlementBinding>,
+  recordVerified: boolean,
+): boolean {
+  return (result.ok && result.txHash.trim().length > 0) ||
+    (recordVerified &&
+      hasDefinitiveDemosFailure(result, binding.amount, binding.network));
 }
 
 function storeOptions(options: Readonly<SettlementIdempotencyStoreOptions>): Readonly<{
@@ -1108,7 +1123,7 @@ function buildIdempotencyStore(
               capturedBinding,
               "reconciled settlement result",
             );
-            if (!isDefinitive(found)) {
+            if (!isDefinitive(found, capturedBinding, false)) {
               throw new DacsError(
                 `settlement ${key} reconciliation was not definitive; require a finalized result or bound replay authorization`,
               );
@@ -1166,13 +1181,16 @@ function buildIdempotencyStore(
         // their irreversible request. An ordinary empty-hash failure is still
         // ambiguous; only an explicit not-invoked rail disposition releases.
         await effectFence.assertCurrent();
+        const recordVerified = isRecordVerifiedSource(submit);
         const submission = captureSubmission(await submit(effectFence));
         const result = captureBoundResult(
           ("disposition" in submission ? submission.result : submission) as SettleResult,
           capturedBinding,
           "submitted settlement result",
         );
-        if (isDefinitive(result)) return persist(result, effectFence);
+        if (isDefinitive(result, capturedBinding, recordVerified)) {
+          return persist(result, effectFence);
+        }
         if ("disposition" in submission) {
           const released = await durable.releaseIntent({
             key,

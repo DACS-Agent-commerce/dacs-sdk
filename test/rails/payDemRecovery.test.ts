@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
+import { vouchRecordVerifiedSource } from "../../src/agent/settlementFailure.js";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
@@ -59,7 +60,9 @@ async function settledLog(outcome: ReturnType<typeof executed> | ReturnType<type
   const log = createInMemorySettlementLog();
   const { amountOs: _amount, preparedTransfer: _journal, ...result } = outcome;
   const { priorAttempts: _history, ...fresh } = request();
-  await payDemSettle({ address: payer, settle: async () => ({ ...result, chainId: network }) }, { network },
+  // Stands in for createPayDemRail, so a failed outcome is recorded.
+  const settle = vouchRecordVerifiedSource(async () => ({ ...result, chainId: network }));
+  await payDemSettle({ address: payer, settle }, { network },
     { store: createIdempotencyStore(log) })(fresh);
   return log;
 }
@@ -375,7 +378,7 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     expect(reconcile).toHaveBeenCalledTimes(2);
   });
 
-  test("another writer's cached failure cannot demote this bridge's success", async () => {
+  test("another writer's reconciled failure cannot demote this bridge's success", async () => {
     const log = createInMemorySettlementLog();
     let now = 1_000;
     const options = { now: () => now, leaseDurationMs: 1_000 };
@@ -394,14 +397,18 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     const { priorAttempts: _history, ...fresh } = request();
     const slow = settle(fresh);
     await submitted;
-    // The lease expires and another process records its reconciled failure.
+    // The lease expires and another process reconciles a failure. A reconciled
+    // failure is never recorded as the definitive outcome, so nothing is cached.
     now += 2_000;
     const other = payDemSettle({ address: payer, settle: vi.fn() },
       {}, { store: createIdempotencyStore(log, { ...options, owner: "b" }), reconcile });
-    await expect(other(fresh)).resolves.toMatchObject({ ok: false, errorClass: "permanent" });
+    await expect(other(fresh)).rejects.toThrow(/reconciliation was not definitive/);
     finish();
     // The superseded generation can no longer record its hash, so nothing is persisted.
     await expect(slow).rejects.toThrow(/attempt was produced by a stale generation/);
+    // The other writer's lease has expired too: the reconciled failure is
+    // refused against the success this bridge authenticated.
+    now += 2_000;
     await expect(settle(fresh)).rejects.toThrow(demoted);
     expect(submit).toHaveBeenCalledTimes(1);
   });

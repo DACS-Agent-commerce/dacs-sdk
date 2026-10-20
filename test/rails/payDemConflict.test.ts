@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
+import { vouchRecordVerifiedSource } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog, type SettlementBinding } from "../../src/rails/idempotency.js";
 import { type PayDemRail, type PayDemSettlementReconcile, payDemSettle } from "../../src/rails/payDem.js";
 
@@ -89,11 +90,12 @@ describe("pay-dem retained identity conflict quarantine", () => {
       const claimIntent = vi.spyOn(log, "claimIntent");
       const putOutcome = vi.spyOn(log, "putOutcome");
       const store = createIdempotencyStore(log);
-      const submit = vi.fn<PayDemRail["settle"]>(async () => {
+      // Stands in for createPayDemRail, so a failed outcome is recorded.
+      const submit = vouchRecordVerifiedSource(vi.fn<PayDemRail["settle"]>(async () => {
         if (paid) return freshSuccess();
         const { amountOs: _amount, preparedTransfer: _journal, ...result } = failed(hashA);
         return result;
-      });
+      }));
       const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
       const rail = { address: payer, settle: submit };
       const settle = payDemSettle(rail, {}, { store, reconcile });
@@ -140,7 +142,11 @@ describe("pay-dem retained identity conflict quarantine", () => {
     const log = createInMemorySettlementLog();
     const putOutcome = vi.spyOn(log, "putOutcome");
     const store = createIdempotencyStore(log);
-    await store.once("pay-dem:conflicting-native:0", binding, async () => stored(failed(hashA)));
+    // This key's own record-verified submit records its hash, then the failure.
+    await store.once("pay-dem:conflicting-native:0", binding, vouchRecordVerifiedSource(async (fence) => {
+      await fence!.recordAttempt!(hashA);
+      return stored(failed(hashA));
+    }));
     putOutcome.mockClear();
     const reply = change === "success" ? executed() : {
       ...failed(hashA), ...(change === "block" ? { blockNumber: 43 } : {}),
@@ -156,24 +162,27 @@ describe("pay-dem retained identity conflict quarantine", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  test.each([true, false])("keeps a stored permanent failure that reconciliation presents with other fee fields (history=%s)", async (withHistory) => {
+  test.each([true, false])("keeps a stored permanent failure and refuses a reconciled failure that carries fee fields (history=%s)", async (withHistory) => {
     const log = createInMemorySettlementLog();
     const store = createIdempotencyStore(log);
-    // This key's own submit records its hash, as the bridge's submit does.
-    await store.once("pay-dem:conflicting-native:0", binding, async (fence) => {
+    // This key's own record-verified submit records its hash, then the failure.
+    await store.once("pay-dem:conflicting-native:0", binding, vouchRecordVerifiedSource(async (fence) => {
       await fence!.recordAttempt!(hashA);
       return stored(failed(hashA));
-    });
+    }));
     const putOutcome = vi.spyOn(log, "putOutcome");
     const submit = vi.fn();
-    // Same transaction, block and proof; the reconciler also reports the fee.
-    const reply = { ...failed(hashA), networkFeeOs: "5" };
+    // Same transaction, block and proof; a failure carries no fee fields.
+    let reply: ReturnType<typeof failed> & { networkFeeOs?: string } = { ...failed(hashA), networkFeeOs: "5" };
     const reconcile = vi.fn(async () => reply);
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
-    await expect(settle(withHistory ? history(hashA, false) : request)).resolves.toMatchObject({
+    const call = () => settle(withHistory ? history(hashA, false) : request);
+    await expect(call()).rejects.toThrow(/invalid terminal-failure proof/);
+    reply = failed(hashA);
+    await expect(call()).resolves.toMatchObject({
       ok: false, errorClass: "permanent", txHash: hashA, failureProof: failed(hashA).failureProof,
     });
-    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(2);
     expect(putOutcome).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });

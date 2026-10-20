@@ -810,7 +810,6 @@ export {
   type SessionTerms,
   type SettleRequest,
   type SettleResult,
-  type DemosFailedRecordProof,
   type SettlementRecoveryAttempt,
   // Legacy v1 session store API. Its public names and behaviour remain stable.
   assertCheckpointPayloadShape,

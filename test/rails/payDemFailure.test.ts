@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
-import { hasDefinitiveDemosFailure } from "../../src/agent/settlementFailure.js";
+import { hasDefinitiveDemosFailure, vouchRecordVerifiedSource } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog,
   type SettlementBinding } from "../../src/rails/idempotency.js";
 import { payDemSettle, payDemSettleCore,
@@ -33,9 +33,9 @@ describe("terminal failed Demos record", () => {
     expect(hasDefinitiveDemosFailure({ ...failure, txHash: hash,
       failureProof: { ...proof, txHash: hash } }, proof.amountOs, "demos")).toBe(false);
   });
-  it("persists a permanent result and reuses it after a store restart without submission", async () => {
+  it("persists a record-verified permanent result and reuses it after a store restart without submission", async () => {
     const log = createInMemorySettlementLog();
-    const submit = vi.fn(async () => failure);
+    const submit = vouchRecordVerifiedSource(vi.fn(async () => failure));
     await expect(createIdempotencyStore(log).once(key, binding, submit)).resolves.toEqual(failure);
     const forbidden = vi.fn(async () => { throw new Error("must not submit or reconcile"); });
     await expect(createIdempotencyStore(log).once(key, binding, forbidden, forbidden))
@@ -51,7 +51,8 @@ describe("terminal failed Demos record", () => {
       { address: payer, transfer } as never);
     expect(result).toEqual({ ...failure, chainId: network });
     const log = createInMemorySettlementLog();
-    await expect(createIdempotencyStore(log).once(key, { ...binding, network }, async () => result))
+    await expect(createIdempotencyStore(log).once(key, { ...binding, network },
+      vouchRecordVerifiedSource(async () => result)))
       .resolves.toEqual(result);
     const forbidden = vi.fn(async () => { throw new Error("must not submit"); });
     await expect(createIdempotencyStore(log).once(key, { ...binding, network }, forbidden))
@@ -76,18 +77,21 @@ describe("terminal failed Demos record", () => {
     expect(submit).toHaveBeenCalledTimes(1);
   });
 
-  it("authenticates terminal failure when recovering an ambiguous intent without replacement", async () => {
+  // A reconciler is the caller's statement, so its failure never becomes the
+  // definitive outcome; the intent stays held and nothing is resubmitted.
+  it("keeps an ambiguous intent held when reconciliation reports a bound failure", async () => {
     const log = createInMemorySettlementLog();
     const before = createIdempotencyStore(log, { owner: "before", now: () => 1, leaseDurationMs: 1 });
     await expect(before.once(key, binding, async () => { throw new Error("lost response"); }))
       .rejects.toThrow("lost response");
     const after = createIdempotencyStore(log, { owner: "after", now: () => 3, leaseDurationMs: 1 });
     const submit = vi.fn(async () => failure);
-    await expect(after.once(key, binding, submit, async () => failure)).resolves.toEqual(failure);
+    await expect(after.once(key, binding, submit, async () => failure))
+      .rejects.toThrow(/reconciliation was not definitive/);
     expect(submit).not.toHaveBeenCalled();
   });
 
-  it.each(["demos", "demos:testnet"])("reconciles a permanent failure on %s through the pay-dem bridge after restart", async (network) => {
+  it.each(["demos", "demos:testnet"])("holds a reconciled permanent failure on %s through the pay-dem bridge after restart", async (network) => {
     const log = createInMemorySettlementLog();
     const submit = vi.fn(async () => { throw new Error("lost transfer response"); });
     const rail = { address: payer, settle: submit };
@@ -101,8 +105,7 @@ describe("terminal failed Demos record", () => {
       errorClass: "permanent" as const, failureProof: proof }));
     const after = payDemSettle(rail, { network }, { store: createIdempotencyStore(log,
       { owner: "after", now: () => 3, leaseDurationMs: 1 }), reconcile });
-    await expect(after(request)).resolves.toEqual({ ...failure, chainId: network, payee: request.expectedPayee });
-    await expect(after(request)).resolves.toEqual({ ...failure, chainId: network, payee: request.expectedPayee });
+    await expect(after(request)).rejects.toThrow(/reconciliation was not definitive/);
     expect(submit).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
@@ -112,7 +115,7 @@ describe("terminal failed Demos record", () => {
     const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
       payee: `did:demos:agent:${payee}`, expectedPayee: payee,
       jobId: "failure-proof", phaseIndex: 0 };
-    const submit = vi.fn(async () => failure);
+    const submit = vouchRecordVerifiedSource(vi.fn(async () => failure));
     await payDemSettle({ address: payer, settle: submit }, {},
       { store: createIdempotencyStore(log) })(request);
     const restarted = payDemSettle({ address: payer, settle: submit }, {}, {
