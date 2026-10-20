@@ -13,7 +13,8 @@ The core:
 - converts the canonical DACS amount into exact integer token base units,
   within the SPL `u64` range;
 - requires SPL Token `TransferChecked` and records its exact instruction
-  index; Token-2022 mints are not supported;
+  index; it refuses a mint that SPL Token does not own, Token-2022 included,
+  before any balance or account decides a result;
 - pays only the payee's associated token account, which it derives itself;
 - refuses a signed durable-nonce transaction before it is retained;
 - refuses to create a missing associated token account unless the selected
@@ -119,16 +120,18 @@ result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
 | `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
 | `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable`, `solana-spl-predecessor-landed-failed`, `solana-spl-other-attempt-unresolved` |
 | `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain`, `solana-spl-multiple-settlements` |
-| `indeterminate`, new attempt | `solana-spl-preflight-unavailable`, `solana-spl-preflight-invalid`, `solana-spl-payee-ata-not-associated`, `solana-spl-payer-rent-state-unknown`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
+| `indeterminate`, new attempt | `solana-spl-preflight-fence-lost`, `solana-spl-preflight-invalid`, `solana-spl-mint-program-unsupported`, `solana-spl-payee-ata-not-associated`, `solana-spl-payer-rent-state-unknown`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
 
 A store `conflict` (another binding already holds the same job, rail and
 phase) or `corrupt` claim is `indeterminate`, not `failed`: that record may
 hold a broadcast this call cannot inspect, so it must be resolved out of band.
 `solana-spl-failure-persistence-uncertain` also covers a close after an
 on-chain refusal that the store did not acknowledge.
-`solana-spl-preflight-unavailable` is `transient` when the preflight read
-itself failed, and `indeterminate` when the lease was lost around it, whether
-the read then returned or failed, because another worker may then be signing.
+`solana-spl-preflight-unavailable` is always `transient`: the preflight read
+itself failed, and the lease was still current afterwards. A lease lost around
+that read, whether the read then returned or failed, is
+`solana-spl-preflight-fence-lost`, which is `indeterminate`, because another
+worker may then be signing. Each reason code has one status.
 `solana-spl-predecessor-landed-failed` is a predecessor with `confirmed`
 expiry evidence from an earlier version that the chain has since refused at
 `finalized`, with no matching settlement found among its successors. Recovery
@@ -382,7 +385,10 @@ runtime.
 
 `settled-same` and `landed-failed` report the commitment level actually
 observed, as `getSignatureStatuses` returns it: never the intent's level in
-its place. For a transaction that landed with a non-null error status, the
+its place. Read it with `searchTransactionHistory: true`, or with
+`getTransaction` at `finalized`. Without that option, `null` comes only from
+the recent status cache and is never absence. When the node cannot serve the
+history, return `indeterminate`. For a transaction that landed with a non-null error status, the
 adapter returns `landed-failed` with the slot, the observed commitment and an
 `authenticationHash` that binds the cluster, signature, slot, error and
 commitment. Below `finalized` the core waits, because a fork could still roll
@@ -392,6 +398,15 @@ its signature can never land again, so the core closes the key as
 never acts on `broadcastRetained`'s answer, including `rejected`: a
 synchronous RPC answer is not ledger state. A malformed `landed-failed` is
 `solana-spl-landed-failure-proof-invalid`.
+
+When the plan's `createPayeeAta` is true, `prepareSignedTransfer` must create
+the account with the associated token account program's `CreateIdempotent`
+instruction (instruction 1), never `Create` (instruction 0). If the payee, or
+another payment, creates the account before the transaction executes,
+`Create` fails on chain. At `finalized` the core would then close the key as
+`solana-spl-transfer-failed-on-chain`, although the transfer itself would
+have succeeded. `CreateIdempotent` leaves an existing account alone. The core
+does not decode this instruction, so this is the adapter's contract.
 
 `prepareSignedTransfer` must sign a recent-blockhash transaction, never a
 durable-nonce one. A nonce transaction stays valid past its blockhash's last
@@ -418,8 +433,8 @@ The core refuses an untranslated event as
 Standard's `solana-instruction` reference, which carries no `standard`.
 
 Preflight amounts must be canonical decimal strings within the `u64` range,
-`payeeAtaExists` a boolean, and `payerTokenAccount` and `payeeAta` Base58
-public keys. `payeeAta` must be the payee's associated token account for the
+`payeeAtaExists` a boolean, and `mintTokenProgram`, `payerTokenAccount` and
+`payeeAta` Base58 public keys. `payeeAta` must be the payee's associated token account for the
 mint under SPL Token. The core derives that address and refuses any other
 destination as `solana-spl-payee-ata-not-associated`. That covers any other
 token account the payee owns for the mint, because the address is derived,
@@ -435,12 +450,22 @@ a zero balance or a missing account would close the key with the wrong
 reason. Nothing has been signed in that case, so the cost is a wrong failure,
 never a double payment.
 
-Token-2022 is not supported, and its associated token account is refused in
-the same way. A Token-2022 mint with a transfer fee credits the payee less
-than the `TransferChecked` amount, so the amount the core checks would not be
-the amount paid. Because the address is derived under SPL Token, the
-transfer the adapter builds is an SPL Token transfer, and an SPL Token
-account can only hold an SPL Token mint.
+Token-2022 is not supported. A Token-2022 mint with a transfer fee credits
+the payee less than the `TransferChecked` amount, so the amount the core
+checks would not be the amount paid. `mintTokenProgram` is the mint
+account's owner, taken from the same read. The core checks it before
+anything else in the answer decides a result. Every account and balance in
+the answer is read under SPL Token, and for a mint another program owns,
+neither the payee's account nor the payer's balance exists there. Read
+anyway, they would close the key as `failed` against a payee or payer that
+did nothing wrong. So any owner other than SPL Token
+(`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`), Token-2022 included, is
+`indeterminate` with `solana-spl-mint-program-unsupported`: nothing is signed
+and the key stays open. The owner is read, not proved, so it never closes the
+key. A missing or malformed `mintTokenProgram` is
+`solana-spl-preflight-invalid`. A Token-2022 associated token account
+reported as `payeeAta` under an SPL Token owner is still
+`solana-spl-payee-ata-not-associated`.
 
 `payerRentExemptMinimumLamports` is the rent-exempt minimum of the payer's
 system account, `getMinimumBalanceForRentExemption(0)`. A payer that starts
@@ -498,6 +523,16 @@ The `@solana/*` packages and `bs58` are transitive development dependencies
 only, used here as references. Recheck these definitions before moving to a
 new revision of any of them.
 
+These are source revisions, not a cluster's feature status. Two checks touch
+features that each cluster activates separately: message v1 (SIMD-0385) and
+the relaxed post-execution rent check (SIMD-0392). The core relies on
+neither, so its decisions hold whether or not each feature is active. It
+refuses v1 messages either way. It reports a payer that starts below its
+rent-exempt minimum as `solana-spl-payer-rent-state-unknown`, with nothing
+signed. An adapter that wants to sign v1 messages, or to resolve that rent
+state, must first read the feature's activation on its cluster in a
+compatibility check, and the core must change with it.
+
 ## Upgrading
 
 - **Stores** must implement `recordFailure` and the `failed` claim. A store
@@ -522,10 +557,12 @@ new revision of any of them.
 - **Records whose bytes do not carry their signature**, which a correct
   adapter never produces, are refused as `solana-spl-retained-state-corrupt`
   in the same way.
-- **Adapters** must return `payerRentExemptMinimumLamports` from `preflight`.
-  A preflight without it is `solana-spl-preflight-invalid`: nothing is
-  signed, and the key stays open. They must return the payee's associated
-  token account as `payeeAta`, and report the commitment level they observed.
+- **Adapters** must return `payerRentExemptMinimumLamports` and
+  `mintTokenProgram` (the mint account's owner) from `preflight`. A preflight
+  without either is `solana-spl-preflight-invalid`: nothing is signed, and
+  the key stays open. They must return the payee's associated token account
+  as `payeeAta`, create a missing one only with `CreateIdempotent`, and
+  report the commitment level they observed.
   They should return `landed-failed` for a retained transaction whose status
   carries an error; until they do, such a transaction stays `indeterminate`,
   as before.
@@ -550,8 +587,12 @@ new revision of any of them.
   its settlement key and binding are unchanged. A key created for any other
   `jobId` can no longer be resumed: reconcile any attempt retained under it
   by hand before the phase is paid another way.
-- **Token-2022 mints** are no longer paid: their associated token account is
-  `solana-spl-payee-ata-not-associated` before anything is signed.
+- **Token-2022 mints** are no longer paid: a mint that SPL Token does not own
+  is `solana-spl-mint-program-unsupported` before any balance or account
+  decides a result, so nothing is signed and the key stays open.
+- **Callers keyed on `reason`**: a lease lost around the preflight read is
+  now `solana-spl-preflight-fence-lost` (`indeterminate`).
+  `solana-spl-preflight-unavailable` is now only `transient`.
 - **Durable-nonce and malformed signed messages** are
   `solana-spl-prepared-transaction-invalid` before they are retained. A
   retained attempt of either kind from an earlier version is

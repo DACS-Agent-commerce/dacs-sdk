@@ -51,6 +51,8 @@ const MINT = `${"1".repeat(31)}3`;
 const PAYER_TOKEN = `${"1".repeat(31)}4`;
 // PAYEE's associated token account for MINT under SPL Token.
 const PAYEE_ATA = "4GdNzi5A6pM3dCkP9d58MRz8YLfppc1U9W3q3extZzK3";
+// The program that owns an SPL Token mint: a public program id.
+const SPL_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const SIGNATURE_1 = "1".repeat(64);
 const SIGNATURE_2 = `${"1".repeat(63)}2`;
 const HASH = "a".repeat(64);
@@ -87,6 +89,7 @@ function authority(overrides: Partial<SolanaSplSettlementAuthority> = {}): Solan
 
 function preflight(overrides: Partial<SolanaSplPreflight> = {}): SolanaSplPreflight {
   return {
+    mintTokenProgram: SPL_PROGRAM_ID,
     payerTokenAccount: PAYER_TOKEN, payerTokenBalanceBaseUnits: "5000000",
     payerNativeBalanceLamports: "10000000", payeeAta: PAYEE_ATA, payeeAtaExists: true,
     payeeAtaOwner: PAYEE, payeeAtaMint: MINT, networkFeeLamports: "5000",

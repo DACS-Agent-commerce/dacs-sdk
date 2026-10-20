@@ -76,6 +76,12 @@ export interface SolanaSplSettlementIntent {
 }
 
 export interface SolanaSplPreflight {
+  /**
+   * The program that owns the mint account, as the same read reports it. The
+   * core pays only SPL Token mints: any other owner, Token-2022 included, is
+   * refused before a balance or account decides a failure.
+   */
+  mintTokenProgram: string;
   payerTokenAccount: string;
   payerTokenBalanceBaseUnits: string;
   payerNativeBalanceLamports: string;
@@ -720,6 +726,7 @@ function validatePreflight(
   try {
     // Read each field once, so what is checked is what is planned.
     const preflight: SolanaSplPreflight = {
+      mintTokenProgram: value.mintTokenProgram,
       payerTokenAccount: value.payerTokenAccount,
       payerTokenBalanceBaseUnits: value.payerTokenBalanceBaseUnits,
       payerNativeBalanceLamports: value.payerNativeBalanceLamports,
@@ -735,6 +742,14 @@ function validatePreflight(
     requireBase58Bytes(preflight.payeeAta, "payeeAta", 32);
     if (typeof preflight.payeeAtaExists !== "boolean") {
       throw new DacsError("pay-solana-spl: payeeAtaExists must be a boolean");
+    }
+    // Every account and balance below is read under SPL Token. For a mint
+    // another program owns, the payee's account and the payer's balance there
+    // do not exist, so they would close the key against a payee or payer that
+    // did nothing wrong. The owner is read, not proved, so it never closes it.
+    requireBase58Bytes(preflight.mintTokenProgram, "mintTokenProgram", 32);
+    if (preflight.mintTokenProgram !== SPL_PROGRAM_ID) {
+      return { status: "indeterminate", reason: "solana-spl-mint-program-unsupported" };
     }
     // DACS-4 §9.5.3: the destination is the payee's associated token account.
     // The address is derived, not observed, so another one is the adapter's
@@ -1825,11 +1840,12 @@ export async function advanceSolanaSplSettlement(
   // A stale fence means another worker may be signing, so only a failed read
   // under a current fence is `transient`. Nothing has been signed in this
   // call, and nothing retained can land, so a retry of the same key is safe.
+  // A lost lease has its own code: it must never count against a retry budget.
   let preflight: { value: Readonly<SolanaSplPreflight> } | null;
   try {
     await fence.assertCurrent();
   } catch {
-    return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
+    return { status: "indeterminate", reason: "solana-spl-preflight-fence-lost" };
   }
   try {
     preflight = { value: await runPreflight(intent, fence) };
@@ -1841,7 +1857,7 @@ export async function advanceSolanaSplSettlement(
   try {
     await fence.assertCurrent();
   } catch {
-    return { status: "indeterminate", reason: "solana-spl-preflight-unavailable" };
+    return { status: "indeterminate", reason: "solana-spl-preflight-fence-lost" };
   }
   if (!preflight) return { status: "transient", reason: "solana-spl-preflight-unavailable" };
   const plan = validatePreflight(intent, preflight.value);

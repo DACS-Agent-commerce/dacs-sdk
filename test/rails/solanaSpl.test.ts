@@ -34,6 +34,9 @@ const PAYER_TOKEN = `${"1".repeat(31)}4`;
 // PAYEE's associated token account for MINT under SPL Token, as
 // `getAssociatedTokenAddressSync` in @solana/spl-token 0.3.11 derives it.
 const PAYEE_ATA = "4GdNzi5A6pM3dCkP9d58MRz8YLfppc1U9W3q3extZzK3";
+// The programs that own an SPL Token mint and a Token-2022 mint: public ids.
+const SPL_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const EXTENSIONS_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const SIGNATURE_1 = "1".repeat(64);
 const SIGNATURE_2 = `${"1".repeat(63)}2`;
 const HASH = "a".repeat(64);
@@ -96,6 +99,7 @@ function authority(
 
 function preflight(overrides: Partial<SolanaSplPreflight> = {}): SolanaSplPreflight {
   return {
+    mintTokenProgram: SPL_PROGRAM_ID,
     payerTokenAccount: PAYER_TOKEN,
     payerTokenBalanceBaseUnits: "5000000",
     payerNativeBalanceLamports: "10000000",
@@ -1406,7 +1410,7 @@ describe("advanceSolanaSplSettlement", () => {
           return read();
         },
       }),
-    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-unavailable" });
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-fence-lost" });
   });
 
   // A read that times out is the likeliest way to lose the lease. Another
@@ -1441,7 +1445,7 @@ describe("advanceSolanaSplSettlement", () => {
     failRead(new Error("getAccountInfo: timeout at https://rpc.example"));
 
     await expect(first)
-      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-unavailable" });
+      .resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-fence-lost" });
     await expect(store.claim({
       intent: createSolanaSplSettlementIntent(authority()),
       owner: "observer",
@@ -1465,7 +1469,7 @@ describe("advanceSolanaSplSettlement", () => {
           return preflight();
         },
       }),
-    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-unavailable" });
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-fence-lost" });
   });
 
   test("lease loss during preflight cannot become a stale permanent outcome", async () => {
@@ -1490,7 +1494,7 @@ describe("advanceSolanaSplSettlement", () => {
 
     expect(result).toEqual({
       status: "indeterminate",
-      reason: "solana-spl-preflight-unavailable",
+      reason: "solana-spl-preflight-fence-lost",
     });
     expect(recordAttempt).not.toHaveBeenCalled();
     expect(prepareSignedTransfer).not.toHaveBeenCalled();
@@ -1700,23 +1704,111 @@ describe("advanceSolanaSplSettlement pays only the payee's associated token acco
   });
 
   // Token-2022 is not supported: a transfer-fee mint credits the payee less
-  // than the instruction's amount. Its account is refused like any other.
+  // than the instruction's amount. Its account is refused like any other, and
+  // a mint Token-2022 owns is refused before its account is looked at.
   test.each(ASSOCIATED_ACCOUNTS.map(([payee, mint, , token2022]) => [payee, mint, token2022]))(
     "refuses %s's Token-2022 account for %s before signing", async (payee, mint, payeeAta) => {
+      for (const [program, reason] of [
+        [SPL_PROGRAM_ID, "solana-spl-payee-ata-not-associated"],
+        [EXTENSIONS_PROGRAM_ID, "solana-spl-mint-program-unsupported"],
+      ] as const) {
+        const store = createInMemorySolanaSplSettlementStore();
+        const recordFailure = vi.spyOn(store, "recordFailure");
+        const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+        await expect(advanceSolanaSplSettlement(input({
+          store,
+          authority: authority({ payee, mint }),
+          adapter: adapter({
+            preflight: async () => preflight({
+              mintTokenProgram: program, payeeAta, payeeAtaOwner: payee, payeeAtaMint: mint,
+            }),
+            prepareSignedTransfer,
+          }),
+        }))).resolves.toEqual({ status: "indeterminate", reason });
+        expect(prepareSignedTransfer).not.toHaveBeenCalled();
+        expect(recordFailure).not.toHaveBeenCalled();
+      }
+    });
+
+  // An adapter that follows the contract derives the payee's account under
+  // SPL Token, and for a mint another program owns that account cannot exist.
+  // Without the mint's program the core read that as the payee's fault
+  // (`failed` / `counterparty`), read the payer's empty SPL Token account as
+  // `failed` / `permanent`, or signed a transfer that could only fail on chain.
+  test.each([
+    ["Token-2022", EXTENSIONS_PROGRAM_ID],
+    ["the system program (no mint account)", "1".repeat(32)],
+    ["another account", PAYEE],
+  ])("a mint owned by %s is refused before any failure or signature", async (_name, program) => {
+    for (const [create, balance] of [[false, "5000000"], [false, "0"], [true, "5000000"]] as const) {
+      let clock = 1_000;
       const store = createInMemorySolanaSplSettlementStore();
       const recordFailure = vi.spyOn(store, "recordFailure");
       const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
-      await expect(advanceSolanaSplSettlement(input({
+      const shared = input({
         store,
-        authority: authority({ payee, mint }),
+        now: () => clock,
+        authority: authority({ createPayeeAtaIfMissing: create }),
         adapter: adapter({
-          preflight: async () => preflight({ payeeAta, payeeAtaOwner: payee, payeeAtaMint: mint }),
+          preflight: async () => preflight({
+            mintTokenProgram: program,
+            payeeAtaExists: false,
+            payeeAtaOwner: "",
+            payeeAtaMint: "",
+            payerTokenBalanceBaseUnits: balance,
+          }),
           prepareSignedTransfer,
         }),
-      }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-payee-ata-not-associated" });
+      });
+      const refused = { status: "indeterminate", reason: "solana-spl-mint-program-unsupported" };
+      await expect(advanceSolanaSplSettlement(shared)).resolves.toEqual(refused);
+      // The key stays open, so another worker reads the mint again.
+      clock += 101;
+      await expect(advanceSolanaSplSettlement({ ...shared, owner: "worker-b" })).resolves.toEqual(refused);
       expect(prepareSignedTransfer).not.toHaveBeenCalled();
       expect(recordFailure).not.toHaveBeenCalled();
+    }
+  });
+
+  test("an SPL Token mint the payee has no account for is still the payee's to fix", async () => {
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordFailure = vi.spyOn(store, "recordFailure");
+    await expect(advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({
+        preflight: async () => preflight({ payeeAtaExists: false, payeeAtaOwner: "", payeeAtaMint: "" }),
+      }),
+    }))).resolves.toEqual({
+      status: "failed",
+      errorClass: "counterparty",
+      reason: "solana-spl-payee-ata-missing",
     });
+    expect(recordFailure).toHaveBeenCalledTimes(1);
+  });
+
+  // The owner decides whether the core may close the key at all, so only a
+  // Base58 key string may reach the comparison.
+  test.each([
+    ["missing", undefined],
+    ["empty", ""],
+    ["not Base58", "0".repeat(43)],
+    ["31 bytes", "1".repeat(31)],
+    ["a number", 1],
+    ["a key object", { toBase58: () => SPL_PROGRAM_ID, toString: () => SPL_PROGRAM_ID }],
+  ])("a mint program that is %s is an adapter fault, never failed", async (_name, program) => {
+    const answer: Record<string, unknown> = { ...preflight({ payerTokenBalanceBaseUnits: "0" }) };
+    if (program === undefined) delete answer.mintTokenProgram;
+    else answer.mintTokenProgram = program;
+    const store = createInMemorySolanaSplSettlementStore();
+    const recordFailure = vi.spyOn(store, "recordFailure");
+    const prepareSignedTransfer = vi.fn(adapter().prepareSignedTransfer);
+    await expect(advanceSolanaSplSettlement(input({
+      store,
+      adapter: adapter({ preflight: async () => answer as never, prepareSignedTransfer }),
+    }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-invalid" });
+    expect(prepareSignedTransfer).not.toHaveBeenCalled();
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
 
   // A projection of the DACS-Standard settlement-event-identity-v0.6 vector
   // current-solana-instruction-index (Standard revision d45c0a29). It checks
@@ -3271,7 +3363,7 @@ describe("advanceSolanaSplSettlement with a malformed store write", () => {
           isCurrent: async () => current as never,
         },
         adapter: adapter({ prepareSignedTransfer, broadcastRetained }),
-      }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-unavailable" });
+      }))).resolves.toEqual({ status: "indeterminate", reason: "solana-spl-preflight-fence-lost" });
       expect(prepareSignedTransfer).not.toHaveBeenCalled();
       expect(broadcastRetained).not.toHaveBeenCalled();
     },
