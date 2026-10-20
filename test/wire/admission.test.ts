@@ -272,6 +272,78 @@ describe("endpoint proof purchase gate", () => {
   });
 });
 
+describe("a purchase the buyer already agreed continues while the seller drains or its Listing ends", () => {
+  // The Listing is valid for one minute from NOW - 1 s, discovery for ten; the buyer accepted the Agreement at AGREED.
+  const AGREED = NOW + 1000, ENDED = NOW + 120_000;
+  const CONTINUING = ["/dacs/v1/payments", "/dacs/v1/bundles/request", "/dacs/v1/bundles/countersignature", "/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"];
+  const windowed: w.ListingEligibilityReader = (scope) => ({ ...(readFixtureListingEligibility(scope) as object), notBefore: NOW - 1000, expiresAt: NOW + 60_000 });
+  async function proof(x: ReturnType<typeof world>, ready: boolean, now = NOW, agreedAt?: number) {
+    const bytes = await w.signDiscoveryDocument({ ...x.discovery, ready, expiresAt: NOW + 600_000 }, x.seller, x.binding, LOCAL);
+    return w.verifyEndpointProof(bytes, { readListingEligibility: windowed, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now, ...(agreedAt === undefined ? {} : { agreedAt }) });
+  }
+  /** The seller opens and checks the request and answers it; the buyer verifies the answer. */
+  async function reachesSeller(x: ReturnType<typeof world>, sent: { payload: w.WireRequestPayload; header: string }, now: number) {
+    const opened = w.openWireEnvelope(sent.header, "request", x.context);
+    expect(w.checkWireRequest(opened, { reserveRequest: () => true, retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now }).readbackOnly).toBe(false);
+    const answer = await w.signWireResponse(sent.payload, 200, "{}", { ...x.context, signer: x.seller, now });
+    expect(w.verifyWireResponse(sent.payload, { ...x.context, header: answer, status: 200, body: Buffer.from("{}"), now }).principal).toBe(x.seller.claim);
+  }
+  it("ready: false refuses a new purchase as before, and an agreed one is signed on every route, checked and answered", async () => {
+    const x = world(), endpointProof = await proof(x, false), now = NOW + 5000;
+    for (const path of ["/dacs/v1/agreements/proposals", ...CONTINUING]) {
+      await expect(w.signWireRequest({ ...x.input, path, endpointProof, now })).rejects.toMatchObject({ code: "seller_not_ready", status: 503, category: "transient" });
+    }
+    await refuses(() => w.signWireEnvelope(x.request, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now }), "seller_not_ready", 503);
+    expect(x.buyer.calls).toBe(0);
+    const job = { ...x.input.job, agreedAt: AGREED };
+    for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, job, endpointProof, now }), now);
+    await w.signWireEnvelope(x.request, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, agreedAt: AGREED });
+    expect(x.buyer.calls).toBe(CONTINUING.length + 1);
+  });
+  it("an ended Listing window refuses a new purchase as before, and one agreed inside it is signed, checked and answered", async () => {
+    const x = world(), kept = await proof(x, true);
+    for (const path of ["/dacs/v1/agreements/proposals", ...CONTINUING]) {
+      await refuses(() => w.signWireRequest({ ...x.input, path, endpointProof: kept, now: ENDED }), "listing_unsupported", 500);
+    }
+    await refuses(() => w.signWireEnvelope(x.request, { ...x.context, signer: x.buyer, endpointProof: kept, publicEndpoint: ENDPOINT, now: ENDED }), "listing_unsupported", 500);
+    // Verifying discovery again, as after the ten-minute document lapses.
+    await refuses(() => proof(x, true, ENDED), "listing_unsupported", 500);
+    expect(x.buyer.calls).toBe(0);
+    const job = { ...x.input.job, agreedAt: AGREED }, again = await proof(x, true, ENDED, AGREED), drained = await proof(x, false, ENDED, AGREED);
+    for (const endpointProof of [kept, again, drained]) {
+      for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, job, endpointProof, now: ENDED }), ENDED);
+    }
+    await w.signWireEnvelope(x.request, { ...x.context, signer: x.buyer, endpointProof: again, publicEndpoint: ENDPOINT, now: ENDED, agreedAt: AGREED });
+    expect(x.buyer.calls).toBe(3 * CONTINUING.length + 1);
+    // A proof verified for the agreed job is no proof for a new purchase.
+    await refuses(() => w.signWireRequest({ ...x.input, path: "/dacs/v1/agreements/proposals", endpointProof: again, now: ENDED }), "listing_unsupported", 500);
+    await refuses(() => w.signWireRequest({ ...x.input, path: "/dacs/v1/agreements/proposals", endpointProof: drained, now: ENDED }), "seller_not_ready", 503);
+    expect(x.buyer.calls).toBe(3 * CONTINUING.length + 1);
+  });
+  it("an agreed purchase still needs an Agreement time inside the window, well formed, and every other proof check", async () => {
+    const x = world(), endpointProof = await proof(x, false);
+    const pay = (agreedAt: unknown, patch: Partial<w.WireRequestInput> = {}) =>
+      w.signWireRequest({ ...x.input, path: "/dacs/v1/payments", job: { ...x.input.job, agreedAt } as w.WireJobContext, endpointProof, now: ENDED, ...patch });
+    // Agreed before the Listing's window opened, or after it ended; its first and last instants hold, as for generatedAt.
+    for (const agreedAt of [NOW - 1001, NOW + 60_001]) await refuses(() => pay(agreedAt), "listing_unsupported", 500);
+    expect(x.buyer.calls).toBe(0);
+    for (const agreedAt of [NOW - 1000, NOW + 60_000]) await pay(agreedAt);
+    expect(x.buyer.calls).toBe(2);
+    x.buyer.calls = 0;
+    for (const agreedAt of [null, -1, 1.5, "1"]) await refuses(() => pay(agreedAt), "wire_input_invalid", 500);
+    await refuses(() => proof(x, true, ENDED, "1" as never), "wire_input_invalid", 500);
+    await refuses(() => pay(AGREED, { now: NOW + 600_000 }), "discovery_expired", 503);
+    await refuses(() => pay(AGREED, { seller: party().claim }), "endpoint_proof_mismatch", 500);
+    // The reader's own refusal, such as a revoked Listing, still refuses: only the window is compared at AGREED.
+    const revoked = new Error("Listing revoked");
+    let reads = 0;
+    const bytes = await w.signDiscoveryDocument({ ...x.discovery, expiresAt: NOW + 600_000 }, x.seller, x.binding, LOCAL);
+    const read = w.verifyEndpointProof(bytes, { readListingEligibility: (scope) => { if (reads++) throw revoked; return windowed(scope); }, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW });
+    await expect(pay(AGREED, { endpointProof: read })).rejects.toBe(revoked);
+    expect(x.buyer.calls).toBe(0);
+  });
+});
+
 describe("wire format discriminators", () => {
   // Each refused message is correctly signed by its own party under its own domain (checked here without the SDK)
   // and differs from the accepted control only in its discriminator, so the refusal is the discriminator's.

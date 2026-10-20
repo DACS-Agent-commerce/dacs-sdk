@@ -64,6 +64,13 @@ export interface WireJobContext {
   deadline?: number;
   /** The tuple the buyer selected and kept for this purchase; it must be its binding's profile exactly. */
   profile: Tp1WireProfile;
+  /**
+   * Once the buyer holds this job's accepted Agreement (so for its payment,
+   * delivery and readback): that Agreement's `generatedAt`, Unix ms. The request
+   * continues the purchase, so `ready: false` does not refuse it and the
+   * Listing's window is compared at this time, not now. Omitted: a new purchase.
+   */
+  agreedAt?: number;
 }
 
 export interface WireRequestInput extends SigningContext {
@@ -142,8 +149,8 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   };
   // Validate the complete payload before checking the purchase effect gate.
   wireRequestHash(payload);
-  assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now });
-  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now }, delegation) };
+  assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, agreedAt: job.agreedAt });
+  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now, agreedAt: job.agreedAt }, delegation) };
 }
 
 export interface WireResponseReceipt {

@@ -94,6 +94,8 @@ export interface EnvelopeSigningContext extends SigningContext {
   endpointProof?: EndpointProof;
   publicEndpoint?: string;
   now?: number;
+  /** A request continuing a purchase: the job's accepted Agreement time (WireJobContext.agreedAt). */
+  agreedAt?: number;
   /**
    * Required: the tuple the signer kept for this purchase, exactly the
    * binding's profile. `null` (none kept yet) only for a seller's answer to a
@@ -110,7 +112,7 @@ export interface EnvelopeSigningContext extends SigningContext {
  * header all come from those copies.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
-  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now"]) as Partial<EnvelopeSigningContext>;
+  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, agreedAt } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "agreedAt"]) as Partial<EnvelopeSigningContext>;
   assertTp1Binding(binding, local);
   const payload = ownedArtifact(supplied, "peer_envelope_invalid", 500);
   if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
@@ -128,7 +130,7 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
   if (payload.kind === "request") assertEndpointProof(endpointProof, {
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
-    publicEndpoint: publicEndpoint as string, now: now as number,
+    publicEndpoint: publicEndpoint as string, now: now as number, agreedAt,
   });
   assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");

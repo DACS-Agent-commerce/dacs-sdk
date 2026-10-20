@@ -140,8 +140,9 @@ export interface VerifiedListingEligibility extends VerifiedListingEndpoint {
  * Trusted buyer integration, not a peer-supplied callback. Authenticate the
  * Listing and its content hash before returning its selected terms. A missing,
  * revoked or unavailable Listing must throw its real error or return no
- * decision. The wire performs no I/O. Called at proof creation and again
- * before each request signature, so a cached success is never authoritative.
+ * decision; an ended window is returned as it is, and the wire compares it.
+ * The wire performs no I/O. Called at proof creation and again before each
+ * request signature, so a cached success is never authoritative.
  */
 export type ListingEligibilityReader = (scope: Readonly<VerifiedListingEndpoint & { now: number }>) => unknown;
 
@@ -150,7 +151,14 @@ const proofs = new WeakMap<object, KeptProof>();
 const proofGet = uncurry(WeakMap.prototype.get) as (map: typeof proofs, key: object) => KeptProof | undefined;
 const proofSet = uncurry(WeakMap.prototype.set) as (map: typeof proofs, key: object, value: KeptProof) => unknown;
 
-function assertListingEligibility(reader: unknown, listing: VerifiedListingEndpoint, now: number): asserts reader is ListingEligibilityReader {
+/**
+ * `agreedAt`, when the buyer already holds the job's accepted Agreement: the
+ * Listing's window must hold that time, as the fixed-price exchange requires of
+ * `generatedAt` (end included), so its ending later stops new purchases only.
+ * Omitted, it must hold `now`.
+ */
+function assertListingEligibility(reader: unknown, listing: VerifiedListingEndpoint, now: number, agreedAt?: number): asserts reader is ListingEligibilityReader {
+  if (agreedAt !== undefined && !isUint(agreedAt)) fail("wire_input_invalid", 500);
   if (typeof reader !== "function") fail("listing_eligibility_required", 500);
   const scope = deepFreeze({ ...cloneJson(listing), now });
   // Reader failures retain their cause (for example timeout, not-found or
@@ -164,15 +172,21 @@ function assertListingEligibility(reader: unknown, listing: VerifiedListingEndpo
   const module = hasKeys(service, ["kind", "configured", "pure", "deterministic", "synchronous"]) &&
     service.kind === "pure-synchronous-text-module" && service.configured === true && service.pure === true &&
     service.deterministic === true && service.synchronous === true;
+  const at = agreedAt ?? now;
   if (decision.pricingKind !== "fixed" || decision.negotiation !== "negotiate-fixed-price" || decision.rail !== "pay-dem" ||
       !sameCanonical(decision.delivery, TP1_CAPABILITIES.delivery) || (!fixedText && !module) ||
       !sameCanonical(decision.output, TP1_CAPABILITIES.output) || decision.buyerRequestInput !== false ||
       !isUint(decision.notBefore) || !isUint(decision.expiresAt) || !isUint(now) ||
-      decision.notBefore > now || decision.expiresAt <= now) fail("listing_unsupported", 500);
+      decision.notBefore > now || decision.notBefore > at ||
+      (agreedAt === undefined ? decision.expiresAt <= now : decision.expiresAt < agreedAt)) fail("listing_unsupported", 500);
 }
 
-/** Purchase signing accepts only a proof this module verified for the buyer's binding. */
-export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number }): asserts proof is EndpointProof {
+/**
+ * Purchase signing accepts only a proof this module verified for the buyer's
+ * binding. `ready: false` and the Listing's window ending stop new purchases
+ * only: with `agreedAt` (the job's accepted Agreement), neither refuses.
+ */
+export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number; agreedAt?: number }): asserts proof is EndpointProof {
   const kept = typeof proof === "object" && proof !== null ? proofGet(proofs, proof) : undefined;
   if (!kept || kept.binding !== scope.binding) fail("endpoint_proof_required", 500);
   const p = proof as EndpointProof;
@@ -180,8 +194,8 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
       !sameCanonical(kept.listing.listingPin, scope.listingPin)) fail("endpoint_proof_mismatch", 500);
   // The buyer's own kept proof has lapsed: fetching discovery again clears it (transient), not the seller's fault.
   if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 503);
-  if (!p.ready) fail("seller_not_ready", 503);
-  assertListingEligibility(kept.readListingEligibility, kept.listing, scope.now);
+  if (!p.ready && scope.agreedAt === undefined) fail("seller_not_ready", 503);
+  assertListingEligibility(kept.readListingEligibility, kept.listing, scope.now, scope.agreedAt);
   assertTp1Authority(scope.binding, scope.binding.local, [p.payload.seller], DACS_SELLER_DISCOVERY_FORMAT);
 }
 
@@ -192,9 +206,11 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
  * window. The trusted reader is retained and rechecked at purchase signing. Before all of these:
  * the buyer's own binding from bindTp1Profile and its current connection
  * (`local`). The options are read once (ownedFields) and the Listing copied.
+ * `agreedAt` (a job's accepted Agreement) compares the Listing's window at that
+ * time, as signing for that job does.
  */
-export function verifyEndpointProof(bytes: Uint8Array, options: { listing: VerifiedListingEndpoint; binding: Tp1Binding; local: unknown; now: number; readListingEligibility: ListingEligibilityReader }): EndpointProof {
-  const { listing: suppliedListing, binding, local, now, readListingEligibility } = ownedFields(options, ["listing", "binding", "local", "now", "readListingEligibility"]);
+export function verifyEndpointProof(bytes: Uint8Array, options: { listing: VerifiedListingEndpoint; binding: Tp1Binding; local: unknown; now: number; readListingEligibility: ListingEligibilityReader; agreedAt?: number }): EndpointProof {
+  const { listing: suppliedListing, binding, local, now, readListingEligibility, agreedAt } = ownedFields(options, ["listing", "binding", "local", "now", "readListingEligibility", "agreedAt"]);
   assertTp1Binding(binding, local);
   let listing: VerifiedListingEndpoint;
   try { listing = snapshotWireJsonRead(suppliedListing, "verified Listing") as VerifiedListingEndpoint; }
@@ -218,7 +234,7 @@ export function verifyEndpointProof(bytes: Uint8Array, options: { listing: Verif
   if (!p.listings.some((pin) => sameCanonical(pin, listing.listingPin))) fail("discovery_listing_missing", 502);
   if (!sameCanonical(p.capabilities, TP1_CAPABILITIES)) fail("discovery_capabilities_unsupported", 502);
   if (!isUint(now) || p.issuedAt > now + ISSUED_SKEW_MS || p.expiresAt <= now) fail("discovery_expired", 502);
-  assertListingEligibility(readListingEligibility, listing, now as number);
+  assertListingEligibility(readListingEligibility, listing, now as number, agreedAt as number | undefined);
   assertTp1Authority(binding as Tp1Binding, local, [p.seller], DACS_SELLER_DISCOVERY_FORMAT);
   const proof = deepFreeze({ payload: cloneJson(p), ready: p.ready });
   proofSet(proofs, proof, { binding: binding as Tp1Binding, listing: deepFreeze(listing), readListingEligibility });

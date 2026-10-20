@@ -343,6 +343,16 @@ creation and again immediately before every request signature; retaining an
 endpoint proof does not retain an authoritative eligibility verdict. A reader
 must return a current decision or throw; a Promise is refused.
 
+`ready: false` and the end of the Listing's window stop new purchases only.
+For a job whose Agreement the buyer already accepted, the buyer passes that
+Agreement's `generatedAt` as `WireJobContext.agreedAt` (`agreedAt` to
+`verifyEndpointProof` and request-kind `signWireEnvelope`): its requests,
+including payment, delivery and readback, are signed while the document says
+`ready: false`, and the Listing's window must hold `agreedAt` instead of now
+(its last instant included, as the fixed-price exchange requires of `generatedAt`).
+A reader therefore returns an ended window as it is; it still throws for a
+revoked, missing or unavailable Listing, and every other proof check applies.
+
 `capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
 `pay-dem`; `did:demos:agent` claims; delivery through Demos storage at
 `dacs4:deliverable:{jobId}`; `fixed-text` and configured pure, synchronous text
@@ -627,7 +637,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype) |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
-| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`; no request is signed |
+| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`; no request is signed for a new purchase (a job without `agreedAt`) |
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
 | `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}`, or with a malformed one |
 | `peer_job_mismatch`, `peer_agreement_mismatch` (409) | the signed `jobId` or `agreementHash` is not the one the host retained |
@@ -753,9 +763,11 @@ building wire messages. Signed received payloads are never rewritten.
 
 `signWireRequest` and request-kind `signWireEnvelope` require `endpointProof`
 returned by `verifyEndpointProof`, the selected `publicEndpoint`, and `now`. A copied or caller-built proof is refused.
-The proof must still be ready and unexpired, under the buyer's same binding,
+The proof must still be unexpired, under the buyer's same binding,
 for the selected seller, Listing pin and byte-exact endpoint, with a current
-authenticated eligibility decision from the retained reader. Signing-byte
+authenticated eligibility decision from the retained reader; for a new
+purchase it must also be ready and inside the Listing's window (a job with
+`agreedAt` continues; see the endpoint proof section). Signing-byte
 helpers describe transport bytes; purchase preparation uses the gated signers.
 
 Expired session delegations are accepted only on the declared read routes.
