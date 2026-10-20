@@ -380,6 +380,7 @@ export {
 } from "./payD402.js";
 export {
   createPayDemRail,
+  createPayDemRecordReader,
   PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,
@@ -388,6 +389,8 @@ export {
   type PayDemRailResult,
   type PayDemRecordVerifiedTransfer,
   type PayDemRailConfig,
+  type PayDemRecordReader,
+  type PayDemRecordReaderConfig,
   type PayDemPreparedTransfer,
   type PayDemSettlementRecoveryContext,
   type PayDemSettlementAuditContext,

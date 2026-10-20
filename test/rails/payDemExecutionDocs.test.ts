@@ -59,9 +59,10 @@ describe("pay-dem execution docs match the code (#338)", () => {
     );
   });
 
-  it("says only createPayDemRail's verdicts are final and nothing exports a way to vouch", () => {
+  it("says only the SDK's own record read is final and nothing exports a way to vouch", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
-    expect(doc).toContain("The SDK reads the node itself only inside `createPayDemRail`, so only that rail's verdicts are final.");
+    expect(doc).toContain("Only the SDK's own read of the node makes a verdict final: inside `createPayDemRail`, or through a record reader `createPayDemRecordReader` built.");
+    expect(doc).toContain("The client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are ignored");
     expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else.");
     expect(doc).toContain("No file in the package exports a way to add to it");
     expect(doc).not.toMatch(/vouch/i);

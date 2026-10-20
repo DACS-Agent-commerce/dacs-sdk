@@ -7,8 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createInMemoryWalletSpendStateStore,
   createPayDemRail,
+  createPayDemRecordReader,
   createWalletSpendAuthorityV1,
+  payDemSettleCore,
   settlementKey,
+  type DemosNativeClient,
   type DemosTransferObservation,
   type PayDemRail,
   type PayDemSettlementRecoveryContext,
@@ -724,6 +727,26 @@ describe("native DEM buyer payment track", () => {
         recovery: input.recovery,
       });
     }],
+    ["the SDK rail's success for another settlement key with identical terms", (
+      sdkRail: PayDemRail,
+    ): PayDemRail["settle"] => async (input) => {
+      // Journaled under the very hash that success carries: only the
+      // settlement-key binding tells this order's payment from the other's.
+      await input.journalPreparedTransfer!(PREPARED(input.recovery!));
+      await input.assertCurrentBeforeBroadcast!();
+      const otherJob = `${AUTHORITY.jobId}-other`;
+      return sdkRail.settle({
+        recipient: input.recipient,
+        amount: input.amount,
+        network: input.network,
+        maxTotalDebitOs: input.maxTotalDebitOs,
+        recovery: {
+          ...input.recovery!,
+          jobId: otherJob,
+          settlementKey: settlementKey(AUTHORITY.railId, otherJob, AUTHORITY.phaseIndex),
+        },
+      });
+    }],
   ])("holds %s without settling the wallet or a notice (#338)", async (
     _case,
     settleWith,
@@ -765,6 +788,82 @@ describe("native DEM buyer payment track", () => {
     expect(await walletSpendAuthority.inspect()).toMatchObject({
       activeEffects: 1,
       assets: [{ cumulativeSettledDebit: "0" }],
+    });
+  });
+
+  // #338: a custom client the SDK did not build settles the debited payment
+  // when it carries the SDK's record reader, because the SDK itself then reads
+  // and binds this transfer's executed record.
+  it("settles the wallet and notice for a custom client on the SDK's own record read", async () => {
+    demosSdk.getTxByHash.mockResolvedValue({
+      hash: TX_HASH,
+      status: "confirmed",
+      blockNumber: 42,
+      content: {
+        type: "native",
+        from: PAYER,
+        to: PAYEE,
+        amount: Number(AUTHORITY.amountOs),
+        nonce: "7",
+        data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
+      },
+    });
+    const recordReader = await createPayDemRecordReader({
+      rpc: "https://node.test",
+      inclusionPollIntervalMs: 1,
+      statusRequestTimeoutMs: 50,
+      transactionRecordTimeoutMs: 200,
+    });
+    const client: DemosNativeClient = {
+      address: PAYER,
+      recordReader,
+      async transfer({ recovery, journalPreparedTransfer, assertCurrentBeforeBroadcast }) {
+        await journalPreparedTransfer!(PREPARED(recovery!));
+        await assertCurrentBeforeBroadcast!();
+        return { ok: false, state: "timeout", hash: TX_HASH, nonce: 7,
+          totalDebitOs: AUTHORITY.maxTotalDebitOs };
+      },
+    };
+    const database = await open(join(root(), "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    const publishNotice = vi.fn();
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER,
+      chainId: "demos",
+      asset: "DEM",
+      maximumConcurrentEffects: 1,
+    });
+    const rail = markDacsSdkPreparedPayDemRailV1<PayDemRail>({
+      address: PAYER,
+      settle: (params, effectFence) => payDemSettleCore(params, client, effectFence),
+    });
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority,
+      database,
+      workerId: "buyer-dem-reader",
+      rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+      publishNotice,
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-reader",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+      .toMatchObject({ state: "final", outcome: "success" });
+    expect(publishNotice).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(publishNotice).mock.calls[0]?.[0].notice.settlement)
+      .toMatchObject({ txHash: TX_HASH, blockNumber: 42 });
+    expect(demosSdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 0,
+      assets: [{ cumulativeSettledDebit: AUTHORITY.maxTotalDebitOs }],
     });
   });
 

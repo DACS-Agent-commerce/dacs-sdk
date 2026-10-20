@@ -7,6 +7,7 @@
 // name looks like a brand, vouch, mark or registrar with the forged rail and
 // client, then asks the shipped entry points for a verdict.
 import { readdir } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -179,7 +180,96 @@ try {
 const verifiedForgeries = [forgedResult, { ...forgedResult }, coreResult]
   .map((value) => sdk.payDemRecordVerifiedTransfer(value) ?? null);
 
+// The legitimate custom-client path: the shipped reader reads a local node
+// (the real demosdk transport, over loopback) and binds the record itself.
+// One hash's record is confirmed, the other's failed though included.
+const FAILED_HASH = "34".repeat(32);
+const nodeRecord = (hash, status) => ({
+  hash,
+  status,
+  blockNumber: 42,
+  content: {
+    type: "native",
+    from: PAYER,
+    from_ed25519_address: PAYER,
+    to: SELLER,
+    amount: Number(AMOUNT_OS),
+    nonce: "7",
+    data: ["native", { nativeOperation: "send", args: [SELLER, AMOUNT_OS] }],
+  },
+});
+const nodeReads = [];
+const node = createServer((req, res) => {
+  let body = "";
+  req.on("data", (chunk) => { body += chunk; });
+  req.on("end", () => {
+    let response = null;
+    if (req.method === "POST") {
+      const { message, data } = JSON.parse(body).params[0];
+      nodeReads.push(message);
+      if (message === "getTransactionStatus") response = { state: "included", blockNumber: 42 };
+      if (message === "getNetworkInfo") response = { forks: { osDenomination: { activated: true } } };
+      if (message === "getTxByHash") {
+        response = nodeRecord(data.hash, data.hash === FAILED_HASH ? "failed" : "confirmed");
+      }
+    }
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ result: 200, response }));
+  });
+});
+await new Promise((ready) => node.listen(0, "127.0.0.1", ready));
+// The locked demosdk 4.0.16 build cannot be imported by plain Node ESM (a
+// directory import); CI runs this file again against 4.0.18, which can. The
+// reader's own lazy import reports which one the package resolved.
+let readerUnavailable = null;
+let recordReader;
+try {
+  recordReader = await sdk.createPayDemRecordReader({
+    rpc: `http://127.0.0.1:${node.address().port}`,
+    inclusionPollIntervalMs: 1,
+    transactionRecordTimeoutMs: 5_000,
+  });
+} catch (error) {
+  readerUnavailable = String(error?.code ?? error?.message ?? error).slice(0, 200);
+}
+const readerClient = (hash) => ({
+  address: PAYER,
+  recordReader,
+  transfer: async () => ({ ok: false, state: "timeout", hash, nonce: 7 }),
+});
+let readerSuccess = null;
+let readerFailure = null;
+let forgedReader = null;
+if (recordReader !== undefined) {
+  const readerCore = await sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    readerClient(TX_HASH),
+  );
+  readerSuccess = {
+    core: await outcome(async () => readerCore),
+    verified: sdk.payDemRecordVerifiedTransfer(readerCore) ?? null,
+    bridge: await outcome(() => sdk.payDemSettle(
+      { address: PAYER, settle: (params) => sdk.payDemSettleCore(params, readerClient(TX_HASH)) },
+      { network: "demos" },
+    )({ ...request, jobId: "reader-success" })),
+  };
+  readerFailure = await outcome(() => sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    readerClient(FAILED_HASH),
+  ));
+  forgedReader = await outcome(() => sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    { ...readerClient(TX_HASH), recordReader: { ...recordReader } },
+  ));
+}
+node.close();
+
 process.stdout.write(`${JSON.stringify({
+  readerUnavailable,
+  readerSuccess,
+  readerFailure,
+  forgedReader,
+  nodeReads: [...new Set(nodeReads)].sort(),
   shippedFiles: modules.size,
   importErrors,
   brandExports,
