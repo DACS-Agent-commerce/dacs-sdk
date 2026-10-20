@@ -25,4 +25,21 @@ describe("public version metadata", () => {
       `process.env.DACS_STANDARD_REF || "${DACS_STANDARD_PIN}"`,
     );
   });
+
+  it("publishes the same Standard revision in package metadata", async () => {
+    const packageJson = await import("../package.json", { with: { type: "json" } });
+
+    expect(packageJson.default.dacs.standardRevision).toBe(DACS_STANDARD_PIN);
+  });
+
+  it("tests demosdk at the floor of its published peer range", async () => {
+    // The compatibility workflow resolves its newest-in-range leg from the
+    // peer range and its locked leg from the dev range.
+    const packageJson = await import("../package.json", { with: { type: "json" } });
+    const peer = packageJson.default.peerDependencies["@kynesyslabs/demosdk"];
+    const security = await readFile(new URL("../SECURITY.md", import.meta.url), "utf8");
+
+    expect(packageJson.default.devDependencies["@kynesyslabs/demosdk"]).toBe(peer);
+    expect(security).toContain(`peerDependencies: { "@kynesyslabs/demosdk": "${peer}" }`);
+  });
 });
