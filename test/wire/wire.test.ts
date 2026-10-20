@@ -270,13 +270,14 @@ describe("import closure", () => {
     // Node built-ins only. node:fs and node:path are the request journal's local directory (journal.ts); node:net
     // and node:url only parse claim hosts (identity/domainHost.ts: isIP, domainToASCII) for the Agreement validator (CA-7).
     expect([...external].sort()).toEqual(["node:crypto", "node:fs", "node:net", "node:path", "node:url", "node:util"]);
-    expect([...seen].map((href) => href.replace(/^.*\/src\//, "")).sort()).toEqual([
-      "artifacts/registry.ts", "artifacts/signatures.ts", "artifacts/types.ts", "artifacts/validators.ts",
-      "canonical/addressing.ts", "canonical/decimal.ts", "canonical/hash.ts", "canonical/index.ts", "canonical/jcs.ts", "canonical/rawJson.ts", "canonical/snapshot.ts",
-      "crypto/ed25519.ts", "crypto/index.ts", "crypto/signing.ts", "errors.ts", "identity/claimReference.ts", "identity/domainHost.ts",
-      "negotiate/jobId.ts", "wire/approval.ts", "wire/commitment.ts", "wire/delegation.ts", "wire/discovery.ts", "wire/envelope.ts", "wire/index.ts", "wire/journal.ts", "wire/profile.ts",
-      "wire/response.ts", "wire/routes.ts", "wire/validate.ts",
-    ]);
+    // The boundary, not an exact file list: a pure module main adds under these directories (as #357's
+    // canonical/jid1Addressing.ts) stays inside it; a rail, substrate, storage or negotiation module does not.
+    const modules = [...seen].map((href) => href.replace(/^.*\/src\//, ""));
+    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^negotiate\/jobId\.ts$|^errors\.ts$/;
+    expect(modules.filter((module) => !allowed.test(module))).toEqual([]);
+    for (const module of ["wire/index.ts", "wire/journal.ts", "wire/commitment.ts", "canonical/rawJson.ts", "artifacts/validators.ts", "negotiate/jobId.ts"]) {
+      expect(modules, module).toContain(module);
+    }
     const fileUsers = [...seen].filter((href) => /from\s+["']node:(fs|path)["']/.test(readFileSync(new URL(href), "utf8")));
     expect(fileUsers.map((href) => href.replace(/^.*\/src\//, ""))).toEqual(["wire/journal.ts"]);
   });
