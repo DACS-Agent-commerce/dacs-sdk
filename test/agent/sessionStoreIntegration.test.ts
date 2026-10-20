@@ -1436,7 +1436,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       `could not establish the node record for (?:cd){32}: ${reason}; the payment stays unresolved`,
     );
     const expected: Record<string, RegExp> = {
-      absent: unread("transaction record is missing or malformed"),
+      absent: unread("transaction record was not found"),
       indeterminate: unread("transaction record has no terminal execution status"),
       timeout: unread("transaction record read timed out"),
       hash: /does not match the retained transaction/,
@@ -1819,6 +1819,36 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(resumed.settleCalls.n).toBe(0);
   });
 
+  // What the docs say of a fresh native success from a custom `settle`: the
+  // caller's own payment code completes its run without a node read, and a
+  // re-run re-reads the saved success only through the adapter.
+  test("completes a fresh native success from a custom settle, then holds its re-run without the adapter", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+      supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    let paid = 0;
+    const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
+      payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
+    const first = await makeDeps(store, { kv, settle: async () => { paid += 1; return success; } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "completed" });
+    expect(demosNode.reads).toEqual([]);
+    const before = await store.load("job-1");
+    let reads = 0;
+    for (const resumeSettlement of [undefined, async (): Promise<SettleResult> => { reads += 1; return success; }]) {
+      const again = await makeDeps(store, { kv, settle: first.deps.settle, resumeSettlement });
+      await expect(runSessionCore(again.listingRef, demTerms, again.deps, "job-1")).rejects.toThrow(
+        resumeSettlement === undefined
+          ? /resumeSettlement is required/
+          : /resumeSettlement is not the payDemSettle adapter, so it is not called/,
+      );
+    }
+    expect(reads).toBe(0);
+    expect(paid).toBe(1);
+    expect(await store.load("job-1")).toEqual(before);
+  });
+
   test.each(["durable rail log", "lost rail log"])(
     "restarts a payDemSettle session whose evidence ack was lost over a %s without a second debit",
     async (railLog) => {
@@ -2080,6 +2110,41 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(demosNode.transfers).toBe(0);
       expect(demosNode.broadcasts).toBe(0);
       expect(third.settleCalls.n).toBe(0);
+    });
+
+    // A process killed after binding a non-adapter recovery's hash and before
+    // saving it as the held outcome loses nothing. The restart
+    // finds the hash bound to this job and the intent still held, saves the
+    // held outcome, and never pays.
+    test("retries a crash between binding a recovered hash and saving it held, read-only", async () => {
+      const store = createInMemorySessionStore();
+      const kv = await demKv();
+      const first = await makeDeps(store, { kv, settle: async () => { throw new Error("transfer response lost"); } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("transfer response lost");
+      const custom = vi.fn(async (req: SettleRequest): Promise<SettleResult> => ({ ok: true, txHash,
+        chainId: "demos", payer, payee: req.expectedPayee, blockNumber: 42, txRefKind: "demos",
+        finality: { model: "bft-final" } }));
+      let killed = false;
+      const dying: typeof store = { ...store, transition: async (input) => {
+        if (!killed && input.checkpoint?.stage === "outcome") {
+          killed = true;
+          throw new Error("process killed");
+        }
+        return store.transition(input);
+      } };
+      const second = await makeDeps(dying, { kv, resumeSettlement: custom });
+      await expect(runSessionCore(second.listingRef, demTerms, second.deps, "job-1")).rejects.toThrow("process killed");
+      expect(killed).toBe(true);
+      await expect(store.bindHash({ hash: txHash, jobId: "other", kind: "transaction" }))
+        .resolves.toEqual({ ok: false, boundTo: "job-1" });
+      expect(await lastOutcome(store)).toBeUndefined();
+      const third = await makeDeps(store, { kv, resumeSettlement: custom });
+      await expect(runSessionCore(third.listingRef, demTerms, third.deps, "job-1"))
+        .rejects.toThrow(`settlement demos:${txHash} remains indeterminate`);
+      expect(custom).toHaveBeenCalledTimes(2);
+      expect(await lastOutcome(store)).toMatchObject({ ok: false, txHash });
+      expect(second.settleCalls.n + third.settleCalls.n).toBe(0);
+      expect(demosNode.transfers).toBe(0);
     });
 
     // Daybreak P1-2: a self-consistent failure proof from a callback must not

@@ -1066,12 +1066,32 @@ function confirmedFeeComponentOs(value: unknown, postFork: boolean): bigint | nu
   return null;
 }
 
-function confirmedTransactionFeeOs(value: unknown, postFork: boolean): bigint | null {
+/**
+ * A fee component of a stored record as the transaction query serves it. After
+ * the fork that projection serves a safe value as an OS number and a larger
+ * one as a decimal string (`fromEntityToWireNumber`, as for `content.amount`;
+ * node2's recorded envelopes carry `network_fee: 1000000000`). Only the
+ * recovery read of a record the SDK already holds accepts it; the confirmation
+ * before broadcast keeps the strict form above.
+ */
+function recordFeeComponentOs(value: unknown, postFork: boolean): bigint | null {
+  if (postFork && typeof value === "number" && Number.isSafeInteger(value) &&
+      value >= 0 && !Object.is(value, -0)) {
+    return BigInt(value);
+  }
+  return confirmedFeeComponentOs(value, postFork);
+}
+
+function confirmedTransactionFeeOs(
+  value: unknown,
+  postFork: boolean,
+  component: (value: unknown, postFork: boolean) => bigint | null = confirmedFeeComponentOs,
+): bigint | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const fee = value as Record<string, unknown>;
-  const network = confirmedFeeComponentOs(fee.network_fee, postFork);
-  const rpc = confirmedFeeComponentOs(fee.rpc_fee, postFork);
-  const additional = confirmedFeeComponentOs(fee.additional_fee, postFork);
+  const network = component(fee.network_fee, postFork);
+  const rpc = component(fee.rpc_fee, postFork);
+  const additional = component(fee.additional_fee, postFork);
   if (network === null || rpc === null || additional === null) return null;
   return network + rpc + additional;
 }
@@ -1566,9 +1586,10 @@ export async function observeDemosExecutionByHash(
  * The record must carry that hash, a terminal `confirmed` or `failed` status,
  * an inclusion block, and a native body whose payer, payee, amount and nonce
  * bind the payment (the nonce is the record's own: the signed hash covers it).
- * The fee is the record's `transaction_fee`. Anything else, a timeout or a
- * failed read included, is indeterminate with its reason; this never polls,
- * retries or broadcasts.
+ * The fee is the record's `transaction_fee` in the query's projection (see
+ * `recordFeeComponentOs`); a record without one binds no fee. Anything else, a
+ * malformed fee, a timeout or a failed read included, is indeterminate with
+ * its reason; this never polls, retries or broadcasts.
  */
 async function readDemosRecordByHash(
   txHash: string,
@@ -1592,7 +1613,12 @@ async function readDemosRecordByHash(
   } catch (cause) {
     return { state: "indeterminate", reason: "transaction record is not stable JSON", cause };
   }
-  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+  // demosdk resolves the node's not-found reply (`{result: 404, response:
+  // null}`) to null; keep that apart from a malformed record.
+  if (snapshot === null) {
+    return { state: "indeterminate", reason: "transaction record was not found" };
+  }
+  if (typeof snapshot !== "object" || Array.isArray(snapshot)) {
     return { state: "indeterminate", reason: "transaction record is missing or malformed" };
   }
   // demosdk's transport decodes the reply without a byte limit; bound what the
@@ -1622,10 +1648,16 @@ async function readDemosRecordByHash(
   if (!nativeTransferBodyMatches(identity.transaction, { ...transfer, nonce }, "confirmed")) {
     return { state: "indeterminate", reason: "transaction record does not match the payment" };
   }
-  const feeOs = confirmedTransactionFeeOs(
-    (content as Record<string, unknown>).transaction_fee,
-    transfer.postFork,
-  );
+  // A record without a fee binds none, as a confirmation without one does
+  // without a spend ceiling. A fee the SDK cannot parse is not "no fee": it
+  // would then contradict a fee the session saved and hide why.
+  const servedFee = (content as Record<string, unknown>).transaction_fee;
+  const feeOs = servedFee === undefined
+    ? null
+    : confirmedTransactionFeeOs(servedFee, transfer.postFork, recordFeeComponentOs);
+  if (servedFee !== undefined && feeOs === null) {
+    return { state: "indeterminate", reason: "transaction record fee is malformed" };
+  }
   return {
     state: record.status === DEMOS_FAILED_RECORD_STATUS ? "failed" : "executed",
     blockNumber,
@@ -2738,6 +2770,7 @@ export function payDemSettle(
       jobId,
       payee,
       phase,
+      phaseIndex,
       rail: railId,
     } = req;
     if (phase !== "pay-dem") {
@@ -2750,12 +2783,11 @@ export function payDemSettle(
         `pay-dem request rail "${railId}" does not match authenticated descriptor "${configuredRailId}"`,
       );
     }
-    if (req.phaseIndex === undefined) {
+    if (phaseIndex === undefined) {
       throw new DacsError(
         "pay-dem request must carry the exact phaseIndex required by PC-2 and SB-1",
       );
     }
-    const phaseIndex = req.phaseIndex;
     if (
       configuredPhaseIndex !== undefined &&
       phaseIndex !== configuredPhaseIndex

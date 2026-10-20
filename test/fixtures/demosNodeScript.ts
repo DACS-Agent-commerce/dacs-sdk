@@ -52,7 +52,10 @@ export const demosNode = {
   },
 };
 
-/** A native transfer body as the node serves it (nonce as a decimal string). */
+/**
+ * A native transfer record as the node serves it (nonce as a decimal string,
+ * amount and fee components projected as numbers; see {@link servedContent}).
+ */
 export function nodeRecord(input: {
   txHash: string;
   payer: string;
@@ -65,12 +68,37 @@ export function nodeRecord(input: {
 }): NodeRecord {
   return {
     hash: input.txHash,
-    content: {
-      ...transferContent(input.payer, input.payee, input.amountOs, input.nonce ?? 9, input.feeOs),
-      nonce: String(input.nonce ?? 9),
-    },
+    content: servedContent(
+      transferContent(input.payer, input.payee, input.amountOs, input.nonce ?? 9, input.feeOs),
+    ),
     status: input.status ?? "confirmed",
     blockNumber: input.blockNumber ?? 42,
+  };
+}
+
+/**
+ * A signed post-fork body as the pinned node's transaction query serves it
+ * (kynesyslabs/node@61b8e75 `transaction.ts` `fromEntityToWireNumber`, and
+ * node2's recorded `getTxByHash` envelopes): `amount` and each
+ * `transaction_fee` component are OS numbers up to `Number.MAX_SAFE_INTEGER`
+ * and decimal strings above it, and the nonce is a decimal string. The signed
+ * payload in `data` keeps its decimal-string amount.
+ */
+function servedContent(content: NodeRecord): NodeRecord {
+  const projected = (value: unknown) =>
+    typeof value === "string" && BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER)
+      ? Number(value)
+      : value;
+  const fee = content.transaction_fee as Record<string, unknown> | undefined;
+  return {
+    ...content,
+    amount: projected(content.amount),
+    nonce: String(content.nonce),
+    ...(fee === undefined ? {} : {
+      transaction_fee: Object.fromEntries(
+        Object.entries(fee).map(([name, value]) => [name, projected(value)]),
+      ),
+    }),
   };
 }
 
@@ -126,7 +154,7 @@ class MockDemos {
     const { hash, content } = validity.response.data.transaction;
     demosNode.records.set(hash, {
       hash,
-      content: { ...content, nonce: String(content.nonce) },
+      content: servedContent(content),
       status: demosNode.recordStatus,
       blockNumber: demosNode.blockNumber,
     });

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
@@ -93,14 +95,19 @@ async function settledLog(outcome: "executed" | "failed", network = "demos") {
 // A reconciler's `execution: "executed"` is its claim. The verdict of every
 // recovery path is the SDK rail's own read of the node's record for the hash.
 describe("a recovered pay-dem verdict is the SDK rail's own read of the node record", () => {
-  type Script = "failed" | "pending" | "at another block" | "for another payee" | "with another fee" | "absent";
+  type Script = "failed" | "pending" | "at another block" | "for another payee" | "with another fee" |
+    "with a malformed fee" | "absent";
+  const withFee = (record: Record<string, unknown>, transaction_fee: unknown) =>
+    ({ ...record, content: { ...(record.content as object), transaction_fee } });
   const scripts: Record<Script, (record: Record<string, unknown>) => unknown> = {
     "failed": (record) => ({ ...record, status: "failed" }),
     "pending": (record) => ({ ...record, status: "pending" }),
     "at another block": (record) => ({ ...record, blockNumber: 43 }),
     "for another payee": () => nodeRecord({ txHash, payer, payee: "ef".repeat(32), amountOs: "1000000000", feeOs: "0" }),
-    "with another fee": (record) => ({ ...record, content: { ...(record.content as object),
-      transaction_fee: { network_fee: "1", rpc_fee: "0", additional_fee: "0" } } }),
+    // The node serves a large fee component as a decimal string.
+    "with another fee": (record) => withFee(record, { network_fee: "1", rpc_fee: "0", additional_fee: "0" }),
+    // Not an OS amount in either served form: never read as "no fee".
+    "with a malformed fee": (record) => withFee(record, { network_fee: 0.5, rpc_fee: 0, additional_fee: 0 }),
     "absent": () => null,
   };
   const messages: Record<Script, RegExp> = {
@@ -109,7 +116,9 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
     "at another block": /contradicts the node record the SDK read/,
     "for another payee": /could not establish the node record .*does not match the payment/,
     "with another fee": /contradicts the node record the SDK read/,
-    "absent": /could not establish the node record .*missing or malformed/,
+    "with a malformed fee": /could not establish the node record .*transaction record fee is malformed/,
+    // node2 serves a hash from before its reset as not found.
+    "absent": /could not establish the node record .*transaction record was not found/,
   };
   // The reconciler claims execution; then the node serves the scripted record.
   const claimAgainst = (script: Script) => vi.fn<PayDemSettlementReconcile>(async () => {
@@ -201,5 +210,72 @@ describe("a by-key failed record another writer finds is never this key's outcom
     // The other writer's held generation is never resubmitted or demoted.
     await expect(settle(fresh)).rejects.toThrow(/in-flight current generation; refusing to resubmit/);
     expect(submit).toHaveBeenCalledTimes(1);
+  });
+});
+
+// After the denomination fork the transaction query serves each
+// `transaction_fee` component as an OS number (node2's recorded envelope
+// carries `network_fee: 1000000000`), while the transfer the SDK signed carries
+// decimal strings. A fee the session saved from the signed transfer must be
+// re-read from that served record, or a paid session can never complete.
+describe("a recovered pay-dem verdict reads node2's recorded record, numeric fee and all", () => {
+  const node2 = JSON.parse(readFileSync(
+    new URL("../fixtures/demos-node2-records.json", import.meta.url), "utf8",
+  )) as { getTxByHash: Record<string, { response: Record<string, unknown> }> };
+  const hash = "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918";
+  const node2Payer = "c0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a";
+  const node2Payee = "706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1";
+  // 1 DEM network fee + 1 DEM rpc fee, as the node2 record carries them.
+  const feeOs = "2000000000";
+  const ask = (priorAttempts?: readonly SettlementRecoveryAttempt[]): SettleRequest => ({
+    rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "node2-native", amount: "9.5", asset: "DEM",
+    payee: `did:demos:agent:${node2Payee}`, expectedPayee: `did:demos:agent:${node2Payee}`,
+    ...(priorAttempts === undefined ? {} : { priorAttempts }),
+  });
+  const claim = (echoFee: boolean) => vi.fn<PayDemSettlementReconcile>(async () => ({
+    ok: true, txHash: hash, payer: node2Payer, payee: node2Payee, chainId: "demos", amountOs: "9500000000",
+    blockNumber: 498447, txRefKind: "demos", finality: { model: "bft-final" }, execution: "executed",
+    ...(echoFee ? { networkFeeOs: feeOs } : {}),
+    preparedTransfer: { txHash: hash, nonce: 28, payer: node2Payer, payee: node2Payee, amountOs: "9500000000",
+      denomination: "os", network: "demos", recovery: { railId: "pay-dem", jobId: "node2-native", phaseIndex: 0,
+        settlementKey: "pay-dem:node2-native:0", network: "demos", payer: node2Payer, payee: node2Payee,
+        amountOs: "9500000000" } },
+  }));
+  beforeEach(async () => {
+    // The SDK rail signs node2's transfer with the decimal-string fee it quotes.
+    Object.assign(demosNode, { address: node2Payer, nextHash: hash, nonce: 28, blockNumber: 498447, feeOs });
+    rail = await sdkPayDemRail();
+  });
+  const servesNode2 = () => {
+    const served = structuredClone(node2.getTxByHash[hash]!.response);
+    expect((served.content as { transaction_fee: unknown }).transaction_fee)
+      .toMatchObject({ network_fee: 1000000000, rpc_fee: 1000000000, additional_fee: 0 });
+    demosNode.records.set(hash, served);
+  };
+
+  test.each([
+    ...(["retained-hash audit", "restart re-check", "lookup by key"] as const)
+      .flatMap((path) => [true, false].map((echoFee) => ({ path, echoFee }))),
+  ])("completes the $path with the record's fee (reconciler echoes it: $echoFee)", async ({ path, echoFee }) => {
+    const reconcile = claim(echoFee);
+    const log = createInMemorySettlementLog();
+    if (path === "lookup by key") {
+      // A transfer whose response was lost: only the intent is in the log.
+      await expect(payDemSettle({ address: node2Payer, settle: async () => { throw new Error("response lost"); } },
+        {}, { store: createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }) })(ask()))
+        .rejects.toThrow("response lost");
+    } else {
+      await expect(payDemSettle(rail, {}, { store: createIdempotencyStore(log) })(ask()))
+        .resolves.toMatchObject({ ok: true, txHash: hash, networkFeeOs: feeOs });
+    }
+    submit.mockClear();
+    servesNode2();
+    const settle = payDemSettle(rail, {}, { reconcile, store: path === "lookup by key"
+      ? createIdempotencyStore(log, { owner: "b", now: () => 3, leaseDurationMs: 1 })
+      : createIdempotencyStore(log) });
+    await expect(settle(path === "retained-hash audit" ? ask([{ txHash: hash, chainId: "demos", ok: true }]) : ask()))
+      .resolves.toMatchObject({ ok: true, txHash: hash, blockNumber: 498447, networkFeeOs: feeOs });
+    expect(demosNode.reads).toContain(hash);
+    expect(submit).not.toHaveBeenCalled();
   });
 });

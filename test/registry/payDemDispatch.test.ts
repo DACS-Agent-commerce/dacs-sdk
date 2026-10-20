@@ -978,13 +978,14 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(executor).toHaveBeenCalledTimes(1);
   });
 
-  test("settles under the same rail and phase values the pay-dem adapter checked", async () => {
+  test("settles under the same rail, phase and phase index the pay-dem adapter checked", async () => {
     const settle = vi.fn(async () => { throw new Error("rail reached"); });
     mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle });
     mocks.payDemSettle.mockImplementation(actualPayDem.payDemSettle);
     const changing = request();
     let railReads = 0;
     let phaseReads = 0;
+    let phaseIndexReads = 0;
     Object.defineProperty(changing, "rail", {
       enumerable: true,
       get: () => railReads++ === 0 ? DEM_RAIL_ID : "demos-native:OTHER",
@@ -992,6 +993,10 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     Object.defineProperty(changing, "phase", {
       enumerable: true,
       get: () => phaseReads++ === 0 ? "pay-dem" : "pay-x402",
+    });
+    Object.defineProperty(changing, "phaseIndex", {
+      enumerable: true,
+      get: () => phaseIndexReads++ === 0 ? 4 : 7,
     });
     const descriptor = await authenticatedDefinition();
     const dispatched = await settleFromRail(descriptor, {
@@ -1007,5 +1012,6 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     }), expect.anything());
     expect(railReads).toBe(1);
     expect(phaseReads).toBe(1);
+    expect(phaseIndexReads).toBe(1);
   });
 });
