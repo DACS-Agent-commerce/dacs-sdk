@@ -101,5 +101,5 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.deepEqual(out.restart, { stateSameContribution: true, repeatSameContribution: true });
   assert.deepEqual(out.reached, [], 'negotiation reached no operator capability but the Vet context');
   assert.deepEqual(out.vetContextJobs, ['vetted', 'unvetted', 'fabricated'], 'every admitted proposal takes its Agreement input from the Vet context');
-  assert.deepEqual(out.admittedJobs, ['vetted', 'unvetted', 'fabricated', 'replayed'], 'every new session asks the session admission; the restarted one is in flight');
+  assert.deepEqual(out.admittedJobs, ['vetted', 'unvetted', 'fabricated'], 'every session with an issued challenge asks the session admission; the replayed job has none, so the seller refuses it before asking');
 });
