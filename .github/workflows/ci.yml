@@ -358,7 +358,9 @@ jobs:
       # its NetworkInfo/AddressInfo and web2 types are `any` in the checks above.
       # 4.0.18 resolves them; typecheck and run the demosdk-related tests
       # against it (#339). The step fails once a newer version is published in
-      # ^4.0.16, because consumers would then resolve an unchecked version.
+      # ^4.0.16, because consumers would then resolve an unchecked version, and
+      # when the registry cannot be read. The PR that hits the newer version
+      # replaces every 4.0.18 in this step with it and fixes what then fails.
       # Last step: it replaces the installed SDK for the rest of this job.
       - name: Typecheck and test against demosdk 4.0.18
         if: matrix.node-version == '22'
