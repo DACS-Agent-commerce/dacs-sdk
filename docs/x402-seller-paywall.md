@@ -14,7 +14,10 @@ Live x402 actions are unavailable at the SDK's Standard pin
 unreleased corrective candidate. The production buyer constructors, settlement
 bridge, buyer preparation, retained paid-request transport, seller factory and seller core throw
 `UnsupportedCapabilityError` before protocol work. Caller profile objects,
-labels and configuration cannot enable them.
+labels and configuration cannot enable them. Recovery of retained buyer and
+seller x402 state is refused the same way, and a retained intent or record whose
+jobId is not a canonical ULID is refused as malformed: finish or reconcile every
+x402 session before upgrading.
 
 A future release must record the Standard's coordinated tag or immutable merge
 commit and authenticate that exact release and the complete document tuple for

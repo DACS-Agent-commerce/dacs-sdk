@@ -16,6 +16,12 @@ x402 buyer preparation/signing/submission and seller paywall actions therefore f
 protocol helpers remain available for development; see
 [the profile boundary](docs/x402-seller-paywall.md).
 
+Finish or reconcile every x402 session before upgrading to this version. The
+gate also refuses recovery of retained x402 buyer and seller state, and a
+retained intent or record whose jobId is not a canonical ULID is refused as
+malformed, so a session paid but not yet delivered cannot be finished through
+the SDK afterwards.
+
 ## What this is
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.

@@ -22,6 +22,7 @@ tests and reviews were checked against.
 | `getBlockByNumber` past the head | HTTP 200 `{ result: 404, response: "error" }` | indeterminate |
 | `getBlockByNumber(0)` | HTTP 200 `{ result: 400, response: "error" }` | indeterminate |
 | `GET /storage-program/:address`, missing | HTTP 404 `{ success: false, errorCode: "NOT_FOUND" }` | indeterminate (demosdk throws) |
+| `GET /storage-program/:address`, owner-only ACL (live node2) | HTTP 403 `PERMISSION_DENIED` | indeterminate (demosdk throws on any non-2xx) |
 | Transport failure | `{ result: 500, response: Error }` | indeterminate |
 | `getTxByHash`, found | `hash`, `status: "confirmed"`, numeric `blockNumber`, `content` object | compared member by member |
 | `getBlockByNumber`, found | `number`, `hash`, `status`, `content.ordered_transactions`, `content.timestamp` in **seconds**, `validation_data.signatures` | compared; a block without `validation_data` is indeterminate |

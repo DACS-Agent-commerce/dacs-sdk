@@ -1460,6 +1460,14 @@ describe("DemosAdapter.anchorAndWait", () => {
       "utf8",
     ));
     expect(contract.deployment.commit).toBe("61b8e75aa8db5e408c49e1c3a89db4d673f45578");
+    // The shapes are demosdk's: the recorded version is the one installed, and
+    // the record ships with the package.
+    expect(contract.demosdk).toBe(JSON.parse(readFileSync(
+      "node_modules/@kynesyslabs/demosdk/package.json",
+      "utf8",
+    )).version);
+    expect(JSON.parse(readFileSync("package.json", "utf8")).files)
+      .toContain("docs/demos-node-compatibility.md");
     const { reads } = contract;
     const arrangements: Array<[string, (raw: any) => void]> = [
       ["transaction", (raw) => raw.getTxByHash.mockResolvedValueOnce(reads.txMissing.body.response)],
