@@ -1,13 +1,14 @@
 // Run-time port of http-mcp/src/dacs/dem-delivery-context-consumer.mjs at
 // DACS-Agent-commerce/frontend 15fdf23: lines 1-9, 11, 13-16, 21-30, 37-99, 133-152.
-// The source lines below are unchanged (RUNTIME-PORTS.json).
+// The source lines below are unchanged except the counterparty Vet verifier (RUNTIME-PORTS.json).
 // Left out: the buyer-side resolver and its answer capture.
 // Explicit application capability for the fixed-price DEM delivery profile.
 //
 // This is narrower than the generic operator Agreement-context seam: the same
 // capability must answer both the buyer planner and the seller orchestrator,
-// and every Vet reference must name a seller/orchestrator-produced composite
-// at the canonical DACS-2 address.  The underlying composite records and their
+// and every Vet reference must name a composite signed by its counterparty
+// verifier (DACS-2 §7.7.2: the buyer's by the seller, the seller's by the
+// buyer) at the canonical DACS-2 address.  The underlying composite records and their
 // verification provenance are kept seller-side; this consumer only binds the
 // exact Agreement derivation input to the already prepared purchase scope.
 import { canonicalize, compositeVerificationAddress, identityBundleHash } from '@kynesyslabs/dacs';
@@ -66,10 +67,10 @@ const capabilityFor = (value) => {
   return configured ? capabilities.get(configured) : null;
 };
 
-function vetRefProblem(ref, jobId, party, seller, role) {
-  if (!exactKeys(ref, ['anchor', 'contentHash', 'signer']) || !exactKeys(ref.anchor, ['kind', 'locator'])) return `${role} Vet ref is not an exact orchestrator-signed record ref`;
+function vetRefProblem(ref, jobId, party, verifier, role) {
+  if (!exactKeys(ref, ['anchor', 'contentHash', 'signer']) || !exactKeys(ref.anchor, ['kind', 'locator'])) return `${role} Vet ref is not an exact verifier-signed record ref`;
   if (ref.anchor.kind !== 'storage-program' || ref.anchor.locator !== compositeVerificationAddress(jobId, party)) return `${role} Vet ref is not at the canonical composite address`;
-  if (!HEX64.test(ref.contentHash) || ref.signer !== seller) return `${role} Vet ref is not signed by the bound phase orchestrator`;
+  if (!HEX64.test(ref.contentHash) || ref.signer !== verifier) return `${role} Vet ref is not signed by its counterparty verifier`;
   return null;
 }
 
@@ -82,7 +83,7 @@ function inputProblem(input, { scope, listing, buyerBundle }) {
   if (!same(input.buyer.identityBundle, buyerBundle) || identityBundleHash(buyerBundle) !== scope.buyerBundleHash) return 'buyer identity differs';
   if (!same(input.seller.identityBundle, listing.seller.identity) || input.seller.identityBundle.presentedBy !== scope.seller) return 'seller identity differs';
   const vet = vetRefProblem(input.buyer.vetRecordRef, scope.jobId, scope.buyer, scope.seller, 'buyer')
-    ?? vetRefProblem(input.seller.vetRecordRef, scope.jobId, scope.seller, scope.seller, 'seller');
+    ?? vetRefProblem(input.seller.vetRecordRef, scope.jobId, scope.seller, scope.buyer, 'seller');
   if (vet) return vet;
   if (!same(input.selectedRail, scope.rail)
       || !same(input.payoutBindings, [{ railId: DEM_RAIL.railId, phaseIndex: protocolSupport(listing).phases.payment, payeeAddress: scope.payee }])

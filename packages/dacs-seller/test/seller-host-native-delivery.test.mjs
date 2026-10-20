@@ -103,23 +103,37 @@ function demosNode() {
     return clone(signed);
   };
   const reader = createDemosSr2Adapter({ rpcUrl: RPC, journal: createInMemoryDemosSr2Journal(), fetchImpl });
-  return { fetchImpl, pay, create, reader, creates, programs, faults, searches };
+  // A transfer's block and inclusion time (ms), as the pay-dem observer reads them.
+  const inclusion = (hash) => { const { blockNumber } = txs.get(hash); return { blockNumber, includedAt: blocks[blockNumber].content.timestamp * 1000 }; };
+  return { fetchImpl, pay, create, reader, creates, programs, faults, searches, inclusion, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000 };
 }
 
-async function world(t, { deliverableProducer = null } = {}) {
+// The application's Deliverable producer: a report bound to the job, its
+// Agreement and its settlement; `change` replaces any of its fields.
+const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersion: '1', kind: 'TEST-host-native-delivery/report', jobId: agreement.jobId,
+  agreementHash: core.contentHash(agreement), settlementId, body: ['TEST report delivered by the standalone host.'], ...change });
+
+// `schemaUrl: false`: the Listing's deliverable names no schema, so the SDK
+// runs no schema verifier over the prepared Deliverable.
+async function world(t, { deliverableProducer = null, schemaUrl = true } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
-  const admission = createSessionAdmissionFixture({ seller: sellerKey });
+  // The host's and the buyer client's clock: wall time, never behind the
+  // node's latest block (the node stamps its blocks 2 s apart).
+  const clock = () => Math.max(Date.now(), node.latestBlockMs());
+  const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
     category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
+  if (!schemaUrl) delete draft.offering.deliverable.schemaUrl;
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
   const buyerBundle = identityFor(buyerKey, now);
-  // What each operator capability did. `faults` script the next answers.
+  // What each operator capability did. `faults` script the next answers;
+  // `beforeDeliveryReconcile` runs before the delivery capability reconciles.
   const effects = { anchorEvidence: [], deliverySubmit: [], published: [] };
-  const faults = { anchorEvidence: [], deliverySubmit: [] };
+  const faults = { anchorEvidence: [], deliverySubmit: [], beforeDeliveryReconcile: async () => {} };
 
   // The operator's Vet context for each job: references to the
-  // orchestrator-signed records its session admission keeps.
+  // counterparty-verified records its session admission keeps (DACS-2 §7.7.2).
   const inputs = new Map();
   const vettedInput = async (jobId) => {
     if (!inputs.has(jobId)) {
@@ -137,7 +151,7 @@ async function world(t, { deliverableProducer = null } = {}) {
         native: { source: 'TEST-host-native-delivery/agreement', evidenceMode: 'TEST-scripted', nativeAddress: 'TEST-native-agreement', txRef: { kind: 'demos', txHash: 'c3'.repeat(32), blockNumber: 1 } } }
       : { disposition: 'absent', reason: 'TEST not anchored' }) };
   // Seller CREATEs, by logical address; each is read back through the SR-2 adapter.
-  const signedCreates = new Map();
+  const signedCreates = new Map(), written = new Map();
   const readBack = async (logicalAddress, artifactKind, deliveryBinding) => {
     const signed = signedCreates.get(logicalAddress);
     if (!signed) return { status: 'absent', reason: 'TEST no seller CREATE at this address' };
@@ -148,7 +162,10 @@ async function world(t, { deliverableProducer = null } = {}) {
       signedProjection: clone(signed), demosEvidence: read.demosEvidence };
   };
   const writeOnce = (logicalAddress, artifact, artifactKind, deliveryBinding) => {
-    if (!signedCreates.has(logicalAddress)) signedCreates.set(logicalAddress, node.create(sellerKey, { logicalAddress, artifact, artifactKind, deliveryBinding }));
+    if (!signedCreates.has(logicalAddress)) {
+      signedCreates.set(logicalAddress, node.create(sellerKey, { logicalAddress, artifact, artifactKind, deliveryBinding }));
+      written.set(logicalAddress, clone(artifact));
+    }
   };
   const artifactAnchor = { writer: sellerKey.claim, source: 'TEST-host-native-delivery/artifacts',
     publish: async ({ logicalAddress, artifact, artifactKind, authorize }) => {
@@ -187,10 +204,11 @@ async function world(t, { deliverableProducer = null } = {}) {
     resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
     resolveSeller: async ({ jobId }) => {
       const input = await vettedInput(jobId);
-      // One requirement invocation per Vet record the Agreement references.
-      const invocation = (party, claim) => ({ vetRecordRef: input[party].vetRecordRef, evaluatedParty: claim, requirement: clone(listing.buyerRequirement),
-        verifier: sellerKey.claim, freshness: [], dealSpecific: [] });
-      return { disposition: 'present', value: { input, vetRequirements: [invocation('buyer', buyerKey.claim), invocation('seller', sellerKey.claim)] } };
+      // One requirement invocation per Vet record the Agreement references,
+      // each naming the evaluated party's counterparty as verifier.
+      const invocation = (party, claim, verifier) => ({ vetRecordRef: input[party].vetRecordRef, evaluatedParty: claim, requirement: clone(listing.buyerRequirement),
+        verifier, freshness: [], dealSpecific: [] });
+      return { disposition: 'present', value: { input, vetRequirements: [invocation('buyer', buyerKey.claim, sellerKey.claim), invocation('seller', sellerKey.claim, buyerKey.claim)] } };
     } });
   // The seller's Deliverable CREATE and its public readback.
   const deliverable = async (input) => readBack(input.logicalAddress, 'Deliverable', input.deliveryBinding);
@@ -202,6 +220,7 @@ async function world(t, { deliverableProducer = null } = {}) {
       return { status: 'accepted', reconciliationId: signedCreates.get(input.logicalAddress).hash };
     },
     reconcile: async (input) => {
+      await faults.beforeDeliveryReconcile();
       const read = await deliverable(input);
       return read.status === 'present' ? { status: 'complete', reconciliationId: read.receipt.transactionRef.value, observedAt: read.receipt.blockRef.timestamp } : { status: 'absent', reason: read.reason };
     },
@@ -209,18 +228,18 @@ async function world(t, { deliverableProducer = null } = {}) {
     verifyReceipt: async ({ logicalAddress, report, receipt, receiptContentHash, deliveryBinding }) => node.reader.verifyReceipt({ receipt, logicalAddress, artifact: report,
       expectedWriter: sellerKey.claim, artifactKind: 'Deliverable', deliveryBinding, receiptContentHash, signedProjection: clone(signedCreates.get(logicalAddress)) }),
   });
-  const producer = deliverableProducer ?? (({ agreement, settlementId }) => ({ reportVersion: '1', kind: 'TEST-host-native-delivery/report', jobId: agreement.jobId,
-    agreementHash: core.contentHash(agreement), settlementId, body: ['TEST report delivered by the standalone host.'] }));
+  const producer = deliverableProducer ?? report();
 
   const dataDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-native-')));
   t.after(() => rmSync(dataDirectory, { recursive: true, force: true }));
   const hosts = [];
   t.after(async () => { for (const host of hosts) await host.close(); });
+  const capabilities = () => ({ signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing,
+    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer,
+    observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); },
+    nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(), sessionAdmission: admission.sessionAdmission, now: clock });
   const start = async () => {
-    const host = await seller.startSellerHost({ signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, dataDirectory,
-      buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, artifactAnchor, deliverableProducer: producer,
-      observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); },
-      nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(), sessionAdmission: admission.sessionAdmission });
+    const host = await seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor });
     hosts.push(host);
     return host;
   };
@@ -235,7 +254,7 @@ async function world(t, { deliverableProducer = null } = {}) {
     const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
     const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
     const client = () => seller.createSellerAgentClient({ url: host.url, authentication: seller.createSellerTransportClientAuth({
-      buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }) }) });
+      buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock }) });
     const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
     assert.equal(answer.disposition, 'complete', 'the seller signs the vetted Agreement');
     const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
@@ -248,8 +267,17 @@ async function world(t, { deliverableProducer = null } = {}) {
         catch (error) { return { error: error.code, status: error.status }; } } };
   };
   const restart = async () => { await host.close(); hosts.splice(hosts.indexOf(host), 1); host = await start(); };
+  // The operator's read-only view of a job's retained session (durableSessionOf),
+  // read with the host stopped, from the host's own durable state.
+  const retainedSession = async (jobId) => {
+    await host.close(); hosts.splice(hosts.indexOf(host), 1);
+    const agent = await seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor });
+    try { return agent.durableSessionOf(jobId); } finally { agent.close(); }
+  };
   const createsAt = (logicalAddress) => node.creates.filter((entry) => entry.logicalAddress === logicalAddress).length;
-  return { node, effects, faults, purchase, restart, createsAt, sellerKey, buyerKey, listing };
+  const signedCreate = (logicalAddress) => clone(signedCreates.get(logicalAddress));
+  const writtenAt = (logicalAddress) => clone(written.get(logicalAddress));
+  return { node, effects, faults, purchase, restart, retainedSession, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
@@ -389,17 +417,104 @@ test('a readback that is not this payment\'s evidence is refused before delivery
   assert.deepEqual(w.effects.anchorEvidence, [address], 'a CREATE that is present is never sent again');
 });
 
-// Not a passing vector yet. The package's Vet context and session admission
-// take every Vet reference signed by the seller as orchestrator, while the
-// core delivery runner takes the seller's own Vet record only from its
-// counterparty verifier, the buyer (runFulfilmentCore "audit source Vet
-// provenance differs"). Every native delivery stops there.
-test('a native payment is delivered: the Deliverable CREATE reads back bound to the Agreement and the settlement',
-  { todo: 'the core delivery runner refuses the seller-signed seller Vet record (audit-source-mismatch)' }, async (t) => {
-    const w = await world(t);
+// Delivery. Each party's Vet record is verified by its counterparty (DACS-2
+// §7.7.2), as the core delivery runner checks in the audit source.
+test('a native payment is delivered: the Deliverable CREATE reads back bound to the Agreement and the settlement', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  // Payment evidence, the settlement credit on the payment permit, then the Deliverable.
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
+  assert.equal(answer.delivery.logicalAddress, deliverable);
+  assert.deepEqual(w.effects.anchorEvidence, [paymentAddress(p)]);
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+  assert.equal(w.createsAt(deliverable), 1);
+  // The CREATE reads back as the seller's Deliverable for this job, Agreement and settlement.
+  const binding = answer.delivery.deliveryBinding;
+  assert.deepEqual([binding.jobId, binding.agreementHash], [p.jobId, core.contentHash(p.agreement)]);
+  const read = await w.node.reader.read(deliverable, { expectedWriter: w.sellerKey.claim, expectedArtifactKind: 'Deliverable', signedProjection: w.signedCreate(deliverable),
+    expectedDeliveryBinding: binding });
+  assert.equal(read.status, 'present');
+  assert.equal(core.contentHash(read.artifact), answer.delivery.contentHash);
+  assert.deepEqual([read.artifact.jobId, read.artifact.agreementHash, read.artifact.settlementId], [p.jobId, core.contentHash(p.agreement), answer.settlementId]);
+  // A later claim, also on a restarted host, reads the delivery back and sends nothing.
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  await w.restart();
+  const again = await p.claim(tx);
+  assert.equal(again.delivery?.status, 'delivery-ready', shown(again.delivery));
+  assert.equal(again.delivery.contentHash, answer.delivery.contentHash);
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is sent once');
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
+test('a Deliverable the producer does not bind to this job, Agreement and settlement is not sent', async (t) => {
+  const changes = { 'another job': { jobId: core.generateCanonicalJobId() }, 'another Agreement': { agreementHash: core.sha256Hex('TEST another Agreement') },
+    'another settlement': { settlementId: core.sha256Hex('TEST another settlement') } };
+  for (const [label, change] of Object.entries(changes)) {
+    const w = await world(t, { deliverableProducer: report(change) });
     const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
     const answer = await p.claim(tx);
-    assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
-    assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
-    assert.equal(w.createsAt(deliverable), 1);
-  });
+    assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
+    assert.equal(answer.delivery?.status, 'held', `${label}: ${shown(answer.delivery)}`);
+    assert.match(answer.delivery.reason, /the application deliverable is not bound to this Agreement and settlement/, label);
+    assert.deepEqual(w.effects.deliverySubmit, [], `${label}: nothing is sent`);
+    assert.equal(w.createsAt(deliverable), 0, label);
+  }
+});
+
+// The SDK submits the candidate it prepared; the seller sends it only if it is
+// still the exact report the producer answers for this job and settlement.
+// With a schema the SDK's schema verifier compares it too; without one, the
+// seller's check at submission is the only one.
+test('a delivery candidate that is not the exact report is not sent: the producer answered differently at submission', async (t) => {
+  for (const schemaUrl of [true, false]) {
+    let answers = 0;
+    const w = await world(t, { schemaUrl, deliverableProducer: (input) => report({ body: [`TEST report, answer ${++answers}`] })(input) });
+    assert.equal('schemaUrl' in w.listing.offering.deliverable, schemaUrl);
+    const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`, label = schemaUrl ? 'with a schema' : 'without a schema';
+    const answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
+    assert.equal(answer.delivery?.status, 'held', `${label}: ${shown(answer.delivery)}`);
+    assert.deepEqual(w.effects.deliverySubmit, [], `${label}: nothing is sent`);
+    assert.equal(w.createsAt(deliverable), 0, label);
+  }
+});
+
+test('without a schema in the Listing, a native payment is delivered', async (t) => {
+  const w = await world(t, { schemaUrl: false });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
+// Settlement credit (SB-2) on the payment permit: job B claims job A's
+// transfer after A's delivery has read its audit source and before A's permit
+// is consumed. Neither job has credit: A's permit is refused, not spent, and
+// A's Deliverable is not sent. The SDK receipt store elects one of the two
+// claims on its own (both are observed at the transfer's inclusion, so the
+// lower evidence hash wins) and takes the permit from a job it does not elect.
+// A is the job it elects: only the seller's credit check refuses A's permit.
+test('settlement credit is checked again before the Deliverable is sent: a claim on another job during the delivery stops it', async (t) => {
+  const w = await world(t);
+  // Both jobs pay the same payee the same amount, so one transfer serves either.
+  const x = await w.purchase(), y = await w.purchase(), tx = x.pay(), { blockNumber, includedAt } = w.node.inclusion(tx);
+  const evidenceInput = (p) => ({ evidenceVersion: '1', jobId: p.jobId, phase: 'pay-dem', outcome: 'success', paymentTxRefs: [{ kind: 'demos', txHash: tx, blockNumber }],
+    paymentAmount: clone(p.agreement.terms.price), settlementFinality: { model: 'bft-final', finalityObservedAt: includedAt }, observedAt: includedAt });
+  const [a, b] = core.contentHash(evidenceInput(x)) < core.contentHash(evidenceInput(y)) ? [x, y] : [y, x], deliverable = `dacs4:deliverable:${a.jobId}`;
+  let contested = null;
+  w.faults.beforeDeliveryReconcile = async () => { if (contested === null) contested = await b.claim(tx); };
+  assert.equal((await a.claim(tx)).error, 'seller_unavailable', 'no answer for a job whose credit is contested');
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' }, 'job B claimed the transfer during job A\'s delivery');
+  assert.deepEqual(w.effects.anchorEvidence, [paymentAddress(a)], 'job A\'s payment evidence was anchored before the claim on job B');
+  assert.deepEqual(w.effects.deliverySubmit, [], 'job A\'s Deliverable is not sent');
+  assert.equal(w.createsAt(deliverable), 0);
+  // A's anchored evidence is the input A's election was computed from.
+  const { signature: _signature, ...anchored } = w.writtenAt(paymentAddress(a));
+  assert.deepEqual(anchored, evidenceInput(a));
+  const retained = await w.retainedSession(a.jobId);
+  assert.equal(retained.settlementCredit, 'indeterminate');
+  assert.deepEqual([retained.deliveryHold?.result?.decision, retained.deliveryHold?.result?.code], ['rejected', 'payment-permit-invalid'], shown(retained.deliveryHold));
+});

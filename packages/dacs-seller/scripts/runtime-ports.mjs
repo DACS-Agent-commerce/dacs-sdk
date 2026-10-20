@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Run-time ports from the plugin seller kit (RUNTIME-PORTS.json). Each port is
 // a generated header plus the listed source lines, unchanged and in order,
-// after the listed import replacements (each must apply exactly once) and,
-// where a port sets publicationText, the repository's publication wording.
+// after the listed replacements (each must apply exactly once; an import path
+// unless its third element names another change, which the header then names)
+// and, where a port sets publicationText, the repository's publication wording.
 //   --source <http-mcp directory> --write   regenerate the ports and their pins
 //   --source <http-mcp directory> --check   exit 1 unless every port regenerates exactly
 //   (no arguments)                          exit 1 unless every port matches its pinned hash
@@ -24,7 +25,7 @@ export function render(spec,port,source){
   body=body.replace(from,()=>to);
  }
  if(port.publicationText){const published=redactText(body);if(published===body)throw new Error(`${port.target}: publication wording changes nothing`);body=published;}
- const changed=[...(port.replace.length?['import paths']:[]),...(port.publicationText?['publication wording']:[])];
+ const changed=[...new Set(port.replace.map(([,,change='import paths'])=>change)),...(port.publicationText?['publication wording']:[])];
  const header=[...comment(`Run-time port of http-mcp/${port.source} at ${spec.sourceRepository} ${spec.sourceCommit}: ${ranges(port.lines)}.`),
   `// The source lines below are unchanged${changed.length?` except ${changed.join(' and ')}`:''} (RUNTIME-PORTS.json).`,
   ...(port.omitted?comment(`Left out: ${port.omitted}.`):[])];

@@ -75,16 +75,19 @@ assert.equal((await seller.validateListing(listing, { now: () => now, revocation
 const reached = [];
 const refuse = (name) => async () => { reached.push(name); throw new Error(`${name} is not reached while negotiating`); };
 const buyerBundle = identityFor(buyerKey, now);
-// The operator's seller-owned session admission: the orchestrator-signed
-// CompositeVerificationRecords it keeps, one challenge it issued per job (the
+// The operator's seller-owned session admission: the counterparty-verified
+// CompositeVerificationRecords it keeps (DACS-2 §7.7.2: the buyer's signed by
+// the seller, the seller's by the buyer), one challenge it issued per job (the
 // bundle's sessionNonce), a fresh active revocation reading and both parties
 // under the package's exact profile.
 const vetRecords = new Map(), challenges = new Map(), admissionCalls = [];
+const verifierOf = (party) => (party === sellerKey.claim ? buyerKey : sellerKey);
 const vetRef = async (jobId, party, bundle) => {
+  const verifier = verifierOf(party);
   const record = await core.signComponentArtifact({ recordVersion: '1', jobId, evaluatedParty: party, bundleHash: core.identityBundleHash(bundle), requirementHash: core.sha256Hex(`installed-requirement:${jobId}`),
-    freshness: [], supplementary: [], dealSpecific: [], overallDecision: 'pass', generatedAt: now }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: sellerKey.claim, sign: sellerKey.sign });
+    freshness: [], supplementary: [], dealSpecific: [], overallDecision: 'pass', generatedAt: now }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: verifier.claim, sign: verifier.sign });
   vetRecords.set(core.contentHash(record), record);
-  return { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.contentHash(record), signer: sellerKey.claim };
+  return { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.contentHash(record), signer: verifier.claim };
 };
 const sessionAdmission = {
   admit: async (query) => {
@@ -106,7 +109,7 @@ const vettedInput = (jobId) => inputs.get(jobId) ?? inputs.set(jobId, (async () 
 // A Vet context that names a hash with no record behind it.
 const fabricatedInput = (jobId) => {
   const input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
-  const ref = (party) => ({ anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.sha256Hex(`installed-vet:${jobId}:${party}`), signer: sellerKey.claim });
+  const ref = (party) => ({ anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.sha256Hex(`installed-vet:${jobId}:${party}`), signer: verifierOf(party).claim });
   return { ...input, buyer: { ...input.buyer, vetRecordRef: ref(buyerKey.claim) }, seller: { ...input.seller, vetRecordRef: ref(sellerKey.claim) } };
 };
 const fabricatedJobs = new Set();

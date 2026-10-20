@@ -114,8 +114,14 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   (`session_admission_unavailable`). Neither refusal keeps an effect. Each Vet
   reference the context gives is relied on only through the record
   `resolveVetRecord` returns. That record must be a CompositeVerificationRecord
-  with the reference's exact hash, signed by this seller as orchestrator, for
-  this job, party and bundle, with a `pass` decision (DACS-2 §7.7.1). A session
+  with the reference's exact hash, for this job, party and bundle, with a
+  `pass` decision (DACS-2 §7.7.1). It must be signed by the party's
+  counterparty verifier, which the reference names as `signer` (DACS-2
+  §7.7.2): the buyer's record by this seller, the seller's own record by the
+  buyer. Each Vet requirement invocation the context gives must name one of
+  these records, evaluate its party and name that counterparty as verifier,
+  as the SDK delivery runner checks in the audit source; otherwise the
+  Agreement is not signed. A session
   in flight, signed under its pin, continues without a new admission. The agent
   itself never makes up a revocation reading: its startup check reads only the
   Listing's own bytes, signature and rail.

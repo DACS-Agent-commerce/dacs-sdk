@@ -398,14 +398,24 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               return { disposition: 'rejected', reason: 'the Vet context names the not-performed Vet references' };
             }
             // DACS-2 §7.7.1: a reference is relied on only through the record it names.
+            // §7.7.2: each party's record is verified by its counterparty, the
+            // buyer's by the seller and the seller's by the buyer.
             if (!retained) {
-              for (const [role, party, bundle] of [['buyer', session.buyerBundle.presentedBy, session.buyerBundle], ['seller', claim, sellerBundle]]) {
+              const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sellerBundle, session.buyerBundle.presentedBy]];
+              for (const [role, party, bundle, verifier] of parties) {
                 const ref = resolved.input[role].vetRecordRef;
                 let record;
                 try { record = await admission.resolveVetRecord(structuredClone({ jobId, role, party, ref })); }
                 catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
-                const problem = vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), orchestrator: claim });
+                const problem = vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier });
                 if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
+              }
+              // The delivery audit source carries these invocations; the delivery
+              // runner takes one only for a party's record, evaluating that party
+              // and naming its counterparty verifier.
+              const bound = (invocation) => parties.find(([role]) => invocation?.vetRecordRef !== undefined && canonicalize(invocation.vetRecordRef) === canonicalize(resolved.input[role].vetRecordRef));
+              if (resolved.vetRequirements.some((invocation) => { const entry = bound(invocation); return !entry || invocation.evaluatedParty !== entry[1] || invocation.verifier !== entry[3]; })) {
+                return { disposition: 'rejected', reason: 'VET_RECORD_UNVERIFIED: a Vet requirement invocation does not name its party\'s record, that party and its counterparty verifier' };
               }
             }
             session.demDeliveryContext = structuredClone(resolved);

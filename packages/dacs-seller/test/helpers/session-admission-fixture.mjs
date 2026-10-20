@@ -1,20 +1,24 @@
 // A seller-owned session admission for tests: it issues one challenge per job
 // (the bundle's sessionNonce must be it), reads the Listing as active, admits
 // both parties under the package's exact profile, and keeps the
-// orchestrator-signed CompositeVerificationRecords its Vet references name.
+// counterparty-verified CompositeVerificationRecords its Vet references name
+// (DACS-2 §7.7.2: the buyer's record signed by the seller, the seller's by the buyer).
 // `overrides` replaces parts of an admitted answer to build refusal vectors.
 import * as core from '@kynesyslabs/dacs';
 import { SELLER_PROFILE } from '../../src/dacs/session-admission.mjs';
 
-export function createSessionAdmissionFixture({ seller, now = () => Date.now() }) {
+export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.now() }) {
   const records = new Map(), calls = [];
-  // The reference always names the seller as orchestrator at the job's
-  // canonical address; the options build records that do not back it.
-  const vetRecord = async (jobId, party, bundle, { decision = 'pass', signer = seller, recordJobId = jobId, bundleHash = core.identityBundleHash(bundle) } = {}) => {
-    const unsigned = { recordVersion: '1', jobId: recordJobId, evaluatedParty: party, bundleHash, requirementHash: core.sha256Hex(`requirement:${jobId}`),
+  // The reference names the party's verifier (by default its counterparty) at
+  // the job's canonical address; the options build records that do not back it.
+  // A record's hash leaves out its signature, so records by different signers
+  // differ in content: one never replaces another here.
+  const vetRecord = async (jobId, party, bundle, { decision = 'pass', verifier = party === seller.claim ? buyer : seller, signer = verifier, recordJobId = jobId,
+    bundleHash = core.identityBundleHash(bundle) } = {}) => {
+    const unsigned = { recordVersion: '1', jobId: recordJobId, evaluatedParty: party, bundleHash, requirementHash: core.sha256Hex(`requirement:${jobId}:${signer.claim}`),
       freshness: [], supplementary: [], dealSpecific: [], overallDecision: decision, generatedAt: now() };
     const record = await core.signComponentArtifact(unsigned, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: signer.claim, sign: signer.sign });
-    const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.contentHash(record), signer: seller.claim };
+    const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.contentHash(record), signer: verifier.claim };
     records.set(ref.contentHash, record);
     return ref;
   };

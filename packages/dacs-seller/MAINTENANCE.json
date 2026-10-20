@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "41c2e1c7b945c8ee1bed2b5958f7730b3cf934029cc1df988d3b8c975f66d9c9",
+      "sha256": "108ce21b70b49379c3c73b3bdceaa55bb2eb00233ed042cd0cf8a875e0120d9a",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -232,8 +232,8 @@
     {
       "path": "packages/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs",
       "originalSha256": null,
-      "sha256": "682a57ba2857cef4bf5c54a868263cfa0dbd85cb23c285bb7cdabb8f6610268e",
-      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+      "sha256": "08e64abdf526bb1b724d8c1a3ab0bb96f491ff44816282bb845379669c0f8f94",
+      "reason": "Seller run time: port from the plugin seller kit, changed only for the counterparty Vet verifier (DACS-2 §7.7.2; RUNTIME-PORTS.json)."
     },
     {
       "path": "packages/dacs-seller/src/dacs/demos-claims.mjs",
@@ -358,7 +358,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
       "originalSha256": null,
-      "sha256": "c3c2079edc62d013dbf0bd761cb4a78c20778a3e2cfe88a85bf627cfeaa2b7e0",
+      "sha256": "ec30f86e9e59c3df8913ae14068775625e253885d4b78384e61aba2369823169",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -382,7 +382,7 @@
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "1b7f0a49f78978753a6e9f9c264c06ef0419eaf32cd0ff7bff59ee8d4e8b5138",
+      "sha256": "975fd340964fec72daeb54459c7deabfb2e9484628db015330277038027e54ab",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -412,13 +412,13 @@
     {
       "path": "packages/dacs-seller/src/dacs/session-admission.mjs",
       "originalSha256": null,
-      "sha256": "c32d19a7dff47bd43b04cef0c3d0a7a88f2658cc292eac93d19cc2ad37d4102e",
+      "sha256": "3ca7a18485f9fdd74c4a25cf270a91676a9b1009432be93d9e90115feb0fe790",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/helpers/session-admission-fixture.mjs",
       "originalSha256": null,
-      "sha256": "946868b1a4c612865379354176b53199b3ba683e069357d71cf52632192c7ff7",
+      "sha256": "15f7ec69eaff0280e94450b996df7d394b398b1d41dd422ab5ccbdaa28e84a51",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -430,7 +430,7 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "c1400d241a854f56f27007de855299f404d92fa523fe0c6cb5f043556dcd3dbc",
+      "sha256": "6a292541b6481434e012f95a2832373b8295ef8c88f36e346fff36758d16bc1f",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     }
   ]

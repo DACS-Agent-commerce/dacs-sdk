@@ -17,8 +17,10 @@
 //        `active` (revoked or unknown refuses the new session).
 //  - resolveVetRecord({ jobId, role, party, ref }) answers the
 //    CompositeVerificationRecord the Vet reference names (DACS-2 §7.7.1): its
-//    exact hash, the orchestrator's signature, the job, the evaluated party,
-//    its bundle and a passing decision are checked here.
+//    exact hash, the signature of the party's counterparty verifier (DACS-2
+//    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
+//    the job, the evaluated party, its bundle and a passing decision are
+//    checked here.
 import { ARTIFACT_SEPARATORS, canonicalize, contentHash, isCanonicalBase64Url, isCompositeVerificationRecord, signedBytes } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 
@@ -60,12 +62,13 @@ export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash,
 }
 
 // The reason a resolved Vet record does not back its reference, or null.
-export function vetRecordProblem(record, { ref, jobId, party, bundleHash, orchestrator }) {
+// `verifier` is the evaluated party's counterparty (DACS-2 §7.7.2).
+export function vetRecordProblem(record, { ref, jobId, party, bundleHash, verifier }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
-  if (record.signature.signer !== orchestrator || ref.signer !== orchestrator || !isCanonicalBase64Url(record.signature.value)
-      || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by the phase orchestrator';
+  if (record.signature.signer !== verifier || ref.signer !== verifier || !isCanonicalBase64Url(record.signature.value)
+      || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   return null;
 }

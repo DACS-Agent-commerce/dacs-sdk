@@ -2,7 +2,7 @@
   "format": "dacs-seller-runtime-ports/v1",
   "sourceRepository": "DACS-Agent-commerce/frontend",
   "sourceCommit": "15fdf23",
-  "rule": "Each port is the listed source lines, unchanged and in order, after a generated header. Only the listed import replacements are applied, and, where publicationText is set, the repository's publication wording (scripts/lib/publication-text.mjs). Regenerate or check with scripts/runtime-ports.mjs --source <http-mcp directory> [--write|--check].",
+  "rule": "Each port is the listed source lines, unchanged and in order, after a generated header. Only the listed replacements are applied (import paths, or the change a replacement's third element names, which the port's header then names), and, where publicationText is set, the repository's publication wording (scripts/lib/publication-text.mjs). Regenerate or check with scripts/runtime-ports.mjs --source <http-mcp directory> [--write|--check].",
   "ports": [
     {
       "target": "src/dacs/listing.mjs",
@@ -261,10 +261,31 @@
           152
         ]
       ],
-      "replace": [],
+      "replace": [
+        [
+          "// and every Vet reference must name a seller/orchestrator-produced composite\n// at the canonical DACS-2 address.",
+          "// and every Vet reference must name a composite signed by its counterparty\n// verifier (DACS-2 §7.7.2: the buyer's by the seller, the seller's by the\n// buyer) at the canonical DACS-2 address.",
+          "the counterparty Vet verifier"
+        ],
+        [
+          "function vetRefProblem(ref, jobId, party, seller, role) {\n  if (!exactKeys(ref, ['anchor', 'contentHash', 'signer']) || !exactKeys(ref.anchor, ['kind', 'locator'])) return `${role} Vet ref is not an exact orchestrator-signed record ref`;",
+          "function vetRefProblem(ref, jobId, party, verifier, role) {\n  if (!exactKeys(ref, ['anchor', 'contentHash', 'signer']) || !exactKeys(ref.anchor, ['kind', 'locator'])) return `${role} Vet ref is not an exact verifier-signed record ref`;",
+          "the counterparty Vet verifier"
+        ],
+        [
+          "if (!HEX64.test(ref.contentHash) || ref.signer !== seller) return `${role} Vet ref is not signed by the bound phase orchestrator`;",
+          "if (!HEX64.test(ref.contentHash) || ref.signer !== verifier) return `${role} Vet ref is not signed by its counterparty verifier`;",
+          "the counterparty Vet verifier"
+        ],
+        [
+          "vetRefProblem(input.seller.vetRecordRef, scope.jobId, scope.seller, scope.seller, 'seller')",
+          "vetRefProblem(input.seller.vetRecordRef, scope.jobId, scope.seller, scope.buyer, 'seller')",
+          "the counterparty Vet verifier"
+        ]
+      ],
       "omitted": "the buyer-side resolver and its answer capture",
       "sourceSha256": "6757fcc43ed5c02cecc83673834174383d64b51741700458f4e9e7adb7758ef8",
-      "sha256": "682a57ba2857cef4bf5c54a868263cfa0dbd85cb23c285bb7cdabb8f6610268e"
+      "sha256": "08e64abdf526bb1b724d8c1a3ab0bb96f491ff44816282bb845379669c0f8f94"
     },
     {
       "target": "src/dacs/agreement-context-consumer.mjs",
