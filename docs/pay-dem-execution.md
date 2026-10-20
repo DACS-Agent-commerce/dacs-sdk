@@ -135,25 +135,34 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   when a loaded entry conflicts with the record and never returns `null` for
   the retained hash.
 
-  A recovered success carries the fee of the record the SDK read (its
-  `transaction_fee`, integer OS) as `networkFeeOs`; a reconciler may omit it,
-  and one that reports another fee is refused. `runSession` re-asserts a saved
-  fee, so a record with another fee, or none, leaves the saved success
-  unresolved (not completed, never reported unpaid).
+  A recovered success carries the fee of the record the SDK read (the sum of
+  its `transaction_fee` components in OS) as `networkFeeOs`. After the
+  denomination fork the transaction query serves each component as an OS
+  number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it, as
+  it serves `content.amount`; node2's recorded envelopes carry
+  `network_fee: 1000000000`. Both forms are read, and a fee in any other form
+  leaves the read indeterminate. A reconciler may omit the fee, and one that
+  reports another fee is refused. `runSession` re-asserts a saved fee, so a
+  record with another fee, or none, leaves the saved success unresolved (not
+  completed, never reported unpaid).
 - A restart without history reconciles in the store. With an attempt record
   the reconciler receives its hash as `txHash`, and any other transaction is
   refused; a failure the SDK read for that hash is final. Without one, the
   reconciler's answer for the key is still read by the SDK, but a failure
   found that way is held, and the saved outcome never binds a later audit.
-- `runSession` takes a native success or permanent failure as final only from
-  this `payDemSettle` adapter (directly, from `settleFromRail`, or through
-  `Agent.runSession`), recognised by identity; a wrapper or a `.bind()` copy
-  is a different function. It re-reads a saved native outcome only through
-  the adapter and does not call any other `resumeSettlement` for it. A
-  success or failure proof from any other `settle` or `resumeSettlement` is
-  that implementation's statement: the session binds the hash and saves it as
-  an unresolved attempt, so a later audit through the adapter reads that hash
-  instead of paying again.
+- `runSession` takes a recovered native success, and any native permanent
+  failure, as final only from this `payDemSettle` adapter (directly, from
+  `settleFromRail`, or through `Agent.runSession`), recognised by identity; a
+  wrapper or a `.bind()` copy is a different function. It re-reads a saved
+  native outcome only through the adapter and does not call any other
+  `resumeSettlement` for it. A success or failure proof from any other
+  `resumeSettlement`, and a failure proof from any other `settle`, is that
+  implementation's statement: the session binds the hash and saves it as an
+  unresolved attempt, so a later audit through the adapter reads that hash
+  instead of paying again. A fresh success from a custom `settle` is the
+  caller's own payment code and completes the run without a node read; a
+  re-run of that session re-reads it only through the adapter and is held as
+  indeterminate without such a read.
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).

@@ -83,6 +83,26 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(doc).not.toMatch(/wire one that reads the node you trust/);
     expect(readme).toContain("so it is not called and the payment stays indeterminate");
     expect(readme).toContain("the session binds its hash and saves it as an unresolved attempt");
+    // A fresh success from a custom settle is not demoted; only recovered
+    // successes and every permanent failure need the adapter's read.
+    expect(doc).toContain("A fresh success from a custom `settle` is the caller's own payment code");
+    expect(readme).toContain("A fresh success that a custom `settle` reports is the caller's own payment code");
+    expect(doc).not.toContain("takes a native success or permanent failure as final only from");
+    expect(readme).not.toContain("A native success or permanent failure is final only when the SDK read");
+  });
+
+  it("says the recovered fee is read in the numeric form node2's record serves", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    const node2 = JSON.parse(read("test/fixtures/demos-node2-records.json")) as {
+      getTxByHash: Record<string, { response: { content: { transaction_fee: Record<string, unknown> } } }>;
+    };
+    for (const envelope of Object.values(node2.getTxByHash)) {
+      expect(envelope.response.content.transaction_fee).toMatchObject({ network_fee: 1000000000 });
+    }
+    expect(doc).toContain(
+      "the transaction query serves each component as an OS number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it",
+    );
+    expect(doc).toContain("node2's recorded envelopes carry `network_fee: 1000000000`");
   });
 
   it("dates the node2 build claims and keeps the fixture historical", () => {

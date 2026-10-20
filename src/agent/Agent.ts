@@ -451,10 +451,12 @@ export interface RunSessionOptions {
    * outcome read-only (see `SessionDeps.resumeSettlement`). Must use the same
    * rail idempotency key and reconcile every ordered `req.priorAttempts` entry
    * before returning; a native transfer is never replaced by another hash.
-   * A native DEM success or permanent failure is final only from the SDK's
-   * `payDemSettle` adapter (directly or from `settleFromRail`, not wrapped)
-   * over the rail `createPayDemRail` built; a saved one is re-read only
-   * through that adapter, and any other implementation is not called for it.
+   * A recovered native DEM success, and any native permanent failure, is
+   * final only from the SDK's `payDemSettle` adapter (directly or from
+   * `settleFromRail`, not wrapped) over the rail `createPayDemRail` built; a
+   * saved outcome is re-read only through that adapter, and any other
+   * implementation is not called for it. That includes a success a custom
+   * `settle` reported fresh, which completed its run without a node read.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**

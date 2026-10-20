@@ -756,16 +756,21 @@ success, a bound failed record included, is refused the same way: the session
 neither completes nor records the payment as failed, and the saved success
 stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7).
 
-A native success or permanent failure is final only when the SDK read the
-node's record for that hash itself: over the rail `createPayDemRail` built,
-the adapter reads the record through that rail's own connection and takes its
-status, block, nonce, parties, amount and fee from it; the reconciler's answer
-only names the hash and can refuse, and one the record contradicts is refused.
-Over any other rail the adapter returns no recovered verdict at all. A success
-or failure proof that any other `settle` or `resumeSettlement` reports is its
-statement: the session binds its hash and saves it as an unresolved attempt,
+A recovered native success, and any native permanent failure, is final only
+when the SDK read the node's record for that hash itself: over the rail
+`createPayDemRail` built, the adapter reads the record through that rail's own
+connection and takes its status, block, nonce, parties, amount and fee from
+it; the reconciler's answer only names the hash and can refuse, and one the
+record contradicts is refused. Over any other rail the adapter returns no
+recovered verdict at all. A success or failure proof that any other
+`resumeSettlement` reports, and a failure proof that any other `settle`
+reports, is its statement: the session binds its hash and saves it as an unresolved attempt,
 so a later resume through the adapter audits that hash instead of paying
-again, and never ends the session as failed on it. A recovered failure is
+again, and never ends the session as failed on it. A fresh success that a
+custom `settle` reports is the caller's own payment code: the run completes on
+it without a node read. Once saved it is re-read only through the adapter like
+any other, so a re-run of that session without such a read is held as
+indeterminate and never pays again. A recovered failure is
 final only for a hash the session already held. Requiring a `confirmed` record is
 stricter than the pinned DACS-4 §9.5.9 text, which counts a terminal `included`
 status as success: the node can
