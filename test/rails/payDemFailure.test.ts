@@ -22,7 +22,7 @@ const key = "pay-dem:failure-proof:0";
 describe("terminal failed Demos record", () => {
   it.each(["", " demos", "demos ", "de\u0301mos"])(
     "refuses noncanonical failure-proof network %j", (chainId) => {
-      expect(hasDefinitiveDemosFailure({ ...failure, chainId }, proof.amountOs)).toBe(false);
+      expect(hasDefinitiveDemosFailure({ ...failure, chainId }, proof.amountOs, "demos")).toBe(false);
     },
   );
   it("binds failure proof to the configured network", () => {
@@ -31,7 +31,7 @@ describe("terminal failed Demos record", () => {
   });
   it.each([`z${txHash}`, `${txHash}z`])("refuses extra transaction-hash bytes %s", (hash) => {
     expect(hasDefinitiveDemosFailure({ ...failure, txHash: hash,
-      failureProof: { ...proof, txHash: hash } }, proof.amountOs)).toBe(false);
+      failureProof: { ...proof, txHash: hash } }, proof.amountOs, "demos")).toBe(false);
   });
   it("persists a permanent result and reuses it after a store restart without submission", async () => {
     const log = createInMemorySettlementLog();

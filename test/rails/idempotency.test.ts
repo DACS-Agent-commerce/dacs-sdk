@@ -888,15 +888,48 @@ describe("pay-dem terminal-failure proof binding", () => {
     }).filter(([, value]) => value !== undefined),
   ) as unknown as SettleResult;
 
-  test("persists a bound failed record as definitive and reuses it without resubmitting", async () => {
+  // The proof checks shape and bindings, not origin. One no node served, from
+  // a caller's own submission, must keep the attempt held: never a durable
+  // verdict and never a second submission. Only payDemSettle's submission
+  // around createPayDemRail's own settle is record-verified; the persisted
+  // case is pinned with that rail in payDemExecutedStatus.test.ts.
+  test("keeps an invented, self-consistent proof from a caller's submission held", async () => {
     const log = createInMemorySettlementLog();
-    const store = createIdempotencyStore(log);
-    const submit = vi.fn(async () => failed());
-    await expect(store.once(DEM_KEY, demBinding(), submit)).resolves.toEqual(failed());
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const invented = failed({
+      txHash: "ab".repeat(32),
+      blockNumber: 2,
+      failureProof: proof({ txHash: "ab".repeat(32), nonce: 1, blockNumber: 2 }),
+    });
+    const submit = vi.fn(async () => invented);
+    await expect(createIdempotencyStore(log).once(DEM_KEY, demBinding(), submit))
+      .resolves.toEqual(invented);
     const restarted = createIdempotencyStore(log);
-    await expect(restarted.once(DEM_KEY, demBinding(), submit)).resolves.toEqual(failed());
-    await expect(restarted.readOutcome!(DEM_KEY, demBinding())).resolves.toEqual(failed());
+    await expect(restarted.once(DEM_KEY, demBinding(), submit)).rejects.toThrow(/refusing to resubmit/);
+    await expect(restarted.readOutcome!(DEM_KEY, demBinding())).resolves.toBeNull();
     expect(submit).toHaveBeenCalledTimes(1);
+    expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  test("never records a reconciled failure proof as the definitive outcome", async () => {
+    let clock = 1_000;
+    const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const options = { now: () => clock, leaseDurationMs: 10 };
+    const first = createIdempotencyStore(log, options);
+    // An attempt whose process died after the effect: a not-ok result with a
+    // hash leaves the intent held until its lease expires.
+    await first.once(DEM_KEY, demBinding(), async () => failed({
+      errorClass: undefined, failureProof: undefined,
+    }));
+    clock += 100;
+    const submit = vi.fn(async () => failed());
+    const reconcile = vi.fn(async () => failed());
+    await expect(createIdempotencyStore(log, options).once(DEM_KEY, demBinding(), submit, reconcile))
+      .rejects.toThrow(/reconciliation was not definitive/);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(submit).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
   });
 
   test.each([

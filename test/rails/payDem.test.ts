@@ -1,8 +1,9 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import {
   TERMINAL_INCLUDED,
+  createPayDemRail,
   payDemSettleCore,
   payDemSettle,
   type DemosNativeClient,
@@ -25,6 +26,89 @@ const RECIPIENT = "d4".repeat(32);
 const PAYER = "c3".repeat(32);
 const TX_HASH = "12".repeat(32);
 const OTHER_TX_HASH = "34".repeat(32);
+
+const sdk = vi.hoisted(() => ({
+  broadcast: vi.fn(),
+  confirm: vi.fn(),
+  connect: vi.fn(),
+  connectWallet: vi.fn(),
+  getNetworkInfo: vi.fn(),
+  getTxByHash: vi.fn(),
+  nodeCall: vi.fn(),
+  transfer: vi.fn(),
+  waitForNonce: vi.fn(),
+}));
+
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class MockDemos {
+    readonly tx = { confirm: sdk.confirm };
+    readonly broadcast = sdk.broadcast;
+    readonly connect = sdk.connect;
+    readonly connectWallet = sdk.connectWallet;
+    readonly getNetworkInfo = sdk.getNetworkInfo;
+    readonly getTxByHash = sdk.getTxByHash;
+    readonly nodeCall = sdk.nodeCall;
+    readonly transfer = sdk.transfer;
+    readonly waitForNonce = sdk.waitForNonce;
+
+    getAddress(): string {
+      return `0x${PAYER}`;
+    }
+  },
+}));
+
+// The node signs TX_HASH at nonce 9, includes it at block 4242, and records the
+// broadcast transaction with the status `recordStatus` sets (default confirmed).
+let recordStatus = "confirmed";
+beforeEach(() => {
+  for (const method of Object.values(sdk)) method.mockReset();
+  recordStatus = "confirmed";
+  sdk.connect.mockResolvedValue(undefined);
+  sdk.connectWallet.mockResolvedValue(undefined);
+  sdk.getNetworkInfo.mockResolvedValue({ forks: { osDenomination: { activated: true } } });
+  sdk.transfer.mockImplementation(async (to: string, amountOs: bigint) => ({
+    hash: TX_HASH,
+    content: {
+      type: "native",
+      from: `0x${PAYER}`,
+      to,
+      amount: amountOs.toString(),
+      nonce: 9,
+      data: ["native", { nativeOperation: "send", args: [to, amountOs.toString()] }],
+    },
+  }));
+  sdk.confirm.mockImplementation(async (signed: { hash: string; content: object }) => ({
+    response: { data: { transaction: { hash: signed.hash, content: { ...signed.content } } } },
+  }));
+  sdk.broadcast.mockResolvedValue({ result: 200, response: { hash: TX_HASH } });
+  sdk.nodeCall.mockResolvedValue({ state: "included", blockNumber: 4242 });
+  sdk.getTxByHash.mockImplementation(async () => {
+    const transaction = (sdk.broadcast.mock.calls.at(-1)?.[0] as {
+      response: { data: { transaction: { content: { nonce: number } } } };
+    }).response.data.transaction;
+    return {
+      ...transaction,
+      content: { ...transaction.content, nonce: String(transaction.content.nonce) },
+      status: recordStatus,
+      blockNumber: 4242,
+    };
+  });
+  sdk.waitForNonce.mockResolvedValue(undefined);
+});
+
+/**
+ * The SDK's own rail over the mocked node: the only rail whose verdicts are
+ * final, because it reads and binds the transaction record itself (#338).
+ */
+const sdkRail = () => createPayDemRail({
+  rpc: "https://node.test",
+  secret: "test-secret",
+  inclusionPollIntervalMs: 1,
+  statusRequestTimeoutMs: 50,
+  transactionRecordTimeoutMs: 200,
+});
+/** Native transfers the SDK rail signed over the mocked node. */
+const sdkTransfers = () => sdk.transfer.mock.calls.length;
 
 /** A fake native client recording the transfer it was asked to submit. */
 function fakeClient(
@@ -65,19 +149,26 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+/** A custom client's result: the hash is kept so the intent stays held; nothing is final. */
+const HELD = {
+  ok: false,
+  txHash: TX_HASH,
+  chainId: "demos:testnet",
+  payer: PAYER,
+  payee: RECIPIENT,
+};
+
 describe("payDemSettleCore (§9.5.9 native DEM)", () => {
-  test("happy path: transfers OS base units and reports a bft-final demos txRef", async () => {
+  // #338: only the client createPayDemRail builds reads the node's transaction
+  // record. A custom client's `execution: "executed"` with no record read is its
+  // statement, so it never mints a final payment (payDemExecutedStatus.test.ts
+  // pins the SDK client's executed, failed and indeterminate verdicts).
+  test("holds a custom client's executed statement without a record read: OS base units, no final verdict", async () => {
     const client = fakeClient();
     const res = await payDemSettleCore(params(), client);
-    expect(res.ok).toBe(true);
-    expect(res.txHash).toBe(TX_HASH);
-    expect(res.payer).toBe(PAYER);
-    expect(res.payee).toBe(RECIPIENT);
-    expect(res.chainId).toBe("demos:testnet");
-    // §9.5.9 evidence shape: bft-final finality, demos txRef kind, block height.
-    expect(res.finality).toEqual({ model: "bft-final" });
-    expect(res.txRefKind).toBe("demos");
-    expect(res.blockNumber).toBe(4242);
+    expect(res).toEqual(HELD);
+    expect(res.finality).toBeUndefined();
+    expect(res.blockNumber).toBeUndefined();
     expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
   });
 
@@ -145,7 +236,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("hands the exact recovery context to the native client", async () => {
     const client = fakeClient();
     await expect(payDemSettleCore(params({ recovery: recovery() }), client))
-      .resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      .resolves.toEqual(HELD);
     expect(client.sent).toEqual({
       to: RECIPIENT,
       amountOs: 1_500_000_000n,
@@ -246,10 +337,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
         blockNumber: 1,
       },
     });
-    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
-      ok: true,
-      txHash: TX_HASH,
-    });
+    await expect(payDemSettleCore(params(), client)).resolves.toEqual(HELD);
   });
 
   test("broadcast ACCEPTANCE without observed inclusion → ok:false, no bft-final (steward finding)", async () => {
@@ -323,18 +411,10 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       } as unknown as DemosTransferResult,
     });
 
-    test("a client's bound failed record is a permanent failure", async () => {
-      await expect(payDemSettleCore(params(), failedClient(failedProof()))).resolves.toEqual({
-        ok: false,
-        txHash: TX_HASH,
-        chainId: "demos:testnet",
-        payer: PAYER,
-        payee: RECIPIENT,
-        errorClass: "permanent",
-        failureProof: failedProof(),
-        blockNumber: 7,
-        txRefKind: "demos",
-      });
+    // Only the SDK's own client issues a failure proof (#338); a custom
+    // client's otherwise bound proof is its statement and stays held.
+    test("holds a custom client's otherwise bound failed record, not permanent", async () => {
+      await expect(payDemSettleCore(params(), failedClient(failedProof()))).resolves.toEqual(HELD);
     });
 
     test.each([
@@ -349,6 +429,50 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       ["no proof", undefined],
     ])("a failed record with %s is not permanent", async (_case, failureProof) => {
       await expect(payDemSettleCore(params(), failedClient(failureProof))).resolves.toEqual({
+        ok: false,
+        txHash: TX_HASH,
+        chainId: "demos:testnet",
+        payer: PAYER,
+        payee: RECIPIENT,
+      });
+    });
+
+    // A client that journals these prepared transfers, then reports the failure.
+    const journalingClient = (
+      failureProof: unknown,
+      journaledTransfers: ReadonlyArray<{ txHash: string; nonce: number }>,
+    ): DemosNativeClient => ({
+      address: PAYER,
+      async transfer(args) {
+        for (const prepared of journaledTransfers) {
+          await args.journalPreparedTransfer?.({
+            ...prepared,
+            payer: PAYER,
+            payee: RECIPIENT,
+            amountOs: "1500000000",
+            network: "demos:testnet",
+          });
+        }
+        return {
+          ok: false, state: "failed", hash: TX_HASH, blockNumber: 7, failureProof,
+        } as unknown as DemosTransferResult;
+      },
+    });
+
+    test.each([
+      ["the journaled signed nonce", [{ txHash: TX_HASH, nonce: 9 }]],
+      ["another nonce than the journaled one", [{ txHash: TX_HASH, nonce: 10 }]],
+      ["no journaled transfer", []],
+      ["a journaled transfer for another hash", [{ txHash: OTHER_TX_HASH, nonce: 9 }]],
+      ["two different journaled transfers", [
+        { txHash: TX_HASH, nonce: 9 },
+        { txHash: TX_HASH, nonce: 10 },
+      ]],
+    ])("a failed record with %s is not permanent", async (_case, journaled) => {
+      await expect(payDemSettleCore(
+        params({ journalPreparedTransfer: async () => undefined }),
+        journalingClient(failedProof(), journaled),
+      )).resolves.toEqual({
         ok: false,
         txHash: TX_HASH,
         chainId: "demos:testnet",
@@ -381,7 +505,9 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     expect(res.finality).toBeUndefined();
   });
 
-  test("accepts the exact DACS-4 §9.5.9 terminal included state", async () => {
+  // The SDK client's acceptance of `included` is pinned in payDem-adapter and
+  // payDemExecutedStatus; a custom client's claim of it is never final.
+  test("pins the exact DACS-4 §9.5.9 terminal included state and holds a custom client's claim of it", async () => {
     expect([...TERMINAL_INCLUDED]).toEqual(["included"]);
     const client = fakeClient({
       result: {
@@ -392,11 +518,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
         blockNumber: 7,
       },
     });
-    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
-      ok: true,
-      finality: { model: "bft-final" },
-      blockNumber: 7,
-    });
+    await expect(payDemSettleCore(params(), client)).resolves.toEqual(HELD);
   });
 
   test.each(["confirmed", "finalized", "INCLUDED", "accepted"])(
@@ -493,10 +615,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       value: poison,
     });
 
-    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
-      ok: true,
-      txHash: TX_HASH,
-    });
+    await expect(payDemSettleCore(params(), client)).resolves.toEqual(HELD);
     expect(poison).not.toHaveBeenCalled();
     expect(client.calls).toEqual([1_500_000_000n]);
   });
@@ -607,12 +726,66 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   });
 
   test("converts the agreement's DECIMAL DEM to integer OS base units (×10^9)", async () => {
-    const client = fakeClient();
-    const res = await settleWith(client)(req({ amount: "5" }));
+    const res = await payDemSettle(await sdkRail(), {
+      recipient: PAYEE_CLAIM,
+      network: "demos",
+    })(req({ amount: "5" }));
     expect(res.ok).toBe(true);
     // "5" DEM must move 5 × 10^9 OS — NOT 5 OS (the pre-fix silent 10^-9 bug).
-    expect(client.sent!.amountOs).toBe(5_000_000_000n);
+    expect(sdk.transfer.mock.calls[0]![1]).toBe(5_000_000_000n);
     expect(res.finality).toEqual({ model: "bft-final" });
+  });
+
+  // #338: the bridge reports a final verdict only from createPayDemRail's own
+  // settle, which reads the transaction record. A custom rail's success or
+  // bound failure is its statement: held, never final, never persisted.
+  test.each([
+    ["a custom client's executed statement", (): PayDemRail => ({
+      address: PAYER,
+      settle: (params) => payDemSettleCore(params, fakeClient()),
+    })],
+    ["a custom rail's executed success", (): PayDemRail => ({
+      address: PAYER,
+      settle: async () => ({
+        ok: true,
+        execution: "executed",
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: SELLER_HEX,
+        finality: { model: "bft-final" },
+        blockNumber: 4242,
+        txRefKind: "demos",
+      }),
+    })],
+    ["a wrapper relaying the SDK rail's genuine success", (sdkOwned?: PayDemRail): PayDemRail => ({
+      address: PAYER,
+      settle: (params, fence) => sdkOwned!.settle(params, fence),
+    })],
+  ])("holds %s without a final verdict or a second payment", async (_case, build) => {
+    const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const settle = payDemSettle(build(await sdkRail()), { network: "demos" }, {
+      store: createIdempotencyStore(log),
+    });
+    const held = await settle(req());
+    expect(held).toEqual({
+      ok: false,
+      txHash: TX_HASH,
+      chainId: "demos",
+      payer: PAYER,
+      payee: SELLER_HEX,
+    });
+    await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
+    expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  test("keeps the SDK rail's settle final when a caller reuses it on its own object", async () => {
+    const owned = await sdkRail();
+    const res = await payDemSettle({ address: owned.address, settle: owned.settle }, {
+      network: "demos",
+    })(req());
+    expect(res).toMatchObject({ ok: true, txHash: TX_HASH, finality: { model: "bft-final" } });
   });
 
   test("handles fractional DEM within the 9-decimal precision", async () => {
@@ -622,24 +795,17 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   });
 
   test("SAFE BY DEFAULT: repeated settlement for one session phase submits once", async () => {
-    const client = fakeClient();
-    let transfers = 0;
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: async (params) => {
-        transfers += 1;
-        return payDemSettleCore(params, client);
-      },
-    };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(await sdkRail(), { network: "demos" });
     const first = await settle(req());
+    expect(first.ok).toBe(true);
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.finality)).toBe(true);
     expect(() => {
       (first.finality as { model: string }).model = "mutated";
     }).toThrow();
     const second = await settle(req());
-    expect(transfers).toBe(1);
+    expect(sdkTransfers()).toBe(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
     expect(second).toEqual(first);
     expect(first).not.toHaveProperty("execution");
   });
@@ -694,15 +860,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   });
 
   test("an injected durable store dedupes across bridge instances after restart", async () => {
-    const client = fakeClient();
-    let transfers = 0;
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: async (params) => {
-        transfers += 1;
-        return payDemSettleCore(params, client);
-      },
-    };
+    const rail = await sdkRail();
     const store = createIdempotencyStore(createInMemorySettlementLog());
     await payDemSettle(rail, { network: "demos" }, { store })(req());
     const reconcile = vi.fn(async (context) => ({
@@ -721,8 +879,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       store,
       reconcile,
     })(req());
-    expect(transfers).toBe(1);
-    expect(resumed.txHash).toBe(TX_HASH);
+    expect(sdkTransfers()).toBe(1);
+    expect(resumed).toMatchObject({ ok: true, txHash: TX_HASH });
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
 
@@ -752,17 +910,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       { execution: "included" },
       /does not attest that the transaction record shows the transfer executed/],
   ])("refuses a restarted durable outcome %s", async (_case, reconciled, message) => {
-    const client = fakeClient();
-    let transfers = 0;
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: async (params) => {
-        transfers += 1;
-        return payDemSettleCore(params, client);
-      },
-    };
+    const rail = await sdkRail();
     const store = createIdempotencyStore(createInMemorySettlementLog());
-    await payDemSettle(rail, { network: "demos" }, { store })(req());
+    await expect(payDemSettle(rail, { network: "demos" }, { store })(req()))
+      .resolves.toMatchObject({ ok: true });
     const reconcile = typeof reconciled === "function"
       ? reconciled
       : reconciled === undefined
@@ -787,7 +938,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         ? {}
         : { reconcile: reconcile as unknown as PayDemSettlementReconcile }),
     })(req())).rejects.toThrow(message);
-    expect(transfers).toBe(1);
+    expect(sdkTransfers()).toBe(1);
   });
 
   test("refuses a request for another phase or rail before transferring", async () => {
@@ -1146,25 +1297,63 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       ["another payee", { failureProof: failureProof({ payee: OTHER_HEX }) }],
       ["an extra proof key", { failureProof: { ...failureProof(), extra: 1 } }],
       ["a permanent class without proof", { failureProof: undefined }],
+      ["a proof without a permanent class", { errorClass: undefined }],
     ];
     const withoutUndefined = (value: Record<string, unknown>) =>
       Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+    // createPayDemRail over a node that records the signed transfer `failed`:
+    // its settle reads and binds that record itself, so its proof is the only
+    // one the store may keep (payDemExecutedStatus.test.ts varies the record).
+    const recordVerifiedRail = () => {
+      recordStatus = "failed";
+      return sdkRail();
+    };
+    const HELD_FAILURE = {
+      ok: false,
+      txHash: TX_HASH,
+      chainId: "demos",
+      payer: PAYER,
+      payee: SELLER_HEX,
+    };
 
-    test("persists a rail's bound failed record and reuses it without a second transfer", async () => {
+    test("persists a record-verified rail's bound failed record and reuses it without a second transfer", async () => {
       const log = createInMemorySettlementLog();
       const putOutcome = vi.spyOn(log, "putOutcome");
-      const rail: PayDemRail = {
-        address: PAYER,
-        settle: vi.fn(async () => failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>),
-      };
-      const settle = payDemSettle(rail, { network: "demos" }, {
+      const settle = payDemSettle(await recordVerifiedRail(), { network: "demos" }, {
         store: createIdempotencyStore(log),
       });
       const first = await settle(req());
       expect(first).toEqual({ ...failure(), payee: SELLER_HEX });
       await expect(settle(req())).resolves.toEqual(first);
-      expect(rail.settle).toHaveBeenCalledTimes(1);
+      expect(sdkTransfers()).toBe(1);
       expect(putOutcome).toHaveBeenCalledTimes(1);
+      await expect(createIdempotencyStore(log).readOutcome!(
+        settlementKey("pay-dem", "j1", 0),
+        bindingFor(req()),
+      )).resolves.toEqual(failure());
+    });
+
+    // A custom rail's proof is its statement, even one relaying the SDK rail's
+    // genuine proof: the bridge drops it and the store keeps the intent held.
+    test.each([
+      ["a custom rail", async (): Promise<PayDemRail> => ({
+        address: PAYER,
+        settle: vi.fn(async () => failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>),
+      })],
+      ["a wrapper around a record-verified settle", async (): Promise<PayDemRail> => {
+        const verified = await recordVerifiedRail();
+        return { address: PAYER, settle: (params, fence) => verified.settle(params, fence) };
+      }],
+    ])("holds %s's bound failure proof without persisting it", async (_case, build) => {
+      const log = createInMemorySettlementLog();
+      const putOutcome = vi.spyOn(log, "putOutcome");
+      const rail = await build();
+      const settle = payDemSettle(rail, { network: "demos" }, {
+        store: createIdempotencyStore(log),
+      });
+      await expect(settle(req())).resolves.toEqual(HELD_FAILURE);
+      await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
+      expect(putOutcome).not.toHaveBeenCalled();
     });
 
     test.each(NON_BINDING)("refuses a rail failure proof with %s and holds the intent", async (
@@ -1203,16 +1392,13 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       },
     );
 
-    test("persists a held intent's bound reconciled failure and reuses it", async () => {
+    // A reconciler is the caller's statement, even for a record-verified rail,
+    // so its bound failure never becomes the definitive outcome.
+    test("keeps a held intent held when reconciliation reports a bound failure", async () => {
       const log = createInMemorySettlementLog();
       const request = req({ rail: "demos-native:DEM", jobId: "job-failed", phaseIndex: 7 });
       await seedExpiredIntent(log, request);
-      const rail: PayDemRail = {
-        address: PAYER,
-        settle: vi.fn(async () => {
-          throw new Error("must not rebroadcast");
-        }),
-      };
+      const rail = await recordVerifiedRail();
       const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
         ...failure(),
         amountOs: context.amountOs,
@@ -1222,12 +1408,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         store: createIdempotencyStore(log),
         reconcile: reconcile as unknown as PayDemSettlementReconcile,
       });
-      const first = await settle(request);
-      expect(first).toEqual({ ...failure(), payee: SELLER_HEX });
-      await expect(settle(request)).resolves.toEqual(first);
+      await expect(settle(request)).rejects.toThrow(/reconciliation was not definitive/);
       expect(reconcile).toHaveBeenCalledTimes(1);
-      expect(putOutcome).toHaveBeenCalledTimes(1);
-      expect(rail.settle).not.toHaveBeenCalled();
+      expect(putOutcome).not.toHaveBeenCalled();
+      expect(sdkTransfers()).toBe(0);
     });
 
     test.each([
@@ -1264,15 +1448,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
 
     test("refuses a restarted durable success that reconciliation reports failed", async () => {
       const store = createIdempotencyStore(createInMemorySettlementLog());
-      const client = fakeClient();
-      let transfers = 0;
-      const rail: PayDemRail = {
-        address: PAYER,
-        settle: async (params) => {
-          transfers += 1;
-          return payDemSettleCore(params, client);
-        },
-      };
+      const rail = await sdkRail();
       await expect(payDemSettle(rail, { network: "demos" }, { store })(req()))
         .resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: 4242 });
       const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
@@ -1283,35 +1459,26 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         store,
         reconcile: reconcile as unknown as PayDemSettlementReconcile,
       })(req())).rejects.toThrow(/contradicts the authoritative reconciled outcome/);
-      expect(transfers).toBe(1);
+      expect(sdkTransfers()).toBe(1);
     });
 
     test("refuses a restarted durable failure that reconciliation reports executed", async () => {
       const store = createIdempotencyStore(createInMemorySettlementLog());
-      let transfers = 0;
-      const rail: PayDemRail = {
-        address: PAYER,
-        settle: async () => {
-          transfers += 1;
-          return failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>;
-        },
-      };
+      const rail = await recordVerifiedRail();
       await expect(payDemSettle(rail, { network: "demos" }, { store })(req()))
         .resolves.toMatchObject({ ok: false, errorClass: "permanent" });
       await expect(payDemSettle(rail, { network: "demos" }, {
         store,
         reconcile: vi.fn(async (context: PayDemSettlementRecoveryContext) => success(context)),
       })(req())).rejects.toThrow(/contradicts the authoritative reconciled outcome/);
-      expect(transfers).toBe(1);
+      expect(sdkTransfers()).toBe(1);
     });
 
     test("refuses a restarted durable failure whose reconciled proof names another nonce", async () => {
       const store = createIdempotencyStore(createInMemorySettlementLog());
-      const rail: PayDemRail = {
-        address: PAYER,
-        settle: async () => failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>,
-      };
-      await payDemSettle(rail, { network: "demos" }, { store })(req());
+      const rail = await recordVerifiedRail();
+      await expect(payDemSettle(rail, { network: "demos" }, { store })(req()))
+        .resolves.toMatchObject({ ok: false, errorClass: "permanent" });
       const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
         ...failure({ failureProof: failureProof({ nonce: 10 }) }),
         amountOs: context.amountOs,
@@ -1324,15 +1491,9 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
 
     test("reuses a restarted durable failure that reconciliation confirms", async () => {
       const store = createIdempotencyStore(createInMemorySettlementLog());
-      let transfers = 0;
-      const rail: PayDemRail = {
-        address: PAYER,
-        settle: async () => {
-          transfers += 1;
-          return failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>;
-        },
-      };
+      const rail = await recordVerifiedRail();
       const first = await payDemSettle(rail, { network: "demos" }, { store })(req());
+      expect(first).toMatchObject({ ok: false, errorClass: "permanent" });
       const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
         ...failure(),
         amountOs: context.amountOs,
@@ -1342,7 +1503,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         reconcile: reconcile as unknown as PayDemSettlementReconcile,
       })(req())).resolves.toEqual(first);
       expect(reconcile).toHaveBeenCalledTimes(1);
-      expect(transfers).toBe(1);
+      expect(sdkTransfers()).toBe(1);
     });
   });
 
@@ -1470,22 +1631,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return submit();
       }
     }
-    const rail: PayDemRail = {
-      address: PAYER,
-      async settle(input) {
-        return {
-          ok: true,
-          execution: "executed",
-          txHash: TX_HASH,
-          chainId: input.network ?? "demos",
-          payer: PAYER,
-          payee: input.recipient,
-          finality: { model: "bft-final" },
-          blockNumber: 1,
-          txRefKind: "demos",
-        };
-      },
-    };
+    const rail = await sdkRail();
 
     await expect(payDemSettle(rail, { network: "demos" }, {
       store: new ClassStore(),

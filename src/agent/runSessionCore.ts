@@ -1,7 +1,7 @@
 import { types as nodeTypes } from "node:util";
-export type { DemosFailedRecordProof } from "./settlementFailure.js";
 import {
   hasDefinitiveDemosFailure,
+  payDemRequestAmountOs,
   type DemosFailedRecordProof,
 } from "./settlementFailure.js";
 
@@ -1032,7 +1032,9 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
   if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
       !hasDefinitiveDemosFailure(
         result as unknown as SettleResult,
-        undefined,
+        // The request's amount is bound in validateSettlementResultBinding;
+        // here only the proof's own shape and network are checked.
+        (result.failureProof as { amountOs?: unknown } | null)?.amountOs as string,
         result.chainId as string,
       )) {
     throw new CounterpartyError(`${label} returned a malformed terminal-failure proof`);
@@ -2160,7 +2162,7 @@ function validateSettlementResultBinding(
 ): void {
   if (result.errorClass !== undefined &&
       (!isNativeSettlement(request) ||
-        !hasDefinitiveDemosFailure(result, baseUnits(request.amount, DEM_DECIMALS)))) {
+        !hasDefinitiveDemosFailure(result, baseUnits(request.amount, DEM_DECIMALS), result.chainId))) {
     throw new CounterpartyError(`${label} terminal failure does not bind the payment amount and rail`);
   }
   if (result.networkFeeOs !== undefined && !isNativeSettlement(request)) {
@@ -2170,6 +2172,19 @@ function validateSettlementResultBinding(
     throw new CounterpartyError(
       `${label} returned payee ${result.payee}, expected the request-bound destination ${request.expectedPayee}`,
     );
+  }
+  // A failed-record proof is native DEM only and must carry this request's
+  // exact OS amount, on fresh settlement and on recovery. The request carries
+  // no network, so the proof is bound to the result's own chainId here;
+  // payDemSettle and the settlement store bind it to the configured network.
+  if (result.errorClass !== undefined || result.failureProof !== undefined) {
+    const amountOs = payDemRequestAmountOs(request);
+    if (amountOs === null ||
+        !hasDefinitiveDemosFailure(result, amountOs, result.chainId)) {
+      throw new CounterpartyError(
+        `${label} returned a terminal-failure proof that does not bind the requested pay-dem amount`,
+      );
+    }
   }
 }
 
@@ -2481,7 +2496,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
                 ...data, ok, txHash, chainId,
                 payer: data.payer as string, payee: data.payee as string,
                 failureProof: JSON.parse(data.failureProofJson),
-              }, baseUnits(amount, DEM_DECIMALS))) {
+              }, baseUnits(amount, DEM_DECIMALS), chainId)) {
             return { status: "invalid", reason: "invalid durable terminal-failure proof" };
           }
         } catch {

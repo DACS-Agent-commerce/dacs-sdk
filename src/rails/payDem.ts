@@ -1,6 +1,9 @@
 import { types as nodeTypes } from "node:util";
 
-import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
+import {
+  hasDefinitiveDemosFailure,
+  type DemosFailedRecordProof,
+} from "../agent/settlementFailure.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { baseUnits, canonicalize } from "../canonical/index.js";
 import {
@@ -35,6 +38,27 @@ const DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS = 30_000;
 const DACS_DEMOS_INCLUDED_STATE = "included";
 const DEMOS_EXECUTED_RECORD_STATUS = "confirmed";
 const DEMOS_FAILED_RECORD_STATUS = "failed";
+
+/**
+ * Capabilities whose verdicts come from a node transaction record the SDK read
+ * and bound itself (#338): the native client `createPayDemRail` builds around
+ * demosdk, that rail's `settle`, and `payDemSettle` submissions around such a
+ * settle. Keyed by identity and private to this module: nothing exported from
+ * any shipped file adds to them, and a wrapper is a different object.
+ */
+const sdkRecordReadingClients = new WeakSet<object>();
+const sdkRecordReadingSettles = new WeakSet<object>();
+const sdkRecordReadingSubmissions = new WeakSet<object>();
+
+/**
+ * @internal Whether `submission` is a `payDemSettle` submission around
+ * `createPayDemRail`'s own settle, whose failure proof the SDK built from a
+ * node record it read. Read-only: there is no way to add a source.
+ */
+export function isRecordVerifiedSource(submission: unknown): boolean {
+  return typeof submission === "function" &&
+    sdkRecordReadingSubmissions.has(submission);
+}
 
 type AnyMethod = (...args: never[]) => unknown;
 
@@ -72,6 +96,21 @@ function stableMethod<T extends AnyMethod>(
   key: string,
   label: string,
 ): T {
+  // Never consult a caller-controlled own `.bind` property on the
+  // capability. Capture the exact function while preserving class/private
+  // receivers through the intrinsic Function.prototype operation.
+  return Function.prototype.bind.call(
+    stableMethodTarget(source, key, label),
+    source,
+  ) as T;
+}
+
+/** The exact data-property function {@link stableMethod} binds, unbound. */
+function stableMethodTarget(
+  source: unknown,
+  key: string,
+  label: string,
+): AnyMethod {
   if (
     (typeof source !== "object" && typeof source !== "function") ||
     source === null ||
@@ -93,10 +132,7 @@ function stableMethod<T extends AnyMethod>(
       ) {
         throw new DacsError(`${label} must be a stable method`);
       }
-      // Never consult a caller-controlled own `.bind` property on the
-      // capability. Capture the exact function while preserving class/private
-      // receivers through the intrinsic Function.prototype operation.
-      return Function.prototype.bind.call(descriptor.value, source) as T;
+      return descriptor.value as AnyMethod;
     }
     cursor = Object.getPrototypeOf(cursor) as object | null;
   }
@@ -283,9 +319,10 @@ export interface PayDemReconciledSettlement extends SettleResult {
    */
   preparedTransfer?: PayDemPreparedTransfer;
   /**
-   * The reconciler's statement that the node's transaction record for
-   * `txHash` is `confirmed` at `blockNumber` and binds the payer, payee and
-   * amount (#338). A status-index `included` alone is not execution: the SDK
+   * The reconciler's statement, which the SDK cannot authenticate, that the
+   * node's transaction record for `txHash` is `confirmed` at `blockNumber` and
+   * binds the payer, payee and amount (#338). A status-index `included` alone
+   * is not execution: the SDK
    * refuses a reconciliation without this, as {@link payDemSettleCore} refuses
    * a transfer result without {@link DemosTransferResult.execution}. It is not
    * persisted with the settlement.
@@ -304,7 +341,9 @@ export interface PayDemReconciledSettlement extends SettleResult {
  * status index for a transaction whose record `failed` (#338), so inclusion
  * alone must not be returned as a settlement. A bound `failed` record may
  * return `PayDemReconciledFailure` with a permanent class and exact failure
- * proof. Indeterminate or non-final observations must throw.
+ * proof. It can confirm a durable failure `createPayDemRail` recorded, but is
+ * never itself recorded as the definitive outcome: a held intent stays held.
+ * Indeterminate or non-final observations must throw.
  */
 export interface PayDemReconciledFailure extends SettleResult {
   ok: false;
@@ -339,11 +378,16 @@ export interface DemosTransferResult {
    * `"executed"` when the client read the node's transaction record for the
    * signed hash and it shows the prepared transfer executed at `blockNumber`
    * (#338). Inclusion alone is not execution: {@link payDemSettleCore} reports
-   * success only when this is present, so a client that observed only the
-   * status index fails closed.
+   * success only when this is present. It is final only from the client
+   * `createPayDemRail` builds; from any other client it is a statement and the
+   * result is held.
    */
   execution?: "executed";
-  /** Bound terminal failed record; a status-index failure alone cannot issue it. */
+  /**
+   * Bound terminal failed record; a status-index failure alone cannot issue it.
+   * Permanent only from the client `createPayDemRail` builds, which takes it
+   * from the record it read; any other client's proof is dropped.
+   */
   failureProof?: DemosFailedRecordProof;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
@@ -368,7 +412,10 @@ export interface DemosNativeClient {
    * Sign, confirm, and broadcast a native DEM transfer; resolve its receipt.
    * Resolve `ok: true, state: "included", execution: "executed"` only when the
    * node's transaction record for the signed hash shows the exact prepared
-   * transfer executed; inclusion alone is not success (#338).
+   * transfer executed; inclusion alone is not success (#338). The SDK did not
+   * read that record for a client it did not build, so
+   * {@link payDemSettleCore} holds such a client's result as `ok: false` with
+   * the hash, never final.
    */
   transfer(args: {
     to: string;
@@ -599,6 +646,10 @@ export async function payDemSettleCore(
     "transfer",
     "pay-dem transfer",
   );
+  // Only the client createPayDemRail builds reads the node's transaction record
+  // itself (#338). Any other client's `execution` and failure proof are its
+  // statements, so its result is held as indeterminate, never final.
+  const recordReading = sdkRecordReadingClients.has(client);
 
   let amountOs: bigint;
   try {
@@ -716,9 +767,10 @@ export async function payDemSettleCore(
   // `included` state AND the finality-witness block height. Broadcast acceptance
   // or an unregistered status alias is NOT finality — without these three, we do
   // not stamp bft-final, because the tx may never have landed. Inclusion is not
-  // execution either (#338): the client must also attest that the node's
-  // transaction record shows the transfer executed.
+  // execution either (#338): the SDK's own client must also report that the
+  // node's transaction record it read shows the transfer executed.
   const observedFinal =
+    recordReading &&
     okProperty.value === true &&
     txHash.length > 0 &&
     state === DACS_DEMOS_INCLUDED_STATE &&
@@ -732,7 +784,9 @@ export async function payDemSettleCore(
       errorClass: "permanent" as const, failureProof,
       blockNumber, txRefKind: "demos",
     };
-    if (okProperty.value === false && state === "failed" &&
+    // Only the SDK's own client issues a failure proof: it builds it from the
+    // signed transaction it journaled and the bound record it read.
+    if (recordReading && okProperty.value === false && state === "failed" &&
         hasDefinitiveDemosFailure(failed, amount, chainId)) {
       return failed as PayDemRailResult;
     }
@@ -742,8 +796,9 @@ export async function payDemSettleCore(
       chainId,
       payer,
       payee: recipient,
-      // No finality / blockNumber: inclusion was not observed, so no bft-final
-      // evidence is minted for a possibly-unincluded payment.
+      // No finality / blockNumber: the SDK did not observe execution, so no
+      // bft-final evidence is minted for a possibly-unexecuted payment. The
+      // hash stays so the settlement intent is held for reconciliation.
     };
   }
 
@@ -852,6 +907,8 @@ export interface PayDemRail {
    * verifying literal `confirmed` status, hash, nonce, inclusion block, payer,
    * payee and amount, then returning `execution: "executed"`. Status-index
    * inclusion alone must return a not-ok outcome retaining the signed hash.
+   * {@link payDemSettle} treats a success or failure proof as final only from
+   * the `settle` `createPayDemRail` returned; another rail's is held.
    */
   settle(
     params: PayDemSettleParams,
@@ -1284,9 +1341,11 @@ type ObservedDemosExecution =
  *
  * Node semantics this relies on, verified against the kynesyslabs/node sources
  * `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578` and
- * `stabilisation@52e2e569`. node2 reports 61b8e75 at `GET /version`, but its
- * `getNetworkInfo` marks that build `dirty`, so the deployed bytes are not
- * pinned to that commit; only the served shape below is recorded:
+ * `stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308`. Until early on
+ * 2026-10-20 node2 reported 61b8e75 at `GET /version` from a build its
+ * `getNetworkInfo` marks `dirty`, so the deployed bytes were never pinned to
+ * that commit; later that day it reported 11e7c82 after a chain reset. Only the
+ * served shape below is recorded, and the recorded envelopes are historical:
  * - `getTransactionStatus` reports `included` for every stored row, failed ones
  *   included, and never produces `failed` (`src/libs/blockchain/chainTypes.ts`
  *   `TxStatus`, `chainTransactions.ts` `getTransactionStatus`);
@@ -1299,7 +1358,7 @@ type ObservedDemosExecution =
  *   `fromEntityToWireNumber`); both forms are accepted;
  * - not-found is `{result: 400, response: "error"}` at 61b8e75 and
  *   `{result: 404, response: null}` at 52e2e569; both are polled.
- * The default branch (`testnet`) has no `getTransactionStatus`. The recorded
+ * The default branch (`testnet`) had no `getTransactionStatus` on 2026-10-20. The recorded
  * node2 records in `test/fixtures/demos-node2-records.json` pin this shape,
  * and any other shape is indeterminate; see `docs/pay-dem-execution.md`.
  *
@@ -1769,8 +1828,8 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           failureProof: {
             kind: "demos-failed-record",
             txHash, nonce: signedNonce, blockNumber: terminal.blockNumber,
-            payer: normalizeDemosNativeAddress(address)!,
-            payee: normalizeDemosNativeAddress(to)!, amountOs: amountOs.toString(),
+            payer: canonicalPayer, payee: canonicalPayee,
+            amountOs: amountOs.toString(),
           },
           message: "pay-dem transaction was included but its record reports it failed",
         };
@@ -1806,27 +1865,34 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     },
   };
 
+  const settle: PayDemRail["settle"] = async (params, effectFence) => {
+    const invocationJournal = stableDataProperty(
+      params,
+      "journalPreparedTransfer",
+      "pay-dem per-settlement prepared-transfer journal",
+    );
+    if (journalPreparedTransfer !== undefined && invocationJournal.found &&
+        invocationJournal.value !== undefined) {
+      throw new DacsError(
+        "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
+      );
+    }
+    return payDemSettleCore(
+      params,
+      client,
+      network ?? "demos",
+      effectFence,
+    );
+  };
+  // This client's verdicts come only from the record it read above, so
+  // payDemSettleCore may report them as final, and payDemSettle may let the
+  // settlement store keep this settle's failure proof as the definitive outcome.
+  // Neither object is reachable outside this function except `settle` itself.
+  sdkRecordReadingClients.add(client);
+  sdkRecordReadingSettles.add(settle);
   return {
     address: client.address,
-    settle: async (params, effectFence) => {
-      const invocationJournal = stableDataProperty(
-        params,
-        "journalPreparedTransfer",
-        "pay-dem per-settlement prepared-transfer journal",
-      );
-      if (journalPreparedTransfer !== undefined && invocationJournal.found &&
-          invocationJournal.value !== undefined) {
-        throw new DacsError(
-          "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
-        );
-      }
-      return payDemSettleCore(
-        params,
-        client,
-        network ?? "demos",
-        effectFence,
-      );
-    },
+    settle,
   };
 }
 
@@ -2150,6 +2216,7 @@ function capturePayDemReconciliation(
 function captureFreshPayDemResult(
   value: unknown,
   context: Readonly<PayDemSettlementRecoveryContext>,
+  recordRead: boolean,
 ): SettleResult {
   const snapshot = snapshotCanonicalJsonRead(value, "fresh pay-dem settlement");
   if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
@@ -2162,6 +2229,18 @@ function captureFreshPayDemResult(
   }
   if (!captured.ok && execution !== undefined) {
     throw new DacsError("failed pay-dem settlement must not attest successful execution");
+  }
+  if (!recordRead && (captured.ok || captured.errorClass !== undefined)) {
+    // The SDK did not read this record (#338): a custom rail's success or
+    // failure proof is its statement. Keep only the transaction identity, so
+    // the intent stays held for reconciliation and nothing is final.
+    return {
+      ok: false,
+      txHash: captured.txHash,
+      chainId: captured.chainId,
+      payer: captured.payer,
+      payee: captured.payee,
+    };
   }
   // The attestation authenticates this invocation, not a durable cache entry.
   return captured;
@@ -2351,11 +2430,19 @@ export function payDemSettle(
   if (payerAddress === null) {
     throw new DacsError("pay-dem rail returned an invalid native payer address");
   }
-  const railSettle = stableMethod<PayDemRail["settle"]>(
+  const railSettleTarget = stableMethodTarget(
     rail,
     "settle",
     "pay-dem rail settle",
   );
+  const railSettle = Function.prototype.bind.call(
+    railSettleTarget,
+    rail,
+  ) as PayDemRail["settle"];
+  // Only createPayDemRail's own settle reads and binds the transaction record
+  // itself. Another rail's success or failure proof is its statement: the
+  // bridge holds it as indeterminate, so the store keeps the intent held.
+  const recordVerifiedRail = sdkRecordReadingSettles.has(railSettleTarget);
   const reconcileProperty = stableDataProperty(
     opts,
     "reconcile",
@@ -2596,10 +2683,15 @@ export function payDemSettle(
           network,
           recovery: context,
         }, effectFence);
-        const captured = captureFreshPayDemResult(submitted, context);
+        const captured = captureFreshPayDemResult(
+          submitted,
+          context,
+          recordVerifiedRail,
+        );
         authenticatedResults.set(key, { context, result: captured, boundToKey: true });
         return captured;
       };
+      if (recordVerifiedRail) sdkRecordReadingSubmissions.add(submit);
       // A hash this bridge already bound for the key stays bound when a later
       // reconciliation confirms it. A reconciliation never binds one itself,
       // even with a journal entry.

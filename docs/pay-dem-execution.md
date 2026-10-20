@@ -25,7 +25,18 @@ transfer, broadcasts it once, and then:
 | `failed`, bound | `ok: false`, `errorClass: "permanent"` and a `demos-failed-record` failure proof |
 | `confirmed` or `failed`, but nonce, block or body does not bind | indeterminate at once |
 | missing, `pending`, any other status (`included`, `finalized`, `Confirmed`, ...), malformed, another hash, a rejected read | read again until the budget ends, then indeterminate |
-| a read that outlasts `statusRequestTimeoutMs` | indeterminate at once; reads never stack |
+| a read still pending at its bound, `statusRequestTimeoutMs` or the end of `transactionRecordTimeoutMs`, whichever comes first | indeterminate at once (`transaction record read timed out`); reads never stack |
+
+The first record read starts as soon as the status index reports `included`.
+A record binds when its `hash` is the signed hash, its `status` is literal
+`confirmed` or `failed`, its `blockNumber` is the inclusion block, and its
+`content` is a `native` body with the signed `nonce`, no `custom_charges`,
+the payer in `from` or `from_ed25519_address` (every one present must match),
+`to` and `amount` for this payee and amount, and `data` of
+`["native", {nativeOperation: "send", args: [payee, amount]}]`. Other fields,
+such as `signature`, `gcr_edits` or `attrs`, are not compared, but the whole
+record must still be canonical JSON: a record with, for example, an integer
+above `Number.MAX_SAFE_INTEGER` anywhere in it is malformed and read again.
 
 Indeterminate is `ok: false` with the signed hash retained, so the settlement
 intent stays held. No outcome ever causes a second broadcast.
@@ -35,8 +46,8 @@ intent stays held. No outcome ever causes a second broadcast.
 | Option | Default | Bounds |
 | --- | --- | --- |
 | `inclusionTimeoutMs` | 60 s | waiting for the status index to report `included` |
-| `inclusionPollIntervalMs` | 500 ms | the pause between status and record reads |
-| `statusRequestTimeoutMs` | 5 s | each single status or record read |
+| `inclusionPollIntervalMs` | 500 ms | the pause between repeated status reads, and between repeated record reads |
+| `statusRequestTimeoutMs` | 5 s | each single status or record read (a record read also ends at the record budget) |
 | `transactionRecordTimeoutMs` | 30 s | all record reads after inclusion |
 | `nonceVisibilityTimeoutMs` | 60 s | the post-execution account-nonce projection |
 
@@ -46,22 +57,36 @@ demosdk's transport retries a connection error or a 502 to 504 up to four
 times inside one read, so one read can take several seconds before the SDK
 sees its result.
 
-## Contracts for custom clients, rails and reconcilers
+## Custom clients, rails and reconcilers
 
-- A `DemosNativeClient` resolves `ok: true, state: "included",
-  execution: "executed"` only after it has read and bound a `confirmed`
-  record. Without `execution: "executed"`, `payDemSettleCore` reports not-ok
-  and mints no finality. A `failed` result is permanent only with a
-  `failureProof` that binds the hash, nonce, block, payer, payee and amount.
-- A `PayDemRail` returns `PayDemRailResult`: success carries
-  `execution: "executed"`, and a failure never carries `execution`.
-  `payDemSettle` refuses a success without the attestation and a failure proof
-  that does not bind the payment, and holds the intent in both cases.
+The SDK reads the node itself only inside `createPayDemRail`, so only that
+rail's verdicts are final. A custom `DemosNativeClient` or `PayDemRail` is the
+integrator's own chain access: what it returns is its statement, which the SDK
+cannot authenticate, so a fresh result from it never becomes a final verdict.
+
+- `payDemSettleCore` with a custom `DemosNativeClient` reports
+  `ok: true`, `bft-final` finality, or a permanent failure only for the client
+  `createPayDemRail` builds. Any other client's result, including
+  `ok: true, state: "included", execution: "executed"` and a bound
+  `failureProof`, is held: `ok: false` with the signed hash and nothing else.
+  A malformed result still throws.
+- `payDemSettle` treats a `PayDemRail` the same way. Only the `settle`
+  function `createPayDemRail` returned (also when a caller places it on its
+  own object) yields success or a permanent failure. Any other rail's success
+  or failure proof, including a wrapper that relays the SDK rail's genuine
+  result, is held as `ok: false` with the hash: never persisted as the
+  outcome, and the next call for the key needs reconciliation. A success
+  without `execution: "executed"`, a failure that carries `execution`, and a
+  failure proof that does not bind the payment are refused, and the intent is
+  held in each case.
 - A `PayDemSettlementReconcile` returns a `PayDemReconciledSettlement` with
-  `execution: "executed"` only after the same record read, or a
-  `PayDemReconciledFailure` for a bound `failed` record. After a restart, a
-  durable outcome and a reconciliation that disagree on the transaction, the
-  block, success or the failure proof are refused.
+  `execution: "executed"` only after reading and binding a `confirmed`
+  record, or a `PayDemReconciledFailure` for a bound `failed` record. The
+  reconciler is still the integrator's statement: it recovers a held intent
+  after a restart, and the SDK checks its shape and bindings only. After a
+  restart, a durable outcome and a reconciliation that disagree on the
+  transaction, the block, success or any failure-proof field, the nonce
+  included, are refused.
 - A settlement request carrying `priorAttempts` (which `runSession` sends for
   a session holding a transaction-bearing outcome) is a read-only audit of
   that retained transaction. `payDemSettle` never claims a submit generation
@@ -106,20 +131,35 @@ sees its result.
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).
 
-The settlement store persists a bound permanent failure as the definitive
-outcome for that key. It never permits a replacement payment.
+Which capabilities the SDK built is kept private to the rails module, keyed
+by object identity. No file in the package exports a way to add to it; the
+only export is a read-only check the settlement store uses.
 
-`runSession` accepts the permanent failure only with a bound proof, and only
-for a native DEM settlement whose proof binds the payment amount. It binds the
-hash for anti-replay and records the proof as the terminal failed outcome; a
-later resume reuses it only after the rail re-reads the identical proof.
-Without a `SessionStore` no proof survives the run, so a resume holds the
-anchored failure as indeterminate instead of reporting it again. A failure
-read for a saved success, a bound permanent one included, is refused
-instead: the session stops and the saved success stays in place (PC-7).
+The settlement store records a bound permanent failure as the definitive
+outcome for that key only when it comes from `payDemSettle` over the rail
+`createPayDemRail` returned, whose proof the SDK built from the record it
+read. A failure proof from any other source, including a custom rail, a rail
+that wraps the SDK rail's `settle`, or a reconciler, leaves the intent held:
+it is never a durable verdict and never permits a second broadcast. Neither
+outcome ever permits a replacement payment. The proof type is internal; a
+custom reconciler can name it as `PayDemReconciledFailure["failureProof"]`.
+
+`runSession` accepts the permanent failure only for a `pay-dem` request in
+DEM, with a bound proof whose `amountOs` is the request's amount in OS, on
+fresh settlement and on recovery. It binds the hash for anti-replay and
+records the proof as the terminal failed outcome; a later resume reuses it
+only after the rail re-reads the identical proof. Without a `SessionStore` no
+proof survives the run, so a resume holds the anchored failure as
+indeterminate instead of reporting it again. A failure read for a saved
+success, a bound permanent one included, is refused instead: the session
+stops and the saved success stays in place (PC-7).
 
 The dacs-node buyer track requires `execution: "executed"` on fresh rail
 results before it settles the wallet authority or publishes a payment notice.
+Its default runtime rail also reports success only after the SDK's Demos
+adapter reconciles the wallet journal to `canonical-confirmed`, which needs a
+`confirmed` record it read; a rail injected into the buyer track directly is
+the host's statement.
 Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
 no attestation, so an operator reconciler must return `completed` only after
 reading a bound `confirmed` record.
@@ -133,12 +173,13 @@ for reorganisation afterwards.
 The pinned Standard (`d45c0a29`) says to return success when the transaction
 reaches the terminal `included` state. The rail is stricter: it also requires
 the bound `confirmed` record, because the status index reports `included` for
-failed records.
+failed records. No Standard conformance vector covers an included but failed
+transaction yet.
 
 ## Node semantics
 
 These were read from kynesyslabs/node `stabilisation@61b8e75` and
-`stabilisation@52e2e569`:
+`stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308`:
 
 - `getTransactionStatus` reports `included` for every stored row, failed ones
   too, and never reports `failed`;
@@ -152,9 +193,17 @@ These were read from kynesyslabs/node `stabilisation@61b8e75` and
   rejects a `0x` prefix as an invalid request. The rail always passes the
   canonical form.
 
-The default `testnet` branch has no `getTransactionStatus`, so against such a
-node the rail never observes inclusion and stays indeterminate.
+The default `testnet` branch had no `getTransactionStatus` when read on
+2026-10-20, so against such a node the rail never observes inclusion and stays
+indeterminate.
 
-node2 reports 61b8e75, but its `getNetworkInfo` marks the build `dirty`, so its
-deployed bytes are not pinned to that commit. The fixture records the
-envelopes node2 served; the rail treats any other shape as indeterminate.
+From 2026-10-15 until early on 2026-10-20 node2 reported 61b8e75, and its
+`getNetworkInfo` marks the build `dirty`, so its deployed bytes were not pinned
+to that commit, and its build time changed between reads. Later on 2026-10-20
+node2 reported `11e7c8207732e25035de5a04cab25c5346046493` at `GET /version`,
+again from a dirty build, after a chain reset: it no longer serves the
+recorded hashes. The
+fixture is therefore a historical set of envelopes node2 served on the dates it
+records, not a pin of a deployment, and cannot be re-read today. The rail does
+not depend on that build: a record without the fields listed above, or with
+any of them different, is indeterminate.
