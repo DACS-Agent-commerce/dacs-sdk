@@ -634,6 +634,9 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
         delete record.content;
         return record;
       }],
+    ["a record with null content",
+      "transaction record does not bind the signed nonce",
+      async () => ({ ...executedRecord(), content: null })],
     ["a failed record for another amount",
       "transaction record does not match the prepared transfer",
       async () => {
@@ -704,7 +707,10 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
   const node2 = JSON.parse(readFileSync(
     new URL("../fixtures/demos-node2-records.json", import.meta.url),
     "utf8",
-  )) as { getTxByHash: Record<string, { response: Record<string, unknown> }> };
+  )) as {
+    getTxByHash: Record<string, { response: Record<string, unknown> }>;
+    getTransactionStatus: Record<string, { response: Record<string, unknown> }>;
+  };
   const PAYER = "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a";
   const PAYEE = "0x706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1";
   const CONFIRMED_HASH = "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918";
@@ -754,6 +760,14 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
       FAST,
     )).resolves.toEqual({ state: "failed" });
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("records node2's status index reporting that failed record as included", () => {
+    // Why inclusion alone is not execution: same hash, same block.
+    expect(node2.getTransactionStatus[FAILED_HASH]!.response)
+      .toEqual({ state: "included", blockNumber: 480_877 });
+    expect(node2.getTxByHash[FAILED_HASH]!.response)
+      .toMatchObject({ status: "failed", blockNumber: 480_877 });
   });
 
   it.each([
