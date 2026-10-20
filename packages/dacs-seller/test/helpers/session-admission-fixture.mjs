@@ -1,5 +1,8 @@
-// A seller-owned session admission for tests: it reads the Listing as active
-// and admits both parties under the package's exact profile (the presentation
+// A seller-owned session admission for tests: its revocation readers give one
+// fresh catalog surface that lists the Listing as active (the agent decides
+// with core checkListingRevocation; `readRevocationWith` scripts other
+// readings and `markers` holds anchored RevocationMarkers by locator), and it
+// admits both parties under the package's exact profile (the presentation
 // challenge is the agent's own ledger: `issue` hands the agent the nonce a
 // bundle carries, as the operator's issuer would before the presentation),
 // and keeps the counterparty-verified CompositeVerificationRecords its Vet
@@ -28,9 +31,10 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
     return ref;
   };
   const admitted = (query) => ({ disposition: 'admitted', jobId: query.jobId, buyer: query.buyer, buyerBundleHash: query.buyerBundleHash, listingPin: query.listingPin,
-    listingStatus: { status: 'active', observedAt: now() },
     participants: [{ role: 'buyer', claim: query.buyer, ...structuredClone(SELLER_PROFILE) }, { role: 'seller', claim: query.seller, ...structuredClone(SELLER_PROFILE) }] });
-  let overrides = null;
+  const activeSurfaces = () => [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: now() }];
+  const markers = new Map();
+  let overrides = null, surfaces = null;
   // CORE SN-1/SN-3: the seller issues the bundle's challenge for its job before
   // the buyer presents it (`target` is the agent or the host). Issuing it again
   // to the same seller state (after a restart) keeps the first issue.
@@ -44,7 +48,12 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
     issue,
     // The answer for the next admissions: (admitted, query) => answer, or null.
     answerWith: (fn) => { overrides = fn; },
+    // The revocation surfaces for the next readings: (active, query) => surfaces (or a throw), or null.
+    readRevocationWith: (fn) => { surfaces = fn; },
+    markers,
     sessionAdmission: {
+      readRevocationSurfaces: async (query) => { calls.push(['readRevocationSurfaces', query.jobId]); return surfaces ? surfaces(activeSurfaces(), query) : activeSurfaces(); },
+      readRevocationMarker: async (anchor) => { calls.push(['readRevocationMarker', anchor.locator]); return markers.has(anchor.locator) ? structuredClone(markers.get(anchor.locator)) : null; },
       admit: async (query) => { calls.push(['admit', query.jobId]); const answer = admitted(query); return overrides ? overrides(answer, query) : answer; },
       resolveVetRecord: async ({ ref }) => { calls.push(['resolveVetRecord', ref.contentHash]); if (!records.has(ref.contentHash)) throw new Error('no Vet record at this reference'); return structuredClone(records.get(ref.contentHash)); },
     },

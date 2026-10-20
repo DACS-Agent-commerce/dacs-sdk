@@ -14,6 +14,7 @@ const files = [
   'seller-raw-json.test.mjs', 'devnet-storage-write-recovery.test.mjs',
   'settlement-collisions.test.mjs', 'seller-lifecycle-gates.test.mjs', 'provenance-checkout.test.mjs',
   'demos-claims.test.mjs', 'seller-substrate-profile.test.mjs', 'seller-settlement-profile.test.mjs', 'seller-http-roundtrip.test.mjs', 'seller-payment-retry.test.mjs', 'seller-host-native-delivery.test.mjs', 'installed-package.test.mjs',
+  'payment-evidence-wallet-journal.test.mjs',
 ];
 // Packing and installing the core and seller tarballs needs more time.
 const timeouts: Record<string, number> = {'installed-package.test.mjs': 420000};

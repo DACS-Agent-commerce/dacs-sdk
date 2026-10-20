@@ -5,16 +5,20 @@
 // (a synchronous { claim, sign(bytes) } over its own custody; no key or key
 // file reaches this package) and the native capabilities, which are required:
 // the host never builds a fixture substrate, and it starts only with the whole
-// chain to delivery (native payment evidence, the DEM delivery context, whose
-// Vet references the Agreement carries, and native DEM delivery) and the
-// steward-signed rail authority each session pins, so it never commits an
-// Agreement it cannot settle. Each new session is opened only for a
-// presentation that carries a challenge this host issued for its job and
-// buyer (`issueSessionChallenge`, which the operator hands to the buyer; the
-// first attempt consumes it) and under the operator's seller-owned
-// sessionAdmission (session-admission.mjs): both parties' exact profile, a
-// fresh revocation reading of the Listing and the Vet records the Agreement
-// references. It does not mount the context route itself.
+// chain to delivery (native payment evidence with the wallet journal's
+// `reconcilePaymentEvidence`, so an anchor whose outcome is unknown always has
+// a way to land, as createPaymentEvidenceWalletJournal composes them; the DEM
+// delivery context, whose Vet references the Agreement carries, and native DEM
+// delivery) and the steward-signed rail authority each session pins, so it
+// never commits an Agreement it cannot settle or holds a paid order with no
+// way on. Each new session is opened only for a presentation that carries a
+// challenge this host issued for its job and buyer (`issueSessionChallenge`,
+// which the operator hands to the buyer; the first attempt consumes it), on a
+// Listing the agent's own revocation check (core checkListingRevocation over
+// the operator's readings) finds not revoked, and under the operator's
+// seller-owned sessionAdmission (session-admission.mjs): both parties' exact
+// profile and the Vet records the Agreement references. It does not mount the
+// context route itself.
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
@@ -24,8 +28,8 @@ import { createSellerTransportServerAuth, createSellerTransportStore } from './d
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer', 'observeDemosTransfer',
-  'nativePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']);
-const OPTIONAL = Object.freeze(['deliveryEvidenceEnabled', 'reconcilePaymentEvidence', 'host', 'port', 'now']);
+  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']);
+const OPTIONAL = Object.freeze(['deliveryEvidenceEnabled', 'host', 'port', 'now']);
 const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });
@@ -47,7 +51,7 @@ export async function startSellerHost(options) {
   const missing = REQUIRED.filter((key) => options[key] == null);
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
-    nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, deliveryEvidenceEnabled = false, reconcilePaymentEvidence = null,
+    nativePaymentEvidence, reconcilePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, deliveryEvidenceEnabled = false,
     host = '127.0.0.1', port = 0, now = () => Date.now() } = options;
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');

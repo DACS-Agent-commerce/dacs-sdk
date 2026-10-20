@@ -75,6 +75,7 @@ async function world(t) {
   };
   const chain = {
     nativePaymentEvidence: () => createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: refuse('anchorEvidence'), fetchImpl: refuse('fetch') }),
+    reconcilePaymentEvidence: refuse('reconcilePaymentEvidence'),
     demDeliveryContext: (input = vetted, vetRequirements = invocationsFor(input)) => createDemDeliveryContext({ authority: 'TEST-settlement-profile', resolveBuyer: refuse('resolveBuyer'),
       resolveSeller: async () => { reached.push('resolveSeller'); return { disposition: 'present', value: { input: structuredClone(input), vetRequirements: structuredClone(vetRequirements) } }; } }),
     nativeDemDelivery: () => createNativeDemDeliveryCapability({ authority: 'TEST-settlement-profile', submit: refuse('submit'), reconcile: refuse('reconcile'), read: refuse('read'), verifyReceipt: refuse('deliveryVerifyReceipt') }),
@@ -127,7 +128,7 @@ test('native payment evidence and the Vet context without native delivery sign t
 
 test('the complete native profile takes payment only as native payment evidence, before any transfer is observed', async (t) => {
   const w = await world(t);
-  const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(),
+  const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence,
     demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() });
   t.after(() => agent.close());
   assert.equal((await agent.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
@@ -138,7 +139,7 @@ test('the complete native profile takes payment only as native payment evidence,
 test('a Vet context that names the not-performed Vet references is not signed', async (t) => {
   const w = await world(t);
   for (const input of [w.synthetic, w.signedSynthetic]) {
-    const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(),
+    const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence,
       demDeliveryContext: w.chain.demDeliveryContext(input), nativeDemDelivery: w.chain.nativeDemDelivery() });
     const answer = await agent.receiveProposal(await w.proposalFor(input));
     agent.close();
@@ -148,8 +149,21 @@ test('a Vet context that names the not-performed Vet references is not signed', 
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
-const complete = (w, extra = {}) => ({ ...w.capabilities, nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext(),
-  nativeDemDelivery: w.chain.nativeDemDelivery(), ...extra });
+const complete = (w, extra = {}) => ({ ...w.capabilities, nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence,
+  demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery(), ...extra });
+// A RevocationMarker for the world's Listing (DACS-1 RB-1), signed by `signerKey`
+// (the Listing signer by default) and kept by the admission's marker reader at
+// `locator`, and the revoked catalog surface whose binding names it (RB-2).
+const revocationOf = async (w, { signerKey = w.sellerKey, locator } = {}) => {
+  const listingContentHash = core.contentHash(w.listing), presentedBy = w.listing.seller.identity.presentedBy;
+  const marker = await core.signComponentArtifact({ listingId: w.listing.listingId, listingVersion: w.listing.listingVersion, listingContentHash, revokedAt: w.now - 1, reason: 'TEST withdrawn' },
+    'dacs-revocation:v1:', { algorithm: 'ed25519', signer: signerKey.claim, sign: signerKey.sign });
+  const logicalAddress = `dacs1-revoked:${core.encodeAddressSegment(presentedBy)}:${w.listing.listingId}:v${w.listing.listingVersion}`;
+  const binding = { sellerPrimaryClaim: presentedBy, listingId: w.listing.listingId, listingVersion: w.listing.listingVersion, listingContentHash, logicalAddress,
+    markerAnchor: { kind: 'storage-program', locator: locator ?? logicalAddress }, markerContentHash: core.contentHash(marker) };
+  w.admission.markers.set(binding.markerAnchor.locator, marker);
+  return { marker, binding, surface: { kind: 'catalog', status: 'revoked', readStatus: 'ok', catalogObservedAt: w.now, binding } };
+};
 
 test('without the steward-signed rail authority the native profile is refused before any state is opened', async (t) => {
   const w = await world(t), durableDirectory = w.dir();
@@ -222,9 +236,9 @@ test('the standalone host refuses to start without the whole chain to delivery',
   const w = await world(t);
   const { nativeArtifactAnchor: artifactAnchor, ...rest } = w.capabilities;
   const { now: _now, ...required } = rest;
-  for (const missing of ['nativePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']) {
+  for (const missing of ['nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']) {
     const dataDirectory = w.dir();
-    const options = { ...required, artifactAnchor, dataDirectory, nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
+    const options = { ...required, artifactAnchor, dataDirectory, nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
     delete options[missing];
     await assert.rejects(seller.startSellerHost(options), { name: 'TypeError', message: new RegExp(`requires ${missing}$`) });
     assert.deepEqual(readdirSync(dataDirectory), [], `nothing is opened without ${missing}`);
@@ -262,7 +276,7 @@ function nativeChain(w) {
   const nativePaymentEvidence = createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: notReached('anchorEvidence'),
     fetchImpl: async () => { seen.fetch++; throw new Error('TEST transfer observation is not answered'); } });
   const options = (railAuthority, durableDirectory) => ({ ...w.capabilities, nativeArtifactAnchor, agreementAnchor, durableDirectory, railAuthority, nativePaymentEvidence,
-    demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() });
+    reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() });
   // The buyer finalizes the Agreement from both contributions and anchors it.
   const anchorAgreement = async (session) => {
     retained.agreement = await core.finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], seller.contributionVerifier);
@@ -565,16 +579,13 @@ test('a buyer presentation that admitted one session is refused for another job,
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
-test('a revoked or unread Listing and a missing or different profile are refused before any session is kept; each refused attempt consumes its challenge', async (t) => {
+test('a missing or different admission or profile is refused before any session is kept; each refused attempt consumes its challenge', async (t) => {
   const w = await world(t);
   const profile = (answer, change) => ({ ...answer, participants: answer.participants.map((entry) => entry.role === 'buyer' ? { ...entry, ...change } : entry) });
-  const stale = w.now - 10 * 60 * 1000;
   const refusals = {
     'another job': (answer) => ({ ...answer, jobId: core.generateCanonicalJobId() }),
     'another bundle': (answer) => ({ ...answer, buyerBundleHash: core.sha256Hex('another bundle') }),
-    'a revoked Listing': (answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, status: 'revoked' } }),
-    'an unknown revocation state': (answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, status: 'indeterminate' } }),
-    'a stale revocation reading': (answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, observedAt: stale } }),
+    'a revocation reading in the answer (the seller reads revocation itself)': (answer) => ({ ...answer, listingStatus: { status: 'active', observedAt: w.now } }),
     'no buyer profile': (answer) => ({ ...answer, participants: answer.participants.filter((entry) => entry.role !== 'buyer') }),
     'a duplicate buyer profile': (answer) => ({ ...answer, participants: [...answer.participants, answer.participants[0]] }),
     'an older Standard revision': (answer) => profile(answer, { standardRevision: '0'.repeat(40) }),
@@ -639,7 +650,7 @@ test('a presentation nonce the seller did not issue, issued for another job or b
   // and a re-signed one carrying the same nonce are refused after it.
   const first = bundle();
   w.admission.issue(agent, w.jobId, first);
-  w.admission.answerWith((answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, status: 'indeterminate' } }));
+  w.admission.answerWith(() => ({ disposition: 'refused', reason: 'TEST not admitted' }));
   assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the first attempt is refused by the admission');
   w.admission.answerWith(null);
   const asked = admits();
@@ -684,20 +695,79 @@ test('a session in flight continues after its Listing is revoked; a new session 
   t.after(() => agent.close());
   const signed = await agent.receiveProposal(await w.proposalFor(w.vetted));
   assert.equal(signed.disposition, 'complete');
-  w.admission.answerWith((answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, status: 'revoked' } }));
+  const revoked = await revocationOf(w);
+  w.admission.readRevocationWith(() => [revoked.surface]);
   assert.deepEqual((await agent.receiveProposal(await w.proposalFor(w.vetted))).contribution, signed.contribution, 'the in-flight session is answered again');
   const next = { ...w.vetted, jobId: core.generateCanonicalJobId() }, request = await w.proposalFor(next);
   assert.deepEqual(await refused(() => agent.receiveProposal({ ...request, transportIdentity: { ...request.transportIdentity, jobId: next.jobId } })), { code: 'session_not_admitted', status: 409 });
 });
 
+// DACS-1 RB-4..RB-6, LR-3: the seller decides whether its Listing is revoked
+// with the core SDK's own check over the operator's readers, never from an
+// answer that asserts it: this fixture's admit would admit every session.
+test('the seller decides revocation itself: a verified marker refuses a new session that admit would admit, and an incomplete reading refuses as indeterminate, before admit is asked or anything is kept or signed', async (t) => {
+  const w = await world(t), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
+  t.after(() => agent.close());
+  const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
+  let presented = 0;
+  const fresh = () => { const bundle = identityFor(w.buyerKey, w.now - 1 - presented++); w.admission.issue(agent, w.jobId, bundle); return { ...request, buyerIdentityBundle: bundle }; };
+  const refusal = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status, message: error.message }; } };
+  const revoked = await revocationOf(w), forged = await revocationOf(w, { signerKey: w.buyerKey, locator: 'TEST-forged-marker' });
+  const active = { kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: w.now };
+  const { catalogObservedAt: _observed, ...revokedIndex } = { ...revoked.surface, kind: 'well-known', integrity: 'verified' };
+  const REVOKED = ['session_not_admitted', 409, /the Listing is revoked \(verified-revocation-marker\)/];
+  const unknown = (cause) => ['session_admission_unavailable', 503, new RegExp(`revocation check is indeterminate: ${cause}`)];
+  const readings = {
+    'a verified revocation marker': [() => [revoked.surface], REVOKED],
+    'an active catalog entry next to a verified marker on a well-known index': [() => [active, revokedIndex], REVOKED],
+    'a revoked entry whose marker does not read back': [() => [{ ...revoked.surface, binding: { ...revoked.binding, markerAnchor: { kind: 'storage-program', locator: 'TEST-no-marker' } } }], unknown('marker-unreadable')],
+    'a marker that is not the Listing signer\'s': [() => [forged.surface], unknown('marker-signer-mismatch')],
+    'a revoked entry with no binding': [() => [{ ...active, status: 'revoked' }], unknown('required-binding-missing')],
+    'an unavailable surface': [() => [{ ...active, readStatus: 'unavailable', readFailureReason: 'TEST catalog down' }], unknown('TEST catalog down')],
+    'a catalog reading older than a day': [() => [{ ...active, catalogObservedAt: w.now - 25 * 60 * 60 * 1000 }], unknown('catalog-stale')],
+    'a well-known index whose integrity is not verified': [() => [{ kind: 'well-known', status: 'active', readStatus: 'ok', integrity: 'indeterminate' }], unknown('surface-integrity')],
+    'no surface': [() => [], unknown('revocation-surfaces-malformed')],
+    'more surfaces than one reading may name': [() => Array.from({ length: 17 }, () => active), unknown('revocation-surfaces-malformed')],
+    'a reader that throws': [() => { throw new Error('TEST revocation reader down'); }, unknown('revocation-surfaces-unavailable: TEST revocation reader down')],
+  };
+  for (const [label, [surfaces, [code, status, message]]] of Object.entries(readings)) {
+    w.admission.readRevocationWith(surfaces);
+    const asked = admits(), answer = await refusal(() => agent.receiveProposal(fresh()));
+    assert.deepEqual([answer?.code, answer?.status], [code, status], `${label}: ${answer?.message}`);
+    assert.match(answer.message, message, `${label}: the refusal keeps its cause`);
+    assert.equal(admits(), asked, `${label}: admit is not asked`);
+    assert.equal(agent.stageOf(w.jobId), null, `${label}: no session is kept`);
+  }
+  w.admission.readRevocationWith(null);
+  assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'with a complete reading that finds no revocation, the session is signed');
+  // The check reads the seller clock after the surfaces: a reading the reader
+  // stamps with the same advancing clock is current, not one from the future.
+  let tick = w.now;
+  const ticking = await w.agent(complete(w, { durableDirectory: w.dir(), now: () => tick++ }));
+  t.after(() => ticking.close());
+  w.admission.readRevocationWith(() => [{ ...active, catalogObservedAt: tick }]);
+  assert.equal((await ticking.receiveProposal(request)).disposition, 'complete', 'a reading stamped by the advancing seller clock admits');
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+test('the native settlement profile needs the wallet journal question, so a paid order whose anchor outcome is unknown always has a way on (DACS-4 PC-7(b))', async (t) => {
+  const w = await world(t);
+  for (const reconcilePaymentEvidence of [undefined, null]) {
+    await assert.rejects(w.agent(complete(w, { durableDirectory: w.dir(), reconcilePaymentEvidence })), { name: 'TypeError', message: /needs reconcilePaymentEvidence/ });
+  }
+});
+
 test('over HTTP an admission refusal is definite and keeps no session: the same request runs again and is refused for its consumed challenge, and a presentation under its own challenge is signed', async (t) => {
   const w = await world(t), h = await httpSeller(t, w);
   const fresh = (presentedAt) => { const bundle = identityFor(w.buyerKey, presentedAt); w.admission.issue(h.agent, w.jobId, bundle); return { ...h.proposal, buyerIdentityBundle: bundle }; };
-  const revoked = fresh(w.now - 1);
-  w.admission.answerWith((answer) => ({ ...answer, listingStatus: { ...answer.listingStatus, status: 'revoked' } }));
+  const revoked = fresh(w.now - 1), revocation = await revocationOf(w);
+  w.admission.readRevocationWith(() => [revocation.surface]);
   await answered(() => h.client.propose(revoked));
   assert.deepEqual([h.last.status, h.last.answer.error], [409, 'session_not_admitted']);
-  w.admission.answerWith(null);
+  w.admission.readRevocationWith(() => [{ kind: 'catalog', status: 'active', readStatus: 'unavailable', readFailureReason: 'TEST catalog down' }]);
+  await answered(() => h.client.propose(fresh(w.now - 3)));
+  assert.deepEqual([h.last.status, h.last.answer.error], [503, 'session_admission_unavailable'], 'an indeterminate revocation check is definite and keeps no session');
+  w.admission.readRevocationWith(null);
   await answered(() => h.client.propose(revoked));
   assert.deepEqual([h.last.status, h.last.answer.error, h.last.answer.message], [409, 'session_not_admitted', 'the presentation challenge was consumed by an earlier presentation attempt']);
   w.admission.answerWith(() => { throw new Error('TEST admission store is down'); });

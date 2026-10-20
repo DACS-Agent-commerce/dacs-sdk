@@ -77,11 +77,13 @@ test('PROFILE.json names the Standard pin and the seller requirement the run tim
   assert.equal(canonicalize({ standardRevision: profile.standardRevision, documentVersions: profile.documentVersions }), canonicalize(SELLER_PROFILE));
 });
 
-test('a session admission is taken only by the native profile and only with both of its functions', async () => {
+test('a session admission is taken only by the native profile and only with all four of its functions, the revocation readers included', async () => {
   const w = sellerWorld(), native = { ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority };
-  for (const sessionAdmission of [{ admit: async () => null }, { resolveVetRecord: async () => null }, () => null]) {
-    await assert.rejects(seller.createSellerAgent({ ...native, sessionAdmission }), { name: 'TypeError', message: /sessionAdmission must expose admit and resolveVetRecord/ });
+  const complete = { admit: async () => null, resolveVetRecord: async () => null, readRevocationSurfaces: async () => [], readRevocationMarker: async () => null };
+  const without = (name) => { const { [name]: _missing, ...rest } = complete; return rest; };
+  for (const sessionAdmission of [without('admit'), without('resolveVetRecord'), without('readRevocationSurfaces'), without('readRevocationMarker'), () => null]) {
+    await assert.rejects(seller.createSellerAgent({ ...native, sessionAdmission }), { name: 'TypeError', message: /sessionAdmission must expose admit, resolveVetRecord, readRevocationSurfaces and readRevocationMarker/ });
   }
-  await assert.rejects(seller.createSellerAgent({ ...w.base, anchors: w.anchors, simulatedFixture: true, sessionAdmission: { admit: async () => null, resolveVetRecord: async () => null } }),
+  await assert.rejects(seller.createSellerAgent({ ...w.base, anchors: w.anchors, simulatedFixture: true, sessionAdmission: complete }),
     { name: 'TypeError', message: /simulated fixture profile takes no sessionAdmission/ });
 });

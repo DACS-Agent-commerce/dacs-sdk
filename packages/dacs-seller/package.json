@@ -35,6 +35,7 @@
     "src/dacs/listing.mjs",
     "src/dacs/native-dem-delivery-consumer.mjs",
     "src/dacs/native-payment-evidence-consumer.mjs",
+    "src/dacs/payment-evidence-wallet-journal.mjs",
     "src/dacs/purchase-protocol.mjs",
     "src/dacs/rail-authority.mjs",
     "src/dacs/seller-agent.mjs",

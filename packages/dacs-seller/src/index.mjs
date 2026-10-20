@@ -9,3 +9,5 @@ export { buildUnsignedIdentityBundle, attachIdentityPresentation, buildListingDr
 export { validateSellerListing as validateListing } from './dacs/rail-authority.mjs';
 export { agreementInput, listingPin, contributionVerifier } from './dacs/purchase-protocol.mjs';
 export { createOperatorBuyerAccess } from './devnet-demo/buyer-access.mjs';
+// The seller wallet's payment-evidence journal: anchorEvidence and reconcilePaymentEvidence.
+export { createPaymentEvidenceWalletJournal } from './dacs/payment-evidence-wallet-journal.mjs';

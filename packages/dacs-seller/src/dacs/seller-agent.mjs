@@ -50,7 +50,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
-import { sessionAdmissionConfig, sessionAdmissionProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
+import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
@@ -144,11 +144,12 @@ export function buildReport({ agreement, listing, settlementId }) {
 // not wired; bundle_finalization_unavailable).
 // The native profile opens a new session only for a presentation of a
 // challenge this seller issued for its job and buyer (issueSessionChallenge;
-// the first attempt consumes it, durably) and under the operator's
-// `sessionAdmission` (session-admission.mjs): the exact profile of both
-// parties, a fresh revocation reading of the Listing, and the Vet records the
-// references name, checked strictly against the requirement invocations the
-// delivery runner checks, for a retained context too.
+// the first attempt consumes it, durably), on a Listing its own revocation
+// check (core checkListingRevocation over the operator's readings) finds not
+// revoked, and under the operator's `sessionAdmission` (session-admission.mjs):
+// the exact profile of both parties and the Vet records the references name,
+// checked strictly against the requirement invocations the delivery runner
+// checks, for a retained context too.
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
@@ -199,6 +200,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (admission && !nativeProfile) throw new TypeError('the simulated fixture profile takes no sessionAdmission');
   if (nativeProfile) anchors = NATIVE_PROFILE_FIXTURE;
   const settlementChain = nativeEvidence !== null && deliveryContext !== null && nativeDelivery !== null;
+  // DACS-4 PC-7(b) catch-up: a profile that opens sessions and takes payment
+  // needs the wallet's journal question, so an anchor whose outcome is unknown
+  // (a throw, a crash during the wallet call, a dropped submission) always has
+  // a way to land; without it a paid order would be held for good.
+  if (settlementChain && admission && reconcilePaymentEvidence === null) throw new TypeError('the native settlement profile needs reconcilePaymentEvidence, the seller wallet\'s journal question for the evidence anchor (createPaymentEvidenceWalletJournal)');
   // Checked before any session, signature, read or write. These profile gates
   // (and native_evidence_required, bundle_finalization_unavailable) are
   // seller-http.mjs SELLER_PRE_EFFECT_REFUSALS: definite no-effect refusals.
@@ -228,7 +234,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // validated; payment intake replays exactly this result (never live state).
   // It checks the Listing's own bytes, signature and rail only: the catalog row
   // below is this seller's own, not a revocation reading. Whether the Listing
-  // is revoked is read for each new session from sessionAdmission.
+  // is revoked is checked for each new session (listingRevocationProblem).
   const admittedAt = retainedAdmission?.admittedAt ?? now();
   const validation = retainedAdmission?.validation ?? await validateSellerListing(listing, {
     now: () => admittedAt,
@@ -387,41 +393,50 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertVetContext();
     assertSessionAdmission();
     assertBuyer(buyerIdentityBundle?.presentedBy,jobId,{proposal:true});
-    authenticateBuyerBundle(buyerIdentityBundle);
-    if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
+    if (!isIdentityBundle(buyerIdentityBundle)) throw new SellerAgentError('buyer_bundle_invalid', 'buyer IdentityBundle is not normative');
     const existing = sessions.get(jobId);
-    if (existing && existing.buyerBundleHash !== identityBundleHash(buyerIdentityBundle)) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
     // signed definition pinned before the Agreement is signed. The pin is in
     // flight only from the seller's signature (railPinSigned, saved before
     // it): until then every attempt, a retry after a rejection or a crash
     // included, selects again under the current authority as a new session.
     // The Agreement names only the rail id and version, so a new pin never
-    // changes what is signed.
+    // changes what is signed. The rail is the seller's own state, read before
+    // the presentation is looked at: a `rail_unavailable` refusal consumes no
+    // challenge.
     const inFlight = existing?.railPinSigned === true;
     const railPin = nativeProfile ? (inFlight ? existing.railPin : rail.pin()) : undefined;
     assertRailPin(railPin, inFlight ? 'in-flight' : 'new');
-    // A new session (not yet signed under its pin) is admitted before anything
-    // of it is kept, read, signed or sent; a session in flight continues.
-    if (nativeProfile && !inFlight) {
-      // CORE SN-1..SN-4: the bundle's sessionNonce must be a challenge this
-      // seller issued for this job and buyer (issueSessionChallenge), not
-      // expired. The first presentation attempt that carries it consumes it,
-      // durably and before anything validates it, a refused attempt too: only
-      // that exact presentation, once admitted, continues; any other is refused.
-      const nonce = buyerIdentityBundle.sessionNonce, bundleHash = identityBundleHash(buyerIdentityBundle);
-      const issued = challenges.attemptChallenge(nonce, { jobId, bundleHash, attemptedAt: now(), admitted: false });
+    // CORE SN-4: a presentation attempt for a new session (not yet signed
+    // under its pin) consumes the challenge its bundle carries, durably and
+    // before the attempt is validated (its signature, buyer and job binding
+    // included), a refused attempt too; only that exact presentation, once
+    // admitted, continues. A session in flight continues without one.
+    const newSession = nativeProfile && !inFlight;
+    const nonce = buyerIdentityBundle.sessionNonce, bundleHash = identityBundleHash(buyerIdentityBundle);
+    const issued = newSession ? challenges.attemptChallenge(nonce, { jobId, bundleHash, attemptedAt: now(), admitted: false }) : null;
+    authenticateBuyerBundle(buyerIdentityBundle);
+    if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
+    if (existing && existing.buyerBundleHash !== bundleHash) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
+    // A new session is admitted before anything of it is kept, read, signed or sent.
+    if (newSession) {
+      // CORE SN-1..SN-3: the bundle's sessionNonce must be a challenge this
+      // seller issued for this job and buyer (issueSessionChallenge), not expired.
       const challengeProblem = !issued ? 'the presentation nonce is not a challenge this seller issued'
         : issued.jobId !== jobId || issued.buyer !== buyerIdentityBundle.presentedBy ? 'the presentation nonce is a challenge issued for another job or buyer'
           : issued.attempt !== null && !(issued.attempt.bundleHash === bundleHash && issued.attempt.admitted === true) ? 'the presentation challenge was consumed by an earlier presentation attempt'
             : !(now() < issued.expiresAt) ? 'the presentation challenge expired' : null;
       if (challengeProblem) throw new SellerAgentError('session_not_admitted', challengeProblem, 409);
+      // DACS-1 RB-4..RB-6, LR-3: the seller decides revocation itself (core
+      // checkListingRevocation) over the operator's readings; only `absent` opens.
+      const revocation = await listingRevocationProblem(admission, { listing, listingPin: pin, jobId, now });
+      if (revocation) throw new SellerAgentError(revocation.code, revocation.message, revocation.status);
       const query = { jobId, buyer: buyerIdentityBundle.presentedBy, buyerBundleHash: bundleHash, sessionNonce: nonce,
         seller: claim, listingPin: structuredClone(pin), profile: structuredClone(SELLER_PROFILE) };
       let answer;
       try { answer = await admission.admit(structuredClone(query)); }
       catch (error) { throw new SellerAgentError('session_admission_unavailable', `the seller's session admission is unavailable: ${String(error?.message ?? error).slice(0, 180)}`, 503); }
-      const problem = sessionAdmissionProblem(answer, { ...query, now: now() });
+      const problem = sessionAdmissionProblem(answer, query);
       if (problem) throw new SellerAgentError('session_not_admitted', problem, 409);
       challenges.admitChallenge(nonce, bundleHash);
     }

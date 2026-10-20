@@ -18,7 +18,7 @@ const ENTRY_MODULES = ['src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-co
 // Operator-side sources that need the operator's wallet, journal or custody.
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs', 'src/devnet-demo/seller-write-batch.mjs'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
-  'contributionVerifier', 'createOperatorBuyerAccess', 'createSellerAgent', 'createSellerAgentClient', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
+  'contributionVerifier', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgent', 'createSellerAgentClient', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
   'createSellerTransportServerAuth', 'createSellerTransportStore', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 
 test('the packed seller installs outside the repository and serves one Listing without test hooks', { timeout: 600000 }, async (t) => {
@@ -74,6 +74,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.match(out.refusedConfigurations.missingDelivery, /^TypeError: .*requires nativeDemDelivery$/, 'the host starts only with the whole chain to delivery');
   assert.match(out.refusedConfigurations.missingRailAuthority, /^TypeError: .*requires railAuthority$/, 'the host selects its rail only from the steward-signed definition');
   assert.match(out.refusedConfigurations.missingSessionAdmission, /^TypeError: .*requires sessionAdmission$/, 'the host opens sessions only under the seller\'s session admission');
+  assert.match(out.refusedConfigurations.missingJournal, /^TypeError: .*requires reconcilePaymentEvidence$/, 'the host takes payment only with the wallet journal\'s question, so a paid order always has a way on');
   assert.match(out.refusedConfigurations.publicInterface, /^TypeError: .*loopback/);
   assert.match(out.refusedConfigurations.unknownOption, /^TypeError: .*anchors/);
   assert.match(out.refusedConfigurations.relativeDirectory, /^TypeError: .*dataDirectory/);
@@ -94,6 +95,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.equal(out.refusals.fabricatedVetProposal.contribution, null);
   assert.deepEqual(out.refusals.replayedPresentation, { name: 'SellerRefusedError', code: 'session_not_admitted', status: 409 }, 'a presentation is admitted only on the job its challenge was issued for');
   assert.deepEqual(out.issuedChallenge, { nonce: true, lifetimeMs: 600000 }, 'the installed host issues a fresh 256-bit challenge with its lifetime');
+  assert.equal(out.presentsIssuedChallenge, true, 'the buyer presents the random challenge the host issued through the public builder');
   assert.deepEqual(out.refusals.contextChallenge, { status: 404, body: { error: 'not_found' } });
   for (const attempt of [out.refusals.secondHostSameDirectory, out.refusals.secondProcessSameDirectory]) {
     assert.match(attempt, /^Error: seller state directory is in use by another live operator process/, 'one live host owns the state');

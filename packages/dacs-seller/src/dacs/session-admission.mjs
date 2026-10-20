@@ -4,18 +4,27 @@
 // module checks that every answer binds exactly the session it admits and
 // refuses anything missing, malformed, duplicated or mismatched.
 //
-// sessionAdmission = { admit(query), resolveVetRecord(query) }:
+// sessionAdmission = { admit(query), resolveVetRecord(query),
+//   readRevocationSurfaces(query), readRevocationMarker(markerAnchor) }:
+//  - readRevocationSurfaces({ jobId, listingPin }) answers the DACS-1 §6.3.5/
+//    §6.3.6 discovery surfaces the operator read for this Listing (core
+//    RevocationSurface[], 1 to MAX_REVOCATION_SURFACES), and
+//    readRevocationMarker(markerAnchor) the RevocationMarker a binding names, or
+//    null. They are readers only: the agent itself decides (DACS-1 RB-4..RB-6,
+//    LR-3) with the core SDK's checkListingRevocation, which fetches, hashes and
+//    verifies a bound marker against the Listing signer before `revoked`, and
+//    answers `indeterminate` for a missing, stale, unverified or unreadable
+//    surface. Only `absent` opens a new session.
 //  - admit({ jobId, buyer, buyerBundleHash, sessionNonce, seller, listingPin, profile })
 //    answers { disposition: 'admitted', jobId, buyer, buyerBundleHash, listingPin,
-//    listingStatus: { status, observedAt },
 //    participants: [{ role, claim, standardRevision, documentVersions }, ...] }:
-//      * CORE §11.1.2(3): both participants are configured for this exact
-//        corrective profile (the Standard commit and the complete tuple);
-//      * DACS-1 RB-5/RB-6, LR-3: a fresh revocation reading of this Listing is
-//        `active` (revoked or unknown refuses the new session).
+//    CORE §11.1.2(3), both participants are configured for this exact
+//    corrective profile (the Standard commit and the complete tuple). An answer
+//    with any other member (a `listingStatus` too) is refused.
 //    It is asked only after the agent's own challenge ledger (CORE SN-1..SN-4,
 //    DACS-1 §6.3.2) found the bundle's sessionNonce issued by this seller for
-//    this job and buyer, and consumed it for this attempt.
+//    this job and buyer, and consumed it for this attempt, and after the
+//    agent's own revocation check found the Listing not revoked.
 //  - resolveVetRecord({ jobId, role, party, ref }) answers the
 //    CompositeVerificationRecord the Vet reference names (DACS-2 §7.7.1): its
 //    exact hash, the signature of the party's counterparty verifier (DACS-2
@@ -23,7 +32,7 @@
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
 //    `requirementHash` and replayed aggregation are checked here.
-import { ARTIFACT_SEPARATORS, canonicalize, contentHash, isCanonicalBase64Url, isCompositeVerificationRecord, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, canonicalize, checkListingRevocation, contentHash, isCanonicalBase64Url, isCompositeVerificationRecord, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 
 // PROFILE.json: the exact corrective profile this package implements (the
@@ -32,28 +41,28 @@ export const SELLER_PROFILE = Object.freeze({
   standardRevision: 'd45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20',
   documentVersions: Object.freeze({ CORE: '0.3', 'DACS-1': '0.7', 'DACS-2': '0.6', 'DACS-3': '0.5', 'DACS-4': '0.8', 'DACS-5': '0.5' }),
 });
-// How old a revocation reading may be when admitted.
-export const SESSION_ADMISSION_MAX_AGE_MS = 5 * 60 * 1000;
+// The most revocation surfaces one reading may name.
+export const MAX_REVOCATION_SURFACES = 16;
 // CORE SN-4: how long an issued presentation challenge can be presented.
 export const SESSION_CHALLENGE_LIFETIME_MS = 10 * 60 * 1000;
 
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value, keys) => object(value) && canonicalize(Object.keys(value).sort()) === canonicalize([...keys].sort());
 const same = (left, right) => { try { return canonicalize(left) === canonicalize(right); } catch { return false; } };
-const recent = (time, now) => Number.isSafeInteger(time) && time <= now && now - time <= SESSION_ADMISSION_MAX_AGE_MS;
-const ADMITTED_KEYS = ['disposition', 'jobId', 'buyer', 'buyerBundleHash', 'listingPin', 'listingStatus', 'participants'];
+const ADMITTED_KEYS = ['disposition', 'jobId', 'buyer', 'buyerBundleHash', 'listingPin', 'participants'];
 
 export function sessionAdmissionConfig(value) {
   if (value == null) return null;
-  if (!object(value) || typeof value.admit !== 'function' || typeof value.resolveVetRecord !== 'function') throw new TypeError('sessionAdmission must expose admit and resolveVetRecord');
+  if (!object(value) || ['admit', 'resolveVetRecord', 'readRevocationSurfaces', 'readRevocationMarker'].some((name) => typeof value[name] !== 'function')) {
+    throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readRevocationSurfaces and readRevocationMarker');
+  }
   return value;
 }
 
 // The reason a session admission answer does not admit this exact session, or null.
-export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash, seller, listingPin, now }) {
+export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash, seller, listingPin }) {
   if (!exactKeys(answer, ADMITTED_KEYS) || answer.disposition !== 'admitted') return 'the session is not admitted';
   if (answer.jobId !== jobId || answer.buyer !== buyer || answer.buyerBundleHash !== buyerBundleHash || !same(answer.listingPin, listingPin)) return 'the admission names another job, buyer, bundle or Listing';
-  if (!exactKeys(answer.listingStatus, ['status', 'observedAt']) || answer.listingStatus.status !== 'active' || !recent(answer.listingStatus.observedAt, now)) return 'the Listing has no fresh active revocation reading';
   const participants = answer.participants;
   if (!Array.isArray(participants) || participants.length !== 2) return 'the profile admission does not name exactly the buyer and the seller';
   for (const [role, claim] of [['buyer', buyer], ['seller', seller]]) {
@@ -62,6 +71,28 @@ export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash,
     if (entries[0].standardRevision !== SELLER_PROFILE.standardRevision || !same(entries[0].documentVersions, SELLER_PROFILE.documentVersions)) return `the ${role} is not configured for this exact profile`;
   }
   return null;
+}
+
+// DACS-1 RB-4..RB-6 for a new session on this seller's own Listing, decided by
+// the core SDK over the operator's readings: null when the Listing is not
+// revoked (`absent`), else { code, status, message }. A verified revocation
+// marker refuses (409); an indeterminate check (a reader that throws, a
+// missing, stale, unverified or malformed surface, a marker that does not read
+// back or verify) refuses as unavailable (503), keeping its cause. `now` is the
+// seller clock, read by the check after the surfaces are read, so a reading
+// stamped by the same clock is never taken for one from the future.
+export async function listingRevocationProblem(admission, { listing, listingPin, jobId, now }) {
+  const unavailable = (reason) => ({ code: 'session_admission_unavailable', status: 503, message: `the Listing revocation check is indeterminate: ${String(reason).slice(0, 160)}` });
+  let surfaces;
+  try { surfaces = await admission.readRevocationSurfaces(structuredClone({ jobId, listingPin })); }
+  catch (error) { return unavailable(`revocation-surfaces-unavailable: ${error?.message ?? error}`); }
+  if (!Array.isArray(surfaces) || surfaces.length === 0 || surfaces.length > MAX_REVOCATION_SURFACES) return unavailable(`revocation-surfaces-malformed (1 to ${MAX_REVOCATION_SURFACES} surfaces)`);
+  const result = await checkListingRevocation(listing, listingPin.contentHash, { nowMs: now, surfaces,
+    readMarker: async (anchor) => admission.readRevocationMarker(structuredClone(anchor)),
+    verifyMarkerSignature: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }) });
+  if (result.disposition === 'absent') return null;
+  if (result.disposition === 'revoked') return { code: 'session_not_admitted', status: 409, message: `the Listing is revoked (${result.reason})` };
+  return unavailable(result.reason);
 }
 
 // The reason a resolved Vet record does not back its reference and the

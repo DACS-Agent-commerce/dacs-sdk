@@ -36,7 +36,7 @@ export const DEM_DECIMALS = 9;
 export const SDK_PROVENANCE = Object.freeze({
   package: '@kynesyslabs/dacs',
   version: DACS_SDK_VERSION,
-  source: 'vendored support-branch build dacs-sdk@6658691cefed76e2bb576ae959d1ad3bc7eeafec (sha256 79934553…a69a3); not SDK main',
+  source: 'the @kynesyslabs/dacs peer dependency at this package\'s own version, built from the same repository',
   standardPin: DACS_STANDARD_PIN,
 });
 
@@ -65,13 +65,18 @@ export function verifyComponent({ signedBytes: bytes, signature }) {
   }
 }
 
-export function buildUnsignedIdentityBundle({ address, presentedAt, sessionSeed }) {
+// `sessionNonce`, when given, is the challenge the seller issued for this
+// presentation (CORE SN-1..SN-3: lowercase hex, 32 to 128 characters) and is
+// presented as it is; without it the nonce is derived from `sessionSeed`, which
+// a seller host that issues its own challenges refuses.
+export function buildUnsignedIdentityBundle({ address, presentedAt, sessionSeed, sessionNonce }) {
   const claim = claimForAddress(address);
+  if (sessionNonce !== undefined && (typeof sessionNonce !== 'string' || !/^[0-9a-f]{32,128}$/.test(sessionNonce))) throw new TypeError('sessionNonce must be the issued challenge: lowercase hex of 32 to 128 characters');
   const bundle = {
     bundleVersion: '1',
     presentedBy: claim,
     presentedAt,
-    sessionNonce: sha256Hex(`dacs-chatgpt-plugin:${sessionSeed}:${claim}:${presentedAt}`),
+    sessionNonce: sessionNonce ?? sha256Hex(`dacs-chatgpt-plugin:${sessionSeed}:${claim}:${presentedAt}`),
     claims: [{ ref: claim }],
   };
   const bundleHash = sha256Hex(canonicalize(bundle));
