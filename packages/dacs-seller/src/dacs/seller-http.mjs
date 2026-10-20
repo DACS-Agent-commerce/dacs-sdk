@@ -29,7 +29,8 @@ const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_una
 // (for example a transfer not yet included): a no-effect answer, so the same
 // claim reaches intake again. After it, the agent retains its work and its
 // next call reads back first, so a `held` evidence answer or a delivery that
-// is not done yet runs the route again (journal retry), never a resend.
+// is not done yet runs the route again (journal retry). The agent sends its
+// evidence anchor again only when that readback proves it absent.
 const PAYMENT_PATH = '/dacs/v1/payments';
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));

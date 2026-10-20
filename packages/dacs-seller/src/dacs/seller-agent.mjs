@@ -1080,13 +1080,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertSettlementCredit(work.intake.jobId);
     return { status: 'payment-evidenced', settlementId: work.intake.settlementId, evidenceAddress: work.address,
       evidenceHash: work.intake.evidenceHash, anchorReceipt: work.nativeReceipt, signedProjection: retainedNativeEvidenceProjection(work),
-      anchorAttempt: work.anchorAttempt, finality: 'one-node-fixture-view-not-independent', delivery };
+      anchorAttempt: work.anchorAttempt, anchorAttempts: work.anchorAttempts, finality: 'one-node-fixture-view-not-independent', delivery };
   }
 
   // Reduce a retained native-evidence checkpoint only from independently
-  // authenticated, read-only authorities. In particular, a transport retry
-  // never calls anchorEvidence again and neither an old HTTP response nor the
-  // signed seller snapshot is treated as a receipt/public projection.
+  // authenticated, read-only authorities. In particular, this reduction never
+  // calls anchorEvidence (only submitNativePaymentEvidence sends it again, on
+  // a proven absence) and neither an old HTTP response nor the signed seller
+  // snapshot is treated as a receipt/public projection.
   async function reduceNativeEvidenceWork(session, work, { jobId, txHash, payerPayingKey }) {
     const terms = agreementTerms(session.agreement), hash = String(txHash).toLowerCase(), intake = work?.intake;
     const held = (reason, disposition = 'indeterminate') => ({ disposition, reason });
@@ -1268,7 +1269,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (check.decision !== 'pass') throw new SellerAgentError('native_evidence_invalid', check.reasons.join('; '));
       step = 'work-checkpoint';
       const work = session.nativeEvidenceWork = { txHash: hash, payerPayingKey, agreementHash: contentHash(session.agreement), commitmentHash: contentHash(session.commitment.record),
-        listingPin: pin, intake: JSON.parse(JSON.stringify(intake)), evidence, address: paymentEvidenceAddress(jobId, terms.rail, terms.paymentPhaseIndex), anchorAttempt: 'issued-once' };
+        listingPin: pin, intake: JSON.parse(JSON.stringify(intake)), evidence, address: paymentEvidenceAddress(jobId, terms.rail, terms.paymentPhaseIndex),
+        anchorAttempt: 'readback-first-retry', anchorAttempts: 0 };
       session.stage = 'native-payment-evidence-held'; persist(session);
       return { work };
     } catch (error) {
@@ -1279,29 +1281,46 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
   }
 
+  // One call of the operator's wallet anchor with the exact retained evidence,
+  // under the job lock and settlement credit, its attempt kept before the call.
+  async function anchorNativePaymentEvidence(session, work) {
+    durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
+    work.anchorAttempts = (work.anchorAttempts ?? 1) + 1;
+    persist(session);
+    try {
+      const answer = await nativeEvidence.anchorEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId: session.jobId, receiptContentHash: work.intake.evidenceHash });
+      work.anchorAnswer = JSON.parse(JSON.stringify(answer ?? null));
+      delete work.anchorError;
+    } catch (error) { work.anchorError = { code: error.code ?? 'unknown', message: String(error.message).slice(0, 240) }; }
+    persist(session);
+  }
+
   // Separate from the historical fixture receipt/delivery publisher. Genuine
   // SDK SettlementEvidence is preserved byte-for-byte; no artifactType is
   // invented to satisfy a wallet bridge. Retain an issued attempt BEFORE the
-  // wallet boundary. Every later call/restart is readback-only, never resend.
+  // wallet boundary. Every later call or restart reads back first. DACS-4
+  // PC-7(b): an anchor that failed, was lost or never ran (a crash after the
+  // checkpoint) is sent again with the same bytes, but only when the readback
+  // proved it absent, at most once per call and never in the call of the first
+  // attempt. An unknown readback sends nothing. Once a readback authenticated
+  // it (work.nativeReceipt), it is never sent again. The operator's
+  // anchorEvidence must be idempotent on the dacs4:payment address: a write
+  // that landed but is not yet indexed is returned again, never created twice.
   async function submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence }) {
     if (!nativeEvidence || requestedEvidence !== NATIVE_PAYMENT_EVIDENCE) throw new SellerAgentError('native_evidence_held', 'the explicit native evidence capability/terms are absent');
     if (!session.commitment || !session.agreementAnchor) throw new SellerAgentError('not_committed', 'native Agreement and seller commitment must be retained');
     const hash = String(txHash).toLowerCase();
-    let work = session.nativeEvidenceWork;
+    let work = session.nativeEvidenceWork, retry = false;
     if (work) {
       await commit({ jobId });
       if (work.txHash !== hash || work.payerPayingKey !== payerPayingKey || work.agreementHash !== contentHash(session.agreement)
           || work.commitmentHash !== contentHash(session.commitment.record)) throw new SellerAgentError('seller_native_evidence_conflict', 'the retained exact payment/Agreement/commitment cannot change', 409);
+      retry = !work.nativeReceipt;
     } else {
       const started = await startNativePaymentEvidence({ session, jobId, hash, payerPayingKey });
       if (!started.work) return started.answer;
       work = started.work;
-      durable.assertHeld(jobId);assertSettlementCredit(jobId);
-      try {
-        const answer = await nativeEvidence.anchorEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId, receiptContentHash: work.intake.evidenceHash });
-        work.anchorAnswer = JSON.parse(JSON.stringify(answer ?? null));
-      } catch (error) { work.anchorError = { code: error.code ?? 'unknown', message: String(error.message).slice(0, 240) }; }
-      persist(session);
+      await anchorNativePaymentEvidence(session, work);
     }
     // Recovery is delivery-only. The payment evidence receipt/projection below
     // was already authenticated and retained before the ambiguous delivery;
@@ -1313,12 +1332,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const recovered = await recoverNativeSdkDelivery(session, work);
       if (recovered) return recovered;
     }
-    const read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
+    let read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
+    if (retry && read.disposition === 'absent') {
+      await anchorNativePaymentEvidence(session, work);
+      read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
+    }
     if (read.disposition === 'present') return advanceAuthenticatedNativeDelivery(session, work, read);
     return { status: read.disposition === 'rejected' ? 'rejected' : 'held', reason: read.reason ?? 'native-evidence-readback-incomplete',
       ...(work.anchorError ? { anchorError: work.anchorError } : {}),
       evidenceAddress: work.address, evidenceHash: work.intake.evidenceHash, intake: 'pinned-SDK-verified-on-owned-fixture', readback: read.disposition,
-      ...(read.nativeReadStatus ? { nativeReadStatus:read.nativeReadStatus } : {}), ...(read.code ? { nativeReadCode:read.code } : {}), anchorAttempt: work.anchorAttempt,
+      ...(read.nativeReadStatus ? { nativeReadStatus:read.nativeReadStatus } : {}), ...(read.code ? { nativeReadCode:read.code } : {}), anchorAttempt: work.anchorAttempt, anchorAttempts: work.anchorAttempts,
       limits: 'fixture Listing admission/rail/commitment; SDK one-node included view, not independent finality; delivery/Vet/ST11/completion held' };
   }
 
@@ -1569,7 +1592,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   // Seller-owned recovery seam, deliberately not an HTTP route. It resumes
   // only retained, previously verified work after every unknown anchor has
-  // authenticated exact readback. Absence never authorizes resubmission.
+  // authenticated exact readback. Absence never authorizes resubmission, except
+  // that the payment-evidence anchor is sent again when its readback proves
+  // it absent (submitNativePaymentEvidence, DACS-4 PC-7(b)).
   async function resume({ jobId }) {
     const session = sessionFor(jobId);
     if(access&&!access.allowsWallet(addressForClaim(session.buyerBundle.presentedBy))&&readIssued){

@@ -67,8 +67,17 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
   done yet, runs the agent's retained work again on the buyer's next request
-  (which reads back first and never resends), and a different claim for the
-  job is still refused (`peer_operation_conflict`).
+  (which reads back first), and a different claim for the job is still
+  refused (`peer_operation_conflict`).
+- Payment evidence is anchored through the operator's
+  `nativePaymentEvidence` `anchorEvidence` (DACS-4 PC-7(b)). An anchor that
+  failed, was lost or never ran is sent again with the same bytes on the
+  buyer's next claim (or after a restart), but only when the readback proves
+  it absent: at most once per request, never in the request of the first
+  attempt, and never once a readback has authenticated it. An unknown
+  readback sends nothing. `anchorEvidence` must be idempotent on the
+  `dacs4:payment:…` address: when a write it made has landed but does not
+  read back yet, it returns that write and never creates a second one.
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
