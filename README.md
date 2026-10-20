@@ -679,17 +679,25 @@ input remains available for callers with a separate trusted pin.
 
 A saved native DEM outcome is not reused on trust. Every resume, including a
 re-run of a completed session, calls `resumeSettlement` once as a read-only audit
-of the retained transaction hash: a success is kept only when the rail re-reads
-a `confirmed` record with the same block, kind, parties, finality and any saved
-fee, and a permanent failure only when it returns the identical failure proof.
-Absence, an indeterminate read, another hash or any mismatch fails closed
-without paying again. A failure read for a saved success, a bound failed record
-included, is refused the same way: the session neither completes nor records the
-payment as failed, and the saved success stays in place for an operator to
-resolve (DACS-4 §9.5.1 PC-7). Wire `payDemSettle` with a `reconcile` that checks
-the node record against the retained prepared-transfer journal (signed nonce
-included). Requiring a `confirmed` record is stricter than the pinned DACS-4
-§9.5.9 text, which counts a terminal `included` status as success: the node can
+of the retained transaction hash. With the session's rail checkpoint in the
+`SessionStore`, a success is kept only when the rail re-reads a `confirmed`
+record with the same block, kind, parties, finality and any saved fee, and a
+permanent failure only when it returns the identical failure proof. From the
+signed evidence alone (no `SessionStore`, or one without that checkpoint), a
+success is kept only when the re-read matches the evidence's block, kind and
+finality and the request-bound payee; the evidence carries no payer or fee to
+compare. Failure evidence there has no proof to re-read, so it is held as
+indeterminate without a rail call. Absence, an indeterminate read, another hash
+or any mismatch fails closed without paying again. A failure read for a saved
+success, a bound failed record included, is refused the same way: the session
+neither completes nor records the payment as failed, and the saved success
+stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7). The audit
+is as strong as the `resumeSettlement` it calls, which the session trusts as it
+trusts `settle`: wire `payDemSettle` with a `reconcile` that checks the node
+record against the retained prepared-transfer journal (signed nonce included)
+and reports the record's network fee. Requiring a `confirmed` record is
+stricter than the pinned DACS-4 §9.5.9 text, which counts a terminal `included`
+status as success: the node can
 report `included` for a transaction whose stored record `failed`, so such a
 saved success is held unresolved rather than completed or reported unpaid.
 

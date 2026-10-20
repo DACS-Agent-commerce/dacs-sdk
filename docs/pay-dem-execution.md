@@ -75,7 +75,10 @@ sees its result.
   to this rail, job and phase; a permanent failure's proof must also carry the
   journaled nonce. The reconciler throws when the journal is missing or
   conflicting and never returns `null` for a hash it cannot tie to the
-  journal.
+  journal. A success for a record that debits a network fee also carries it
+  as `networkFeeOs` (total debit minus amount, integer OS): `runSession`
+  re-asserts a saved fee, so an audit that omits it leaves the saved success
+  unresolved (not completed, never reported unpaid).
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).
@@ -86,8 +89,10 @@ outcome for that key. It never permits a replacement payment.
 `runSession` accepts the permanent failure only with a bound proof, and only
 for a native DEM settlement whose proof binds the payment amount. It binds the
 hash for anti-replay and records the proof as the terminal failed outcome; a
-later resume reuses it only after the rail re-reads the identical proof. A
-failure read for a saved success, a bound permanent one included, is refused
+later resume reuses it only after the rail re-reads the identical proof.
+Without a `SessionStore` no proof survives the run, so a resume holds the
+anchored failure as indeterminate instead of reporting it again. A failure
+read for a saved success, a bound permanent one included, is refused
 instead: the session stops and the saved success stays in place (PC-7).
 
 The dacs-node buyer track requires `execution: "executed"` on fresh rail
