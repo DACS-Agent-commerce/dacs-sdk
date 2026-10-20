@@ -24,6 +24,12 @@ export function payDemRequestAmountOs(
  * A trusted rail's attestation of a terminal failed Demos record. It is issued
  * only after matching the signed hash/nonce, inclusion block and native body.
  * It proves failure of this attempt; it never authorizes a replacement debit.
+ *
+ * Fields are projections of the node's `getTxByHash` record, in canonical form:
+ * `txHash`, `payer` and `payee` are 64 lower-case hex without `0x` (the node
+ * serves `0x`-prefixed keys); `nonce` is the record's decimal nonce string
+ * converted to a safe integer; `amountOs` is the decimal OS amount. It is not
+ * exported from the package roots; a `SettleResult` carries it as `failureProof`.
  */
 export interface DemosFailedRecordProof {
   kind: "demos-failed-record";
@@ -35,10 +41,24 @@ export interface DemosFailedRecordProof {
   amountOs: string;
 }
 
+const RESULT_KEYS = new Set([
+  "ok", "txHash", "chainId", "payer", "payee", "errorClass", "failureProof",
+  "blockNumber", "txRefKind", "finality", "txRef", "finalityObservedAt",
+  "x402Receipt",
+]);
+const REQUIRED_RESULT_KEYS = [
+  "ok", "txHash", "chainId", "payer", "payee", "errorClass", "failureProof",
+  "blockNumber", "txRefKind",
+];
+
 /**
  * Validate owned, canonical result data after the caller's snapshot boundary.
- * Rail callers bind the configured network here; session recovery also matches
- * the retained chainId against its durable outcome and anchored evidence.
+ * Both bindings are required: the proof must carry exactly `amountOs`, and the
+ * result's chainId must be exactly `expectedNetwork`. Anything unknown, missing
+ * or non-canonical returns false and never throws: `ok` must be exactly
+ * `false`, the result and the proof may carry only their declared keys, the
+ * keys this check requires must be owned, and payer/payee must be unpadded
+ * strings that resolve to Demos keys.
  */
 export function hasDefinitiveDemosFailure(
   result: {
@@ -47,17 +67,23 @@ export function hasDefinitiveDemosFailure(
     txRefKind?: unknown; finality?: unknown; txRef?: unknown;
     finalityObservedAt?: unknown; x402Receipt?: unknown;
   },
-  amountOs?: string,
-  expectedNetwork?: string,
+  amountOs: string,
+  expectedNetwork: string,
 ): boolean {
+  if (result === null || typeof result !== "object" || Array.isArray(result) ||
+      Object.keys(result).some((key) => !RESULT_KEYS.has(key)) ||
+      !REQUIRED_RESULT_KEYS.every((key) => Object.prototype.hasOwnProperty.call(result, key)) ||
+      typeof result.txHash !== "string" ||
+      typeof result.payer !== "string" || result.payer.trim() !== result.payer ||
+      typeof result.payee !== "string" || result.payee.trim() !== result.payee) return false;
   const proof = result.failureProof;
   const payer = demosAddressFromClaim(result.payer) ?? normalizeDemosNativeAddress(result.payer);
   const payee = demosAddressFromClaim(result.payee) ?? normalizeDemosNativeAddress(result.payee);
-  if (result.ok || result.errorClass !== "permanent" ||
+  if (result.ok !== false || result.errorClass !== "permanent" ||
       typeof result.chainId !== "string" || result.chainId.length === 0 ||
       result.chainId.trim() !== result.chainId ||
       result.chainId.normalize("NFC") !== result.chainId ||
-      (expectedNetwork !== undefined && result.chainId !== expectedNetwork) ||
+      result.chainId !== expectedNetwork ||
       !/^[0-9a-f]{64}$/.test(result.txHash) ||
       payer === null || payee === null ||
       result.txRefKind !== "demos" || result.finality !== undefined ||
@@ -74,5 +100,5 @@ export function hasDefinitiveDemosFailure(
     value.blockNumber === result.blockNumber && value.payer === payer &&
     value.payee === payee && typeof value.amountOs === "string" &&
     /^[1-9][0-9]*$/.test(value.amountOs) &&
-    (amountOs === undefined || value.amountOs === amountOs);
+    value.amountOs === amountOs;
 }

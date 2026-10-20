@@ -647,8 +647,12 @@ export function settlementKey(railId: string, jobId: string, phaseIndex: number)
   return `${railId}:${jobId}:${phaseIndex}`;
 }
 
-function isDefinitive(result: Readonly<SettleResult>): boolean {
-  return (result.ok && result.txHash.trim().length > 0) || hasDefinitiveDemosFailure(result);
+function isDefinitive(
+  result: Readonly<SettleResult>,
+  binding: Readonly<SettlementBinding>,
+): boolean {
+  return (result.ok && result.txHash.trim().length > 0) ||
+    hasDefinitiveDemosFailure(result, binding.amount, binding.network);
 }
 
 function storeOptions(options: Readonly<SettlementIdempotencyStoreOptions>): Readonly<{
@@ -951,7 +955,7 @@ export function createIdempotencyStore(
               capturedBinding,
               "reconciled settlement result",
             );
-            if (!isDefinitive(found)) {
+            if (!isDefinitive(found, capturedBinding)) {
               throw new DacsError(
                 `settlement ${key} reconciliation was not definitive; require a finalized result or bound replay authorization`,
               );
@@ -1015,7 +1019,7 @@ export function createIdempotencyStore(
           capturedBinding,
           "submitted settlement result",
         );
-        if (isDefinitive(result)) return persist(result, effectFence);
+        if (isDefinitive(result, capturedBinding)) return persist(result, effectFence);
         if ("disposition" in submission) {
           const released = await durable.releaseIntent({
             key,

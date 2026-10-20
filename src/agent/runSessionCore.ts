@@ -1,5 +1,4 @@
 import { types as nodeTypes } from "node:util";
-export type { DemosFailedRecordProof } from "./settlementFailure.js";
 import {
   hasDefinitiveDemosFailure,
   payDemRequestAmountOs,
@@ -987,7 +986,9 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
   if ((result.errorClass !== undefined || result.failureProof !== undefined) &&
       !hasDefinitiveDemosFailure(
         result as unknown as SettleResult,
-        undefined,
+        // The request's amount is bound in validateSettlementResultBinding;
+        // here only the proof's own shape and network are checked.
+        (result.failureProof as { amountOs?: unknown } | null)?.amountOs as string,
         result.chainId as string,
       )) {
     throw new CounterpartyError(`${label} returned a malformed terminal-failure proof`);
