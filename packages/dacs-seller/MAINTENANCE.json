@@ -430,7 +430,7 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "9950b756508b7c43e927f2ea83bce30dfefce650a0f1cfb060eb720aedbbe2c7",
+      "sha256": "b3c9db9ab1d4e191f27b4bb28c868b1fd0d300ca8a731fc8f2b8f9a201d492f5",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {

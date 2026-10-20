@@ -56,9 +56,15 @@ function demosNode() {
   // The name index for a program: `indexDown` does not answer, `indexEmpty`
   // answers no rows, `beforeSearch` runs before it answers. `searches` lists them.
   const faults = { indexDown: () => false, indexEmpty: () => false, beforeSearch: async () => {} }, searches = [];
+  // Block time (s): 2 s after the previous block and, as on a real chain, never
+  // before the wall time the transaction lands at. A block stamped behind it
+  // would predate what the host observed before sending the transaction (the
+  // proposal's admission, the delivery's validation): on a busy machine the
+  // commitment block then precedes phase 0 of the SessionRecord, and the SDK
+  // delivery runner refuses the record as not monotonic.
   let clock = Math.ceil(Date.now() / 1000);
   const include = (tx) => {
-    clock += 2;
+    clock = Math.max(clock + 2, Math.ceil(Date.now() / 1000));
     const number = blocks.length;
     blocks.push({ number, status: 'confirmed', hash: core.sha256Hex(`TEST-block:${number}:${tx.hash}`), content: { timestamp: clock, ordered_transactions: [tx.hash] },
       validation_data: { simulated: true, chainIdentity: ID } });
@@ -146,7 +152,8 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 async function world(t, { deliverableProducer = null, schemaUrl = true, idempotentWallet = true, reconcile = true, walletJournal = false } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
-  // node's latest block (the node stamps its blocks 2 s apart).
+  // node's latest block (the node stamps its blocks at least 2 s apart, so
+  // they can run ahead of wall time).
   const clock = () => Math.max(Date.now(), node.latestBlockMs());
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid/agent',
