@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   evmErc20Settle: vi.fn(),
 }));
 
-vi.mock("../../src/rails/payDem.js", () => ({
+vi.mock("../../src/rails/payDem.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../src/rails/payDem.js")>(),
   createPayDemRail: mocks.createPayDemRail,
   payDemSettle: mocks.payDemSettle,
 }));
@@ -30,10 +31,6 @@ import {
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
-import {
-  isPayDemSettleAdapter,
-  markPayDemSettleAdapter,
-} from "../../src/rails/payDemAdapter.js";
 import { contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
@@ -62,6 +59,11 @@ const stewardPrivateKey = privateKeyFromSeed(STEWARD_SEED);
 const stewardPublicKey = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
 const stewardSigner = `did:demos:agent:${Buffer.from(stewardPublicKey).toString("hex")}`;
 const DEM_RAIL_ID = "demos-native:DEM";
+
+// The real bridge, for the cases where dispatch hands it out as itself.
+const actualPayDem = await vi.importActual<typeof import("../../src/rails/payDem.js")>(
+  "../../src/rails/payDem.js",
+);
 
 function storeBinding(
   railId = "rail",
@@ -293,8 +295,8 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       },
     });
 
-    expect(typeof result).toBe("function");
-    expect(result).not.toBe(executor);
+    // The adapter is returned as itself, so runSession can recognise it.
+    expect(result).toBe(executor);
     expect(mocks.createPayDemRail).toHaveBeenCalledWith({
       rpc: "https://demos.example",
       secret: "test-secret",
@@ -356,14 +358,16 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     );
   });
 
-  test("keeps the payDemSettle adapter mark through the descriptor gate only", async () => {
+  test("returns the payDemSettle adapter itself, not a wrapper runSession cannot recognise", async () => {
     mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle: vi.fn() });
+    mocks.payDemSettle.mockImplementation(actualPayDem.payDemSettle);
     const descriptor = await authenticatedDefinition();
-    const options = { demosRpc: "https://demos.example", demosSecret: "test-secret" };
-    mocks.payDemSettle.mockReturnValue(markPayDemSettleAdapter(vi.fn()));
-    expect(isPayDemSettleAdapter(await settleFromRail(descriptor, options))).toBe(true);
-    mocks.payDemSettle.mockReturnValue(vi.fn());
-    expect(isPayDemSettleAdapter(await settleFromRail(descriptor, options))).toBe(false);
+    const dispatched = await settleFromRail(descriptor, {
+      demosRpc: "https://demos.example",
+      demosSecret: "test-secret",
+    });
+    expect(dispatched).toBe(mocks.payDemSettle.mock.results[0]!.value);
+    expect(actualPayDem.isPayDemSettleAdapter(dispatched)).toBe(true);
   });
 
   test("captures recovery authorities before the optional peer connects", async () => {
@@ -814,14 +818,15 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(secondAuthorize).not.toHaveBeenCalled();
   });
 
+  // The pay-dem adapter is not behind the descriptor gate: it holds the
+  // descriptor's rail id itself and refuses another rail or phase.
   test.each([
-    ["wrong descriptor", { rail: "demos-native:OTHER" }, /does not match authenticated definition/],
-    ["wrong phase", { phase: "pay-x402" }, /does not match definition railType/],
+    ["wrong descriptor", { rail: "demos-native:OTHER" }, /does not match authenticated descriptor/],
+    ["wrong phase", { phase: "pay-x402" }, /requires phase "pay-dem"/],
   ])("rejects a %s before invoking the rail", async (_label, override, pattern) => {
     const rail = { address: "aa".repeat(32), settle: vi.fn() };
-    const executor = vi.fn();
     mocks.createPayDemRail.mockResolvedValue(rail);
-    mocks.payDemSettle.mockReturnValue(executor);
+    mocks.payDemSettle.mockImplementation(actualPayDem.payDemSettle);
     const descriptor = await authenticatedDefinition();
     const dispatched = await settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
@@ -829,8 +834,8 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       payment: { phaseIndex: 4 },
     });
 
-    await expect(dispatched(request(override))).rejects.toThrow(pattern);
-    expect(executor).not.toHaveBeenCalled();
+    await expect(dispatched(request(override) as never)).rejects.toThrow(pattern);
+    expect(rail.settle).not.toHaveBeenCalled();
   });
 
   test.each(["disabled", "failed"] as const)(
@@ -912,19 +917,8 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     })).resolves.toEqual(expect.any(Function));
   });
 
+  // pay-dem is covered by "rejects a %s before invoking the rail" above.
   test.each([
-    {
-      label: "pay-dem",
-      definition: demDefinition,
-      expectedPhase: "pay-dem",
-      options: {
-        demosRpc: "https://demos.example",
-        demosSecret: "test-secret",
-        payment: { phaseIndex: 4 },
-      },
-      create: mocks.createPayDemRail,
-      bridge: mocks.payDemSettle,
-    },
     {
       label: "x402",
       definition: x402Definition,
@@ -979,10 +973,10 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(executor).toHaveBeenCalledTimes(1);
   });
 
-  test("passes the same rail and phase values that the descriptor gate checked", async () => {
-    const executor = vi.fn(async () => ({ ok: true }));
-    mocks.createPayDemRail.mockResolvedValue({});
-    mocks.payDemSettle.mockReturnValue(executor);
+  test("settles under the same rail and phase values the pay-dem adapter checked", async () => {
+    const settle = vi.fn(async () => { throw new Error("rail reached"); });
+    mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle });
+    mocks.payDemSettle.mockImplementation(actualPayDem.payDemSettle);
     const changing = request();
     let railReads = 0;
     let phaseReads = 0;
@@ -1001,10 +995,12 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       payment: { phaseIndex: 4 },
     });
 
-    await expect(dispatched(changing)).resolves.toEqual({ ok: true });
-    expect(executor).toHaveBeenCalledWith(expect.objectContaining({
-      rail: DEM_RAIL_ID,
-      phase: "pay-dem",
-    }));
+    await expect(dispatched(changing as never)).rejects.toThrow("rail reached");
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledWith(expect.objectContaining({
+      recovery: expect.objectContaining({ railId: DEM_RAIL_ID, phaseIndex: 4 }),
+    }), expect.anything());
+    expect(railReads).toBe(1);
+    expect(phaseReads).toBe(1);
   });
 });

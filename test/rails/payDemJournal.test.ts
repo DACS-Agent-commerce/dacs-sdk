@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
 import {
@@ -13,50 +13,71 @@ import {
   type PayDemSettlementAuditContext,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
+import { demosNode, nodeRecord, sdkPayDemRail } from "../fixtures/demosNodeMock.js";
+
+vi.mock("@kynesyslabs/demosdk/websdk", async () =>
+  (await import("../fixtures/demosNodeMock.js")).demosWebsdkMock);
 
 const hashA = "56".repeat(32);
 const hashB = "78".repeat(32);
 const payer = "ab".repeat(32);
 const payee = "cd".repeat(32);
 const claim = `did:demos:agent:${payee}`;
+
+// The SDK's own rail over a scripted node: wallet `ab…` signs A at nonce 9 and
+// the node includes it at block 42. Only this rail's verdicts, fresh or
+// recovered, are final (#338). `transfers` sees every transfer it signs.
+let sdkRail: PayDemRail;
+const transfers = vi.fn();
+beforeEach(async () => {
+  demosNode.reset();
+  Object.assign(demosNode, { address: payer, nextHash: hashA, onTransfer: transfers });
+  transfers.mockReset();
+  sdkRail = await sdkPayDemRail();
+});
 const request = (jobId: string, phaseIndex = 0, txHash?: string, ok = true): SettleRequest => ({
   rail: "pay-dem", phase: "pay-dem", phaseIndex, jobId, amount: "1", asset: "DEM",
   payee: claim, expectedPayee: claim,
   ...(txHash === undefined ? {} : { priorAttempts: [{ txHash, chainId: "demos", ok }] }),
 });
-const executed = (txHash: string) => ({
-  ok: true as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
-  blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
-  execution: "executed" as const,
-});
-const failed = (txHash: string, nonce: number) => ({
-  ok: false as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
-  blockNumber: 42, txRefKind: "demos", errorClass: "permanent" as const,
-  failureProof: { kind: "demos-failed-record" as const, txHash, payer, payee,
-    nonce, blockNumber: 42, amountOs: "1000000000" },
-});
+// A reconciler's claim; the node serves the same outcome for the hash when the
+// claim is made, so these tests reach the checks after the SDK's own read.
+const executed = (txHash: string) => {
+  demosNode.records.set(txHash, nodeRecord({ txHash, payer, payee, amountOs: "1000000000" }));
+  return {
+    ok: true as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
+    blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
+    execution: "executed" as const,
+  };
+};
+const failed = (txHash: string, nonce: number) => {
+  demosNode.records.set(txHash, nodeRecord({ txHash, payer, payee, amountOs: "1000000000", nonce,
+    status: "failed" }));
+  return {
+    ok: false as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
+    blockNumber: 42, txRefKind: "demos", errorClass: "permanent" as const,
+    failureProof: { kind: "demos-failed-record" as const, txHash, payer, payee,
+      nonce, blockNumber: 42, amountOs: "1000000000" },
+  };
+};
 
 /**
- * Two jobs pay the same payee the same amount through the bridge. The rail
- * journals each prepared transfer the way `createPayDemRail` does, with the
- * recovery tuple the bridge passed it, keyed by hash.
+ * Two jobs pay the same payee the same amount through the bridge. The SDK
+ * rail signs A at nonce 7, then B at nonce 8, and journals each prepared
+ * transfer with the recovery tuple the bridge passed it, keyed by hash.
  */
-function journaledPayments() {
+async function journaledPayments() {
   const journal = new Map<string, PayDemPreparedTransfer>();
   const hashes = [hashA, hashB];
   let nonce = 7;
-  const rail: PayDemRail = {
-    address: payer,
-    settle: vi.fn(async (params) => {
-      const txHash = hashes.shift()!;
-      journal.set(txHash, Object.freeze({
-        txHash, nonce: nonce++, payer, payee, amountOs: params.amount, denomination: "os" as const,
-        network: params.network ?? "demos", recovery: params.recovery!,
-      }));
-      const { amountOs: _amount, ...result } = executed(txHash);
-      return result;
-    }),
+  demosNode.onTransfer = () => {
+    transfers();
+    demosNode.nextHash = hashes.shift()!;
+    demosNode.nonce = nonce++;
   };
+  const rail = await sdkPayDemRail(undefined, {
+    journalPreparedTransfer: async (prepared) => { journal.set(prepared.txHash, prepared); },
+  });
   return { journal, rail };
 }
 
@@ -65,16 +86,17 @@ function auditor(
   store: SettlementIdempotencyStore = createIdempotencyStore(),
 ) {
   const once = vi.spyOn(store, "once");
-  const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
-  const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
-  return { settle, once, submit };
+  const settle = payDemSettle(sdkRail, {}, { store, reconcile });
+  return { settle, once, submit: transfers };
 }
 
-/** The rail log of a bridge that settled job A with `outcome`: the SDK's own record of hash A for job A. */
-async function settledJobA(outcome: ReturnType<typeof executed> | ReturnType<typeof failed> = executed(hashA)) {
+/** The rail log of the SDK rail's bridge that settled job A: the SDK's own record of hash A for job A. */
+async function settledJobA(outcome: "executed" | "failed" = "executed") {
   const store = createIdempotencyStore();
-  const { amountOs: _amount, ...result } = outcome;
-  await payDemSettle({ address: payer, settle: async () => result }, {}, { store })(request("job-a"));
+  demosNode.recordStatus = outcome === "executed" ? "confirmed" : "failed";
+  await expect(payDemSettle(sdkRail, {}, { store })(request("job-a")))
+    .resolves.toMatchObject({ ok: outcome === "executed", txHash: hashA });
+  transfers.mockClear();
   return store;
 }
 
@@ -86,12 +108,13 @@ async function settledJobA(outcome: ReturnType<typeof executed> | ReturnType<typ
 // this key, and refuses a supplied entry that does not bind this payment.
 describe("pay-dem audits count a retained hash only through the SDK's record and check its journal entry", () => {
   test("refuses another job's transfer of the same payer, payee and amount", async () => {
-    const { journal, rail } = journaledPayments();
+    const { journal, rail } = await journaledPayments();
     const store = createIdempotencyStore();
     const fresh = payDemSettle(rail, {}, { store });
     await expect(fresh(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(fresh(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashB });
-    expect(rail.settle).toHaveBeenCalledTimes(2);
+    expect(demosNode.transfers).toBe(2);
+    transfers.mockClear();
 
     // A reconciler that keys everything by hash returns job A's journal entry.
     const byHash = vi.fn(async (context: PayDemSettlementAuditContext) => ({
@@ -109,16 +132,17 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       expect(audit.once).not.toHaveBeenCalled();
       expect(audit.submit).not.toHaveBeenCalled();
     }
-    expect(rail.settle).toHaveBeenCalledTimes(2);
+    expect(demosNode.transfers).toBe(2);
   });
 
   // The reconciler is the host's, so the entry it returns can name any job.
   test("refuses job A's transfer for job B when the reconciler fabricates job B's entry", async () => {
     // Job A pays through a journaling rail; job B never pays.
-    const { journal, rail } = journaledPayments();
+    const { journal, rail } = await journaledPayments();
     const store = createIdempotencyStore();
     await expect(payDemSettle(rail, {}, { store })(request("job-a")))
       .resolves.toMatchObject({ ok: true, txHash: hashA });
+    transfers.mockClear();
     const original = journal.get(hashA)!;
     expect(original.recovery).toMatchObject({ jobId: "job-a" });
     const forged: PayDemPreparedTransfer = { ...original,
@@ -140,7 +164,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     const genuine = vi.fn<PayDemSettlementReconcile>(async () => ({ ...executed(hashA), preparedTransfer: original }));
     await expect(auditor(genuine, store).settle(request("job-a", 0, hashA)))
       .resolves.toMatchObject({ ok: true, txHash: hashA });
-    expect(rail.settle).toHaveBeenCalledTimes(1);
+    expect(demosNode.transfers).toBe(1);
   });
 
   test("refuses an audit whose reconciler returns no journal entry", async () => {
@@ -226,7 +250,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
   test("binds a permanent failure's proof to the journaled signed nonce", async () => {
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({ ...failed(hashA, 10),
       preparedTransfer: entry() as PayDemPreparedTransfer }));
-    const f = auditor(reconcile, await settledJobA(failed(hashA, 9)));
+    const f = auditor(reconcile, await settledJobA("failed"));
     await expect(f.settle(request("job-a", 0, hashA, false)))
       .rejects.toThrow(/does not match the journaled signed nonce/);
     reconcile.mockImplementation(async () => ({ ...failed(hashA, 9),
@@ -241,13 +265,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
   // the rail-log outcome under this exact settlement key and terms, or the
   // result this bridge authenticated. That record, never the session's hash,
   // ties the retained hash to the payment.
-  const unjournaledRail = (): PayDemRail => ({
-    address: payer,
-    settle: vi.fn(async () => {
-      const { amountOs: _amount, ...result } = executed(hashA);
-      return result;
-    }),
-  });
+  const unjournaledRail = (): PayDemRail => sdkRail;
   const honest = () => vi.fn(async (context: PayDemSettlementAuditContext) =>
     executed(context.txHash)) as unknown as PayDemSettlementReconcile;
 
@@ -270,7 +288,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     await expect(payDemSettle(rail, {}, { store, reconcile: mismatched })(request("job-a", 0, hashA)))
       .rejects.toThrow(binds);
     expect(once).not.toHaveBeenCalled();
-    expect(rail.settle).toHaveBeenCalledTimes(1);
+    expect(demosNode.transfers).toBe(1);
   });
 
   test("audits a journal-less payment this bridge authenticated", async () => {
@@ -285,7 +303,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     // Without that result, the journal entry is required.
     await expect(payDemSettle(rail, {}, { store, reconcile: honest() })(request("job-a", 0, hashA)))
       .rejects.toThrow(/must return the prepared-transfer journal entry/);
-    expect(rail.settle).toHaveBeenCalledTimes(1);
+    expect(demosNode.transfers).toBe(1);
   });
 
   // Only a store `createIdempotencyStore` built checks a recorded outcome's key
@@ -303,11 +321,13 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     // The SDK store's own lookup still binds, even on another object.
     const inner = createIdempotencyStore();
     await payDemSettle(unjournaledRail(), {}, { store: inner })(request("job-a"));
+    transfers.mockClear();
     const borrowed = { once, readOutcome: inner.readOutcome };
-    await expect(payDemSettle({ address: payer, settle: submit }, {}, { store: borrowed, reconcile: honest() })(
+    await expect(payDemSettle(sdkRail, {}, { store: borrowed, reconcile: honest() })(
       request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(once).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
+    expect(transfers).not.toHaveBeenCalled();
   });
 
   test("does not count a hash through its own journal entry without the SDK's record", async () => {
@@ -342,9 +362,9 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     ["replays a cached outcome", async () => cachedA as SettleResult],
   ])("does not bind a result reconciled for a store that %s, even with a journal entry", async (_case, once) => {
     const store = { once: vi.fn(once), readOutcome: vi.fn(async () => null) };
-    const submit = vi.fn(async () => { throw new Error("must never submit"); });
+    const submit = transfers;
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed(hashA));
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    const settle = payDemSettle(sdkRail, {}, { store, reconcile });
     await expect(settle(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(settle(request("job-b", 0, hashA)))
       .rejects.toThrow(/must return the prepared-transfer journal entry/);
@@ -352,7 +372,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     const bound = vi.fn<PayDemSettlementReconcile>(async () => executed(hashA));
     bound.mockImplementationOnce(async () => ({ ...executed(hashA),
       preparedTransfer: entry({ recovery: { ...recovery, jobId: "job-b", settlementKey: "pay-dem:job-b:0" } }) as PayDemPreparedTransfer }));
-    const journaled = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile: bound });
+    const journaled = payDemSettle(sdkRail, {}, { store, reconcile: bound });
     await expect(journaled(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(journaled(request("job-b", 0, hashA)))
       .rejects.toThrow(/must return the prepared-transfer journal entry/);
@@ -368,14 +388,12 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
         store.once.mock.calls.length === 1 ? submit() : reconcile!(key) as Promise<SettleResult>),
       readOutcome: vi.fn(async () => null),
     };
-    const rail: PayDemRail = {
-      address: payer,
-      settle: vi.fn(async () => ({ ok: false as const, txHash: hashA, payer, payee, chainId: "demos" })),
-    };
+    // The SDK rail's fresh read finds A's record still pending: held with its hash.
+    demosNode.recordStatus = "pending";
     for (const [found, audited] of [[hashA, true], [hashB, false]] as const) {
       store.once.mockClear();
       const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed(found));
-      const settle = payDemSettle(rail, {}, { store, reconcile });
+      const settle = payDemSettle(sdkRail, {}, { store, reconcile });
       await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: false, txHash: hashA });
       await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: found });
       // Another hash found for the key is only the reconciler's answer.
@@ -384,19 +402,16 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
         ? expect(audit).resolves.toMatchObject({ ok: true, txHash: hashA })
         : expect(audit).rejects.toThrow(/must return the prepared-transfer journal entry/));
     }
-    expect(rail.settle).toHaveBeenCalledTimes(2);
+    expect(demosNode.transfers).toBe(2);
   });
 
   test("checks a journal entry a restart reconciliation supplies, and never persists it", async () => {
     const store = createIdempotencyStore();
-    const submit = vi.fn(async () => {
-      const { amountOs: _amount, ...result } = executed(hashA);
-      return result;
-    });
-    await payDemSettle({ address: payer, settle: submit }, {}, { store })(request("job-a"));
+    const submit = transfers;
+    await payDemSettle(sdkRail, {}, { store })(request("job-a"));
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({ ...executed(hashA),
       preparedTransfer: entry({ recovery: { ...recovery, jobId: "job-b", settlementKey: "pay-dem:job-b:0" } }) as PayDemPreparedTransfer }));
-    const restarted = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    const restarted = payDemSettle(sdkRail, {}, { store, reconcile });
     await expect(restarted(request("job-a"))).rejects.toThrow(binds);
     reconcile.mockImplementation(async () => ({ ...executed(hashA), preparedTransfer: entry() as PayDemPreparedTransfer }));
     const result = await restarted(request("job-a"));

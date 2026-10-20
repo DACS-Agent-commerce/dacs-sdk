@@ -12,7 +12,6 @@ import {
   type PayDemPreparedTransfer,
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
-import { forwardPayDemSettleAdapter } from "../rails/payDemAdapter.js";
 import {
   isBindingCheckedOutcomeLookup,
   type SettlementIdempotencyStore,
@@ -107,8 +106,7 @@ function bindDescriptorRequest(
   executor: (req: SettleRequest) => Promise<SettleResult>,
 ): (req: SettleRequest) => Promise<SettleResult> {
   const expectedPhase = descriptor.phaseHandler;
-  // The gate only forwards, so a pay-DEM adapter stays recognisable to runSession.
-  return forwardPayDemSettleAdapter(executor, async (req: SettleRequest): Promise<SettleResult> => {
+  return async (req: SettleRequest): Promise<SettleResult> => {
     // Capture the two authority-bearing request fields once, then overwrite any
     // accessor/proxy values copied by the compatibility spread below. The rail
     // executor must receive the same descriptor id and phase that this gate
@@ -130,7 +128,7 @@ function bindDescriptorRequest(
       rail: requestRail,
       phase: requestPhase,
     });
-  });
+  };
 }
 
 async function enforceAvailability(
@@ -823,7 +821,11 @@ export async function settleFromRail(
           ? {}
           : { transactionRecordTimeoutMs }),
       });
-      return bindDescriptorRequest(descriptorIdentity, payDemSettle(rail, {
+      // Returned as itself, not behind the descriptor gate, so runSession can
+      // recognise the SDK adapter. It enforces the gate's checks: the request
+      // rail must be this descriptor's id (`railId` below) and the phase must
+      // be `pay-dem`, each read once.
+      return payDemSettle(rail, {
         ...(demRecipient === undefined
           ? {}
           : { recipient: demRecipient }),
@@ -839,7 +841,7 @@ export async function settleFromRail(
         ...(reconcile === undefined
           ? {}
           : { reconcile }),
-      }));
+      });
     }
     default:
       throw new DacsError(

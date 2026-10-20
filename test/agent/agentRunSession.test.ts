@@ -1,9 +1,15 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   buildAgent,
   type AuthenticatedListing,
 } from "../../src/agent/Agent.js";
+import type { SettleRequest } from "../../src/agent/runSessionCore.js";
+import { demosNode, sdkPayDemRail } from "../fixtures/demosNodeMock.js";
+
+vi.mock("@kynesyslabs/demosdk/websdk", async () =>
+  (await import("../fixtures/demosNodeMock.js")).demosWebsdkMock);
+beforeEach(() => demosNode.reset());
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import {
   signComponentArtifact,
@@ -608,12 +614,10 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       },
     });
     const txHash = "11".repeat(32);
-    const transfer = vi.fn(async ({ recipient, network }: Parameters<PayDemRail["settle"]>[0]) => ({
-      ok: true as const, execution: "executed" as const, txHash, chainId: network ?? "demos",
-      payer: buyerDid, payee: recipient, finality: { model: "bft-final" as const },
-      blockNumber: 42, txRefKind: "demos",
-    }));
-    const rail: PayDemRail = { address: buyerDid, settle: transfer };
+    // The SDK rail over a scripted node: the buyer's wallet signs `11…`, and
+    // the node records it executed at block 42.
+    Object.assign(demosNode, { address: buyerHex, nextHash: txHash, blockNumber: 42 });
+    const rail = await sdkPayDemRail("demos:testnet");
     const terms = {
       price: { amount: "1", asset: "DEM", decimals: 9, rail: "demos:native" },
       deliveryPhase: "deliver-attested-payload",
@@ -633,11 +637,15 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         settle: async () => { throw new Error("must not pay again"); },
         resumeSettlement,
       });
-    // A constant callback echoing the anchored success is not a node read.
-    await expect(rerun(async (req) => ({
+    // A constant callback echoing the anchored success is not a node read, so
+    // it is never asked.
+    const constant = vi.fn(async (req: SettleRequest) => ({
       ok: true, txHash, chainId: "demos:testnet", payer: buyerHex, payee: req.expectedPayee,
-      finality: { model: "bft-final" }, blockNumber: 42, txRefKind: "demos",
-    }))).rejects.toThrow(/not the SDK's payDemSettle adapter; the payment remains indeterminate/);
+      finality: { model: "bft-final" as const }, blockNumber: 42, txRefKind: "demos",
+    }));
+    await expect(rerun(constant))
+      .rejects.toThrow(/resumeSettlement is not the payDemSettle adapter, so it is not called/);
+    expect(constant).not.toHaveBeenCalled();
     // The adapter's reconciler reads the executed record and its journal entry.
     const reconcile = vi.fn(async (context: Parameters<PayDemSettlementReconcile>[0]) => {
       const tuple = { network: context.network, payer: context.payer, payee: context.payee,
@@ -655,7 +663,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       store: createIdempotencyStore(railLog), reconcile,
     }))).resolves.toEqual(first);
     expect(reconcile).toHaveBeenCalledOnce();
-    expect(transfer).toHaveBeenCalledOnce();
+    expect(demosNode.transfers).toBe(1);
+    expect(demosNode.reads.filter((hash) => hash === txHash).length).toBeGreaterThan(1);
   });
 
   test("a genuinely signed listing settles through the public runSession", async () => {

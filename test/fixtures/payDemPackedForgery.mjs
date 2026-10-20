@@ -17,7 +17,7 @@ const PAYER = "c3".repeat(32);
 const SELLER = "a1".repeat(32);
 const TX_HASH = "12".repeat(32);
 const AMOUNT_OS = "5000000000";
-const BRAND_NAME = /vouch|brand|mark|regist|trust|verif|attest|record/i;
+const BRAND_NAME = /vouch|brand|mark|regist|trust|verif|attest|record|adapter|forward/i;
 
 async function shippedFiles(directory) {
   const files = [];
@@ -72,6 +72,9 @@ const forgedTransfer = async () => ({
   blockNumber: 42,
 });
 const forgedClient = { address: PAYER, transfer: forgedTransfer };
+// A consumer's own recovery function, which must never pass as the SDK's
+// payDemSettle adapter: runSession completes a native verdict only from that.
+const forgedResume = async () => failedRecord();
 
 // Offer every brand-shaped export the forged capabilities.
 const brandExports = [];
@@ -79,7 +82,7 @@ for (const [file, namespace] of modules) {
   for (const [name, value] of Object.entries(namespace)) {
     if (typeof value !== "function" || !BRAND_NAME.test(name)) continue;
     brandExports.push(`${file}#${name}`);
-    for (const target of [forgedSettle, forgedRail, forgedTransfer, forgedClient]) {
+    for (const target of [forgedSettle, forgedRail, forgedTransfer, forgedClient, forgedResume]) {
       try {
         const out = value(target);
         if (out && typeof out.then === "function") await out.catch(() => undefined);
@@ -151,6 +154,50 @@ const railSuccess = await outcome(() => sdk.payDemSettle(
   { network: "demos" },
 )({ ...request, jobId: "forged-rail-success" }));
 
+// Forgery 3: no shipped export marks a consumer's function as the SDK
+// adapter, and neither a wrapper around a genuine adapter nor a bound copy of
+// one passes as it.
+const isAdapter = modules.get("dist/rails/payDem.js")?.isPayDemSettleAdapter;
+const genuine = sdk.payDemSettle(forgedRail, { network: "demos" });
+const adapterMark = {
+  checkShipped: typeof isAdapter === "function",
+  genuine: isAdapter?.(genuine) === true,
+  forged: isAdapter?.(forgedResume) === true,
+  wrapper: isAdapter?.(async (req) => genuine(req)) === true,
+  bound: isAdapter?.(genuine.bind(null)) === true,
+};
+
+// Forgery 4: a reconciler's `execution: "executed"` through the genuine
+// adapter, over a rail the SDK did not build, must not mint a recovered
+// success: the SDK has no node read of its own behind it.
+let reconcilerCalls = 0;
+const forgedReconcile = async () => {
+  reconcilerCalls += 1;
+  return {
+    ok: true,
+    execution: "executed",
+    txHash: TX_HASH,
+    chainId: "demos",
+    payer: PAYER,
+    payee: SELLER,
+    finality: { model: "bft-final" },
+    blockNumber: 42,
+    txRefKind: "demos",
+    amountOs: AMOUNT_OS,
+  };
+};
+const audited = sdk.payDemSettle(
+  { address: PAYER, settle: async () => ({ ok: false, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: SELLER }) },
+  { network: "demos" },
+  { reconcile: forgedReconcile },
+);
+const auditRequest = { ...request, jobId: "forged-audit" };
+const reconcilerFresh = await outcome(() => audited(auditRequest));
+const reconcilerAudit = await outcome(() => audited({
+  ...auditRequest,
+  priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: true }],
+}));
+
 process.stdout.write(`${JSON.stringify({
   shippedFiles: modules.size,
   importErrors,
@@ -160,4 +207,6 @@ process.stdout.write(`${JSON.stringify({
   coreSuccess,
   bridgeSuccess,
   railSuccess,
+  adapterMark,
+  reconciler: { fresh: reconcilerFresh, audit: reconcilerAudit, calls: reconcilerCalls },
 })}\n`);

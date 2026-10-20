@@ -1015,12 +1015,16 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       store: firstStore,
     })(request)).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
 
-    const restartedRail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async () => {
-        throw new Error("must not rebroadcast");
-      }),
-    };
+    // The restarted process wires the SDK rail: its own read of the node's
+    // record for the reconciled hash decides the verdict.
+    const restartedRail = await sdkRail();
+    sdk.getTxByHash.mockImplementation(async () => ({
+      hash: TX_HASH,
+      content: { type: "native", from: `0x${PAYER}`, to: SELLER_HEX, amount: "1250000000", nonce: "9",
+        data: ["native", { nativeOperation: "send", args: [SELLER_HEX, "1250000000"] }] },
+      status: "confirmed",
+      blockNumber: 95563,
+    }));
     const reconcile = vi.fn(async (context) => ({
       ok: true,
       txHash: TX_HASH,
@@ -1053,7 +1057,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     });
     expect(recovered).not.toHaveProperty("execution");
     expect(transfers).toBe(1);
-    expect(restartedRail.settle).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(0);
+    expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledWith({
       railId: "demos-native:DEM",
@@ -1404,11 +1409,21 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         amountOs: context.amountOs,
       }));
       const putOutcome = vi.spyOn(log, "putOutcome");
+      // The SDK's own read agrees the record failed; a lookup by key still
+      // never ties that hash to this key.
+      sdk.getTxByHash.mockImplementation(async () => ({
+        hash: TX_HASH,
+        content: { type: "native", from: `0x${PAYER}`, to: SELLER_HEX, amount: AMOUNT_OS, nonce: "9",
+          data: ["native", { nativeOperation: "send", args: [SELLER_HEX, AMOUNT_OS] }] },
+        status: "failed",
+        blockNumber: 4242,
+      }));
       const settle = payDemSettle(rail, { network: "demos" }, {
         store: createIdempotencyStore(log),
         reconcile: reconcile as unknown as PayDemSettlementReconcile,
       });
       await expect(settle(request)).rejects.toThrow(/reconciliation was not definitive/);
+      expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
       expect(reconcile).toHaveBeenCalledTimes(1);
       expect(putOutcome).not.toHaveBeenCalled();
       expect(sdkTransfers()).toBe(0);

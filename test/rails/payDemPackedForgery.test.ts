@@ -33,6 +33,8 @@ interface ForgeryReport {
   coreSuccess: unknown;
   bridgeSuccess: unknown;
   railSuccess: unknown;
+  adapterMark: Record<string, boolean>;
+  reconciler: { fresh: unknown; audit: unknown; calls: number };
 }
 
 describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
@@ -93,5 +95,21 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     expect(report.coreSuccess).toEqual(HELD);
     expect(report.bridgeSuccess).toEqual(HELD);
     expect(report.railSuccess).toEqual(HELD);
+  });
+
+  // runSession completes a native verdict only from the SDK adapter, so a
+  // consumer's function must never carry the adapter's identity.
+  it("lets no consumer function pass as the payDemSettle adapter", () => {
+    expect(report.brandExports).toContain("dist/rails/payDem.js#isPayDemSettleAdapter");
+    expect(report.brandExports.filter((entry) => /#(?:mark|forward)/i.test(entry))).toEqual([]);
+    expect(report.adapterMark).toEqual({
+      checkShipped: true, genuine: true, forged: false, wrapper: false, bound: false,
+    });
+  });
+
+  it("mints no recovered payment from a reconciler's executed claim without the SDK's own node read", () => {
+    expect(report.reconciler.fresh).toEqual(HELD);
+    expect(report.reconciler.audit).toEqual(HELD);
+    expect(report.reconciler.calls).toBe(1);
   });
 });

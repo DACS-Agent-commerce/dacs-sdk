@@ -62,7 +62,7 @@ import {
   type ClassifyCciTlsnDeps,
 } from "../identity/index.js";
 import { generateCanonicalJobId } from "../negotiate/jobId.js";
-import { forwardPayDemSettleAdapter } from "../rails/payDemAdapter.js";
+import { isPayDemSettleAdapter } from "../rails/payDem.js";
 import type {
   DemosWriteEvidence,
   SubstrateAdapter,
@@ -204,10 +204,10 @@ function stableAgentMethod<T>(
   if (typeof candidate !== "function" || nodeTypes.isProxy(candidate)) {
     throw new DacsError(`${label} must be a stable function`);
   }
-  return forwardPayDemSettleAdapter(
-    candidate,
-    isolateAgentCallback<T>(candidate as (...args: never[]) => unknown),
-  );
+  // The SDK's own pay-DEM adapter ignores its receiver, so it is passed on as
+  // itself: runSession recognises it only by identity.
+  if (isPayDemSettleAdapter(candidate)) return candidate as T;
+  return isolateAgentCallback<T>(candidate as (...args: never[]) => unknown);
 }
 
 interface CapturedAgentDemosCciConfig {
@@ -451,8 +451,10 @@ export interface RunSessionOptions {
    * outcome read-only (see `SessionDeps.resumeSettlement`). Must use the same
    * rail idempotency key and reconcile every ordered `req.priorAttempts` entry
    * before returning; a native transfer is never replaced by another hash.
-   * A native DEM success it returns completes only when this is the SDK's
-   * `payDemSettle` adapter (directly or from `settleFromRail`).
+   * A native DEM success or permanent failure is final only from the SDK's
+   * `payDemSettle` adapter (directly or from `settleFromRail`, not wrapped)
+   * over the rail `createPayDemRail` built; a saved one is re-read only
+   * through that adapter, and any other implementation is not called for it.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
