@@ -57,11 +57,11 @@ const MUTANTS = [
   // checkWireRequest, and signWireEnvelope checks the tuple every signer passes it; where two sites check one value,
   // the mutant removes both (each alone is equivalent there), and the single-site vectors show each site is needed.
   MF("purchase tuple kept (seller, both sites)", [
-    ["wire/envelope.ts", '  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding);\n', ""],
-    ["wire/envelope.ts", "if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding);", ""],
+    ["wire/envelope.ts", '  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding, 500);\n', ""],
+    ["wire/envelope.ts", "if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding, 500);", ""],
   ], ["request/purchase-profile-omitted", "request/purchase-profile-revision-missing", "request/purchase-profile-other-revision", "request/purchase-profile-other-chain"]),
-  M("purchase tuple kept (open)", "wire/envelope.ts", '  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding);\n', "", ["request/open-purchase-profile-other-revision", "request/open-purchase-profile-omitted"]),
-  M("purchase tuple kept (check)", "wire/envelope.ts", "if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding);", "", ["request/check-purchase-profile-other-revision", "request/check-purchase-profile-omitted"]),
+  M("purchase tuple kept (open)", "wire/envelope.ts", '  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding, 500);\n', "", ["request/open-purchase-profile-other-revision", "request/open-purchase-profile-omitted"]),
+  M("purchase tuple kept (check)", "wire/envelope.ts", "if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding, 500);", "", ["request/check-purchase-profile-other-revision", "request/check-purchase-profile-omitted"]),
   MF("purchase tuple kept (signer, with the envelope's)", [
     ["wire/response.ts", "assertPurchaseProfile(job?.profile, binding, 500);", ""],
     ["wire/envelope.ts", 'if (purchaseProfile !== null || payload.kind !== "response") assertPurchaseProfile(purchaseProfile, binding, 500);', ""],
@@ -74,8 +74,8 @@ const MUTANTS = [
   // A request is signed only under a kept tuple: `null` passes only for an answer.
   M("purchase tuple kept (envelope signer, request)", "wire/envelope.ts", 'if (purchaseProfile !== null || payload.kind !== "response")', "if (purchaseProfile !== null)", ["signing/envelope-request-purchase-profile-none"]),
   MF("purchase tuple kept (buyer, with the open's)", [
-    ["wire/response.ts", "assertPurchaseProfile(request?.profile, received.binding);", ""],
-    ["wire/envelope.ts", '  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding);\n', ""],
+    ["wire/response.ts", "assertPurchaseProfile(request?.profile, received.binding, 500);", ""],
+    ["wire/envelope.ts", '  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding, 500);\n', ""],
   ], ["response/kept-request-revision-missing"]),
   M("envelope signature", "wire/envelope.ts", 'if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");', "", ["request/wrong-signer", "response/other-signer"]),
   M("exact request fields", "wire/envelope.ts", "(kind === \"request\" || kind === \"response\") && hasKeys(p, kind === \"response\" ? RESPONSE_FIELDS : REQUEST_FIELDS) &&", "(kind === \"request\" || kind === \"response\") && typeof p === \"object\" && p !== null &&", ["request/extra-field"]),
@@ -93,13 +93,22 @@ const MUTANTS = [
   M("delegation required (both sites)", "wire/envelope.ts", [['if (requireDelegation && !delegated) fail("peer_delegation_required");', ""], ['if (c.requireDelegation && !delegation) fail("peer_delegation_required");', ""]], null, ["request/delegation-required"]),
   M("delegation required (open)", "wire/envelope.ts", 'if (requireDelegation && !delegated) fail("peer_delegation_required");', "", ["request/open-delegation-required"]),
   M("delegation required (check)", "wire/envelope.ts", 'if (c.requireDelegation && !delegation) fail("peer_delegation_required");', "", ["request/check-delegation-required"]),
-  M("delegated request ends by delegation expiry", "wire/envelope.ts", 'if (request.expiresAt > delegation.payload.expiresAt) fail("peer_delegation_expired", 408);', "", ["request/delegated-outlives-delegation"]),
+  M("delegated request ends by delegation expiry", "wire/envelope.ts", " && request.expiresAt <= delegation.payload.expiresAt) {", ") {", ["request/delegated-outlives-delegation"]),
+  // A request may carry a delegation to any seller; requireDelegation only makes one mandatory.
+  M("delegation read whenever present (open)", "wire/envelope.ts", 'const delegated = kind === "request" && Object.hasOwn(envelope ?? {}, "delegation");', 'const delegated = kind === "request" && requireDelegation && Object.hasOwn(envelope ?? {}, "delegation");', ["request/valid-delegated-not-required"]),
   M("delegated request matches the retained Agreement", "wire/envelope.ts", ' fail(delegation ? "peer_delegation_agreement_mismatch" : "peer_agreement_party_mismatch", 409);', " void 0;", ["request/delegated-agreement-mismatch", "request/direct-agreement-buyer-party-mismatch", "request/direct-agreement-seller-party-mismatch"]),
   M("direct request matches the retained Agreement's parties", "wire/envelope.ts", "for (const artifact of retainedArtifacts) {\n    const parties", "for (const artifact of delegation ? retainedArtifacts : []) {\n    const parties", ["request/direct-agreement-buyer-party-mismatch", "request/direct-agreement-seller-party-mismatch"]),
   // The host's retained job and Agreement hash: each comparison removed, and a missing record replaced by the request's own values.
   M("retained Agreement hash", "wire/envelope.ts", 'if (request.agreementHash !== retained.agreementHash) fail("peer_agreement_mismatch", 409);', "", ["request/retained-agreement-hash-mismatch", "request/delegated-retained-agreement-hash-mismatch"]),
   M("retained job", "wire/envelope.ts", 'if (request.jobId !== retained.jobId) fail("peer_job_mismatch", 409);', "", ["request/retained-job-mismatch"]),
-  M("retained Agreement required", "wire/envelope.ts", "c.retained === undefined ? undefined :", "c.retained === undefined ? { jobId: envelope?.payload?.jobId, agreementHash: envelope?.payload?.agreementHash } as JsonRecord :", ["request/retained-agreement-omitted"]),
+  M("retained Agreement required", "wire/envelope.ts", "c.retained === undefined ? undefined :", "c.retained === undefined ? { jobId: envelope?.payload?.jobId, agreementHash: envelope?.payload?.agreementHash, buyer: envelope?.payload?.buyer, seller: envelope?.payload?.seller } as JsonRecord :", ["request/retained-agreement-omitted"]),
+  // The retained parties: each comparison removed, and a record without them admitted (it then names no party).
+  M("retained buyer", "wire/envelope.ts", '  if (request.buyer !== retained.buyer) fail("peer_agreement_party_mismatch", 409);\n', "", ["request/retained-buyer-mismatch", "request/delegated-retained-buyer-mismatch"]),
+  M("retained seller", "wire/envelope.ts", '  if (request.seller !== retained.seller) fail("peer_agreement_party_mismatch", 409);\n', "", ["request/retained-seller-mismatch"]),
+  MF("retained parties required", [
+    ["wire/envelope.ts", '["jobId", "agreementHash", "buyer", "seller"]', '["jobId", "agreementHash"]'],
+    ["wire/envelope.ts", " ||\n      !isClaim(retained.buyer) || !isClaim(retained.seller)", ""],
+  ], ["request/retained-parties-omitted"]),
   M("delegated request matches the retained Agreement's buyer", "wire/envelope.ts", 'parties.find((party) => party?.role === "buyer")?.primaryClaim !== request.buyer', "false", ["request/delegated-agreement-buyer-party-mismatch", "request/direct-agreement-buyer-party-mismatch"]),
   M("delegated request matches the retained Agreement's seller", "wire/envelope.ts", 'parties.find((party) => party?.role === "seller")?.primaryClaim !== request.seller', "false", ["request/delegated-agreement-seller-party-mismatch", "request/direct-agreement-seller-party-mismatch"]),
   M("retained Agreement parties found by role", "wire/envelope.ts", 'party?.role === "buyer"', "true", ["request/valid-delegated-agreement-parties-reordered"]),
@@ -125,12 +134,13 @@ const MUTANTS = [
   // seller-key signature check instead; without the kind conjunct, a verifier given requireDelegation accepts the
   // buyer-delegated session key as the seller's.
   M("exact response envelope members", "wire/envelope.ts", 'if (!hasKeys(envelope, ["payload", "signature", ...(delegated ? ["delegation"] : [])])) fail("peer_envelope_invalid");', 'if (!isRecord(envelope)) fail("peer_envelope_invalid");', ["response/delegated-session-signed"]),
-  M("response never delegated (open)", "wire/envelope.ts", 'const delegated = kind === "request" && requireDelegation', "const delegated = requireDelegation", ["response/delegated-session-signed-delegation-required"]),
+  M("response never delegated (open)", "wire/envelope.ts", 'const delegated = kind === "request" && Object.hasOwn(', "const delegated = Object.hasOwn(", ["response/delegated-session-signed-delegation-required"]),
   M("response carries no delegation (signer)", "wire/envelope.ts", '  if (delegation !== null && payload.kind !== "request") fail("peer_envelope_invalid", 500);\n', "", ["signing/envelope-response-delegation"]),
   M("response identity binding", "wire/response.ts", "!sameCanonical(identity, expected) || ", "", ["response/identity-mismatch"]),
   M("response request-hash binding", "wire/response.ts", "requestHash !== expectedRequestHash || ", "", ["response/request-hash-mismatch"]),
   M("response expiry", "wire/response.ts", "expiresAt <= received.now ||", "", ["response/expired"]),
   M("response lifetime", "wire/response.ts", "expiresAt > received.now + DACS_SELLER_HTTP_LIMITS.maxMessageLifetimeMs", "false", ["response/lifetime-over-60s"]),
+  M("endpoint is an origin", "wire/discovery.ts", "  if (!/^https:\\/\\/[^/]+\\/?$/.test(value)) return false;\n", "", ["discovery/listing-endpoint-with-path"]),
   M("endpoint proof: exact endpoint", "wire/discovery.ts", 'if (p.publicEndpoint !== listing.publicEndpoint) fail("discovery_endpoint_mismatch", 502);', "", ["discovery/endpoint-mismatch"]),
   M("endpoint proof: Listing seller", "wire/discovery.ts", 'if (p.seller !== listing.seller) fail("discovery_signer_wrong", 502);', "", ["discovery/signer-not-listing-seller"]),
   M("endpoint proof: signature", "wire/discovery.ts", "if (!verifyEd25519(discoverySigningBytes(p), envelopeSignatureBytes(document.signature, \"discovery_signature_invalid\"), claimKey(p.seller))) {", "if (false) {", ["discovery/bad-signature", "discovery/wrong-domain"]),

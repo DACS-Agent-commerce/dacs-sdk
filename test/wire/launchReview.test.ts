@@ -18,6 +18,8 @@ function party() {
   return { claim: `did:demos:agent:${key}`, key, sign: (bytes: Uint8Array) => sign(null, Buffer.from(bytes), privateKey) };
 }
 const header = (value: unknown) => Buffer.from(canonicalize(value)).toString("base64url");
+/** Well-formed claims for retained records that are refused before their parties are compared. */
+const CLAIM_A = `did:demos:agent:${"1".repeat(64)}`, CLAIM_B = `did:demos:agent:${"2".repeat(64)}`;
 function world(path = "/dacs/v1/payments") {
   const buyer = party(), seller = party(), session = party();
   const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
@@ -39,7 +41,7 @@ function world(path = "/dacs/v1/payments") {
   /** The buyer-signed (undelegated) request header. */
   const direct = () => header(signed(request, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request));
   /** What the seller host retained for the job: its own record, not read from the request. */
-  const retained = { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64) };
+  const retained = { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), buyer: buyer.claim, seller: seller.claim };
   const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained };
   return { buyer, seller, request, open, delegated, direct, artifact, check, context, signed, retained };
 }
@@ -238,6 +240,25 @@ describe("the job and Agreement the host retained", () => {
   const OTHER_JOB = "01K7FZ8Q9W3V5T2R1N0M8K6J4J";
   const effects = ["/dacs/v1/payments", "/dacs/v1/commitments"];
 
+  // Agreements are public on testnet (G1): another key that knows the job and its hash signs a direct request as buyer.
+  it.each([...effects, "/dacs/v1/bundles/request", "/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"])(
+    "%s: a non-party's correctly signed direct request is refused by the retained parties alone, with no artifacts and no reservation", (path) => {
+      const x = world(path), mallory = party(), reserveRequest = vi.fn(() => true);
+      const signedHeader = x.signed({ ...x.request, buyer: mallory.claim }, mallory, wire.DACS_SELLER_HTTP_DOMAINS.request);
+      const opened = wire.openWireEnvelope(Buffer.from(canonicalize(signedHeader)).toString("base64url"), "request", x.context);
+      expect(() => wire.checkWireRequest(opened, { ...x.check, reserveRequest }))
+        .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
+      // The host's record is what is compared: the job's own buyer is refused under another retained buyer or seller.
+      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: { ...x.retained, buyer: mallory.claim }, reserveRequest }))
+        .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
+      expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained: { ...x.retained, seller: mallory.claim }, reserveRequest }))
+        .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
+      expect(() => wire.checkWireRequest(x.delegated(), { ...x.check, artifacts: [x.artifact], retained: { ...x.retained, buyer: mallory.claim }, reserveRequest }))
+        .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
+      expect(reserveRequest).not.toHaveBeenCalled();
+      expect(wire.checkWireRequest(x.open(), { ...x.check, reserveRequest }).readbackOnly).toBe(false);
+    });
+
   it.each(effects)("%s: a correctly signed direct request naming another Agreement or job makes no reservation", (path) => {
     const x = world(path), reserveRequest = vi.fn(() => true), check = { ...x.check, reserveRequest };
     expect(() => wire.checkWireRequest(x.open({ ...x.request, agreementHash: "b".repeat(64) }), check))
@@ -277,10 +298,16 @@ describe("the job and Agreement the host retained", () => {
     ["omitted", undefined],
     ["null", null],
     ["empty", {}],
-    ["without agreementHash", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H" }],
-    ["with an extra member", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), listingId: "report" }],
-    ["with an uppercase hash", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "A".repeat(64) }],
-    ["with a non-canonical job id", { jobId: "01k7fz8q9w3v5t2r1n0m8k6j4h", agreementHash: "a".repeat(64) }],
+    ["without agreementHash", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", buyer: CLAIM_A, seller: CLAIM_B }],
+    ["with an extra member", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), buyer: CLAIM_A, seller: CLAIM_B, listingId: "report" }],
+    ["with an uppercase hash", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "A".repeat(64), buyer: CLAIM_A, seller: CLAIM_B }],
+    ["with a non-canonical job id", { jobId: "01k7fz8q9w3v5t2r1n0m8k6j4h", agreementHash: "a".repeat(64), buyer: CLAIM_A, seller: CLAIM_B }],
+    // The parties are part of the host's record: without them only the optional artifacts could bind the buyer.
+    ["without parties (the job and hash only)", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64) }],
+    ["without buyer", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), seller: CLAIM_B }],
+    ["without seller", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), buyer: CLAIM_A }],
+    ["with a buyer that is not a claim", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), buyer: "a".repeat(64), seller: CLAIM_B }],
+    ["with a seller that is not a claim", { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash: "a".repeat(64), buyer: CLAIM_A, seller: null }],
     ["a string", "a".repeat(64)],
   ])("refuses a retained Agreement %s, on effect and read routes, before reservation", (_name, retained) => {
     for (const path of [...effects, "/dacs/v1/agreements/state"]) {
@@ -296,7 +323,7 @@ describe("the job and Agreement the host retained", () => {
   it("reads the retained Agreement once, as data", () => {
     const x = world(), reserveRequest = vi.fn(() => true);
     let reads = 0;
-    const retained = { jobId: x.retained.jobId, get agreementHash() { return ++reads === 1 ? x.retained.agreementHash : "b".repeat(64); } };
+    const retained = { jobId: x.retained.jobId, buyer: x.retained.buyer, seller: x.retained.seller, get agreementHash() { return ++reads === 1 ? x.retained.agreementHash : "b".repeat(64); } };
     expect(() => wire.checkWireRequest(x.open(), { ...x.check, retained, reserveRequest }))
       .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
     expect(reserveRequest).not.toHaveBeenCalled();

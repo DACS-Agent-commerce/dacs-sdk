@@ -179,8 +179,9 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
       // checkSubject: what reaches checkWireRequest instead of the opened envelope.
       const subject = input.checkSubject === "decoded-header" ? JSON.parse(rawBodyText(input.header))
         : input.checkSubject === "copy" ? { ...opened } : opened;
-      // retained: the job and Agreement hash the seller host kept (the file's job); a vector may give another, or "omitted".
-      const retained = input.retained === "omitted" ? undefined : input.retained ?? { jobId: file.job.jobId, agreementHash: file.job.agreementHash };
+      // retained: the job, Agreement hash and parties the seller host kept (the file's job); a vector may give another, or "omitted".
+      const retained = input.retained === "omitted" ? undefined
+        : input.retained ?? { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller };
       const { readbackOnly } = wire.checkWireRequest(subject, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained,
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
         method: input.method ?? "POST", path: input.path, rawBody, now: file.now,
@@ -296,6 +297,11 @@ describe("dacs-seller-http/v1 vectors", () => {
       // The job and Agreement hash the seller host retained, compared on every request.
       "request/retained-agreement-hash-mismatch", "request/retained-job-mismatch", "request/retained-agreement-omitted",
       "request/delegated-retained-agreement-hash-mismatch",
+      // The parties the seller host retained, compared on every request with or without artifacts.
+      "request/retained-buyer-mismatch", "request/retained-seller-mismatch", "request/retained-parties-omitted",
+      "request/delegated-retained-buyer-mismatch",
+      // A delegation is verified whenever a request carries one; a publicEndpoint is an origin.
+      "request/valid-delegated-not-required", "discovery/listing-endpoint-with-path",
       "binding/record-proxy-changes-between-reads", "binding/record-accessor-changes-between-reads",
       "binding/local-proxy-changes-between-reads", "delegation/payload-changes-between-reads",
       "signing/envelope-payload-changes-between-reads", "signing/delegation-payload-changes-between-reads",

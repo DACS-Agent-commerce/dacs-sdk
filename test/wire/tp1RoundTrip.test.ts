@@ -159,7 +159,7 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
       const purchaseProfile = keptProfile as typeof job.profile;
       expect(await code(() => signWireRequest({ signer: counting, binding: w.buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: w.seller.claim, job: { ...job, profile: purchaseProfile }, now: NOW }))).toBe("tp1_purchase_profile_mismatch");
       expect(await code(() => openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile }))).toBe("tp1_purchase_profile_mismatch");
-      expect(await code(() => checkWireRequest(exactlyOpened, { reserveRequest: () => true, retained: { jobId: JOB, agreementHash: AGREEMENT }, seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile }))).toBe("tp1_purchase_profile_mismatch");
+      expect(await code(() => checkWireRequest(exactlyOpened, { reserveRequest: () => true, retained: { jobId: JOB, agreementHash: AGREEMENT, buyer: w.buyer.claim, seller: w.seller.claim }, seller: w.seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile }))).toBe("tp1_purchase_profile_mismatch");
       expect(await code(() => signWireResponse(payload, 200, answer, { signer: sellerCounting, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile }))).toBe("tp1_purchase_profile_mismatch");
     }
     expect(counting.calls + sellerCounting.calls).toBe(0);
@@ -244,7 +244,7 @@ describe("TP-1 round trips (fresh keys, both directions)", () => {
     // before the exchange is compared or a reservation is made.
     const sellerOpened = openWireEnvelope(genuine, "response", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, principal: w.seller.claim });
     const reserve = vi.fn(() => true);
-    expect(await code(() => checkWireRequest(sellerOpened as unknown as Parameters<typeof checkWireRequest>[0], { reserveRequest: reserve, retained: { jobId: JOB, agreementHash: AGREEMENT }, seller: w.seller.claim, listingPin: PIN, method: "POST", path: response.path, rawBody: Buffer.from(answer), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }))).toBe("peer_request_unverified");
+    expect(await code(() => checkWireRequest(sellerOpened as unknown as Parameters<typeof checkWireRequest>[0], { reserveRequest: reserve, retained: { jobId: JOB, agreementHash: AGREEMENT, buyer: w.buyer.claim, seller: w.seller.claim }, seller: w.seller.claim, listingPin: PIN, method: "POST", path: response.path, rawBody: Buffer.from(answer), now: NOW, binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile }))).toBe("peer_request_unverified");
     expect(reserve).not.toHaveBeenCalled();
 
     // The generic signer refuses an answer with a delegation before its signer is called; without one it signs.
@@ -291,7 +291,7 @@ describe("the buyer's delegated session signer (signWireRequest)", () => {
   }) as Parameters<typeof signWireRequest>[0];
   const sellerCheck = (w: ReturnType<typeof world>, header: string) => {
     const opened = openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true });
-    return checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained: { jobId: JOB, agreementHash: AGREEMENT },
+    return checkWireRequest(opened, { reserveRequest: () => true, artifacts: agreementFixture(opened), retained: { jobId: JOB, agreementHash: AGREEMENT, buyer: w.buyer.claim, seller: w.seller.claim },
       seller: w.seller.claim, listingPin: PIN, method: "POST", path: opened.payload.path, rawBody: Buffer.from(text), now: NOW,
       binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation: true });
   };

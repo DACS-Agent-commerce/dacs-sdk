@@ -36,7 +36,7 @@ not yet independently checked (composition checks qualify it).
 
 ## Implementation decisions and release scope
 
-This PR implements one buyer-to-seller transport, `dacs-seller-http/v1`,
+The SDK implements one buyer-to-seller transport, `dacs-seller-http/v1`,
 without a fallback to the plugin signing domains. Its definitions and validators
 ship in the existing core package as `@kynesyslabs/dacs/wire` (`./wire`);
 HTTP hosting, clients and durable journals belong to their consuming packages.
@@ -52,7 +52,9 @@ that proposed status until the checks run.
 ## Routes
 
 All signed routes are `POST` with a JSON body and the signed envelope in the
-`x-dacs-seller-peer` header. Paths are matched exactly against the raw request
+`x-dacs-seller-peer` header. A request goes to the seller's `publicEndpoint`,
+which is an origin (see the discovery document), followed by the route path.
+Paths are matched exactly against the raw request
 target; a query string, trailing slash, other case or encoded alias is not a
 route (`findDacsSellerHttpRoute`).
 
@@ -118,8 +120,14 @@ Header `x-dacs-seller-peer` is the base64url (no padding) encoding of the
 canonical JSON `{payload, signature, delegation?}`. `signature` is the 64-byte
 Ed25519 signature. Producers write canonical base64url; receivers also accept
 128 hex characters, with or without one `0x` prefix. The same holds for the
-discovery document's `signature`. `delegation` is
-present only when the seller requires delegated sessions.
+discovery document's `signature`. `delegation` is optional on a request and
+never present on an answer. A buyer may send one to any seller, and the seller
+verifies it whenever it is present (`openWireEnvelope`), with the full delegated
+checks below. A seller that requires delegated sessions (`requireDelegation`)
+also refuses a request without one (`peer_delegation_required`). So a buyer
+never needs to know that setting: one that signs with a delegated session key
+is accepted by every seller, and one that signs with its wallet key is told
+plainly when a seller requires a delegation.
 
 Request payload, exact fields:
 
@@ -143,7 +151,12 @@ of the exact response body bytes, its own `expiresAt` (at most 30 s after the se
 `now < expiresAt <= now + 60 s` by its clock), and two more
 fields: `requestHash` (sha256 of the canonical request payload, profile
 included) and `status` (the HTTP status, 200-599). The seller signs every
-answer, refusals included, with its Listing key; the buyer verifies it against
+answer to a request it opened, refusals by `checkWireRequest` and its handlers
+included, with its Listing key. A request that `openWireEnvelope` refuses was
+never authenticated, so it has no payload to answer: the seller answers it
+unsigned, and the buyer treats an unsigned answer as no answer (the request may
+or may not have been received, and is retried or read back, never taken as a
+refusal or a result). The buyer verifies a signed answer against
 the seller claim of the verified Listing and requires every request field,
 the profile among them, to be echoed exactly.
 No delegation ever authenticates or accompanies an answer. A response header
@@ -163,8 +176,11 @@ caller assembles is refused (`peer_request_unverified`) and no unverified
 request reaches effect handling. `checkWireRequest` also admits the exact received body
 bytes (D7) before comparing their hash, and returns the admitted body; effect
 handling uses that body, never a separately parsed copy. A request
-authenticated only by an expired delegation can reach only declared read
-routes, where it is `readbackOnly`. Effect routes fail with
+authenticated only by an expired delegation, or one that outlives a live
+delegation, can reach only declared read routes, where it is `readbackOnly`.
+The buyer decides readback by its own clock, so a readback request signed just
+after the delegation expired by the buyer's clock is answered even while the
+seller's clock is still before that expiry. Effect routes fail with
 `peer_delegation_expired` before a checked body reaches their handlers. The
 wire refuses even a retry of a journaled effect on an effect route after
 delegation expiry; a nonce reservation never extends that authority. The plugin's
@@ -182,36 +198,41 @@ below):
    participants and a job only once a signature authenticates them (the same
    holds in `verifySellerSessionDelegation` and `verifyEndpointProof`), so an
    unsigned header triggers no participant or session read. A refused
-   request is never decoded into a value the seller holds.
+   request is never decoded into a value the seller holds, so it gets no
+   signed answer (above).
 2. `checkWireRequest(opened, check)`: the envelope `openWireEnvelope`
    verified under that binding; the kept tuple again; the lifetime override;
    audience; expiry and lifetime; the body's admission; method, path and body
    hash; the Listing pin; the job and Agreement the host retained; a required
    delegation; the delegation's scope, Agreement deadline and expiry.
    Every request, on every signed route, direct or delegated, requires
-   `retained: {jobId, agreementHash}`: what the seller host retained for that
-   job before this request (the retained Agreement's hash; for an initial
-   proposal, see below; for the context route, the exact context-scope hash).
-   It is read once, as data, and never taken from the request's envelope.
+   `retained: {jobId, agreementHash, buyer, seller}`: what the seller host
+   retained for that job before this request (the retained Agreement's hash
+   and parties; for an initial proposal, see below; for the context route, the
+   exact context-scope hash). It is read once, as data, and never taken from
+   the request's envelope.
    An initial proposal has no earlier retained state: the host admits the
    body bytes with `admitWireRequestBody`, validates the draft Agreement in it
    against its own Listing and offer, and then retains that draft's `jobId`
    and its Agreement hash (`contentHash` over the unsigned draft, as the SDK's
    fixed-price exchange computes it; computed by the host,
-   never read from the envelope). For that route the comparison proves only
+   never read from the envelope), and the draft's buyer and seller. For that
+   route the comparison proves only
    that the signed envelope and the admitted body name the same draft; the
    draft itself goes in `artifacts`. A missing or
    malformed record fails with `seller_retained_agreement_required` (500); a
    signed `jobId` or `agreementHash` that differs fails with `peer_job_mismatch`
-   or `peer_agreement_mismatch` (409). Both refusals come before the delegation
-   scope, the reservation callback and any returned body, so a correctly signed
-   request naming another job or Agreement never reaches a handler.
+   or `peer_agreement_mismatch` (409), and a signed `buyer` or `seller` that
+   differs fails with `peer_agreement_party_mismatch` (409). These refusals
+   come before the delegation scope, the reservation callback and any returned
+   body, so a correctly signed request naming another job, Agreement or party
+   never reaches a handler. Agreements are public on testnet (G1): the
+   retained parties, not the artifacts, are what refuse another key that knows
+   the job and its Agreement hash.
    Every artifact given in `artifacts`, on a direct request as on a delegated
-   one, must name the signed `jobId`, Listing pin, buyer and seller (parties
-   found by role); otherwise a direct request fails with
-   `peer_agreement_party_mismatch` (409) before the reservation. Hosts pass
-   the retained Agreement (or the admitted draft) on every route: without
-   it, only the trusted authority reader binds the buyer of a direct request.
+   one, must also name the signed `jobId`, Listing pin, buyer and seller
+   (parties found by role); otherwise a direct request fails with
+   `peer_agreement_party_mismatch` (409) before the reservation.
    Delegated requests also require at least one host-owned proposal draft or
    retained Agreement in `artifacts`; omission, an empty list or only null
    entries fails with `peer_delegation_agreement_required`. For an initial
@@ -287,7 +308,7 @@ under `dacs-seller-http:v1:discovery:`.
 | `format` | `"dacs-seller-discovery/v1"` |
 | `profile` | the TP-1 profile member |
 | `seller` | the seller claim |
-| `publicEndpoint` | absolute HTTPS URL starting with the literal `https://` and an authority, no credentials, query or fragment; no backslash, tab or line break, and no trailing space or control character (spellings the URL parser would repair into another URL). Other spellings the parser normalizes (letter case, a default port, dot segments, percent-encoding) are kept as written and compared byte for byte, so a Listing must name the endpoint exactly as the document does |
+| `publicEndpoint` | an HTTPS origin: the literal `https://` and an authority, then at most one `/`; no credentials, path, query or fragment; no backslash, tab or line break, and no trailing space or control character (spellings the URL parser would repair into another URL). Other spellings the parser normalizes (letter case, a default port) are kept as written and compared byte for byte, so a Listing must name the endpoint exactly as the document does. A request goes to the origin followed by the route path (`new URL(path, publicEndpoint)`, the same as dropping a trailing `/` and appending the path), and discovery to the origin's `/.well-known/dacs-seller.json` (RFC 8615); a seller behind a path-prefix proxy serves these paths at its origin |
 | `transport` | `["dacs-seller-http/v1"]` |
 | `listings` | 1-32 Listing pins served here |
 | `capabilities` | exactly `TP1_CAPABILITIES` (listed below) |
@@ -541,10 +562,12 @@ when the module loads, so a later patch of `Array`, `WeakSet` or `WeakMap`
 prototypes does not open the gate. With the owned copies above, this holds
 against callers, including a record, connection, payload, request, delegation
 or options object whose answers change between reads, at binding, signing and
-verifying alike, and against code that changes the runtime after the SDK
-loaded; it does not hold against code
-that replaces SDK modules through the loader or patches the runtime before the
-SDK loads, which could equally call a signer directly.
+verifying alike. It is not a boundary against other code in the process: only
+those set and list lookups are captured at load, so code that patches other
+runtime methods after the SDK loads (for example `node:crypto` hashing, which
+digests the identity record), replaces SDK modules through the loader or
+patches the runtime before the SDK loads can open the gate, and could equally
+call a signer directly.
 
 ## Exact-bytes admission (D7)
 
@@ -567,7 +590,14 @@ values, which this wire refuses.
 ## Refusal codes
 
 Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
-`bad_json`, `bad_request`). New codes:
+`bad_json`, `bad_request`), except where the fault is the actor's own input.
+A `WireError`'s `category` follows its status: 500 is the actor's own
+configuration or input (`permanent`), 503 a state that may clear
+(`transient`), and any other status the counterparty's. So the actor's own
+kept tuple (`tp1_purchase_profile_mismatch`), a payload a signer built
+itself, such as an answer status outside 200-599 (`peer_envelope_invalid`),
+are 500, and signing under an endpoint proof whose document has since expired
+(`discovery_expired`) is 503: fetch discovery again. New codes:
 
 | Code | Meaning |
 |---|---|
@@ -575,10 +605,10 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 | `bad_json` (detail: admission code) | request body failed admission |
 | `response_json_rejected` (detail: admission code) | response body failed admission |
 | `outgoing_body_rejected` (detail: admission code) | a signer was given a body its peer would refuse |
-| `seller_configuration_invalid` | a lifetime override outside 1-60,000 ms |
+| `seller_configuration_invalid` (500) | `checkWireRequest`'s `maxLifetimeMs` outside 1-60,000 ms; `signWireResponse`'s `lifetimeMs` outside 1-30,000 ms, or a `maxLifetimeMs` given to it |
 | `tp1_profile_missing`, `tp1_profile_mismatch` | profile absent, or not the receiver's own |
 | `tp1_profile_revision_missing`, `tp1_profile_revision_unknown` | profile without a revision, or naming a revision this SDK does not define (exact comparison) |
-| `tp1_purchase_profile_mismatch` | the tuple kept for the purchase is absent, `null` where only a seller's new purchase allows it, or not the actor's own bound profile |
+| `tp1_purchase_profile_mismatch` (500) | the tuple kept for the purchase is absent, `null` where only a seller's new purchase allows it, or not the actor's own bound profile |
 | `tp1_identity_record_missing`, `tp1_identity_pin_missing`, `tp1_identity_record_invalid`, `tp1_identity_fixture`, `tp1_identity_refused`, `tp1_identity_unapproved` | identity gate |
 | `tp1_binding_required`, `tp1_local_binding_changed`, `tp1_local_binding_invalid` | signing or verifying without a binding from `bindTp1Profile`, or on a changed connection |
 | `tp1_authority_required`, `tp1_connection_unverified`, `tp1_participant_profile_mismatch` | missing trusted reader, unauthenticated/changed active connection, or mismatched authenticated participant/session profile and module evidence |
@@ -588,12 +618,12 @@ Ported refusals keep the plugin's codes and HTTP statuses (`peer_*`,
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
 | `seller_not_ready` (503) | the endpoint proof's document says `ready: false`; no request is signed |
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
-| `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash}`, or with a malformed one |
+| `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}`, or with a malformed one |
 | `peer_job_mismatch`, `peer_agreement_mismatch` (409) | the signed `jobId` or `agreementHash` is not the one the host retained |
 | `seller_replay_guard_required`, `seller_replay_guard_invalid` (500) | an effect route checked without `reserveRequest`, or with one that returned anything but `true` or `false` |
 | `peer_request_replayed` (409) | the host's journal already holds the request's reservation key |
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
-| `peer_agreement_party_mismatch` (409) | a direct request whose host-owned Agreement context names another job, Listing or party |
+| `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |
 | `peer_envelope_too_large` (500), `peer_response_too_large` (503), `body_too_large` (413) | a signer given a header, response body or request body over the limits; nothing is signed |
 | `peer_signer_wrong` | a response signed by someone other than the expected seller, or a signer whose claim is not the answer's seller |
 
@@ -602,7 +632,7 @@ The plugin capture does not contain the codes in the rows above from
 
 ## Vectors, fixtures and checks
 
-- `vectors/dacs-seller-http-v1.json` (195 vectors, from
+- `vectors/dacs-seller-http-v1.json` (203 vectors, from
   `scripts/wire/generate-wire-vectors.mjs`): valid and invalid envelopes,
   expired and wrong-scope delegations, wrong domain, wrong and missing profile,
   the profile tuple (a correctly signed message, request, response, delegation
@@ -624,9 +654,11 @@ The plugin capture does not contain the codes in the rows above from
   its check only, the delegation's buyer, seller, Listing and job scope (including a
   delegation another wallet signed under a request naming the buyer), the
   delegated request's Agreement checks (job, Listing, the buyer and seller
-  parties found by role, deadline), the host's retained job and Agreement hash
-  (another hash for a direct and a delegated request, another job, none
-  given), a missing envelope header, a request expiring exactly at the
+  parties found by role, deadline), the host's retained job, Agreement hash
+  and parties (another hash for a direct and a delegated request, another
+  job, another buyer for a direct and a delegated request, another seller,
+  a record without parties, none given), a delegated request to a seller
+  that does not require one, a Listing endpoint with a path, a missing envelope header, a request expiring exactly at the
   seller's clock, an overlong lifetime override, the identity gate (the SDK's own
   approval list, a caller's own list, and the tests' replacement list), and
   CF-5 raw-input negatives named explicitly for the header, the request body,
@@ -655,7 +687,7 @@ The plugin capture does not contain the codes in the rows above from
   Each negative names the check that refuses it, and
   `test/wire/vectors.test.ts` checks that each received revision vector is
   correctly signed by its party, so only the profile gate can refuse it.
-  `scripts/wire/mutate-wire-checks.mjs` defines 104 named-check replay plans.
+  `scripts/wire/mutate-wire-checks.mjs` defines 109 named-check replay plans.
   Its `--check` mode verifies all source targets and vector IDs without
   applying mutations or running tests. Request producer fixtures use the
   selected `DACS_WIRE_IMPL` for signing, discovery and proof verification.

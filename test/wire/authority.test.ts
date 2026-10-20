@@ -70,7 +70,7 @@ async function boundaries(x: ReturnType<typeof world>) {
     ["discovery signer", () => wire.signDiscoveryDocument(discoveryPayload, x.seller, x.binding, local)],
     ["request open", () => wire.openWireEnvelope(requestHeader, "request", context)],
     ["retained request admission", () => wire.checkWireRequest(opened, { ...context, seller: x.seller.claim,
-      retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash }, listingPin: x.request.listingPin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now,
+      retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.request.buyer, seller: x.request.seller }, listingPin: x.request.listingPin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now,
       reserveRequest: () => { reservations++; return true; } })],
     ["delegation verifier", () => wire.verifySellerSessionDelegation(delegation, { ...context, jobId, time: now })],
     ["response verifier", () => wire.verifyWireResponse(x.request, { ...context, header: response, status: 200, body: Buffer.from("{}"), now })],

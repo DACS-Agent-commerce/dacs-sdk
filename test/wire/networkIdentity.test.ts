@@ -159,7 +159,7 @@ describe("TP-1 network identity gate", () => {
     const text = `{"jobId":"${JOB}"}`;
     const { payload, header } = await signWireRequest({ signer: buyer.signer, binding: buyerBinding, local: RPC_A, path: "/dacs/v1/commitments", jobId: JOB, text, seller: seller.signer.claim, job: { listingPin: PIN, agreementHash: "a".repeat(64), profile: buyerBinding.profile }, now: NOW });
     const opened = openWireEnvelope(header, "request", { binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile });
-    checkWireRequest(opened, { reserveRequest: () => true, retained: { jobId: JOB, agreementHash: "a".repeat(64) }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile });
+    checkWireRequest(opened, { reserveRequest: () => true, retained: { jobId: JOB, agreementHash: "a".repeat(64), buyer: buyer.signer.claim, seller: seller.signer.claim }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, binding: sellerBinding, local: RPC_B, purchaseProfile: sellerBinding.profile });
     const response = await signWireResponse(opened.payload, 200, "{}", { signer: seller.signer, binding: sellerBinding, local: RPC_B, now: NOW, purchaseProfile: sellerBinding.profile });
     expect(verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: buyerBinding, local: RPC_A }).principal).toBe(seller.signer.claim);
     expect(buyer.signer.calls + seller.signer.calls).toBe(2);
@@ -184,7 +184,7 @@ describe("TP-1 network identity gate", () => {
     const discovery = await signDiscoveryDocument(discoveryPayload, seller.signer, sellerBinding, RPC_B);
     const listing = { seller: seller.signer.claim, publicEndpoint: "https://seller.identity.invalid", listingPin: PIN };
     const effects = { count: 0 };
-    const check = { reserveRequest: () => true, retained: { jobId: JOB, agreementHash: job.agreementHash }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, purchaseProfile: sellerBinding.profile };
+    const check = { reserveRequest: () => true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.signer.claim, seller: seller.signer.claim }, seller: seller.signer.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(text), now: NOW, purchaseProfile: sellerBinding.profile };
     /** Each verification entry point, with the given seller-side and buyer-side binding and connection. */
     const verifyAll = (sellerSide: [unknown, unknown], buyerSide: [unknown, unknown]) => {
       const [sb, sl] = sellerSide as [Tp1Binding, unknown], [bb, bl] = buyerSide as [Tp1Binding, unknown];

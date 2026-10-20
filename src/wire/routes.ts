@@ -85,8 +85,11 @@ export const DACS_SELLER_HTTP_LIMITS = Object.freeze({
   maxMessageLifetimeMs: 60_000,
   /**
    * Clock difference tolerated between two parties (signer and receiver, a
-   * worker and its journal). Every rule below that compares one party's
-   * timestamp with another party's clock leaves this much room.
+   * worker and its journal). Every limit below that compares one party's
+   * timestamp with another party's clock leaves this much room. A
+   * delegation's expiry leaves none on purpose: no effect starts after it by
+   * the seller's clock. A read route there is answered as readback by either
+   * party's clock (checkWireRequest).
    */
   maxClockSkewMs: 30_000,
   /**

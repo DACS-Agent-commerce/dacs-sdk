@@ -162,7 +162,7 @@ export function verifyWireResponse(suppliedRequest: WireRequestPayload, supplied
   const received = ownedFields(suppliedReceived, ["header", "status", "body", "now", "binding", "local"]) as unknown as ReceivedWireResponse;
   assertTp1Binding(received.binding, received.local);
   const request = ownedArtifact(suppliedRequest, "peer_envelope_invalid", 500) as WireRequestPayload;
-  assertPurchaseProfile(request?.profile, received.binding);
+  assertPurchaseProfile(request?.profile, received.binding, 500);
   const expectedRequestHash = wireRequestHash(request);
   const responseBytes = ownedBytes(received.body);
   const { payload: response, authenticationHash } = openWireEnvelope(received.header, "response", { binding: received.binding, local: received.local, purchaseProfile: request.profile, principal: request.seller });

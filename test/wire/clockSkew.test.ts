@@ -4,16 +4,19 @@ import { agreementFixture, retainedFixture } from "./agreementFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Two parties never share a clock. A signer stamps expiresAt (or notBefore)
 // from its own clock and the receiver compares it with another, so every such
-// rule leaves DACS_SELLER_HTTP_LIMITS.maxClockSkewMs of room: signers give at
+// limit leaves DACS_SELLER_HTTP_LIMITS.maxClockSkewMs of room: signers give at
 // most maxSignedLifetimeMs (30 s), receivers accept up to maxMessageLifetimeMs
-// (60 s), and a journal keeps a reservation until retainUntil. The same
-// retained-state rule binds a direct request to the host's artifacts.
+// (60 s), and a journal keeps a reservation until retainUntil. At a
+// delegation's expiry a read route is answered by either clock. The same
+// retained-state rule binds a direct request to the host's artifacts; a
+// delegation is verified whether or not the seller requires one; and a host's
+// own input faults are its own.
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/index.js";
 import {
-  checkWireRequest, DACS_SELLER_HTTP_LIMITS, openWireEnvelope, signWireResponse, verifyWireResponse,
+  checkWireRequest, DACS_SELLER_HTTP_LIMITS, openWireEnvelope, signSellerSessionDelegation, signWireResponse, verifyWireResponse,
   WireError, type RequestCheck, type WireRequestPayload, type WireRequestReservation, type WireSigner,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
@@ -80,6 +83,70 @@ const sellerAnswers = (w: World, request: WireRequestPayload, sellerNow: number,
 
 const buyerVerifies = (w: World, request: WireRequestPayload, header: string, buyerNow: number) =>
   verifyWireResponse(request, { header, status: 200, body: Buffer.from(ANSWER), now: buyerNow, binding: w.buyerBinding, local: RPC_A });
+
+const delegate = (w: World, notBefore: number, expiresAt: number) => signSellerSessionDelegation({
+  version: "1", kind: "seller-session-delegation", buyer: w.buyer.claim, sessionPublicKey: w.session.raw, seller: w.seller.claim,
+  listingPin: PIN, jobId: JOB, notBefore, expiresAt, profile: w.buyerBinding.profile,
+}, w.buyer, w.buyerBinding, RPC_A);
+
+describe("a delegation's expiry under clock difference", () => {
+  // At a5dac90 the buyer chose readback by its own clock and the seller refused it by its own until its clock caught up.
+  it("a read route is answered as readback when the buyer's clock passed the expiry and the seller's has not; an effect is still refused", async () => {
+    const w = world();
+    const delegation = await delegate(w, NOW - 3_600_000, NOW);
+    const buyerNow = NOW + 1_000, sellerNow = buyerNow - 5_000;
+    for (const path of ["/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"]) {
+      const { header } = await buyerSigns(w, buyerNow, { signer: w.session, delegation, path });
+      expect(sellerCheck(w, header, sellerNow, {}, true).check()).toEqual({ body: { jobId: JOB }, readbackOnly: true });
+    }
+    const reserveRequest = vi.fn(() => true);
+    const { header } = await buyerSigns(w, buyerNow, { signer: w.session, delegation });
+    expect(await code(() => sellerCheck(w, header, sellerNow, { reserveRequest }, true).check())).toBe("peer_delegation_expired");
+    expect(reserveRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("a delegation sent to a seller that does not require one", () => {
+  // At a5dac90 such a seller refused it as peer_envelope_invalid, the code of a corrupt header: a buyer had to guess the setting.
+  it("is verified and bound like any delegation: live it may start an effect, expired it reaches read routes only", async () => {
+    const w = world();
+    const live = await delegate(w, NOW - 1_000, NOW + 60_000);
+    const { header } = await buyerSigns(w, NOW, { signer: w.session, delegation: live });
+    const direct = sellerCheck(w, header, NOW);
+    expect(direct.opened.delegation?.payload.buyer).toBe(w.buyer.claim);
+    expect(direct.check().readbackOnly).toBe(false);
+    expect(await code(() => sellerCheck(w, header, NOW, { artifacts: [] }).check())).toBe("peer_delegation_agreement_required");
+    const expired = await delegate(w, NOW - 3_600_000, NOW - 1);
+    const effect = await buyerSigns(w, NOW, { signer: w.session, delegation: expired });
+    expect(await code(() => sellerCheck(w, effect.header, NOW).check())).toBe("peer_delegation_expired");
+    const read = await buyerSigns(w, NOW, { signer: w.session, delegation: expired, path: "/dacs/v1/agreements/state" });
+    expect(sellerCheck(w, read.header, NOW).check().readbackOnly).toBe(true);
+    // A request the session key signs without its delegation names the session key as buyer: the host's record refuses it.
+    const bare = await buyerSigns(w, NOW, { signer: w.session });
+    const hostRecord = { jobId: JOB, agreementHash: AGREEMENT, buyer: w.buyer.claim, seller: w.seller.claim };
+    expect(await code(() => sellerCheck(w, bare.header, NOW, { retained: hostRecord, artifacts: [] }).check())).toBe("peer_agreement_party_mismatch");
+  });
+});
+
+describe("a host's own input faults are blamed on the host, never on the counterparty", () => {
+  const fault = async (fn: () => unknown) => {
+    try { await fn(); return "ok"; } catch (error) { if (error instanceof WireError) return [error.code, error.status, error.category]; throw error; }
+  };
+  it("its kept tuple, its own answer status and its own retained request", async () => {
+    const w = world();
+    const otherTuple = { ...w.sellerBinding.profile, pinVersion: "synthetic-test-only/other" };
+    const { payload, header } = await buyerSigns(w, NOW);
+    const own = ["tp1_purchase_profile_mismatch", 500, "permanent"];
+    expect(await fault(() => openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: otherTuple }))).toEqual(own);
+    expect(await fault(() => sellerCheck(w, header, NOW, { purchaseProfile: otherTuple }).check())).toEqual(own);
+    expect(await fault(() => verifyWireResponse({ ...payload, profile: otherTuple }, { header: "x", status: 200, body: Buffer.from(ANSWER), now: NOW, binding: w.buyerBinding, local: RPC_A }))).toEqual(own);
+    expect(await fault(() => signWireResponse(payload, 600, ANSWER, { signer: w.seller, binding: w.sellerBinding, local: RPC_B, now: NOW, purchaseProfile: w.sellerBinding.profile })))
+      .toEqual(["peer_envelope_invalid", 500, "permanent"]);
+    // A peer's malformed header is still the peer's fault.
+    expect(await fault(() => openWireEnvelope("A".repeat(10), "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: null })))
+      .toEqual(["wire_json_rejected", 401, "counterparty"]);
+  });
+});
 
 describe("a seller answer under clock difference (the buyer's 60 s window, the seller's 30 s lifetime)", () => {
   // At 5429154 the seller signed 60 s answers into a 60 s window: any lead refused every answer after the seller's effect.

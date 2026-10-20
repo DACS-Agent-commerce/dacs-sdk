@@ -119,6 +119,8 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   // Only a request carries a delegation; every receiver refuses a response header that has one.
   if (delegation !== null && payload.kind !== "request") fail("peer_envelope_invalid", 500);
   assertPeerProfile(payload.profile, binding, 500);
+  // A payload this signer built, such as an answer status outside 200-599, is its own fault.
+  if (!payloadShape(payload, payload.kind)) fail("peer_envelope_invalid", 500);
   const signingBytes = wireEnvelopeSigningBytes(payload as unknown as WirePayload);
   // A canonical Ed25519 signature is always 86 base64url characters. Bound
   // the complete encoded header, including a supplied delegation, before signing.
@@ -163,8 +165,10 @@ export interface OpenEnvelopeOptions {
   /** Required signer of a response (the seller); a request is signed by its buyer or delegated session key. */
   principal?: string;
   /**
-   * Seller-side: a request must carry a delegation, and one is read only then.
-   * A response never carries one: with this set, a response is refused.
+   * Seller-side: a request must carry a delegation. Without it, a request may
+   * still carry one, and it is verified whenever present: a buyer never needs
+   * to know this setting. A response never carries one: with this set, a
+   * response is refused.
    */
   requireDelegation?: boolean;
 }
@@ -177,12 +181,12 @@ export interface OpenEnvelopeOptions {
 export function openWireEnvelope<K extends WireKind>(header: unknown, kind: K, options: OpenEnvelopeOptions): OpenedEnvelope<Extract<WirePayload, { kind: K }>> {
   const { binding, local, purchaseProfile, principal, requireDelegation = false } = ownedFields(options, ["binding", "local", "purchaseProfile", "principal", "requireDelegation"]) as Partial<OpenEnvelopeOptions>;
   assertTp1Binding(binding, local);
-  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding);
+  if (purchaseProfile !== null || kind !== "request") assertPurchaseProfile(purchaseProfile, binding, 500);
   if (typeof header !== "string" || header.length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength || !/^[A-Za-z0-9_-]+$/.test(header)) fail("peer_envelope_invalid");
   const bytes = Buffer.from(header as string, "base64url");
   if (bytes.toString("base64url") !== header) fail("peer_envelope_invalid");
   const envelope = admitWireJson(bytes, DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "wire_json_rejected", 401) as JsonRecord;
-  const delegated = kind === "request" && requireDelegation && Object.hasOwn(envelope ?? {}, "delegation");
+  const delegated = kind === "request" && Object.hasOwn(envelope ?? {}, "delegation");
   if (!hasKeys(envelope, ["payload", "signature", ...(delegated ? ["delegation"] : [])])) fail("peer_envelope_invalid");
   const p = envelope.payload as JsonRecord;
   if (lacksProfile(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) fail("tp1_profile_missing", 409);
@@ -232,18 +236,19 @@ export interface RequestCheck {
   purchaseProfile: Tp1WireProfile | null;
   requireDelegation?: boolean;
   /**
-   * Required on every signed route: the job and Agreement hash the host
-   * retained before this request (for an initial proposal, the admitted
-   * draft's hash; for the context route, the exact context-scope hash). Both
-   * must equal the signed jobId and agreementHash exactly, before any
-   * delegation scope, reservation or return. Omitted or malformed is refused.
+   * Required on every signed route: the job, Agreement hash and parties the
+   * host retained before this request (for an initial proposal, the admitted
+   * draft's hash and parties; for the context route, the exact context-scope
+   * hash). Each must equal the signed jobId, agreementHash, buyer and seller
+   * exactly, before any delegation scope, reservation or return. Omitted or
+   * malformed is refused.
    */
   retained: WireRetainedAgreement;
   /**
    * The host's proposal draft and/or retained Agreement. On every request,
-   * each one given must name the signed job, Listing, buyer and seller. At
-   * least one is required for delegated requests, and their deadline bounds
-   * the delegation.
+   * each one given must also name the signed job, Listing, buyer and seller.
+   * At least one is required for delegated requests, and their deadline
+   * bounds the delegation.
    */
   artifacts?: readonly unknown[];
   /**
@@ -265,6 +270,9 @@ export interface RequestCheck {
 export interface WireRetainedAgreement {
   jobId: string;
   agreementHash: string;
+  /** The job's buyer and seller claims, from the host's own record: a request from anyone else is refused. */
+  buyer: string;
+  seller: string;
 }
 
 export interface WireRequestReservation {
@@ -337,7 +345,7 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   if (typeof envelope !== "object" || envelope === null || openedBinding(opened, envelope) !== c.binding ||
       envelope.payload?.kind !== "request") fail("peer_request_unverified", 500);
   // openWireEnvelope checked the kept tuple and the request's own; the tuple kept now is checked again.
-  if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding);
+  if (c.purchaseProfile !== null) assertPurchaseProfile(c.purchaseProfile, c.binding, 500);
   const { payload: request, delegation } = envelope;
   assertTp1Authority(c.binding, c.local, [request.buyer, request.seller], request.jobId);
   const maxLifetimeMs = messageLifetime(c.maxLifetimeMs, "seller_configuration_invalid");
@@ -347,11 +355,15 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
   if (request.method !== c.method || request.path !== c.path || request.bodyHash !== sha256Hex(rawBody)) fail("peer_request_mismatch");
   if (!sameCanonical(request.listingPin, listingPin)) fail("peer_listing_mismatch", 409);
   // A correctly signed request naming another job or Agreement never reaches the delegation scope, a reservation or a handler.
-  if (!hasKeys(retained, ["jobId", "agreementHash"]) || !isCanonicalJobId(retained.jobId) || !isHash(retained.agreementHash)) {
+  if (!hasKeys(retained, ["jobId", "agreementHash", "buyer", "seller"]) || !isCanonicalJobId(retained.jobId) || !isHash(retained.agreementHash) ||
+      !isClaim(retained.buyer) || !isClaim(retained.seller)) {
     fail("seller_retained_agreement_required", 500);
   }
   if (request.jobId !== retained.jobId) fail("peer_job_mismatch", 409);
   if (request.agreementHash !== retained.agreementHash) fail("peer_agreement_mismatch", 409);
+  // The retained parties bind every request, with or without artifacts: another key that knows the job and its public Agreement is refused.
+  if (request.buyer !== retained.buyer) fail("peer_agreement_party_mismatch", 409);
+  if (request.seller !== retained.seller) fail("peer_agreement_party_mismatch", 409);
   if (c.requireDelegation && !delegation) fail("peer_delegation_required");
   // Every host artifact given binds the signed job, Listing and both parties, on a direct request as on a delegated one.
   const retainedArtifacts = artifacts.filter((a) => a != null) as JsonRecord[];
@@ -374,11 +386,12 @@ export function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, c
     verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, deadline: deadline as number });
   }
   verifySellerSessionDelegation(delegation, { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true });
-  if (c.now < delegation.payload.expiresAt) {
-    if (request.expiresAt > delegation.payload.expiresAt) fail("peer_delegation_expired", 408);
+  if (c.now < delegation.payload.expiresAt && request.expiresAt <= delegation.payload.expiresAt) {
     reserveEffectRequest(request, c.reserveRequest);
     return { body, readbackOnly: false };
   }
+  // An expired delegation, or a request that outlives a live one, authenticates readback only. The buyer
+  // picks readback by its own clock, which may run ahead of this one: a read route is answered either way.
   // A nonce reservation never extends expired delegation authority.
   // Refuse effect routes rather than returning a flag a host could overlook.
   if (!isReadRoute(request.path)) fail("peer_delegation_expired", 408);

@@ -204,13 +204,20 @@ const vectors = [
   R("request/open-delegation-required", "delegation required (open)", { header: req(request), requireDelegation: true, checkRequireDelegation: false }, no("peer_delegation_required")),
   R("request/check-delegation-required", "delegation required (check)", { header: req(request), requireDelegation: false, checkRequireDelegation: true }, no("peer_delegation_required")),
   R("request/valid-delegated-with-agreement", null, { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [agreement] }, ok),
+  // A seller that does not require a delegation still verifies one a request carries: a buyer never has to guess the setting.
+  R("request/valid-delegated-not-required", null, { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: false, artifacts: [agreement] }, ok),
   R("request/delegated-agreement-mismatch", "delegated request matches the retained Agreement", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [{ ...agreement, jobId: OTHER_JOB_ID }] }, no("peer_delegation_agreement_mismatch")),
   // `retained`: the job and Agreement hash the seller host kept, instead of the file's job ("omitted": none given).
   // Each signed request is the valid one: only the host's record differs, so only that comparison can refuse it.
-  R("request/retained-agreement-hash-mismatch", "retained Agreement hash", { header: req(request), retained: { jobId: JOB_ID, agreementHash: sha256Hex("other-agreement") } }, no("peer_agreement_mismatch")),
-  R("request/retained-job-mismatch", "retained job", { header: req(request), retained: { jobId: OTHER_JOB_ID, agreementHash: AGREEMENT_HASH } }, no("peer_job_mismatch")),
+  R("request/retained-agreement-hash-mismatch", "retained Agreement hash", { header: req(request), retained: { jobId: JOB_ID, agreementHash: sha256Hex("other-agreement"), buyer: buyer.claim, seller: seller.claim } }, no("peer_agreement_mismatch")),
+  R("request/retained-job-mismatch", "retained job", { header: req(request), retained: { jobId: OTHER_JOB_ID, agreementHash: AGREEMENT_HASH, buyer: buyer.claim, seller: seller.claim } }, no("peer_job_mismatch")),
   R("request/retained-agreement-omitted", "retained Agreement required", { header: req(request), retained: "omitted" }, no("seller_retained_agreement_required")),
-  R("request/delegated-retained-agreement-hash-mismatch", "retained Agreement hash", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [agreement], retained: { jobId: JOB_ID, agreementHash: sha256Hex("other-agreement") } }, no("peer_agreement_mismatch")),
+  // The retained parties bind a request with no artifacts: another key that knows the job and its public Agreement is refused.
+  R("request/retained-buyer-mismatch", "retained buyer", { header: req(request), retained: { jobId: JOB_ID, agreementHash: AGREEMENT_HASH, buyer: other.claim, seller: seller.claim } }, no("peer_agreement_party_mismatch")),
+  R("request/retained-seller-mismatch", "retained seller", { header: req(request), retained: { jobId: JOB_ID, agreementHash: AGREEMENT_HASH, buyer: buyer.claim, seller: other.claim } }, no("peer_agreement_party_mismatch")),
+  R("request/retained-parties-omitted", "retained parties required", { header: req(request), retained: { jobId: JOB_ID, agreementHash: AGREEMENT_HASH } }, no("seller_retained_agreement_required")),
+  R("request/delegated-retained-agreement-hash-mismatch", "retained Agreement hash", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [agreement], retained: { jobId: JOB_ID, agreementHash: sha256Hex("other-agreement"), buyer: buyer.claim, seller: seller.claim } }, no("peer_agreement_mismatch")),
+  R("request/delegated-retained-buyer-mismatch", "retained buyer", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [agreement], retained: { jobId: JOB_ID, agreementHash: AGREEMENT_HASH, buyer: other.claim, seller: seller.claim } }, no("peer_agreement_party_mismatch")),
   R("request/delegated-agreement-buyer-party-mismatch", "delegated request matches the retained Agreement's buyer", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [{ ...agreement, parties: [{ role: "buyer", primaryClaim: other.claim }, agreement.parties[1]] }] }, no("peer_delegation_agreement_mismatch")),
   R("request/delegated-agreement-seller-party-mismatch", "delegated request matches the retained Agreement's seller", { header: req(delegated, { signer: session.signer, delegation }), requireDelegation: true, artifacts: [{ ...agreement, parties: [agreement.parties[0], { role: "seller", primaryClaim: other.claim }] }] }, no("peer_delegation_agreement_mismatch")),
   // A direct request is bound to the same host artifacts: another buyer's request for this job and hash is refused.
@@ -292,6 +299,8 @@ const vectors = [
   S("response/local-binding-changed", "verifier's current connection (open)", { request, header: resp(response), verifier: { local: BUYER_CHANGED } }, no("tp1_local_binding_changed")),
 
   V("discovery/valid", null, { document: disc(discovery) }, ok),
+  // A publicEndpoint is an origin: requests go to it followed by the route path, discovery to its /.well-known.
+  V("discovery/listing-endpoint-with-path", "endpoint is an origin", { document: disc(discovery), listing: { seller: seller.claim, publicEndpoint: `${PUBLIC_ENDPOINT}/seller/v2`, listingPin: LISTING_PIN } }, no("wire_input_invalid")),
   V("discovery/endpoint-mismatch", "endpoint proof: publicEndpoint byte for byte", { document: disc({ ...discovery, publicEndpoint: `${PUBLIC_ENDPOINT}/` }) }, no("discovery_endpoint_mismatch")),
   V("discovery/signer-not-listing-seller", "endpoint proof: Listing seller", { document: disc({ ...discovery, seller: other.claim }, { signer: other.signer }) }, no("discovery_signer_wrong")),
   V("discovery/bad-signature", "endpoint proof: signature key", { document: disc(discovery, { signer: other.signer }) }, no("discovery_signature_invalid")),
@@ -397,7 +406,7 @@ const vectors = [
 
 writeJson(resolve(args.out), {
   format: "dacs-seller-http-v1-vectors/1",
-  status: "design draft; proposed; composition qualification pending",
+  status: "SDK wire definitions ready for review; composition qualification pending",
   generator: "scripts/wire/generate-wire-vectors.mjs",
   keys: "Ed25519 keys were generated at run time and discarded; this file holds public keys and signatures only.",
   synthetic: "Every identity record here is SYNTHETIC and test-only. None is the approved record or a Demos chain identity; MOCKED-MAINNET is a random value labelled as a mainnet identity for refusal tests. testApprovedRecordDigests approve only through the tests' own replacement of the SDK's approval list; the shipped bindTp1Profile refuses every record here.",

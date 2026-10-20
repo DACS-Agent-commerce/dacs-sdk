@@ -1,6 +1,6 @@
 {
   "format": "dacs-seller-http-v1-vectors/1",
-  "status": "design draft; proposed; composition qualification pending",
+  "status": "SDK wire definitions ready for review; composition qualification pending",
   "generator": "scripts/wire/generate-wire-vectors.mjs",
   "keys": "Ed25519 keys were generated at run time and discarded; this file holds public keys and signatures only.",
   "synthetic": "Every identity record here is SYNTHETIC and test-only. None is the approved record or a Demos chain identity; MOCKED-MAINNET is a random value labelled as a mainnet identity for refusal tests. testApprovedRecordDigests approve only through the tests' own replacement of the SDK's approval list; the shipped bindTp1Profile refuses every record here.",
@@ -1012,6 +1012,43 @@
       }
     },
     {
+      "id": "request/valid-delegated-not-required",
+      "kind": "request",
+      "check": null,
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJkZWxlZ2F0aW9uIjp7InBheWxvYWQiOnsiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk4MjgwMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJzZWxsZXItc2Vzc2lvbi1kZWxlZ2F0aW9uIiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm5vdEJlZm9yZSI6MTc5MTk3OTE5OTAwMCwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInNlc3Npb25QdWJsaWNLZXkiOiJkMThmYmIzNWExYTVmMjI1M2EzZTM3NjZjMjc2Zjc2MmFhMDc5ZTlhMjlhMTIzZGU5YjIxMDQ0M2M2NjU1NDgzIiwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoiMHgyOWRiYjg2YmRhMjAxYWI4Nzk0OTUyOWI0YTVjY2M2OTc0ZDdmMjY5YzU1Mzg4NzQ5N2U4NTc0MWI0ZWZmNGNkMWNiMmEyNjE0ZmY2NTc0NTA0Y2ZhNTA5NTJmODg3MTZiOTY0N2M4YmI3MWI4YTM0MzU5YjYwY2NlODFjNTcwNiJ9LCJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkZ4WVZGQk1TRVJBUERnME1Dd29KQ0FjR0JRUURBZ0VBIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Ijl6N3dzTWFBeHhBUUpEdXNmcDh6XzhHUzQ1ZTlSdzBzaWsxXzd0SVFCUDlRaGNkQjJaM3RZYXhaUWNSZ2xFZThmdHBYcjNHWWVwWDcxeWxaR2JQOUFnIn0",
+        "artifacts": [
+          {
+            "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+            "listingRef": {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            },
+            "parties": [
+              {
+                "role": "buyer",
+                "primaryClaim": "did:demos:agent:9537e9c17284fdd2bf1e0e9f3b0e398580d32d21bbd86512ec95bac4df1bfb2b"
+              },
+              {
+                "role": "seller",
+                "primaryClaim": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61"
+              }
+            ],
+            "terms": {
+              "deadline": 1791986400000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
       "id": "request/delegated-agreement-mismatch",
       "kind": "request",
       "check": "delegated request matches the retained Agreement",
@@ -1060,7 +1097,9 @@
         "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im8zU3Z2RUthWndSbktfUDZFS0djNVVXMmVtMGhIcHRiU2V3eU9FLURMYU5xVC1Dcks4Q3VDSnJ5WWl2UlhBUVFBZWlLekR5R0NSanhYVlNTUTF1bUJ3In0",
         "retained": {
           "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
-          "agreementHash": "7a1e6f6ba190f9f2bc82859619a149030e9e85cdcfbd33026ab3c7a43ed28ba9"
+          "agreementHash": "7a1e6f6ba190f9f2bc82859619a149030e9e85cdcfbd33026ab3c7a43ed28ba9",
+          "buyer": "did:demos:agent:9537e9c17284fdd2bf1e0e9f3b0e398580d32d21bbd86512ec95bac4df1bfb2b",
+          "seller": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61"
         }
       },
       "expect": {
@@ -1079,7 +1118,9 @@
         "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im8zU3Z2RUthWndSbktfUDZFS0djNVVXMmVtMGhIcHRiU2V3eU9FLURMYU5xVC1Dcks4Q3VDSnJ5WWl2UlhBUVFBZWlLekR5R0NSanhYVlNTUTF1bUJ3In0",
         "retained": {
           "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4J",
-          "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e"
+          "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+          "buyer": "did:demos:agent:9537e9c17284fdd2bf1e0e9f3b0e398580d32d21bbd86512ec95bac4df1bfb2b",
+          "seller": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61"
         }
       },
       "expect": {
@@ -1097,6 +1138,67 @@
         "requireDelegation": false,
         "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im8zU3Z2RUthWndSbktfUDZFS0djNVVXMmVtMGhIcHRiU2V3eU9FLURMYU5xVC1Dcks4Q3VDSnJ5WWl2UlhBUVFBZWlLekR5R0NSanhYVlNTUTF1bUJ3In0",
         "retained": "omitted"
+      },
+      "expect": {
+        "ok": false,
+        "code": "seller_retained_agreement_required"
+      }
+    },
+    {
+      "id": "request/retained-buyer-mismatch",
+      "kind": "request",
+      "check": "retained buyer",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im8zU3Z2RUthWndSbktfUDZFS0djNVVXMmVtMGhIcHRiU2V3eU9FLURMYU5xVC1Dcks4Q3VDSnJ5WWl2UlhBUVFBZWlLekR5R0NSanhYVlNTUTF1bUJ3In0",
+        "retained": {
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+          "buyer": "did:demos:agent:beeb8ef18b01e61db0861b47935b10f459dfd04f3e13540d0b53cbe8160a0dd6",
+          "seller": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_agreement_party_mismatch"
+      }
+    },
+    {
+      "id": "request/retained-seller-mismatch",
+      "kind": "request",
+      "check": "retained seller",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im8zU3Z2RUthWndSbktfUDZFS0djNVVXMmVtMGhIcHRiU2V3eU9FLURMYU5xVC1Dcks4Q3VDSnJ5WWl2UlhBUVFBZWlLekR5R0NSanhYVlNTUTF1bUJ3In0",
+        "retained": {
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+          "buyer": "did:demos:agent:9537e9c17284fdd2bf1e0e9f3b0e398580d32d21bbd86512ec95bac4df1bfb2b",
+          "seller": "did:demos:agent:beeb8ef18b01e61db0861b47935b10f459dfd04f3e13540d0b53cbe8160a0dd6"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_agreement_party_mismatch"
+      }
+    },
+    {
+      "id": "request/retained-parties-omitted",
+      "kind": "request",
+      "check": "retained parties required",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": false,
+        "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im8zU3Z2RUthWndSbktfUDZFS0djNVVXMmVtMGhIcHRiU2V3eU9FLURMYU5xVC1Dcks4Q3VDSnJ5WWl2UlhBUVFBZWlLekR5R0NSanhYVlNTUTF1bUJ3In0",
+        "retained": {
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e"
+        }
       },
       "expect": {
         "ok": false,
@@ -1137,12 +1239,58 @@
         ],
         "retained": {
           "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
-          "agreementHash": "7a1e6f6ba190f9f2bc82859619a149030e9e85cdcfbd33026ab3c7a43ed28ba9"
+          "agreementHash": "7a1e6f6ba190f9f2bc82859619a149030e9e85cdcfbd33026ab3c7a43ed28ba9",
+          "buyer": "did:demos:agent:9537e9c17284fdd2bf1e0e9f3b0e398580d32d21bbd86512ec95bac4df1bfb2b",
+          "seller": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61"
         }
       },
       "expect": {
         "ok": false,
         "code": "peer_agreement_mismatch"
+      }
+    },
+    {
+      "id": "request/delegated-retained-buyer-mismatch",
+      "kind": "request",
+      "check": "retained buyer",
+      "input": {
+        "path": "/dacs/v1/commitments",
+        "body": "eyJqb2JJZCI6IjAxSzdGWjhROVczVjVUMlIxTjBNOEs2SjRIIn0",
+        "requireDelegation": true,
+        "header": "eyJkZWxlZ2F0aW9uIjp7InBheWxvYWQiOnsiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk4MjgwMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJzZWxsZXItc2Vzc2lvbi1kZWxlZ2F0aW9uIiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm5vdEJlZm9yZSI6MTc5MTk3OTE5OTAwMCwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInNlc3Npb25QdWJsaWNLZXkiOiJkMThmYmIzNWExYTVmMjI1M2EzZTM3NjZjMjc2Zjc2MmFhMDc5ZTlhMjlhMTIzZGU5YjIxMDQ0M2M2NjU1NDgzIiwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoiMHgyOWRiYjg2YmRhMjAxYWI4Nzk0OTUyOWI0YTVjY2M2OTc0ZDdmMjY5YzU1Mzg4NzQ5N2U4NTc0MWI0ZWZmNGNkMWNiMmEyNjE0ZmY2NTc0NTA0Y2ZhNTA5NTJmODg3MTZiOTY0N2M4YmI3MWI4YTM0MzU5YjYwY2NlODFjNTcwNiJ9LCJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OTUzN2U5YzE3Mjg0ZmRkMmJmMWUwZTlmM2IwZTM5ODU4MGQzMmQyMWJiZDg2NTEyZWM5NWJhYzRkZjFiZmIyYiIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkZ4WVZGQk1TRVJBUERnME1Dd29KQ0FjR0JRUURBZ0VBIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6MmQ0NjI1NzVmZmE3YmI3ZjU0ZWJjYjJjNzNlMWIwNmVjMGM3OGQ0NGQ4ZDdkNTVkOTUwYzgwZGEwOTUwMWM2MSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Ijl6N3dzTWFBeHhBUUpEdXNmcDh6XzhHUzQ1ZTlSdzBzaWsxXzd0SVFCUDlRaGNkQjJaM3RZYXhaUWNSZ2xFZThmdHBYcjNHWWVwWDcxeWxaR2JQOUFnIn0",
+        "artifacts": [
+          {
+            "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+            "listingRef": {
+              "listingId": "wire-fixture-report",
+              "version": 1,
+              "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+            },
+            "parties": [
+              {
+                "role": "buyer",
+                "primaryClaim": "did:demos:agent:9537e9c17284fdd2bf1e0e9f3b0e398580d32d21bbd86512ec95bac4df1bfb2b"
+              },
+              {
+                "role": "seller",
+                "primaryClaim": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61"
+              }
+            ],
+            "terms": {
+              "deadline": 1791986400000
+            }
+          }
+        ],
+        "retained": {
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+          "buyer": "did:demos:agent:beeb8ef18b01e61db0861b47935b10f459dfd04f3e13540d0b53cbe8160a0dd6",
+          "seller": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "peer_agreement_party_mismatch"
       }
     },
     {
@@ -3370,6 +3518,27 @@
       },
       "expect": {
         "ok": true
+      }
+    },
+    {
+      "id": "discovery/listing-endpoint-with-path",
+      "kind": "discovery",
+      "check": "endpoint is an origin",
+      "input": {
+        "listing": {
+          "seller": "did:demos:agent:2d462575ffa7bb7f54ebcb2c73e1b06ec0c78d44d8d7d55d950c80da09501c61",
+          "publicEndpoint": "https://seller.wire-fixture.invalid/seller/v2",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          }
+        },
+        "document": "eyJwYXlsb2FkIjp7ImNhcGFiaWxpdGllcyI6eyJidXllclJlcXVlc3RJbnB1dCI6ZmFsc2UsImNhcGFiaWxpdHkiOiJGUC1ERU0iLCJkZWxpdmVyeSI6eyJhZGRyZXNzIjoiZGFjczQ6ZGVsaXZlcmFibGU6e2pvYklkfSIsImNoYW5uZWwiOiJkZW1vcy1zdG9yYWdlIn0sImlkZW50aXR5U2NoZW1lIjoiZGlkOmRlbW9zOmFnZW50IiwibmVnb3RpYXRpb24iOlsibmVnb3RpYXRlLWZpeGVkLXByaWNlIl0sIm91dHB1dCI6eyJlbnZlbG9wZSI6ImRhY3MtY2hhdGdwdC1wbHVnaW4vZGV2bmV0LXB1cmNoYXNlZC1yZXBvcnQiLCJtYXhDaGFyYWN0ZXJzIjoxNjM4NCwibWVkaWFUeXBlIjoidGV4dC9wbGFpbjsgY2hhcnNldD11dGYtOCIsInJlcG9ydFZlcnNpb24iOiIxIiwic3luY2hyb25vdXMiOnRydWV9LCJyYWlscyI6WyJwYXktZGVtIl0sInNlcnZpY2VzIjpbImZpeGVkLXRleHQiLCJwdXJlLXN5bmNocm9ub3VzLXRleHQtbW9kdWxlIl19LCJleHBpcmVzQXQiOjE3OTE5Nzk1MDAwMDAsImZvcm1hdCI6ImRhY3Mtc2VsbGVyLWRpc2NvdmVyeS92MSIsImlzc3VlZEF0IjoxNzkxOTc5MTk5MDAwLCJsaXN0aW5ncyI6W3siY29udGVudEhhc2giOiI5N2IyNmQxYmNiMTczOWVkMjI1OWE2NjQ2YmJiM2E4MDQ3ZDYwYzhjMWY2MzRmYzlmZDBmZmQyMWU1OTIxOGI2IiwibGlzdGluZ0lkIjoid2lyZS1maXh0dXJlLXJlcG9ydCIsInZlcnNpb24iOjF9XSwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiIwNjE1Y2U2OTQzODhjOTJjNjMxZGY0MDQyNDVlMzYzZWU1NTY3M2JlYWNhMDQxNzQ2YjU5MjMyZTcyYWYxYjQ0IiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJwdWJsaWNFbmRwb2ludCI6Imh0dHBzOi8vc2VsbGVyLndpcmUtZml4dHVyZS5pbnZhbGlkIiwicmVhZHkiOnRydWUsInNlbGxlciI6ImRpZDpkZW1vczphZ2VudDoyZDQ2MjU3NWZmYTdiYjdmNTRlYmNiMmM3M2UxYjA2ZWMwYzc4ZDQ0ZDhkN2Q1NWQ5NTBjODBkYTA5NTAxYzYxIiwidHJhbnNwb3J0IjpbImRhY3Mtc2VsbGVyLWh0dHAvdjEiXX0sInNpZ25hdHVyZSI6InNSdzh5RjBZVTBUeEwySVpvdGVKNXRIQnJBandnSzQ2UVpPUEVzUE93ODJTbU1xNm9uUUpRT1ozek1tcW1ZY1IyTm5uRGpXbXlZOHBMbWpPUXRBZERBIn0"
+      },
+      "expect": {
+        "ok": false,
+        "code": "wire_input_invalid"
       }
     },
     {

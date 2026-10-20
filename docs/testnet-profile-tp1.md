@@ -131,8 +131,8 @@ composition against the base and record every difference in the register.
   DACS artifact signature.
 - **Discovery.** The signed discovery document carries the profile and states
   the capability restrictions above; the buyer requires its signer to be the
-  Listing's seller and its `publicEndpoint` to equal the Listing's byte for
-  byte.
+  Listing's seller and its `publicEndpoint`, an HTTPS origin, to equal the
+  Listing's byte for byte.
 - **Network identity.** Nothing is signed without a binding to an approved
   identity record and the signer's own current connection. The SDK approves
   the record (`TP1_APPROVED_IDENTITY_RECORD_DIGESTS`); the caller cannot. Missing pins, the

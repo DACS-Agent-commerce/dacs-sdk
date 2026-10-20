@@ -9,10 +9,11 @@ export function agreementFixture(opened: OpenedEnvelope<WireRequestPayload>) {
 }
 
 /**
- * The job and Agreement hash a transport fixture's host retained: these
- * fixtures sign their job's own Agreement. Mismatches are tested separately
- * (test/wire/launchReview.test.ts, the request/retained-* vectors).
+ * The job, Agreement hash and parties a transport fixture's host retained:
+ * these fixtures sign their job's own Agreement. Mismatches are tested
+ * separately (test/wire/launchReview.test.ts, the request/retained-* vectors).
  */
 export function retainedFixture(opened: OpenedEnvelope<WireRequestPayload>) {
-  return { jobId: opened.payload.jobId, agreementHash: opened.payload.agreementHash };
+  const p = opened.payload;
+  return { jobId: p.jobId, agreementHash: p.agreementHash, buyer: p.buyer, seller: p.seller };
 }

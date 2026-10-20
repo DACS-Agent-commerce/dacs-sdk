@@ -42,19 +42,22 @@ const MAX_LISTINGS = 32;
 const ISSUED_SKEW_MS = 60_000;
 
 /**
- * An absolute HTTPS URL with no credentials, query or fragment. Compared byte
- * for byte, never normalized. Before parsing, the literal `https://` and an
- * authority are required, and the spellings the URL parser would repair into
- * another URL are refused: a backslash, a tab or line break anywhere, and a
- * trailing space or control character. Otherwise the parser repairs spellings
- * such as `https:host` or `https:\\host` that a browser resolves against its
- * own page. Spellings it only normalizes (letter case, a default port, dot
- * segments, percent-encoding) are accepted as written; byte equality with the
+ * An HTTPS origin: `https://` and an authority, then at most one `/`, with no
+ * credentials, path, query or fragment. A request goes to the origin followed
+ * by the signed route path, and discovery to its `/.well-known/dacs-seller.json`
+ * (RFC 8615), so a path would leave two buyers forming different URLs.
+ * Compared byte for byte, never normalized. Before parsing, the spellings the
+ * URL parser would repair into another URL are refused: a backslash, a tab or
+ * line break anywhere, and a trailing space or control character. Otherwise
+ * the parser repairs spellings such as `https:host` or `https:\\host` that a
+ * browser resolves against its own page. Spellings it only normalizes (letter
+ * case, a default port) are accepted as written; byte equality with the
  * Listing's endpoint is what binds them.
  */
 export function isPublicEndpoint(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 2048) return false;
   if (!/^https:\/\/[^/\\]/.test(value) || /[\\\t\n\r]/.test(value) || value.charCodeAt(value.length - 1) <= 0x20) return false;
+  if (!/^https:\/\/[^/]+\/?$/.test(value)) return false;
   try {
     const url = new URL(value);
     return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash && !value.includes("#") && !value.includes("?");
@@ -171,7 +174,8 @@ export function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding
   const p = proof as EndpointProof;
   if (kept.listing.seller !== scope.seller || kept.listing.publicEndpoint !== scope.publicEndpoint ||
       !sameCanonical(kept.listing.listingPin, scope.listingPin)) fail("endpoint_proof_mismatch", 500);
-  if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 502);
+  // The buyer's own kept proof has lapsed: fetching discovery again clears it (transient), not the seller's fault.
+  if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 503);
   if (!p.ready) fail("seller_not_ready", 503);
   assertListingEligibility(kept.readListingEligibility, kept.listing, scope.now);
   assertTp1Authority(scope.binding, scope.binding.local, [p.payload.seller], DACS_SELLER_DISCOVERY_FORMAT);

@@ -133,11 +133,15 @@ describe("wire Listing pins and producer bounds", () => {
     const x = world();
     const oversized = { payload: x.delegation, signature: "A".repeat(4000) };
     await refuses(() => w.signWireEnvelope(x.request, { ...x.context, signer: x.buyer }, oversized), "peer_envelope_too_large");
-    // Each pin and the endpoint are valid individually; the whole document exceeds 16 KiB in UTF-8. The endpoint's
-    // interior control characters are escaped by canonical JSON; it ends with an ordinary character, as a trailing one is refused.
-    const discovery = { ...x.discovery, publicEndpoint: ENDPOINT + "/" + "\u0001".repeat(2000) + "x", listings: Array.from({ length: 32 }, (_, i) => ({ ...PIN, listingId: "x".repeat(126) + String(i).padStart(2, "0") })) };
-    await refuses(() => w.signDiscoveryDocument(discovery, x.seller, x.binding, LOCAL), "discovery_too_large");
     expect(x.buyer.calls + x.seller.calls).toBe(0);
+    // A publicEndpoint is an origin, so the largest document a seller can sign (32 maximal pins and a 2,048-character
+    // origin of 3-byte characters) still fits the buyer's 16 KiB bound: the buyer admits every document a seller signs.
+    const host = Array.from({ length: 40 }, () => "中".repeat(60)).join(".").slice(0, 2048 - 16);
+    const discovery = { ...x.discovery, publicEndpoint: `https://${host}.invalid`, listings: Array.from({ length: 32 }, (_, i) => ({ ...PIN, listingId: "x".repeat(126) + String(i).padStart(2, "0") })) };
+    expect(discovery.publicEndpoint).toHaveLength(2048);
+    const bytes = await w.signDiscoveryDocument(discovery, x.seller, x.binding, LOCAL);
+    expect(bytes.length).toBeGreaterThan(14_000);
+    expect(bytes.length).toBeLessThanOrEqual(w.DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes);
   });
 });
 
@@ -159,6 +163,8 @@ describe("endpoint proof purchase gate", () => {
     const otherBinding = bindTp1Fixture({ record: w.TP1_APPROVED_IDENTITY_RECORD, local: LOCAL });
     await refuses(() => w.signWireRequest({ ...x.input, endpointProof: p, binding: otherBinding }), "endpoint_proof_required");
     await refuses(() => w.signWireRequest({ ...x.input, endpointProof: p, now: NOW + 60_000 }), "discovery_expired");
+    // The buyer's own kept proof lapsed: fetching discovery again clears it, so it is transient, not the seller's fault.
+    await expect(w.signWireRequest({ ...x.input, endpointProof: p, now: NOW + 60_000 })).rejects.toMatchObject({ code: "discovery_expired", status: 503, category: "transient" });
     const notReady = await proof(x, { ready: false });
     await refuses(() => w.signWireRequest({ ...x.input, endpointProof: notReady.proof }), "seller_not_ready");
     expect(x.buyer.calls).toBe(0);
@@ -169,14 +175,14 @@ describe("endpoint proof purchase gate", () => {
     expect(x.buyer.calls).toBe(2);
   });
   it("binds an endpoint the URL parser would normalize by its exact bytes, never by its parsed form", async () => {
-    const x = world(), written = "https://SELLER.admission.invalid:443/a/../b", parsed = new URL(written).href;
-    expect(parsed).toBe("https://seller.admission.invalid/b");
+    const x = world(), written = "https://SELLER.admission.invalid:443", parsed = new URL(written).href;
+    expect(parsed).toBe("https://seller.admission.invalid/");
     const { bytes, proof: p } = await proof(x, { publicEndpoint: written });
     expect(p.payload.publicEndpoint).toBe(written);
     await refuses(() => w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: parsed, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_endpoint_mismatch");
   });
   it("preserves the verified Listing endpoint bytes: NFC never matches NFD", async () => {
-    const x = world(), nfc = ENDPOINT + "/caf\u00e9", nfd = ENDPOINT + "/cafe\u0301";
+    const x = world(), nfc = "https://caf\u00e9.admission.invalid", nfd = "https://cafe\u0301.admission.invalid";
     const { bytes } = await proof(x, { publicEndpoint: nfc });
     await refuses(() => w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: nfd, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW }), "discovery_endpoint_mismatch");
     const getter = Object.defineProperty({ seller: x.seller.claim, listingPin: PIN }, "publicEndpoint", { enumerable: true, get() { throw new Error("must not run"); } });

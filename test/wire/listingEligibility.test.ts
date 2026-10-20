@@ -166,7 +166,7 @@ it("supplies an immutable source scope and refuses decisions that disappear afte
   expect(w.buyer.calls).toBe(0);
 });
 
-describe("public endpoint rule: absolute HTTPS, no credentials, query or fragment", () => {
+describe("public endpoint rule: an HTTPS origin, no credentials, path, query or fragment", () => {
   const repaired = ["https:seller.eligibility.invalid", "https:/seller.eligibility.invalid", "https:\\\\seller.eligibility.invalid",
     "https:///seller.eligibility.invalid", "https://seller.eligibility.invalid\\dacs", " https://seller.eligibility.invalid",
     "https://seller.eligibility.invalid ", "https://seller.eli\tgibility.invalid", "https://seller.eligibility.invalid\n",
@@ -177,18 +177,28 @@ describe("public endpoint rule: absolute HTTPS, no credentials, query or fragmen
     // Past the literal-prefix check, but no URL at all.
     "https:// x",
     // One character over the 2,048 limit.
-    `https://seller.eligibility.invalid/${"a".repeat(2048 - 35 + 1)}`,
+    `https://${"a".repeat(2048 - 16 + 1)}.invalid`,
     // Spellings the URL parser repairs into an absolute URL, but a browser resolves against its own page, or rewrites.
     ...repaired];
-  it.each(refused)("isPublicEndpoint refuses %j", (value) => expect(wire.isPublicEndpoint(value)).toBe(false));
-  it("accepts an absolute HTTPS endpoint", () => expect(wire.isPublicEndpoint("https://seller.eligibility.invalid/dacs")).toBe(true));
+  // A path, even one the parser removes, would leave URL resolution and concatenation reaching different URLs.
+  const paths = ["https://seller.eligibility.invalid/dacs", "https://seller.eligibility.invalid/seller/v2", "https://seller.eligibility.invalid/seller/",
+    "https://seller.eligibility.invalid//", "https://seller.eligibility.invalid/.", "https://seller.eligibility.invalid/a/../", "https://seller.eligibility.invalid/%2F",
+    "https://seller.eligibility.invalid:443/dacs", "https://seller.eligibility.invalid/café"];
+  it.each([...refused, ...paths])("isPublicEndpoint refuses %j", (value) => expect(wire.isPublicEndpoint(value)).toBe(false));
+  it.each(["https://seller.eligibility.invalid", "https://seller.eligibility.invalid/", "https://127.0.0.1:8443/"])("accepts the HTTPS origin %j", (value) => {
+    expect(wire.isPublicEndpoint(value)).toBe(true);
+    // A request goes to the origin followed by the route path, and discovery to its /.well-known, however a buyer joins them.
+    for (const route of ["/dacs/v1/payments", "/.well-known/dacs-seller.json"]) {
+      expect(new URL(route, value).href).toBe(value.replace(/\/$/, "") + route);
+    }
+  });
   it("accepts an endpoint of exactly 2,048 characters", () => {
-    const endpoint = `https://seller.eligibility.invalid/${"a".repeat(2048 - 35)}`;
+    const endpoint = `https://${"a".repeat(2048 - 16)}.invalid`;
     expect(endpoint).toHaveLength(2048);
     expect(wire.isPublicEndpoint(endpoint)).toBe(true);
   });
   // Spellings the parser only normalizes are kept as written: byte equality with the Listing binds them (admission.test.ts).
-  it.each(["https://SELLER.eligibility.invalid/dacs", "https://seller.eligibility.invalid:443/dacs", "https://seller.eligibility.invalid/a/../dacs", "https://seller.eligibility.invalid/café"])(
+  it.each(["https://SELLER.eligibility.invalid", "https://seller.eligibility.invalid:443", "https://séller.eligibility.invalid/"])(
     "accepts %j as written", (value) => {
       expect(new URL(value).href).not.toBe(value);
       expect(wire.isPublicEndpoint(value)).toBe(true);
