@@ -358,7 +358,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
       "originalSha256": null,
-      "sha256": "ec30f86e9e59c3df8913ae14068775625e253885d4b78384e61aba2369823169",
+      "sha256": "e66fb113b7fcd56277abd9694d1c4bf34b205763c01b01aaafee28e00aacd771",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
