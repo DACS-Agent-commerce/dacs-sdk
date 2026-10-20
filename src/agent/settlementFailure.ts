@@ -1,4 +1,5 @@
 import { baseUnits } from "../canonical/index.js";
+import { snapshotWireJsonRead } from "../canonical/snapshot.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "../rails/demosAddress.js";
 
 /** DACS-4 §9.5.9: 1 DEM = 10^9 OS (the rail's `DEM_DECIMALS`). */
@@ -21,15 +22,18 @@ export function payDemRequestAmountOs(
 }
 
 /**
- * A trusted rail's attestation of a terminal failed Demos record. It is issued
- * only after matching the signed hash/nonce, inclusion block and native body.
- * It proves failure of this attempt; it never authorizes a replacement debit.
+ * A rail's projection of a terminal failed Demos record. The rail must build it
+ * from the node's `getTxByHash` record only after matching the signed
+ * hash/nonce, inclusion block and native body; the pay-dem rail builds it that
+ * way and carries it on `SettleResult` as `failureProof`. It describes failure
+ * of this attempt; it never authorizes a replacement debit.
  *
  * Fields are projections of the node's `getTxByHash` record, in canonical form:
  * `txHash`, `payer` and `payee` are 64 lower-case hex without `0x` (the node
  * serves `0x`-prefixed keys); `nonce` is the record's decimal nonce string
- * converted to a safe integer; `amountOs` is the decimal OS amount. It is not
- * exported from the package roots; a `SettleResult` carries it as `failureProof`.
+ * converted to a safe integer; `amountOs` is the decimal OS amount. Internal:
+ * it is not exported from the package roots; a `SettleResult` carries it as
+ * `failureProof`.
  */
 export interface DemosFailedRecordProof {
   kind: "demos-failed-record";
@@ -51,22 +55,47 @@ const REQUIRED_RESULT_KEYS = [
   "blockNumber", "txRefKind",
 ];
 
+type DemosFailureResult = {
+  ok: boolean; txHash: string; chainId: string; payer: string; payee: string;
+  errorClass?: unknown; failureProof?: unknown; blockNumber?: unknown;
+  txRefKind?: unknown; finality?: unknown; txRef?: unknown;
+  finalityObservedAt?: unknown; x402Receipt?: unknown;
+};
+
 /**
- * Validate owned, canonical result data after the caller's snapshot boundary.
- * Both bindings are required: the proof must carry exactly `amountOs`, and the
- * result's chainId must be exactly `expectedNetwork`. Anything unknown, missing
- * or non-canonical returns false and never throws: `ok` must be exactly
- * `false`, the result and the proof may carry only their declared keys, the
- * keys this check requires must be owned, and payer/payee must be unpadded
- * strings that resolve to Demos keys.
+ * Check that a failed result carries a well-formed failure proof bound to it.
+ * This checks shape and bindings only; it does not authenticate the proof
+ * against the node, so `true` may be acted on only for a proof the caller's
+ * own rail built as described on {@link DemosFailedRecordProof}.
+ *
+ * The input is first copied as data-only JSON, so proxies, accessors, exotic
+ * prototypes (`Date`, class instances), symbol or non-enumerable keys and
+ * `undefined` members are refused without running caller code. Both bindings
+ * are required: the proof must carry exactly `amountOs`, and the result's
+ * chainId must be exactly `expectedNetwork`. Anything unknown, missing or
+ * non-canonical returns false and never throws: `ok` must be exactly `false`,
+ * the result and the proof may carry only their declared keys, the keys this
+ * check requires must be owned, and payer/payee must be unpadded strings that
+ * resolve to Demos keys.
  */
 export function hasDefinitiveDemosFailure(
-  result: {
-    ok: boolean; txHash: string; chainId: string; payer: string; payee: string;
-    errorClass?: unknown; failureProof?: unknown; blockNumber?: unknown;
-    txRefKind?: unknown; finality?: unknown; txRef?: unknown;
-    finalityObservedAt?: unknown; x402Receipt?: unknown;
-  },
+  result: DemosFailureResult,
+  amountOs: string,
+  expectedNetwork: string,
+): boolean {
+  try {
+    return isBoundDemosFailure(
+      snapshotWireJsonRead(result, "Demos failure result"),
+      amountOs,
+      expectedNetwork,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isBoundDemosFailure(
+  result: DemosFailureResult,
   amountOs: string,
   expectedNetwork: string,
 ): boolean {
