@@ -628,8 +628,8 @@ settlement log to authenticate the same PC-7 effect. `reconcile` receives that
 landed. Each terminal record must bind the retained hash, signed nonce,
 inclusion block, payer, payee and OS amount. Status-index `included` alone is
 not enough (#338), and neither is a `confirmed` record with absent or empty
-`gcr_edits`, which the node applies as a no-op. Unproven, non-final or conflicting observations must throw.
-Even authoritative absence does not revoke a
+`gcr_edits`, which the node applies as a no-op. Unproven, non-final or
+conflicting observations must throw. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory

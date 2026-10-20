@@ -36,8 +36,14 @@ describe("the pay-dem execution guide", () => {
       "a `balance` `remove` of the amount from the payer and a `balance` `add` of the amount to the payee",
     );
     expect(guide).toContain(
-      "A `confirmed` record with absent, empty or other edits moved no value, and the rail must leave `execution` out.",
+      "A `confirmed` record whose edits lack that `remove` or that `add`, including absent or empty edits, moved no value, and the rail must leave `execution` out.",
     );
+    // Extra edits next to the transfer pair are normal (see the fixture test
+    // below), so the rule must not read as refusing them.
+    expect(guide).toContain(
+      "The record may carry other edits as well, such as the fee and nonce edits demosdk derives.",
+    );
+    expect(guide).not.toContain("absent, empty or other edits");
     expect(guide).toContain("with `gcr_edits` that debit the payer and credit the payee that amount");
     expect(guide).toContain("must check the record's `gcr_edits` as described for custom clients");
     for (const path of ["../../README.md", "../../docs/funded-e2e-safety.md"]) {
@@ -67,6 +73,35 @@ describe("the pay-dem execution guide", () => {
         edit.account === account && String(edit.amount) === amount);
     expect(has("remove", content.from)).toBe(true);
     expect(has("add", content.to)).toBe(true);
+    // The same record also carries the fee debit and the nonce edit.
+    expect(content.gcr_edits.some((edit) =>
+      edit.type === "balance" && edit.operation === "remove" &&
+      edit.account === content.from && String(edit.amount) !== amount)).toBe(true);
+    expect(content.gcr_edits.some((edit) => edit.type === "nonce")).toBe(true);
+  });
+
+  it("names the observer's missing or non-executed attestation exactly", () => {
+    expect(guide).toContain(
+      "An included observation that matches the retained payment but whose `execution` is missing or is not `\"executed\"` returns `indeterminate` with `pay-dem-chain-execution-unconfirmed`",
+    );
+    expect(guide).not.toContain("Missing or other execution evidence");
+  });
+
+  it("keeps the pay-dem prose hard-wrapped", () => {
+    // Table rows and fenced code may run long; prose lines stay near 80.
+    for (const path of ["../../docs/pay-dem-execution.md", "../../docs/funded-e2e-safety.md"]) {
+      let fenced = false;
+      const long = readFileSync(new URL(path, import.meta.url), "utf8")
+        .split("\n")
+        .filter((line) => {
+          if (line.startsWith("```")) fenced = !fenced;
+          return !fenced && !line.startsWith("|") && line.length > 90;
+        });
+      expect(long, path).toEqual([]);
+    }
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    expect(readme.split("\n").filter((line) => line.includes("gcr_edits") && line.length > 90))
+      .toEqual([]);
   });
 
   it("does not fix the size of an unmerged Standard corpus", () => {

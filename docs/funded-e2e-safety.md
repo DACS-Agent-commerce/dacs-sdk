@@ -91,10 +91,11 @@ the execution guide; it must omit successful execution and finality.
 `payDemSettle` keeps an intent held unless reconciliation authenticates one of
 these definitive outcomes (see
 [the pay-dem execution gate](./pay-dem-execution.md)). After restart, even a
-cached success is reconciled before reuse. An authoritative `null` proves only that no transfer has landed yet; it
-cannot revoke a possibly-live old process or signed transaction and does not
-authorize a new native transfer. Non-observation, absence without an independent
-replay fence, or an ambiguous transaction must never cause an automatic broadcast.
+cached success is reconciled before reuse. An authoritative `null` proves only
+that no transfer has landed yet; it cannot revoke a possibly-live old process
+or signed transaction and does not authorize a new native transfer.
+Non-observation, absence without an independent replay fence, or an ambiguous
+transaction must never cause an automatic broadcast.
 
 Hash-first observation has a finite wait even when demosdk's broadcast promise
 or a status call never settles. A pending JavaScript promise alone does not keep

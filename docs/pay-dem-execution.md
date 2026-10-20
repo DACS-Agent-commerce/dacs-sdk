@@ -89,16 +89,17 @@ fresh result must carry `execution: "executed"`, attesting that the rail read
 the transaction record and checked literal `confirmed` status, signed hash,
 nonce, inclusion block, payer, payee and amount, and that the record's
 `content.gcr_edits` move that amount: a `balance` `remove` of the amount from
-the payer and a `balance` `add` of the amount to the payee. A `confirmed`
-record with absent, empty or other edits moved no value, and the rail must
-leave `execution` out. Status-index inclusion alone
-must return a not-ok result retaining the hash. Both `payDemSettle` and the
-dacs-node buyer payment track refuse a fresh success without this literal
-attestation before completing settlement, recording wallet debits or publishing
-a payment notice. The intent remains held for reconciliation. The attestation
-is removed before durable settlement storage and notice publication; the rail
-bridge and buyer payment track require fresh execution authentication when
-recovering stored results.
+the payer and a `balance` `add` of the amount to the payee. The record may
+carry other edits as well, such as the fee and nonce edits demosdk derives. A
+`confirmed` record whose edits lack that `remove` or that `add`, including
+absent or empty edits, moved no value, and the rail must leave `execution`
+out. Status-index inclusion alone must return a not-ok result retaining the
+hash. Both `payDemSettle` and the dacs-node buyer payment track refuse a fresh
+success without this literal attestation before completing settlement,
+recording wallet debits or publishing a payment notice. The intent remains
+held for reconciliation. The attestation is removed before durable settlement
+storage and notice publication; the rail bridge and buyer payment track
+require fresh execution authentication when recovering stored results.
 
 `payDemSettleCore` accepts any `DemosNativeClient`. It reports success only
 when the client's result has `ok: true`, `state: "included"`, a block number
@@ -136,9 +137,10 @@ to equal the retained prepared transfer's signed nonce before returning
 `completed`; missing or conflicting nonces require operator recovery. Custom
 observers must supply the same checked nonce, and must check the record's
 `gcr_edits` as described for custom clients.
-Missing or other execution evidence returns `indeterminate` with
-`pay-dem-chain-execution-unconfirmed`, keeping the payment held. The
-reconciler forwards the attestation with its `completed` settlement. The host
+An included observation that matches the retained payment but whose
+`execution` is missing or is not `"executed"` returns `indeterminate` with
+`pay-dem-chain-execution-unconfirmed`, keeping the payment held.
+The reconciler forwards the attestation with its `completed` settlement. The host
 payment track checks it and removes it before settlement storage and notice
 publication. Seller intake and wallet recovery authentication also require
 literal `execution: "executed"` before delivery or settlement accounting.
