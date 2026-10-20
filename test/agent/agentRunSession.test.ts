@@ -489,7 +489,10 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(store.size).toBe(anchorsBefore);
   });
 
-  test("defaults a normative pay-dem session to the seller Demos claim", async () => {
+  // A custom rail's `execution: "executed"` is its statement (#338): the SDK
+  // did not read the record, so the session stops indeterminate after the one
+  // transfer instead of completing. The request still targets the seller claim.
+  test("defaults a normative pay-dem session to the seller Demos claim and holds a custom rail's success", async () => {
     const { adapter, store } = memAdapter();
     const ref = await anchorListing(
       store,
@@ -557,7 +560,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         },
         settle: payDemSettle(rail, { network: "demos:testnet" }),
       }),
-    ).resolves.toMatchObject({ outcome: "completed" });
+    ).rejects.toThrow(/remains indeterminate; refusing terminal failure evidence/);
     expect(transfer).toHaveBeenCalledOnce();
     const submitted = transfer.mock.calls[0]![0];
     expect(submitted).toMatchObject({
