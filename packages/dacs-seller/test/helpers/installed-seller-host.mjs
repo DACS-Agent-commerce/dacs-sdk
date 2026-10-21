@@ -115,6 +115,7 @@ const sessionAdmission = {
       participants: [{ role: 'buyer', claim: query.buyer, ...query.profile }, { role: 'seller', claim: query.seller, ...query.profile }] };
   },
   resolveVetRecord: async ({ ref }) => { if (!vetRecords.has(ref.contentHash)) throw new Error('no Vet record at this reference'); return structuredClone(vetRecords.get(ref.contentHash)); },
+  verifyVetAnchorReceipt: async ({ ref, receipt }) => (vetRecords.has(ref.contentHash) && receipt?.logicalAddress === ref.anchor.locator && receipt.contentHash === ref.contentHash && receipt.evidence?.value === 'installed' ? 'valid' : 'invalid'),
   readVetAnchorReceipt: async ({ ref }) => { if (!vetRecords.has(ref.contentHash)) throw new Error('no SR-2 receipt at this reference'); return vetReceipt(ref); },
 };
 // The Agreement derivation input both parties use, with the Vet references.

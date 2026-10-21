@@ -18,7 +18,7 @@ import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consu
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { SELLER_PRE_EFFECT_REFUSALS } from '../src/dacs/seller-http.mjs';
-import { SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
+import { SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from '../src/dacs/session-admission.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 
@@ -532,6 +532,51 @@ test('a Vet record is relied on only with its SR-2 receipt at accepted or later:
     const input = { ...w.vetted, buyer: { ...w.vetted.buyer, vetRecordRef: await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement, receipt: { state } }) } };
     assert.equal((await sign(input)).disposition, 'complete', state);
   }
+});
+
+// DACS-2 VPC-3 and CORE SR2-4: "the receipt fields alone are assertions, not
+// proof". A shape-valid receipt at `finalized` that the operator's verifier does
+// not authenticate (a fabricated transaction and evidence) is refused before the
+// Agreement is signed; only a 'valid' verdict passes.
+test('a Vet record whose SR-2 receipt is well formed but not authenticated is not signed over; an authenticated one passes whatever its writer', async (t) => {
+  const w = await world(t), buyer = w.buyerKey.claim, sign = async (input = w.vetted) => {
+    const agent = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(input) }));
+    try { return await agent.receiveProposal(await w.proposalFor(input)); } finally { agent.close(); }
+  };
+  const forged = { transactionRef: { kind: 'demos', value: core.sha256Hex('a transaction that never landed') }, evidence: { kind: 'TEST', value: 'invented' } };
+  const input = { ...w.vetted, buyer: { ...w.vetted.buyer, vetRecordRef: await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, receipt: forged }) } };
+  for (const [label, verdict] of Object.entries({ 'an invalid verdict': () => 'invalid', 'an indeterminate verdict': () => 'indeterminate', 'no verdict': () => undefined, 'a truthy non-verdict': () => true, 'a verifier that throws': () => { throw new Error('chain read failed'); } })) {
+    w.admission.verifyReceiptWith(verdict);
+    const answer = await sign(input);
+    assert.equal(answer.disposition, 'rejected', label);
+    assert.equal(answer.contribution, undefined, `${label}: no seller contribution is issued`);
+    assert.match(answer.reason, /^VET_RECORD_UNVERIFIED: (buyer: the Vet record SR-2 receipt is not verified|the buyer Vet record SR-2 receipt could not be verified)/, label);
+  }
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+  // The verifier is asked about the exact record and receipt, and an authenticated one passes,
+  // whoever the receipt names as writer (SR2-5 binds the writer it names; no rule ties it to the record's signer).
+  const asked = [];
+  w.admission.verifyReceiptWith(({ ref, record, receipt }) => { asked.push({ ref, record, receipt }); return 'valid'; });
+  for (const writer of [buyer, w.sellerKey.claim]) {
+    asked.length = 0;
+    const ref = await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement, receipt: { writer } });
+    assert.equal((await sign({ ...w.vetted, buyer: { ...w.vetted.buyer, vetRecordRef: ref } })).disposition, 'complete', `writer ${writer}`);
+    const mine = asked.find((entry) => entry.ref.contentHash === ref.contentHash);
+    assert.equal(core.contentHash(mine.record), ref.contentHash);
+    assert.equal(mine.receipt.writer, writer);
+  }
+});
+
+// The reference's own locator must be the job's canonical composite address: a
+// retained context relies on this guard (a fresh one is checked by the context
+// consumer too), so a receipt that matches a reference elsewhere does not pass.
+test('a Vet receipt that matches a reference at another address than the job\'s canonical composite address is refused', async (t) => {
+  const w = await world(t), buyer = w.buyerKey.claim;
+  const ref = await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement: w.listing.buyerRequirement });
+  const receipt = (await w.admission.sessionAdmission.readVetAnchorReceipt({ ref }));
+  assert.equal(vetAnchorReceiptProblem(receipt, { ref, jobId: w.jobId, party: buyer }), null);
+  const moved = { ...ref, anchor: { ...ref.anchor, locator: 'dacs2:composite:elsewhere' } };
+  assert.match(vetAnchorReceiptProblem({ ...receipt, logicalAddress: moved.anchor.locator }, { ref: moved, jobId: w.jobId, party: buyer }), /not at the job's canonical composite address/);
 });
 
 // The delivery audit source carries the Vet context's requirement invocations.

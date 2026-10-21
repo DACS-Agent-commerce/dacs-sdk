@@ -79,10 +79,10 @@ test('PROFILE.json names the Standard pin and the seller requirement the run tim
 
 test('a session admission is taken only by the native profile and only with all five of its functions, the Vet receipt and revocation readers included', async () => {
   const w = sellerWorld(), native = { ...w.base, agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority };
-  const complete = { admit: async () => null, resolveVetRecord: async () => null, readVetAnchorReceipt: async () => null, readRevocationSurfaces: async () => [], readRevocationMarker: async () => null };
+  const complete = { admit: async () => null, resolveVetRecord: async () => null, readVetAnchorReceipt: async () => null, verifyVetAnchorReceipt: async () => 'invalid', readRevocationSurfaces: async () => [], readRevocationMarker: async () => null };
   const without = (name) => { const { [name]: _missing, ...rest } = complete; return rest; };
-  for (const sessionAdmission of [without('admit'), without('resolveVetRecord'), without('readVetAnchorReceipt'), without('readRevocationSurfaces'), without('readRevocationMarker'), () => null]) {
-    await assert.rejects(seller.createSellerAgent({ ...native, sessionAdmission }), { name: 'TypeError', message: /sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker/ });
+  for (const sessionAdmission of [without('admit'), without('resolveVetRecord'), without('readVetAnchorReceipt'), without('verifyVetAnchorReceipt'), without('readRevocationSurfaces'), without('readRevocationMarker'), () => null]) {
+    await assert.rejects(seller.createSellerAgent({ ...native, sessionAdmission }), { name: 'TypeError', message: /sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker/ });
   }
   await assert.rejects(seller.createSellerAgent({ ...w.base, anchors: w.anchors, simulatedFixture: true, sessionAdmission: complete }),
     { name: 'TypeError', message: /simulated fixture profile takes no sessionAdmission/ });

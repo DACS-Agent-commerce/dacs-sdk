@@ -42,7 +42,7 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
     participants: [{ role: 'buyer', claim: query.buyer, ...structuredClone(SELLER_PROFILE) }, { role: 'seller', claim: query.seller, ...structuredClone(SELLER_PROFILE) }] });
   const activeSurfaces = () => [{ kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: now() }];
   const markers = new Map();
-  let overrides = null, surfaces = null;
+  let overrides = null, surfaces = null, verifyOverride = null;
   // CORE SN-1/SN-3: the seller issues the bundle's challenge for its job before
   // the buyer presents it (`target` is the agent or the host). Issuing it again
   // to the same seller state (after a restart) keeps the first issue.
@@ -58,12 +58,16 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
     answerWith: (fn) => { overrides = fn; },
     // The revocation surfaces for the next readings: (active, query) => surfaces (or a throw), or null.
     readRevocationWith: (fn) => { surfaces = fn; },
+    // The verdict for the next receipt verifications: ({ ref, record, receipt }) => 'valid' | 'invalid' | 'indeterminate' (or a throw), or null.
+    verifyReceiptWith: (fn) => { verifyOverride = fn; },
     markers,
     sessionAdmission: {
       readRevocationSurfaces: async (query) => { calls.push(['readRevocationSurfaces', query.jobId]); return surfaces ? surfaces(activeSurfaces(), query) : activeSurfaces(); },
       readRevocationMarker: async (anchor) => { calls.push(['readRevocationMarker', anchor.locator]); return markers.has(anchor.locator) ? structuredClone(markers.get(anchor.locator)) : null; },
       admit: async (query) => { calls.push(['admit', query.jobId]); const answer = admitted(query); return overrides ? overrides(answer, query) : answer; },
       resolveVetRecord: async ({ ref }) => { calls.push(['resolveVetRecord', ref.contentHash]); if (!records.has(ref.contentHash)) throw new Error('no Vet record at this reference'); return structuredClone(records.get(ref.contentHash)); },
+      // The authentic receipt of a record is the one the fixture's chain holds for it.
+      verifyVetAnchorReceipt: async ({ ref, record, receipt }) => { calls.push(['verifyVetAnchorReceipt', ref.contentHash]); if (verifyOverride) return verifyOverride({ ref, record, receipt }); return receipts.has(ref.contentHash) && core.canonicalize(receipts.get(ref.contentHash)) === core.canonicalize(receipt) && core.contentHash(record) === ref.contentHash ? 'valid' : 'invalid'; },
       readVetAnchorReceipt: async ({ ref }) => { calls.push(['readVetAnchorReceipt', ref.contentHash]); if (!receipts.has(ref.contentHash)) throw new Error('no SR-2 receipt at this reference'); return structuredClone(receipts.get(ref.contentHash)); },
     },
   };

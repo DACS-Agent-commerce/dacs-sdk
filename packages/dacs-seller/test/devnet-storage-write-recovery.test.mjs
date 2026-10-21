@@ -209,9 +209,61 @@ test('a read of an address that was never asked of the wallet proves the absence
  assert.notEqual((await read()).provenUnsigned,true,'a signed CREATE retained by the source is no proof');
  w.sourceJournal.rows.delete('source/signed');
  assert.equal((await read()).provenUnsigned,true);
- // After publish stored its intent and the wallet was asked, the outcome is unknown: never the proof.
- w.controls.request=async()=>({success:false,error:{code:'internal_error'}});
+ // The wallet was asked and answered success:false while it journaled a signed CREATE: unknown, never the proof.
+ w.controls.request=async request=>{await w.journal.put('demo/wallet/signed',{stage:'broadcast-started',hash:'a'.repeat(64),signedTransaction:request.transaction});return {success:false,error:{code:'internal_error'}};};
  await w.publish(anchor,jobId);
  assert.equal(w.captured.length,1);
- assert.notEqual((await read()).provenUnsigned,true,'a stored intent is no proof');
+ assert.notEqual((await read()).provenUnsigned,true,'a failure that left a signed CREATE is no proof');
+});
+
+// SDK #365 sweep: a wallet refusal that signed nothing, and a kill while the
+// wallet was asked, stranded a paid order (the reader never proved the absence
+// and publish never asked again).
+const unsignedFixture=async()=>{
+ const w=await anchorFixture(),anchor=w.open(),jobId=JOBS[0],logicalAddress=core.finalityCommitmentAddress(jobId);
+ const input={logicalAddress,artifact:{jobId,signature:{signer:w.seller}},artifactKind:'FinalityCommitmentRecord'};
+ const rows=()=>[...w.journal.rows].filter(([key])=>key.startsWith('demo/artifact/')).map(([,row])=>row);
+ return {w,anchor,jobId,logicalAddress,input,rows};
+};
+for(const code of ['internal_error','capture-without-signing','sdk_error'])test(`a wallet ${code} that signed nothing is a proven absence, and publishing asks the wallet again from a fresh intent`,async()=>{
+ const {w,anchor,input,rows}=await unsignedFixture();
+ w.controls.request=async()=>({success:false,error:{code}});
+ assert.equal((await anchor.publish(input)).status,'indeterminate');
+ assert.equal(rows()[0].stage,'unsigned');
+ for(const read of [()=>anchor.read(input),()=>w.open().read(input),()=>w.open().readRetained(input)]){
+  const out=await read();assert.equal(out.status,'absent');assert.equal(out.provenUnsigned,true,'nothing signed: proven absence, also after a restart');
+ }
+ let attempts=0;w.controls.request=async request=>{attempts++;return {success:false,error:{code}};};
+ assert.equal((await w.open().publish(input)).status,'indeterminate');
+ assert.equal(attempts,1,'exactly one new wallet request');assert.equal(w.captured.length,2);
+ assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,1],'no nonce was consumed');assert.equal(rows().length,1);
+});
+test('a process killed while the wallet was asked (an intent, nothing signed) is a proven absence; a signed CREATE retained for the address is not',async()=>{
+ const {w,anchor,input,rows}=await unsignedFixture();
+ w.source.binding=async()=>({disposition:'pending'});
+ w.controls.request=async()=>{throw new Error('killed');};
+ await assert.rejects(anchor.publish(input),/killed/);
+ assert.equal(rows()[0].stage,'intent');
+ assert.equal((await w.open().read(input)).provenUnsigned,true,'the wallet journals before it sends: no signed CREATE retained, so none was sent');
+ // The wallet journaled its signed CREATE before the kill: the outcome is unknown.
+ await w.journal.put('demo/wallet/signed',{stage:'broadcast-started',hash:'a'.repeat(64),signedTransaction:w.captured[0].transaction});
+ const held=await w.open().read(input);
+ assert.notEqual(held.provenUnsigned,true,'a retained signed CREATE is no proof');
+ assert.notEqual((await w.open().readRetained(input)).provenUnsigned,true);
+ assert.equal((await w.open().publish(input)).status,'indeterminate','a retained signed CREATE is only read back');
+ assert.equal(w.captured.length,1,'a signed CREATE is never asked of the wallet again');
+ // The source retains it instead.
+ w.journal.rows.delete('demo/wallet/signed');
+ await w.sourceJournal.put('source/signed',{stage:'signed',hash:'a'.repeat(64),signedTransaction:w.captured[0].transaction});
+ assert.notEqual((await w.open().read(input)).provenUnsigned,true);
+});
+test('only a row that carries no hash or signed transaction can be an unsigned proof',async()=>{
+ const {w,anchor,input,rows}=await unsignedFixture();
+ w.controls.request=async()=>({success:false,error:{code:'internal_error'}});
+ await anchor.publish(input);
+ const [key,row]=[...w.journal.rows].find(([k])=>k.startsWith('demo/artifact/'));
+ for(const changed of [{...row,hash:'b'.repeat(64)},{...row,signedTransaction:row.transaction},{...row,stage:'issued'},{...row,stage:'denied',error:'user_rejected'},{...row,stage:'rejected',error:'broadcast_rejected'}]){
+  await w.journal.put(key,changed);
+  assert.notEqual((await w.open().read(input)).provenUnsigned,true,JSON.stringify(Object.keys(changed))+changed.stage);
+ }
 });

@@ -534,6 +534,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record SR-2 receipt is unavailable: ${String(error?.message ?? error).slice(0, 160)}` }; }
               const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId, party });
               if (receiptProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${receiptProblem}` };
+              // CORE SR2-4: the receipt's fields alone are assertions, not proof.
+              // Only the operator's authentication of this record's receipt passes.
+              let verdict;
+              try { verdict = await admission.verifyVetAnchorReceipt(structuredClone({ jobId, role, party, ref, record, receipt })); }
+              catch (error) { return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: the ${role} Vet record SR-2 receipt could not be verified: ${String(error?.message ?? error).slice(0, 160)}` }; }
+              if (verdict !== 'valid') return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet record SR-2 receipt is not verified (${typeof verdict === 'string' ? verdict.slice(0, 40) : 'no verdict'})` };
             }
             session.demDeliveryContext = structuredClone(resolved);
             persist(session);

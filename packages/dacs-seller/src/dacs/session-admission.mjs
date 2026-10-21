@@ -4,7 +4,7 @@
 // module checks that every answer binds exactly the session it admits and
 // refuses anything missing, malformed, duplicated or mismatched.
 //
-// sessionAdmission = { admit(query), resolveVetRecord(query), readVetAnchorReceipt(query),
+// sessionAdmission = { admit(query), resolveVetRecord(query), readVetAnchorReceipt(query), verifyVetAnchorReceipt(query),
 //   readRevocationSurfaces(query), readRevocationMarker(markerAnchor) }:
 //  - readRevocationSurfaces({ jobId, listingPin }) answers the DACS-1 §6.3.5/
 //    §6.3.6 discovery surfaces the operator read for this Listing (core
@@ -36,10 +36,18 @@
 //    AnchorReceipt the operator's SR-2 reader holds for that same record
 //    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
 //    `accepted` or later). This module checks what the receipt names (the
-//    reference's canonical address and exact hash) and its state; the reader
-//    authenticates it against the chain, as it does a revocation surface.
+//    reference's canonical address and exact hash) and its state; whether it is
+//    authentic is verifyVetAnchorReceipt's.
 //    A record with no receipt, one for another address or hash, or one not yet
 //    accepted (or dropped, replaced, expired, reorged, indeterminate) is refused.
+//  - verifyVetAnchorReceipt({ jobId, role, party, ref, record, receipt }) answers
+//    'valid', 'invalid' or 'indeterminate' for that exact record and receipt
+//    (CORE SR2-4: "the receipt fields alone are assertions, not proof"; DACS-2
+//    VPC-3: a verified receipt). It authenticates the receipt's evidence against
+//    the chain; only 'valid' passes, and any other answer, or a throw, refuses
+//    before any signature. The receipt's writer is not compared with the
+//    record's signer: the Standard does not tie them (SR2-5 binds the writer
+//    the receipt names, not the record's verifier).
 import { ARTIFACT_SEPARATORS, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 
@@ -83,8 +91,8 @@ export function sellerSessionPresentationProblem(bundle, listingIdentity) {
 
 export function sessionAdmissionConfig(value) {
   if (value == null) return null;
-  if (!object(value) || ['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].some((name) => typeof value[name] !== 'function')) {
-    throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker');
+  if (!object(value) || ['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].some((name) => typeof value[name] !== 'function')) {
+    throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker');
   }
   return value;
 }

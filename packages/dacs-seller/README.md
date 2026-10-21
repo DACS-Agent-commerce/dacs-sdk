@@ -34,9 +34,10 @@ const host = await startSellerHost({
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
-  sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, readRevocationSurfaces, readRevocationMarker }:
-                         // the seller-owned session admission, Vet record and receipt readers and revocation
-                         // readers (src/dacs/session-admission.mjs)
+  sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt,
+                         // readRevocationSurfaces, readRevocationMarker }: the seller-owned session admission,
+                         // Vet record reader, receipt reader and receipt verifier, and revocation readers
+                         // (src/dacs/session-admission.mjs)
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
 });
@@ -92,7 +93,7 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   (a crash during the first claim) nothing was sent and every step is
   replay-idempotent, so the same claim runs again from its start, under the
   same gates. Either way the claim then goes back to the same retry, so a
-  paid order is never stranded; a first claim that ran again from its start
+  paid order is not stranded by a failure the seller can retry; a first claim that ran again from its start
   and kept nothing (a transfer not on the node, an underpaid one) is released
   as on the ordinary path, so the buyer's corrected claim reaches payment
   intake. Until a gate that refuses the claim (a closed buyer access, an
@@ -121,9 +122,21 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   an error, or a CREATE it signed that is not on the chain) holds the
   delivery and never submits again: a landed CREATE would be made twice. A
   `read` that never returns the proof strands a paid order after one failed
-  submission. The package's devnet artifact anchor returns it for an address
-  with no stored intent and no signed CREATE retained by the source or its
-  wallet, and for an intent a shutdown cut before it was signed.
+  submission. The package's devnet artifact anchor returns it, on every read
+  and for `readRetained` too, for an address with no stored intent, and for a
+  stored intent that carries no hash and no signed transaction when neither the
+  source nor the seller's wallet retains a signed CREATE for the address: one a
+  shutdown cut before it was signed (`closing`), one the wallet answered
+  without signing (`unsigned`), and one the process died on while the wallet
+  was asked (`intent`; the wallet journals a signature before it sends
+  anything, so a signature it made but did not journal was never sent).
+  Publishing such an intent again replaces it under the address's lock and
+  asks the wallet once more. An operator's refusal (`denied`), a broadcast
+  rejection, or any row with a hash or a signed CREATE is only read back. The
+  proof rests on the artifact journal and the wallet journal being the ones
+  that recorded the attempt: a journal lost, or restored from an older copy,
+  after a Deliverable landed reads as never asked, and the order is submitted
+  again (an operator-induced limit).
 - Payment evidence is anchored through `nativePaymentEvidence`'s
   `anchorEvidence` (DACS-4 PC-7(b), write-once) and answered for by the
   required `reconcilePaymentEvidence`. The agent, whether the host composes
@@ -295,8 +308,15 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   observation, or a `submitted`, `rejected`, `dropped`, `replaced`,
   `expired` or `reorged` one refuses before the Agreement is signed
   (`VET_RECORD_UNVERIFIED`). The host checks what the receipt names and its
-  state; the operator's reader authenticates it against the chain, as it does
-  a revocation surface. The record must be a CompositeVerificationRecord
+  state, then asks the operator's `verifyVetAnchorReceipt({ jobId, role,
+  party, ref, record, receipt })` and signs only on the answer `'valid'`
+  (CORE SR2-4: the receipt's fields alone are assertions, not proof); an
+  `'invalid'` or `'indeterminate'` answer, any other value, or a throw
+  refuses before any signature. The verifier authenticates the receipt's
+  evidence against the chain, as the operator's reader does a revocation
+  surface; the package does not do it, since the receipt may name any writer
+  (SR2-5 binds the writer the receipt names, with no rule tying it to the
+  record's signer). The record must be a CompositeVerificationRecord
   with the reference's exact hash, for this job, party and bundle, with a
   `pass` decision (DACS-2 §7.7.1). It must be signed by the party's
   counterparty verifier, which the reference names as `signer` (DACS-2

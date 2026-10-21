@@ -5,9 +5,11 @@ import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // CREATE is produced by the packaged seller wallet and then accepted only
 // after an independent source read, original signed projection, and SDK
 // portable receipt verification. A retained intent never reissues a wallet
-// request, except one whose approval a shutdown ended before anything was
-// signed (stage 'closing'); an accepted, absent operator CREATE may resend
-// its original bytes.
+// request, except one that provably signed nothing (a shutdown ended its
+// approval: stage 'closing'; the wallet answered without signing: 'unsigned';
+// the process died while the wallet was asked: 'intent'), and only while no
+// signed CREATE for its address is retained by the source or the seller's
+// wallet; an accepted, absent operator CREATE may resend its original bytes.
 import { isNativeDeliveryEvidence } from '../dacs/delivery-evidence.mjs';
 import { provenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mjs';
 import { storageWriteRpcSigner } from './storage-write-recovery.mjs';
@@ -41,9 +43,11 @@ const exactHash=(v)=>sha256Hex(canonicalize(v));
 // could promote a rejected row to 'issued' while keeping this error marker.
 const broadcastRejected=(row)=>row?.error==='broadcast_rejected';
 const HASH=/^[0-9a-f]{64}$/;
-// A retained 'closing' intent was never signed (see publish): it reads as
-// absent, so callers publish it again, which asks the operator again.
+// A retained intent that provably signed nothing (see signedNothing) reads as
+// a proven absence, so callers publish it again, which asks the wallet again;
+// a 'closing' row with a signed CREATE reads as plain absence.
 const NO_INTENT_ABSENT='no seller-owned demo CREATE intent';
+const UNSIGNED_ABSENT='the wallet never signed this CREATE (no signed transaction is retained for it); publishing it asks again';
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
 
 function artifactValid(kind,value,writer,verifier=writer) {
@@ -250,10 +254,13 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       if(retained) {
         if(retained.inputHash!==exactHash(input)) fail('conflict','immutable demo artifact intent differs');
         authorizeRetained(retained);
-        // A shutdown ended its approval before anything was signed: ask again
-        // below, from a fresh nonce, as for a new intent.
+        // Nothing was signed (a shutdown ended its approval, the wallet answered
+        // without signing, or the process died while it was asked, with no
+        // signed CREATE retained for the address): ask again below, from a
+        // fresh nonce, as for a new intent. Only the operator's refusal of a
+        // Listing is also asked again, when the caller says so.
         const neverSigned=retained.stage==='denied'&&retained.error==='user_rejected'&&retained.hash===undefined;
-        if(retained.stage!=='closing'&&!(reaskDenied===true&&artifactKind==='Listing'&&neverSigned)) return observe(input,retained);
+        if(!(await signedNothing(logicalAddress,retained))&&!(reaskDenied===true&&artifactKind==='Listing'&&neverSigned)) return observe(input,retained);
       }
       authorizeJob(artifactKind,jobId);
       await assertQualifiedDeployment(sourceCapability);
@@ -330,17 +337,28 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
       if(retained.inputHash!==exactHash(input)) return {status:'rejected',reason:'retained demo CREATE scope differs'};
       authorizeRetained(retained);
-      if(retained.stage==='closing') return closingAbsence(logicalAddress,retained);
+      if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
+      if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
       return observe(input,retained,undefined,{fresh});
     });
   }
-  // Only a 'closing' row exactly as publish writes it, with no signed
-  // transaction for its address retained by the source or this seller's
-  // wallet, proves nothing was signed (the marker a held native Deliverable
-  // needs to be asked again). Any other 'closing' row reads as plain absence.
-  async function closingAbsence(logicalAddress,retained) {
-    const exact=retained.error===OPERATOR_CLOSING && !Object.hasOwn(retained,'hash') && !(await signedCreateRetained(logicalAddress));
-    return exact ? provenUnsignedAbsence(CLOSING_ABSENT) : {status:'absent',reason:CLOSING_ABSENT};
+  // Whether a retained row proves the wallet never signed this CREATE. The
+  // packaged wallet journals the signed bytes (its own journal, and the
+  // source's before it broadcasts) before anything leaves the process, and
+  // publish holds this address's lock from the intent through the wallet's
+  // answer, so a row this read finds is never mid-request. The row must be one
+  // publish writes before or without a signature, carry no hash, and have no
+  // signed CREATE for its address retained by the source or this seller's
+  // wallet, checked again on every read: a 'closing' row exactly as publish
+  // writes it (a shutdown ended the approval), an 'unsigned' one (the wallet
+  // answered without signing), or an 'intent' one (the process died while the
+  // wallet was asked: a signature it made but did not journal was never sent).
+  // Any other row reads as before (plain absence for 'closing', else a readback).
+  async function signedNothing(logicalAddress,retained) {
+    if(Object.hasOwn(retained,'hash') || Object.hasOwn(retained,'signedTransaction')) return false;
+    if(retained.stage==='closing'){ if(retained.error!==OPERATOR_CLOSING) return false; }
+    else if(retained.stage!=='unsigned' && retained.stage!=='intent') return false;
+    return !(await signedCreateRetained(logicalAddress));
   }
   // Whether the source or this seller's wallet retains a signed CREATE for the
   // address.
@@ -370,7 +388,8 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       authorizeRetained(retained);
       // As read: only an exact 'closing' row reads as the proven absence (the
       // context route resumes a step a shutdown cut only from that proof).
-      if(retained.stage==='closing') return closingAbsence(logicalAddress,retained);
+      if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
+      if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
       return observe(clone(retained.input),retained,undefined,{fresh});
     });
   }

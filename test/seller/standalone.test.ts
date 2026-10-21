@@ -11,7 +11,7 @@ const files = [
   'd5-admission.test.mjs', 'd5-challenge-retention.test.mjs',
   'd5-limits-before-effects.test.mjs', 'd5-vet-decisions.test.mjs',
   'd5-recovery.test.mjs', 'canonical-job-boundaries.test.mjs', 'bilateral-vet.test.mjs', 'party-vet-store.test.mjs',
-  'seller-raw-json.test.mjs', 'devnet-storage-write-recovery.test.mjs',
+  'seller-raw-json.test.mjs', 'devnet-storage-write-recovery.test.mjs', 'devnet-delivery-wallet-refusal.test.mjs',
   'settlement-collisions.test.mjs', 'seller-lifecycle-gates.test.mjs', 'provenance-checkout.test.mjs',
   'demos-claims.test.mjs', 'seller-substrate-profile.test.mjs', 'seller-settlement-profile.test.mjs', 'seller-http-roundtrip.test.mjs', 'seller-payment-retry.test.mjs', 'seller-host-native-delivery.test.mjs', 'installed-package.test.mjs',
   'payment-evidence-wallet-journal.test.mjs',
