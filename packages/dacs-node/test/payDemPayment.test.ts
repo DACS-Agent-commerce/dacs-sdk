@@ -1674,6 +1674,8 @@ describe("native DEM buyer payment track", () => {
       ({ prepared }) => ({
         status: "completed",
         settlement: {
+          execution: "executed",
+          nonce: prepared!.nonce,
           ok: true,
           txHash: prepared!.txHash,
           chainId: "demos",
@@ -1785,6 +1787,8 @@ describe("native DEM buyer payment track", () => {
       ({ prepared }) => ({
         status: "completed",
         settlement: {
+          execution: "executed",
+          nonce: prepared!.nonce,
           ok: true,
           txHash: prepared!.txHash,
           chainId: "demos",
@@ -2050,7 +2054,9 @@ describe("native DEM buyer payment track", () => {
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database: first,
       workerId: "buyer-dem-before-restart",
-      rail: {
+      // A fresh payment runs only on a record-verifying rail; this one is lost
+      // after it journals (or fails to journal) the prepared transfer.
+      rail: markDacsRecordVerifyingPayDemRailV1<PayDemRail>({
         address: PAYER,
         async settle(input) {
           if (journal) {
@@ -2062,7 +2068,7 @@ describe("native DEM buyer payment track", () => {
           }
           throw new Error("process lost before the transfer result");
         },
-      },
+      }),
       resolveAuthority: () => AUTHORITY,
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
       publishNotice: vi.fn(),
