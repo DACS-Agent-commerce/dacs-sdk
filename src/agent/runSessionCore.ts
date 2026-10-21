@@ -273,6 +273,10 @@ export interface SessionDeps {
    * rail-idempotency/reconciliation path. The SessionStore and rail store are
    * complementary: one guards the orchestration claim, the other resolves the
    * post-payment crash window.
+   *
+   * For a native DEM price this must be the SDK's `payDemSettle` adapter,
+   * passed as is (see `resumeSettlement`); any other function is refused
+   * before it is called, so no payment is made.
    */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -303,12 +307,13 @@ export interface SessionDeps {
    * Callers may then wire the same wrapper as both `settle` and
    * `resumeSettlement`. For native DEM that implementation is the SDK's
    * `payDemSettle` adapter itself, passed as is: the session recognises it by
-   * identity, and a wrapper around it never completes a native outcome.
+   * identity and calls no other `settle` or `resumeSettlement` for native DEM
+   * (a wrapper around the adapter included), so no payment is made and the
+   * payment stays indeterminate. No other implementation's native success
+   * could be re-read after a restart.
    *
    * For a saved native outcome this is a read-only audit of the original
-   * transfer's execution, and the session calls only the `payDemSettle`
-   * adapter for it; it does not call any other implementation and holds the
-   * payment as indeterminate. The adapter returns success only for a
+   * transfer's execution. The adapter returns success only for a
    * `confirmed` record, or a bound permanent failure, for the retained hash,
    * and throws on absence or indeterminate observations. Neither outcome
    * authorizes another broadcast, and a different native transaction is
@@ -325,18 +330,13 @@ export interface SessionDeps {
    * records; an evidence checkpoint without the payer the evidence signed is
    * held as indeterminate), and a saved failure proof (nonce
    * included) to be returned byte-for-byte; failure evidence without that
-   * proof is held as indeterminate. A recovered native success, and any native
-   * permanent failure, is final only from that adapter (directly, from
-   * `settleFromRail` or through `Agent.runSession`) over the rail
-   * `createPayDemRail` built, which reads the node's record for the hash
-   * itself; a recovered failure only for a hash the session already held. A
-   * success or failure proof from any other `resumeSettlement`, and a failure
-   * proof from any other `settle`, is its statement: the session binds the
-   * hash and saves it as an unresolved attempt, then refuses to complete, so
-   * the next resume audits that hash. A fresh success from another `settle` is
-   * the caller's own payment code and completes the run without a node read;
-   * once saved it is re-read only through the adapter like any other, so a
-   * re-run of that session without such a read is held as indeterminate.
+   * proof is held as indeterminate. A native success or permanent failure is
+   * final only from that adapter (directly, from `settleFromRail` or through
+   * `Agent.runSession`) over the rail `createPayDemRail` built, which reads
+   * the node's record for the hash itself; a recovered failure only for a
+   * hash the session already held. Over any other rail the adapter reports
+   * only the hash: the session binds it and saves it as an unresolved
+   * attempt, then refuses to complete, so the next resume audits that hash.
    *
    * `runSessionCore` deliberately does not call the ordinary `settle` seam under
    * an unresolved SessionStore intent because it cannot assume every implementation
@@ -4323,30 +4323,39 @@ export async function runSessionCore(
   };
 
   /**
-   * A native DEM permanent failure, and a recovered success, is final only
-   * from the SDK's `payDemSettle` adapter over the rail `createPayDemRail`
-   * built, whose verdicts come from the SDK's own read of the node record
-   * (#338); over any other rail the adapter returns neither verdict. From any
-   * other `source`, a permanent failure (and, when `recovered`, a success) is
-   * that source's statement: keep only the transaction identity, so its hash
-   * is bound and saved as an unresolved attempt instead of being dropped or
-   * completing the phase. A fresh success from another `settle` is the
-   * caller's own payment code and is kept. A recovered permanent failure is
-   * final only for a hash the session already held.
+   * Native DEM is settled and recovered only through the SDK's `payDemSettle`
+   * adapter, whose every success or permanent failure over the rail
+   * `createPayDemRail` built is its own read of the node record (#338). Any
+   * other `settle` or `resumeSettlement` is not called at all: it could pay,
+   * or report a native outcome, that no later run can re-read, so a session
+   * that completed on it once could never be resumed or repeated.
+   */
+  const assertNativeAdapter = (
+    seam: "settle" | "resumeSettlement",
+    implementation: unknown,
+    label: string,
+  ): void => {
+    if (!isNativeSettlement(expectedSettlementBinding) || isPayDemSettleAdapter(implementation)) return;
+    throw new CounterpartyError(
+      `settlement for ${jobId} requires the SDK's own record read (${label}); ${seam} is not ` +
+        "the payDemSettle adapter, so it is not called and " +
+        (seam === "settle" ? "no payment is made" : "the payment remains indeterminate"),
+    );
+  };
+
+  /**
+   * A native DEM permanent failure the adapter recovered is final only for a
+   * hash the session already held. For any other hash keep only the
+   * transaction identity, so the hash is bound and saved as an unresolved
+   * attempt and the next resume audits it.
    */
   const nativeVerdict = (
     result: SettleResult,
-    source: unknown,
     recovered?: Readonly<{ heldHashes: readonly string[] }>,
   ): SettleResult => {
     if (!isNativeSettlement(expectedSettlementBinding)) return result;
-    const fromAdapter = isPayDemSettleAdapter(source);
-    const statement =
-      (result.errorClass !== undefined &&
-        (!fromAdapter ||
-          (recovered !== undefined && !recovered.heldHashes.includes(result.txHash)))) ||
-      (result.ok && recovered !== undefined && !fromAdapter);
-    return statement
+    return result.errorClass !== undefined && recovered !== undefined &&
+        !recovered.heldHashes.includes(result.txHash)
       ? {
           ok: false,
           txHash: result.txHash,
@@ -4368,17 +4377,7 @@ export async function runSessionCore(
           "resumeSettlement is required to reconcile it",
       );
     }
-    // A saved native verdict is re-read only through the SDK adapter. Another
-    // implementation's answer could never complete it, so it is not called at
-    // all: one written to the older contract might pay instead of reading.
-    if (isNativeSettlement(expectedSettlementBinding) && prior !== undefined &&
-        (prior.ok || ("outcomeSource" in prior && prior.errorClass === "permanent")) &&
-        !isPayDemSettleAdapter(deps.resumeSettlement)) {
-      throw new CounterpartyError(
-        `settlement for ${jobId} requires the SDK's own record read (${label}); resumeSettlement is not ` +
-          "the payDemSettle adapter, so it is not called and the payment remains indeterminate",
-      );
-    }
+    assertNativeAdapter("resumeSettlement", deps.resumeSettlement, label);
     let priorAttempts: SettlementRecoveryAttempt[] = [];
     if (store) {
       const durable = await store.load(jobId);
@@ -4422,7 +4421,7 @@ export async function runSessionCore(
       "settlement recovery",
     );
     const outcome = durableSettlementOutcome(
-      nativeVerdict(recovered, deps.resumeSettlement, {
+      nativeVerdict(recovered, {
         heldHashes: [...priorAttempts, ...(prior ? [prior] : [])]
           .map((attempt) => attempt.txHash)
           .filter((hash) => hash.length > 0),
@@ -4607,6 +4606,7 @@ export async function runSessionCore(
           // would be an unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
         } else {
+          assertNativeAdapter("settle", deps.settle, "fresh native settlement");
           const pay = snapshotSettleResult(
             await deps.settle(
               deepFreezeJson(
@@ -4618,12 +4618,8 @@ export async function runSessionCore(
           validateSettlementResultBinding(pay, settleRequest, "settlement rail");
           // Defense in depth (independent of the rail): a settlement is only a
           // success if it produced a verifiable on-chain tx id. A rail reporting
-          // ok:true with no txHash cannot back a provider-receipt claim. A
-          // native permanent failure is final only from the SDK adapter.
-          settlement = durableSettlementOutcome(
-            nativeVerdict(pay, deps.settle),
-            expectedSettlementBinding,
-          );
+          // ok:true with no txHash cannot back a provider-receipt claim.
+          settlement = durableSettlementOutcome(pay, expectedSettlementBinding);
           await bindSettlementTransaction(settlement);
           if (!settlement.ok && settlement.txHash.length > 0 && settlement.errorClass !== "permanent") {
             await completeSettlement(settlement, "settling");

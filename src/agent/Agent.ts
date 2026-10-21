@@ -400,7 +400,11 @@ const ed25519RawVerify: Verifier = (bytes, signature, publicKey) =>
 export interface RunSessionOptions {
   /** The agreed fixed-price terms (rail must be offered by the listing). */
   terms: SessionTerms;
-  /** Executes payment on the chosen rail (e.g. an x402 rail). */
+  /**
+   * Executes payment on the chosen rail (e.g. an x402 rail). For a native DEM
+   * price only the SDK's `payDemSettle` adapter is called (see
+   * `resumeSettlement`).
+   */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
    * Runtime destination the buyer instructs the selected rail to pay and records
@@ -451,12 +455,11 @@ export interface RunSessionOptions {
    * outcome read-only (see `SessionDeps.resumeSettlement`). Must use the same
    * rail idempotency key and reconcile every ordered `req.priorAttempts` entry
    * before returning; a native transfer is never replaced by another hash.
-   * A recovered native DEM success, and any native permanent failure, is
-   * final only from the SDK's `payDemSettle` adapter (directly or from
-   * `settleFromRail`, not wrapped) over the rail `createPayDemRail` built; a
-   * saved outcome is re-read only through that adapter, and any other
-   * implementation is not called for it. That includes a success a custom
-   * `settle` reported fresh, which completed its run without a node read.
+   * A native DEM success or permanent failure is final only from the SDK's
+   * `payDemSettle` adapter (directly or from `settleFromRail`, not wrapped)
+   * over the rail `createPayDemRail` built. A native DEM session calls only
+   * that adapter, as the settlement and as this recovery; any other
+   * implementation is not called, so it makes no payment.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**

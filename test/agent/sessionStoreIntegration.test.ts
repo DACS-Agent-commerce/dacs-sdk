@@ -6,6 +6,24 @@ vi.mock("@kynesyslabs/demosdk/websdk", async () =>
   (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
 beforeEach(() => demosNode.reset());
 
+// A native DEM session calls only the payDemSettle adapter. Saved native
+// verdicts the SDK never read came from an adapter of an SDK before #338,
+// which minted them from inclusion alone; a test models such a seam with
+// `olderSdkAdapter`. Every other function goes through the real identity check.
+const olderSdkAdapters = vi.hoisted(() => new WeakSet<object>());
+vi.mock("../../src/rails/payDem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/rails/payDem.js")>();
+  return {
+    ...actual,
+    isPayDemSettleAdapter: (value: unknown) =>
+      (typeof value === "function" && olderSdkAdapters.has(value)) || actual.isPayDemSettleAdapter(value),
+  };
+});
+function olderSdkAdapter<T extends (req: SettleRequest) => Promise<SettleResult>>(seam: T): T {
+  olderSdkAdapters.add(seam);
+  return seam;
+}
+
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
   runSessionCore,
@@ -1197,7 +1215,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const oldSuccess: SettleResult = { ok: true, txHash, chainId: "demos", payer,
         payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs: "0" };
       const first = await makeDeps(saved === "anchor only" ? undefined : store, { kv,
-        settle: async () => oldSuccess,
+        settle: olderSdkAdapter(async () => oldSuccess),
         anchor: async (name, value) => {
           const ref = `stor:${name}`;
           if (name === sessionAnchorName.evidence("job-1")) {
@@ -1239,7 +1257,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           if (!journalAvailable) throw missingJournal;
           return { ...failure, ok: false, errorClass: "permanent",
             amountOs: "1000000000", failureProof: failure.failureProof!,
-            // The audit counts the hash only through its prepared-transfer journal.
+            // A journal entry can refuse but never binds the hash: the SDK's
+            // rail log and its own node read decide.
             preparedTransfer: { txHash, nonce: 9, payer, payee, amountOs: "1000000000",
               denomination: "os", network: "demos", recovery: { railId: "pay-dem", jobId: "job-1",
                 phaseIndex: 0, settlementKey: "pay-dem:job-1:0", network: "demos", payer, payee,
@@ -1306,7 +1325,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const payee = sellerDid.split(":").at(-1)!;
     const oldSuccess: SettleResult = { ok: true, txHash: hashB, chainId: "demos", payer,
       payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
-    const first = await makeDeps(store, { kv, settle: async () => oldSuccess,
+    const first = await makeDeps(store, { kv, settle: olderSdkAdapter(async () => oldSuccess),
       anchor: async (name, value) => {
         if (name === sessionAnchorName.evidence("job-1")) throw new Error("checkpoint crash");
         const ref = `stor:${name}`; kv.set(ref, value as Record<string, unknown>); return ref;
@@ -1354,7 +1373,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
     const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
       payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs: "0" };
-    const first = await makeDeps(store, { kv, settle: async () => success,
+    const first = await makeDeps(store, { kv, settle: olderSdkAdapter(async () => success),
       anchor: async (name, value) => {
         const ref = `stor:${name}`;
         if (name === sessionAnchorName.evidence("job-1")) {
@@ -1528,7 +1547,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
       payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
     const first = await makeDeps(saved === "anchor only" ? undefined : createInMemorySessionStore(), { kv,
-      settle: async () => success,
+      settle: olderSdkAdapter(async () => success),
       anchor: async (name, value) => {
         const ref = `stor:${name}`;
         kv.set(ref, value as Record<string, unknown>);
@@ -1589,7 +1608,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
       payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs: "5" };
     const first = await makeDeps(saved === "anchor only" ? undefined : createInMemorySessionStore(), { kv,
-      settle: async () => success,
+      settle: olderSdkAdapter(async () => success),
       anchor: async (name, value) => {
         const ref = `stor:${name}`;
         kv.set(ref, value as Record<string, unknown>);
@@ -1651,8 +1670,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
       const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
       const first = await makeDeps(saved === "evidence, anchor only" ? undefined : createInMemorySessionStore(), { kv,
-        settle: async () => ({ ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
-          payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs: "5" }),
+        settle: olderSdkAdapter(async () => ({ ok: true, txHash: "cd".repeat(32), chainId: "demos",
+          payer: "ab".repeat(32), payee: sellerDid, blockNumber: 42, txRefKind: "demos",
+          finality: { model: "bft-final" }, networkFeeOs: "5" })),
         anchor: async (name, value) => {
           const ref = `stor:${name}`;
           kv.set(ref, value as Record<string, unknown>);
@@ -1717,7 +1737,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
       payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs: "5" };
     const first = await makeDeps(saved === "anchor only" ? undefined : createInMemorySessionStore(), { kv,
-      settle: async () => success,
+      settle: olderSdkAdapter(async () => success),
       anchor: async (name, value) => {
         const ref = `stor:${name}`;
         kv.set(ref, value as Record<string, unknown>);
@@ -1784,7 +1804,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
       payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs: "5" };
     const store = saved === "anchor only" ? undefined : createInMemorySessionStore();
-    const first = await makeDeps(store, { kv, settle: async () => success,
+    const first = await makeDeps(store, { kv, settle: olderSdkAdapter(async () => success),
       anchor: async (name, value) => {
         const ref = `stor:${name}`;
         if (name === sessionAnchorName.evidence("job-1")) {
@@ -1819,34 +1839,63 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(resumed.settleCalls.n).toBe(0);
   });
 
-  // What the docs say of a fresh native success from a custom `settle`: the
-  // caller's own payment code completes its run without a node read, and a
-  // re-run re-reads the saved success only through the adapter.
-  test("completes a fresh native success from a custom settle, then holds its re-run without the adapter", async () => {
+  // A native success is final only from the SDK's own read, fresh or saved: a
+  // custom `settle` is never called, so no run completes on a payment that a
+  // re-run could not read again. The adapter's session repeats to the same
+  // result without a second debit.
+  test("never calls a custom native settle, and repeats an adapter-completed session without paying again", async () => {
     const store = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();
     kv.set("stor:listing", await buildSignedArtifact({ ...listing,
       supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
     const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    const payer = "ab".repeat(32);
+    const payee = sellerDid.split(":").at(-1)!;
     let paid = 0;
-    const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
+    const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer,
       payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
-    const first = await makeDeps(store, { kv, settle: async () => { paid += 1; return success; } });
-    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).resolves.toMatchObject({ outcome: "completed" });
-    expect(demosNode.reads).toEqual([]);
-    const before = await store.load("job-1");
-    let reads = 0;
-    for (const resumeSettlement of [undefined, async (): Promise<SettleResult> => { reads += 1; return success; }]) {
-      const again = await makeDeps(store, { kv, settle: first.deps.settle, resumeSettlement });
-      await expect(runSessionCore(again.listingRef, demTerms, again.deps, "job-1")).rejects.toThrow(
-        resumeSettlement === undefined
-          ? /resumeSettlement is required/
-          : /resumeSettlement is not the payDemSettle adapter, so it is not called/,
+    const wallet = await sdkPayDemRail();
+    // A custom callback, and one that delegates to the SDK rail through a wrapper.
+    const delegating = payDemSettle(wallet, {}, {});
+    for (const [settle, sessions] of [
+      [async () => { paid += 1; return success; }, store],
+      [async (req: SettleRequest) => { paid += 1; return delegating(req); }, createInMemorySessionStore()],
+    ] as const) {
+      const custom = await makeDeps(sessions, { kv, settle });
+      await expect(runSessionCore(custom.listingRef, demTerms, custom.deps)).rejects.toThrow(
+        /requires the SDK's own record read \(fresh native settlement\); settle is not the payDemSettle adapter, so it is not called and no payment is made/,
+      );
+      // Its resume calls no custom recovery either.
+      const resume = await makeDeps(sessions, { kv, settle, resumeSettlement: settle });
+      await expect(runSessionCore(resume.listingRef, demTerms, resume.deps, "job-1")).rejects.toThrow(
+        /resumeSettlement is not the payDemSettle adapter, so it is not called and the payment remains indeterminate/,
       );
     }
-    expect(reads).toBe(0);
-    expect(paid).toBe(1);
-    expect(await store.load("job-1")).toEqual(before);
+    expect(paid).toBe(0);
+    expect(demosNode.transfers).toBe(0);
+    expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
+    // The settlement intent the refused run claimed is resumed only through the adapter.
+    const log = createInMemorySettlementLog();
+    const reconcile = vi.fn(async (context: Parameters<PayDemSettlementReconcile>[0]) => {
+      const retained = "txHash" in context ? context.txHash : "cd".repeat(32);
+      return { ok: true as const, execution: "executed" as const, txHash: retained, chainId: "demos", payer, payee,
+        blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const }, amountOs: "1000000000" };
+    });
+    const adapter = () => payDemSettle(wallet, {}, { store: createIdempotencyStore(log), reconcile });
+    const first = await makeDeps(store, { kv, resumeSettlement: adapter() });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps, "job-1"))
+      .resolves.toMatchObject({ outcome: "completed" });
+    const completed = await store.load("job-1");
+    const evidence = structuredClone([...kv]);
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      const again = await makeDeps(store, { kv, settle: adapter(), resumeSettlement: adapter() });
+      await expect(runSessionCore(again.listingRef, demTerms, again.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+    }
+    expect(await store.load("job-1")).toEqual(completed);
+    expect([...kv]).toEqual(evidence);
+    expect(demosNode.transfers).toBe(1);
+    expect(demosNode.broadcasts).toBe(1);
   });
 
   test.each(["durable rail log", "lost rail log"])(
@@ -1915,7 +1964,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
       const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
         payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs: "5" };
-      const first = await makeDeps(undefined, { kv, settle: async () => success,
+      const first = await makeDeps(undefined, { kv, settle: olderSdkAdapter(async () => success),
         anchor: async (name, value) => {
           const ref = `stor:${name}`;
           kv.set(ref, value as Record<string, unknown>);
@@ -1987,7 +2036,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     // Only the SDK rail's own read of the failed record is a permanent failure.
     demosNode.recordStatus = "failed";
     const first = await makeDeps(store, { kv, settle: saved === "permanent failure"
-      ? payDemSettle(await sdkPayDemRail(), {}, {}) : async () => failure,
+      ? payDemSettle(await sdkPayDemRail(), {}, {}) : olderSdkAdapter(async () => failure),
       anchor: async (name, value) => {
         if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor unavailable");
         kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
@@ -2030,8 +2079,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
     const txHash = "cd".repeat(32);
     const payer = "ab".repeat(32);
-    const first = await makeDeps(store, { kv, settle: async () => ({ ok: false, txHash, chainId: "demos", payer,
-      payee: sellerDid, blockNumber: 42, txRefKind: "demos" }) });
+    const first = await makeDeps(store, { kv, settle: olderSdkAdapter(async () => ({ ok: false, txHash,
+      chainId: "demos", payer, payee: sellerDid, blockNumber: 42, txRefKind: "demos" })) });
     await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/remains indeterminate/);
     // Another writer binds the definitive failure while the SDK adapter re-reads the hash.
     const bindFailure = async () => {
@@ -2078,17 +2127,23 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       failureProof: { kind: "demos-failed-record" as const, txHash: hash, payer, payee, nonce: 9,
         blockNumber: 42, amountOs: "1000000000" } });
 
+    // A recovery the SDK did not read (the adapter over a custom rail) holds
+    // the hash it reports: only its transaction identity.
+    const heldRecovery = () => olderSdkAdapter(vi.fn(async (req: SettleRequest): Promise<SettleResult> =>
+      ({ ok: false, txHash, chainId: "demos", payer, payee: req.expectedPayee })));
+    const lostResponse = () => olderSdkAdapter(async (): Promise<SettleResult> => {
+      throw new Error("transfer response lost");
+    });
+
     // Outside review F1: refusing a reported hash before binding it let a
     // later adapter, over a rail log without the intent, broadcast again.
-    test("binds and saves a hash a non-adapter recovery reports, so a later adapter audits it instead of paying again", async () => {
+    test("binds and saves a hash a recovery holds, so a later adapter audits it instead of paying again", async () => {
       const store = createInMemorySessionStore();
       const kv = await demKv();
-      const first = await makeDeps(store, { kv, settle: async () => { throw new Error("transfer response lost"); } });
+      const first = await makeDeps(store, { kv, settle: lostResponse() });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("transfer response lost");
-      // A recovery that is not the SDK adapter correctly reports the transfer.
-      const custom = vi.fn(async (req: SettleRequest): Promise<SettleResult> => ({ ok: true, txHash,
-        chainId: "demos", payer, payee: req.expectedPayee, blockNumber: 42, txRefKind: "demos",
-        finality: { model: "bft-final" } }));
+      // A recovery that names the transfer without the SDK's own read of it.
+      const custom = heldRecovery();
       const second = await makeDeps(store, { kv, resumeSettlement: custom });
       await expect(runSessionCore(second.listingRef, demTerms, second.deps, "job-1"))
         .rejects.toThrow(`settlement demos:${txHash} remains indeterminate`);
@@ -2112,18 +2167,16 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(third.settleCalls.n).toBe(0);
     });
 
-    // A process killed after binding a non-adapter recovery's hash and before
+    // A process killed after binding a held recovery's hash and before
     // saving it as the held outcome loses nothing. The restart
     // finds the hash bound to this job and the intent still held, saves the
     // held outcome, and never pays.
     test("retries a crash between binding a recovered hash and saving it held, read-only", async () => {
       const store = createInMemorySessionStore();
       const kv = await demKv();
-      const first = await makeDeps(store, { kv, settle: async () => { throw new Error("transfer response lost"); } });
+      const first = await makeDeps(store, { kv, settle: lostResponse() });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("transfer response lost");
-      const custom = vi.fn(async (req: SettleRequest): Promise<SettleResult> => ({ ok: true, txHash,
-        chainId: "demos", payer, payee: req.expectedPayee, blockNumber: 42, txRefKind: "demos",
-        finality: { model: "bft-final" } }));
+      const custom = heldRecovery();
       let killed = false;
       const dying: typeof store = { ...store, transition: async (input) => {
         if (!killed && input.checkpoint?.stage === "outcome") {
@@ -2148,14 +2201,14 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
 
     // Daybreak P1-2: a self-consistent failure proof from a callback must not
-    // end the session as failed while the transfer executed.
-    test("holds a callback's permanent failure, then completes on the SDK adapter's read of the executed record", async () => {
+    // end the session as failed while the transfer executed. The adapter over
+    // a custom rail holds it.
+    test("holds a custom rail's permanent failure, then completes on the SDK adapter's read of the executed record", async () => {
       const store = createInMemorySessionStore();
       const kv = await demKv();
-      const first = await makeDeps(store, { kv, settle: async (req) => {
-        const { amountOs: _amount, ...failed } = failedClaim(txHash);
-        return { ...failed, payee: req.expectedPayee };
-      } });
+      const { amountOs: _amount, ...failed } = failedClaim(txHash);
+      const first = await makeDeps(store, { kv, settle: payDemSettle({ address: payer,
+        settle: async () => failed as Awaited<ReturnType<PayDemRail["settle"]>> }, {}, {}) });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps))
         .rejects.toThrow(`settlement demos:${txHash} remains indeterminate`);
       const held = await lastOutcome(store);
@@ -2168,6 +2221,48 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         .resolves.toMatchObject({ outcome: "completed" });
       expect(kv.get(`stor:${sessionAnchorName.evidence("job-1")}`)).toMatchObject({ outcome: "success" });
       expect(demosNode.transfers).toBe(0);
+    });
+
+    // A process killed after the SDK rail recorded the failed
+    // record it read, and before the session bound and saved it, leaves only
+    // the intent. The resume's re-check returns that failure for a hash the
+    // session never held, so it is held once; the next resume ends it failed.
+    test("holds a recovered failure for a hash the session never held, then ends it failed once held", async () => {
+      const store = createInMemorySessionStore();
+      const kv = await demKv();
+      const log = createInMemorySettlementLog();
+      demosNode.recordStatus = "failed";
+      const wallet = await sdkPayDemRail();
+      let killed = false;
+      const dying: typeof store = { ...store, bindHash: async (input) => {
+        if (input.kind !== "transaction") return store.bindHash(input);
+        killed = true;
+        throw new Error(`process killed before binding ${input.hash}`);
+      } };
+      const first = await makeDeps(dying, { kv,
+        settle: payDemSettle(wallet, {}, { store: createIdempotencyStore(log) }) });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("process killed");
+      expect(killed).toBe(true);
+      expect(await lastOutcome(store)).toBeUndefined();
+      const reconcile = vi.fn(async (context: Parameters<PayDemSettlementReconcile>[0]) =>
+        failedClaim("txHash" in context ? context.txHash : txHash));
+      const resume = async () => makeDeps(store, { kv,
+        resumeSettlement: payDemSettle(wallet, {}, { store: createIdempotencyStore(log), reconcile }) });
+      const held = await resume();
+      await expect(runSessionCore(held.listingRef, demTerms, held.deps, "job-1"))
+        .rejects.toThrow(`settlement demos:${txHash} remains indeterminate`);
+      const saved = await lastOutcome(store);
+      expect(saved).toMatchObject({ ok: false, txHash });
+      expect(saved).not.toHaveProperty("errorClass");
+      expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
+      const final = await resume();
+      await expect(runSessionCore(final.listingRef, demTerms, final.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "failed" });
+      expect(await lastOutcome(store)).toMatchObject({ ok: false, txHash, errorClass: "permanent" });
+      expect(kv.get(`stor:${sessionAnchorName.evidence("job-1")}`)).toMatchObject({ outcome: "failure" });
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(1);
+      expect(held.settleCalls.n + final.settleCalls.n).toBe(0);
     });
 
     // Outside review F2: a failed record found by (payer, payee, amount) may
@@ -2205,8 +2300,9 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
     const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
     // A custom native rail's non-final reply with the block and kind a success re-read repeats.
-    const first = await makeDeps(store, { kv, settle: async () => ({ ok: false, txHash: "cd".repeat(32),
-      chainId: "demos", payer: "ab".repeat(32), payee: sellerDid, blockNumber: 42, txRefKind: "demos" }) });
+    const first = await makeDeps(store, { kv, settle: olderSdkAdapter(async () => ({ ok: false,
+      txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32), payee: sellerDid, blockNumber: 42,
+      txRefKind: "demos" })) });
     await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/remains indeterminate/);
     const resumed = await makeDeps(store, { kv, resumeSettlement: await demAudit() });
     // The executed re-read is never folded into the saved failure (PC-7).
@@ -2229,7 +2325,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
       payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
     const first = await makeDeps(saved === "anchor only" ? undefined : createInMemorySessionStore(), { kv,
-      settle: async () => success,
+      settle: olderSdkAdapter(async () => success),
       anchor: async (name, value) => {
         const ref = `stor:${name}`;
         kv.set(ref, value as Record<string, unknown>);
@@ -2499,13 +2595,14 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const payee = sellerDid.split(":").at(-1)!;
       const hashA = "12".repeat(32);
       const hashB = "34".repeat(32);
-      const first = await makeDeps(store, { kv, settle: async () => ({ ok: false, txHash: hashA,
-        chainId: "demos", payer, payee: sellerDid, blockNumber: 41, txRefKind: "demos" }) });
+      const first = await makeDeps(store, { kv, settle: olderSdkAdapter(async () => ({ ok: false, txHash: hashA,
+        chainId: "demos", payer, payee: sellerDid, blockNumber: 41, txRefKind: "demos" })) });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/indeterminate/);
       const before = await store.load("job-1");
       const beforeKv = structuredClone([...kv]);
       let recoveries = 0;
-      const resumed = await makeDeps(store, { kv, resumeSettlement: async (req): Promise<SettleResult> => {
+      // The session refuses another hash whatever adapter reports it.
+      const resumed = await makeDeps(store, { kv, resumeSettlement: olderSdkAdapter(async (req): Promise<SettleResult> => {
         recoveries += 1;
         expect(req.priorAttempts).toEqual([{ txHash: hashA, chainId: "demos", ok: false }]);
         if (reply === "absence") return { ok: false, txHash: "", chainId: "demos", payer, payee: sellerDid };
@@ -2515,7 +2612,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
           : { ok: false, txHash: hashB, chainId: "demos", payer, payee: sellerDid, blockNumber: 42,
             txRefKind: "demos", errorClass: "permanent", failureProof: { kind: "demos-failed-record",
               txHash: hashB, payer, payee, nonce: 10, blockNumber: 42, amountOs: "1000000000" } };
-      } });
+      }) });
       await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
         .rejects.toThrow(/not the retained transfer; a native transfer is never replaced/);
       expect(recoveries).toBe(1);
@@ -2534,7 +2631,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const payer = "ab".repeat(32);
     const success: SettleResult = { ok: true, txHash, chainId: "demos", payer, payee: sellerDid,
       blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" } };
-    const first = await makeDeps(store, { kv, settle: async () => success,
+    const first = await makeDeps(store, { kv, settle: olderSdkAdapter(async () => success),
       anchor: async (name, value) => {
         if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor unavailable");
         kv.set(`stor:${name}`, value as Record<string, unknown>); return `stor:${name}`;
@@ -2689,33 +2786,25 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       )) as Record<string, unknown>,
     ]]);
 
-    test("binds the hash and saves a callback's proof as an unresolved attempt on fresh settlement and recovery", async () => {
-      // The proof is terminal only from the SDK adapter's own record read; a
-      // callback's proof is its statement, so only the hash is kept.
+    test("never calls a callback for a native failed-record proof, fresh or on recovery", async () => {
+      // The proof is terminal only from the SDK adapter's own record read, and
+      // a native session calls no other implementation at all (a custom rail's
+      // proof through the adapter is held: see the custom pay-dem rail below).
       const demTerms = { ...terms, price: { amount: "9.5", asset: "DEM", decimals: 9, rail: "pay-dem" } };
       const store = createInMemorySessionStore();
       const kv = await demKv();
-      const first = await makeDeps(store, {
-        kv,
-        settle: async (req) => failedRecord(req.expectedPayee),
-      });
+      const callback = vi.fn(async (req: SettleRequest) => failedRecord(req.expectedPayee));
+      const first = await makeDeps(store, { kv, settle: callback });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps))
-        .rejects.toThrow(/remains indeterminate/);
-      expect(await outcomes(store)).toMatchObject([
-        { data: { outcomeSource: "rail-result", ok: false, txHash: FAILED_HASH } },
-      ]);
-      expect((await outcomes(store))[0]!.data).not.toHaveProperty("errorClass");
-      expect((await outcomes(store))[0]!.data).not.toHaveProperty("failureProofJson");
-      await expect(store.bindHash({ hash: FAILED_HASH, jobId: "other", kind: "transaction" }))
-        .resolves.toEqual({ ok: false, boundTo: "job-1" });
-
-      const resumed = await makeDeps(store, {
-        kv,
-        resumeSettlement: async (req) => failedRecord(req.expectedPayee),
-      });
+        .rejects.toThrow(/settle is not the payDemSettle adapter, so it is not called and no payment is made/);
+      const resumed = await makeDeps(store, { kv, resumeSettlement: callback });
       await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-        .rejects.toThrow(/remains indeterminate/);
-      expect(await outcomes(store)).toHaveLength(1);
+        .rejects.toThrow(/resumeSettlement is not the payDemSettle adapter, so it is not called/);
+      expect(callback).not.toHaveBeenCalled();
+      expect(await outcomes(store)).toHaveLength(0);
+      // Nothing bound the hash to this job.
+      await expect(store.bindHash({ hash: FAILED_HASH, jobId: "other", kind: "transaction" }))
+        .resolves.toEqual({ ok: true, boundTo: "other" });
 
       // The same proof cannot settle another rail's payment.
       const x402Store = createInMemorySessionStore();
@@ -2741,7 +2830,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const store = createInMemorySessionStore();
       const first = await makeDeps(store, {
         kv: await demKv(),
-        settle: async (req) => result(req.expectedPayee),
+        settle: olderSdkAdapter(async (req) => result(req.expectedPayee)),
       });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps))
         .rejects.toThrow(/malformed terminal-failure proof/);
@@ -2752,7 +2841,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const store = createInMemorySessionStore();
       const first = await makeDeps(store, {
         kv: await demKv(),
-        settle: async (req) => failedRecord(req.expectedPayee, { amountOs: "20000000000" }),
+        settle: olderSdkAdapter(async (req) => failedRecord(req.expectedPayee, { amountOs: "20000000000" })),
       });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps))
         .rejects.toThrow(/does not bind the requested pay-dem amount/);
@@ -2762,16 +2851,18 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     test("refuses a valid proof for another DEM amount on recovery", async () => {
       const store = createInMemorySessionStore();
       const kv = await demKv();
+      // A held attempt: only the hash of the transfer.
       const first = await makeDeps(store, {
         kv,
-        settle: async (req) => failedRecord(req.expectedPayee),
+        settle: olderSdkAdapter(async (req) => ({ ok: false, txHash: FAILED_HASH, chainId: "demos",
+          payer: PAYER_HEX, payee: req.expectedPayee })),
       });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps))
         .rejects.toThrow(/remains indeterminate/);
       const resumed = await makeDeps(store, {
         kv,
-        resumeSettlement: async (req) =>
-          failedRecord(req.expectedPayee, { amountOs: "20000000000" }),
+        resumeSettlement: olderSdkAdapter(async (req) =>
+          failedRecord(req.expectedPayee, { amountOs: "20000000000" })),
       });
       await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
         .rejects.toThrow(/does not bind the requested pay-dem amount/);
@@ -3005,7 +3096,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     let submits = 0;
     const interrupted = await makeDeps(base, {
       kv,
-      settle: async (req) => {
+      settle: olderSdkAdapter(async (req) => {
         submits += 1;
         return native
           ? { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
@@ -3013,7 +3104,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
             finality: { model: "bft-final" }, networkFeeOs: "1" }
           : { ok: true, txHash: "0xlatest-paid", chainId: "eip155:84532", payer: "0xbuyer",
             payee: req.expectedPayee };
-      },
+      }),
       anchor: async (name, value) => {
         if (name === sessionAnchorName.evidence("job-1")) {
           throw new Error("stop after durable outcome");
