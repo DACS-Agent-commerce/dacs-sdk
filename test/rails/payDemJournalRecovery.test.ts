@@ -22,7 +22,7 @@ const request = (): SettleRequest => ({
 beforeEach(() => resetDemosNode({ payer, txHash }));
 
 describe("recovery of the SDK's own prepared-transfer journal", () => {
-  test.each([false, true])("a crash after journaling and before recording the attempt never replaces the payment (history=%s)", async (withHistory) => {
+  test.each([false, true])("a crash after journaling and before recording the attempt never accepts an unproven journal as the payment (history=%s)", async (withHistory) => {
     let now = 1_000;
     let journalReturned = false;
     let stoppedBeforeAttempt = false;
