@@ -152,10 +152,14 @@ fresh settlement and on recovery. It treats it as a transaction-bearing
 non-success: the hash is bound for anti-replay,
 the outcome is recorded, and the session stops as indeterminate.
 
-The dacs-node buyer track settles the wallet authority and publishes a
-payment notice for a fresh rail result only when `payDemRecordVerifiedTransfer`
-lists it with this payment's payer, payee, amount, network and settlement key,
-and its hash is the one this invocation journaled. Any other success,
+The dacs-node buyer track is built only around a rail whose success the SDK
+can make final: the default runtime rail, a rail `isPayDemRecordVerifyingRail`
+accepts, or the runtime's wrapper around such a rail. Any other rail is refused
+when the track is built, before any wallet reservation. The track settles the
+wallet authority and publishes a payment notice for a fresh rail result only
+when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee,
+amount, network and settlement key, and its hash is the one this invocation
+journaled. Any other success,
 including an injected rail's `execution: "executed"`, a copy of the SDK
 rail's result, or the SDK rail's result for another transfer or settlement
 key, leaves the payment indeterminate with the wallet reservation retained. A

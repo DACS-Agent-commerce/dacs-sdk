@@ -73,8 +73,13 @@ describe("pay-dem execution docs match the code (#338)", () => {
       "only when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee, amount, network and settlement key, and its hash is the one this invocation journaled",
     );
     expect(doc).not.toContain("the host's statement");
+    expect(doc).toContain(
+      "Any other rail is refused when the track is built, before any wallet reservation.",
+    );
     expect(read("packages/dacs-node/src/payDemPayment.ts"))
       .toMatch(/payDemRecordVerifiedTransfer\(raw\)/);
+    expect(read("packages/dacs-node/src/payDemPayment.ts"))
+      .toMatch(/"pay-dem-rail-not-record-verifying"/);
   });
 
   it("dates the node2 build claims and keeps the fixture historical", () => {
