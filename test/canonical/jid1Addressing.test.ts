@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { describe, expect, test, vi } from "vitest";
+import { beforeAll, describe, expect, test, vi } from "vitest";
 import * as canonical from "../../src/canonical/index.js";
 import * as hash from "../../src/canonical/hash.js";
 import { DacsError } from "../../src/errors.js";
@@ -18,8 +18,11 @@ const calls = (job: unknown) => [
  () => api().jid1BundleAddress!(job, "buyer"),
 ];
 describe("current-only JID-3 address derivation", () => {
- test("exports four explicit current helpers from canonical and root", async () => {
-  const root = await import("../../src/index.js");
+ // The root index pulls in the whole SDK graph; its first (cold) import takes ~4-5 s, which is the default 5 s test
+ // timeout. Load it before the test so the timeout bounds the assertions, not module loading.
+ let root: typeof import("../../src/index.js");
+ beforeAll(async () => { root = await import("../../src/index.js"); }, 60_000);
+ test("exports four explicit current helpers from canonical and root", () => {
   for (const name of ["jid1AttestationAddress", "jid1PaymentEvidenceAddress", "jid1RatingAddress", "jid1BundleAddress"]) {
    expect(typeof api()[name]).toBe("function");
    expect((root as unknown as Record<string, unknown>)[name]).toBe(api()[name]);
