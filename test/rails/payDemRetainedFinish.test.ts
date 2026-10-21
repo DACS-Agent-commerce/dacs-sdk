@@ -17,7 +17,7 @@ import {
   type PayDemSettlementAuditContext,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
-import { heldRail, resetDemosNode, sdkRail, sdkTransfers, serveNodeRecord } from "../fixtures/demosNodeMock.js";
+import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers, serveNodeRecord } from "../fixtures/demosNodeMock.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
 
@@ -29,7 +29,15 @@ const BLOCK = 480_877;
 const AMOUNT_OS = "9500000000";
 const LEASE_MS = 300_000;
 
-beforeEach(() => resetDemosNode({ payer: PAYER_HEX, txHash: TX_HASH, nonce: NONCE, blockNumber: BLOCK }));
+beforeEach(() => {
+  resetDemosNode({ payer: PAYER_HEX, txHash: TX_HASH, nonce: NONCE, blockNumber: BLOCK });
+  // These tests reach the store's finish checks only after the SDK reads the
+  // retained payment's node record. A reconciler's claim alone cannot do that,
+  // including when no transfer was made through this process's mocked node.
+  serveNodeRecord(TX_HASH, {
+    payer: PAYER_HEX, payee: PAYEE_HEX, amountOs: AMOUNT_OS, nonce: NONCE, blockNumber: BLOCK,
+  });
+});
 
 const request = (jobId: string) => ({
   rail: "pay-dem", phase: "pay-dem" as const, amount: "9.5", asset: "DEM",
@@ -80,6 +88,47 @@ function logWithoutReadOutcome(full: SettlementLog): SettlementLog {
 }
 
 describe("pay-dem finishes a retained transfer no attempt record names through the store's expired generation", () => {
+  it.each([
+    { observation: "missing", reason: "transaction record was not found" },
+    { observation: "pending", reason: "transaction record has no terminal execution status" },
+  ])("refuses a $observation node record before entering the store's finish path", async ({ observation, reason }) => {
+    const log = createInMemorySettlementLog();
+    const claimIntent = vi.spyOn(log, "claimIntent");
+    const releaseIntent = vi.spyOn(log, "releaseIntent");
+    const putAttempt = vi.spyOn(log, "putAttempt");
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const store = createIdempotencyStore(log);
+    const once = vi.spyOn(store, "once");
+    const reconcile = vi.fn(async () => executed());
+    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+    if (observation === "missing") demosNode.getTxByHash.mockResolvedValue(null);
+    else serveNodeRecord(TX_HASH, {
+      payer: PAYER_HEX, payee: PAYEE_HEX, amountOs: AMOUNT_OS, nonce: NONCE, blockNumber: BLOCK,
+      status: "pending",
+    });
+
+    // Omitting history on a retry must still audit the retained hash.
+    for (const req of [resumed("job-t"), request("job-t")]) {
+      await expect(settle(req)).rejects.toThrow(
+        `pay-dem recovery could not establish the node record for ${TX_HASH}: ${reason}; ` +
+          "the payment stays unresolved and is never resubmitted",
+      );
+    }
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ txHash: TX_HASH }));
+    expect(demosNode.getTxByHash.mock.calls).toEqual([[TX_HASH], [TX_HASH]]);
+    expect(once).not.toHaveBeenCalled();
+    expect(claimIntent).not.toHaveBeenCalled();
+    expect(releaseIntent).not.toHaveBeenCalled();
+    expect(putAttempt).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
+    expect(demosNode.transfer).not.toHaveBeenCalled();
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+    const key = settlementKey("pay-dem", "job-t", 0);
+    await expect(log.readAttempt!(key)).resolves.toBeNull();
+    await expect(log.readOutcome!(key)).resolves.toBeNull();
+  });
+
   it("refuses while held, then resolves after the lease expires and after a restart, with one transfer", async () => {
     const { log, state } = logPredatingAttempts();
     let clock = 1_000_000;
@@ -198,8 +247,6 @@ describe("pay-dem finishes a retained transfer no attempt record names through t
   it("never finishes it through a store whose once is not the SDK store's", async () => {
     const inner = createIdempotencyStore(createInMemorySettlementLog());
     const reconcile = vi.fn(async () => executed());
-    // The node serves the retained transfer, so only the store decides.
-    serveNodeRecord(TX_HASH, { payer: PAYER_HEX, payee: PAYEE_HEX, amountOs: AMOUNT_OS, nonce: NONCE, blockNumber: BLOCK });
     // A wrapper keeps the SDK lookups but asks the bridge to reconcile with
     // no generation of its own.
     const store = {
