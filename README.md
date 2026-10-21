@@ -730,8 +730,7 @@ including a re-run of a completed session, calls `resumeSettlement` once as a
 read-only audit of the retained transaction hash, except in the cases below
 that are held without a rail call. Only the SDK's `payDemSettle` adapter
 (directly, from `settleFromRail`, or passed through `Agent.runSession`) is
-called for it: any other `resumeSettlement` could never complete a saved
-outcome, so it is not called and the payment stays indeterminate. With the
+called for it, as for every native settlement (see below). With the
 session's rail checkpoint in the
 `SessionStore`, a success is kept only when the rail re-reads a `confirmed`
 record with the same block, kind, parties, finality and any saved fee, and a
@@ -748,8 +747,8 @@ of that first re-read beside the evidence, and later resumes must repeat them;
 an evidence checkpoint written before payers were bound is left as it is, and
 every resume re-reads through the rail log. Held as indeterminate without a
 rail call: an evidence checkpoint without the payer and fee the evidence
-signed, and failure evidence without a `SessionStore` (it has no proof to
-re-read).
+signed, and, on every rail, anchored failure evidence that carries a
+transaction without a `SessionStore` (no proof survives the run to re-read).
 Absence, an indeterminate read, another hash
 or any mismatch fails closed without paying again. A failure read for a saved
 success, a bound failed record included, is refused the same way: the session
@@ -764,16 +763,19 @@ it. It reads the amount and fee in the denomination the record's signed payload
 carries (DEM numbers before the denomination fork, OS strings after it), so a
 payment saved before the fork still completes after it activates. The
 reconciler's answer only names the hash and can refuse, and one the
-record contradicts is refused. Over any other rail the adapter returns no
-recovered verdict at all. A success or failure proof that any other
-`resumeSettlement` reports, and a failure proof that any other `settle`
-reports, is its statement: the session binds its hash and saves it as an unresolved attempt,
-so a later resume through the adapter audits that hash instead of paying
-again, and never ends the session as failed on it. A fresh success that a
-custom `settle` reports is the caller's own payment code: the run completes on
-it without a node read. Once saved it is re-read only through the adapter like
-any other, so a re-run of that session without such a read is held as
-indeterminate and never pays again. A recovered failure is
+record contradicts is refused. The fork state that bounds this read (no
+OS-signed record before the fork) is read from the node afresh for each
+recovery, not from demosdk's `getNetworkInfo`, which keeps a connection's
+first reply. Over any other rail the adapter returns no recovered verdict at
+all, only the hash: the session binds it and saves it as an unresolved
+attempt, so a later resume through the adapter over the SDK rail audits that
+hash instead of paying again, and never ends the session as failed on it.
+
+A native DEM session calls only that adapter, as `settle` and as
+`resumeSettlement`. Any other implementation, a wrapper around the adapter
+included, is refused before it is called, so it makes no payment: nothing
+could re-read its success after a restart, so a session that completed on it
+once could never be resumed or repeated. A recovered failure is
 final only for a hash the session already held. Requiring a `confirmed` record is
 stricter than the pinned DACS-4 §9.5.9 text, which counts a terminal `included`
 status as success: the node can

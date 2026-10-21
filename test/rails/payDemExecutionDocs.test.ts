@@ -74,21 +74,37 @@ describe("pay-dem execution docs match the code (#338)", () => {
       .toMatch(/payDemRecordVerifiedTransfer\(raw\)/);
   });
 
-  it("says a recovered verdict is the SDK's own node read and only the adapter re-reads a saved one", () => {
+  it("says a recovered verdict is the SDK's own node read and a native session calls only the adapter", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     const readme = read("README.md").replace(/\s+/g, " ");
     expect(doc).toContain("is then decided by the SDK rail's own read of the node's record for that hash");
     expect(doc).toContain("A failure found by a lookup by key is never final");
-    expect(doc).toContain("does not call any other `resumeSettlement` for it");
     expect(doc).not.toMatch(/wire one that reads the node you trust/);
-    expect(readme).toContain("so it is not called and the payment stays indeterminate");
-    expect(readme).toContain("the session binds its hash and saves it as an unresolved attempt");
-    // A fresh success from a custom settle is not demoted; only recovered
-    // successes and every permanent failure need the adapter's read.
-    expect(doc).toContain("A fresh success from a custom `settle` is the caller's own payment code");
-    expect(readme).toContain("A fresh success that a custom `settle` reports is the caller's own payment code");
+    // No custom settle or recovery is called for native DEM, so no run can
+    // complete on a success that a re-run could not read again.
+    expect(doc).toContain("as `settle` and as `resumeSettlement`");
+    expect(doc).toContain("Any other implementation is refused before it is called, so it makes no payment");
+    expect(readme).toContain("A native DEM session calls only that adapter, as `settle` and as `resumeSettlement`");
+    expect(readme).toContain("is refused before it is called, so it makes no payment");
+    expect(readme).toContain("the session binds it and saves it as an unresolved attempt");
+    expect(doc).not.toContain("caller's own payment code");
+    expect(readme).not.toContain("caller's own payment code");
     expect(doc).not.toContain("takes a native success or permanent failure as final only from");
     expect(readme).not.toContain("A native success or permanent failure is final only when the SDK read");
+  });
+
+  it("says the store keeps a reconciled failure held and a by-key success relies on the reconciler", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    expect(doc).toContain("The store records no reconciled failure as the definitive outcome");
+    expect(doc).not.toContain("a failure the SDK read for that hash is final");
+    expect(doc).toContain("a success found that way relies on the reconciler to look up this exact payment");
+  });
+
+  it("says the fork state that bounds a recovered read is read afresh", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    const readme = read("README.md").replace(/\s+/g, " ");
+    expect(doc).toContain("The SDK reads that fork state from the node for each recovery (`nodeCall(\"getNetworkInfo\")`)");
+    expect(readme).toContain("is read from the node afresh for each recovery");
   });
 
   it("says the recovered fee is read in the numeric form node2's record serves", () => {

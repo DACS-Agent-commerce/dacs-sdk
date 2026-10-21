@@ -150,28 +150,37 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   and fee components are converted at 1 DEM = 1,000,000,000 OS. A decimal
   string is OS. A payment saved before the fork therefore still completes
   after it activates. An OS-signed record on a node that reports the fork
-  inactive is indeterminate. A reconciler may omit the fee, and one that
+  inactive is indeterminate. The SDK reads that fork state from the node for
+  each recovery (`nodeCall("getNetworkInfo")`), not from demosdk's
+  `getNetworkInfo`, which keeps a `Demos` instance's first reply, so a rail
+  that saw the fork inactive still reads a payment signed after it activated.
+  A reconciler may omit the fee, and one that
   reports another fee is refused. `runSession` re-asserts a saved fee, so a
   record with another fee, or none, leaves the saved success unresolved (not
   completed, never reported unpaid).
 - A restart without history reconciles in the store. With an attempt record
   the reconciler receives its hash as `txHash`, and any other transaction is
-  refused; a failure the SDK read for that hash is final. Without one, the
-  reconciler's answer for the key is still read by the SDK, but a failure
-  found that way is held, and the saved outcome never binds a later audit.
-- `runSession` takes a recovered native success, and any native permanent
-  failure, as final only from this `payDemSettle` adapter (directly, from
-  `settleFromRail`, or through `Agent.runSession`), recognised by identity; a
-  wrapper or a `.bind()` copy is a different function. It re-reads a saved
-  native outcome only through the adapter and does not call any other
-  `resumeSettlement` for it. A success or failure proof from any other
-  `resumeSettlement`, and a failure proof from any other `settle`, is that
-  implementation's statement: the session binds the hash and saves it as an
-  unresolved attempt, so a later audit through the adapter reads that hash
-  instead of paying again. A fresh success from a custom `settle` is the
-  caller's own payment code and completes the run without a node read; a
-  re-run of that session re-reads it only through the adapter and is held as
-  indeterminate without such a read.
+  refused. The store records no reconciled failure as the definitive
+  outcome, so a failure the SDK read there leaves the intent held
+  (`reconciliation was not definitive`) and nothing is resubmitted. A failure
+  is final only on the retained-hash audit or the restart re-check of the
+  rail's own durable failure. Without an attempt record, the reconciler's
+  answer for the key is still read by the SDK, but that read cannot tell this
+  payment from another job's transfer of the same payer, payee and amount:
+  a success found that way relies on the reconciler to look up this exact
+  payment, a failure found that way is held, and the saved outcome never
+  binds a later audit.
+- A native DEM session (`runSession` with a `pay-dem` price in DEM) calls
+  only this `payDemSettle` adapter (directly, from `settleFromRail`, or
+  through `Agent.runSession`), as `settle` and as `resumeSettlement`,
+  recognised by identity; a wrapper or a `.bind()` copy is a different
+  function. Any other implementation is refused before it is called, so it
+  makes no payment and reports no outcome: nothing could re-read a native
+  success it reported after a restart. The adapter over a rail
+  `createPayDemRail` did not build reports only a hash for any outcome it did
+  not read: the session binds the hash and saves it as an unresolved attempt,
+  so a later audit through the adapter over the SDK rail reads that hash
+  instead of paying again.
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).
