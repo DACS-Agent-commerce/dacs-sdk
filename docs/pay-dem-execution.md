@@ -337,9 +337,13 @@ key, leaves the payment indeterminate with the wallet reservation retained. A
 rail that relays the SDK's own result object unchanged, such as the default
 runtime rail, keeps it. That default rail also reports success only after the
 SDK's Demos adapter reconciles the wallet journal to `canonical-confirmed`.
-Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
-no attestation, so an operator reconciler must return `completed` only after
-reading a bound `confirmed` record.
+Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, must
+return `completed` only after reading a bound `confirmed` record, and the
+completed settlement carries `execution: "executed"` with that record's signed
+`nonce`. The track checks the attestation against the prepared checkpoint before
+it settles the wallet or publishes a notice: any other execution value leaves
+the payment indeterminate, and a missing checkpoint or another hash or nonce
+needs an operator.
 
 ## Finality
 
