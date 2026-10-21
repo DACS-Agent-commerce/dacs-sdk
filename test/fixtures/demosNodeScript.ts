@@ -146,6 +146,8 @@ function transferContent(
     to: payee,
     amount: wire(amountOs),
     nonce,
+    // demosdk signs the timestamp; reader-carrying clients bind it to this call.
+    timestamp: String(Date.now()),
     data: ["native", { nativeOperation: "send", args: [payee, wire(amountOs)] }],
     ...(feeOs === undefined
       ? {}

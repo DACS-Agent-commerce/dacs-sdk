@@ -153,7 +153,12 @@ beforeEach(() => {
     const transaction = validity.response.data.transaction;
     return {
       ...transaction,
-      content: { ...transaction.content, nonce: String(transaction.content.nonce) },
+      content: {
+        // A reader-carrying client's record shows it signed after the call began.
+        timestamp: String(Date.now()),
+        ...transaction.content,
+        nonce: String(transaction.content.nonce),
+      },
       status: "confirmed",
       blockNumber: 42,
     };
@@ -768,6 +773,7 @@ describe("native DEM buyer payment track", () => {
     denomination: "os" as const,
     network: "demos",
     maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+    confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
     recovery,
   });
   it.each([
@@ -880,13 +886,28 @@ describe("native DEM buyer payment track", () => {
 
   // #338: a custom client the SDK did not build settles the debited payment
   // when it carries the SDK's record reader, because the SDK itself then reads
-  // and binds this transfer's executed record.
-  it("settles the wallet and notice for a custom client on the SDK's own record read", async () => {
+  // and binds this transfer's executed record. Its fee is the confirmed debit
+  // it journaled before broadcast, also when its result reports none (#369
+  // cold review). A transfer signed before this payment began, such as one
+  // that already settled another job before a restart, never settles it.
+  it.each([
+    // Each case has its own hash: the SDK settles one hash once per process.
+    ["reporting its total debit", "7a".repeat(32), { totalDebitOs: AUTHORITY.maxTotalDebitOs }, 0, true],
+    ["reporting no total debit", "7b".repeat(32), {}, 0, true],
+    ["presenting a transfer signed before this payment began", "7c".repeat(32), {}, -60_000, false],
+  ] as const)("settles the wallet and notice for a custom client %s only on the SDK's own record read", async (
+    _label,
+    txHash,
+    reported,
+    signedOffsetMs,
+    settles,
+  ) => {
+    const paymentBeganAtMs = Date.now();
     // Before the transfer the payer had used nonce 6, so the client signs 7.
     demosSdk.nodeCall.mockImplementation(async (message: string) =>
       message === "getAddressNonce" ? 6 : { state: "included", blockNumber: 42 });
-    demosSdk.getTxByHash.mockResolvedValue({
-      hash: TX_HASH,
+    demosSdk.getTxByHash.mockImplementation(async () => ({
+      hash: txHash,
       status: "confirmed",
       blockNumber: 42,
       content: {
@@ -895,9 +916,12 @@ describe("native DEM buyer payment track", () => {
         to: PAYEE,
         amount: Number(AUTHORITY.amountOs),
         nonce: "7",
+        timestamp: String(signedOffsetMs === 0
+          ? Date.now()
+          : paymentBeganAtMs + signedOffsetMs),
         data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
       },
-    });
+    }));
     const recordReader = await createPayDemRecordReader({
       rpc: "https://node.test",
       inclusionPollIntervalMs: 1,
@@ -908,10 +932,9 @@ describe("native DEM buyer payment track", () => {
       address: PAYER,
       recordReader,
       async transfer({ recovery, journalPreparedTransfer, assertCurrentBeforeBroadcast }) {
-        await journalPreparedTransfer!(PREPARED(recovery!));
+        await journalPreparedTransfer!(PREPARED(recovery!, txHash));
         await assertCurrentBeforeBroadcast!();
-        return { ok: false, state: "timeout", hash: TX_HASH, nonce: 7,
-          totalDebitOs: AUTHORITY.maxTotalDebitOs };
+        return { ok: false, state: "timeout", hash: txHash, nonce: 7, ...reported };
       },
     };
     const database = await open(join(root(), "buyer.sqlite"));
@@ -945,12 +968,22 @@ describe("native DEM buyer payment track", () => {
     await coordinator.startOrder(ORDER);
     await coordinator.runPending({ limit: 2 });
 
+    expect(demosSdk.getTxByHash).toHaveBeenCalledWith(txHash);
+    if (!settles) {
+      expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+        .toMatchObject({ state: "indeterminate" });
+      expect(publishNotice).not.toHaveBeenCalled();
+      expect(await walletSpendAuthority.inspect()).toMatchObject({
+        activeEffects: 1,
+        assets: [{ cumulativeSettledDebit: "0" }],
+      });
+      return;
+    }
     expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
       .toMatchObject({ state: "final", outcome: "success" });
     expect(publishNotice).toHaveBeenCalledTimes(1);
     expect(vi.mocked(publishNotice).mock.calls[0]?.[0].notice.settlement)
-      .toMatchObject({ txHash: TX_HASH, blockNumber: 42 });
-    expect(demosSdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
+      .toMatchObject({ txHash, blockNumber: 42 });
     expect(await walletSpendAuthority.inspect()).toMatchObject({
       activeEffects: 0,
       assets: [{ cumulativeSettledDebit: AUTHORITY.maxTotalDebitOs }],
@@ -1700,7 +1733,7 @@ describe("native DEM buyer payment track", () => {
   it("reconciles after the notice queue fails behind a settled wallet without paying again", async () => {
     // A hash no other test settles, so the SDK reads and binds its record.
     const txHash = "d".repeat(64);
-    demosSdk.getTxByHash.mockResolvedValue({
+    demosSdk.getTxByHash.mockImplementation(async () => ({
       hash: txHash,
       status: "confirmed",
       blockNumber: 42,
@@ -1710,9 +1743,10 @@ describe("native DEM buyer payment track", () => {
         to: PAYEE,
         amount: Number(AUTHORITY.amountOs),
         nonce: "9",
+        timestamp: String(Date.now()),
         data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
       },
-    });
+    }));
     const transfer = vi.fn<DemosNativeClient["transfer"]>(async ({
       recovery,
       journalPreparedTransfer,
@@ -1726,6 +1760,7 @@ describe("native DEM buyer payment track", () => {
         amountOs: AUTHORITY.amountOs,
         network: "demos",
         maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+        confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
         recovery: recovery!,
       });
       await assertCurrentBeforeBroadcast!();
@@ -1825,7 +1860,7 @@ describe("native DEM buyer payment track", () => {
   it("rejects a client rail's success that never invokes the pre-broadcast fence", async () => {
     // A hash no other test settles, so the SDK reads and binds its record.
     const txHash = "c".repeat(64);
-    demosSdk.getTxByHash.mockResolvedValue({
+    demosSdk.getTxByHash.mockImplementation(async () => ({
       hash: txHash,
       status: "confirmed",
       blockNumber: 42,
@@ -1835,9 +1870,10 @@ describe("native DEM buyer payment track", () => {
         to: PAYEE,
         amount: Number(AUTHORITY.amountOs),
         nonce: "7",
+        timestamp: String(Date.now()),
         data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
       },
-    });
+    }));
     const database = await open(join(root(), "buyer.sqlite"));
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
     const events: string[] = [];
@@ -1907,6 +1943,7 @@ describe("native DEM buyer payment track", () => {
         amountOs: AUTHORITY.amountOs,
         network: "demos",
         maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+        confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
         recovery: recovery!,
       });
       await assertCurrentBeforeBroadcast!();

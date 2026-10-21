@@ -42,8 +42,22 @@ describe("pay-dem execution docs match the code (#338)", () => {
   it("states the attempt-record contract for the SDK's rails and durable logs", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     const readme = read("README.md").replace(/\s+/g, " ");
-    expect(doc).toContain("record the exact hash they will return before they broadcast");
-    expect(readme).toContain("call `fence.recordAttempt` with the exact hash they will return before they broadcast");
+    for (const text of [doc, readme]) {
+      // #370 sweep: only the SDK's own signing or record read writes a record.
+      expect(text).toContain("`createPayDemRail` signs the hash itself");
+      expect(text).toContain("fence carries no `recordAttempt`");
+      expect(text).toContain("records its hash only after the SDK's own record read made it this payment's success");
+      expect(text).toContain("including its own transfer the SDK has not read yet, is not recorded and stays unbound");
+      expect(text).toContain("the SDK settles and records at most one of them in a process");
+      expect(text).not.toContain("record the exact hash they will return before they broadcast");
+      expect(text).not.toContain("through the journal hook the SDK hands");
+      // A log that can start a transfer reads outcomes without a claim; the
+      // claim-based lookup of an older log is not read-only.
+      expect(text).toContain("that keeps attempt records must implement `readOutcome`");
+      expect(text).toContain("so it is not read-only");
+      expect(text).toContain("takes a reconcile lease that it leaves to lapse and refuses");
+      expect(text).not.toContain("never claims a submit generation");
+    }
     for (const text of [doc, readme]) {
       expect(text).not.toContain("keeps working for fresh settlement");
       expect(text).toContain("starts no new transfer through a `createIdempotencyStore` store over a log without it");
@@ -56,9 +70,9 @@ describe("pay-dem execution docs match the code (#338)", () => {
     }
     for (const text of [doc, readme]) {
       expect(text).toContain("Nor does it start one through any other store, wrapper or fence");
-      expect(text).toContain("whose own `readAttempt` it carries");
+      expect(text).toContain("whose own `readOutcome` and `readAttempt` it carries");
       expect(text).toContain("lookup reads through `claimIntent`");
-      expect(text).toContain("any other hash it returns, such as another payment's transfer relayed for this one, is never recorded");
+      expect(text).not.toContain("is never recorded");
       expect(text).not.toContain("saved before attempt records existed");
       expect(text).not.toContain("also records any hash a rail returns");
       expect(text).not.toContain("must therefore implement the optional `readOutcome` method");
@@ -75,6 +89,8 @@ describe("pay-dem execution docs match the code (#338)", () => {
   it("says only the SDK's own record read is final and nothing exports a way to vouch", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain("Only the SDK's own read of the node makes a verdict final: inside `createPayDemRail`, or through a record reader `createPayDemRecordReader` built.");
+    // Recovery also requires the SDK's own read, as the recovery test below pins.
+    expect(doc).not.toContain("the SDK checks only that statement's shape and bindings");
     expect(doc).toContain("The client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are ignored");
     expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else, when it has no signed nonce, when it is not bound to a transfer this call journaled and signed");
     expect(doc).toContain("No file in the package exports a way to add to it");
@@ -87,10 +103,16 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(doc).toContain("so an attempt it made before reconciles through `reconcile` without calling it");
     expect(doc).not.toContain("refused when the bridge is built");
     expect(doc).toContain("whose signed nonce is above that account nonce");
-    expect(doc).toContain("One hash settles at most one payment in a process");
+    expect(doc).toContain("in one process a hash settles at most one payment");
+    // P1-1 (#369 review): the signed time, not the lagging nonce, binds a
+    // transfer to the call across a restart.
+    expect(doc).toContain("its signed `content.timestamp` (milliseconds, as demosdk sets it when it signs) is not earlier than the SDK's clock when the call began");
+    expect(doc).toContain("in any process and after any restart");
+    expect(doc).toContain("must carry its `confirmedTotalDebitOs`, at least the amount and within that ceiling");
     const source = read("src/rails/payDem.ts");
     expect(source).toMatch(/"getAddressNonce"/);
     expect(source).toMatch(/signedNonce > nonceFloor/);
+    expect(source).toMatch(/signedAt < expected\.signedNotBeforeMs/);
     expect(source).toMatch(/refusing transfer/);
     expect(doc).not.toMatch(/vouch/i);
   });

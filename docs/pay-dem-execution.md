@@ -81,8 +81,13 @@ authenticate, so its own verdict never becomes final.
   is a final success that `payDemRecordVerifiedTransfer` lists; a bound
   `failed` record is a permanent failure with a proof the SDK builds. The
   client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are
-  ignored; its `totalDebitOs` is used only as fee accounting, within
-  `maxTotalDebitOs`. The reader holds no wallet, signs nothing and trusts its
+  ignored. Its fee is accounting only: when the payment has a
+  `maxTotalDebitOs`, the client's journal entry must carry its
+  `confirmedTotalDebitOs`, at least the amount and within that ceiling, or the
+  entry is refused and the client must not broadcast, as `createPayDemRail`
+  refuses; the success's `networkFeeOs` is that journaled debit less the
+  amount, or else the client's `totalDebitOs`, which must match the journaled
+  debit when both are given. The reader holds no wallet, signs nothing and trusts its
   node exactly as `createPayDemRail` trusts its own. A reader the SDK did not
   build, or a copy of one, is refused before the transfer.
 - A record shows that a transfer with these terms executed, not that this
@@ -93,10 +98,19 @@ authenticate, so its own verdict never becomes final.
   and whose hash and nonce are the ones the client journaled exactly once,
   for this payer, payee and amount, before `transfer` returned. A journal
   entry for other terms, a second entry, or one after `transfer` returned is
-  refused, so the client must not broadcast. One hash settles at most one
-  payment in a process: the node's account nonce can lag inclusion, so a hash
-  this path already settled is never read again. Across processes, a durable
-  session store binds a hash to one job.
+  refused, so the client must not broadcast.
+- The node's account nonce can lag inclusion, so the nonce alone could admit
+  a transfer that executed just before this call, for example one that
+  settled another job before a restart. The record therefore binds only when
+  its signed `content.timestamp` (milliseconds, as demosdk sets it when it
+  signs) is not earlier than the SDK's clock when the call began; a record
+  without one, or signed earlier, confirmed or failed, is indeterminate. The
+  timestamp is part of the signed transaction, so an earlier transfer cannot
+  carry a later one, in any process and after any restart. The client must
+  sign with a clock that does not run behind the SDK's, or its transfers are
+  held. Calls that overlap can each see the same newly signed transfer: in one
+  process a hash settles at most one payment, and across processes that run
+  at the same time a durable session store binds a hash to one job.
 - A reader-carrying client's result is held: `ok: false` with the signed hash
   and nothing else, when it has no signed nonce, when it is not bound to a
   transfer this call journaled and signed, or when its record does not bind.
@@ -140,12 +154,15 @@ authenticate, so its own verdict never becomes final.
   block, success or any failure-proof field, the nonce included, are refused.
 - A settlement request carrying `priorAttempts` (which `runSession` sends for
   a session holding a transaction-bearing outcome) is a read-only audit of
-  that retained transaction. `payDemSettle` never claims a submit generation
-  for it, even when the rail log lost its record, and requires both
-  `settlementStore.readOutcome` and `reconcile`. Over a log without the
-  optional `readOutcome`, the `createIdempotencyStore` lookup reads through
-  `claimIntent`: it returns a saved outcome, releases at once an intent it had
-  to install, and refuses a held or expired generation without releasing it.
+  that retained transaction. `payDemSettle` never calls the store's `once` or
+  the rail for it, even when the rail log lost its record, and requires both
+  `settlementStore.readOutcome` and `reconcile`. A log that keeps attempt
+  records must implement `readOutcome`, which reads without a lease. Over an
+  older log with neither, the `createIdempotencyStore` lookup reads through
+  `claimIntent`, so it is not read-only: it returns a saved outcome, takes a
+  short lease on a key it had to install and releases it at once, refuses a
+  held generation, and on an expired one takes a reconcile lease that it
+  leaves to lapse and refuses.
   The reconciler then receives a
   `PayDemSettlementAuditContext` with `txHash`, the retained hash in canonical
   form (64 lower-case hex digits, no `0x`). It returns the node's record for
@@ -158,16 +175,19 @@ authenticate, so its own verdict never becomes final.
 - The attempt record is written through the settlement fence's
   `recordAttempt`, which a `createIdempotencyStore` store provides when its
   `SettlementLog` implements the optional `putAttempt`/`readAttempt` pair (the
-  in-memory log does). The rail records the signed hash before its one
-  broadcast and does not broadcast when the record is refused; `payDemSettle`
-  records `createPayDemRail`'s hash again before the store persists or returns
-  it, and a refused write fails the call and leaves the hash unbound. The only
-  rails `payDemSettle` runs (those `createPayDemRail` and
-  `createPayDemClientRail` return) record the exact hash they will return before
-  they broadcast. A client rail does so through the journal hook the SDK hands
-  its client, only for a transfer signed after the call began that this
-  process has not settled; any other hash it returns, such as another
-  payment's transfer relayed for this one, is never recorded. The fence a
+  in-memory log does). `createPayDemRail` signs the hash itself, records it
+  before its one broadcast and does not broadcast when the record is refused;
+  `payDemSettle` records that hash again before the store persists or returns
+  it, and a refused write fails the call and leaves the hash unbound. A
+  `createPayDemClientRail` client's journal entry is its own statement and can
+  name another payment's transfer, so its fence carries no `recordAttempt`:
+  `payDemSettle` records its hash only after the SDK's own record read made it
+  this payment's success (signed after the call began, its nonce above the
+  account nonce read before it, settled by no other call in this process).
+  Any other hash it returns, including its own transfer the SDK has not read
+  yet, is not recorded and stays unbound. Two payments in flight at once that
+  a client hands one transfer cannot be told apart by the record; the SDK
+  settles and records at most one of them in a process. The fence a
   rail receives records the canonical form (64 lower-case hex digits, no `0x`)
   whichever form the rail passes, and rejects a value that is not a Demos
   transaction hash before the rail can broadcast it. The write is
@@ -179,7 +199,8 @@ authenticate, so its own verdict never becomes final.
   signed or sent, and the intent is released. Nor does it start one through
   any other store, wrapper or fence: a new transfer runs only when the fence a
   store hands its submit records through the same `createIdempotencyStore`
-  store whose own `readAttempt` it carries. A log without the pair still
+  store whose own `readOutcome` and `readAttempt` it carries. A log without
+  the pair still
   serves the payments it holds. An audit counts the hash that an outcome the
   log holds for these exact terms names, once the reconciliation agrees with
   it on block and result; a key with no saved outcome stays fail closed. Before adding the pair to an existing log,

@@ -13,15 +13,17 @@ type Submit = (fence?: Readonly<SettlementEffectFence>) => Promise<SettleResult 
  * For a test store that decides itself when to run the bridge's submit (on
  * every call, behind a cached answer, around a reconciliation): `run` hands
  * submit the fence `createIdempotencyStore` builds for a fresh attempt, and
- * the store passes on `readAttempt`, the lookup of that same store, so
- * `payDemSettle` lets the rail run. The log forgets every intent and outcome,
- * so only the test store and the bridge order calls. It keeps the last attempt
- * per key unless `keepAttempts` is false (a log that lost its records).
+ * the store passes on `readOutcome` and `readAttempt`, the lookups of that
+ * same store, so `payDemSettle` lets the rail run. The log forgets every
+ * intent and outcome (its `readOutcome` answers null), so only the test store
+ * and the bridge order calls. It keeps the last attempt per key unless
+ * `keepAttempts` is false (a log that lost its records).
  */
 export function sdkFences({ keepAttempts = true }: { keepAttempts?: boolean } = {}) {
   const attempts = new Map<string, Readonly<{ bindingHash: string; txHash: string }>>();
   let generation = 0;
   const log: SettlementLog = {
+    async readOutcome() { return null; },
     async claimIntent(input) {
       return {
         status: "acquired",
@@ -41,6 +43,7 @@ export function sdkFences({ keepAttempts = true }: { keepAttempts?: boolean } = 
   };
   const store = createIdempotencyStore(log);
   return {
+    readOutcome: store.readOutcome!,
     readAttempt: store.readAttempt!,
     run: (key: string, binding: Readonly<SettlementBinding>, submit: Submit): Promise<SettleResult> =>
       store.once(key, binding, submit),

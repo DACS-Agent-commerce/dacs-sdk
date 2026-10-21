@@ -100,7 +100,12 @@ beforeEach(async () => {
     }).response.data.transaction;
     return {
       ...transaction,
-      content: { ...transaction.content, nonce: String(transaction.content.nonce) },
+      content: {
+        // A reader-carrying client's record shows it signed after the call began.
+        timestamp: String(Date.now()),
+        ...transaction.content,
+        nonce: String(transaction.content.nonce),
+      },
       status: recordStatus,
       blockNumber: 4242,
     };
@@ -1013,6 +1018,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         submitted = submit;
         return inner.once(key, binding, submit, reconcile);
       },
+      readOutcome: inner.readOutcome,
       readAttempt: inner.readAttempt,
     };
     await payDemSettle(rail, { recipient: PAYEE_CLAIM, network: "demos" }, { store })(req());
@@ -1200,6 +1206,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const backing = createInMemorySettlementLog();
     const lifecycle: string[] = [];
     const log: SettlementLog = {
+      // A log that keeps attempts reads its outcomes without a claim.
+      readOutcome(key) {
+        return backing.readOutcome!(key);
+      },
       async claimIntent(input) {
         lifecycle.push(`intent:${input.key}`);
         return backing.claimIntent(input);
@@ -1237,7 +1247,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         transfers += 1;
         lifecycle.push(`journal:${input.recovery?.settlementKey}`);
         contexts.push(input.recovery);
-        // The SDK records the attempt from this journal call, before the broadcast.
+        // The journal entry is the client's statement: the SDK records no
+        // attempt from it, only from its own read of the record.
         await input.journalPreparedTransfer?.({
           txHash: TX_HASH, nonce: 9, payer: PAYER, payee: SELLER_HEX, amountOs: "1250000000",
           denomination: "os", network: "demos",
@@ -1316,8 +1327,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       payer: PAYER,
       payee: SELLER_HEX,
       amountOs: "1250000000",
-      // The restart asks for exactly the hash the first process recorded.
-      txHash: TX_HASH,
+      // The client's held transfer left no attempt record, so the restart
+      // reconciles by key; nothing binds its hash to the key.
     });
     expect(contexts).toEqual([expect.objectContaining({
       settlementKey: key,
@@ -1327,11 +1338,9 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       lifecycle.indexOf(`journal:${key}`),
     );
     expect(lifecycle.indexOf(`journal:${key}`)).toBeLessThan(
-      lifecycle.indexOf(`attempt:${key}`),
-    );
-    expect(lifecycle.indexOf(`attempt:${key}`)).toBeLessThan(
       lifecycle.indexOf(`outcome:${key}`),
     );
+    expect(lifecycle).not.toContain(`attempt:${key}`);
   });
 
   test("a non-final reconciliation cannot authorize rebroadcast", async () => {
@@ -1798,6 +1807,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     class DelegatingStore {
       readonly #inner = createIdempotencyStore();
       readonly once = this.#inner.once;
+      readonly readOutcome = this.#inner.readOutcome;
       readonly readAttempt = this.#inner.readAttempt;
     }
     const rail = await sdkRail();
