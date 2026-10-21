@@ -93,6 +93,8 @@ const ANCHORED = ["record", "nativeAddress", "anchorTxRef", "anchorReceipt"];
 const RESULT = [...ANCHORED, "recordKind", "logicalAddress", "agreementHash", "committedAt", "resumed"];
 const RECORD = ["finalityCommitmentVersion", "jobId", "agreementHash", "listingRef", "parties", "pattern", "createdAt", "signature"];
 const SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
+/** The Agreement discriminators other than the payee-bound one the commit phase selects (DACS-3 §8.5). */
+const OTHER_DISCRIMINATORS = ["agreementVersion", "identityBoundAgreementVersion", "identityBoundPayeeAgreementVersion"];
 
 const invalid = (): never => fail("continuation_commitment_invalid", 500);
 const agreementInvalid = (): never => fail("continuation_agreement_invalid", 500);
@@ -114,12 +116,32 @@ const TP1_DELIVERY_PHASE = "deliver-storage-program";
 const TP1_DELIVERABLE_KIND = "storage-program";
 
 /**
+ * DACS-1 §6.3.4: a Listing verifier reconstructs `dacs-listing:v1:` followed
+ * by the Listing's content hash and verifies `signature.value` against it
+ * (DACS-3 §8.5.2: the complete signed Listing is validated before any
+ * Agreement check). The content hash omits the signature, so the pin cannot
+ * vouch for it. TP-1's seller is its orchestrator (G3) and presents one key,
+ * so the signer must be exactly `seller`, an Ed25519 key the claim names, and
+ * the signature a canonical 64-byte value that verifies under it. A signature
+ * the wire cannot verify (another algorithm, another signer) is refused, not
+ * assumed. Refused as `continuation_listing_invalid`, detail `LISTING-SIGNATURE`.
+ */
+function assertListingSignature(listing: Listing, seller: string): void {
+  const signature = listing.signature as unknown as JsonRecord;
+  if (signature.algorithm !== "ed25519" || signature.signer !== seller || typeof signature.value !== "string" || !SIGNATURE.test(signature.value) ||
+      Buffer.from(signature.value, "base64url").toString("base64url") !== signature.value) fail("continuation_listing_invalid", 500, "LISTING-SIGNATURE");
+  const signed = Buffer.from(`${ARTIFACT_SEPARATORS.Listing}${contentHash(listing as unknown as JsonRecord)}`, "utf8");
+  if (!verifyEd25519(signed, Buffer.from(signature.value, "base64url"), claimKey(seller))) fail("continuation_listing_invalid", 500, "LISTING-SIGNATURE");
+}
+
+/**
  * The Listing the purchase pins (DACS-1 §6.3.4), from its own bytes: an exact
  * Listing whose recomputed content hash, id and version are `listingPin`, the
  * pin the request, the commitment record and the Agreement all name. The
  * content hash omits the Listing's signature, so its content is authenticated
  * by the Agreement both parties signed and the record the seller signed over
- * that hash. Its seller must be `seller`. Its pipeline must select one
+ * that hash, and its own signature is verified (assertListingSignature). Its
+ * seller must be `seller`. Its pipeline must select one
  * fixed-price commitment, as the SDK gate's does: exactly one negotiate phase,
  * `negotiate-fixed-price`, directly followed by the only commit phase. That
  * phase selects the Agreement type before any signature is read (DACS-3
@@ -141,6 +163,7 @@ function committedListing(value: unknown, scope: CommitmentScope): CommittedList
   const pin = scope.listingPin;
   if (listing.listingId !== pin.listingId || listing.listingVersion !== pin.version || contentHash(listing) !== pin.contentHash) listingInvalid();
   if (listing.seller.identity.presentedBy !== scope.seller) listingInvalid();
+  assertListingSignature(listing, scope.seller);
   const kinds = listing.pipeline.map((phase) => phase.kind as string);
   const negotiate = kinds.flatMap((kind, i) => (kind.startsWith("negotiate-") ? [i] : []));
   const commits = kinds.flatMap((kind, i) => (kind.startsWith("commit-") ? [i] : []));
@@ -187,8 +210,11 @@ function assertListingTerms(agreement: JsonRecord, listing: Listing, committedAt
 /**
  * CA-7: the Agreement the record commits is one both parties signed. The
  * Listing's `commit-payee-bound-agreement` phase (checked first) requires an exact DACS-3
- * §8.5 PayeeBoundAgreementDocument, here derived from fixed price; a plain or
- * identity-bound document is the off-diagonal pairing and is refused. Its
+ * §8.5 PayeeBoundAgreementDocument, here derived from fixed price, carrying
+ * that one discriminator (detail `DISCRIMINATOR` for another beside it); a plain or
+ * identity-bound document is the off-diagonal pairing and is refused. TP-1 has no
+ * `pay-alternative` phase, so `terms.priorPaymentDispositionRef` is refused (detail
+ * `PRIOR-DISPOSITION`, §8.5.2 check 10). Its
  * recomputed content hash must be the record's `agreementHash`, and its job
  * and Listing pin the record's. Its buyer and seller (by role) must be the
  * record's parties, in that order. Its two signatures, one by each party,
@@ -200,6 +226,10 @@ function assertListingTerms(agreement: JsonRecord, listing: Listing, committedAt
 function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreement: JsonRecord; generatedAt: unknown; deadline: unknown } {
   const agreement = ownedArtifact(admittedInput(value, "continuation_agreement_invalid"), "continuation_agreement_invalid", 500) as JsonRecord;
   if (!isPayeeBoundAgreementDocument(agreement) || agreement.derivedFromPattern !== "fixed-price") agreementInvalid();
+  // DACS-3 §8.5: exactly one supported discriminator; the validator rules out only the plain one. §8.5.2 check 10:
+  // no `priorPaymentDispositionRef` unless the Listing has a `pay-alternative` phase, and TP-1 has none.
+  if (OTHER_DISCRIMINATORS.some((name) => name in agreement)) fail("continuation_agreement_invalid", 500, "DISCRIMINATOR");
+  if ("priorPaymentDispositionRef" in (agreement.terms as JsonRecord)) fail("continuation_agreement_invalid", 500, "PRIOR-DISPOSITION");
   const hash = contentHash(agreement);
   if (hash !== record.agreementHash || agreement.jobId !== record.jobId || !sameCanonical(agreement.listingRef, record.listingRef)) agreementInvalid();
   const parties = agreement.parties as JsonRecord[];

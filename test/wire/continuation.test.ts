@@ -309,6 +309,78 @@ describe("the seller checks the job's finalized commitment on every payment and 
     for (const given of [received(LISTING), admitted]) expect(check(x, given)().effect).toMatchObject({ state: "new" });
   });
 
+  it("verifies the pinned Listing's own signature under the seller's key (DACS-1 §6.3.4) on every continuing route, direct and delegated: the pin omits the signature", () => {
+    const x = world();
+    const other = party();
+    const journals = testJournals();
+    const refused = expect.objectContaining({ code: "continuation_listing_invalid", status: 500, detail: "LISTING-SIGNATURE" });
+    const { signature } = LISTING;
+    const resign = (value: Record<string, unknown>) => ({ ...LISTING, signature: { ...signature, ...value } });
+    // The seller's key signs another Listing's hash, and another key signs this one's.
+    const forged = (signer: { sign(bytes: Uint8Array): Uint8Array | Buffer }, hash: string) =>
+      Buffer.from(signer.sign(Buffer.from(`dacs-listing:v1:${hash}`, "utf8"))).toString("base64url");
+    const otherListing = tp1Listing({ seller: SELLER, listingId: "other-report" }).pin.contentHash;
+    // Another party's claim is among the seller's claims and signs the Listing: the Listing pin cannot tell, but the seller's key did not sign it.
+    const coSigned = tp1Listing({ seller: other, listingId: "co-signed", patch: { seller: { ...LISTING.seller, identity: { ...LISTING.seller.identity, claims: [{ ref: SELLER.claim }, { ref: other.claim }] } } } });
+    const cases: Array<[string, unknown, ReturnType<typeof world>]> = [
+      ["a signature with one bit changed", resign({ value: flipped(signature.value) }), x],
+      ["the seller's signature over another Listing", resign({ value: forged(SELLER, otherListing) }), x],
+      ["another key's signature naming the seller", resign({ value: forged(other, x.pin.contentHash) }), x],
+      ["another algorithm", resign({ algorithm: "ecdsa-secp256k1" }), x],
+      ["a signer that is not the seller", coSigned.listing, world(coSigned, { deriveFrom: tp1Listing({ seller: SELLER, listingId: "co-signed" }) })],
+    ];
+    for (const [name, listing, w] of cases) {
+      const given = received(listing);
+      // The tampered Listing keeps its pin: only the signature differs.
+      expect(contentHash(listing as never), name).toBe(w.pin.contentHash);
+      for (const path of CONTINUING) {
+        for (const [mode, open, extra] of [["direct", () => w.direct(w.request(path)), {}], ["delegated", () => w.delegated(w.request(path)), { requireDelegation: true, artifacts: [w.artifact] }]] as const) {
+          expect(() => wire.checkWireRequest(open(), { ...w.check(path), ...extra, requestJournal: journals.open(), signedListing: given }), `${name} ${mode} ${path}`).toThrowError(refused);
+        }
+      }
+    }
+    // Nothing was reserved; the seller's own signature continues.
+    expect(journals.reservations()).toEqual([]);
+    expect(wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journals.open() }).effect).toMatchObject({ state: "new" });
+    expect(journals.reservations()).toHaveLength(1);
+  });
+
+  it("refuses an Agreement both parties signed that carries a second discriminator (DACS-3 §8.5) or a priorPaymentDispositionRef under a Listing with no pay-alternative phase (§8.5.2 check 10), on every continuing route", () => {
+    const journals = testJournals();
+    const prior = { anchor: { kind: "storage-program", locator: "prior-disposition" }, contentHash: "d".repeat(64) };
+    const cases: Array<[string, Parameters<typeof world>[1], string]> = [
+      ["the plain discriminator beside the payee-bound one", { patch: { agreementVersion: "1" } }, "continuation_agreement_invalid"],
+      ["the identity-bound payee discriminator", { patch: { identityBoundPayeeAgreementVersion: "1" } }, "DISCRIMINATOR"],
+      ["the identity-bound discriminator", { patch: { identityBoundAgreementVersion: "1" } }, "DISCRIMINATOR"],
+      ["a priorPaymentDispositionRef", { terms: { priorPaymentDispositionRef: prior } }, "PRIOR-DISPOSITION"],
+    ];
+    for (const [name, options, want] of cases) {
+      const w = world(undefined, options);
+      for (const path of CONTINUING) {
+        expect(() => wire.checkWireRequest(w.direct(w.request(path)), { ...w.check(path), requestJournal: journals.open() }), `${name} ${path}`)
+          .toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid", status: 500, ...(want === "continuation_agreement_invalid" ? {} : { detail: want }) }));
+      }
+    }
+    expect(journals.reservations()).toEqual([]);
+  });
+
+  it("signs, opens and admits a request only for a route in the table, never another spelling of one that would skip the commitment check", async () => {
+    const x = world();
+    const journals = testJournals();
+    for (const alias of ["/dacs/v1/payments/", "/dacs/v1//payments", "/dacs/v1/Payments", "/dacs/v1/payments?x=1", "/dacs/v1/bundles/request/", "/dacs/v1/unknown", "/dacs/v1/agreements/state/"]) {
+      // A buyer signs it, and the seller opens it, nowhere.
+      expect(() => x.direct(x.request(alias)), alias).toThrowError(expect.objectContaining({ code: "peer_envelope_invalid" }));
+      await expect(wire.signWireEnvelope(x.request(alias), { signer: x.buyer, binding: x.binding, local: LOCAL, purchaseProfile: x.binding.profile, now: NOW }), alias)
+        .rejects.toMatchObject({ code: "peer_envelope_invalid" });
+      // A host that serves the alias and passes its raw path is refused for the signed route's path.
+      for (const route of CONTINUING) {
+        expect(() => wire.checkWireRequest(x.direct(x.request(route)), { ...x.check(alias), requestJournal: journals.open(), commitment: undefined }), `${alias} for ${route}`)
+          .toThrowError(expect.objectContaining({ code: "peer_request_mismatch" }));
+      }
+    }
+    expect(journals.reservations()).toEqual([]);
+  });
+
   it("checks the signed Agreement's terms against the pinned Listing (DACS-3 §8.5.2 checks 1-4) on every continuing route, direct and delegated", () => {
     // Each Agreement is signed by both parties and committed by the seller's own finalized record: only its terms differ from the Listing's.
     const terms = (signedAgreement({ buyer: party(), seller: SELLER, jobId: JOB, listingPin: PIN }).agreement as unknown as { terms: Record<string, unknown> }).terms;
@@ -650,6 +722,35 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
     expect(buyer.calls).toBe(0);
   });
 
+  it("refuses, at both signers, a continuation under a Listing whose signature is not the seller's over the pinned Listing (DACS-1 §6.3.4)", async () => {
+    const { purchase, buyer, seller, pin, sellerResult, binding, discovery, listing, input } = await committed();
+    const proof = wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
+      commitment: received(sellerResult), agreement: received(purchase.agreement), signedListing: received(purchase.listing) });
+    const refusedAs = (detail?: string) => ({ code: "continuation_listing_invalid", status: 500, ...(detail === undefined ? {} : { detail }) });
+    const { signature } = purchase.listing;
+    // The signature is not part of the pin, so the Listing, Agreement and finality record are all still the ones the parties signed.
+    for (const [name, changed, detail] of [
+      ["a signature with one bit changed", { value: flipped(signature.value) }, "LISTING-SIGNATURE"],
+      ["another algorithm", { algorithm: "ecdsa-secp256k1" }, "LISTING-SIGNATURE"],
+      // Not among the seller's claims, so not even a well-formed Listing (isListing).
+      ["another signer", { signer: buyer.claim }, undefined],
+    ] as const) {
+      const refused = refusedAs(detail);
+      const tampered = { ...purchase.listing, signature: { ...signature, ...changed } };
+      expect(contentHash(tampered as never), name).toBe(pin.contentHash);
+      expect(() => wire.verifyEndpointProof(discovery, { readListingEligibility: windowed, readCommitmentReceipt: validReceipt, listing, binding, local: LOCAL, now: ENDED,
+        commitment: received(sellerResult), agreement: received(purchase.agreement), signedListing: received(tampered) }), name).toThrowError(expect.objectContaining(refused));
+      for (const path of CONTINUING) {
+        await expect(wire.signWireRequest({ ...input(received(sellerResult), received(purchase.agreement), proof, path), signedListing: received(tampered) }), `${name} ${path}`).rejects.toMatchObject(refused);
+        const payload: wire.WireRequestPayload = { version: "1", kind: "request", method: "POST", path, bodyHash: sha256Hex("{}"), jobId: JOB, buyer: buyer.claim, seller: seller.claim,
+          listingPin: pin, agreementHash: purchase.agreementHash, nonce: nonce(), expiresAt: ENDED + 30_000, profile: binding.profile };
+        await expect(wire.signWireEnvelope(payload, { signer: buyer, binding, local: LOCAL, purchaseProfile: binding.profile, endpointProof: proof, publicEndpoint: ENDPOINT, now: ENDED,
+          commitment: received(sellerResult), agreement: received(purchase.agreement), signedListing: received(tampered) }), `${name} ${path}`).rejects.toMatchObject(refused);
+      }
+    }
+    expect(buyer.calls).toBe(0);
+  });
+
   it("refuses, at both signers, a continuation under a Listing whose delivery phase cannot deliver its deliverable (DACS-4 §9.6.1)", async () => {
     const { buyer, seller, binding, input } = await committed();
     // The seller's signed Listing pairs deliver-storage-program with an attested-payload deliverable; the Agreement is derived from it.
@@ -815,6 +916,38 @@ describe("an effect is reserved only in the SDK's durable journal", () => {
     for (const body of ['{"tx":"1"}', '{"tx":"2"}']) expect(at(body).effect).toEqual({ state: "completed", operationId: first.effect!.operationId, outcome });
   });
 
+  it("keeps an outcome's text byte for byte, Unicode that is not NFC included: a repeat, a restart and the same text again return exactly what the handler signed", () => {
+    const x = world();
+    const directory = journalDirectory();
+    const journal = wire.openWireRequestJournal(directory);
+    const at = (j: wire.WireRequestJournal, body: string) => wire.checkWireRequest(x.direct(x.request(P.payments, body)), { ...x.check(P.payments, body), requestJournal: j });
+    // Raw (not escaped) text with a combining accent in a member name and in a value, and an astral character: canonical JSON would normalize all of it.
+    const text = '{"réport":"linéx \u{1F600}","café":"café"}';
+    expect(text).not.toBe(text.normalize("NFC"));
+    const outcome = { status: 200, text };
+    const first = at(journal, '{"tx":"1"}');
+    wire.completeWireEffect(journal, first.effect!, outcome);
+    const done = { state: "completed", operationId: first.effect!.operationId, outcome };
+    expect(at(journal, '{"tx":"2"}').effect).toEqual(done);
+    // Completing again with the same text is a no-op; a restart (another handle on the directory) reads it back unchanged.
+    wire.completeWireEffect(journal, first.effect!, { ...outcome });
+    const restarted = at(wire.openWireRequestJournal(directory), '{"tx":"3"}').effect as { outcome: { text: string } };
+    expect(restarted).toEqual(done);
+    expect(Buffer.from(restarted.outcome.text, "utf8").equals(Buffer.from(text, "utf8"))).toBe(true);
+    // The normalized form is another text: it conflicts with the stored one.
+    expect(() => wire.completeWireEffect(journal, first.effect!, { status: 200, text: text.normalize("NFC") })).toThrowError(expect.objectContaining({ code: "seller_effect_conflict" }));
+  });
+
+  it("refuses an outcome whose text is not well-formed UTF-8 (a lone surrogate would be stored as another character) before anything is published", () => {
+    const x = world();
+    const journal = testJournal();
+    const { effect } = wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal });
+    for (const text of ["\ud800", '{"a":"\udc00"}', "ok\ud83d"]) {
+      expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text }), text).toThrowError(expect.objectContaining({ code: "wire_input_invalid", detail: "OUTCOME-INVALID" }));
+    }
+    expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text: "\u{1F600}" })).not.toThrow();
+  });
+
   it("refuses to complete an effect it did not issue, on another journal, or with a malformed outcome", () => {
     const x = world();
     const journal = testJournal(), other = testJournal();
@@ -895,7 +1028,7 @@ describe("an effect is reserved only in the SDK's durable journal", () => {
       }
     }
     expect(() => at(open())).toThrowError(expect.objectContaining({ code: "seller_effect_unresolved" }));
-  });
+  }, 60_000); // about 48 fsync-heavy journal opens: load-sensitive under the 5 s default
 });
 
 describe("a response is opened only against its principal", () => {

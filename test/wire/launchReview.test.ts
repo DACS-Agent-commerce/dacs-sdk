@@ -138,7 +138,10 @@ describe("effect request replay reservations", () => {
       // An attempt file the journal cannot read is not a lapsed lease: nothing is recovered from it.
       ["an attempt that does not parse", (d) => writeFileSync(join(d, `o-${operationId}-0`), "{"), "STORE-ATTEMPT-INVALID"],
       ["an attempt for another operation", (d) => writeFileSync(join(d, `o-${operationId}-0`), JSON.stringify({ operationId: "f".repeat(64), attempt: 0, requestHash: "a".repeat(64), leaseUntil: 0, binding: "b".repeat(64) })), "STORE-ATTEMPT-INVALID"],
-      ["an outcome with no attempt", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, text: "{}" } })), "STORE-ATTEMPT-MISSING"],
+      ["an outcome with no attempt", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, textBytes: Buffer.from("{}").toString("base64url") } })), "STORE-ATTEMPT-MISSING"],
+      // The outcome's text is stored as its UTF-8 bytes; plain text there, or bytes that are not canonical base64url, was not written by this journal.
+      ["an outcome with its text stored plain", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, text: "{}" } })), "STORE-OUTCOME-INVALID"],
+      ["an outcome whose bytes are not canonical base64url", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, textBytes: "e30=" } })), "STORE-OUTCOME-INVALID"],
     ];
     for (const [name, plant, detail] of cases) {
       const directory = journalDirectory();

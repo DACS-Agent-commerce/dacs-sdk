@@ -169,37 +169,59 @@ function assertBinding(store: Store, operationId: string, binding: string): void
 }
 const outcomeName = (operationId: string) => `o-${operationId}.done`;
 
+/** Well-formed UTF-8 text: one that survives its own encoding, so the bytes stored are the text given. */
+const isWellFormedText = (text: string) => Buffer.from(text, "utf8").toString("utf8") === text;
+
 function isOutcome(value: unknown): value is WireEffectOutcome {
   return hasKeys(value, ["status", "text"]) && isUint(value.status) && value.status >= 200 && value.status <= 599 &&
-    typeof value.text === "string" && Buffer.byteLength(value.text) <= DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes;
+    typeof value.text === "string" && Buffer.byteLength(value.text) <= DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes && isWellFormedText(value.text);
+}
+
+/**
+ * An outcome as stored. The records are canonical JSON, which normalizes the
+ * Unicode of every string, so the answer's text is stored as the base64url of
+ * its UTF-8 bytes: what a repeat returns is exactly what the handler signed.
+ */
+type StoredOutcome = { status: number; textBytes: string };
+const toStored = (outcome: WireEffectOutcome): StoredOutcome => ({ status: outcome.status, textBytes: Buffer.from(outcome.text, "utf8").toString("base64url") });
+
+/** The outcome a stored one holds, or null when it is not one this journal wrote. */
+function fromStored(value: unknown): WireEffectOutcome | null {
+  if (!hasKeys(value, ["status", "textBytes"]) || typeof value.textBytes !== "string" || !/^[A-Za-z0-9_-]*$/.test(value.textBytes)) return null;
+  const bytes = Buffer.from(value.textBytes, "base64url");
+  if (bytes.toString("base64url") !== value.textBytes) return null;
+  const outcome = { status: value.status, text: bytes.toString("utf8") };
+  return isOutcome(outcome) ? outcome : null;
 }
 
 function readOutcome(store: Store, operationId: string): WireEffectOutcome {
   const record = readRecord(store, outcomeName(operationId), OUTCOME_FILE_BYTES);
   // An outcome is published whole (link), so a malformed one was not written by this journal.
-  if (!hasKeys(record, ["operationId", "attempt", "outcome"]) || record.operationId !== operationId || !isOutcome(record.outcome)) corrupt("STORE-OUTCOME-INVALID");
-  return { status: (record!.outcome as JsonRecord).status as number, text: (record!.outcome as JsonRecord).text as string };
+  const outcome = hasKeys(record, ["operationId", "attempt", "outcome"]) && record.operationId === operationId ? fromStored(record.outcome) : null;
+  return outcome ?? corrupt("STORE-OUTCOME-INVALID");
 }
 
 const sameOutcome = (a: WireEffectOutcome | null, b: WireEffectOutcome | null) => a === null || b === null ? a === b : a.status === b.status && a.text === b.text;
 
 /** Publish the operation's outcome from its attempt's end; one already there must be the same. */
 function publishOutcome(store: Store, operationId: string, attempt: number, outcome: WireEffectOutcome): void {
-  if (publish(store, outcomeName(operationId), canonicalize({ operationId, attempt, outcome }))) return;
+  if (publish(store, outcomeName(operationId), canonicalize({ operationId, attempt, outcome: toStored(outcome) }))) return;
   if (!sameOutcome(readOutcome(store, operationId), outcome)) fail("seller_effect_conflict", 500);
 }
 
 type AttemptEnd = { superseded: boolean; outcome: WireEffectOutcome | null };
 const END = ["operationId", "attempt", "superseded", "outcome"];
-const endRecord = (operationId: string, attempt: number, end: AttemptEnd) => canonicalize({ operationId, attempt, ...end });
+const endRecord = (operationId: string, attempt: number, end: AttemptEnd) =>
+  canonicalize({ operationId, attempt, superseded: end.superseded, outcome: end.outcome === null ? null : toStored(end.outcome) });
 
 /** The end entry this journal published for an attempt; anything else there is a corrupt store. */
 function readEnd(store: Store, operationId: string, attempt: number): AttemptEnd {
   const record = readRecord(store, endedName(operationId, attempt), OUTCOME_FILE_BYTES);
   if (!hasKeys(record, END) || record.operationId !== operationId || record.attempt !== attempt || typeof record.superseded !== "boolean" ||
-      !(record.outcome === null || isOutcome(record.outcome)) || (record.superseded && record.outcome !== null)) corrupt("STORE-END-INVALID");
-  const outcome = record!.outcome as JsonRecord | null;
-  return { superseded: record!.superseded as boolean, outcome: outcome === null ? null : { status: outcome.status as number, text: outcome.text as string } };
+      (record.superseded && record.outcome !== null)) corrupt("STORE-END-INVALID");
+  const outcome = record!.outcome === null ? null : fromStored(record!.outcome);
+  if (record!.outcome !== null && outcome === null) corrupt("STORE-END-INVALID");
+  return { superseded: record!.superseded as boolean, outcome };
 }
 
 function now(store: Store): number {
@@ -315,7 +337,7 @@ export function completeWireEffect(journal: WireRequestJournal, effect: WireEffe
   const kept = issuedGet(issued, effect as object);
   if (!kept || kept.store !== store) fail("wire_input_invalid", 500, "EFFECT-NOT-ISSUED");
   const { operationId, attempt } = kept!;
-  // Read once through own data properties; the text is kept byte for byte (no normalization).
+  // Read once through own data properties; the text is kept byte for byte (stored as its UTF-8 bytes, so canonical JSON does not normalize it).
   const owned = outcome === null ? null : ownedFields(outcome, ["status", "text"]) as unknown as WireEffectOutcome;
   if (owned !== null && !isOutcome(owned)) fail("wire_input_invalid", 500, "OUTCOME-INVALID");
   // One exclusive step: this attempt's end, or the one a recovering request published first.

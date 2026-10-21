@@ -17,7 +17,7 @@ import { commitmentReceiptTime, type CommitmentReceiptReader } from "./commitmen
 import { assertEndpointProof, isContinuingRoute, type EndpointProof } from "./discovery.js";
 import { journalStore, reserveEffect, type WireEffect, type WireRequestJournal } from "./journal.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, isReadRoute } from "./routes.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
@@ -58,10 +58,13 @@ export function isWirePayload(supplied: unknown, kind: unknown): supplied is Wir
   return payloadShape(ownedOrNothing(supplied), kind);
 }
 
+/** The only paths a request or response is signed for: exactly the route table's signed routes, never a spelling of one (trailing slash, case, double slash). */
+const SIGNED_PATHS: ReadonlySet<string> = new Set(Object.values(DACS_SELLER_HTTP_PATHS));
+
 function payloadShape(p: unknown, kind: unknown): p is WirePayload {
   return (kind === "request" || kind === "response") && hasKeys(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS) &&
     p.version === "1" && p.kind === kind && p.method === "POST" &&
-    typeof p.path === "string" && /^\/dacs\/v1\/[a-z/-]+$/.test(p.path) && p.path.length <= 160 &&
+    typeof p.path === "string" && SIGNED_PATHS.has(p.path) &&
     isHash(p.bodyHash) && isCanonicalJobId(p.jobId) && isClaim(p.buyer) && isClaim(p.seller) && p.buyer !== p.seller &&
     isListingPin(p.listingPin) && isHash(p.agreementHash) && typeof p.nonce === "string" && NONCE.test(p.nonce) &&
     Buffer.from(p.nonce, "base64url").toString("base64url") === p.nonce && isUint(p.expiresAt) &&

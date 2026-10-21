@@ -120,7 +120,7 @@ export interface AcceptedPurchase {
 export async function acceptedPurchase(options: { jobId: string; generatedAt: number; validity: { notBefore: number; notAfter: number }; publicEndpoint: string; listingId?: string }): Promise<AcceptedPurchase> {
   const buyer = seededParty(41), seller = seededParty(42), orchestrator = seller;
   const at = options.validity.notBefore;
-  const listing: Listing = {
+  const unsigned = {
     dacsVersion: "1", listingVersion: 1, listingId: options.listingId ?? "report",
     seller: { identity: identity(seller.claim, at), displayName: "Report", publicEndpoint: options.publicEndpoint },
     offering: { title: "Report", description: "A fixed-text report", category: "data.test", tags: ["report"],
@@ -131,9 +131,12 @@ export async function acceptedPurchase(options: { jobId: string; generatedAt: nu
     acceptedRails: [DEM],
     terms: { deadlineSecAfterCommit: 600 },
     validity: options.validity,
-    signature: { algorithm: "ed25519", signer: seller.claim, value: Buffer.alloc(64, 7).toString("base64url") },
   };
-  const pin = { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing as unknown as Record<string, unknown>) };
+  // The seller signs the Listing (DACS-1 §6.3.4): the wire verifies that signature at every continuation.
+  const listingHash = contentHash(unsigned as unknown as Record<string, unknown>);
+  const listing = { ...unsigned, signature: { algorithm: "ed25519", signer: seller.claim,
+    value: Buffer.from(seller.signBytes(Buffer.from(`dacs-listing:v1:${listingHash}`, "utf8"))).toString("base64url") } } as unknown as Listing;
+  const pin = { listingId: listing.listingId, version: listing.listingVersion, contentHash: listingHash };
   const draft = deriveFixedPriceAgreement({
     jobId: options.jobId, verifiedListing: { disposition: "verified", listing, pin },
     buyer: { identityBundle: identity(buyer.claim, at), vetRecordRef: vet("buyer-vet", "a") },
