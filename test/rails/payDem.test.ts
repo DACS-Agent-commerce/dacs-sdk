@@ -861,10 +861,88 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const rail = build(await sdkRail());
     const settle = vi.spyOn(rail, "settle");
     expect(isPayDemRecordVerifyingRail(rail)).toBe(false);
-    expect(() => payDemSettle(rail, { network: "demos" }))
-      .toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
+    await expect(payDemSettle(rail, { network: "demos" })(req()))
+      .rejects.toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
     expect(settle).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
+  });
+
+  // The refusal is of a fresh attempt only: nothing ran, so the store releases
+  // the key instead of holding it as an ambiguous attempt.
+  test("refuses a custom rail's fresh attempt without holding the key", async () => {
+    const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const store = createIdempotencyStore(log);
+    const settle = vi.fn<PayDemRail["settle"]>();
+    const request = req({ jobId: "job-refused-custom" });
+
+    await expect(payDemSettle({ address: PAYER, settle }, { network: "demos" }, { store })(request))
+      .rejects.toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
+    expect(settle).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
+
+    const client = fakeClient();
+    const transfer = vi.spyOn(client, "transfer");
+    await expect(payDemSettle(createPayDemClientRail(client), { network: "demos" }, {
+      store,
+    })(request)).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+    expect(transfer).toHaveBeenCalledTimes(1);
+  });
+
+  test("refuses both of two overlapping fresh attempts through a custom rail", async () => {
+    const settle = vi.fn<PayDemRail["settle"]>();
+    const bridge = payDemSettle({ address: PAYER, settle }, { network: "demos" });
+    const refused = {
+      status: "rejected",
+      reason: expect.objectContaining({
+        message: expect.stringMatching(/createPayDemRail or createPayDemClientRail.*refusing/),
+      }),
+    };
+
+    await expect(Promise.allSettled([bridge(req()), bridge(req())]))
+      .resolves.toEqual([refused, refused]);
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  // A payment a custom rail made before the upgrade must still reconcile:
+  // the bridge is built for any rail, and recovery never calls its settle.
+  test("reconciles a custom rail's retained attempt without calling the rail", async () => {
+    const log = createInMemorySettlementLog();
+    const request = req({ jobId: "job-retained-custom" });
+    await seedExpiredIntent(log, request);
+    const settle = vi.fn<PayDemRail["settle"]>();
+    const rail: PayDemRail = { address: PAYER, settle };
+    const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+      ok: true as const,
+      txHash: TX_HASH,
+      chainId: context.network,
+      payer: context.payer,
+      payee: context.payee,
+      finality: { model: "bft-final" as const },
+      blockNumber: 4242,
+      txRefKind: "demos" as const,
+      amountOs: context.amountOs,
+      execution: "executed" as const,
+    }));
+    const bridge = () => payDemSettle(rail, { network: "demos" }, {
+      store: createIdempotencyStore(log),
+      reconcile,
+    });
+
+    await expect(bridge()(request)).resolves.toMatchObject({
+      ok: true,
+      txHash: TX_HASH,
+      blockNumber: 4242,
+      payee: SELLER_HEX,
+    });
+    // After another restart the recorded outcome is re-authenticated, again
+    // without calling the rail.
+    await expect(bridge()(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(settle).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(0);
+    await expect(log.readOutcome!(settlementKey("pay-dem", "job-retained-custom", 0)))
+      .resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
   });
 
   test("calls only the SDK's own rails and a caller's object carrying their settle", async () => {
@@ -1446,8 +1524,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       const verified = await recordVerifiedRail();
       const settle = vi.fn((params: Parameters<PayDemRail["settle"]>[0], fence?: Parameters<PayDemRail["settle"]>[1]) =>
         verified.settle(params, fence));
-      expect(() => payDemSettle({ address: PAYER, settle }, { network: "demos" }))
-        .toThrow(/refusing/);
+      await expect(payDemSettle({ address: PAYER, settle }, { network: "demos" })(req()))
+        .rejects.toThrow(/refusing/);
       expect(settle).not.toHaveBeenCalled();
       expect(sdkTransfers()).toBe(0);
     });

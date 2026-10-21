@@ -19,6 +19,7 @@ import {
   type SettlementBinding,
   type SettlementEffectFence,
   type SettlementIdempotencyStore,
+  type SettlementNotInvokedResult,
   type SettlementReconcile,
 } from "./idempotency.js";
 
@@ -2718,14 +2719,12 @@ export function payDemSettle(
   // Only createPayDemRail's own settle reads and binds the transaction record
   // itself. A createPayDemClientRail settle's success is final only as the
   // exact object the SDK's own read minted for this payment (below); its
-  // failure proof stays held. Any other rail could never settle, so it is
-  // refused here, before it can transfer anything.
+  // failure proof stays held. Any other rail could never settle, so its
+  // settle is never called for a fresh attempt (`submit` below). The bridge
+  // is still built around it, so a payment it already made reconciles.
   const recordVerifiedRail = sdkRecordReadingSettles.has(railSettleTarget);
-  if (!recordVerifiedRail && !sdkClientRailSettles.has(railSettleTarget)) {
-    throw new DacsError(
-      "pay-dem rail settle must be the one createPayDemRail or createPayDemClientRail returned: another rail's result could never be final; refusing",
-    );
-  }
+  const freshSettleRail =
+    recordVerifiedRail || sdkClientRailSettles.has(railSettleTarget);
   const reconcileProperty = stableDataProperty(
     opts,
     "reconcile",
@@ -2864,7 +2863,24 @@ export function payDemSettle(
       network,
       finality: Object.freeze({ model: "bft-final" }),
     }) satisfies Readonly<SettlementBinding>;
-    const submit = async (effectFence?: Readonly<SettlementEffectFence>) => {
+    const submit = async (
+      effectFence?: Readonly<SettlementEffectFence>,
+    ): Promise<SettleResult | SettlementNotInvokedResult> => {
+      // Decide before the effect: the store calls submit only for a fresh
+      // attempt or a reconciler-granted replay, never to recover a retained
+      // one. Nothing runs, so the store releases the key rather than hold it.
+      if (!freshSettleRail) {
+        return Object.freeze({
+          disposition: "not-invoked" as const,
+          result: Object.freeze({
+            ok: false,
+            txHash: "",
+            chainId: network,
+            payer: payerAddress,
+            payee: payeeAddress,
+          }),
+        });
+      }
       const submitted = await railSettle({
         recipient: payeeAddress,
         amount: amountOs,
@@ -2909,6 +2925,13 @@ export function payDemSettle(
       context,
       "cached or completed pay-dem settlement",
     );
+    // This rail's settle is never called, so a result with no transaction is
+    // submit's refusal: this call's, or a concurrent call's it shared.
+    if (!freshSettleRail && !captured.ok && captured.txHash === "") {
+      throw new DacsError(
+        "pay-dem rail settle must be the one createPayDemRail or createPayDemClientRail returned: another rail's result could never be final; refusing",
+      );
+    }
     const known = authenticatedResults.get(key);
     if (
       known === undefined ||
