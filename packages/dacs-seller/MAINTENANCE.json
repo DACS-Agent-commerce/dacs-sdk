@@ -358,7 +358,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
       "originalSha256": null,
-      "sha256": "f15e2a1cb5373d61c8af3a0d49482f7dfa022aa69e1d15d8ee69899bc3332b61",
+      "sha256": "73726674808ce86476066d2f745ca09c8b3ee8eb454fcf8cf948b583b6e13585",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -430,19 +430,19 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "b3c9db9ab1d4e191f27b4bb28c868b1fd0d300ca8a731fc8f2b8f9a201d492f5",
+      "sha256": "c2fe20c0afd9b7f49887352b14339b86ff29eeb5a27509543072d727eb002087",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs",
       "originalSha256": null,
-      "sha256": "b67bcfc843626b123a3164d550b9f3072a1ecc903e2bd4f811446875ee9f578e",
+      "sha256": "bce1329adf21ba4479f2231b4aa41b43eb59143d0a0d5c9ad9eaed2aea4fbec8",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/test/payment-evidence-wallet-journal.test.mjs",
       "originalSha256": null,
-      "sha256": "0c7a6f7905b61164cdf0554462ad284e510de03300e9a6187441ae9237f9c966",
+      "sha256": "6fa9225f2e2710900a0f2b8bff205ac4154c43ec40121da7db9794437d8078c7",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     }
   ]

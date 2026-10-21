@@ -52,7 +52,9 @@ const presentChallenge = (party, presentedAt, sessionNonce) => {
 function demosNode() {
   const ID = DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
   const blocks = [{ number: 0, status: 'confirmed', hash: ID, content: { timestamp: 0, ordered_transactions: [] }, validation_data: { simulated: true, chainIdentity: ID } }];
-  const txs = new Map(), programs = new Map(), nonces = new Map(), creates = [];
+  // `nonces`: the last nonce each writer signed; `accountNonces`: the nonce of
+  // its last applied transaction (the node's account nonce).
+  const txs = new Map(), programs = new Map(), nonces = new Map(), accountNonces = new Map(), creates = [];
   // The name index for a program: `indexDown` does not answer, `indexEmpty`
   // answers no rows, `beforeSearch` runs before it answers. `searches` lists them.
   const faults = { indexDown: () => false, indexEmpty: () => false, beforeSearch: async () => {} }, searches = [];
@@ -106,9 +108,17 @@ function demosNode() {
   };
   // A storage CREATE the writer's wallet signed (Demos: ed25519 over the tx hash).
   // `land: false` signs it without the node applying it (a dropped submission);
-  // `rebroadcast(hash)` applies a signed CREATE the node has not applied, once.
+  // `rebroadcast(hash)` applies a signed CREATE the node has not applied, once,
+  // and only while its nonce is above its writer's account nonce: as on node
+  // 61b8e75 (validateTransaction, mempool), a transaction whose nonce a later
+  // write of the same account has reached can never be included.
   const pending = new Map();
-  const rebroadcast = (hash) => { const apply = pending.get(hash); pending.delete(hash); apply?.(); };
+  const rebroadcast = (hash) => {
+    const signed = pending.get(hash);
+    if (!signed || signed.nonce <= (accountNonces.get(signed.owner) ?? 0)) return;
+    pending.delete(hash);
+    signed.apply();
+  };
   const create = (writer, { logicalAddress, artifact, artifactKind, deliveryBinding }, { land = true } = {}) => {
     const owner = writer.address, programName = core.logicalToStorageProgramName(logicalAddress), nonce = (nonces.get(owner) ?? 0) + 1;
     nonces.set(owner, nonce);
@@ -118,18 +128,23 @@ function demosNode() {
     content.data[1].metadata = metadata;
     content.from_ed25519_address = owner;
     const hash = core.sha256Hex(JSON.stringify(content)), signed = { hash, content, signature: { type: 'ed25519', data: writer.signWallet(hash) } };
-    pending.set(hash, () => {
+    pending.set(hash, { owner, nonce, apply: () => {
       include(signed);
+      accountNonces.set(owner, nonce);
       programs.set(storageAddress, { success: true, storageAddress, owner, programName, data: clone(artifact), metadata: clone(metadata), createdByTx: hash, interactionTxs: [hash] });
       creates.push({ logicalAddress, artifactKind, hash });
-    });
+    } });
     if (land) rebroadcast(hash);
     return clone(signed);
   };
   const reader = createDemosSr2Adapter({ rpcUrl: RPC, journal: createInMemoryDemosSr2Journal(), fetchImpl });
   // A transfer's block and inclusion time (ms), as the pay-dem observer reads them.
   const inclusion = (hash) => { const { blockNumber } = txs.get(hash); return { blockNumber, includedAt: blocks[blockNumber].content.timestamp * 1000 }; };
-  return { fetchImpl, pay, create, rebroadcast, reader, creates, programs, faults, searches, inclusion, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000 };
+  // The wallet's chain reads: its account nonce, and whether a transaction was
+  // applied (this node keeps no mempool, so anything else is absent).
+  const accountNonce = (owner) => accountNonces.get(owner) ?? 0;
+  const transactionState = (hash) => (txs.has(String(hash).toLowerCase()) ? 'applied' : 'absent');
+  return { fetchImpl, pay, create, rebroadcast, reader, creates, programs, faults, searches, inclusion, accountNonce, transactionState, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000 };
 }
 
 // The application's Deliverable producer: a report bound to the job, its
@@ -146,7 +161,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // for an anchor attempt that was sent or whose outcome is unknown; `reconcile:
 // false` leaves it out. `walletJournal: true` composes the evidence anchor and
 // that question from the package's createPaymentEvidenceWalletJournal over
-// the wallet's sign and broadcast primitives (`faults.signCreate`: 'throw'
+// the wallet's sign, broadcast and chain-read primitives (`faults.signCreate`: 'throw'
 // before signing; `faults.broadcast`: 'drop' (the node never applies it) or
 // 'lost' (applied, then the answer is lost)); `restartWallet()` reopens it.
 async function world(t, { deliverableProducer = null, schemaUrl = true, idempotentWallet = true, reconcile = true, walletJournal = false } = {}) {
@@ -237,8 +252,10 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
       if (faults.signCreate.shift() === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
       const signed = node.create(sellerKey, { logicalAddress, artifact, artifactKind }, { land: false });
       signedCreates.set(logicalAddress, signed); written.set(logicalAddress, clone(artifact)); effects.signed.push(signed.hash);
-      return { signedTransaction: JSON.stringify(signed), txHash: signed.hash };
+      return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
     },
+    readAccountNonce: async () => node.accountNonce(sellerKey.address),
+    readTransactionState: async ({ txHash }) => node.transactionState(txHash),
     broadcast: async ({ signedTransaction, txHash }) => {
       effects.broadcast.push(signedTransaction);
       const fault = faults.broadcast.shift();
@@ -462,8 +479,9 @@ test('a confirmed anchor is not sent again when the name index later reads it ab
 
 // DACS-4 PC-7(b) is write-once and a name-index miss is no proof of absence
 // (CORE §5.1): the node answers its name search only for programs already
-// applied in a block and rejects only an existing storage address, which is
-// nonce-derived, so a second CREATE under the same name lands. With a plain
+// applied in a block and, besides a nonce its writer's account has reached,
+// rejects only an existing storage address, which is nonce-derived, so a
+// second CREATE under the same name lands. With a plain
 // wallet, an anchor that was sent (or whose answer was lost) and does not read
 // back yet is waited for, never sent again.
 for (const [label, fault] of [['an anchor the wallet sent', undefined], ['an anchor whose answer was lost after the write', 'lost']]) {
@@ -533,6 +551,37 @@ test('the shipped wallet journal takes a paid order to delivery with one CREATE 
     assert.equal(w.createsAt(address), 1, `${label}: one CREATE`);
     assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
     assert.equal(new Set(w.effects.broadcast).size, 1, `${label}: every broadcast is the same signed bytes`);
+  }
+});
+
+// DACS-4 PC-7(b) with the shipped journal when the kept CREATE can no longer
+// be included: its broadcast was dropped and another job's commitment, a later
+// write of the same seller wallet, landed above its nonce. The journal reads
+// that from the chain, answers 'unsigned', and the same evidence is signed
+// anew once: one evidence CREATE, and the order is delivered.
+test('the shipped wallet journal signs anew, once, an evidence CREATE another write of the seller wallet overtook: one CREATE and delivery, also across a restart of the host and the wallet', async (t) => {
+  for (const restart of [false, true]) {
+    const w = await world(t, { idempotentWallet: false, walletJournal: true });
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults.broadcast.push('drop');
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', shown(held));
+    assert.equal(w.createsAt(address), 0, 'the node did not apply it');
+    const overtaken = w.signedCreate(address);
+    await w.purchase();
+    assert.ok(w.node.accountNonce(w.sellerKey.address) > overtaken.content.nonce, 'another job\'s commitment landed above the kept nonce');
+    if (restart) { await w.restart(); w.restartWallet(); }
+    let answer = held;
+    for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `restart ${restart}: ${shown(answer)}`);
+    assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to delivery');
+    assert.equal(w.createsAt(address), 1, 'one evidence CREATE');
+    assert.equal(w.effects.signed.length, 2, 'signed anew once');
+    assert.notEqual(w.signedCreate(address).hash, overtaken.hash, 'the applied CREATE is the new signature');
+    assert.equal(w.node.transactionState(overtaken.hash), 'absent', 'the overtaken CREATE never lands');
+    assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+    assert.equal(w.effects.signed.length, 2, 'once read back, never signed again');
+    assert.equal(w.createsAt(address), 1);
   }
 });
 

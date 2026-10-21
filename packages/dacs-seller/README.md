@@ -106,15 +106,24 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   - any other answer or a throw keeps the claim held (`reconcileError` keeps
     the cause).
 
-  `createPaymentEvidenceWalletJournal({ path, signCreate, broadcast })` gives
-  both functions from the operator's wallet primitives: `signCreate(input)`
-  signs, and does not send, the storage CREATE (`{ signedTransaction, txHash
-  }`), and `broadcast({ signedTransaction, txHash })` sends exactly those
-  bytes. The journal keeps the signed CREATE in its SQLite file (a private
-  0600 file) before it broadcasts it, signs an address at most once, answers
-  `unsigned` only for an address it kept nothing for, and otherwise
+  `createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
+  readAccountNonce, readTransactionState })` gives both functions from the
+  operator's wallet primitives. `signCreate(input)` signs, and does not send,
+  the storage CREATE (`{ signedTransaction, txHash, nonce }`).
+  `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
+  `readAccountNonce()` reads the wallet account's nonce on the chain, and
+  `readTransactionState({ txHash })` answers `applied`, `pending` or `absent`.
+  The journal keeps the signed CREATE and its nonce in its SQLite file (a
+  private 0600 file) before it broadcasts it, and keeps at most one live signed
+  CREATE per address. While that CREATE can still be included, the journal
   broadcasts the same signed bytes again (`rebroadcast`, or `pending` when the
-  broadcast fails). An unknown readback sends nothing and asks nothing.
+  broadcast fails). The node refuses a transaction whose nonce the account has
+  reached. So once the account nonce has reached the kept nonce (read first),
+  and the CREATE is then neither applied nor pending, the journal marks it
+  superseded (and keeps it). It then answers `unsigned`, and the next anchor
+  signs the same evidence anew, with a higher nonce. A read that fails, times
+  out (`readTimeoutMs`, 10 s by default) or answers anything else never
+  supersedes it. An unknown readback sends nothing and asks nothing.
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
