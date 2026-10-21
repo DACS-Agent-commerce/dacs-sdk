@@ -129,17 +129,14 @@ below).
   answer naming the retained hash is accepted, recorded as the key's attempt
   and saved. Every audit reads the attempt record, and a record naming
   another hash refuses it, whatever the bridge holds in memory.
-  One more source binds the hash. When `runSession` re-audits a saved success
-  named by SettlementEvidence the buyer signed and anchored for the job, and
-  that evidence signed the payer, the request also carries
-  `anchoredEvidence` (`{ txHash, chainId }` of the evidence's transaction).
-  It is accepted only beside a retained history naming that same hash and
-  network, and only after the SDK's own read of the node's record for the hash
-  (payer, payee, amount, block, nonce) and the reconciler agree. It lets a
-  paid session finish when the rail log lost its attempt record (for
-  example, an in-memory log over a restart); it never overrides a record
-  naming another hash, and evidence that signed no payer (minted before
-  payers were bound) is not passed, so it still binds only through the log.
+  Nothing else binds it. SettlementEvidence the buyer signed and anchored
+  names a hash, but DACS-4 §9.5.9 declares no settlement-side job binding
+  for pay-dem and SB-2 gives an outer evidence signature or an anchor no
+  collision authority, so it cannot bind the hash to this job: another job
+  could cite the same transfer. When the rail log has lost the key's attempt
+  record, the audit is held as indeterminate (never repaid, never counted)
+  until the attempt record is restored or the payment is resolved by hand
+  against the node's record (the SDK has no operator path for it).
 - Checkpoint and evidence members the SDK now writes (`errorClass`,
   `failureProofJson`, `networkFeeOs`, the evidence `payer`) carry no schema
   version. An older SDK reads such a record as invalid, so there is no

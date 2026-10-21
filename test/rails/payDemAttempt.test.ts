@@ -387,44 +387,41 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
   });
 });
 
-// The session's buyer-signed, anchored SettlementEvidence names the paid hash
-// for its job. When the rail log has lost the key's attempt record, that binds
-// the hash, but only beside the SDK's own read of the node's record for it.
-describe("pay-dem binds a retained hash through the session's anchored evidence", () => {
+// DACS-4 §9.5.9 declares no settlement-side job binding for pay-dem, and SB-2
+// says an outer SettlementEvidence signature, an SR-2 anchor or a caller field
+// is not collision authority. So a request member that names a hash (the buyer's
+// anchored evidence is one) never binds it to a job the rail log has no attempt
+// record for: the same transfer would otherwise be credited to every job.
+describe("pay-dem never binds a retained hash through a caller-supplied evidence member", () => {
   const anchored = (txHash: string, chainId = "demos") => ({ txHash, chainId });
-  const audited = (job: string, over: Partial<SettleRequest> = {}): SettleRequest =>
-    ({ ...request(job, hashA, true), anchoredEvidence: anchored(hashA), ...over });
+  const claimed = (job: string): SettleRequest =>
+    ({ ...request(job, hashA, true), anchoredEvidence: anchored(hashA) }) as SettleRequest;
 
-  test("finishes an audit over an empty rail log without signing or sending", async () => {
+  test("the same transfer is not credited to two jobs over an empty rail log", async () => {
     const run = processes();
-    const reconcile = vi.fn(async () => executed(hashA));
-    const audit = await auditingProcess(run.store("B"), reconcile);
-    await expect(audit.settle(audited("job-a")))
-      .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
-    expect(audit.once).not.toHaveBeenCalled();
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
+    for (const job of ["job-a", "job-b"]) {
+      await expect(audit.settle(claimed(job))).rejects.toThrow(
+        /no SDK record binds the retained transaction to this payment/,
+      );
+      await expect(run.log.readAttempt!(`pay-dem:${job}:0`)).resolves.toBeNull();
+    }
     expect(audit.submit).not.toHaveBeenCalled();
-    await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
     expect(sdkTransfers()).toBe(0);
     expect(demosNode.broadcast).not.toHaveBeenCalled();
   });
 
-  test("the same audit without the evidence stays unbound", async () => {
-    const audit = await auditingProcess(processes().store("B"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
+  test("a recorded attempt still binds only its own job's hash", async () => {
+    const run = processes();
+    resetDemosNode({ payer, txHash: hashA, nonce: 7 });
+    await expect(payDemSettle(await sdkRail(), {}, { store: run.store("A") })(request("job-a")))
+      .resolves.toMatchObject({ ok: true, txHash: hashA });
+    run.restart();
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(claimed("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    await expect(audit.settle(claimed("job-b"))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
-  });
-
-  test.each([
-    ["another hash than the history", audited("job-a", { anchoredEvidence: anchored(hashB) })],
-    ["another network", audited("job-a", { anchoredEvidence: anchored(hashA, "other") })],
-    ["a malformed transaction", audited("job-a", { anchoredEvidence: anchored("xyz") })],
-    ["an extra member", audited("job-a", { anchoredEvidence: { ...anchored(hashA), ok: true } as never })],
-    ["no history at all", { ...request("job-a"), anchoredEvidence: anchored(hashA) }],
-  ] as const)("refuses evidence with %s", async (_label, req) => {
-    const audit = await auditingProcess(processes().store("B"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(req)).rejects.toThrow(/anchored evidence/);
-    expect(audit.submit).not.toHaveBeenCalled();
   });
 
   test("still refuses a hash the key's own attempt record contradicts", async () => {
@@ -436,23 +433,9 @@ describe("pay-dem binds a retained hash through the session's anchored evidence"
     run.restart();
     serveNodeRecord(hashA, { payer, payee, nonce: 7 });
     const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(audited("job-a"))).rejects.toThrow(
+    await expect(audit.settle(claimed("job-a"))).rejects.toThrow(
       /conflicts with this key's recorded attempt/,
     );
-  });
-
-  test("still needs the node's record to match the payment", async () => {
-    // The node holds the hash for another payee: the SDK's own read refuses it.
-    serveNodeRecord(hashA, { payer, payee: "ef".repeat(32), nonce: 7 });
-    const audit = await auditingProcess(processes().store("B"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(audited("job-a"))).rejects.toThrow(/could not establish the node record/);
-    expect(audit.submit).not.toHaveBeenCalled();
-  });
-
-  test("still holds a reconciler's answer for another block", async () => {
-    const audit = await auditingProcess(processes().store("B"),
-      vi.fn(async () => ({ ...executed(hashA), blockNumber: 43 })));
-    await expect(audit.settle(audited("job-a"))).rejects.toThrow(/contradicts the node record/);
   });
 });
 
@@ -473,7 +456,6 @@ describe("pay-dem over a log without attempt records", () => {
     await expect(audit.settle(request("job-a", hashA, true))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(audit.settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-a", txHash: hashA }));
-    expect(audit.once).not.toHaveBeenCalled();
     expect(audit.submit).not.toHaveBeenCalled();
   });
 

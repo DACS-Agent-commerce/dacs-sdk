@@ -151,15 +151,6 @@ export interface SettleRequest {
    * settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
-  /**
-   * Supplied only to `resumeSettlement`, and only when the session re-audits a
-   * native success named by SettlementEvidence the buyer signed and anchored
-   * for this job (its signature authenticated just before). It names that
-   * evidence's transaction. A rail whose own log has lost the attempt record
-   * of the payment may bind a retained hash to the payment through it, after
-   * reading the node's record for the hash itself. Ordinary requests omit it.
-   */
-  anchoredEvidence?: { txHash: string; chainId: string };
 }
 
 export interface SettlementRecoveryAttempt {
@@ -4379,7 +4370,6 @@ export async function runSessionCore(
     label: string,
     prior?: LegacyDurableSettlementOutcome | DurableSettlementOutcome,
     persist = true,
-    anchoredEvidence?: { txHash: string; chainId: string },
   ): Promise<DurableSettlementOutcome> => {
     if (!deps.resumeSettlement) {
       throw new CounterpartyError(
@@ -4413,7 +4403,6 @@ export async function runSessionCore(
     const recoveryRequest: SettleRequest = {
       ...settleRequest,
       ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
-      ...(anchoredEvidence === undefined ? {} : { anchoredEvidence }),
     };
     const recovered = snapshotSettleResult(
       await deps.resumeSettlement(
@@ -4796,9 +4785,6 @@ export async function runSessionCore(
       // SDK's own rail log for this key, whose binding names the paying wallet.
       const authenticated = await recoverRailOutcome(
         "saved native success evidence requires execution reconciliation", prior, false,
-        // Evidence that signed no payer (minted before payers were bound) names
-        // the transaction but not who paid it: that binds only through the rail log.
-        signedPayer === undefined ? undefined : { txHash: identity.txHash, chainId: identity.chainId },
       );
       // Re-assert every chain fact the signed evidence claims: block, kind,
       // finality (minted from the rail's finality, provider-receipt when it

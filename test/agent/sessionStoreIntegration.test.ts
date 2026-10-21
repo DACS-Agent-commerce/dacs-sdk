@@ -1943,10 +1943,19 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         reconcile,
       }) });
       const run = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
-      // The evidence the buyer signed and anchored for this job names the hash,
-      // and the SDK reads the node's record for it (payer, payee, amount, block),
-      // so an empty rail log no longer strands the paid session.
-      await expect(run).resolves.toMatchObject({ outcome: "completed" });
+      if (railLog === "durable rail log") {
+        await expect(run).resolves.toMatchObject({ outcome: "completed" });
+      } else {
+        // Without the SDK's own record the hash is unbound: held, never re-sent.
+        // The buyer's anchored evidence names it, but pay-dem declares no
+        // settlement-side job binding (DACS-4 §9.5.9) and SB-2 gives an anchor
+        // no collision authority, so it cannot bind the hash to this job.
+        await expect(run).rejects.toThrow(
+          "no SDK record binds the retained transaction",
+        );
+        expect(await store.load("job-1")).toEqual(before);
+        expect([...kv]).toEqual(evidence);
+      }
       expect(reconcile).toHaveBeenCalledOnce();
       expect(demosNode.transfers).toBe(1);
       expect(demosNode.broadcasts).toBe(1);

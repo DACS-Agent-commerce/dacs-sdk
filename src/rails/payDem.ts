@@ -2270,7 +2270,7 @@ function sdkRecoveryReader(
     if (normalizedDemosAccount(expected.payer) !== normalizedDemosAccount(wallet)) {
       return { state: "indeterminate", reason: "the payment's payer is not this rail's wallet" };
     }
-    // Read the node's fork state afresh for every recovery: demosdk's
+    // Read the node's fork state afresh for every recovery:
     // demosdk 4.0.16's `getNetworkInfo` keeps an instance's first reply for good
     // (later versions may refresh it), so a rail that read the fork inactive
     // could hold every payment signed after it.
@@ -2737,31 +2737,6 @@ function retainedPayDemAttempt(
   return retained === undefined ? undefined : Object.freeze({ txHash: retained, succeeded });
 }
 
-/**
- * The transaction the session's buyer-signed, anchored SettlementEvidence names
- * for this job, when the audit request carries it, in canonical form. It is
- * accepted only beside a retained history naming the same hash and network.
- */
-function anchoredEvidenceTxHash(
-  req: SettleRequest,
-  network: string,
-  retained: string | undefined,
-): string | undefined {
-  const anchored = stableDataProperty(req, "anchoredEvidence", "pay-dem anchored evidence");
-  if (!anchored.found || anchored.value === undefined) return undefined;
-  const value = snapshotCanonicalJsonRead(anchored.value, "pay-dem anchored evidence");
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new DacsError("pay-dem anchored evidence is malformed");
-  }
-  const record = value as Record<string, unknown>;
-  const hash = canonicalDemosTxHash(record.txHash);
-  if (Object.keys(record).length !== 2 || hash === null || record.chainId !== network ||
-      retained === undefined || hash !== retained) {
-    throw new DacsError("pay-dem anchored evidence does not name the retained transaction; refusing reuse or rebroadcast");
-  }
-  return hash;
-}
-
 const NO_READABLE_ATTEMPT_RECORD =
   "pay-dem settlement store records no attempt this bridge can read back; refusing to start a new transfer whose hash a restart could not bind (nothing was signed or sent; pass a createIdempotencyStore store over a log with readOutcome, putAttempt and readAttempt, with its own once, readOutcome and readAttempt)";
 
@@ -3130,7 +3105,6 @@ export function payDemSettle(
     }) satisfies Readonly<PayDemSettlementRecoveryContext>;
     const supplied = retainedPayDemAttempt(req, network);
     const suppliedTxHash = supplied?.txHash;
-    const anchoredTxHash = anchoredEvidenceTxHash(req, network, suppliedTxHash);
     const binding = Object.freeze({
       bindingVersion: "1",
       railId,
@@ -3317,13 +3291,7 @@ export function payDemSettle(
           existing !== null && existing.txHash === retainedTxHash &&
           existing.blockNumber === captured.blockNumber && sameSettledOutcome(existing, captured);
         // Another process may record this key's attempt while the chain read runs.
-        // The buyer-signed evidence the session anchored for this job names the
-        // hash too. That binds it when the log has lost the key's attempt
-        // record, as the evidence was minted from this key's own result; the
-        // SDK's read of the node's record (payer, payee, amount, block, nonce)
-        // above has already held the hash to this exact payment.
-        if (recordedBefore || outcomeNames(before) || outcomeNames(after) ||
-            anchoredTxHash === retainedTxHash || await attemptNames()) {
+        if (recordedBefore || outcomeNames(before) || outcomeNames(after) || await attemptNames()) {
           authenticatedResults.set(key, { context, result: captured, boundToKey: true });
           return publicPayDemResult(captured, expectedPayee);
         }

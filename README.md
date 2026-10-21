@@ -789,11 +789,10 @@ These two are SDK extension members inside the signed scope (a verifier that
 does not know them keeps them, as SIG-5 requires). `dacsSdkNetworkFeeOs` is the
 fee the node's record declares in `transaction_fee`, which can differ from the
 debit the chain took; it is not the Standard's `paymentFee`. When the rail log
-has lost the key's attempt record, evidence that signed the payer binds the
-retained hash to the payment instead, beside the SDK's own read of the node's
-record for it (payer, payee, amount, block, nonce): the session passes the
-transaction that evidence names to `resumeSettlement` as
-`req.anchoredEvidence`, only after the evidence's signature is authenticated.
+has lost the key's attempt record, the signed evidence does not bind the
+retained hash to the job (pay-dem declares no settlement-side job binding, and
+an evidence signature or anchor is not collision authority under DACS-4 SB-2),
+so the audit holds as indeterminate.
 Evidence signed before those fields existed is audited the same way, and its
 payer is the one the `payDemSettle` rail log recorded for the job's settlement
 key (that log's binding names the paying wallet; the audit fails closed when
