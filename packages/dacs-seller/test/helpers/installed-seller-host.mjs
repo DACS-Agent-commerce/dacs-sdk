@@ -156,6 +156,8 @@ const start = (extra = {}) => seller.startSellerHost({ signer, listing, dataDire
 
 // Refused configurations: each names its cause and starts nothing.
 const refusal = async (options) => { try { const host = await seller.startSellerHost(options); await host.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } };
+// The same for an agent an operator composes itself (createSellerAgent).
+const agentRefusal = async (options) => { try { const agent = await seller.createSellerAgent(options); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } };
 if (second !== null) {
   process.stdout.write(`${JSON.stringify({ secondProcess: await refusal({ signer, listing, dataDirectory, ...capabilities() }) })}\n`);
   process.exit(0);
@@ -176,6 +178,8 @@ out.refusedConfigurations = {
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
   otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
   scriptedJournal: await refusal({ signer, listing, dataDirectory, ...capabilities(), reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
+  scriptedAgent: await agentRefusal({ signer, listing, ...capabilities(), nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
+    reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
 };
 
 // The buyer derives the Agreement from the vetted input and signs its contribution.

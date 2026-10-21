@@ -2,17 +2,16 @@
 // delivery: startSellerHost with the package's wallet journal over scripted
 // wallet primitives and every other operator capability scripted, and the
 // package's own native payment evidence consumer reading a scripted in-memory
-// Demos node (marked as the fixture node it requires). A scripted wallet with
-// no journal, which startSellerHost refuses, runs the same agent behind the
-// same transport composition. The buyer proposes, commits, pays and claims
-// over the authenticated HTTP transport.
+// Demos node (marked as the fixture node it requires). The host and the agent
+// take the evidence anchor and its reconciliation only from one wallet
+// journal, so every wallet fault is one of the journal's primitives. The buyer
+// proposes, commits, pays and claims over the authenticated HTTP transport.
 // Commitment, payment evidence and the Deliverable are signed storage CREATEs
 // on that node, each read back through the package's SR-2 adapter.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
@@ -158,17 +157,18 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 
 // `schemaUrl: false`: the Listing's deliverable names no schema, so the SDK
 // runs no schema verifier over the prepared Deliverable.
-// `idempotentWallet: false`: the seller wallet signs a new CREATE on every
-// anchorEvidence call, as a plain Demos wallet does (the node checks only the
-// nonce-derived storage address, so a second CREATE under one name lands).
-// The host requires the wallet's journal question (reconcilePaymentEvidence)
-// for an anchor attempt that was sent or whose outcome is unknown; `reconcile:
-// false` leaves it out. `walletJournal: true` composes the evidence anchor and
-// that question from the package's createPaymentEvidenceWalletJournal over
-// the wallet's sign, broadcast and chain-read primitives (`faults.signCreate`: 'throw'
-// before signing; `faults.broadcast`: 'drop' (the node never applies it) or
-// 'lost' (applied, then the answer is lost)); `restartWallet()` reopens it.
-async function world(t, { deliverableProducer = null, schemaUrl = true, idempotentWallet = true, reconcile = true, walletJournal = false } = {}) {
+// The seller wallet is the package's createPaymentEvidenceWalletJournal over
+// the wallet's sign, broadcast and chain-read primitives on this node; a plain
+// Demos wallet signs a new CREATE whenever it is asked (the node checks only
+// the nonce-derived storage address, so a second CREATE under one name lands).
+// `faults.signCreate`: 'throw' before signing; `faults.broadcast`: 'drop' (the
+// node never applies it), 'lost' (applied, then the answer is lost) or 'other'
+// (the node applies instead a seller-signed CREATE of evidence naming another
+// transfer, as another tool holding the seller's key could write);
+// `faults.readAccountNonce`: 'throw'. `restartWallet()` reopens the journal.
+// The host requires the journal's question (reconcilePaymentEvidence);
+// `reconcile: false` leaves it out.
+async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -189,8 +189,10 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
   };
   // What each operator capability did. `faults` script the next answers;
   // `beforeDeliveryReconcile` runs before the delivery capability reconciles.
-  const effects = { anchorEvidence: [], reconcileEvidence: [], deliverySubmit: [], published: [], signCreate: [], signed: [], broadcast: [] };
-  const faults = { anchorEvidence: [], reconcileEvidence: [], deliverySubmit: [], signCreate: [], broadcast: [], beforeDeliveryReconcile: async () => {} };
+  // `effects.signCreate` lists the address of each signature asked of the
+  // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
+  const effects = { deliverySubmit: [], published: [], signCreate: [], signed: [], broadcast: [] };
+  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], beforeDeliveryReconcile: async () => {} };
 
   // The operator's Vet context for each job: references to the
   // counterparty-verified records its session admission keeps (DACS-2 §7.7.2).
@@ -240,16 +242,19 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
     verifyReceipt: async ({ logicalAddress, artifact, artifactKind, receipt, signedProjection }) =>
       node.reader.verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter: sellerKey.claim, artifactKind, signedProjection }),
   };
-  // The seller wallet's payment-evidence anchor. PC-7(b): by default idempotent
-  // on the dacs4:payment address, so a retry gets the earlier CREATE, never a
-  // second (`idempotentWallet: false` writes a new one on every call).
-  // `fail`: answers { status: 'refused' }, nothing signed; `throw`: throws
-  // before signing, which the agent cannot tell from a lost answer; `lost`:
-  // written, then the answer is lost (a throw); `dropped`: signed and answered,
-  // but the node never applied it; `other`: the wallet writes seller-signed
-  // evidence naming another transfer.
+  // The seller wallet's payment-evidence journal (DACS-4 PC-7(b)).
   const walletDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-wallet-')));
   t.after(() => rmSync(walletDirectory, { recursive: true, force: true }));
+  // Another tool with the seller's key lands its own CREATE at the address:
+  // seller-signed evidence naming another transfer.
+  const landOther = async (signed) => {
+    const op = signed.content.data[1], logicalAddress = op.metadata.logicalAddress;
+    const { signature: _signature, ...unsigned } = clone(op.data);
+    unsigned.paymentTxRefs = [{ ...unsigned.paymentTxRefs[0], txHash: 'd4'.repeat(32) }];
+    const artifact = await core.signComponentArtifact(unsigned, core.ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: sellerKey.claim, sign: sellerKey.sign });
+    signedCreates.set(logicalAddress, node.create(sellerKey, { logicalAddress, artifact, artifactKind: 'SettlementEvidence' }));
+    written.set(logicalAddress, clone(artifact));
+  };
   const openJournal = (file = 'wallet-journal.sqlite') => seller.createPaymentEvidenceWalletJournal({ path: join(walletDirectory, file),
     signCreate: async ({ logicalAddress, artifact, artifactKind }) => {
       effects.signCreate.push(logicalAddress);
@@ -258,53 +263,25 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
       signedCreates.set(logicalAddress, signed); written.set(logicalAddress, clone(artifact)); effects.signed.push(signed.hash);
       return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
     },
-    readAccountNonce: async () => node.accountNonce(sellerKey.address),
+    readAccountNonce: async () => {
+      if (faults.readAccountNonce.shift() === 'throw') throw new Error('TEST account nonce read failed');
+      return node.accountNonce(sellerKey.address);
+    },
     readTransactionState: async ({ txHash }) => node.transactionState(txHash),
     broadcast: async ({ signedTransaction, txHash }) => {
       effects.broadcast.push(signedTransaction);
       const fault = faults.broadcast.shift();
       if (fault === 'drop') return;
+      if (fault === 'other') return landOther(JSON.parse(signedTransaction));
       if (JSON.parse(signedTransaction).hash === txHash) node.rebroadcast(txHash);
       if (fault === 'lost') throw new Error('TEST broadcast answer lost after the node applied it');
     } });
-  let journal = walletJournal ? openJournal() : null;
-  t.after(() => journal?.close());
+  let journal = openJournal();
+  t.after(() => journal.close());
   // Reopens the wallet's journal: the host started after it anchors with the new one.
   const restartWallet = () => { journal.close(); journal = openJournal(); };
   const evidenceConsumer = (anchorEvidence) => createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl, anchorEvidence,
     readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) });
-  // The scripted seller wallet (no journal).
-  const scriptedEvidence = evidenceConsumer(async (input) => {
-      effects.anchorEvidence.push(input.logicalAddress);
-      const fault = faults.anchorEvidence.shift();
-      if (fault === 'fail') return { status: 'refused', reason: 'TEST wallet refused before signing' };
-      if (fault === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
-      let artifact = input.artifact;
-      if (fault === 'other') {
-        const { signature: _signature, ...unsigned } = clone(artifact);
-        unsigned.paymentTxRefs = [{ ...unsigned.paymentTxRefs[0], txHash: 'd4'.repeat(32) }];
-        artifact = await core.signComponentArtifact(unsigned, core.ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: sellerKey.claim, sign: sellerKey.sign });
-      }
-      if (fault === 'dropped') signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact, artifactKind: 'SettlementEvidence' }, { land: false }));
-      else if (!idempotentWallet && signedCreates.has(input.logicalAddress)) signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact, artifactKind: 'SettlementEvidence' }));
-      else writeOnce(input.logicalAddress, artifact, 'SettlementEvidence');
-      if (fault === 'lost') throw new Error('TEST wallet answer lost after the CREATE');
-      return { status: 'submitted', txHash: signedCreates.get(input.logicalAddress).hash };
-    });
-  // The scripted wallet's journal question (DACS-4 PC-7(b)): nothing signed for the
-  // address is 'unsigned'; a signed CREATE is broadcast again as the same
-  // signed transaction ('rebroadcast'). `throw` and `pending` script the answer.
-  const scriptedReconcile = async (input) => {
-    const { logicalAddress } = input;
-    effects.reconcileEvidence.push(logicalAddress);
-    const fault = faults.reconcileEvidence.shift();
-    if (fault === 'throw') throw Object.assign(new Error('TEST wallet journal unavailable'), { code: 'TEST-journal-down' });
-    if (fault === 'pending') return { status: 'pending', txHash: signedCreates.get(logicalAddress)?.hash ?? null };
-    const signed = signedCreates.get(logicalAddress);
-    if (!signed) return { status: 'unsigned', reason: 'TEST the wallet journal holds no CREATE for this address', journal: 'TEST'.repeat(4096) };
-    node.rebroadcast(signed.hash);
-    return { status: 'rebroadcast', txHash: signed.hash };
-  };
   const demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-host-native-delivery',
     resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
     resolveSeller: async ({ jobId }) => {
@@ -342,24 +319,10 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
   const capabilities = () => ({ signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer,
     observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); },
-    nativePaymentEvidence: journal ? evidenceConsumer(journal.anchorEvidence) : scriptedEvidence, demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(),
-    sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal ? journal.reconcilePaymentEvidence : scriptedReconcile } : {}) });
-  // startSellerHost takes the evidence anchor and its reconciliation only from
-  // one package wallet journal. A scripted wallet's vectors run the agent
-  // behind the same composition the host builds: its durable state, the
-  // authenticated transport and its journal, on loopback.
-  const composeHost = async () => {
-    const agent = await seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor });
-    mkdirSync(join(dataDirectory, 'transport'), { recursive: true, mode: 0o700 });
-    const store = seller.createSellerTransportStore({ path: join(dataDirectory, 'transport', 'transport.sqlite'), now: clock });
-    const authentication = seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: agent.listingPin, store, now: clock });
-    const server = createServer(seller.createSellerHttpHandler(agent, { authentication }));
-    await new Promise((resolve) => server.listen({ host: '127.0.0.1', port: 0 }, resolve));
-    return { url: `http://127.0.0.1:${server.address().port}`, issueSessionChallenge: (input) => agent.issueSessionChallenge(input),
-      close: () => new Promise((resolve) => { server.close(() => { store.close(); agent.close(); resolve(); }); server.closeIdleConnections(); }) };
-  };
+    nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(),
+    sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}) });
   const start = async () => {
-    const host = walletJournal || !reconcile ? await seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor }) : await composeHost();
+    const host = await seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor });
     hosts.push(host);
     return host;
   };
@@ -435,70 +398,43 @@ test('the host takes a native payment to anchored, read-back payment evidence an
   assert.equal(core.contentHash(read.artifact), answer.evidenceHash);
   assert.equal(read.artifact.jobId, p.jobId);
   assert.deepEqual(read.artifact.paymentTxRefs.map((ref) => ref.txHash), [tx]);
-  assert.deepEqual(w.effects.anchorEvidence, [address]);
+  assert.deepEqual(w.effects.signCreate, [address]);
   // While the delivery is not final, each claim runs the retained work again,
   // also on a restarted host: it reads the confirmed anchor back and sends nothing.
   assert.equal((await p.claim(tx)).status, 'payment-evidenced');
   await w.restart();
   assert.equal((await p.claim(tx)).status, 'payment-evidenced');
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'a confirmed anchor is not sent again');
-  assert.equal(w.createsAt(address), 1);
-});
-
-test('a payment-evidence anchor that failed is sent again on the buyer\'s next claim, and the order goes on to delivery (DACS-4 PC-7(b))', async (t) => {
-  const w = await world(t);
-  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  w.faults.anchorEvidence.push('fail');
-  const held = await p.claim(tx);
-  assert.equal(held.status, 'held', shown(held));
-  assert.equal(held.readback, 'absent');
-  assert.equal(held.anchorOutcome, 'refused');
-  assert.equal(w.createsAt(address), 0);
-  const answer = await p.claim(tx);
-  assert.equal(answer.status, 'payment-evidenced', shown(answer));
-  assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to the SDK delivery runner');
-  assert.deepEqual(w.effects.anchorEvidence, [address, address], 'sent again once the readback proved it absent');
-  assert.equal(w.createsAt(address), 1, 'one CREATE');
-  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
-  assert.equal(w.effects.anchorEvidence.length, 2, 'once confirmed, it is not sent again');
-});
-
-test('the anchor retry survives a restart: the restarted host sends the failed anchor again', async (t) => {
-  const w = await world(t);
-  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  w.faults.anchorEvidence.push('fail');
-  assert.equal((await p.claim(tx)).status, 'held');
-  await w.restart();
-  const answer = await p.claim(tx);
-  assert.equal(answer.status, 'payment-evidenced', shown(answer));
-  assert.deepEqual(w.effects.anchorEvidence, [address, address]);
+  assert.deepEqual(w.effects.signCreate, [address], 'a confirmed anchor is not signed again');
+  assert.equal(w.effects.broadcast.length, 1, 'nor sent again');
   assert.equal(w.createsAt(address), 1);
 });
 
 test('an anchor whose answer was lost after the write is read back, not sent again', async (t) => {
   const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  w.faults.anchorEvidence.push('lost');
+  w.faults.broadcast.push('lost');
   const answer = await p.claim(tx);
   assert.equal(answer.status, 'payment-evidenced', shown(answer));
   assert.equal((await p.claim(tx)).status, 'payment-evidenced');
-  assert.deepEqual(w.effects.anchorEvidence, [address]);
+  assert.deepEqual(w.effects.signCreate, [address]);
+  assert.equal(w.effects.broadcast.length, 1);
   assert.equal(w.createsAt(address), 1);
 });
 
 test('an indeterminate readback sends nothing: the anchor is sent again only on a proven absence', async (t) => {
   const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  w.faults.anchorEvidence.push('fail');
+  w.faults.signCreate.push('throw');
   assert.equal((await p.claim(tx)).status, 'held');
   w.node.faults.indexDown = (programName) => programName === core.logicalToStorageProgramName(address);
   const unknown = await p.claim(tx);
   assert.equal(unknown.status, 'held', shown(unknown));
   assert.equal(unknown.readback, 'indeterminate');
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'nothing is sent while the readback is unknown');
+  assert.deepEqual(w.effects.signCreate, [address], 'nothing is asked or sent while the readback is unknown');
   w.node.faults.indexDown = () => false;
   assert.equal((await p.claim(tx)).status, 'payment-evidenced');
-  assert.deepEqual(w.effects.anchorEvidence, [address, address]);
+  assert.deepEqual(w.effects.signCreate, [address, address]);
+  assert.equal(w.effects.signed.length, 1);
   assert.equal(w.createsAt(address), 1);
 });
 
@@ -510,7 +446,8 @@ test('a confirmed anchor is not sent again when the name index later reads it ab
   await p.claim(tx);
   w.node.faults.indexEmpty = () => false;
   assert.equal((await p.claim(tx)).status, 'payment-evidenced');
-  assert.deepEqual(w.effects.anchorEvidence, [address]);
+  assert.deepEqual(w.effects.signCreate, [address]);
+  assert.equal(w.effects.broadcast.length, 1);
   assert.equal(w.createsAt(address), 1);
 });
 
@@ -518,15 +455,15 @@ test('a confirmed anchor is not sent again when the name index later reads it ab
 // (CORE §5.1): the node answers its name search only for programs already
 // applied in a block and, besides a nonce its writer's account has reached,
 // rejects only an existing storage address, which is nonce-derived, so a
-// second CREATE under the same name lands. With a plain
-// wallet, an anchor that was sent (or whose answer was lost) and does not read
-// back yet is waited for, never sent again.
+// second CREATE under the same name lands. An anchor that was sent (or whose
+// answer was lost) and does not read back yet is waited for: the journal
+// broadcasts the same signed bytes again and nothing is signed anew.
 for (const [label, fault] of [['an anchor the wallet sent', undefined], ['an anchor whose answer was lost after the write', 'lost']]) {
   test(`${label} is not sent again while the name index lags: one CREATE (DACS-4 PC-7(b) write-once)`, async (t) => {
-    const w = await world(t, { idempotentWallet: false });
+    const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
     w.node.faults.indexEmpty = (programName) => programName === name;
-    if (fault) w.faults.anchorEvidence.push(fault);
+    if (fault) w.faults.broadcast.push(fault);
     for (const claim of [1, 2, 3]) {
       const held = await p.claim(tx);
       assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
@@ -535,14 +472,15 @@ for (const [label, fault] of [['an anchor the wallet sent', undefined], ['an anc
     }
     await w.restart();
     assert.equal((await p.claim(tx)).status, 'held', 'nor after a restart');
-    assert.deepEqual(w.effects.anchorEvidence, [address], 'the wallet is asked once');
+    assert.deepEqual(w.effects.signCreate, [address], 'the wallet is asked to sign once');
+    assert.equal(new Set(w.effects.broadcast).size, 1, 'every broadcast is the same signed bytes');
     assert.equal(w.createsAt(address), 1, 'one CREATE at the payment address');
     // The index catches up: the one CREATE reads back and the order goes on.
     w.node.faults.indexEmpty = () => false;
     const answer = await p.claim(tx);
     assert.equal(answer.status, 'payment-evidenced', shown(answer));
     assert.equal(typeof answer.delivery, 'object');
-    assert.deepEqual(w.effects.anchorEvidence, [address]);
+    assert.deepEqual(w.effects.signCreate, [address]);
     assert.equal(w.createsAt(address), 1);
   });
 }
@@ -551,13 +489,13 @@ test('the host does not start without the wallet\'s journal question: a paid ord
   await assert.rejects(world(t, { reconcile: false }), { name: 'TypeError', message: /requires reconcilePaymentEvidence$/ });
 });
 
-// DACS-4 PC-7(b): the answers that let the agent sign the same evidence again
-// ('refused' from the anchor, 'unsigned' from the reconciliation) are taken
+// DACS-4 PC-7(b): the answer that lets the agent sign the same evidence again
+// ('unsigned' from the reconciliation; no answer of the anchor does) is taken
 // only from one package wallet journal, which keeps every signed CREATE and
-// reads its fate from the chain. A wallet that would answer them falsely
-// never reaches the host.
+// reads its fate from the chain. A wallet that would answer falsely never
+// reaches the host (nor an agent composed directly: seller-settlement-profile).
 test('the host takes the evidence anchor and its reconciliation only from one wallet journal: a scripted \'refused\' or \'unsigned\' answer cannot authorize a second signature', async (t) => {
-  const w = await world(t, { idempotentWallet: false, walletJournal: true });
+  const w = await world(t);
   const journal = w.walletJournal(), other = w.openJournal('other-journal.sqlite');
   t.after(() => other.close());
   const refused = async () => ({ status: 'refused', reason: 'TEST a wallet that says it sent nothing' });
@@ -580,9 +518,8 @@ test('the host takes the evidence anchor and its reconciliation only from one wa
 // (the node's name index answers 503 once) is a held answer with its cause,
 // never an uncertain effect that only a read-only reconciliation can reach.
 test('a readback outage on the buyer\'s retry keeps the paid order a retry: once the node answers, the evidence is anchored once and the order is delivered, also across a restart', async (t) => {
-  for (const [label, options, kind, fault, restart] of [['a refused anchor', {}, 'anchorEvidence', 'fail', false],
-    ['a dropped broadcast (shipped wallet journal), across a restart', { idempotentWallet: false, walletJournal: true }, 'broadcast', 'drop', true]]) {
-    const w = await world(t, options);
+  for (const [label, kind, fault, restart] of [['signing threw', 'signCreate', 'throw', false], ['a dropped broadcast, across a restart', 'broadcast', 'drop', true]]) {
+    const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
     w.faults[kind].push(fault);
     assert.equal((await p.claim(tx)).status, 'held', label);
@@ -599,7 +536,7 @@ test('a readback outage on the buyer\'s retry keeps the paid order a retry: once
     assert.equal(answer.status, 'payment-evidenced', `${label}, restart ${restart}: ${shown(answer)}`);
     assert.equal(typeof answer.delivery, 'object', `${label}: the paid order is handed to delivery`);
     assert.equal(w.createsAt(address), 1, `${label}: one CREATE`);
-    if (options.walletJournal) assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
+    assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
   }
 });
 
@@ -609,9 +546,8 @@ test('a readback outage on the buyer\'s retry keeps the paid order a retry: once
 // back first; the journal decides any resend), never sends twice, and hands
 // the claim back to the ordinary retry until the order is delivered.
 test('a payment claim a crash left reserved and unfinished is not stranded: the restarted host runs the retained work again, anchors once and delivers', async (t) => {
-  for (const [label, options, kind, fault] of [['signing threw (shipped wallet journal)', { idempotentWallet: false, walletJournal: true }, 'signCreate', 'throw'],
-    ['the broadcast was dropped (shipped wallet journal)', { idempotentWallet: false, walletJournal: true }, 'broadcast', 'drop']]) {
-    const w = await world(t, options);
+  for (const [label, kind, fault] of [['signing threw', 'signCreate', 'throw'], ['the broadcast was dropped', 'broadcast', 'drop']]) {
+    const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
     w.faults[kind].push(fault);
     assert.equal((await p.claim(tx)).status, 'held', label);
@@ -621,29 +557,36 @@ test('a payment claim a crash left reserved and unfinished is not stranded: the 
     assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
     assert.equal(typeof answer.delivery, 'object', `${label}: the paid order is handed to delivery`);
     assert.equal(w.createsAt(address), 1, `${label}: one CREATE`);
-    if (options.walletJournal) {
-      assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
-      assert.equal(new Set(w.effects.broadcast).size, 1, `${label}: every broadcast is the same signed bytes`);
-    }
+    assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
+    assert.equal(new Set(w.effects.broadcast).size, 1, `${label}: every broadcast is the same signed bytes`);
     assert.equal((await p.claim(tx)).status, 'payment-evidenced', `${label}: the delivered order answers again`);
     assert.equal(w.createsAt(address), 1);
   }
 });
 
-test('a wallet that throws is not a refusal: while the journal does not answer, the anchor is not sent again on an absent readback', async (t) => {
-  const w = await world(t, { idempotentWallet: false });
+// The same before the evidence checkpoint: a host that died during the
+// buyer's first payment claim, before the agent retained any work, sent
+// nothing (everything before the checkpoint is free of external effects and
+// replay-idempotent). The restarted host runs that claim again from its start
+// through reconciliation and hands it back to the ordinary retry: the paid
+// order is anchored once and delivered, and a repeated claim answers the same.
+test('a crash during the first payment claim, before any work is retained, does not strand the paid order: the restarted host runs the claim again, anchors once and delivers', async (t) => {
+  const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  w.faults.anchorEvidence.push('throw');
-  const held = await p.claim(tx);
-  assert.equal(held.status, 'held', shown(held));
-  assert.equal(held.anchorError?.code, 'TEST-wallet-failed', 'the wallet error keeps its cause');
-  assert.equal(held.anchorOutcome, 'unknown');
-  w.faults.reconcileEvidence.push('throw');
+  await w.crashMidClaim(p, tx);
+  assert.equal((await w.retainedSession(p.jobId)).nativeEvidenceWork, undefined, 'no work was retained before the crash');
+  await w.restart();
+  let answer = { status: 'not-claimed' };
+  for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to delivery');
+  assert.equal(w.createsAt(address), 1, 'one CREATE');
+  assert.equal(w.effects.signed.length, 1, 'signed once');
   const again = await p.claim(tx);
-  assert.equal(again.status, 'held', shown(again));
-  assert.equal(again.readback, 'indeterminate');
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'only a { status: \'refused\' } answer or the journal\'s \'unsigned\' lets the anchor be sent again');
-  assert.equal(w.createsAt(address), 0);
+  assert.equal(again.status, 'payment-evidenced', 'the repeated claim answers the same');
+  assert.equal(again.evidenceHash, answer.evidenceHash);
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.effects.signed.length, 1);
 });
 
 // DACS-4 PC-7(b) with the package's own wallet journal: the exact signed
@@ -653,7 +596,7 @@ test('a wallet that throws is not a refusal: while the journal does not answer, 
 // broadcast carries the same signed bytes.
 test('the shipped wallet journal takes a paid order to delivery with one CREATE after a throw before signing, a dropped broadcast or a lost answer, across a restart of the host and the wallet', async (t) => {
   for (const [label, kind, fault] of [['signing threw', 'signCreate', 'throw'], ['the broadcast was dropped', 'broadcast', 'drop'], ['the broadcast answer was lost', 'broadcast', 'lost']]) {
-    const w = await world(t, { idempotentWallet: false, walletJournal: true });
+    const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
     w.faults[kind].push(fault);
     const first = await p.claim(tx);
@@ -677,7 +620,7 @@ test('the shipped wallet journal takes a paid order to delivery with one CREATE 
 // anew once: one evidence CREATE, and the order is delivered.
 test('the shipped wallet journal signs anew, once, an evidence CREATE another write of the seller wallet overtook: one CREATE and delivery, also across a restart of the host and the wallet', async (t) => {
   for (const restart of [false, true]) {
-    const w = await world(t, { idempotentWallet: false, walletJournal: true });
+    const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
     w.faults.broadcast.push('drop');
     const held = await p.claim(tx);
@@ -704,34 +647,36 @@ test('the shipped wallet journal signs anew, once, an evidence CREATE another wr
 // DACS-4 PC-7(b): the anchor retry catches up, idempotent on the payment
 // address. An attempt that was sent or whose outcome is unknown and does not
 // read back is resolved by the wallet's own journal (reconcilePaymentEvidence):
-// only 'unsigned' lets the same bytes be sent again; a rebroadcast of the one
-// signed transaction is waited for. A plain wallet writes a new CREATE on every
-// call, so each vector counts the CREATEs.
+// only 'unsigned' lets the same evidence be anchored again; a rebroadcast of
+// the one signed transaction is waited for. A throw from the wallet is not a
+// refusal: the anchor's own answer never lets it be sent again.
 test('a wallet that threw before signing is asked its journal: nothing signed, so the same evidence is sent once more and the order is delivered, also after a restart', async (t) => {
   for (const restart of [false, true]) {
-    const w = await world(t, { idempotentWallet: false });
+    const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-    w.faults.anchorEvidence.push('throw');
+    w.faults.signCreate.push('throw');
     const held = await p.claim(tx);
     assert.equal(held.status, 'held', shown(held));
-    assert.equal(held.anchorOutcome, 'unknown');
-    assert.deepEqual(w.effects.reconcileEvidence, [], 'the first claim only reads back');
+    assert.equal(held.anchorOutcome, 'unknown', 'a throw is not a refusal');
+    assert.equal(held.anchorError?.code, 'TEST-wallet-failed', 'the wallet error keeps its cause');
+    assert.equal(held.readback, 'indeterminate', 'the first claim only reads back');
+    assert.deepEqual(w.effects.signCreate, [address]);
     if (restart) await w.restart();
     const answer = await p.claim(tx);
     assert.equal(answer.status, 'payment-evidenced', shown(answer));
     assert.equal(typeof answer.delivery, 'object', 'the paid order is handed to the SDK delivery runner');
-    assert.deepEqual(w.effects.reconcileEvidence, [address], 'the wallet journal is asked once');
-    assert.deepEqual(w.effects.anchorEvidence, [address, address], 'sent again once, after the journal proved nothing signed');
+    assert.deepEqual(w.effects.signCreate, [address, address], 'asked again once, after the journal proved nothing signed');
+    assert.equal(w.effects.signed.length, 1, 'signed once');
     assert.equal(w.createsAt(address), 1, 'one CREATE');
     assert.equal((await p.claim(tx)).status, 'payment-evidenced');
-    assert.equal(w.effects.anchorEvidence.length, 2, 'once read back, never sent again');
+    assert.equal(w.effects.signCreate.length, 2, 'once read back, never sent again');
   }
 });
 
 test('a sent anchor the node dropped is broadcast again as the same signed transaction, never signed anew: one CREATE, then delivery', async (t) => {
-  const w = await world(t, { idempotentWallet: false });
+  const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  w.faults.anchorEvidence.push('dropped');
+  w.faults.broadcast.push('drop');
   const held = await p.claim(tx);
   assert.equal(held.status, 'held', shown(held));
   assert.equal(held.anchorOutcome, 'sent');
@@ -740,56 +685,65 @@ test('a sent anchor the node dropped is broadcast again as the same signed trans
   await w.restart();
   const pending = await p.claim(tx);
   assert.equal(pending.status, 'held', 'the rebroadcast is waited for, not read in the same claim');
-  assert.deepEqual(w.effects.reconcileEvidence, [address]);
+  assert.equal(w.effects.broadcast.length, 2, 'the journal broadcast it again');
   assert.equal(w.createsAt(address), 1, 'the same signed CREATE landed');
   assert.deepEqual(w.signedCreate(address), signed, 'the exact signed bytes, not a new transaction');
   const answer = await p.claim(tx);
   assert.equal(answer.status, 'payment-evidenced', shown(answer));
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'the wallet is asked to anchor once');
+  assert.deepEqual(w.effects.signCreate, [address], 'the wallet is asked to sign once');
+  assert.equal(new Set(w.effects.broadcast).size, 1, 'every broadcast is the same signed bytes');
   assert.equal(w.createsAt(address), 1);
 });
 
 test('a lost anchor answer while the name index lags: the journal names the one signed CREATE, nothing is signed again, and the order goes on once it reads back', async (t) => {
-  const w = await world(t, { idempotentWallet: false });
+  const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
   w.node.faults.indexEmpty = (programName) => programName === name;
-  w.faults.anchorEvidence.push('lost');
+  w.faults.broadcast.push('lost');
   for (const claim of [1, 2, 3]) {
     const held = await p.claim(tx);
     assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
     assert.equal(held.readback, 'indeterminate');
     assert.equal(held.anchorOutcome, 'unknown');
   }
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'the wallet is asked to anchor once');
+  assert.deepEqual(w.effects.signCreate, [address], 'the wallet is asked to sign once');
   assert.equal(w.createsAt(address), 1, 'one CREATE');
   w.node.faults.indexEmpty = () => false;
   assert.equal((await p.claim(tx)).status, 'payment-evidenced');
   assert.equal(w.createsAt(address), 1);
 });
 
-test('a journal question that fails or does not answer \'unsigned\' sends nothing: the claim stays held with its cause', async (t) => {
-  const w = await world(t, { idempotentWallet: false });
+// The journal supersedes a kept CREATE only once it reads from the chain that
+// it can no longer be included. Here another write of the seller wallet
+// overtook its nonce, but the account nonce cannot be read: the same bytes are
+// broadcast again and nothing is signed anew; once the read answers, the
+// evidence is signed anew once and the order is delivered.
+test('a journal that cannot read a kept CREATE\'s fate signs nothing anew: the claim stays held, and once the read answers the evidence is signed anew once and delivered', async (t) => {
+  const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  w.faults.anchorEvidence.push('throw');
+  w.faults.broadcast.push('drop');
   assert.equal((await p.claim(tx)).status, 'held');
-  w.faults.reconcileEvidence.push('throw', 'pending');
-  const down = await p.claim(tx);
-  assert.equal(down.status, 'held', shown(down));
-  assert.equal(down.reconcileError?.code, 'TEST-journal-down', 'the journal error keeps its cause');
-  assert.equal(down.anchorOutcome, 'unknown');
-  const pending = await p.claim(tx);
-  assert.equal(pending.status, 'held', shown(pending));
-  assert.equal(pending.reconcileError, undefined);
-  assert.equal(pending.anchorOutcome, 'unknown');
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'nothing is sent while the journal does not prove nothing signed');
+  const overtaken = w.signedCreate(address);
+  await w.purchase();
+  assert.ok(w.node.accountNonce(w.sellerKey.address) > overtaken.content.nonce, 'another job\'s commitment landed above the kept nonce');
+  w.faults.readAccountNonce.push('throw', 'throw');
+  for (const claim of [1, 2]) {
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
+    assert.equal(held.anchorOutcome, 'sent', `claim ${claim}`);
+  }
+  assert.equal(w.effects.signed.length, 1, 'nothing is signed anew while the fate is unread');
+  assert.equal(new Set(w.effects.broadcast).size, 1, 'only the kept bytes are broadcast');
   assert.equal(w.createsAt(address), 0);
-  // The journal answers: nothing signed. The anchor is sent once and delivered.
-  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
-  assert.deepEqual(w.effects.anchorEvidence, [address, address]);
+  let answer = { status: 'not-claimed' };
+  for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(w.effects.signed.length, 2, 'signed anew once');
   assert.equal(w.createsAt(address), 1);
   const work = (await w.retainedSession(p.jobId)).nativeEvidenceWork;
-  assert.deepEqual(work.reconcileAnswer, { status: 'unsigned', reason: 'TEST the wallet journal holds no CREATE for this address' }, 'only the bounded status and reason of a journal answer are kept');
-  assert.equal(work.anchorOutcome, 'sent', 'the one resend after the journal answer was sent');
+  assert.equal(work.reconcileAnswer.status, 'unsigned');
+  assert.match(work.reconcileAnswer.reason, /can no longer be included$/, 'only the bounded status, hash and reason of a journal answer are kept');
+  assert.equal(work.anchorOutcome, 'sent', 'the one new signature was sent');
 });
 
 // Settlement credit (SB-2): one transfer claimed by two jobs gives neither
@@ -799,39 +753,43 @@ test('a journal question that fails or does not answer \'unsigned\' sends nothin
 test('settlement credit: a transfer another job also claims is anchored for neither job and handed to no delivery', async (t) => {
   const w = await world(t);
   const a = await w.purchase(), b = await w.purchase(), tx = a.pay(), address = paymentAddress(a);
-  w.faults.anchorEvidence.push('fail');
+  w.faults.signCreate.push('throw');
   assert.equal((await a.claim(tx)).status, 'held');
   assert.deepEqual(await b.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
   const reads = w.node.searches.length;
   assert.equal((await a.claim(tx)).error, 'seller_unavailable', 'no answer for a job whose credit is contested');
   assert.deepEqual(w.node.searches.slice(reads).filter((name) => name === core.logicalToStorageProgramName(address)), [], 'the contested checkpoint is not read back');
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'nothing is anchored once the credit is contested');
+  assert.deepEqual(w.effects.signCreate, [address], 'nothing is anchored once the credit is contested');
   assert.equal(w.createsAt(address) + w.createsAt(paymentAddress(b)), 0);
 });
 
 test('settlement credit is checked again right before the anchor is sent: a claim on another job during the readback stops it', async (t) => {
   const w = await world(t);
   const a = await w.purchase(), b = await w.purchase(), tx = a.pay(), address = paymentAddress(a), name = core.logicalToStorageProgramName(address);
-  w.faults.anchorEvidence.push('fail');
+  w.faults.signCreate.push('throw');
   assert.equal((await a.claim(tx)).status, 'held');
   let contested = null;
   w.node.faults.beforeSearch = async (programName) => { if (programName === name && contested === null) contested = await b.claim(tx); };
   assert.equal((await a.claim(tx)).error, 'seller_unavailable');
   assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' }, 'job B claimed the transfer while job A read back');
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'job A sends nothing once its credit is contested');
+  assert.deepEqual(w.effects.signCreate, [address], 'job A sends nothing once its credit is contested');
   assert.equal(w.createsAt(address), 0);
 });
 
+// Another tool holding the seller's key landed its own CREATE at the payment
+// address, of seller-signed evidence naming another transfer, in place of the
+// journal's: it reads back, but not as this payment's evidence.
 test('a readback that is not this payment\'s evidence is refused before delivery', async (t) => {
   const w = await world(t);
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
-  w.faults.anchorEvidence.push('other');
+  w.faults.broadcast.push('other');
   const answer = await p.claim(tx);
   assert.equal(answer.status, 'rejected', shown(answer));
   assert.equal(answer.reason, 'native-payment-evidence-scope-mismatch');
   assert.equal(answer.delivery, undefined, 'no delivery is attempted');
   assert.equal((await p.claim(tx)).status, 'rejected');
-  assert.deepEqual(w.effects.anchorEvidence, [address], 'a CREATE that is present is never sent again');
+  assert.deepEqual(w.effects.signCreate, [address], 'a CREATE that is present is never sent again');
+  assert.equal(w.effects.broadcast.length, 1);
 });
 
 // Delivery. Each party's Vet record is verified by its counterparty (DACS-2
@@ -844,7 +802,7 @@ test('a native payment is delivered: the Deliverable CREATE reads back bound to 
   assert.equal(answer.status, 'payment-evidenced', shown(answer));
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
   assert.equal(answer.delivery.logicalAddress, deliverable);
-  assert.deepEqual(w.effects.anchorEvidence, [paymentAddress(p)]);
+  assert.deepEqual(w.effects.signCreate, [paymentAddress(p)]);
   assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
   assert.equal(w.createsAt(deliverable), 1);
   // The CREATE reads back as the seller's Deliverable for this job, Agreement and settlement.
@@ -925,7 +883,7 @@ test('settlement credit is checked again before the Deliverable is sent: a claim
   w.faults.beforeDeliveryReconcile = async () => { if (contested === null) contested = await b.claim(tx); };
   assert.equal((await a.claim(tx)).error, 'seller_unavailable', 'no answer for a job whose credit is contested');
   assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' }, 'job B claimed the transfer during job A\'s delivery');
-  assert.deepEqual(w.effects.anchorEvidence, [paymentAddress(a)], 'job A\'s payment evidence was anchored before the claim on job B');
+  assert.deepEqual(w.effects.signCreate, [paymentAddress(a)], 'job A\'s payment evidence was anchored before the claim on job B');
   assert.deepEqual(w.effects.deliverySubmit, [], 'job A\'s Deliverable is not sent');
   assert.equal(w.createsAt(deliverable), 0);
   // A's anchored evidence is the input A's election was computed from.

@@ -61,6 +61,7 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
   './fixture-anchors.mjs':lifecycle?local:Object.fromEntries(['fixtureRef','signAnchorWrite','verifyFixtureRecord','verifyFixtureReceipt','fixtureTxRef','canonicalSignature'].map(n=>[n,forbidden])),
   './seller-durable-state.mjs':{createSellerDurableState:async()=>store},
   './native-payment-evidence-consumer.mjs':{NATIVE_PAYMENT_EVIDENCE:'native-fixture',nativePaymentEvidenceConfig:()=>null,checkNativePaymentEvidence:forbidden},
+  './payment-evidence-wallet-journal.mjs':{isPaymentEvidenceWalletJournalPair:()=>false},
   './dem-delivery-context-consumer.mjs':{demDeliveryContextConfig:()=>null,resolveDemDeliverySellerContext:forbidden},
   './native-dem-delivery-consumer.mjs':Object.fromEntries(['nativeDemDeliveryConfig','submitNativeDemDelivery','reconcileNativeDemDelivery','readNativeDemDelivery','verifyNativeDemDeliveryReceipt','isProvenUnsignedAbsence'].map(n=>[n,n==='nativeDemDeliveryConfig'?()=>null:forbidden])),
   './purchase-protocol.mjs':protocol,

@@ -117,6 +117,46 @@ test('a signCreate answer that is not the signed CREATE it names is refused: not
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast');
 });
 
+// The kept bytes must be a CREATE the node can execute and the SR-2 readback
+// (demos-sr2-adapter.mjs authenticate) can read back as this evidence: exactly
+// the signed projection (node 61b8e75 validateTransaction refuses a truthy
+// top-level `status`, which the signature does not cover), at the storage
+// address the writer, the program name and the nonce derive, from the writer on
+// both sender fields, with the readback's salt, encoding and metadata, and the
+// SDK's signature encoding. Kept otherwise, the CREATE could never land or read
+// back, and while its nonce is not overtaken it would never be superseded.
+test('a signed CREATE the node or the readback would refuse is not kept: exact projection, derived address, both senders, salt, encoding, metadata and signature encoding', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const meta = (key, value) => ({ edit: (content) => { content.data[1].metadata[key] = value; } });
+  const NOT_EVIDENCE = /not this evidence's storage CREATE/, NOT_AT = /not at the storage address/, PROJECTION = /not exactly the signed projection/, NOT_SIGNED = /not signed by the writer/;
+  for (const [label, change, message] of [
+    ['a truthy top-level status', { wrap: (signed) => ({ ...signed, status: 'confirmed' }) }, PROJECTION],
+    ['an empty top-level status', { wrap: (signed) => ({ ...signed, status: '' }) }, PROJECTION],
+    ['another top-level member', { wrap: (signed) => ({ ...signed, blockNumber: 7 }) }, PROJECTION],
+    ['another signature member', { wrap: (signed) => ({ ...signed, signature: { ...signed.signature, publicKey: 'TEST' } }) }, PROJECTION],
+    ['another destination', { edit: (content) => { content.to = `stor-${'c4'.repeat(20)}`; } }, NOT_AT],
+    ['another storage address in the operation', { edit: (content) => { content.data[1].storageAddress = `stor-${'c4'.repeat(20)}`; } }, NOT_AT],
+    ['a nonce edited after the address was derived', { nonce: 40, edit: (content) => { content.nonce = 41; } }, NOT_AT],
+    ['another from_ed25519_address', { edit: (content) => { content.from_ed25519_address = `0x${'b8'.repeat(32)}`; } }, NOT_SIGNED],
+    ['no from_ed25519_address', { edit: (content) => { delete content.from_ed25519_address; } }, NOT_SIGNED],
+    ['a salt', { edit: (content) => { content.data[1].salt = 'TEST'; } }, NOT_EVIDENCE],
+    ['another encoding', { edit: (content) => { content.data[1].encoding = 'raw'; } }, NOT_EVIDENCE],
+    ['another artifact kind', meta('artifactKind', 'Deliverable'), NOT_EVIDENCE],
+    ['another content hash', meta('contentHash', 'f2'.repeat(32)), NOT_EVIDENCE],
+    ['another envelope hash', meta('envelopeHash', 'f3'.repeat(32)), NOT_EVIDENCE],
+    ['no metadata', { edit: (content) => { delete content.data[1].metadata; } }, /is not a signed Demos transaction/],
+    ['a base64url signature', { wrap: (signed) => ({ ...signed, signature: { type: 'ed25519', data: Buffer.from(signed.signature.data.slice(2), 'hex').toString('base64url') } }) }, NOT_SIGNED],
+    ['an upper-case hex signature', { wrap: (signed) => ({ ...signed, signature: { type: 'ed25519', data: `0x${signed.signature.data.slice(2).toUpperCase()}` } }) }, NOT_SIGNED]]) {
+    w.faults.sign.push(change);
+    await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message }, label);
+    assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned', `${label}: nothing is kept`);
+  }
+  assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
+  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', 'the exact projection at the derived address is kept and sent');
+  assert.equal(w.calls.broadcast.length, 1);
+});
+
 test('the pair check names only one journal\'s own anchorEvidence and reconcilePaymentEvidence', async (t) => {
   const a = wallet(t).open(), b = wallet(t).open();
   t.after(() => { a.close(); b.close(); });

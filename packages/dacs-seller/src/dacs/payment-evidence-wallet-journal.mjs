@@ -22,13 +22,19 @@
 //    not send, the storage CREATE for input ({ logicalAddress, artifact, writer,
 //    artifactKind, jobId, receiptContentHash }); nonce is the transaction's
 //    account nonce (a positive safe integer). signedTransaction is the JSON of
-//    the Demos signed transaction { hash, content, signature } (the public
-//    signed projection the SR-2 readback authenticates). It is checked before it
-//    is kept: hash is txHash and the SHA-256 of JSON.stringify(content), its
-//    nonce is nonce, it is this CREATE_STORAGE_PROGRAM of exactly input.artifact
-//    at input.logicalAddress, from the writer's address, with the writer's
-//    Ed25519 signature over the hash. Anything else is refused (wallet_sign_invalid),
-//    and nothing is kept or sent;
+//    exactly the public signed projection { hash, content, signature: { type,
+//    data } } the SR-2 readback authenticates (of the SDK's signed transaction,
+//    only those three members: no `status`, `blockNumber` or
+//    `ed25519_signature`). It is checked before it is kept: hash is txHash and
+//    the SHA-256 of JSON.stringify(content), its nonce is nonce, it is this
+//    CREATE_STORAGE_PROGRAM of exactly input.artifact (salt '', encoding
+//    'json'; metadata logicalAddress, artifactKind, contentHash =
+//    receiptContentHash and envelopeHash = SHA-256 of the canonical artifact)
+//    at input.logicalAddress, with `to` and the operation's storageAddress the
+//    address the writer, the program name and the nonce derive, from the
+//    writer's address (`from` and `from_ed25519_address`), with the writer's
+//    Ed25519 signature over the hash as 0x and lower-case hex. Anything else is
+//    refused (wallet_sign_invalid), and nothing is kept or sent;
 //  - broadcast({ signedTransaction, txHash }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
 //  - readAccountNonce() -> the wallet account's current nonce on the chain (the
@@ -44,18 +50,21 @@
 //  Each read is given readTimeoutMs (default 10 s) to answer.
 // Returns { anchorEvidence, reconcilePaymentEvidence, close }: the first goes
 // into createNativePaymentEvidenceConsumer, the second is the host option.
-// startSellerHost takes the two only from one journal
-// (isPaymentEvidenceWalletJournalPair): their answers are the only authority
-// for a second signature of the same evidence.
+// createSellerAgent (and so startSellerHost) takes the two only from one
+// journal (isPaymentEvidenceWalletJournalPair): their answers are the only
+// authority for a second signature of the same evidence.
 import { closeSync, constants, lstatSync, openSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
+import { deriveStorageAddress } from './wallet-transactions.mjs';
 
 // Bounds on what signCreate answers before it is kept.
 const MAX_SIGNED_TRANSACTION = 1024 * 1024;
 const TX_HASH = /^[0-9a-f]{64}$/;
+// The SDK's Ed25519 signature encoding (demosdk sign: 0x and lower-case hex).
+const SIGNATURE = /^0x[0-9a-f]{128}$/;
 const TX_STATES = new Set(['applied', 'pending', 'absent']);
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const reason = (error) => String(error?.message ?? error).slice(0, 200);
@@ -70,19 +79,31 @@ export function isPaymentEvidenceWalletJournalPair(anchorEvidence, reconcilePaym
 
 // Why signCreate's answer is not the signed CREATE it names, or null. The fate
 // of a kept CREATE is read by its hash and nonce, so both must be the bytes'.
+// The bytes must also be what the node executes and the SR-2 readback
+// (demos-sr2-adapter.mjs authenticate) reads back as this evidence: kept
+// otherwise, they could never land, and while their nonce is not overtaken
+// they would never be superseded.
 function signedCreateProblem(answer, input) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
   const content = signed?.content, op = content?.data?.[1];
-  if (!object(signed) || !object(content) || !Array.isArray(content.data) || !object(op)) return 'is not a signed Demos transaction { hash, content, signature }';
+  if (!object(signed) || !object(content) || !Array.isArray(content.data) || !object(op) || !object(op.metadata)) return 'is not a signed Demos transaction { hash, content, signature }';
+  // Only members the signature covers: node 61b8e75 refuses a truthy top-level `status`.
+  if (Object.keys(signed).sort().join() !== 'content,hash,signature' || !object(signed.signature)
+      || Object.keys(signed.signature).sort().join() !== 'data,type') return 'is not exactly the signed projection { hash, content, signature: { type, data } }';
   if (signed.hash !== answer.txHash || sha256Hex(JSON.stringify(content)) !== answer.txHash) return 'does not hash to its txHash';
   if (content.nonce !== answer.nonce) return 'carries another nonce';
   let from;
   try { from = addressForClaim(input.writer); } catch { return 'names no writer address'; }
+  const programName = logicalToStorageProgramName(input.logicalAddress), metadata = op.metadata;
   if (content.type !== 'storageProgram' || content.data.length !== 2 || content.data[0] !== 'storageProgram' || op.operation !== 'CREATE_STORAGE_PROGRAM'
-      || op.programName !== logicalToStorageProgramName(input.logicalAddress) || op.metadata?.logicalAddress !== input.logicalAddress
-      || canonicalize(op.data) !== canonicalize(input.artifact)) return 'is not this evidence\'s storage CREATE';
-  if (content.from !== from || signed.signature?.type !== 'ed25519' || !verifyDemosSignature({ address: from, message: answer.txHash, signature: signed.signature.data })) return 'is not signed by the writer';
+      || op.programName !== programName || op.salt !== '' || op.encoding !== 'json' || canonicalize(op.data) !== canonicalize(input.artifact)
+      || metadata.logicalAddress !== input.logicalAddress || typeof input.artifactKind !== 'string' || metadata.artifactKind !== input.artifactKind
+      || metadata.contentHash !== input.receiptContentHash || metadata.envelopeHash !== sha256Hex(canonicalize(input.artifact))) return 'is not this evidence\'s storage CREATE';
+  if (content.from !== from || content.from_ed25519_address !== from || signed.signature.type !== 'ed25519' || typeof signed.signature.data !== 'string'
+      || !SIGNATURE.test(signed.signature.data) || !verifyDemosSignature({ address: from, message: answer.txHash, signature: signed.signature.data })) return 'is not signed by the writer';
+  const storageAddress = deriveStorageAddress(from, programName, answer.nonce, '');
+  if (content.to !== storageAddress || op.storageAddress !== storageAddress) return `is not at the storage address its writer, name and nonce derive (${storageAddress})`;
   return null;
 }
 

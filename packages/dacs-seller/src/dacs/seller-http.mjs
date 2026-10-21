@@ -31,8 +31,9 @@ const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_una
 // next call reads back first, so a `held` evidence answer or a delivery that
 // is not done yet runs the route again (journal retry). The agent sends its
 // evidence anchor again only when that readback proves it absent. A claim
-// whose effect a thrown error or a crash left uncertain runs that retained
-// work again through reconciliation, and goes back to the retry.
+// whose effect a thrown error or a crash left uncertain runs again through
+// reconciliation, from that retained work or, when the claim ended before the
+// checkpoint (nothing sent), from its start, and goes back to the retry.
 const PAYMENT_PATH = '/dacs/v1/payments';
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
@@ -153,10 +154,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           // absent/unknown facts remain fenced.
           const reconcile = contextStep ? context.reconcile : typeof agent.reconcileTransport === 'function' ? agent.reconcileTransport : null;
           const proof = reconcile && typeof authentication.store.reconcile === 'function' ? await reconcile({ request, body, rawBody }) : null;
-          // The first exception: a payment claim whose retained native
-          // evidence work ran again (`retry`, seller-agent.mjs
-          // reconcileTransport) and is not final. Its effect goes back to the
-          // ordinary retry, so the next claim runs that work again.
+          // The first exception: a native payment claim that ran again from
+          // what the agent retained (`retry`, seller-agent.mjs
+          // reconcileTransport: its retained evidence work, or its start when
+          // it ended before the work checkpoint) and is not final. Its effect
+          // goes back to the ordinary retry, so the next claim runs it again.
           const retry = !contextStep && req.url === PAYMENT_PATH && proof?.disposition === 'retry';
           if (proof?.disposition === 'present' || retry) {
             const text = JSON.stringify(proof.value);

@@ -9,7 +9,7 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../../src/dacs/wallet-transactions.mjs';
-import { logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 
 export const evidenceInput = (writer, extra = {}) => ({ logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:2', artifact: { TEST: 'evidence' }, writer,
   artifactKind: 'SettlementEvidence', jobId: 'TEST-job', receiptContentHash: 'e1'.repeat(32), ...extra });
@@ -28,18 +28,24 @@ export function walletChain({ state = newWalletChainState(), file = null } = {})
   const raw = createPublicKey(privateKey).export({ format: 'der', type: 'spki' }).subarray(12).toString('hex');
   const address = `0x${raw}`, claim = `did:demos:agent:${raw}`;
   const signHash = (hash) => `0x${sign(null, Buffer.from(hash, 'utf8'), privateKey).toString('hex')}`;
-  // `change` alters what is signed or what the answer claims (a hostile wallet).
+  // `change` alters what is signed or what the answer claims (a hostile wallet):
+  // `edit(content)` changes the content before it is hashed and signed, and
+  // `wrap(signed)` the signed transaction after it is signed.
   const signCreate = (input, change = {}) => {
     const nonce = change.nonce ?? chain.nextNonce++, programName = logicalToStorageProgramName(input.logicalAddress);
     const from = change.from ?? address, storageAddress = deriveStorageAddress(from, programName, nonce, '');
+    const artifact = change.artifact ?? input.artifact;
     const { content } = buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress: input.logicalAddress,
-      signedListing: change.artifact ?? input.artifact, nonce, timestamp: chain.timestamp++ });
+      signedListing: artifact, nonce, timestamp: chain.timestamp++ });
+    content.data[1].metadata = { logicalAddress: input.logicalAddress, contentHash: input.receiptContentHash, envelopeHash: sha256Hex(canonicalize(artifact)), artifactKind: input.artifactKind };
     content.from_ed25519_address = from;
+    change.edit?.(content);
     const hash = sha256Hex(JSON.stringify(content));
-    const signed = { hash, content, signature: { type: 'ed25519', data: change.signature ?? signHash(hash) } };
-    chain.signed[hash] = nonce;
+    const projection = { hash, content, signature: { type: 'ed25519', data: change.signature ?? signHash(hash) } };
+    const signed = change.wrap ? change.wrap(projection) : projection;
+    chain.signed[hash] = content.nonce;
     save();
-    return { signedTransaction: JSON.stringify(signed), txHash: change.txHash ?? hash, nonce: change.claimedNonce ?? nonce };
+    return { signedTransaction: JSON.stringify(signed), txHash: change.txHash ?? hash, nonce: change.claimedNonce ?? content.nonce };
   };
   const land = (hash) => {
     const nonce = chain.signed[hash];

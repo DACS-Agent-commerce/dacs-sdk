@@ -79,9 +79,22 @@ async function world(t) {
     railAuthority: steward.railAuthority(),
     sessionAdmission: admission.sessionAdmission,
   };
+  // The seller wallet's journal over wallet primitives that refuse: the native
+  // settlement chain takes the evidence anchor and its reconciliation only from
+  // one createPaymentEvidenceWalletJournal (`journal()`), in the agent as in the host.
+  let walletJournal = null;
+  const journal = () => {
+    if (!walletJournal) {
+      walletJournal = seller.createPaymentEvidenceWalletJournal({ path: join(dir(), 'wallet-journal.sqlite'), signCreate: refuse('anchorEvidence'), broadcast: refuse('broadcast'),
+        readAccountNonce: refuse('readAccountNonce'), readTransactionState: refuse('readTransactionState') });
+      t.after(() => walletJournal.close());
+    }
+    return walletJournal;
+  };
   const chain = {
-    nativePaymentEvidence: () => createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: refuse('anchorEvidence'), fetchImpl: refuse('fetch') }),
-    reconcilePaymentEvidence: refuse('reconcilePaymentEvidence'),
+    journal,
+    nativePaymentEvidence: ({ anchorEvidence = journal().anchorEvidence, fetchImpl = refuse('fetch') } = {}) => createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence, fetchImpl }),
+    get reconcilePaymentEvidence() { return journal().reconcilePaymentEvidence; },
     demDeliveryContext: (input = vetted, vetRequirements = invocationsFor(input)) => createDemDeliveryContext({ authority: 'TEST-settlement-profile', resolveBuyer: refuse('resolveBuyer'),
       resolveSeller: async () => { reached.push('resolveSeller'); return { disposition: 'present', value: { input: structuredClone(input), vetRequirements: structuredClone(vetRequirements) } }; } }),
     nativeDemDelivery: () => createNativeDemDeliveryCapability({ authority: 'TEST-settlement-profile', submit: refuse('submit'), reconcile: refuse('reconcile'), read: refuse('read'), verifyReceipt: refuse('deliveryVerifyReceipt') }),
@@ -105,6 +118,7 @@ async function world(t) {
 }
 const refused = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status }; } };
 const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
+const notCalled = async () => { throw new Error('TEST not called'); };
 
 test('a native agent without the Vet context and delivery chain signs, commits and takes payment for nothing', async (t) => {
   const w = await world(t);
@@ -265,7 +279,6 @@ test('the standalone host refuses to start without the whole chain to delivery',
 // finalized, the buyer's Agreement reads back once it is anchored, and the
 // transfer observation (native payment evidence) counts each fetch and fails.
 const clone = (value) => JSON.parse(JSON.stringify(value));
-const notReached = (name) => async () => { throw new Error(`${name} is not reached`); };
 function nativeChain(w) {
   const TX = 'a1'.repeat(32), BLOCK = 'b2'.repeat(32), seen = { publish: 0, fetch: 0 }, retained = { stored: null, agreement: null };
   const nativeArtifactAnchor = {
@@ -287,8 +300,7 @@ function nativeChain(w) {
       ? { disposition: 'present', artifact: clone(retained.agreement), ref: { anchor: { kind: 'storage-program', locator: logicalAddress }, contentHash: core.contentHash(retained.agreement) },
         native: { source: 'TEST-agreement', evidenceMode: 'TEST-scripted', nativeAddress: 'TEST-native-agreement', txRef: { kind: 'demos', txHash: 'c3'.repeat(32), blockNumber: 8 } } }
       : { disposition: 'absent', reason: 'TEST not anchored' }) };
-  const nativePaymentEvidence = createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: notReached('anchorEvidence'),
-    fetchImpl: async () => { seen.fetch++; throw new Error('TEST transfer observation is not answered'); } });
+  const nativePaymentEvidence = w.chain.nativePaymentEvidence({ fetchImpl: async () => { seen.fetch++; throw new Error('TEST transfer observation is not answered'); } });
   const options = (railAuthority, durableDirectory) => ({ ...w.capabilities, nativeArtifactAnchor, agreementAnchor, durableDirectory, railAuthority, nativePaymentEvidence,
     reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() });
   // The buyer finalizes the Agreement from both contributions and anchors it.
@@ -796,6 +808,31 @@ test('the native settlement profile needs the wallet journal question, so a paid
   for (const reconcilePaymentEvidence of [undefined, null]) {
     await assert.rejects(w.agent(complete(w, { durableDirectory: w.dir(), reconcilePaymentEvidence })), { name: 'TypeError', message: /needs reconcilePaymentEvidence/ });
   }
+});
+
+// DACS-4 PC-7(b): the answers that let the agent sign the same evidence again
+// come only from one package wallet journal, for an agent composed directly
+// (createSellerAgent is a public export) as for the host: a wallet or a
+// wrapper that answered them falsely could authorize a second signed CREATE.
+test('createSellerAgent takes the evidence anchor and its reconciliation only from one wallet journal: a scripted, mixed, wrapped or two-journal pair is refused at construction', async (t) => {
+  const w = await world(t);
+  const journal = w.chain.journal(), other = seller.createPaymentEvidenceWalletJournal({ path: join(w.dir(), 'other-journal.sqlite'), signCreate: notCalled, broadcast: notCalled,
+    readAccountNonce: notCalled, readTransactionState: notCalled });
+  t.after(() => other.close());
+  const refusedAnswer = async () => ({ status: 'refused', reason: 'TEST a wallet that says it sent nothing' });
+  const unsignedAnswer = async () => ({ status: 'unsigned', reason: 'TEST a wallet that says nothing can land' });
+  for (const [label, anchorEvidence, reconcilePaymentEvidence, extra = {}] of [['a scripted anchor and reconciliation', refusedAnswer, unsignedAnswer],
+    ['the journal\'s anchor with a scripted reconciliation', journal.anchorEvidence, unsignedAnswer], ['a scripted anchor with the journal\'s reconciliation', refusedAnswer, journal.reconcilePaymentEvidence],
+    ['the anchor and the reconciliation of two journals', journal.anchorEvidence, other.reconcilePaymentEvidence], ['a wrapper around the journal\'s anchor', (input) => journal.anchorEvidence(input), journal.reconcilePaymentEvidence],
+    ['the reconciliation as the anchor', journal.reconcilePaymentEvidence, journal.reconcilePaymentEvidence],
+    ['a scripted pair without session admission', refusedAnswer, unsignedAnswer, { sessionAdmission: null }]]) {
+    await assert.rejects(seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence({ anchorEvidence }), reconcilePaymentEvidence, ...extra })),
+      { name: 'TypeError', message: /only from one createPaymentEvidenceWalletJournal/ }, label);
+  }
+  // One journal's own pair is taken.
+  const agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
+  agent.close();
+  assert.deepEqual(w.reached, []);
 });
 
 test('over HTTP an admission refusal is definite and keeps no session: the same request runs again and is refused for its consumed challenge, and a presentation under its own challenge is signed', async (t) => {

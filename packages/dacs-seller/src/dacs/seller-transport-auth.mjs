@@ -535,9 +535,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // The host may resolve only the SAME retained operation, after its seller
     // reducer has authenticated durable context and fresh native readback. No
     // reservation, slot or transaction is released; no expired intent retries.
-    // retry (payments only): the agent ran its retained payment work again and
-    // it is not final yet; the effect goes back to `retry`, as finish would
-    // leave it, so the next claim runs that work again under the same slot.
+    // retry (payments only): the agent ran the payment claim again (its
+    // retained work, or its start when it ended before the work checkpoint)
+    // and it is not final yet; the effect goes back to `retry`, as finish would
+    // leave it, so the next claim runs it again under the same slot.
     reconcile(reservation, request, status, text, { retry = false } = {}) {
       requireJobId(request?.jobId);
       if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);

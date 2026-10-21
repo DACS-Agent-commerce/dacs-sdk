@@ -81,23 +81,29 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
   node or name-index outage) is a `held` answer with its cause
-  (`nativeReadCode`), and a claim whose effect a thrown error or a crashed
-  host left uncertain runs that retained work again through reconciliation,
-  then goes back to the same retry, so a paid order is never stranded.
+  (`nativeReadCode`). A claim whose effect a thrown error or a crashed host
+  left uncertain runs again through reconciliation, from what the agent
+  retained: after the checkpoint its retained work runs again; before it
+  (a crash during the first claim) nothing was sent and every step is
+  replay-idempotent, so the same claim runs again from its start, under the
+  same gates. Either way the claim then goes back to the same retry, so a
+  paid order is never stranded. Until a gate that refuses the claim (a closed
+  buyer access, an unusable rail) passes again, its claims answer `503
+  operation_uncertain` and run again on the next one.
 - Payment evidence is anchored through `nativePaymentEvidence`'s
   `anchorEvidence` (DACS-4 PC-7(b), write-once) and answered for by the
-  required `reconcilePaymentEvidence`. The host takes the two only from one
-  `createPaymentEvidenceWalletJournal` (the journal's own `anchorEvidence`
-  inside the consumer, and its `reconcilePaymentEvidence`): any other pair,
-  a wrapper or two journals included, is refused at start, so the answers
-  that allow a second signature come only from the journal's own records.
+  required `reconcilePaymentEvidence`. The agent, whether the host composes
+  it or an operator does with `createSellerAgent`, takes the two only from
+  one `createPaymentEvidenceWalletJournal` (the journal's own
+  `anchorEvidence` inside the consumer, and its `reconcilePaymentEvidence`):
+  any other pair, a wrapper or two journals included, is refused when it is
+  constructed (and by the host at start), so the answers that allow a second
+  signature come only from the journal's own records.
   The agent keeps each attempt before it calls the wallet. It sends the same
-  bytes again on the buyer's next claim (or after a restart) only when no
-  attempt can have written them: the last attempt never reached the wallet
-  (a crash after the evidence checkpoint), the wallet answered
-  `{ status: "refused", reason }` (only an agent composed with
-  `createSellerAgent` can get it: the journal never answers it), or the
-  wallet's journal answered `{ status: "unsigned" }` (below).
+  evidence again on the buyer's next claim (or after a restart) only when no
+  attempt can have written it: the last attempt never reached the wallet
+  (a crash after the evidence checkpoint), or the wallet's journal answered
+  `{ status: "unsigned" }` (below). No answer of the anchor itself allows it.
   It also needs a readback that finds nothing: at most once per request,
   never in the request of the first attempt, and never once a readback has
   authenticated it. A name-index miss is no proof that nothing landed
@@ -122,13 +128,23 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   readAccountNonce, readTransactionState })` gives both functions from the
   operator's wallet primitives. `signCreate(input)` signs, and does not send,
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
-  `signedTransaction` is the JSON of the Demos signed transaction `{ hash,
-  content, signature }`. Before it is kept, the journal checks it is what it
-  claims: `hash` is `txHash` and the SHA-256 of `JSON.stringify(content)`, its
-  nonce is `nonce`, and it is the `CREATE_STORAGE_PROGRAM` of exactly this
-  evidence at this logical address, from the writer's address, with the
-  writer's Ed25519 signature over the hash. Anything else is refused
-  (`wallet_sign_invalid`), and nothing is kept or sent.
+  `signedTransaction` is the JSON of exactly the public signed projection
+  `{ hash, content, signature: { type, data } }` of the Demos signed
+  transaction: of the SDK's `sign()` result, only those three members (its
+  `status`, `blockNumber` and `ed25519_signature` are left out; node 61b8e75
+  refuses a truthy `status`, which the signature does not cover). Before it is
+  kept, the journal checks it is what the node executes and the SR-2 readback
+  reads back as this evidence: `hash` is `txHash` and the SHA-256 of
+  `JSON.stringify(content)`, its nonce is `nonce`, and it is the
+  `CREATE_STORAGE_PROGRAM` of exactly this evidence (salt `''`, encoding
+  `json`, metadata `logicalAddress`, `artifactKind`, `contentHash` =
+  `receiptContentHash` and `envelopeHash` = the SHA-256 of the canonical
+  evidence) at this logical address, with `to` and the operation's
+  `storageAddress` the address the writer, the program name and the nonce
+  derive, from the writer's address (`from` and `from_ed25519_address`), with
+  the writer's Ed25519 signature over the hash as `0x` and lower-case hex.
+  Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
+  sent.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads the wallet account's nonce on the chain, and
   `readTransactionState({ txHash })` answers `applied` (executed), `pending`

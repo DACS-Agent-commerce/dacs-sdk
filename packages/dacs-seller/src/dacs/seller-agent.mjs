@@ -54,6 +54,7 @@ import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProbl
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
+import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
 import { nativeDemDeliveryConfig, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
 import {
@@ -95,9 +96,10 @@ import { proposalTimeProblem } from './seller-proposal-time.mjs';
 export { proposalTimeProblem } from './seller-proposal-time.mjs';
 const FINALISED_SKEW_MS = 5 * 60 * 1000;
 // Payment-evidence anchor outcomes after which no attempt can land: it never
-// reached the wallet, the wallet refused it before signing, or the wallet's
-// journal answered that nothing it signed for the address can be included.
-const UNSENT_ANCHOR_OUTCOMES = Object.freeze(['not-sent', 'refused', 'unsigned']);
+// reached the wallet (the agent's own record), or the wallet's journal
+// answered that nothing it signed for the address can be included. No wallet
+// answer to the anchor itself is one: any answer is 'sent'.
+const UNSENT_ANCHOR_OUTCOMES = Object.freeze(['not-sent', 'unsigned']);
 // Readback failures of retained native evidence work (the commitment and
 // Agreement readback): a retry answers them as held, with the cause.
 const RETAINED_READBACK_FAILURES = new Set(['commitment_failed', 'commitment_readback_required', 'substrate_unavailable', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'seller_agreement_readback_required']);
@@ -203,11 +205,19 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (admission && !nativeProfile) throw new TypeError('the simulated fixture profile takes no sessionAdmission');
   if (nativeProfile) anchors = NATIVE_PROFILE_FIXTURE;
   const settlementChain = nativeEvidence !== null && deliveryContext !== null && nativeDelivery !== null;
-  // DACS-4 PC-7(b) catch-up: a profile that opens sessions and takes payment
-  // needs the wallet's journal question, so an anchor whose outcome is unknown
-  // (a throw, a crash during the wallet call, a dropped submission) always has
-  // a way to land; without it a paid order would be held for good.
-  if (settlementChain && admission && reconcilePaymentEvidence === null) throw new TypeError('the native settlement profile needs reconcilePaymentEvidence, the seller wallet\'s journal question for the evidence anchor (createPaymentEvidenceWalletJournal)');
+  // DACS-4 PC-7(b) catch-up: a profile that takes payment needs the wallet's
+  // journal question, so an anchor whose outcome is unknown (a throw, a crash
+  // during the wallet call, a dropped submission) always has a way to land;
+  // without it a paid order would be held for good. Its answer ('unsigned') is
+  // the only one that lets the agent sign the same evidence again, so the
+  // anchor and the question come from one createPaymentEvidenceWalletJournal,
+  // which keeps every signed CREATE and reads its fate from the chain: any
+  // other pair, a wrapper or two journals included, is refused, for an agent
+  // composed directly as for the host.
+  if (settlementChain && reconcilePaymentEvidence === null) throw new TypeError('the native settlement profile needs reconcilePaymentEvidence, the seller wallet\'s journal question for the evidence anchor (createPaymentEvidenceWalletJournal)');
+  if (settlementChain && !isPaymentEvidenceWalletJournalPair(nativeEvidence.anchorEvidence, reconcilePaymentEvidence)) {
+    throw new TypeError('the native settlement profile takes the payment-evidence anchor and reconcilePaymentEvidence only from one createPaymentEvidenceWalletJournal: nativePaymentEvidence must anchor with its anchorEvidence');
+  }
   // Checked before any session, signature, read or write. These profile gates
   // (and native_evidence_required, bundle_finalization_unavailable) are
   // seller-http.mjs SELLER_PRE_EFFECT_REFUSALS: definite no-effect refusals.
@@ -1377,11 +1387,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
   }
 
-  // One call of the operator's wallet anchor with the exact retained evidence,
+  // One call of the wallet journal's anchor with the exact retained evidence,
   // under the job lock and settlement credit, its attempt kept before the call
-  // as `anchorOutcome: 'unknown'`. Only an answer { status: 'refused', reason }
-  // (the wallet signed and sent nothing) makes it 'refused'; any other answer
-  // is 'sent', and a throw or a crash during the call leaves it 'unknown'.
+  // as `anchorOutcome: 'unknown'`. Any answer makes it 'sent' (no answer of the
+  // anchor proves that nothing was signed: only the journal's reconciliation
+  // can), and a throw or a crash during the call leaves it 'unknown'.
   async function anchorNativePaymentEvidence(session, work) {
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
     work.anchorAttempts = (work.anchorAttempts ?? 1) + 1;
@@ -1390,17 +1400,19 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     try {
       const answer = await nativeEvidence.anchorEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId: session.jobId, receiptContentHash: work.intake.evidenceHash });
       work.anchorAnswer = walletAnswer(answer);
-      work.anchorOutcome = answer?.status === 'refused' ? 'refused' : 'sent';
+      work.anchorOutcome = 'sent';
       delete work.anchorError;
     } catch (error) { work.anchorError = { code: error.code ?? 'unknown', message: String(error.message).slice(0, 240) }; }
     persist(session);
   }
 
   // DACS-4 PC-7(b): the anchor retry is idempotent on the payment address. An
-  // attempt that was sent or whose outcome is unknown, and that does not read
-  // back, is resolved only by the wallet that holds its signed transaction:
-  // `reconcilePaymentEvidence` answers from the wallet's own journal for this
-  // exact evidence. Only { status: 'unsigned' } (it holds no transaction it
+  // attempt that was sent or whose outcome is unknown (or a retained 'refused'
+  // of an earlier version), and that does not read back, is resolved only by
+  // the wallet that holds its signed transaction: `reconcilePaymentEvidence`
+  // answers from the wallet's own journal for this exact evidence (the agent
+  // takes it only from one createPaymentEvidenceWalletJournal, with that
+  // journal's anchor). Only { status: 'unsigned' } (it holds no transaction it
   // signed for this address that is or can still be included) lets the same
   // bytes be sent again; { status: 'rebroadcast' | 'pending', txHash } (the one signed
   // transaction was sent again, or is still pending) keeps the readback
@@ -1428,9 +1440,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // wallet boundary. Every later call or restart reads back first. DACS-4
   // PC-7(b), write-once: the anchor is sent again with the same bytes only
   // when no attempt can have written it, that is when the last attempt never
-  // ran (a crash after the checkpoint, 'not-sent'), the wallet refused it
-  // before signing ('refused') or its journal answered that nothing it signed
-  // can land ('unsigned'), and the readback finds nothing; at most once per
+  // ran (a crash after the checkpoint, 'not-sent') or the wallet's journal
+  // answered that nothing it signed can land ('unsigned'), and the readback
+  // finds nothing; at most once per
   // call and never in the call of the first attempt. A name-index miss is no
   // proof of absence (CORE §5.1): after an attempt that was sent or whose
   // outcome is unknown (a throw, a crash during the call), nothing is sent
@@ -1474,7 +1486,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (recovered) return recovered;
     }
     let read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
-    if (retry && read.disposition === 'absent' && reconcilePaymentEvidence && ['sent', 'unknown'].includes(work.anchorOutcome)) await reconcileNativePaymentEvidence(session, work);
+    if (retry && read.disposition === 'absent' && reconcilePaymentEvidence && !UNSENT_ANCHOR_OUTCOMES.includes(work.anchorOutcome)) await reconcileNativePaymentEvidence(session, work);
     if (retry && read.disposition === 'absent' && UNSENT_ANCHOR_OUTCOMES.includes(work.anchorOutcome)) {
       await anchorNativePaymentEvidence(session, work);
       read = await reduceNativeEvidenceWork(session, work, { jobId, txHash: hash, payerPayingKey });
@@ -1710,22 +1722,28 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           return present({ status: 'committed', address: verified.logicalAddress, resumed: true, ...(session.agreementAnchor ? { agreementAnchor: json(session.agreementAnchor) } : {}) });
         }
         case '/dacs/v1/payments': {
-          if (session.nativeEvidenceWork) {
-            const work = session.nativeEvidenceWork;
-            if (body.nativePaymentEvidence !== NATIVE_PAYMENT_EVIDENCE || work.txHash !== String(body.txHash).toLowerCase() ||
-                body.payerPayingKey !== request.buyer || work.payerPayingKey !== request.buyer) {
+          if (session.nativeEvidenceWork || (nativeEvidence && body.nativePaymentEvidence === NATIVE_PAYMENT_EVIDENCE)) {
+            const work = session.nativeEvidenceWork ?? null;
+            if (body.nativePaymentEvidence !== NATIVE_PAYMENT_EVIDENCE || body.payerPayingKey !== request.buyer ||
+                (work && (work.txHash !== String(body.txHash).toLowerCase() || work.payerPayingKey !== request.buyer))) {
               return held('seller_native_delivery_context_mismatch');
             }
-            // The retained work, not how an earlier request ended (a thrown
-            // readback, a crash mid-request), decides what this claim may do:
-            // the same retained step as submitPayment runs. It reads back
-            // first, and sends the anchor again only on a proven absence (after
-            // a send, only on the wallet journal's 'unsigned'), so it never
-            // sends twice. An answer that is not final hands the effect back to
-            // the ordinary retry (`retry`, seller-http.mjs).
-            const answer = await submitNativePaymentEvidence({ session, jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, requestedEvidence: body.nativePaymentEvidence });
+            // What the agent retained, not how an earlier request ended (a
+            // thrown readback, a crash mid-request), decides what this claim
+            // may do. With work retained, the same retained step as
+            // submitPayment runs: it reads back first, and sends the anchor
+            // again only on a proven absence (after a send, only on the wallet
+            // journal's 'unsigned'), so it never sends twice. With none, the
+            // claim ended before the work checkpoint, where nothing is sent and
+            // every step is replay-idempotent (startNativePaymentEvidence), so
+            // the same claim runs again from its start under submitPayment's
+            // gates. An answer that is not final hands the effect back to the
+            // ordinary retry (`retry`, seller-http.mjs).
+            const answer = work
+              ? await submitNativePaymentEvidence({ session, jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, requestedEvidence: body.nativePaymentEvidence })
+              : await submitPayment({ jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, nativePaymentEvidence: body.nativePaymentEvidence });
             if (['delivery-ready','delivered'].includes(answer?.delivery?.status)) return present(answer);
-            return ['held', 'payment-evidenced'].includes(answer?.status) ? { disposition: 'retry', value: answer } : held(answer?.reason ?? 'seller_native_evidence_readback_required');
+            return !work || ['held', 'payment-evidenced'].includes(answer?.status) ? { disposition: 'retry', value: answer } : held(answer?.reason ?? 'seller_native_evidence_readback_required');
           }
           if (!session.paymentWork || session.paymentWork.txHash !== String(body.txHash).toLowerCase() || body.payerPayingKey !== request.buyer ||
               session.paymentWork.payerPayingKey !== request.buyer) return held('seller_payment_context_mismatch');

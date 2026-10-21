@@ -80,6 +80,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.match(out.refusedConfigurations.relativeDirectory, /^TypeError: .*dataDirectory/);
   assert.match(out.refusedConfigurations.otherSigner, /does not control this Listing/);
   assert.match(out.refusedConfigurations.scriptedJournal, /^TypeError: .*only from one createPaymentEvidenceWalletJournal/, 'the answers that allow a second evidence signature come only from the package wallet journal');
+  assert.match(out.refusedConfigurations.scriptedAgent, /^TypeError: .*only from one createPaymentEvidenceWalletJournal/, 'an agent the operator composes takes them only from the package wallet journal too');
 
   assert.equal(out.host.origin.startsWith('http://127.0.0.1:'), true);
   assert.deepEqual(out.host.timeouts, { headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });

@@ -87,6 +87,20 @@ test('a held answer after the evidence checkpoint runs the agent again on a fres
   assert.equal(w.calls.length, 3, 'the conflicting body and the final answer never reach the agent');
 });
 
+// Only a payment claim goes back to the retry from reconciliation: any other
+// route's reconciliation with `retry` is refused before the journal is read.
+test('the transport store hands an uncertain effect back to the retry only for a payment claim', (t) => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-store-')));
+  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite') });
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const jobId = core.generateCanonicalJobId(), reservation = { disposition: 'uncertain', effectKey: 'TEST-effect', owner: 'TEST-owner' };
+  for (const path of ['/dacs/v1/commitments', '/dacs/v1/agreements/proposals', '/dacs/v1/commitments/signature', '/dacs/v1/bundles/buyer-copy']) {
+    assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { retry: true }), { code: 'peer_reconciliation_invalid' }, path);
+  }
+  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/payments' }, 200, '{}', { retry: true }), (error) => error.code !== 'peer_reconciliation_invalid',
+    'a payment claim passes the guard and is checked against its retained effect');
+});
+
 test('evidenced payment with a delivery not done yet is retried until the delivery is final', async (t) => {
   const pending = [
     { status: 'payment-evidenced', delivery: { status: 'held', reason: 'delivery readback absent' } },
