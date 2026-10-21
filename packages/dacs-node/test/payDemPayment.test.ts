@@ -819,6 +819,22 @@ describe("native DEM buyer payment track", () => {
       await input.assertCurrentBeforeBroadcast!();
       return sdkRail.settle({ recipient: PAYEE, amount: "1", network: "demos" });
     }],
+    ["the SDK rail's success for another amount with the same hash, parties, network and settlement key", (
+      sdkRail: PayDemRail,
+    ): PayDemRail["settle"] => async (input) => {
+      // Only the amount differs from this payment: the hash is the journaled
+      // one, and the payer, payee, network and settlement key are this
+      // order's. The rail binds the recovery context's amount to its own.
+      await input.journalPreparedTransfer!(PREPARED(input.recovery!));
+      await input.assertCurrentBeforeBroadcast!();
+      return sdkRail.settle({
+        recipient: input.recipient,
+        amount: "1",
+        network: input.network,
+        maxTotalDebitOs: input.maxTotalDebitOs,
+        recovery: { ...input.recovery!, amountOs: "1" },
+      });
+    }],
     ["the SDK rail's success for a hash this payment never journaled", (
       sdkRail: PayDemRail,
     ): PayDemRail["settle"] => async (input) => {

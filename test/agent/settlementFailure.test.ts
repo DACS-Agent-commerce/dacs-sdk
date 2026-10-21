@@ -6,6 +6,7 @@ import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import * as settlementFailure from "../../src/agent/settlementFailure.js";
 import {
   hasDefinitiveDemosFailure,
+  payDemRequestAmountOs,
   type DemosFailedRecordProof,
 } from "../../src/agent/settlementFailure.js";
 import { isRecordVerifiedSource } from "../../src/rails/payDem.js";
@@ -490,6 +491,30 @@ describe("hasDefinitiveDemosFailure contract limits", () => {
       .toEqual([]);
     expect(sources.filter(({ text }) => /isRecordVerifiedSource\(/.test(text)).map(({ file }) => file).sort())
       .toEqual(["rails/idempotency.ts", "rails/payDem.ts"]);
+  });
+});
+
+describe("payDemRequestAmountOs", () => {
+  const request = { phase: "pay-dem", asset: "DEM", amount: "9.5" };
+
+  it("converts a pay-dem DEM amount to exact OS", () => {
+    expect(payDemRequestAmountOs(request)).toBe(AMOUNT);
+  });
+
+  // An otherwise matching positive amount must not admit a proof for another
+  // phase or another asset: each field is pinned on its own.
+  it.each([
+    ["another phase", { ...request, phase: "pay-usdc" }],
+    ["another asset", { ...request, asset: "USDC" }],
+    ["another phase and asset", { ...request, phase: "pay-usdc", asset: "USDC" }],
+    ["a differently cased phase", { ...request, phase: "Pay-Dem" }],
+    ["a differently cased asset", { ...request, asset: "dem" }],
+  ])("returns null for %s", (_case, other) => {
+    expect(payDemRequestAmountOs(other)).toBeNull();
+  });
+
+  it.each(["0", "0.0", "not-a-number", ""])("returns null for the amount %j", (amount) => {
+    expect(payDemRequestAmountOs({ ...request, amount })).toBeNull();
   });
 });
 
