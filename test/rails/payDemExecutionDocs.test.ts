@@ -48,32 +48,26 @@ describe("pay-dem execution docs match the code (#338)", () => {
 
   it("says only the SDK's own record read is final and nothing exports a way to vouch", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
-    expect(doc).toContain("Only the SDK's own read of the node makes a fresh payment's verdict final: inside `createPayDemRail`, or through a record reader `createPayDemRecordReader` built.");
+    expect(doc).toContain("Only the SDK's own read of the node makes a fresh payment's verdict final, inside `createPayDemRail`.");
     // P2-5 (#369 review): recovery is the reconciler's statement, not a read.
     expect(doc).toContain("the SDK checks only that statement's shape and bindings");
-    expect(doc).toContain("The client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are ignored");
-    expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else, when it has no signed nonce, when it is not bound to a transfer this call journaled and signed");
     expect(doc).toContain("No file in the package exports a way to add to it");
   });
 
-  it("says a client or rail the SDK cannot finalise is refused before its effect, and how a transfer is bound to the call", () => {
+  it("says a client or rail the SDK cannot finalise is refused before its effect, and why", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
-    expect(doc).toContain("before its `transfer` runs: its result could never be final");
-    expect(doc).toContain("any other rail, including a wrapper around one of these, is refused on a fresh attempt before its `settle` runs");
+    expect(doc).toContain("`payDemSettleCore` refuses any client except the one `createPayDemRail` builds, before its `transfer` runs: its result could never be final");
+    expect(doc).toContain("any other rail, including a wrapper around it, is refused on a fresh attempt before its `settle` runs");
     expect(doc).toContain("so an attempt it made before reconciles through `reconcile` without calling it");
     expect(doc).not.toContain("refused when the bridge is built");
-    expect(doc).toContain("whose signed nonce is above that account nonce");
-    expect(doc).toContain("in one process a hash settles at most one payment");
-    // P1-1 (#369 review): the signed time, not the lagging nonce, binds a
-    // transfer to the call across a restart.
-    expect(doc).toContain("its signed `content.timestamp` (milliseconds, as demosdk sets it when it signs) is not earlier than the SDK's clock when the call began");
-    expect(doc).toContain("in any process and after any restart");
-    expect(doc).toContain("must carry its `confirmedTotalDebitOs`, at least the amount and within that ceiling");
+    // Sweep 10 (#369 review): a record read after another party's broadcast
+    // cannot bind that transfer to the call, its ordering or its fee.
+    expect(doc).toContain("not that this call made it, that it came after the journal and the fence, or what fee it paid");
+    expect(doc).not.toMatch(/createPayDemRecordReader|createPayDemClientRail|recordReader/);
     const source = read("src/rails/payDem.ts");
-    expect(source).toMatch(/"getAddressNonce"/);
-    expect(source).toMatch(/signedNonce > nonceFloor/);
-    expect(source).toMatch(/signedAt < expected\.signedNotBeforeMs/);
     expect(source).toMatch(/refusing transfer/);
+    expect(source).not.toMatch(/createPayDemRecordReader|createPayDemClientRail|recordReader/);
+    expect(read("README.md")).not.toMatch(/createPayDemRecordReader|createPayDemClientRail|recordReader/);
     expect(doc).not.toMatch(/vouch/i);
   });
 

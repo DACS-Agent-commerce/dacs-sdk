@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  createPayDemClientRail,
-  createPayDemRecordReader,
-  type DemosNativeClient,
-} from "@kynesyslabs/dacs";
+import type { PayDemRail } from "@kynesyslabs/dacs";
 import {
   createFixedPricePayDemBuyerCoordinator,
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
@@ -28,17 +24,6 @@ import {
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
 import { createPermissiveTestWalletSpendAuthorityV1 } from "./helpers/walletSpend.js";
-
-// The recovery worker's client rail reads through this node. Recovery never
-// transfers, so the rail only connects.
-vi.mock("@kynesyslabs/demosdk/websdk", () => ({
-  Demos: class MockDemos {
-    readonly connect = async () => undefined;
-    readonly getNetworkInfo = async () => undefined;
-    readonly nodeCall = async () => undefined;
-    readonly getTxByHash = async () => undefined;
-  },
-}));
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = "did:example:pay-dem-buyer";
@@ -229,8 +214,8 @@ describe("native DEM process recovery", () => {
       authority: BUYER,
     });
     databases.push(database);
-    const transfer: DemosNativeClient["transfer"] = vi.fn(async () => {
-      throw new Error("transfer must not run during process recovery");
+    const settle: PayDemRail["settle"] = vi.fn(async () => {
+      throw new Error("settle must not run during process recovery");
     });
     const reconcile = vi.fn(async ({ prepared }) => {
       expect(prepared).toEqual(expect.objectContaining({
@@ -264,11 +249,7 @@ describe("native DEM process recovery", () => {
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database,
       workerId: "buyer-payment-after-kill",
-      rail: createPayDemClientRail({
-        address: PAYER,
-        recordReader: await createPayDemRecordReader({ rpc: "https://node.test" }),
-        transfer,
-      }),
+      rail: { address: PAYER, settle },
       resolveAuthority: () => AUTHORITY,
       reconcile,
       publishNotice,
@@ -286,7 +267,7 @@ describe("native DEM process recovery", () => {
 
     await coordinator.runPending({ limit: 1 });
 
-    expect(transfer).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(publishNotice).toHaveBeenCalledTimes(1);
     expect(await coordinator.getOrderStatus(JOB_ID)).toMatchObject({

@@ -1162,7 +1162,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         expectedPayee: payeeHex,
         jobId: "job-1",
         phaseIndex: 0,
-      })).rejects.toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
+      })).rejects.toThrow(/createPayDemRail returned.*refusing/);
       expect(rail.settle).not.toHaveBeenCalled();
       expect(putOutcome).not.toHaveBeenCalled();
     });

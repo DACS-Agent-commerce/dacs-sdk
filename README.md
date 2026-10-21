@@ -622,20 +622,14 @@ authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
 recorded outcome by itself. A non-final observation must throw. Only the SDK's
-own read of the node record makes a fresh payment final: the rail
-`createPayDemRail` returns, or a custom `DemosNativeClient` that carries
-`recordReader: await createPayDemRecordReader({ rpc })`, journals its signed
-transfer once through the journal the SDK hands it (with its
-`confirmedTotalDebitOs` when the payment has a `maxTotalDebitOs`) and returns
-its signed `nonce`, whose returned hash the SDK then observes and binds itself,
-also through `createPayDemClientRail`. The SDK reads the record only for a
-transfer whose nonce is above the payer's account nonce read before the call,
-and binds it only when the record's signed `content.timestamp` is not earlier
-than the start of the call, so a transfer made before a restart never settles
-a later payment; it also settles one hash at most once per process. Any other custom
-`DemosNativeClient` or `PayDemRail` is refused before its transfer or `settle`
-runs, so it can never debit the buyer and then leave the payment held; a
-payment one already made still reconciles, because recovery never calls it. See
+own read of the node record makes a fresh payment final, through the rail
+`createPayDemRail` returns: it signs, journals, fences and broadcasts the
+transfer itself, so the record it reads is this call's transfer at the fee the
+node confirmed. A custom `DemosNativeClient` or `PayDemRail` is refused before
+its transfer or `settle` runs, because the SDK could not bind a transfer it did
+not sign and broadcast to the call; it can never debit the buyer and then leave
+the payment held, and a payment one already made still reconciles, because
+recovery never calls it. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize

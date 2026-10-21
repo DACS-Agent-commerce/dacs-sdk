@@ -6,9 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createInMemoryWalletSpendStateStore,
-  createPayDemClientRail,
   createPayDemRail,
-  createPayDemRecordReader,
   createWalletSpendAuthorityV1,
   payDemSettleCore,
   settlementKey,
@@ -53,8 +51,10 @@ import {
   type DacsPayDemBuyerPaymentTrackOptionsV1,
 } from "../src/payDemPayment.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
-import { markDacsSdkPreparedPayDemRailV1 } from
-  "../src/payDemRailCapabilities.js";
+import {
+  markDacsRecordVerifyingPayDemRailV1,
+  markDacsSdkPreparedPayDemRailV1,
+} from "../src/payDemRailCapabilities.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -154,8 +154,6 @@ beforeEach(() => {
     return {
       ...transaction,
       content: {
-        // A reader-carrying client's record shows it signed after the call began.
-        timestamp: String(Date.now()),
         ...transaction.content,
         nonce: String(transaction.content.nonce),
       },
@@ -178,22 +176,36 @@ const sdkPayDemRail = () => createPayDemRail({
   transactionRecordTimeoutMs: 200,
 });
 /**
- * A rail around a custom client that carries the SDK's record reader, so the
- * SDK reads and binds its transfer's record itself: the only custom rail the
- * buyer track calls (#338).
+ * The SDK's own rail over the mocked node, signing `txHash` at `nonce`.
+ * `onSign` runs as demosdk signs, before the journal, the fence and the
+ * broadcast; `onBroadcast` replaces the node's answer to the one broadcast.
  */
-const clientPayDemRail = async (
-  transfer: DemosNativeClient["transfer"],
-): Promise<PayDemRail> => createPayDemClientRail({
-  address: PAYER,
-  recordReader: await createPayDemRecordReader({
-    rpc: "https://node.test",
-    inclusionPollIntervalMs: 1,
-    statusRequestTimeoutMs: 50,
-    transactionRecordTimeoutMs: 200,
-  }),
-  transfer,
-});
+const sdkPayDemRailSigning = (
+  txHash: string,
+  nonce: number,
+  hooks: {
+    onSign?: () => Promise<void>;
+    onBroadcast?: () => Promise<unknown>;
+  } = {},
+): Promise<PayDemRail> => {
+  demosSdk.transfer.mockImplementation(async (to: string, amountOs: bigint) => {
+    await hooks.onSign?.();
+    return {
+      hash: txHash,
+      content: {
+        type: "native",
+        from: `0x${PAYER}`,
+        to,
+        amount: amountOs.toString(),
+        nonce,
+        data: ["native", { nativeOperation: "send", args: [to, amountOs.toString()] }],
+      },
+    };
+  });
+  demosSdk.broadcast.mockImplementation(hooks.onBroadcast ??
+    (async () => ({ result: 200, response: { hash: txHash } })));
+  return sdkPayDemRail();
+};
 const PAYER_AUTHORITY = demosAgentClaimRef(PAYER_PUBLIC_KEY);
 
 const PROTOCOL: FixedPricePayDemProtocolBinding = {
@@ -884,59 +896,23 @@ describe("native DEM buyer payment track", () => {
     });
   });
 
-  // #338: a custom client the SDK did not build settles the debited payment
-  // when it carries the SDK's record reader, because the SDK itself then reads
-  // and binds this transfer's executed record. Its fee is the confirmed debit
-  // it journaled before broadcast, also when its result reports none (#369
-  // cold review). A transfer signed before this payment began, such as one
-  // that already settled another job before a restart, never settles it.
-  it.each([
-    // Each case has its own hash: the SDK settles one hash once per process.
-    ["reporting its total debit", "7a".repeat(32), { totalDebitOs: AUTHORITY.maxTotalDebitOs }, 0, true],
-    ["reporting no total debit", "7b".repeat(32), {}, 0, true],
-    ["presenting a transfer signed before this payment began", "7c".repeat(32), {}, -60_000, false],
-  ] as const)("settles the wallet and notice for a custom client %s only on the SDK's own record read", async (
-    _label,
-    txHash,
-    reported,
-    signedOffsetMs,
-    settles,
-  ) => {
-    const paymentBeganAtMs = Date.now();
-    // Before the transfer the payer had used nonce 6, so the client signs 7.
-    demosSdk.nodeCall.mockImplementation(async (message: string) =>
-      message === "getAddressNonce" ? 6 : { state: "included", blockNumber: 42 });
-    demosSdk.getTxByHash.mockImplementation(async () => ({
-      hash: txHash,
-      status: "confirmed",
-      blockNumber: 42,
-      content: {
-        type: "native",
-        from: PAYER,
-        to: PAYEE,
-        amount: Number(AUTHORITY.amountOs),
-        nonce: "7",
-        timestamp: String(signedOffsetMs === 0
-          ? Date.now()
-          : paymentBeganAtMs + signedOffsetMs),
-        data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
-      },
-    }));
-    const recordReader = await createPayDemRecordReader({
-      rpc: "https://node.test",
-      inclusionPollIntervalMs: 1,
-      statusRequestTimeoutMs: 50,
-      transactionRecordTimeoutMs: 200,
+  // #338: a custom client that signs and broadcasts itself could never make
+  // its payment final: a record the SDK read afterwards cannot show the
+  // transfer was this payment's, came after its journal and fence, or paid the
+  // fee it claims. The SDK refuses it before its transfer runs, so the track
+  // neither debits the buyer nor settles the wallet or publishes a notice.
+  it("refuses a custom client that signs and broadcasts itself before any transfer", async () => {
+    const transfer = vi.fn<DemosNativeClient["transfer"]>(async ({
+      recovery,
+      journalPreparedTransfer,
+      assertCurrentBeforeBroadcast,
+    }) => {
+      await journalPreparedTransfer!(PREPARED(recovery!, TX_HASH));
+      await assertCurrentBeforeBroadcast!();
+      return { ok: true, state: "included", execution: "executed", hash: TX_HASH,
+        blockNumber: 42, totalDebitOs: AUTHORITY.amountOs };
     });
-    const client: DemosNativeClient = {
-      address: PAYER,
-      recordReader,
-      async transfer({ recovery, journalPreparedTransfer, assertCurrentBeforeBroadcast }) {
-        await journalPreparedTransfer!(PREPARED(recovery!, txHash));
-        await assertCurrentBeforeBroadcast!();
-        return { ok: false, state: "timeout", hash: txHash, nonce: 7, ...reported };
-      },
-    };
+    const client: DemosNativeClient = { address: PAYER, transfer };
     const database = await open(join(root(), "buyer.sqlite"));
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
     const publishNotice = vi.fn();
@@ -953,7 +929,7 @@ describe("native DEM buyer payment track", () => {
     const payment = createDacsPayDemBuyerPaymentTrackV1({
       walletSpendAuthority,
       database,
-      workerId: "buyer-dem-reader",
+      workerId: "buyer-dem-custom-client",
       rail,
       resolveAuthority: () => AUTHORITY,
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
@@ -961,32 +937,21 @@ describe("native DEM buyer payment track", () => {
     });
     const coordinator = createFixedPricePayDemBuyerCoordinator({
       store: database.createPayDemCoordinatorStore("buyer"),
-      workerId: "buyer-coordinator-reader",
+      workerId: "buyer-coordinator-custom-client",
       operations: { agreement: success, payment },
     });
 
     await coordinator.startOrder(ORDER);
     await coordinator.runPending({ limit: 2 });
 
-    expect(demosSdk.getTxByHash).toHaveBeenCalledWith(txHash);
-    if (!settles) {
-      expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
-        .toMatchObject({ state: "indeterminate" });
-      expect(publishNotice).not.toHaveBeenCalled();
-      expect(await walletSpendAuthority.inspect()).toMatchObject({
-        activeEffects: 1,
-        assets: [{ cumulativeSettledDebit: "0" }],
-      });
-      return;
-    }
-    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
-      .toMatchObject({ state: "final", outcome: "success" });
-    expect(publishNotice).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(publishNotice).mock.calls[0]?.[0].notice.settlement)
-      .toMatchObject({ txHash, blockNumber: 42 });
+    expect(transfer).not.toHaveBeenCalled();
+    expect(demosSdk.nodeCall).not.toHaveBeenCalled();
+    expect(demosSdk.getTxByHash).not.toHaveBeenCalled();
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment?.state)
+      .not.toBe("final");
     expect(await walletSpendAuthority.inspect()).toMatchObject({
-      activeEffects: 0,
-      assets: [{ cumulativeSettledDebit: AUTHORITY.maxTotalDebitOs }],
+      assets: [{ cumulativeSettledDebit: "0" }],
     });
   });
 
@@ -1597,11 +1562,15 @@ describe("native DEM buyer payment track", () => {
             };
           },
         })
-      : await clientPayDemRail(async () => {
-          events.push("rail-preparation-started");
-          await prepareTransfer();
-          broadcasts += 1;
-          return { ok: false, state: "timeout", hash: TX_HASH, nonce: 7 };
+      : await sdkPayDemRailSigning(TX_HASH, 7, {
+          onSign: async () => {
+            events.push("rail-preparation-started");
+            await prepareTransfer();
+          },
+          onBroadcast: async () => {
+            broadcasts += 1;
+            return { result: 200, response: { hash: TX_HASH } };
+          },
         });
     const payment = createDacsPayDemBuyerPaymentTrackV1({
       walletSpendAuthority,
@@ -1743,30 +1712,10 @@ describe("native DEM buyer payment track", () => {
         to: PAYEE,
         amount: Number(AUTHORITY.amountOs),
         nonce: "9",
-        timestamp: String(Date.now()),
         data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
       },
     }));
-    const transfer = vi.fn<DemosNativeClient["transfer"]>(async ({
-      recovery,
-      journalPreparedTransfer,
-      assertCurrentBeforeBroadcast,
-    }) => {
-      await journalPreparedTransfer!({
-        txHash,
-        nonce: 9,
-        payer: PAYER,
-        payee: PAYEE,
-        amountOs: AUTHORITY.amountOs,
-        network: "demos",
-        maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-        confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-        recovery: recovery!,
-      });
-      await assertCurrentBeforeBroadcast!();
-      return { ok: false, state: "timeout", hash: txHash, nonce: 9,
-        totalDebitOs: AUTHORITY.maxTotalDebitOs };
-    });
+    const rail = await sdkPayDemRailSigning(txHash, 9);
     const authority = createPermissiveTestWalletSpendAuthorityV1();
     const permitSettles: string[] = [];
     const walletSpendAuthority: WalletSpendAuthorityV1 = {
@@ -1795,7 +1744,7 @@ describe("native DEM buyer payment track", () => {
       walletSpendAuthority,
       database: first.database,
       workerId: "buyer-dem-before-notice-failure",
-      rail: await clientPayDemRail(transfer),
+      rail,
       resolveAuthority: () => AUTHORITY,
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
       publishNotice: failingNotice,
@@ -1805,7 +1754,7 @@ describe("native DEM buyer payment track", () => {
       status: "indeterminate",
       reasonCode: "pay-dem-settlement-ambiguous",
     });
-    expect(transfer).toHaveBeenCalledOnce();
+    expect(demosSdk.broadcast).toHaveBeenCalledOnce();
     expect(permitSettles).toEqual([txHash]);
     expect(failingNotice).toHaveBeenCalledOnce();
     expect(first.writes).toEqual([
@@ -1836,7 +1785,7 @@ describe("native DEM buyer payment track", () => {
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database: restarted.database,
       workerId: "buyer-dem-after-notice-failure",
-      rail: await clientPayDemRail(transfer),
+      rail,
       resolveAuthority: () => AUTHORITY,
       reconcile,
       publishNotice,
@@ -1847,7 +1796,8 @@ describe("native DEM buyer payment track", () => {
       outcome: "success",
       authenticationHash: txHash,
     });
-    expect(transfer).toHaveBeenCalledOnce();
+    expect(demosSdk.transfer).toHaveBeenCalledOnce();
+    expect(demosSdk.broadcast).toHaveBeenCalledOnce();
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({
       prepared: expect.objectContaining({ txHash, nonce: 9 }),
     }));
@@ -1857,8 +1807,7 @@ describe("native DEM buyer payment track", () => {
     expect(restarted.writes).toEqual(["reconciliation:performed"]);
   });
 
-  it("rejects a client rail's success that never invokes the pre-broadcast fence", async () => {
-    // A hash no other test settles, so the SDK reads and binds its record.
+  it("holds an SDK-verified success whose broadcast never passed the pre-broadcast fence", async () => {
     const txHash = "c".repeat(64);
     demosSdk.getTxByHash.mockImplementation(async () => ({
       hash: txHash,
@@ -1870,7 +1819,6 @@ describe("native DEM buyer payment track", () => {
         to: PAYEE,
         amount: Number(AUTHORITY.amountOs),
         nonce: "7",
-        timestamp: String(Date.now()),
         data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
       },
     }));
@@ -1886,14 +1834,17 @@ describe("native DEM buyer payment track", () => {
       }),
       events,
     );
+    const inner = await sdkPayDemRailSigning(txHash, 7);
     const payment = createDacsPayDemBuyerPaymentTrackV1({
       walletSpendAuthority,
       database,
       workerId: "buyer-dem-missing-pre-broadcast-fence",
-      rail: await clientPayDemRail(async ({ recovery, journalPreparedTransfer }) => {
-        await journalPreparedTransfer!(PREPARED(recovery!, txHash));
-        return { ok: true, state: "included", execution: "executed", hash: txHash,
-          nonce: 7, blockNumber: 42 };
+      // A record-verifying wrapper that relays the SDK rail's genuine success
+      // but drops the track's pre-broadcast fence on the way in.
+      rail: markDacsRecordVerifyingPayDemRailV1<PayDemRail>({
+        address: inner.address,
+        settle: ({ assertCurrentBeforeBroadcast: _dropped, ...params }, effectFence) =>
+          inner.settle(params, effectFence),
       }),
       resolveAuthority: () => AUTHORITY,
       reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
@@ -1930,25 +1881,25 @@ describe("native DEM buyer payment track", () => {
     // The node does not serve the record yet, so the SDK holds this attempt.
     demosSdk.getTxByHash.mockRejectedValue(new Error("record not served yet"));
     const heldNotice = vi.fn();
-    const firstRail = await clientPayDemRail(async ({
-      recovery,
-      journalPreparedTransfer,
-      assertCurrentBeforeBroadcast,
-    }) => {
-      await journalPreparedTransfer!({
-        txHash: TX_HASH,
-        nonce: 9,
-        payer: PAYER,
-        payee: PAYEE,
-        amountOs: AUTHORITY.amountOs,
-        network: "demos",
-        maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-        confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-        recovery: recovery!,
-      });
-      await assertCurrentBeforeBroadcast!();
-      return { ok: true, state: "included", execution: "executed", hash: TX_HASH,
-        nonce: 9, blockNumber: 43 };
+    // A record-verifying wrapper whose transfer journals a legacy prepared
+    // record, with no denomination, and is held after its broadcast.
+    const firstRail = markDacsRecordVerifyingPayDemRailV1<PayDemRail>({
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 9,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        return { ok: false, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: PAYEE };
+      },
     });
     const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
@@ -2077,25 +2028,11 @@ describe("native DEM buyer payment track", () => {
       walletSpendAuthority,
       database: first,
       workerId: "buyer-before-actor-restore",
-      rail: await clientPayDemRail(async ({
-        recovery,
-        journalPreparedTransfer,
-        assertCurrentBeforeBroadcast,
-      }) => {
-        await journalPreparedTransfer!({
-          txHash: TX_HASH,
-          nonce: 11,
-          payer: PAYER,
-          payee: PAYEE,
-          amountOs: AUTHORITY.amountOs,
-          network: "demos",
-          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-          recovery: recovery!,
-        });
-        await assertCurrentBeforeBroadcast!();
-        transfers += 1;
-        throw new Error("transfer completed but response was lost");
+      rail: await sdkPayDemRailSigning(TX_HASH, 11, {
+        onBroadcast: async () => {
+          transfers += 1;
+          throw new Error("transfer completed but response was lost");
+        },
       }),
       resolveAuthority: () => AUTHORITY,
       reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(
@@ -2123,14 +2060,14 @@ describe("native DEM buyer payment track", () => {
     await new Promise((resolve) => setTimeout(resolve, 510));
     actorDatabase = first;
     walletNow.value = 1_101;
-    const transfer: DemosNativeClient["transfer"] = vi.fn(async () => {
-      throw new Error("restored actor must not rebroadcast");
-    });
+    const resumedRail = await sdkPayDemRail();
+    demosSdk.transfer.mockClear();
+    demosSdk.transfer.mockRejectedValue(new Error("restored actor must not rebroadcast"));
     const resumedPayment = createDacsPayDemBuyerPaymentTrackV1({
       walletSpendAuthority,
       database: first,
       workerId: "buyer-after-actor-restore",
-      rail: await clientPayDemRail(transfer),
+      rail: resumedRail,
       resolveAuthority: () => AUTHORITY,
       reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(
         observeDemosTransfer,
@@ -2146,7 +2083,8 @@ describe("native DEM buyer payment track", () => {
     });
     await resumed.runPending({ limit: 1 });
 
-    expect(transfer).not.toHaveBeenCalled();
+    expect(demosSdk.transfer).not.toHaveBeenCalled();
+    expect(transfers).toBe(1);
     expect(observeDemosTransfer).not.toHaveBeenCalled();
     expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
       state: "operator-action",

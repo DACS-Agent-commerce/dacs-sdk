@@ -13,21 +13,26 @@ vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
   createPayDemRail: sdkPayDem.createRail,
 }));
 
-// A record reader connects to this node; nothing here transfers through it.
+// The SDK's own rail connects its wallet to this node; nothing here transfers.
 vi.mock("@kynesyslabs/demosdk/websdk", () => ({
   Demos: class MockDemos {
+    readonly tx = { confirm: async () => undefined };
+    readonly broadcast = async () => undefined;
     readonly connect = async () => undefined;
+    readonly connectWallet = async () => undefined;
     readonly getNetworkInfo = async () => undefined;
     readonly nodeCall = async () => undefined;
     readonly getTxByHash = async () => undefined;
+    readonly transfer = async () => undefined;
+    readonly waitForNonce = async () => undefined;
+
+    getAddress(): string {
+      return `0x${Buffer.from(PUBLIC_KEY).toString("hex")}`;
+    }
   },
 }));
 
-import {
-  createPayDemClientRail,
-  createPayDemRecordReader,
-  isPayDemRecordVerifyingRail,
-} from "@kynesyslabs/dacs";
+import { isPayDemRecordVerifyingRail } from "@kynesyslabs/dacs";
 import {
   DACS_NODE_LIVE_PROFILE,
   createDacsDemosActorRuntimeV1,
@@ -278,11 +283,13 @@ describe("role-owned Demos runtime", () => {
     const directory = root();
     const loaded = await secret(directory);
     const wallet = Buffer.from(PUBLIC_KEY).toString("hex");
-    const inner = createPayDemClientRail({
-      address: wallet,
-      recordReader: await createPayDemRecordReader({ rpc: "http://127.0.0.1:5350" }),
-      transfer: vi.fn(),
+    const { createPayDemRail: createSdkPayDemRail } =
+      await vi.importActual<typeof import("@kynesyslabs/dacs")>("@kynesyslabs/dacs");
+    const inner = await createSdkPayDemRail({
+      rpc: "http://127.0.0.1:5350",
+      secret: "test-only-secret",
     });
+    expect(isPayDemRecordVerifyingRail(inner)).toBe(true);
 
     const opened = await createDacsDemosActorRuntimeV1({
       config: payDemConfig(directory),
