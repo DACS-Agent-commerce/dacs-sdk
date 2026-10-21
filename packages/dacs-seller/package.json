@@ -1,7 +1,7 @@
 {
   "name": "@kynesyslabs/dacs-seller",
   "version": "0.1.0-alpha.0",
-  "description": "Self-hosted DACS seller: one seller agent for one signed Listing behind the authenticated seller transport, on loopback.",
+  "description": "Self-hosted DACS seller kit (fixture-only: TEST authorities and a loopback fixture node, not a real Demos node): one seller agent for one signed Listing behind the authenticated seller transport, on loopback.",
   "license": "MIT",
   "repository": {
     "type": "git",

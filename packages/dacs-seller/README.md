@@ -7,7 +7,10 @@ loopback. The agent runs negotiation (DACS-3), the finalized commitment,
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
 evidence and native DEM delivery capabilities, which the host requires. This is the devnet-demo seller kit, ported from the
 plugin seller kit (`RUNTIME-PORTS.json` and `PROVENANCE.json` in the
-repository). It is not qualified for mainnet.
+repository). It is a **fixture-only kit**: its native capabilities accept
+only `TEST-` authorities and a loopback fixture node, so it cannot start
+against, or read from, a real Demos node (see "What the host does and does
+not do"). It is not qualified for mainnet.
 
 Requires Node.js 22.13 or later (`node:sqlite`) and the same version of
 `@kynesyslabs/dacs` as a peer.
@@ -31,8 +34,9 @@ const host = await startSellerHost({
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
-  sessionAdmission,      // { admit, resolveVetRecord, readRevocationSurfaces, readRevocationMarker }: the seller-owned
-                         // session admission and revocation readers (src/dacs/session-admission.mjs)
+  sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, readRevocationSurfaces, readRevocationMarker }:
+                         // the seller-owned session admission, Vet record and receipt readers and revocation
+                         // readers (src/dacs/session-admission.mjs)
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
 });
@@ -104,6 +108,22 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   nothing was signed); a readback that misses or fails holds the delivery. A
   seller signature whose signer failed released nothing, so the next holder of
   the job signs the same bytes again.
+- The delivery capability owes that proof. The agent records a Deliverable
+  submission before it asks `nativeDemDelivery.submit`, so a submission that
+  fails before anything is signed, or a host that dies between the record and
+  the call, leaves a record with no CREATE, and only the capability can tell
+  that from a CREATE it signed and lost. Its `read` returns
+  `provenUnsignedAbsence(reason)` (from
+  `@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs`)
+  exactly when it holds no signed CREATE for the address and never asked its
+  wallet to sign one; the agent then asks again, and the paid order is
+  delivered with one CREATE. Any other answer (a miss, a lagging name index,
+  an error, or a CREATE it signed that is not on the chain) holds the
+  delivery and never submits again: a landed CREATE would be made twice. A
+  `read` that never returns the proof strands a paid order after one failed
+  submission. The package's devnet artifact anchor returns it for an address
+  with no stored intent and no signed CREATE retained by the source or its
+  wallet, and for an intent a shutdown cut before it was signed.
 - Payment evidence is anchored through `nativePaymentEvidence`'s
   `anchorEvidence` (DACS-4 PC-7(b), write-once) and answered for by the
   required `reconcilePaymentEvidence`. The agent, whether the host composes
@@ -266,7 +286,17 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   (`session_not_admitted`), and an `admit` that throws is refused too
   (`session_admission_unavailable`). Neither refusal keeps an effect. Each Vet
   reference the context gives is relied on only through the record
-  `resolveVetRecord` returns. That record must be a CompositeVerificationRecord
+  `resolveVetRecord` returns, and only with the SR-2 receipt
+  `readVetAnchorReceipt` returns for it (DACS-2 VPC-3: a signed record is not
+  thereby admitted). The receipt must be a CORE §5.1 receipt for the
+  reference's own address (the job's canonical `dacs2:composite:` address)
+  and exact hash, an established observation, at `accepted`, `included` or
+  `finalized`; none, one for another address or hash, an indeterminate
+  observation, or a `submitted`, `rejected`, `dropped`, `replaced`,
+  `expired` or `reorged` one refuses before the Agreement is signed
+  (`VET_RECORD_UNVERIFIED`). The host checks what the receipt names and its
+  state; the operator's reader authenticates it against the chain, as it does
+  a revocation surface. The record must be a CompositeVerificationRecord
   with the reference's exact hash, for this job, party and bundle, with a
   `pass` decision (DACS-2 §7.7.1). It must be signed by the party's
   counterparty verifier, which the reference names as `signer` (DACS-2

@@ -1,6 +1,7 @@
 // Rehosted native recovery assertions; no portal/browser or live wallet needed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as core from '@kynesyslabs/dacs';
 import {anchorFixture} from './helpers/anchor-isolated-fixture.mjs';
 import {assertQualifiedDeployment} from '../src/devnet-demo/deployment-qualification.mjs';
 import {classifyStorageWriteSubmission,storageWriteAbsent,storageWriteConfirmationMatches,storageWriteAccountNonce,rpcEnvelope} from '../src/devnet-demo/storage-write-recovery.mjs';
@@ -185,4 +186,32 @@ test('an uncoordinated source journal change after the first scan refuses before
  };
  await assert.rejects(w.publish(w.open(),JOBS[0]),/source wallet nonce lane changed/);assert.equal(w.captured.length,0);
  assert.equal([...w.journal.rows.values()].find(row=>row.transaction).stage,'unsigned');
+});
+
+// A held native Deliverable is asked again only on the reader's proven absence
+// (README: the delivery capability's contract). publish stores its intent before
+// it asks the wallet to sign, so an address with no intent and no signed CREATE
+// retained anywhere was never signed; every other absence stays plain.
+test('a read of an address that was never asked of the wallet proves the absence; one with a retained signed CREATE or an unknown outcome does not',async()=>{
+ const w=await anchorFixture(),anchor=w.open(),jobId=JOBS[0],logicalAddress=core.finalityCommitmentAddress(jobId);
+ const read=()=>anchor.read({logicalAddress,artifact:{jobId,signature:{signer:w.seller}},artifactKind:'FinalityCommitmentRecord'});
+ const signedFor={stage:'signed',hash:'a'.repeat(64),signedTransaction:{content:{from:w.owner,nonce:1,data:['storageProgram',{metadata:{logicalAddress}}]}}};
+ const never=await read();
+ assert.equal(never.status,'absent');assert.equal(never.provenUnsigned,true,'no intent, no signed CREATE retained: proven unsigned');
+ assert.equal(w.captured.length,0);
+ // A signed CREATE for this address retained by the wallet, whose intent row is gone: not proven.
+ await w.journal.put('demo/wallet/signed',signedFor);
+ const lost=await read();
+ assert.equal(lost.status,'absent');assert.notEqual(lost.provenUnsigned,true,'a retained signed CREATE for the address is no proof');
+ // The source's own journal retains one: not proven either.
+ w.journal.rows.delete('demo/wallet/signed');
+ await w.sourceJournal.put('source/signed',signedFor);
+ assert.notEqual((await read()).provenUnsigned,true,'a signed CREATE retained by the source is no proof');
+ w.sourceJournal.rows.delete('source/signed');
+ assert.equal((await read()).provenUnsigned,true);
+ // After publish stored its intent and the wallet was asked, the outcome is unknown: never the proof.
+ w.controls.request=async()=>({success:false,error:{code:'internal_error'}});
+ await w.publish(anchor,jobId);
+ assert.equal(w.captured.length,1);
+ assert.notEqual((await read()).provenUnsigned,true,'a stored intent is no proof');
 });

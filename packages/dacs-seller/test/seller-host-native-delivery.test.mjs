@@ -18,7 +18,7 @@ import { DatabaseSync } from 'node:sqlite';
 import * as core from '@kynesyslabs/dacs';
 import * as seller from '../src/index.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
-import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
+import { createNativeDemDeliveryCapability, provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE_CHAIN_IDENTITY } from '../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
@@ -175,7 +175,8 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // 'forged' one not signed by the seller. `faults.sign`: 'throw-evidence' fails
 // the seller signer's next SettlementEvidence signature; `faults.deliverySubmit`: 'fail' refuses
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
-// seller-state lock row is lost, so nothing after it is recorded.
+// seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
+// signs and keeps the CREATE, then fails before it is broadcast.
 async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
@@ -322,6 +323,8 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       effects.deliverySubmit.push(input.logicalAddress);
       const fault = faults.deliverySubmit.shift();
       if (fault === 'fail') throw new Error('TEST delivery wallet refused before signing');
+      // Signed and kept, then the answer is lost before anything is broadcast.
+      if (fault === 'sign-then-lose') { signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact: input.report, artifactKind: 'Deliverable', deliveryBinding: input.deliveryBinding }, { land: false })); throw new Error('TEST delivery wallet failed after signing'); }
       writeOnce(input.logicalAddress, input.report, 'Deliverable', input.deliveryBinding);
       if (fault === 'land-lose-lock') loseJobLock(input.logicalAddress.slice('dacs4:deliverable:'.length));
       return { status: 'accepted', reconciliationId: signedCreates.get(input.logicalAddress).hash };
@@ -331,7 +334,13 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       const read = await deliverable(input);
       return read.status === 'present' ? { status: 'complete', reconciliationId: read.receipt.transactionRef.value, observedAt: read.receipt.blockRef.timestamp } : { status: 'absent', reason: read.reason };
     },
-    read: deliverable,
+    // The capability's contract (README): a reader that kept no signed CREATE
+    // for the address returns the proven unsigned absence; a miss for a CREATE
+    // it did sign (a lagging index, an unbroadcast one) is a plain absence.
+    read: async (input) => {
+      const read = await deliverable(input);
+      return read.status === 'absent' && !signedCreates.has(input.logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
+    },
     verifyReceipt: async ({ logicalAddress, report, receipt, receiptContentHash, deliveryBinding }) => node.reader.verifyReceipt({ receipt, logicalAddress, artifact: report,
       expectedWriter: sellerKey.claim, artifactKind: 'Deliverable', deliveryBinding, receiptContentHash, signedProjection: clone(signedCreates.get(logicalAddress)) }),
   });
@@ -990,6 +999,46 @@ test('a landed Deliverable whose records were lost is not submitted again while 
   assert.equal(w.createsAt(deliverable), 1);
 });
 
+// The Deliverable's submission is recorded before the capability is asked, so a
+// failure or a death before anything is signed leaves a record with no CREATE.
+// A reader that kept no signed CREATE proves that absence, and the paid order is
+// then submitted again, once (README: the delivery capability's contract).
+test('a Deliverable submission that fails before anything is signed does not strand the paid order: the next claim submits it once, with and without a restart', async (t) => {
+  for (const restart of [false, true]) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('fail');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable', `restart ${restart}: the first submission failed`);
+    assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+    assert.equal(w.createsAt(deliverable), 0, 'nothing was signed');
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', `restart ${restart}: ${shown(answer)}`);
+    assert.deepEqual(w.effects.deliverySubmit, [deliverable, deliverable], 'asked again after the proven absence');
+    assert.equal(w.createsAt(deliverable), 1, 'exactly one CREATE');
+    assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+    assert.equal(w.createsAt(deliverable), 1);
+  }
+});
+
+// The proof is the capability's: a CREATE it signed and kept, whose answer was
+// lost before it was broadcast, reads back as a plain absence. The host holds
+// it and never asks again, since the kept bytes may still land.
+test('a Deliverable the capability signed but lost is held, never submitted again, whatever the read says', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('sign-then-lose');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  for (const restart of [false, true]) {
+    if (restart) await w.restart();
+    for (const claim of [1, 2]) {
+      const held = await p.claim(tx);
+      assert.notEqual(held.delivery?.status, 'delivery-ready', `restart ${restart}, claim ${claim}: ${shown(held)}`);
+    }
+  }
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is asked for once');
+});
+
 // The package's Vet provider presents the seller's Listing identity afresh for
 // each session (to the buyer's challenge): the seller accepts that exact
 // presentation, signed by itself, and refuses one it did not sign.
@@ -1088,4 +1137,18 @@ test('read-only reconciliation of a held payment claim neither signs nor sends: 
     assert.deepEqual({ signCreate: w.effects.signCreate, broadcast: w.effects.broadcast.length }, before, 'nothing signed or broadcast');
     assert.equal((await agent.reconcileTransport(await w.signedClaim(p, tx))).disposition, 'retry', 'control: a live request runs the retained work');
   } finally { agent.close(); }
+});
+
+// README (Scope): this package is a fixture-only kit. Nothing in it can read or
+// write a real Demos node, so the capabilities it builds refuse a real node's
+// endpoint, an unregistered source and a non-TEST authority; the claim is pinned
+// here so it cannot drift into one of a seller that runs on a real node.
+test('the package builds capabilities only for the loopback fixture node and TEST authorities: a real node endpoint and an unregistered source are refused', () => {
+  for (const rpcUrl of ['https://node2.demos.sh/', 'http://node2.demos.sh/', 'http://localhost:53550/', 'http://127.0.0.1:9/node']) {
+    assert.throws(() => createNativePaymentEvidenceConsumer({ rpcUrl }), { name: 'TypeError', message: /owned literal loopback or the exact opaque source/ }, rpcUrl);
+  }
+  assert.throws(() => createNativePaymentEvidenceConsumer({ rpcUrl: 'https://node2.demos.sh/', sourceCapability: {} }), { name: 'TypeError', message: /exact opaque SettlementEvidence source capability/ });
+  const operations = { submit: async () => null, reconcile: async () => null, read: async () => null, verifyReceipt: async () => null };
+  assert.throws(() => createNativeDemDeliveryCapability({ authority: 'node2.demos.sh', ...operations }), { name: 'TypeError', message: /explicit TEST authority/ });
+  assert.doesNotThrow(() => createNativeDemDeliveryCapability({ authority: 'TEST-scope', ...operations }));
 });

@@ -486,6 +486,54 @@ test('a Vet reference is signed only through the passing record of this job, par
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
+// DACS-2 VPC-3: a record the counterparty signed is not thereby admitted. The
+// seller signs the Agreement only over records whose SR-2 receipt, read by the
+// operator's reader, names the reference's canonical address and exact hash at
+// `accepted` or later. Each vector keeps the record and its signature valid
+// and spoils only the receipt; none reaches the Agreement signature.
+test('a Vet record is relied on only with its SR-2 receipt at accepted or later: a valid signed record without one is not signed over', async (t) => {
+  const w = await world(t), buyer = w.buyerKey.claim, sellerClaim = w.sellerKey.claim, sellerBundle = w.listing.seller.identity;
+  const requirement = w.listing.buyerRequirement, other = core.sha256Hex('another record');
+  const preserved = { preservedReceiptHash: core.sha256Hex('preserved receipt') };
+  const spoiled = {
+    'no receipt (the reader has none)': [null, /^VET_RECORD_UNVERIFIED: the (buyer|seller) Vet record SR-2 receipt is unavailable: no SR-2 receipt at this reference$/],
+    'a submitted receipt': [{ state: 'submitted' }, /not accepted or later/],
+    'a rejected receipt': [{ state: 'rejected' }, /not accepted or later/],
+    'a dropped receipt': [{ state: 'dropped' }, /not accepted or later/],
+    'a replaced receipt': [{ state: 'replaced' }, /not accepted or later/],
+    'an expired receipt': [{ state: 'expired' }, /not accepted or later/],
+    'a reorged receipt': [{ state: 'reorged' }, /not accepted or later/],
+    'an indeterminate observation': [{ observationDisposition: 'indeterminate', ...preserved }, /not an established observation/],
+    'a receipt for another address': [{ logicalAddress: 'dacs2:composite:another' }, /for another address or hash/],
+    'a receipt for another hash': [{ contentHash: other }, /for another address or hash/],
+    'a malformed receipt': [{ writer: '' }, /not a CORE receipt/],
+  };
+  const sign = async (input, sessionAdmission) => {
+    const agent = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(input), ...(sessionAdmission ? { sessionAdmission } : {}) }));
+    try { return await agent.receiveProposal(await w.proposalFor(input)); } finally { agent.close(); }
+  };
+  for (const [label, [receipt, reason]] of Object.entries(spoiled)) {
+    for (const [role, party, bundle] of [['buyer', buyer, w.buyerBundle], ['seller', sellerClaim, sellerBundle]]) {
+      const ref = await w.admission.vetRecord(w.jobId, party, bundle, { requirement, receipt });
+      const answer = await sign({ ...w.vetted, [role]: { ...w.vetted[role], vetRecordRef: ref } });
+      assert.equal(answer.disposition, 'rejected', `${role}: ${label}`);
+      assert.equal(answer.contribution, undefined, `${role}: ${label}: no seller contribution is issued`);
+      assert.match(answer.reason, reason, `${role}: ${label}`);
+    }
+  }
+  // A reader that answers nothing at all.
+  const noAnswer = { ...w.admission.sessionAdmission, readVetAnchorReceipt: async () => null };
+  const none = await sign(w.vetted, noAnswer);
+  assert.equal(none.disposition, 'rejected');
+  assert.match(none.reason, /^VET_RECORD_UNVERIFIED: buyer: the Vet record has no SR-2 receipt$/);
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+  // The receipt states from which a record is relied on pass.
+  for (const state of ['accepted', 'included', 'finalized']) {
+    const input = { ...w.vetted, buyer: { ...w.vetted.buyer, vetRecordRef: await w.admission.vetRecord(w.jobId, buyer, w.buyerBundle, { requirement, receipt: { state } }) } };
+    assert.equal((await sign(input)).disposition, 'complete', state);
+  }
+});
+
 // The delivery audit source carries the Vet context's requirement invocations.
 // The seller runs core's own delivery predicate on them before it signs
 // (sellerFulfilmentVetRequirementsViolation): one invocation per party record,

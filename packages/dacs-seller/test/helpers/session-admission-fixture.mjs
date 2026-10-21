@@ -10,24 +10,32 @@
 // seller's by the buyer). Each record hashes the exact BundleRequirement it
 // evaluated (`requirement`, DACS-2 §7.7.1) and has no results, so it passes
 // only a requirement with no required claim.
+// Each record also has the SR-2 receipt the operator's reader holds for it
+// (DACS-2 VPC-3), finalized by default; `receipt` in the record options is
+// null (the reader has none) or the members that replace the default's.
 // `overrides` replaces parts of an admitted answer to build refusal vectors.
 import * as core from '@kynesyslabs/dacs';
 import { SELLER_PROFILE } from '../../src/dacs/session-admission.mjs';
 
 export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.now() }) {
-  const records = new Map(), calls = [];
+  const records = new Map(), receipts = new Map(), calls = [];
   let made = 0;
   // The reference names the party's verifier (by default its counterparty) at
   // the job's canonical address; the options build records that do not back it.
   // A record's hash leaves out its signature, so each record gets its own
   // generatedAt: one never replaces another here.
   const vetRecord = async (jobId, party, bundle, { requirement, decision = 'pass', verifier = party === seller.claim ? buyer : seller, signer = verifier, recordJobId = jobId,
-    bundleHash = core.identityBundleHash(bundle), requirementHash = core.sha256Hex(core.canonicalize(requirement)) } = {}) => {
+    bundleHash = core.identityBundleHash(bundle), requirementHash = core.sha256Hex(core.canonicalize(requirement)), receipt = {} } = {}) => {
     const unsigned = { recordVersion: '1', jobId: recordJobId, evaluatedParty: party, bundleHash, requirementHash,
       freshness: [], supplementary: [], dealSpecific: [], overallDecision: decision, generatedAt: now() - made++ };
     const record = await core.signComponentArtifact(unsigned, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: signer.claim, sign: signer.sign });
     const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.contentHash(record), signer: verifier.claim };
     records.set(ref.contentHash, record);
+    if (receipt !== null) {
+      receipts.set(ref.contentHash, { receiptVersion: '1', substrate: 'demos', finalityProfile: 'TEST-fixture', logicalAddress: ref.anchor.locator, nativeAddress: `TEST-native-${ref.contentHash.slice(0, 16)}`,
+        contentHash: ref.contentHash, transactionRef: { kind: 'demos', value: core.sha256Hex(`TEST vet tx ${ref.contentHash}`) }, writer: verifier.claim, state: 'finalized', observationDisposition: 'established',
+        observedAt: now(), blockRef: { id: 'TEST-block', height: '1', timestamp: now() }, evidence: { kind: 'TEST', value: 'fixture' }, ...receipt });
+    }
     return ref;
   };
   const admitted = (query) => ({ disposition: 'admitted', jobId: query.jobId, buyer: query.buyer, buyerBundleHash: query.buyerBundleHash, listingPin: query.listingPin,
@@ -56,6 +64,7 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
       readRevocationMarker: async (anchor) => { calls.push(['readRevocationMarker', anchor.locator]); return markers.has(anchor.locator) ? structuredClone(markers.get(anchor.locator)) : null; },
       admit: async (query) => { calls.push(['admit', query.jobId]); const answer = admitted(query); return overrides ? overrides(answer, query) : answer; },
       resolveVetRecord: async ({ ref }) => { calls.push(['resolveVetRecord', ref.contentHash]); if (!records.has(ref.contentHash)) throw new Error('no Vet record at this reference'); return structuredClone(records.get(ref.contentHash)); },
+      readVetAnchorReceipt: async ({ ref }) => { calls.push(['readVetAnchorReceipt', ref.contentHash]); if (!receipts.has(ref.contentHash)) throw new Error('no SR-2 receipt at this reference'); return structuredClone(receipts.get(ref.contentHash)); },
     },
   };
 }

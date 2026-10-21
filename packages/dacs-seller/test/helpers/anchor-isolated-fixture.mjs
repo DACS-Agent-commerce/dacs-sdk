@@ -13,7 +13,7 @@ export async function anchorFixture({writer,signRpc=null}={}){
   './deployment-qualification.mjs':{assertQualifiedDeployment},
   '../util/immutable-readbacks.mjs':{createImmutableReadbacks:()=>({get:()=>null,put:noop,delete:noop})},
   '../dacs/delivery-evidence.mjs':{isNativeDeliveryEvidence:()=>false},
-  '../dacs/native-dem-delivery-consumer.mjs':{provenUnsignedAbsence:()=>({})},
+  '../dacs/native-dem-delivery-consumer.mjs':{provenUnsignedAbsence:reason=>({status:'absent',reason,provenUnsigned:true})},
   './storage-write-recovery.mjs':{storageWriteRpcSigner:()=>signRpc},
   './buyer-access.mjs':{operatorBuyerAccessConfig:()=>({assertSellerJob:noop})},
   './operator-approval.mjs':{OPERATOR_CLOSING:'operator_closing'},

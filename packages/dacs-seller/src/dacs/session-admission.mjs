@@ -4,7 +4,7 @@
 // module checks that every answer binds exactly the session it admits and
 // refuses anything missing, malformed, duplicated or mismatched.
 //
-// sessionAdmission = { admit(query), resolveVetRecord(query),
+// sessionAdmission = { admit(query), resolveVetRecord(query), readVetAnchorReceipt(query),
 //   readRevocationSurfaces(query), readRevocationMarker(markerAnchor) }:
 //  - readRevocationSurfaces({ jobId, listingPin }) answers the DACS-1 §6.3.5/
 //    §6.3.6 discovery surfaces the operator read for this Listing (core
@@ -32,7 +32,15 @@
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
 //    `requirementHash` and replayed aggregation are checked here.
-import { ARTIFACT_SEPARATORS, canonicalize, checkListingRevocation, contentHash, identityBundleHash, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+//  - readVetAnchorReceipt({ jobId, role, party, ref }) answers the CORE §5.1
+//    AnchorReceipt the operator's SR-2 reader holds for that same record
+//    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
+//    `accepted` or later). This module checks what the receipt names (the
+//    reference's canonical address and exact hash) and its state; the reader
+//    authenticates it against the chain, as it does a revocation surface.
+//    A record with no receipt, one for another address or hash, or one not yet
+//    accepted (or dropped, replaced, expired, reorged, indeterminate) is refused.
+import { ARTIFACT_SEPARATORS, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 
 // PROFILE.json: the exact corrective profile this package implements (the
@@ -52,11 +60,13 @@ const same = (left, right) => { try { return canonicalize(left) === canonicalize
 const ADMITTED_KEYS = ['disposition', 'jobId', 'buyer', 'buyerBundleHash', 'listingPin', 'participants'];
 
 // Why `bundle` is not the seller's identity for a session, or null: the
-// Listing's own bundle, or a presentation of exactly it made for this session
-// (the seller's Vet provider presents it afresh to the buyer's challenge),
-// which differs only in presentedAt, sessionNonce and presentation, and whose
-// presentation the seller signed (CORE SIG-6, as a buyer bundle's). The seller
-// Vet record the buyer signs binds this bundle's hash (DACS-2 §7.7.2).
+// Listing's own bundle, or a presentation of exactly it (the seller's Vet
+// provider presents it afresh to the buyer's challenge), which differs only in
+// presentedAt, sessionNonce and presentation, and whose presentation the seller
+// signed (CORE SIG-6, as a buyer bundle's). The seller Vet record the buyer
+// signs binds this bundle's hash (DACS-2 §7.7.2). The presentation's own
+// sessionNonce is the buyer's to check (DACS-1 §6.3.2: the verifier of a
+// presentation is its challenger), so it is not compared with this session's.
 export function sellerSessionPresentationProblem(bundle, listingIdentity) {
   if (same(bundle, listingIdentity)) return null;
   if (!isIdentityBundle(bundle)) return 'the seller bundle is not an IdentityBundle';
@@ -73,8 +83,8 @@ export function sellerSessionPresentationProblem(bundle, listingIdentity) {
 
 export function sessionAdmissionConfig(value) {
   if (value == null) return null;
-  if (!object(value) || ['admit', 'resolveVetRecord', 'readRevocationSurfaces', 'readRevocationMarker'].some((name) => typeof value[name] !== 'function')) {
-    throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readRevocationSurfaces and readRevocationMarker');
+  if (!object(value) || ['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].some((name) => typeof value[name] !== 'function')) {
+    throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker');
   }
   return value;
 }
@@ -113,6 +123,25 @@ export async function listingRevocationProblem(admission, { listing, listingPin,
   if (result.disposition === 'absent') return null;
   if (result.disposition === 'revoked') return { code: 'session_not_admitted', status: 409, message: `the Listing is revoked (${result.reason})` };
   return unavailable(result.reason);
+}
+
+// The CORE §5.1 receipt states from which a Vet record may be relied on
+// (DACS-2 VPC-3: `accepted` or later; dropped, replaced, expired, reorged and
+// rejected are not later states).
+export const VET_RECEIPT_STATES = Object.freeze(['accepted', 'included', 'finalized']);
+
+// The reason a Vet record's SR-2 receipt does not back its reference, or null:
+// DACS-2 VPC-3 and §7.7.2. The receipt is a well-formed CORE §5.1 receipt for
+// the reference's exact hash, at the job's canonical composite address (the
+// reference's own locator), observed (not indeterminate), at `accepted` or later.
+export function vetAnchorReceiptProblem(receipt, { ref, jobId, party }) {
+  if (receipt == null) return 'the Vet record has no SR-2 receipt';
+  if (!isAnchorReceipt(receipt)) return 'the Vet record SR-2 receipt is not a CORE receipt';
+  if (ref?.anchor?.locator !== compositeVerificationAddress(jobId, party)) return 'the Vet reference is not at the job\'s canonical composite address';
+  if (receipt.logicalAddress !== ref.anchor.locator || receipt.contentHash !== ref.contentHash) return 'the Vet record SR-2 receipt is for another address or hash';
+  if (receipt.observationDisposition !== 'established') return 'the Vet record SR-2 receipt is not an established observation';
+  if (!VET_RECEIPT_STATES.includes(receipt.state)) return `the Vet record SR-2 receipt is ${receipt.state}, not accepted or later`;
+  return null;
 }
 
 // The reason a resolved Vet record does not back its reference and the

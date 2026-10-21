@@ -95,6 +95,9 @@ const bundleFor = (id) => ownBundles.get(id);
 // with core checkListingRevocation) and both parties under the package's exact
 // profile. The presentation challenge is the host's own.
 const vetRecords = new Map(), admissionCalls = [];
+const vetReceipt = (ref) => ({ receiptVersion: '1', substrate: 'demos', finalityProfile: 'TEST-installed', logicalAddress: ref.anchor.locator, nativeAddress: `TEST-native-${ref.contentHash.slice(0, 16)}`,
+  contentHash: ref.contentHash, transactionRef: { kind: 'demos', value: core.sha256Hex(`installed vet tx ${ref.contentHash}`) }, writer: ref.signer, state: 'finalized', observationDisposition: 'established',
+  observedAt: Date.now(), blockRef: { id: 'TEST-block', height: '1', timestamp: Date.now() }, evidence: { kind: 'TEST', value: 'installed' } });
 const verifierOf = (party) => (party === sellerKey.claim ? buyerKey : sellerKey);
 const vetRef = async (jobId, party, bundle) => {
   const verifier = verifierOf(party);
@@ -112,6 +115,7 @@ const sessionAdmission = {
       participants: [{ role: 'buyer', claim: query.buyer, ...query.profile }, { role: 'seller', claim: query.seller, ...query.profile }] };
   },
   resolveVetRecord: async ({ ref }) => { if (!vetRecords.has(ref.contentHash)) throw new Error('no Vet record at this reference'); return structuredClone(vetRecords.get(ref.contentHash)); },
+  readVetAnchorReceipt: async ({ ref }) => { if (!vetRecords.has(ref.contentHash)) throw new Error('no SR-2 receipt at this reference'); return vetReceipt(ref); },
 };
 // The Agreement derivation input both parties use, with the Vet references.
 const inputs = new Map();

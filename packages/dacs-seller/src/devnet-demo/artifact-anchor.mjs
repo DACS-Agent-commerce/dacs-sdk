@@ -43,6 +43,7 @@ const broadcastRejected=(row)=>row?.error==='broadcast_rejected';
 const HASH=/^[0-9a-f]{64}$/;
 // A retained 'closing' intent was never signed (see publish): it reads as
 // absent, so callers publish it again, which asks the operator again.
+const NO_INTENT_ABSENT='no seller-owned demo CREATE intent';
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
 
 function artifactValid(kind,value,writer,verifier=writer) {
@@ -325,7 +326,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier)) return {status:'rejected',reason:'demo read scope differs'};
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
-      if(!retained) return {status:'absent',reason:'no seller-owned demo CREATE intent'};
+      if(!retained) return noIntentAbsence(logicalAddress);
       const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
       if(retained.inputHash!==exactHash(input)) return {status:'rejected',reason:'retained demo CREATE scope differs'};
       authorizeRetained(retained);
@@ -338,11 +339,22 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // wallet, proves nothing was signed (the marker a held native Deliverable
   // needs to be asked again). Any other 'closing' row reads as plain absence.
   async function closingAbsence(logicalAddress,retained) {
-    const names=(value)=>value?.signedTransaction?.content?.data?.[1]?.metadata?.logicalAddress===logicalAddress;
-    const exact=retained.error===OPERATOR_CLOSING && !Object.hasOwn(retained,'hash')
-      && !(await sourceCapability.journal.entries()).some(([,value])=>names(value))
-      && !(await journal.entries()).some(([key,value])=>key.startsWith('demo/wallet/')&&names(value));
+    const exact=retained.error===OPERATOR_CLOSING && !Object.hasOwn(retained,'hash') && !(await signedCreateRetained(logicalAddress));
     return exact ? provenUnsignedAbsence(CLOSING_ABSENT) : {status:'absent',reason:CLOSING_ABSENT};
+  }
+  // Whether the source or this seller's wallet retains a signed CREATE for the
+  // address.
+  async function signedCreateRetained(logicalAddress) {
+    const names=(value)=>value?.signedTransaction?.content?.data?.[1]?.metadata?.logicalAddress===logicalAddress;
+    return (await sourceCapability.journal.entries()).some(([,value])=>names(value))
+      || (await journal.entries()).some(([key,value])=>key.startsWith('demo/wallet/')&&names(value));
+  }
+  // publish stores its intent before it asks the wallet to sign anything, and
+  // this read holds the address's lock, so an address with no intent row (and
+  // no signed CREATE retained anywhere for it) was never asked of the wallet:
+  // the proven absence a held native Deliverable needs to be asked again.
+  async function noIntentAbsence(logicalAddress) {
+    return (await signedCreateRetained(logicalAddress)) ? {status:'absent',reason:NO_INTENT_ABSENT} : provenUnsignedAbsence(NO_INTENT_ABSENT);
   }
   // Passive: whether this seller's journal retains a CREATE intent for the
   // address. No readback, resend or write, and nothing is authorized by it.
