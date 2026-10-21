@@ -1615,7 +1615,10 @@ function recordSignedDenomination(transaction: Record<string, unknown>): "os" | 
  * record's `transaction_fee` in the query's projection (see
  * `recordFeeComponentOs`); a record without one binds no fee. Anything else, a
  * malformed fee, a timeout or a failed read included, is indeterminate with
- * its reason; this never polls, retries or broadcasts.
+ * its reason. This makes one `getTxByHash` call within `timeoutMs` and never
+ * polls or broadcasts; demosdk's transport may itself retry that one request
+ * (4.0.16 `_doPost` retries a refused connection and HTTP 502-504 up to four
+ * times), all within the same deadline.
  */
 async function readDemosRecordByHash(
   txHash: string,
@@ -1639,16 +1642,19 @@ async function readDemosRecordByHash(
   } catch (cause) {
     return { state: "indeterminate", reason: "transaction record is not stable JSON", cause };
   }
-  // demosdk resolves the node's not-found reply (`{result: 404, response:
-  // null}`) to null; keep that apart from a malformed record.
+  // demosdk unwraps the node's reply to its `response`: a not-found is `null`
+  // at node 11e7c82 (`{result: 404, response: null}`) and `"error"` at 61b8e75
+  // (`{result: 400, response: "error"}`), which reads as malformed below. Both
+  // are indeterminate.
   if (snapshot === null) {
     return { state: "indeterminate", reason: "transaction record was not found" };
   }
   if (typeof snapshot !== "object" || Array.isArray(snapshot)) {
     return { state: "indeterminate", reason: "transaction record is missing or malformed" };
   }
-  // demosdk's transport decodes the reply without a byte limit; bound what the
-  // SDK keeps examining instead. A native transfer record is a few KiB.
+  // demosdk's transport decodes the whole reply without a byte limit, and the
+  // snapshot above copies it, before this bound applies: it limits only the
+  // checks below, not the transport. A native transfer record is a few KiB.
   if (canonicalize(snapshot).length > MAX_RECOVERY_RECORD_JSON_CHARS) {
     return { state: "indeterminate", reason: "transaction record exceeds the size limit" };
   }
@@ -2143,8 +2149,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     if (normalizedDemosAccount(expected.payer) !== normalizedDemosAccount(address)) {
       return { state: "indeterminate", reason: "the payment's payer is not this rail's wallet" };
     }
+    // Read the node's fork state afresh for every recovery: demosdk's
+    // `getNetworkInfo` keeps an instance's first reply for good, so a rail that
+    // read the fork inactive would hold every payment signed after it.
     const info = await boundedPromise(
-      Promise.resolve().then(() => getNetworkInfo()),
+      Promise.resolve().then(() => nodeCall("getNetworkInfo", {})),
       statusRequestTimeoutMs,
     );
     if (info.status === "timeout") {
@@ -2164,8 +2173,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       forkActive = (snapshotCanonicalJsonRead(info.value, "pay-dem network information") as {
         forks?: { osDenomination?: { activated?: unknown } };
       })?.forks?.osDenomination?.activated;
-    } catch {
-      forkActive = undefined;
+    } catch (cause) {
+      // demosdk's nodeCall reports a transport failure as `{result: 500,
+      // response: <error>}`, which is no JSON value.
+      return { state: "indeterminate", reason: "denomination fork state read failed", cause };
     }
     if (typeof forkActive !== "boolean") {
       return { state: "indeterminate", reason: "denomination fork state is unavailable" };
@@ -2924,6 +2935,8 @@ export function payDemSettle(
     // contradiction. Over a rail the SDK did not build there is no such read,
     // so the result is held with its hash. A failure stays held too unless
     // `failureFinal`: the SDK's own record already binds the hash to this key.
+    // On the store's lookup by key even that failure is not final: the store
+    // records no reconciled failure as definitive and keeps the intent held.
     const readRecovered = async (
       claimed: SettleResult,
       failureFinal: boolean,
@@ -3120,8 +3133,9 @@ export function payDemSettle(
             const found = await reconcileRecorded(recorded);
             if (found === null) return null;
             // Only a hash this key's own attempt record names ties a failure to
-            // the key; a lookup by key alone leaves it held, and the store keeps
-            // the intent unresolved.
+            // the key; a lookup by key alone leaves it held. Either way the
+            // store records no reconciled failure as definitive, so the intent
+            // stays unresolved and nothing is resubmitted.
             const captured = await readRecovered(found, recorded !== null);
             // An expired lease after a lost outcome write must not demote the
             // success this bridge already authenticated for the key.

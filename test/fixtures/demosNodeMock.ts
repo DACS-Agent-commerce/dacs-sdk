@@ -56,12 +56,17 @@ export function demosSdkModule() {
       readonly connectWallet = demosNode.connectWallet;
       readonly getNetworkInfo = demosNode.getNetworkInfo;
       readonly getTxByHash = demosNode.getTxByHash;
-      readonly nodeCall = demosNode.nodeCall;
       readonly transfer = demosNode.transfer;
       readonly waitForNonce = demosNode.waitForNonce;
 
       getAddress(): string {
         return `0x${script.payer}`;
+      }
+
+      // The node serves its fork state to `nodeCall("getNetworkInfo")` too
+      // (uncached in demosdk); every other node call is `demosNode.nodeCall`.
+      nodeCall(message: string, args: Record<string, unknown>): Promise<unknown> {
+        return message === "getNetworkInfo" ? demosNode.getNetworkInfo() : demosNode.nodeCall(message, args);
       }
     },
   };

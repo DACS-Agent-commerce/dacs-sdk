@@ -97,7 +97,7 @@ async function settledLog(outcome: "executed" | "failed", network = "demos") {
 describe("a recovered pay-dem verdict is the SDK rail's own read of the node record", () => {
   type Script = "failed" | "pending" | "at another block" | "for another payee" | "with another fee" |
     "with a malformed fee" | "with a negative fee" | "with a non-canonical fee" | "with an unsafe fee" |
-    "with a null fee" | "with an empty fee" | "with a fee list" | "absent";
+    "with a null fee" | "with an empty fee" | "with a fee list" | "absent" | "absent at node 61b8e75";
   const withFee = (record: Record<string, unknown>, transaction_fee: unknown) =>
     ({ ...record, content: { ...(record.content as object), transaction_fee } });
   const scripts: Record<Script, (record: Record<string, unknown>) => unknown> = {
@@ -118,6 +118,9 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
     "with an empty fee": (record) => withFee(record, {}),
     "with a fee list": (record) => withFee(record, [0, 0, 0]),
     "absent": () => null,
+    // The cited node commit answers not-found as `{result: 400, response:
+    // "error"}`, which demosdk unwraps to "error".
+    "absent at node 61b8e75": () => "error",
   };
   const messages: Record<Script, RegExp> = {
     "failed": /contradicts the node record the SDK read/,
@@ -134,6 +137,7 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
     "with a fee list": /could not establish the node record .*transaction record fee is malformed/,
     // node2 serves a hash from before its reset as not found.
     "absent": /could not establish the node record .*transaction record was not found/,
+    "absent at node 61b8e75": /could not establish the node record .*transaction record is missing or malformed/,
   };
   // The reconciler claims execution; then the node serves the scripted record.
   const claimAgainst = (script: Script) => vi.fn<PayDemSettlementReconcile>(async () => {
@@ -162,6 +166,24 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
     await expect(settle(path === "retained-hash audit" ? request() : fresh)).rejects.toThrow(messages[node]);
     expect(reconcile).toHaveBeenCalledOnce();
     expect(demosNode.reads).toContain(txHash);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  // The SDK rail's reader reads its own wallet's transfers only: a bridge that
+  // names another payer over that rail's settle gets no verdict for it.
+  test("refuses a recovery that names another payer over the SDK rail's settle", async () => {
+    const other = "ef".repeat(32);
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => {
+      const { preparedTransfer: _journal, ...claim } = executed();
+      return { ...claim, payer: other };
+    });
+    const borrowed = payDemSettle({ address: other, settle: rail.settle }, {},
+      { store: createIdempotencyStore(), reconcile });
+    await expect(borrowed(request())).rejects.toThrow(
+      /could not establish the node record .*the payment's payer is not this rail's wallet/,
+    );
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(demosNode.reads).toEqual([]);
     expect(submit).not.toHaveBeenCalled();
   });
 
@@ -384,4 +406,27 @@ describe("a payment signed before the denomination fork is read in DEM after it 
       expect(submit).not.toHaveBeenCalled();
     },
   );
+
+  // demosdk keeps a `Demos` instance's first getNetworkInfo reply, so a rail
+  // that read the fork inactive would report it inactive for good.
+  test("reads the fork state afresh, so a rail that saw it inactive completes a payment signed after it", async () => {
+    const { priorAttempts: _history, ...fresh } = request();
+    Object.assign(demosNode, { postFork: false, nextHash: "34".repeat(32) });
+    const longLived = await sdkPayDemRail();
+    // This rail pays another job before the fork, reading the fork state then.
+    await expect(payDemSettle(longLived, {}, { store: createIdempotencyStore() })({ ...fresh, jobId: "before-fork" }))
+      .resolves.toMatchObject({ ok: true, txHash: "34".repeat(32) });
+    // The fork activates; another process signs this job's transfer in OS.
+    Object.assign(demosNode, { postFork: true, nextHash: txHash });
+    const log = await settledLog("executed");
+    expect((demosNode.records.get(txHash) as { content: { data: unknown } }).content.data)
+      .toEqual(["native", { nativeOperation: "send", args: [payee, "1000000000"] }]);
+    demosNode.networkInfoReads = [];
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed());
+    await expect(payDemSettle(longLived, {}, { store: createIdempotencyStore(log), reconcile })(request()))
+      .resolves.toMatchObject({ ok: true, txHash, blockNumber: 42, networkFeeOs: "0" });
+    expect(demosNode.networkInfoReads).toEqual([true]);
+    expect(submit).not.toHaveBeenCalled();
+    expect(demosNode.broadcasts).toBe(2);
+  });
 });

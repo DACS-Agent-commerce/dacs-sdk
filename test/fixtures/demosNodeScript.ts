@@ -25,8 +25,14 @@ export const demosNode = {
   feeOs: undefined as string | undefined,
   /** The record status a broadcast transfer ends with. */
   recordStatus: "confirmed",
-  /** The fork state `getNetworkInfo` reports, and the form transfers are signed in. */
+  /**
+   * The node's fork state, and the form transfers are signed in. Like demosdk
+   * 4.0.16, a `Demos` instance's `getNetworkInfo` keeps the first state it
+   * read; `nodeCall("getNetworkInfo")` reads it afresh.
+   */
   postFork: true,
+  /** Every uncached `nodeCall("getNetworkInfo")`, as the fork state it served. */
+  networkInfoReads: [] as boolean[],
   /** `getTxByHash` replies by hash; a missing hash is not found (`null`). */
   records: new Map<string, unknown>(),
   /** Replaces the `getTxByHash` reply for every hash when set. */
@@ -44,6 +50,7 @@ export const demosNode = {
     this.feeOs = undefined;
     this.recordStatus = "confirmed";
     this.postFork = true;
+    this.networkInfoReads = [];
     this.records = new Map();
     this.reply = undefined;
     this.onTransfer = undefined;
@@ -149,8 +156,12 @@ class MockDemos {
   getAddress(): string {
     return demosNode.address;
   }
+  // demosdk 4.0.16 (`demosclass.js` getNetworkInfo) returns its first
+  // successful reply for the life of the instance.
+  private cachedNetworkInfo: unknown;
   async getNetworkInfo(): Promise<unknown> {
-    return { forks: { osDenomination: { activated: demosNode.postFork } } };
+    this.cachedNetworkInfo ??= { forks: { osDenomination: { activated: demosNode.postFork } } };
+    return this.cachedNetworkInfo;
   }
   async transfer(to: string, amountOs: bigint): Promise<unknown> {
     demosNode.transfers += 1;
@@ -177,6 +188,10 @@ class MockDemos {
     return { result: 200, response: { hash } };
   }
   async nodeCall(message: string, args: { hash: string }): Promise<unknown> {
+    if (message === "getNetworkInfo") {
+      demosNode.networkInfoReads.push(demosNode.postFork);
+      return { forks: { osDenomination: { activated: demosNode.postFork } } };
+    }
     if (message !== "getTransactionStatus") throw new Error(`unexpected nodeCall ${message}`);
     return demosNode.records.has(args.hash)
       ? { state: "included", blockNumber: demosNode.blockNumber }

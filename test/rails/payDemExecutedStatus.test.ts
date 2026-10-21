@@ -48,12 +48,16 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
     readonly connectWallet = sdk.connectWallet;
     readonly getNetworkInfo = sdk.getNetworkInfo;
     readonly getTxByHash = sdk.getTxByHash;
-    readonly nodeCall = sdk.nodeCall;
     readonly transfer = sdk.transfer;
     readonly waitForNonce = sdk.waitForNonce;
 
     getAddress(): string {
       return WALLET;
+    }
+
+    // The node serves its fork state to `nodeCall("getNetworkInfo")` too.
+    nodeCall(message: string, args: Record<string, unknown>): Promise<unknown> {
+      return message === "getNetworkInfo" ? sdk.getNetworkInfo() : sdk.nodeCall(message, args);
     }
   },
 }));
