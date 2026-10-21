@@ -646,7 +646,9 @@ the store's expired generation. It requires both `settlementStore.readOutcome`
 and `reconcile` and
 fails closed without either, except that a bridge without `reconcile` still
 returns the definitive result it bound to the key itself when the key's
-attempt record names that hash and the store saved that same result. A
+attempt record names that hash and the store saved that same result. It still
+re-reads the node record before returning a cached success or permanent failure,
+including when the same adapter originally submitted the payment. A
 `SettlementLog` that keeps attempt records must implement `readOutcome`, which
 reads without a lease. The `createIdempotencyStore` lookup never claims,
 leases or binds a key; over an older log without `readOutcome` it refuses,
@@ -759,7 +761,8 @@ nonce.
 A restart without history (the lease expired and the session holds no hash)
 reconciles in the store. When the key has an attempt record, the reconciler
 receives its hash as `txHash` and any other transaction is refused. Without
-one, the SDK still accepts the reconciler's answer for the key and saves it, so
+one, the SDK still reads the reconciler's answer for the key and saves a
+confirmed success; a reconciled failure stays held. Thus
 that path trusts the reconciler to look up this exact payment. On a log that
 keeps attempts that saved outcome never binds a later audit. A supplied entry is checked on this path
 too and never persisted. A payment that the bridge, its rail log or the
@@ -802,7 +805,9 @@ input remains available for callers with a separate trusted pin.
 A saved native DEM outcome is not reused on trust. A resume that holds one,
 including a re-run of a completed session, calls `resumeSettlement` once as a
 read-only audit of the retained transaction hash, except in the cases below
-that are held without a rail call. Only the SDK's `payDemSettle` adapter
+that are held without a rail call. When `resumeSettlement` is omitted, the
+registered native DEM `settle` adapter serves as the recovery implementation.
+Only the SDK's `payDemSettle` adapter
 (directly, from `settleFromRail`, or passed through `Agent.runSession`) is
 called for it, as for every native settlement (see below). With the
 session's rail checkpoint in the
@@ -821,6 +826,15 @@ has lost the key's attempt record, the signed evidence does not bind the
 retained hash to the job (pay-dem declares no settlement-side job binding, and
 an evidence signature or anchor is not collision authority under DACS-4 SB-2),
 so the audit holds as indeterminate.
+
+For native DEM sessions, retain a durable rail `SettlementLog` with its immutable
+attempt records alongside the `SessionStore`, and reopen it with a reconciler
+after a process restart. The default in-memory rail log supports retries only
+while its process survives. A `SessionStore` alone cannot recover a payment
+whose rail records were discarded. Restore the original rail log and attempt
+records from a trusted backup before retrying such a session; clearing a paid
+key or forcing a completed outcome cannot reconstruct those records safely.
+
 Evidence signed before those fields existed is audited the same way, and its
 payer is the one the `payDemSettle` rail log recorded for the job's settlement
 key (that log's binding names the paying wallet; the audit fails closed when

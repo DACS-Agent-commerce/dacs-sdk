@@ -629,11 +629,17 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     };
     // The buyer's durable rail log: the restarted process reopens the same log.
     const railLog = createInMemorySettlementLog();
+    const settle = payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(railLog) });
     const first = await agent.runSession(ref, {
       terms,
-      settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(railLog) }),
+      settle,
     });
     expect(first.outcome).toBe("completed");
+    // The original adapter can audit its own payment without a separate
+    // recovery callback, including through the public Agent API.
+    demosNode.reads = [];
+    await expect(agent.runSession(ref, { jobId: first.jobId, terms, settle })).resolves.toEqual(first);
+    expect(demosNode.reads).toEqual([txHash]);
     const rerun = (resumeSettlement: NonNullable<Parameters<typeof agent.runSession>[1]["resumeSettlement"]>) =>
       agent.runSession(ref, {
         jobId: first.jobId,

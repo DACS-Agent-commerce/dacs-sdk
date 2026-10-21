@@ -272,7 +272,10 @@ export interface SessionDeps {
    * wired, callers must therefore also wire `resumeSettlement` to the durable
    * rail-idempotency/reconciliation path. The SessionStore and rail store are
    * complementary: one guards the orchestration claim, the other resolves the
-   * post-payment crash window.
+   * post-payment crash window. For native DEM, the registered `payDemSettle`
+   * adapter supplied here also serves as recovery when `resumeSettlement` is
+   * omitted; recovery after a process restart still needs its durable rail log
+   * and reconciler.
    *
    * For a native DEM price this must be the SDK's `payDemSettle` adapter,
    * passed as is (see `resumeSettlement`); any other function is refused
@@ -306,7 +309,9 @@ export interface SessionDeps {
    * wrapper is the intended implementation with a durable atomic SettlementLog.
    * Callers may then wire the same wrapper as both `settle` and
    * `resumeSettlement`. For native DEM that implementation is the SDK's
-   * `payDemSettle` adapter itself, passed as is: the session recognises it by
+   * `payDemSettle` adapter itself, passed as is. When this option is omitted,
+   * the registered native DEM `settle` adapter also serves as recovery.
+   * The session recognises the adapter by
    * identity and calls no other `settle` or `resumeSettlement` for native DEM
    * (a wrapper around the adapter included), so no payment is made and the
    * payment stays indeterminate. No other implementation's native success
@@ -338,9 +343,9 @@ export interface SessionDeps {
    * only the hash: the session binds it and saves it as an unresolved
    * attempt, then refuses to complete, so the next resume audits that hash.
    *
-   * `runSessionCore` deliberately does not call the ordinary `settle` seam under
-   * an unresolved SessionStore intent because it cannot assume every implementation
-   * is restart-safe.
+   * Under an unresolved SessionStore intent, only the registered native DEM
+   * adapter may serve as the `settle` fallback; other implementations require
+   * this explicit recovery seam.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -4371,13 +4376,17 @@ export async function runSessionCore(
     prior?: LegacyDurableSettlementOutcome | DurableSettlementOutcome,
     persist = true,
   ): Promise<DurableSettlementOutcome> => {
-    if (!deps.resumeSettlement) {
+    const resumeSettlement = deps.resumeSettlement ??
+      (isNativeSettlement(expectedSettlementBinding) && isPayDemSettleAdapter(deps.settle)
+        ? deps.settle
+        : undefined);
+    if (!resumeSettlement) {
       throw new CounterpartyError(
         `settlement for ${jobId} requires authenticated rail reconciliation (${label}); ` +
           "resumeSettlement is required to reconcile it",
       );
     }
-    assertNativeAdapter("resumeSettlement", deps.resumeSettlement, label);
+    assertNativeAdapter("resumeSettlement", resumeSettlement, label);
     let priorAttempts: SettlementRecoveryAttempt[] = [];
     if (store) {
       const durable = await store.load(jobId);
@@ -4405,7 +4414,7 @@ export async function runSessionCore(
       ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
     };
     const recovered = snapshotSettleResult(
-      await deps.resumeSettlement(
+      await resumeSettlement(
         deepFreezeJson(
           snapshotCanonicalJson(
             recoveryRequest,

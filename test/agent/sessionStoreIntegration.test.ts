@@ -2173,6 +2173,73 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       failureProof: { kind: "demos-failed-record" as const, txHash: hash, payer, payee, nonce: 9,
         blockNumber: 42, amountOs: "1000000000" } });
 
+    test.each([true, false].flatMap((ok) => [true, false].flatMap((anchorCommitted) =>
+      [true, false].map((explicitResume) => ({ ok, anchorCommitted, explicitResume })))))(
+      "retries native evidence anchoring after re-reading ok=$ok, anchored=$anchorCommitted, explicitResume=$explicitResume",
+      async ({ ok, anchorCommitted, explicitResume }) => {
+        const store = createInMemorySessionStore();
+        const kv = await demKv();
+        demosNode.recordStatus = ok ? "confirmed" : "failed";
+        const adapter = payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore() });
+        const first = await makeDeps(store, { kv, settle: adapter, anchor: async (name, value) => {
+          const ref = `stor:${name}`;
+          if (name === sessionAnchorName.evidence("job-1")) {
+            if (anchorCommitted) kv.set(ref, value as Record<string, unknown>);
+            throw new Error("evidence acknowledgment lost");
+          }
+          kv.set(ref, value as Record<string, unknown>);
+          return ref;
+        } });
+        await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+          .rejects.toThrow("evidence acknowledgment lost");
+        const original = structuredClone(demosNode.records.get(txHash)) as Record<string, unknown>;
+        demosNode.records.set(txHash, { ...original, status: ok ? "failed" : "confirmed" });
+        const resumed = await makeDeps(store, { kv, settle: adapter,
+          ...(explicitResume ? { resumeSettlement: adapter } : {}) });
+        const before = await store.load("job-1");
+        const anchors = structuredClone([...kv]);
+        demosNode.reads = [];
+        await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+          .rejects.toThrow(/contradicts the node record the SDK read/);
+        expect(demosNode.reads).toEqual([txHash]);
+        expect(await store.load("job-1")).toEqual(before);
+        expect([...kv]).toEqual(anchors);
+        demosNode.records.set(txHash, original);
+        for (let retry = 0; retry < 2; retry += 1) {
+          demosNode.reads = [];
+          await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+            .resolves.toMatchObject({ outcome: ok ? "completed" : "failed" });
+          expect(demosNode.reads).toEqual([txHash]);
+        }
+        expect(demosNode.transfers).toBe(1);
+        expect(demosNode.broadcasts).toBe(1);
+      },
+    );
+
+    test("recovers after restarting with the original rail log and a settle adapter alone", async () => {
+      const store = createInMemorySessionStore();
+      const log = createInMemorySettlementLog();
+      const kv = await demKv();
+      const first = await makeDeps(store, { kv,
+        settle: payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log) }),
+        anchor: async (name, value) => {
+          if (name === sessionAnchorName.evidence("job-1")) throw new Error("evidence unavailable");
+          kv.set(`stor:${name}`, value as Record<string, unknown>);
+          return `stor:${name}`;
+        } });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("evidence unavailable");
+      const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executedClaim(txHash));
+      const restarted = await makeDeps(store, { kv,
+        settle: payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log), reconcile }) });
+      demosNode.reads = [];
+      await expect(runSessionCore(restarted.listingRef, demTerms, restarted.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ txHash }));
+      expect(demosNode.reads).toEqual([txHash]);
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(1);
+    });
+
     // A recovery the SDK did not read (the adapter over a custom rail) holds
     // the hash it reports: only its transaction identity.
     const heldRecovery = () => olderSdkAdapter(vi.fn(async (req: SettleRequest): Promise<SettleResult> =>

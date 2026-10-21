@@ -104,6 +104,45 @@ async function lostResponse(log: SettlementLog, req: SettleRequest) {
   submit.mockClear();
 }
 
+describe("same-adapter cached outcomes require a fresh node record", () => {
+  const cases = [true, false].flatMap((ok) => [true, false].flatMap((history) =>
+    ["matching", "opposite", "missing", "pending", "block", ok ? "fee" : "nonce"].map((observation) =>
+      ({ ok, history, observation }))));
+
+  test.each(cases)("saved ok=$ok, history=$history, node=$observation", async ({ ok, history, observation }) => {
+    const { priorAttempts: _history, ...fresh } = request();
+    const settle = payDemSettle(rail, {}, { store: createIdempotencyStore() });
+    demosNode.recordStatus = ok ? "confirmed" : "failed";
+    const saved = await settle(fresh);
+    expect(saved).toMatchObject({ ok, txHash });
+    const original = structuredClone(demosNode.records.get(txHash)) as Record<string, unknown>;
+    const content = original.content as Record<string, unknown>;
+    const changed = observation === "missing" ? null : {
+      ...original,
+      ...(observation === "opposite" ? { status: ok ? "failed" : "confirmed" } : {}),
+      ...(observation === "pending" ? { status: "pending" } : {}),
+      ...(observation === "block" ? { blockNumber: 43 } : {}),
+      ...(observation === "nonce" ? { content: { ...content, nonce: "10" } } : {}),
+      ...(observation === "fee" ? { content: { ...content,
+        transaction_fee: { network_fee: 1, rpc_fee: 0, additional_fee: 0 } } } : {}),
+    };
+    demosNode.records.set(txHash, changed);
+    demosNode.reads = [];
+    const audit = () => settle(history ? request([prior(ok)]) : fresh);
+    if (observation === "matching") await expect(audit()).resolves.toEqual(saved);
+    else {
+      await expect(audit()).rejects.toThrow(/node record/);
+      // An unavailable or conflicting read never poisons the saved outcome.
+      demosNode.records.set(txHash, original);
+      await expect(audit()).resolves.toEqual(saved);
+    }
+    expect(demosNode.reads.length).toBeGreaterThan(0);
+    expect(demosNode.reads.every((hash) => hash === txHash)).toBe(true);
+    expect(demosNode.transfers).toBe(1);
+    expect(demosNode.broadcasts).toBe(1);
+  });
+});
+
 // A reconciler's `execution: "executed"` is its claim. The verdict of every
 // recovery path is the SDK rail's own read of the node's record for the hash.
 describe("a recovered pay-dem verdict is the SDK rail's own read of the node record", () => {

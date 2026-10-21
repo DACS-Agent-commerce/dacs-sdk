@@ -114,7 +114,9 @@ below).
   when the rail log lost its record, and requires both
   `settlementStore.readOutcome` and `reconcile` (a bridge without `reconcile`
   returns only the definitive result it bound to the key itself, when the
-  attempt record and the saved outcome agree). A log that keeps attempt
+  attempt record and the saved outcome agree). It still re-reads the node
+  record before returning a cached success or permanent failure, including
+  when the same adapter originally submitted the payment. A log that keeps attempt
   records must implement `readOutcome`, which reads without a lease. The
   `createIdempotencyStore` lookup never claims, leases or binds a key; over
   an older log without `readOutcome` it refuses, and the audit then finishes
@@ -251,7 +253,9 @@ below).
   only this `payDemSettle` adapter (directly, from `settleFromRail`, or
   through `Agent.runSession`), as `settle` and as `resumeSettlement`,
   recognised by identity; a wrapper or a `.bind()` copy is a different
-  function. Any other implementation is refused before it is called, so it
+  function. When `resumeSettlement` is omitted, the registered native DEM
+  `settle` adapter serves as the recovery implementation.
+  Any other implementation is refused before it is called, so it
   makes no payment and reports no outcome: nothing could re-read a native
   success it reported after a restart. The adapter over a rail
   `createPayDemRail` did not build reports only a hash for any outcome it did
@@ -274,6 +278,14 @@ below).
   `readAttempt`. A session still holding a paid hash on an older log without
   `readOutcome` finishes it through the store's expired generation, so the
   log needs no upgrade for that.
+
+For native DEM sessions, retain a durable rail `SettlementLog` with its immutable
+attempt records alongside the `SessionStore`, and reopen it with a reconciler
+after a process restart. The default in-memory rail log supports retries only
+while its process survives. A `SessionStore` alone cannot recover a payment
+whose rail records were discarded. Restore the original rail log and attempt
+records from a trusted backup before retrying such a session; clearing a paid
+key or forcing a completed outcome cannot reconstruct those records safely.
 
 Which capabilities the SDK built (its client, its rail's `settle` and
 recovery read, `payDemSettle`'s submissions and the adapters it returned), and

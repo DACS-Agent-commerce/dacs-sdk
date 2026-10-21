@@ -930,8 +930,9 @@ export async function payDemSettleCore(
     finality: Object.freeze({ model: "bft-final" as const }),
     blockNumber: blockNumber as number,
     txRefKind: "demos" as const,
-    // Fee accounting only, never part of the verdict: it comes from the node's
-    // confirmation, checked above against the amount and the debit ceiling.
+    // Debit accounting from the node's confirmation, checked above against
+    // the amount and the debit ceiling. The record's fee must also be readable
+    // before success, so a saved payment can be authenticated again.
     // `payDemSettle` reports the executed record's fee instead
     // (`sdkRecordFees`), the one a restart reads back.
     ...(totalDebitOs === undefined
@@ -2812,8 +2813,9 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * requires `store.readOutcome` and `reconcile` and fails closed without them,
  * except that without `reconcile` it returns the definitive result this
  * bridge bound to the key itself when the attempt record and the saved
- * outcome agree. It counts the retained hash when the key's attempt
- * record in a `createIdempotencyStore` store, or a result this bridge
+ * outcome agree, and a fresh SDK record read confirms it. It counts the
+ * retained hash when the key's attempt record in a `createIdempotencyStore`
+ * store, or a result this bridge
  * submitted and that record accepted, names that hash. When no attempt record
  * names any hash for the key, it finishes the hash only through that store's
  * own `once`: a held generation refuses, and an expired one is reconciled as a
@@ -3137,6 +3139,7 @@ export function payDemSettle(
       }
       return hash;
     };
+    let recordReadThisCall = false;
     // A recovered verdict is final only from the SDK's own read of the node
     // record for its hash (#338). The reconciler names the hash and claims an
     // outcome; the SDK reads status, block, nonce and fee itself and refuses a
@@ -3174,6 +3177,7 @@ export function payDemSettle(
           "pay-dem reconciliation contradicts the node record the SDK read; refusing reuse or rebroadcast",
         );
       }
+      recordReadThisCall = true;
       if (!claimed.ok) return failureFinal ? claimed : heldPayDemResult(claimed);
       // The fee is the record's, which the reconciler may omit.
       const { networkFeeOs: _claimedFee, ...executed } = claimed;
@@ -3253,7 +3257,7 @@ export function payDemSettle(
             const saved = await readOutcome();
             if (await attemptNames() && saved !== null && samePayDemResult(saved, own.result)) {
               assertPayDemSuccessKept(historySucceeded, own.result);
-              return publicPayDemResult(own.result, expectedPayee);
+              return publicPayDemResult(await readRecovered(own.result, true), expectedPayee);
             }
           }
           throw new DacsError("pay-dem retained transaction requires read-only reconciliation; refusing reuse or rebroadcast");
@@ -3427,6 +3431,7 @@ export function payDemSettle(
           recovery: context,
         }, canonicalAttemptFence(effectFence, (hash) => { recordedBeforeBroadcast = hash; }));
         const captured = captureFreshPayDemResult(submitted, context);
+        recordReadThisCall = captured.ok || captured.errorClass === "permanent";
         // Keep what the rail reported so a later call cannot contradict it, but
         // bind it to the key only once the attempt record accepted it.
         authenticatedResults.set(key, { context, result: captured, boundToKey: false });
@@ -3562,6 +3567,11 @@ export function payDemSettle(
           context, result: confirmed, boundToKey: boundAfterReconciliation(confirmed, recorded),
         });
         captured = confirmed;
+      } else if (!recordReadThisCall && (captured.ok || captured.errorClass === "permanent")) {
+        // The bridge's memory binds this result to the key; it does not
+        // authenticate today's node record. A cached verdict must be read
+        // again even when this exact adapter originally submitted it.
+        captured = await readRecovered(captured, true);
       }
       // The low-level native rail reports the exact on-chain address. The public
       // settlement seam must return the request-bound identifier verbatim so the
