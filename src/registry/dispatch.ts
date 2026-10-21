@@ -61,8 +61,9 @@ export interface RailDispatchOptions {
    * low-level process-local compatibility behavior but is not restart-safe.
    * A new transfer, and auditing a retained hash after a restart, need
    * `settlementStore` to be a `createIdempotencyStore` store over a
-   * `SettlementLog` with the `putAttempt`/`readAttempt` pair (or an object
-   * carrying that store's own `once` and `readAttempt`): an injected store's
+   * `SettlementLog` with `readOutcome` and the `putAttempt`/`readAttempt` pair
+   * (or an object carrying that store's own `once`, `readOutcome` and
+   * `readAttempt`): an injected store's
    * own lookups never bind a hash, any other store starts no new transfer,
    * and without that record the audit fails closed. A store over a log
    * without the pair starts no new transfer and binds only the hashes the

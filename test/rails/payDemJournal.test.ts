@@ -270,12 +270,12 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     // A rail log that cannot show the outcome and lost the attempt record:
     // only the bridge's own result binds.
     const fences = sdkFences({ keepAttempts: false });
-    const store = { once: vi.fn(fences.run), readOutcome: vi.fn(async () => null), readAttempt: fences.readAttempt };
+    const store = { once: vi.fn(fences.run), readOutcome: fences.readOutcome, readAttempt: fences.readAttempt };
     const rail = await unjournaledRail();
     const settle = payDemSettle(rail, {}, { store, reconcile: honest() });
     await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(settle(request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
-    expect(store.readOutcome).toHaveBeenCalledTimes(2);
+    expect(store.once).toHaveBeenCalledTimes(1);
     // Without that result or an attempt record, nothing binds the hash.
     await expect(payDemSettle(rail, {}, { store, reconcile: honest() })(request("job-a", 0, hashA)))
       .rejects.toThrow(/no SDK record binds the retained transaction/);
@@ -367,7 +367,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
         store.once.mock.calls.length === 1
           ? fences.run(key, binding, submit)
           : reconcile!(key) as Promise<SettleResult>),
-      readOutcome: vi.fn(async () => null),
+      readOutcome: fences.readOutcome,
       readAttempt: fences.readAttempt,
     };
     let submitted = 0;

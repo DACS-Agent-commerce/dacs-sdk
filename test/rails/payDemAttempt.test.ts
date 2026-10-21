@@ -612,6 +612,16 @@ describe("settlement attempt records are generation-fenced and immutable", () =>
     expect(() => createIdempotencyStore(partial as SettlementLog))
       .toThrow(/settlement log must provide both putAttempt and readAttempt/);
   });
+
+  // Daybreak F1 (#370 sweep): a log that could record a new transfer's hash
+  // but has no read-only outcome lookup. Its restart audit would have to read
+  // through `claimIntent`, which refuses the expired intent a crash after the
+  // broadcast leaves, so the store is refused before anything is signed.
+  test("a log that keeps attempts must provide readOutcome", () => {
+    const { readOutcome: _read, ...paired } = createInMemorySettlementLog();
+    expect(() => createIdempotencyStore(paired as SettlementLog))
+      .toThrow(/settlement log that keeps attempts must provide readOutcome/);
+  });
 });
 
 /** A durable log written before the read-only lookup existed: no `readOutcome`, no attempt pair. */
@@ -706,6 +716,15 @@ describe("pay-dem starts a transfer only through a fence whose record a restart 
         once: async (_key, _binding, submit) => submit() as never,
         readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
       };
+    }],
+    // Daybreak F1 (#370 sweep): its restart audit has no outcome lookup.
+    ["a store carrying the SDK store's once and readAttempt but no readOutcome", (): Store => {
+      const inner = createIdempotencyStore();
+      return { once: inner.once, readAttempt: inner.readAttempt };
+    }],
+    ["a store whose readOutcome belongs to another SDK store", (): Store => {
+      const inner = createIdempotencyStore();
+      return { once: inner.once, readOutcome: createIdempotencyStore().readOutcome, readAttempt: inner.readAttempt };
     }],
     ["a host store whose fence brings its own recorder", (): Store => {
       const inner = createIdempotencyStore();

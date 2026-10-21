@@ -325,24 +325,21 @@ describe("pay-dem retained identity conflict quarantine", () => {
   });
 });
 
-// A store whose readOutcome does not wait for its own in-flight once (unlike
-// createIdempotencyStore) exposes the bridge's own per-key serialization. It
-// runs submit under the SDK fence whose attempt record it reads back.
+// A store whose once runs every call (its log forgets intents) exposes the
+// bridge's own per-key serialization. It runs submit under the SDK fence and
+// passes on that same store's lookups, so the rail may run.
 describe("pay-dem serializes calls for one settlement key", () => {
   const unwaitingStore = () => {
-    let recorded: SettleResult | null = null;
     const fences = sdkFences();
     return {
-      once: vi.fn(async (key: string, binding: SettlementBinding, run: Parameters<typeof fences.run>[2]) => {
-        recorded = await fences.run(key, binding, run);
-        return recorded;
-      }),
-      readOutcome: vi.fn(async () => recorded),
+      once: vi.fn(async (key: string, binding: SettlementBinding, run: Parameters<typeof fences.run>[2]) =>
+        fences.run(key, binding, run)),
+      readOutcome: fences.readOutcome,
       readAttempt: fences.readAttempt,
     };
   };
 
-  test("a conflicting audit waits for a delayed submit even when the store would not", async () => {
+  test("a conflicting audit waits for a delayed submit", async () => {
     let finish!: () => void;
     let started!: () => void;
     const submitted = new Promise<void>((resolve) => { started = resolve; });
@@ -360,7 +357,6 @@ describe("pay-dem serializes calls for one settlement key", () => {
     await submitted;
     const audit = expect(settle(history())).rejects.toThrow(/conflicts with the rail outcome/);
     await new Promise((resolve) => setImmediate(resolve));
-    expect(store.readOutcome).not.toHaveBeenCalled();
     finish();
     await expect(fresh).resolves.toMatchObject({ txHash: hashA, ok: true });
     await audit;
@@ -410,7 +406,7 @@ describe("pay-dem serializes calls for one settlement key", () => {
     const fences = sdkFences();
     const store = {
       once: vi.fn(fences.run),
-      readOutcome: vi.fn(async () => null),
+      readOutcome: fences.readOutcome,
       readAttempt: fences.readAttempt,
     };
     const settle = payDemSettle(rail, {}, { store: store as never });

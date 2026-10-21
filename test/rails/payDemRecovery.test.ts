@@ -391,7 +391,7 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     const store = {
       once: vi.fn(async (key: string, binding: SettlementBinding, run: Parameters<typeof fences.run>[2]) =>
         cached ?? fences.run(key, binding, run)),
-      readOutcome: vi.fn(async () => null),
+      readOutcome: fences.readOutcome,
       readAttempt: fences.readAttempt,
     };
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());

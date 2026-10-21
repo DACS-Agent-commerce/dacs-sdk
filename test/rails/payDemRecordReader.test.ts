@@ -625,6 +625,14 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     jobId,
     phaseIndex: 0,
   });
+  /** The same payment after a restart, with the session's retained hash. */
+  const retained = (jobId: string) => ({
+    ...request(jobId),
+    priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: false }],
+  });
+  /** A reconciler that finds the hash executed: it says nothing about the key. */
+  const reconciled = () => vi.fn(async () =>
+    ({ ...settled(), payer: PAYER_HEX, payee: PAYEE_HEX, amountOs: AMOUNT_OS }) as PayDemReconciledSettlement);
 
   it("settles and records the success of a rail built on a reader-carrying client", async () => {
     const { client, transfer } = customClient(await reader());
@@ -695,10 +703,11 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
   });
 
-  // The client's journal call is the last step before its broadcast: the
-  // attempt record is written there, so a process that dies before the client
-  // returns leaves a hash a restart can bind.
-  it("records a client's own transfer before it broadcasts, so a restart after a crash can bind it", async () => {
+  // A client's journal entry is its own statement: the SDK cannot tell there
+  // whether this call signed the transfer. Only the SDK's own read of the
+  // record makes it this payment's, so a process that dies before that read
+  // leaves no record, and a restart audit refuses rather than binds the hash.
+  it("records no client transfer the SDK has not read yet, so a restart audit refuses rather than binds it", async () => {
     const { client, transfer } = customClient(await reader(), {}, async (args) => {
       await args.journalPreparedTransfer?.(prepared(args.recovery === undefined ? {} : { recovery: args.recovery }));
       await new Promise<never>(() => undefined);
@@ -706,8 +715,124 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     const log = createInMemorySettlementLog();
     void payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) })(request("job-a"));
     await vi.waitFor(() => expect(transfer).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await expect(log.readAttempt!(settlementKey("pay-dem", "job-a", 0))).resolves.toBeNull();
+
+    const restarted = payDemSettle(createPayDemClientRail(customClient(await reader()).client), {}, {
+      store: createIdempotencyStore(log), reconcile: reconciled(),
+    });
+    await expect(restarted(retained("job-a"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+    expect(transfer).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a client's own transfer once the SDK's read made it this payment's success, so a restart after a lost outcome binds it", async () => {
+    const { client, transfer } = customClient(await reader());
+    const memory = createInMemorySettlementLog();
+    // The process dies while it saves the outcome.
+    const log = { ...memory, putOutcome: () => new Promise<never>(() => undefined) };
+    void payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) })(request("job-a"));
     await vi.waitFor(async () =>
-      expect(await log.readAttempt!(settlementKey("pay-dem", "job-a", 0))).toMatchObject({ txHash: TX_HASH }));
+      expect(await memory.readAttempt!(settlementKey("pay-dem", "job-a", 0))).toMatchObject({ txHash: TX_HASH }));
+
+    const restarted = payDemSettle(createPayDemClientRail(customClient(await reader()).client), {}, {
+      store: createIdempotencyStore(memory), reconcile: reconciled(),
+    });
+    await expect(restarted(retained("job-a"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(transfer).toHaveBeenCalledTimes(1);
+  });
+
+  // Daybreak F3 (#370 sweep): two payments in flight at once that a client
+  // hands one transfer. The SDK settles at most one; only that one's record
+  // names the hash, so a restart never reports the other paid with it.
+  it("records one transfer handed to two overlapping payments as at most one key's attempt", async () => {
+    let journals = 0;
+    let bothJournaled!: () => void;
+    const gate = new Promise<void>((resolve) => { bothJournaled = resolve; });
+    const { client } = customClient(await reader(), {}, async (args) => {
+      await args.journalPreparedTransfer?.(prepared(args.recovery === undefined ? {} : { recovery: args.recovery }));
+      journals += 1;
+      if (journals === 2) bothJournaled();
+      await gate;
+    });
+    const log = createInMemorySettlementLog();
+    const settle = payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) });
+
+    const results = await Promise.all([settle(request("job-1")), settle(request("job-2"))]);
+
+    const paid = results.findIndex((result) => result.ok);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    const jobs = ["job-1", "job-2"] as const;
+    await expect(log.readAttempt!(settlementKey("pay-dem", jobs[paid]!, 0)))
+      .resolves.toMatchObject({ txHash: TX_HASH });
+    const heldJob = jobs[1 - paid]!;
+    await expect(log.readAttempt!(settlementKey("pay-dem", heldJob, 0))).resolves.toBeNull();
+    const restarted = payDemSettle(createPayDemClientRail(client), {}, {
+      store: createIdempotencyStore(log), reconcile: reconciled(),
+    });
+    await expect(restarted(retained(heldJob))).rejects.toThrow(/no SDK record binds the retained transaction/);
+  });
+
+  // Code F2 (#370 sweep): job-1's transfer is still pending (its record cannot
+  // be read yet, so this process has not settled it) and the account nonce
+  // lags, so neither process-local check stops a relay to job-2.
+  it("never records another payment's still-pending transfer as this one's attempt", async () => {
+    const { client } = customClient(await reader(), {}, async (args) => {
+      signedAtMs ??= Date.now();
+      await args.journalPreparedTransfer?.(prepared(args.recovery === undefined ? {} : { recovery: args.recovery }));
+    });
+    sdk.getTxByHash.mockImplementation(async () => null);
+    const log = createInMemorySettlementLog();
+    const settle = payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) });
+    await expect(settle(request("job-1"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    sdk.getTxByHash.mockImplementation(async () => record());
+    await expect(settle(request("job-2"))).resolves.toEqual({ ...held(), payer: PAYER_HEX, payee: PAYEE_HEX });
+
+    await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
+    const restarted = payDemSettle(createPayDemClientRail(client), {}, {
+      store: createIdempotencyStore(log), reconcile: reconciled(),
+    });
+    await expect(restarted(retained("job-2"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+  });
+
+  // Code F1 (#370 sweep): job-1 settled in this process and the account nonce
+  // still lags. job-2's relay is neither recorded nor bound by an audit
+  // through the same bridge.
+  it("never records or binds job-1's settled transfer for job-2 while the account nonce lags", async () => {
+    const { client } = customClient(await reader());
+    const log = createInMemorySettlementLog();
+    const settle = payDemSettle(createPayDemClientRail(client), {}, {
+      store: createIdempotencyStore(log), reconcile: reconciled(),
+    });
+    await expect(settle(request("job-1"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    await expect(settle(request("job-2"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+
+    await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
+    await expect(settle(retained("job-2"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+  });
+
+  // A reader-carrying client gets the store's fence without its recorder: it
+  // could otherwise write any hash, such as job-1's, as job-2's attempt.
+  it("hands a reader-carrying client no attempt recorder, so it cannot write job-2's record", async () => {
+    const recorders: unknown[] = [];
+    const { client } = customClient(await reader(), {}, async (args) => {
+      recorders.push(args.effectFence?.recordAttempt);
+      await args.effectFence?.recordAttempt?.(TX_HASH);
+      await args.journalPreparedTransfer?.(prepared(args.recovery === undefined ? {} : { recovery: args.recovery }));
+    });
+    const log = createInMemorySettlementLog();
+    const settle = payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) });
+    await expect(settle(request("job-1"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    accountNonce = NONCE;
+    await expect(settle(request("job-2"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+
+    expect(recorders).toEqual([undefined, undefined]);
+    await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
+    const restarted = payDemSettle(createPayDemClientRail(client), {}, {
+      store: createIdempotencyStore(log), reconcile: reconciled(),
+    });
+    await expect(restarted(retained("job-2"))).rejects.toThrow(/no SDK record binds the retained transaction/);
   });
 
   it("holds job-2 presenting job-1's genuine transfer even before the account nonce shows it", async () => {
@@ -838,6 +963,17 @@ describe("a transfer signed before this call never settles it, across a restart 
     expect(restarted.payDemRecordVerifiedTransfer(second)).toBeUndefined();
     expect(putOutcome).not.toHaveBeenCalled();
     expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
+    // Nor does job-1's transfer become job-2's attempt record, so a restart
+    // audit never reports job-2 paid with it (Daybreak F3, #370 sweep).
+    await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
+    const reconcile = vi.fn(async () =>
+      ({ ...settled(), payer: PAYER_HEX, payee: PAYEE_HEX, amountOs: AMOUNT_OS }) as PayDemReconciledSettlement);
+    await expect(restarted.payDemSettle(
+      restarted.createPayDemClientRail(replay.client),
+      {},
+      { store: restarted.createIdempotencyStore(log), reconcile },
+    )({ ...request("job-2"), priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: false }] }))
+      .rejects.toThrow(/no SDK record binds the retained transaction/);
   });
 
   it("holds a direct settle presenting an earlier executed transfer after a restart", async () => {

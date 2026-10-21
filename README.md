@@ -645,13 +645,15 @@ recovery fails closed and never authorizes a broadcast.
 
 A recovery request that carries `priorAttempts` (as `runSession` sends for a
 session holding a transaction-bearing outcome) is a read-only audit of that
-retained transaction: it never claims a submit generation, even when the rail
-log lost its record. It requires both `settlementStore.readOutcome` and
-`reconcile` and fails closed without either. Over a `SettlementLog` without the
-optional `readOutcome` method, the `createIdempotencyStore` lookup reads through
-`claimIntent`: it returns a saved outcome, releases at once an intent it had to
-install (running nothing), and refuses a held or expired generation without
-releasing it. For an
+retained transaction: it never calls the store's `once` or the rail, even when
+the rail log lost its record. It requires both `settlementStore.readOutcome` and
+`reconcile` and fails closed without either. A `SettlementLog` that keeps
+attempt records must implement `readOutcome`, which reads without a lease.
+Over an older log with neither, the `createIdempotencyStore` lookup reads
+through `claimIntent`, so it is not read-only: it returns a saved outcome,
+takes a short lease on a key it had to install and releases it at once
+(running nothing), refuses a held generation, and on an expired one takes a
+reconcile lease that it leaves to lapse and refuses. For an
 audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plus
 `txHash`, the retained hash in canonical form (64 lower-case hex digits, no
 `0x`). `getTxByHash` matches that stored form exactly and answers any other form
@@ -668,17 +670,21 @@ and a record naming another hash refuses it, whatever this bridge holds in
 memory. A
 `createIdempotencyStore` store hands its settlement fence a `recordAttempt`
 method when its `SettlementLog` implements the optional `putAttempt` and
-`readAttempt` pair (the in-memory log does). `createPayDemRail` records the
-signed hash through it before its one broadcast and does not broadcast if the
-record is refused. `payDemSettle` records that hash again before the store
-persists or returns it; when that write is refused the call fails and the hash
-stays unbound. The only rails `payDemSettle` runs (those `createPayDemRail` and
-`createPayDemClientRail` return) call `fence.recordAttempt` with the exact hash they will return before they
-broadcast, and do not broadcast when it rejects. A client rail does so through
-the journal hook the SDK hands its client, and only for a transfer signed after
-the call began that this process has not settled; any other hash it returns,
-such as another payment's transfer relayed for this one, is never recorded and
-stays unbound.
+`readAttempt` pair (the in-memory log does). `createPayDemRail` signs the hash
+itself and records it through that fence before its one broadcast, and does
+not broadcast if the record is refused. `payDemSettle` records that hash again
+before the store persists or returns it; when that write is refused the call
+fails and the hash stays unbound. A `createPayDemClientRail` client's journal
+entry is its own statement and can name another payment's transfer, so the
+client's fence carries no `recordAttempt`, and `payDemSettle` records its hash
+only after the SDK's own record read made it this payment's success (signed
+after the call began, its nonce above the account nonce read before it, and
+settled by no other call in this process). Any other hash it returns,
+including its own transfer the SDK has not read yet, is not recorded and stays
+unbound, so a restart reconciles that key by key and an audit of it refuses.
+Two payments in flight at once that a client hands one transfer cannot be told
+apart by the record; the SDK settles and records at most one of them in a
+process.
 The fence a rail receives records
 the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
 passes, and rejects a value that is not a Demos transaction hash, so a rail
@@ -691,8 +697,9 @@ transfer through a `createIdempotencyStore` store over a log without it: the
 call fails before the rail runs, nothing is signed or sent, and the intent is
 released. Nor does it start one through any other store, wrapper or fence: a
 new transfer runs only when the fence a store hands its submit records through
-the same `createIdempotencyStore` store whose own `readAttempt` it carries, so
-pass that store, or an object carrying its own `once` and `readAttempt`. A log
+the same `createIdempotencyStore` store whose own `readOutcome` and
+`readAttempt` it carries, so pass that store, or an object carrying its own
+`once`, `readOutcome` and `readAttempt`. A log
 without the pair still serves the payments it holds: an audit counts the hash
 that an outcome the log holds for these exact terms names, once the
 reconciliation agrees with that outcome on block and result, and a key the log

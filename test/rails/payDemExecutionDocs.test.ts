@@ -42,8 +42,22 @@ describe("pay-dem execution docs match the code (#338)", () => {
   it("states the attempt-record contract for the SDK's rails and durable logs", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     const readme = read("README.md").replace(/\s+/g, " ");
-    expect(doc).toContain("record the exact hash they will return before they broadcast");
-    expect(readme).toContain("call `fence.recordAttempt` with the exact hash they will return before they broadcast");
+    for (const text of [doc, readme]) {
+      // #370 sweep: only the SDK's own signing or record read writes a record.
+      expect(text).toContain("`createPayDemRail` signs the hash itself");
+      expect(text).toContain("fence carries no `recordAttempt`");
+      expect(text).toContain("records its hash only after the SDK's own record read made it this payment's success");
+      expect(text).toContain("including its own transfer the SDK has not read yet, is not recorded and stays unbound");
+      expect(text).toContain("the SDK settles and records at most one of them in a process");
+      expect(text).not.toContain("record the exact hash they will return before they broadcast");
+      expect(text).not.toContain("through the journal hook the SDK hands");
+      // A log that can start a transfer reads outcomes without a claim; the
+      // claim-based lookup of an older log is not read-only.
+      expect(text).toContain("that keeps attempt records must implement `readOutcome`");
+      expect(text).toContain("so it is not read-only");
+      expect(text).toContain("takes a reconcile lease that it leaves to lapse and refuses");
+      expect(text).not.toContain("never claims a submit generation");
+    }
     for (const text of [doc, readme]) {
       expect(text).not.toContain("keeps working for fresh settlement");
       expect(text).toContain("starts no new transfer through a `createIdempotencyStore` store over a log without it");
@@ -56,9 +70,9 @@ describe("pay-dem execution docs match the code (#338)", () => {
     }
     for (const text of [doc, readme]) {
       expect(text).toContain("Nor does it start one through any other store, wrapper or fence");
-      expect(text).toContain("whose own `readAttempt` it carries");
+      expect(text).toContain("whose own `readOutcome` and `readAttempt` it carries");
       expect(text).toContain("lookup reads through `claimIntent`");
-      expect(text).toContain("any other hash it returns, such as another payment's transfer relayed for this one, is never recorded");
+      expect(text).not.toContain("is never recorded");
       expect(text).not.toContain("saved before attempt records existed");
       expect(text).not.toContain("also records any hash a rail returns");
       expect(text).not.toContain("must therefore implement the optional `readOutcome` method");

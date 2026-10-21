@@ -807,7 +807,7 @@ describe("read-only settlement outcome lookup", () => {
   // nothing run, and a held, expired or conflicting record refuses unchanged.
   test("a legacy log without readOutcome answers the lookup through claimIntent, and once stays compatible", async () => {
     const memory = createInMemorySettlementLog();
-    const { readOutcome: _read, ...legacy } = memory;
+    const { readOutcome: _read, putAttempt: _put, readAttempt: _attempt, ...legacy } = memory;
     let now = 1_000;
     const store = createIdempotencyStore(legacy, { owner: "audit", leaseDurationMs: 1_000, now: () => now });
     const bindingHash = settlementBindingHash(binding());
@@ -834,9 +834,33 @@ describe("read-only settlement outcome lookup", () => {
   });
 
   test("a legacy lookup refuses an intent it could not release", async () => {
-    const { readOutcome: _read, ...legacy } = createInMemorySettlementLog();
+    const { readOutcome: _read, putAttempt: _put, readAttempt: _attempt, ...legacy } = createInMemorySettlementLog();
     const store = createIdempotencyStore({ ...legacy, releaseIntent: async () => "stale" });
     await expect(store.readOutcome!(KEY, binding())).rejects.toThrow(/could not release the intent it installed/);
+  });
+
+  // Code F3 (#370 sweep): the legacy lookup writes. A process that dies
+  // between its claim and its release leaves a lease that later reads as an
+  // expired attempt: the lookup and `once` both fail closed, nothing runs.
+  test("a legacy lookup that dies before its release leaves the key fail closed, never fresh", async () => {
+    const memory = createInMemorySettlementLog();
+    const { readOutcome: _read, putAttempt: _put, readAttempt: _attempt, ...legacy } = memory;
+    let now = 1_000;
+    const options = { owner: "audit", leaseDurationMs: 1_000, now: () => now };
+    const dying = createIdempotencyStore({ ...legacy, releaseIntent: () => new Promise<never>(() => undefined) }, options);
+    void dying.readOutcome!(KEY, binding());
+    await vi.waitFor(async () =>
+      expect(await memory.claimIntent({
+        key: KEY, bindingHash: settlementBindingHash(binding()), owner: "probe", now, leaseDurationMs: 1_000,
+      })).toMatchObject({ status: "held" }));
+
+    now += 5_000;
+    const restarted = createIdempotencyStore(legacy, options);
+    await expect(restarted.readOutcome!(KEY, binding())).rejects.toThrow(/expired unresolved attempt/);
+    const submit = vi.fn(async () => ok("second-effect"));
+    now += 5_000;
+    await expect(restarted.once(KEY, binding(), submit)).rejects.toThrow();
+    expect(submit).not.toHaveBeenCalled();
   });
 
   test("captures the lookup receiver and method before awaiting caller-controlled code", async () => {

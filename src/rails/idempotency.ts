@@ -141,10 +141,12 @@ export type SettlementAttemptWrite = "recorded" | "existing" | "stale" | "confli
 export interface SettlementLog {
   /**
    * Read an immutable outcome without acquiring a lease or changing a generation.
-   * Optional. Without it the store's `readOutcome` reads through `claimIntent`:
-   * it returns a saved outcome, releases at once an intent it had to install
-   * (running nothing), and refuses a held or expired generation without
-   * releasing it.
+   * Required on a log that keeps attempts. Optional on one that does not;
+   * there the store's `readOutcome` reads through `claimIntent`, so it is not
+   * read-only: it returns a saved outcome, takes a short lease on a key it had
+   * to install and releases it at once (running nothing), refuses a held
+   * generation, and on an expired one takes a reconcile lease that it leaves
+   * to lapse and refuses.
    */
   readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
@@ -194,10 +196,10 @@ export interface SettlementLog {
    * first record needs the exact current unexpired generation (`stale`
    * otherwise). After that the record never changes or disappears: the same
    * hash again is `existing`, any other hash or binding is `conflict`.
-   * Optional, but a log provides both attempt methods or neither. pay-dem
-   * starts no new transfer through a log without them, because a restart
-   * could not bind its hash; such a log still serves audits and restarts of
-   * the outcomes it holds.
+   * Optional, but a log provides both attempt methods or neither, and a log
+   * with them also provides `readOutcome`. pay-dem starts no new transfer
+   * through a log without them, because a restart could not bind its hash;
+   * such a log still serves audits and restarts of the outcomes it holds.
    */
   putAttempt?(input: Readonly<{
     key: string;
@@ -255,7 +257,8 @@ export interface SettlementIdempotencyStore {
    * it only over a log that keeps attempts. Only its lookup binds a retained
    * pay-dem hash after a restart, and `payDemSettle` starts a new transfer
    * only when the fence `once` hands its submit records through this same
-   * store, so this lookup reads the hash back.
+   * store and the store's `readOutcome` is this store's own, so a restart
+   * reads the hash and the outcome back.
    */
   readAttempt?(
     key: string,
@@ -810,8 +813,17 @@ function captureSettlementLog(log: SettlementLog): BoundSettlementLog {
   if ((putAttempt === undefined) !== (readAttempt === undefined)) {
     throw new DacsError("settlement log must provide both putAttempt and readAttempt, or neither");
   }
+  const readOutcome = settlementLogMethod(log, "readOutcome", true);
+  // A log that can record a new transfer's hash must also read its outcome
+  // without a claim: a restart audit through `claimIntent` refuses the
+  // expired intent a crash after the broadcast leaves.
+  if (putAttempt !== undefined && readOutcome === undefined) {
+    throw new DacsError(
+      "settlement log that keeps attempts must provide readOutcome, so a restart can read an outcome without claiming the key",
+    );
+  }
   return Object.freeze({
-    readOutcome: settlementLogMethod(log, "readOutcome", true),
+    readOutcome,
     claimIntent: settlementLogMethod(log, "claimIntent"),
     isCurrent: settlementLogMethod(log, "isCurrent"),
     grantRecovery: settlementLogMethod(log, "grantRecovery"),
@@ -929,6 +941,21 @@ export function isStoreAttemptRecorder(recordAttempt: unknown, readAttempt: unkn
     attemptRecorders.get(recordAttempt) === readAttempt;
 }
 
+// Each `readAttempt` a `createIdempotencyStore` store built, mapped to that
+// same store's `readOutcome`, which reads its log without a claim.
+const storeOutcomeLookups = new WeakMap<object, object>();
+
+/**
+ * Internal (not re-exported): true only when `readAttempt` and `readOutcome`
+ * are the lookups of one `createIdempotencyStore` store over a log that keeps
+ * attempts, so a restart can read both the hash and the outcome back through
+ * it without claiming the key.
+ */
+export function isStoreLookupPair(readAttempt: unknown, readOutcome: unknown): boolean {
+  return typeof readAttempt === "function" && typeof readOutcome === "function" &&
+    storeOutcomeLookups.get(readAttempt) === readOutcome;
+}
+
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),
@@ -936,8 +963,12 @@ export function createIdempotencyStore(
 ): SettlementIdempotencyStore {
   const store = buildIdempotencyStore(log, options);
   bindingCheckedOutcomeLookups.add(store.readOutcome!);
-  if (store.readAttempt !== undefined) bindingCheckedOutcomeLookups.add(store.readAttempt);
-  else outcomeOnlyLogLookups.add(store.readOutcome!);
+  if (store.readAttempt !== undefined) {
+    bindingCheckedOutcomeLookups.add(store.readAttempt);
+    storeOutcomeLookups.set(store.readAttempt, store.readOutcome!);
+  } else {
+    outcomeOnlyLogLookups.add(store.readOutcome!);
+  }
   return store;
 }
 
@@ -980,11 +1011,13 @@ function buildIdempotencyStore(
         },
       };
 
-  // A log without `readOutcome` (one written before it existed) answers the
-  // lookup through `claimIntent`: a saved outcome is returned, and an intent
-  // the claim had to install is released at once, with nothing run. A held
-  // generation refuses, and so does an expired one, which is never released:
-  // its effect may have been sent, and only reconciliation may resolve it.
+  // A log without `readOutcome` (one written before it existed, which keeps no
+  // attempts and so starts no pay-dem transfer) answers the lookup through
+  // `claimIntent`, so the lookup writes: a saved outcome is returned, and an
+  // intent the claim had to install is released at once, with nothing run. A
+  // held generation refuses, and so does an expired one, whose reconcile lease
+  // is left to lapse and never released: its effect may have been sent, and
+  // only reconciliation may resolve it.
   const readOutcomeThroughClaim = async (
     key: string,
     capturedBinding: Readonly<SettlementBinding>,
