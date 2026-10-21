@@ -757,6 +757,20 @@ describe("pay-dem starts a transfer only through a fence whose record a restart 
         readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
       };
     }],
+    // Only the recorder's own key tells these apart: every visible field of the
+    // fence already names this key and these terms.
+    ["a wrapper whose fence rewrites another key's fields to this key's over that key's recorder", (): Store => {
+      const inner = createIdempotencyStore();
+      return {
+        once: (key, binding, submit, reconcile) => inner.once(
+          "pay-dem:job-other:0", { ...binding, jobId: "job-other" },
+          async (fence) => submit(Object.freeze({
+            ...fence!, settlementKey: key, bindingHash: settlementBindingHash(binding),
+          })), reconcile,
+        ),
+        readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+      };
+    }],
     ["a host store whose fence brings its own recorder", (): Store => {
       const inner = createIdempotencyStore();
       return {

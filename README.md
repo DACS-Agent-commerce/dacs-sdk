@@ -639,7 +639,7 @@ recovery fails closed and never authorizes a broadcast.
 
 A recovery request that carries `priorAttempts` (as `runSession` sends for a
 session holding a transaction-bearing outcome) is an audit of that retained
-transaction that never submits and never acquires submit authority: it never
+transaction that never submits: it never
 calls the rail, even when the rail log lost its record. It reads only, except
 to finish a retained hash that no record names (below), which writes through
 the store's expired generation. It requires both `settlementStore.readOutcome`
@@ -687,7 +687,8 @@ store holds nothing for starts nothing (the submit refuses and the intent is
 released), an outcome saved without a record still never binds, and any other
 store's `once` or fence never finishes it. Over a log without `readOutcome`
 the same path also accepts the outcome the store already holds for these exact
-terms when it names the retained hash and the reconciliation of that hash
+terms, returned by that same store's own `once` (not a wrapper's, nor another
+store's), when it names the retained hash and the reconciliation of that hash
 agrees with it on block and result. This path trusts the reconciler as
 the restart without history does (below). This is the one place an audit
 changes the log: the store's `once` claims a fresh intent for a key it holds

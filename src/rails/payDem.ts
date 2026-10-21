@@ -19,6 +19,7 @@ import {
   isOutcomeOnlyLogLookup,
   isStoreAttemptRecorder,
   isStoreLookupPair,
+  isStoreOnceFor,
   isStoreReconcileFence,
   isUnreadableOutcomeLookup,
   settlementBindingHash,
@@ -2470,8 +2471,10 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * starts no new transfer (nothing is signed or sent, and the intent is
  * released). On a log without the pair, an outcome the log holds for the
  * exact terms names the hash once the reconciliation agrees on block and
- * outcome; on such a log without `readOutcome` the store's lookup refuses
- * and the audit with it. Any other rail-log outcome or an
+ * outcome; on such a log without `readOutcome` the store's lookup refuses,
+ * so the audit finishes through the store's `once` (an expired generation
+ * under the exact terms, or the outcome that very store holds, never a
+ * wrapper's `once` beside its lookup). Any other rail-log outcome or an
  * injected store's records never do, and
  * neither does a prepared-transfer journal entry the reconciliation returns:
  * that entry is checked against this exact payment tuple and can refuse the
@@ -2546,6 +2549,11 @@ export function payDemSettle(
   // finished through its `once` alone.
   const outcomeUnreadable = readOutcomeProperty.found &&
     isUnreadableOutcomeLookup(readOutcomeProperty.value);
+  // Whether the `once` is the method of the very store whose lookup is
+  // `readOutcome`: a wrapper can put its own `once` (or another store's) next
+  // to a store's lookup, and only the pair answers for that store's log.
+  const storeOnceIsLookups = readOutcomeProperty.found &&
+    isStoreOnceFor(stableMethodTarget(store, "once", "pay-dem settlement store once"), readOutcomeProperty.value);
   // The store's own outcome lookup, which checks its key and terms itself.
   const storeOutcomeLookup = readOutcomeProperty.found &&
     isBindingCheckedOutcomeLookup(readOutcomeProperty.value)
@@ -2909,7 +2917,15 @@ export function payDemSettle(
             }),
           }),
           async (reconcileKey, fence) => {
-            if (reconcileKey !== key || fence === undefined || !isStoreReconcileFence(fence, storeOutcomeLookup)) {
+            const fenceKey = fence === undefined
+              ? undefined
+              : stableDataProperty(fence, "settlementKey", "pay-dem effect fence settlementKey");
+            const fenceTerms = fence === undefined
+              ? undefined
+              : stableDataProperty(fence, "bindingHash", "pay-dem effect fence bindingHash");
+            if (reconcileKey !== key || fence === undefined || !isStoreReconcileFence(fence, storeOutcomeLookup) ||
+                fenceKey?.found !== true || fenceKey.value !== key ||
+                fenceTerms?.found !== true || fenceTerms.value !== settlementBindingHash(binding)) {
               throw new DacsError(
                 "pay-dem retained transaction is finished only through the settlement store's own expired generation; refusing reuse or rebroadcast",
               );
@@ -2934,8 +2950,10 @@ export function payDemSettle(
         // Over a log whose outcomes cannot be read back, the outcome the store
         // itself holds for these exact terms names the hash, as on a log that
         // keeps no attempt records, once the checks below agree with the
-        // reconciliation of the hash.
-        const heldNamesHash = outcomeUnreadable &&
+        // reconciliation of the hash. Only when this `once` is that store's
+        // own: a wrapper's `once` (or another store's) returns what its
+        // author likes, under any key.
+        const heldNamesHash = outcomeUnreadable && storeOnceIsLookups &&
           canonicalDemosTxHash((finishedRaw as { txHash?: unknown } | null)?.txHash) === retainedTxHash;
         if (!reconciledUnderLease && !heldNamesHash) throw new DacsError(unbound);
         const finished = capturePayDemResult(finishedRaw, context, "pay-dem retained settlement finished by the store");

@@ -94,8 +94,7 @@ below).
   included, are refused.
 - A settlement request carrying `priorAttempts` (which `runSession` sends for
   a session holding a transaction-bearing outcome) is an audit of that
-  retained transaction that never submits and never acquires submit
-  authority. It reads only, except to finish a retained hash that no record
+  retained transaction that never submits. It reads only, except to finish a retained hash that no record
   names (below), which writes through the store's expired generation.
   `payDemSettle` never calls the rail for it, even
   when the rail log lost its record, and requires both
@@ -120,7 +119,8 @@ below).
   reconciler is asked for the key's payment, without the hash); only an
   answer naming the retained hash is accepted, recorded as the key's attempt
   and saved. Over a log without `readOutcome` the same path also accepts the
-  outcome the store already holds for these exact terms when it names the
+  outcome the store already holds for these exact terms, returned by that same
+  store's own `once` (not a wrapper's, nor another store's), when it names the
   retained hash and the reconciliation of that hash agrees with it on block
   and result. This is the one place an audit changes the log: the store's
   `once` claims a fresh intent for a key it holds nothing for and releases it

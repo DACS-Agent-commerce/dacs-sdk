@@ -8,7 +8,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
+  settlementBindingHash,
   settlementKey,
+  type SettlementIdempotencyStore,
   type SettlementLog,
 } from "../../src/rails/idempotency.js";
 import {
@@ -273,5 +275,133 @@ describe("pay-dem finishes a retained transfer no attempt record names through t
       await expect((await bridge(echo))(other)).rejects.toThrow(/no SDK record binds the retained transaction/);
       expect(sdkTransfers()).toBe(1);
     });
+
+    // Sweep N1 (#370): the held outcome counts only when it comes from the
+    // `once` of the very store whose lookup is supplied.
+    describe("beside a once that is not that store's own", () => {
+      const key = settlementKey("pay-dem", "job-t", 0);
+      const wrap = (once: SettlementIdempotencyStore["once"], lookups: SettlementIdempotencyStore) =>
+        ({ once, readOutcome: lookups.readOutcome }) as SettlementIdempotencyStore;
+
+      it("refuses a wrapper once that returns a settlement naming the hash", async () => {
+        const { full, bridge, advance, reconcile } = await setup();
+        advance();
+        await expect((await bridge())(resumed("job-t"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+        const saved = (await full.readOutcome!(key))!.result;
+        const once = vi.fn(async () => saved);
+        const store = wrap(once as unknown as SettlementIdempotencyStore["once"],
+          createIdempotencyStore(logWithoutReadOutcome(full)));
+        const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+        await expect(settle(resumed("job-t"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+        expect(sdkTransfers()).toBe(1);
+      });
+
+      it("refuses another store's saved outcome for another key", async () => {
+        const { full, bridge, advance, reconcile } = await setup();
+        // A second payment of the same transfer on the same log, under job-other.
+        const first = payDemSettle(await heldRail(), {}, {
+          store: createIdempotencyStore(full, { now: () => 1_000_000, leaseDurationMs: LEASE_MS }), reconcile,
+        });
+        await expect(first(request("job-other"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+        advance();
+        await expect((await bridge())(resumed("job-other"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+        const otherKey = settlementKey("pay-dem", "job-other", 0);
+        await expect(full.readOutcome!(otherKey)).resolves.toMatchObject({ result: { txHash: TX_HASH } });
+        await expect(full.readOutcome!(key)).resolves.toBeNull();
+
+        const holder = createIdempotencyStore(full);
+        const store = wrap(
+          (async (_key, binding, submit, rec) =>
+            holder.once(otherKey, { ...binding, jobId: "job-other" }, submit, rec)) as SettlementIdempotencyStore["once"],
+          createIdempotencyStore(logWithoutReadOutcome(full)));
+        const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+        await expect(settle(resumed("job-t"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+        await expect(full.readOutcome!(key)).resolves.toBeNull();
+        expect(sdkTransfers()).toBe(2);
+      });
+
+      it("still finishes through a pass-through once that hands the store's own fence for this key", async () => {
+        const { full, advance, reconcile } = await setup();
+        advance();
+        const real = createIdempotencyStore(logWithoutReadOutcome(full), { now: () => 1_000_000 + LEASE_MS + 1_000, leaseDurationMs: LEASE_MS });
+        const store = wrap(((...args: Parameters<SettlementIdempotencyStore["once"]>) =>
+          real.once(...args)) as SettlementIdempotencyStore["once"], real);
+        const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+        await expect(settle(resumed("job-t")))
+          .resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+        await expect(full.readOutcome!(key)).resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
+        expect(sdkTransfers()).toBe(1);
+      });
+    });
+  });
+
+  // Sweep N2 (#370): for a key the store holds nothing for, the audit claims an
+  // intent and releases it at once, without calling the rail. A death
+  // between the two leaves a held claim that expires like any other.
+  it("keeps the audit of a key the log holds nothing for from calling the rail when it dies before the release", async () => {
+    const { log: base, state } = logPredatingAttempts();
+    state.predating = false;
+    let crash = true;
+    const log: SettlementLog = {
+      ...base,
+      releaseIntent: async (input) => {
+        if (crash) throw new Error("process died before the release");
+        return base.releaseIntent(input);
+      },
+    };
+    let clock = 1_000_000;
+    const options = () => ({ now: () => clock, leaseDurationMs: LEASE_MS });
+    const reconcile = vi.fn(async () => executed());
+    const settle = async () => payDemSettle(await sdkRail(), {}, {
+      store: createIdempotencyStore(log, options()), reconcile,
+    });
+    const key = settlementKey("pay-dem", "job-t", 0);
+    await expect((await settle())(resumed("job-t"))).rejects.toThrow(/process died/);
+    expect(sdkTransfers()).toBe(0);
+    await expect(base.readAttempt!(key)).resolves.toBeNull();
+    await expect(base.readOutcome!(key)).resolves.toBeNull();
+
+    // The claim is held until it expires, and nothing is signed meanwhile.
+    crash = false;
+    await expect((await settle())(resumed("job-t"))).rejects.toThrow(/unresolved or in-flight current generation/);
+    clock += LEASE_MS + 1_000;
+    await expect((await settle())(resumed("job-t")))
+      .resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+    expect(sdkTransfers()).toBe(0);
+  });
+
+  // Sweep N3 (#370): the finish path takes the store's fence only for this
+  // key under these terms, as the submit gate does.
+  it("never finishes through the store's fence for this key under other terms", async () => {
+    const { log, state } = logPredatingAttempts();
+    state.predating = false;
+    let clock = 1_000_000;
+    const real = createIdempotencyStore(log, { now: () => clock, leaseDurationMs: LEASE_MS });
+    const key = settlementKey("pay-dem", "job-t", 0);
+    const reconcile = vi.fn(async () => executed());
+    // The log holds an expired generation for this key under other terms.
+    let otherTerms: Parameters<SettlementIdempotencyStore["once"]>[1] | undefined;
+    const spy = vi.fn(async (_key: string, binding: Parameters<SettlementIdempotencyStore["once"]>[1]) => {
+      otherTerms = { ...binding, amount: "1" };
+      throw new Error("captured");
+    });
+    await expect(payDemSettle(await sdkRail(), {}, {
+      store: { once: spy, readOutcome: real.readOutcome, readAttempt: real.readAttempt } as unknown as SettlementIdempotencyStore,
+      reconcile,
+    })(resumed("job-t"))).rejects.toThrow(/captured/);
+    await log.claimIntent({
+      key, bindingHash: settlementBindingHash(otherTerms!), owner: "someone-else", now: clock, leaseDurationMs: LEASE_MS,
+    });
+    clock += LEASE_MS + 1_000;
+    const store = {
+      once: (k: string, binding: Parameters<SettlementIdempotencyStore["once"]>[1], submit: never, rec: never) =>
+        real.once(k, otherTerms!, submit, rec),
+      readOutcome: real.readOutcome,
+      readAttempt: real.readAttempt,
+    } as unknown as SettlementIdempotencyStore;
+    await expect(payDemSettle(await sdkRail(), {}, { store, reconcile })(resumed("job-t")))
+      .rejects.toThrow(/finished only through the settlement store's own expired generation/);
+    await expect(log.readAttempt!(key)).resolves.toBeNull();
+    await expect(log.readOutcome!(key)).resolves.toBeNull();
   });
 });
