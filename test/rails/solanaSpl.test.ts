@@ -2753,6 +2753,33 @@ describe("advanceSolanaSplSettlement with a transfer the chain refused", () => {
       await expect(store.claim({ intent, owner: "worker-b", now: 2_000, leaseDurationMs: 100 }))
         .resolves.toEqual({ status: "failed", intent, failure });
     });
+
+  test("the in-memory store refuses landed-failure evidence whose signature changes between lookup and capture",
+    async () => {
+      const store = createInMemorySolanaSplSettlementStore();
+      await store.claim({ intent, owner: "worker-a", now: 1_000, leaseDurationMs: 100 });
+      const fence = {
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        owner: "worker-a", generation: 1,
+      };
+      const unsigned = await adapter().prepareSignedTransfer(
+        { intent } as never, 1, { assertCurrent: async () => undefined } as never,
+      );
+      await store.recordAttempt({ ...fence, attempt: { ...unsigned, attemptHash: sha256Hex(canonicalize(unsigned)) } });
+      // The first read finds the retained attempt; every later read differs.
+      let reads = 0;
+      const shifting = {
+        ...evidenceFor(SIGNATURE_1),
+        get signature() { return reads++ === 0 ? SIGNATURE_1 : SIGNATURE_2; },
+      };
+      await expect(store.recordFailure({
+        ...fence, failure: { errorClass: "permanent", reason: refused.reason }, landedFailure: shifting as never,
+      })).resolves.toEqual({ status: "conflict", reason: "solana-landed-failure-invalid" });
+      expect(reads).toBeGreaterThan(1);
+      // The attempt is still live, so the key is not closed.
+      await expect(store.claim({ intent, owner: "worker-b", now: 2_000, leaseDurationMs: 100 }))
+        .resolves.toMatchObject({ status: "acquired" });
+    });
 });
 
 function expiredEvidence(attempt: Pick<SolanaSplSignedAttempt, "signature" | "lastValidBlockHeight">) {
