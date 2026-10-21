@@ -48,7 +48,9 @@ describe("pay-dem execution docs match the code (#338)", () => {
 
   it("says only the SDK's own record read is final and nothing exports a way to vouch", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
-    expect(doc).toContain("Only the SDK's own read of the node makes a verdict final: inside `createPayDemRail`, or through a record reader `createPayDemRecordReader` built.");
+    expect(doc).toContain("Only the SDK's own read of the node makes a fresh payment's verdict final: inside `createPayDemRail`, or through a record reader `createPayDemRecordReader` built.");
+    // P2-5 (#369 review): recovery is the reconciler's statement, not a read.
+    expect(doc).toContain("the SDK checks only that statement's shape and bindings");
     expect(doc).toContain("The client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are ignored");
     expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else, when it has no signed nonce, when it is not bound to a transfer this call journaled and signed");
     expect(doc).toContain("No file in the package exports a way to add to it");
@@ -61,10 +63,16 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(doc).toContain("so an attempt it made before reconciles through `reconcile` without calling it");
     expect(doc).not.toContain("refused when the bridge is built");
     expect(doc).toContain("whose signed nonce is above that account nonce");
-    expect(doc).toContain("One hash settles at most one payment in a process");
+    expect(doc).toContain("in one process a hash settles at most one payment");
+    // P1-1 (#369 review): the signed time, not the lagging nonce, binds a
+    // transfer to the call across a restart.
+    expect(doc).toContain("its signed `content.timestamp` (milliseconds, as demosdk sets it when it signs) is not earlier than the SDK's clock when the call began");
+    expect(doc).toContain("in any process and after any restart");
+    expect(doc).toContain("must carry its `confirmedTotalDebitOs`, at least the amount and within that ceiling");
     const source = read("src/rails/payDem.ts");
     expect(source).toMatch(/"getAddressNonce"/);
     expect(source).toMatch(/signedNonce > nonceFloor/);
+    expect(source).toMatch(/signedAt < expected\.signedNotBeforeMs/);
     expect(source).toMatch(/refusing transfer/);
     expect(doc).not.toMatch(/vouch/i);
   });

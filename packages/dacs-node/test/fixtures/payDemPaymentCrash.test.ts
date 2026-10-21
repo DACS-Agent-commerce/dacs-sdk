@@ -130,6 +130,7 @@ describe("native DEM payment crash fixture", () => {
           denomination: "os",
           network: "demos",
           maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
           recovery: recovery!,
         });
         await writeFile(readyPath, "prepared", {
