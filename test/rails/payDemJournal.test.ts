@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
 import {
   createIdempotencyStore,
+  type SettlementBinding,
   type SettlementIdempotencyStore,
   type SettlementReconcile,
 } from "../../src/rails/idempotency.js";
@@ -14,6 +15,7 @@ import {
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
 import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import { sdkFences } from "../fixtures/sdkFences.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
 
@@ -265,9 +267,10 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
   });
 
   test("audits a journal-less payment this bridge authenticated", async () => {
-    const inner = createIdempotencyStore();
-    // A rail log that cannot show the outcome: only the bridge's own result binds.
-    const store = { once: inner.once.bind(inner), readOutcome: vi.fn(async () => null) };
+    // A rail log that cannot show the outcome and lost the attempt record:
+    // only the bridge's own result binds.
+    const fences = sdkFences({ keepAttempts: false });
+    const store = { once: vi.fn(fences.run), readOutcome: vi.fn(async () => null), readAttempt: fences.readAttempt };
     const rail = await unjournaledRail();
     const settle = payDemSettle(rail, {}, { store, reconcile: honest() });
     await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
@@ -356,11 +359,16 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
 
   test("keeps a hash this bridge submitted bound when a reconciliation confirms it", async () => {
     // The first call broadcasts and times out; the second reconciles the key.
+    // The log lost the attempt record, so only this bridge's own result binds.
+    const fences = sdkFences({ keepAttempts: false });
     const store = {
-      once: vi.fn(async (key: string, _binding: unknown,
-        submit: () => Promise<SettleResult>, reconcile?: SettlementReconcile) =>
-        store.once.mock.calls.length === 1 ? submit() : reconcile!(key) as Promise<SettleResult>),
+      once: vi.fn(async (key: string, binding: SettlementBinding,
+        submit: Parameters<typeof fences.run>[2], reconcile?: SettlementReconcile) =>
+        store.once.mock.calls.length === 1
+          ? fences.run(key, binding, submit)
+          : reconcile!(key) as Promise<SettleResult>),
       readOutcome: vi.fn(async () => null),
+      readAttempt: fences.readAttempt,
     };
     let submitted = 0;
     for (const [found, audited] of [[hashA, true], [hashB, false]] as const) {

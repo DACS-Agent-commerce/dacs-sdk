@@ -986,12 +986,14 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       ? await sdkRail()
       : createPayDemClientRail(fakeClient());
     let submitted: unknown;
-    const store = {
-      async once(_key: string, _binding: unknown, submit: () => Promise<SettleResult>) {
+    const inner = createIdempotencyStore();
+    const store: SettlementIdempotencyStore = {
+      once(key, binding, submit, reconcile) {
         submitted = submit;
-        return submit();
+        return inner.once(key, binding, submit, reconcile);
       },
-    } as unknown as SettlementIdempotencyStore;
+      readAttempt: inner.readAttempt,
+    };
     await payDemSettle(rail, { recipient: PAYEE_CLAIM, network: "demos" }, { store })(req());
     expect(typeof submitted).toBe("function");
     expect(isRecordVerifiedSource(submitted)).toBe(expected);
@@ -1214,6 +1216,12 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         transfers += 1;
         lifecycle.push(`journal:${input.recovery?.settlementKey}`);
         contexts.push(input.recovery);
+        // The SDK records the attempt from this journal call, before the broadcast.
+        await input.journalPreparedTransfer?.({
+          txHash: TX_HASH, nonce: 9, payer: PAYER, payee: SELLER_HEX, amountOs: "1250000000",
+          denomination: "os", network: "demos",
+          ...(input.recovery === undefined ? {} : { recovery: input.recovery }),
+        });
         return { ok: false, state: "timeout", hash: TX_HASH, nonce: 9 };
       },
     });
@@ -1733,6 +1741,9 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(reconcile).not.toHaveBeenCalled();
   });
 
+  // A class store is a valid store, but a new transfer needs the fence of the
+  // SDK store whose own attempt lookup it carries; one that runs submit itself
+  // starts none, because a restart could not bind the hash.
   test("accepts a structurally valid class-based settlement store", async () => {
     class ClassStore {
       async once(
@@ -1743,10 +1754,19 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return submit();
       }
     }
+    class DelegatingStore {
+      readonly #inner = createIdempotencyStore();
+      readonly once = this.#inner.once;
+      readonly readAttempt = this.#inner.readAttempt;
+    }
     const rail = await sdkRail();
 
     await expect(payDemSettle(rail, { network: "demos" }, {
       store: new ClassStore(),
+    })(req({ jobId: "job-class-store" }))).rejects.toThrow(/refusing to start a new transfer whose hash a restart could not bind/);
+    expect(sdk.transfer).not.toHaveBeenCalled();
+    await expect(payDemSettle(rail, { network: "demos" }, {
+      store: new DelegatingStore(),
     })(req({ jobId: "job-class-store" }))).resolves.toMatchObject({
       ok: true,
       txHash: TX_HASH,

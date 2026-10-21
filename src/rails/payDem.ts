@@ -17,6 +17,7 @@ import {
   createIdempotencyStore,
   isBindingCheckedOutcomeLookup,
   isOutcomeOnlyLogLookup,
+  isStoreAttemptRecorder,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -836,6 +837,13 @@ export async function payDemSettleCore(
     }
     await journalPreparedTransfer?.(owned);
     journaled = Object.freeze({ txHash: entryHash, nonce: entryNonce });
+    // Record the hash as this key's attempt before the client broadcasts, but
+    // only for a transfer signed after this call began and not one this
+    // process already settled: another payment's transfer relayed for this
+    // one must never become this key's record. A refused record aborts.
+    if (nonceFloor !== undefined && entryNonce > nonceFloor && !readerSettledHashes.has(entryHash)) {
+      await effectFence?.recordAttempt?.(entryHash);
+    }
   };
   const effectJournal = reading === undefined
     ? journalPreparedTransfer
@@ -2819,6 +2827,9 @@ function retainedPayDemAttempt(
   return retained === undefined ? undefined : Object.freeze({ txHash: retained, succeeded });
 }
 
+const NO_READABLE_ATTEMPT_RECORD =
+  "pay-dem settlement store records no attempt this bridge can read back; refusing to start a new transfer whose hash a restart could not bind (nothing was signed or sent; pass a createIdempotencyStore store over a log with putAttempt and readAttempt, with its own once and readAttempt)";
+
 /**
  * The attempt record compares hashes as exact strings, and the bridge records
  * the canonical form. The fence a rail receives therefore records the
@@ -2890,14 +2901,18 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * `recordAttempt` by the rail before broadcast, or by this bridge when the
  * rail returns), or a result this bridge submitted and that record accepted,
  * names that hash. It always reads the record, which refuses another hash
- * whatever this bridge holds. A custom rail must record the hash it returns
- * before it broadcasts: the bridge's write after the return cannot cover a
- * crash in between. Its fence records the canonical form and refuses a value
- * that is not a Demos hash. A store over a log without the attempt pair starts
- * no new transfer (nothing is signed or sent, and the intent is released), and
- * its own outcome for the exact terms, which predates the records, names the
- * hash once the reconciliation agrees on block and outcome. Any other rail-log
- * outcome or an injected store's records never do, and
+ * whatever this bridge holds. A new transfer runs only through the SDK's own
+ * rails (a custom rail is never called for one), and only when the fence the
+ * store hands `submit` records through the same `createIdempotencyStore`
+ * store whose `readAttempt` this bridge reads; `createPayDemRail` records
+ * through it before its broadcast, and the fence records the canonical form
+ * and refuses a value that is not a Demos hash. Any other store, wrapper or
+ * fence, and a log without the attempt pair, starts no new transfer (nothing
+ * is signed or sent, and the intent is released). On a log without the pair,
+ * an outcome the log holds for the exact terms names the hash once the
+ * reconciliation agrees on block and outcome; on a log without `readOutcome`
+ * the store reads it through `claimIntent`. Any other rail-log outcome or an
+ * injected store's records never do, and
  * neither does a prepared-transfer journal entry the reconciliation returns:
  * that entry is checked against this exact payment tuple and can refuse the
  * audit, but never counts the hash on its own. Once
@@ -2958,9 +2973,8 @@ export function payDemSettle(
     ? readAttemptProperty.value as NonNullable<SettlementIdempotencyStore["readAttempt"]>
     : undefined;
   // A `createIdempotencyStore` store over a log that keeps no attempt records
-  // (one written before they existed). A restart could never bind a new
-  // transfer's hash, so it starts none; the hashes its outcomes name predate
-  // the records, and only its own outcome lookup can bind them.
+  // (one written before they existed). It starts no new transfer (`submit`
+  // below); only its own outcome lookup can bind the hashes its outcomes name.
   const outcomeOnlyLog = storeReadAttempt === undefined && readOutcomeProperty.found &&
     isOutcomeOnlyLogLookup(readOutcomeProperty.value);
   const configuredRecipient = optionalStableString(
@@ -3304,8 +3318,19 @@ export function payDemSettle(
             }),
           });
         }
-        if (outcomeOnlyLog) {
-          // Nothing is signed or sent, so the store releases the intent.
+        // A new transfer runs only when this fence records its hash through
+        // the same `createIdempotencyStore` store whose own `readAttempt` a
+        // restart reads back. Any other store, wrapper or fence, or a log
+        // without the attempt pair, could leave a broadcast no restart can
+        // bind. Nothing is signed or sent, so the store releases the intent.
+        const recorderProperty = effectFence === undefined
+          ? undefined
+          : stableDataProperty(effectFence, "recordAttempt", "pay-dem effect fence attempt record");
+        const recordAttempt = recorderProperty?.found === true &&
+            isStoreAttemptRecorder(recorderProperty.value, storeReadAttempt)
+          ? recorderProperty.value as NonNullable<SettlementEffectFence["recordAttempt"]>
+          : undefined;
+        if (recordAttempt === undefined) {
           refusedWithoutAttemptRecords = true;
           return Object.freeze({
             disposition: "not-invoked" as const,
@@ -3332,12 +3357,17 @@ export function payDemSettle(
         // Keep what the rail reported so a later call cannot contradict it, but
         // bind it to the key only once the attempt record accepted it.
         authenticatedResults.set(key, { context, result: captured, boundToKey: false });
-        // Record the hash durably before the store persists or returns it, so a
-        // restart can bind it; `createPayDemRail` already did so before its
-        // broadcast. A refused record fails closed and leaves the hash unbound.
-        if (captured.txHash.length > 0) await effectFence?.recordAttempt?.(captured.txHash);
+        // `createPayDemRail` signed the hash and recorded it before its
+        // broadcast; recording it again changes nothing, and a refused record
+        // fails closed and leaves the hash unbound. A client rail's hash is
+        // recorded only by the SDK's journal hook, for a transfer this call
+        // signed: any other hash it returns, such as another payment's
+        // transfer relayed for this one, stays unbound.
+        if (recordVerifiedRail && captured.txHash.length > 0) await recordAttempt(captured.txHash);
         // A result without a hash names no transaction, so it binds none.
-        authenticatedResults.set(key, { context, result: captured, boundToKey: captured.txHash.length > 0 });
+        const bound = captured.txHash.length > 0 &&
+          (recordVerifiedRail || await recordedAttempt() === captured.txHash);
+        authenticatedResults.set(key, { context, result: captured, boundToKey: bound });
         return captured;
       };
       if (recordVerifiedRail) sdkRecordReadingSubmissions.add(submit);
@@ -3385,11 +3415,7 @@ export function payDemSettle(
         submit,
         reconcileForStore,
       );
-      if (refusedWithoutAttemptRecords) {
-        throw new DacsError(
-          "pay-dem settlement log keeps no attempt records; refusing to start a new transfer whose hash a restart could not bind (nothing was signed or sent; give the log putAttempt and readAttempt)",
-        );
-      }
+      if (refusedWithoutAttemptRecords) throw new DacsError(NO_READABLE_ATTEMPT_RECORD);
       let captured = capturePayDemResult(
         result,
         context,
@@ -3401,6 +3427,11 @@ export function payDemSettle(
         throw new DacsError(
           "pay-dem rail settle must be the one createPayDemRail or createPayDemClientRail returned: another rail's result could never be final; refusing",
         );
+      }
+      // Likewise through a store without the SDK's own attempt lookup, whose
+      // fence never lets the rail run.
+      if (storeReadAttempt === undefined && !captured.ok && captured.txHash === "") {
+        throw new DacsError(NO_READABLE_ATTEMPT_RECORD);
       }
       const known = authenticatedResults.get(key);
       if (

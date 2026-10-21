@@ -4,6 +4,7 @@ import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore
 import { createIdempotencyStore, createInMemorySettlementLog, type SettlementBinding } from "../../src/rails/idempotency.js";
 import { type PayDemSettlementReconcile, payDemSettle } from "../../src/rails/payDem.js";
 import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import { sdkFences } from "../fixtures/sdkFences.js";
 import { seedSdkOutcome } from "../fixtures/settlementOutcomeSeed.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
@@ -325,16 +326,19 @@ describe("pay-dem retained identity conflict quarantine", () => {
 });
 
 // A store whose readOutcome does not wait for its own in-flight once (unlike
-// createIdempotencyStore) exposes the bridge's own per-key serialization.
+// createIdempotencyStore) exposes the bridge's own per-key serialization. It
+// runs submit under the SDK fence whose attempt record it reads back.
 describe("pay-dem serializes calls for one settlement key", () => {
   const unwaitingStore = () => {
     let recorded: SettleResult | null = null;
+    const fences = sdkFences();
     return {
-      once: vi.fn(async (_key: string, _binding: unknown, run: () => Promise<SettleResult>) => {
-        recorded = await run();
+      once: vi.fn(async (key: string, binding: SettlementBinding, run: Parameters<typeof fences.run>[2]) => {
+        recorded = await fences.run(key, binding, run);
         return recorded;
       }),
       readOutcome: vi.fn(async () => recorded),
+      readAttempt: fences.readAttempt,
     };
   };
 
@@ -403,9 +407,11 @@ describe("pay-dem serializes calls for one settlement key", () => {
     const numbered = (call: number, pending: Promise<unknown>) =>
       pending.finally(() => { order.push(`end ${call}`); });
     // A store that runs every call, so only the bridge orders them.
+    const fences = sdkFences();
     const store = {
-      once: vi.fn(async (_key: string, _binding: unknown, run: () => Promise<SettleResult>) => run()),
+      once: vi.fn(fences.run),
       readOutcome: vi.fn(async () => null),
+      readAttempt: fences.readAttempt,
     };
     const settle = payDemSettle(rail, {}, { store: store as never });
     const first = numbered(1, settle(request));

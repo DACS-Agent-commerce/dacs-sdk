@@ -13,6 +13,7 @@ import {
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
 import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import { sdkFences } from "../fixtures/sdkFences.js";
 import { seedSdkOutcome } from "../fixtures/settlementOutcomeSeed.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
@@ -386,9 +387,12 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
   // reconciliation agrees with that failure. The success still stands.
   test("a cached failure the reconciliation agrees with cannot demote this bridge's success", async () => {
     let cached: SettleResult | undefined;
+    const fences = sdkFences();
     const store = {
-      once: vi.fn(async (_key: string, _binding: unknown, run: () => Promise<SettleResult>) => cached ?? run()),
+      once: vi.fn(async (key: string, binding: SettlementBinding, run: Parameters<typeof fences.run>[2]) =>
+        cached ?? fences.run(key, binding, run)),
       readOutcome: vi.fn(async () => null),
+      readAttempt: fences.readAttempt,
     };
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
     const settle = payDemSettle(await sdkRail(), { network: "demos" }, { store: store as never, reconcile });
