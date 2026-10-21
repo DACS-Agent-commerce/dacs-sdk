@@ -622,20 +622,14 @@ authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
 recorded outcome by itself. A non-final observation must throw. Only the SDK's
-own read of the node record makes a fresh payment final: the rail
-`createPayDemRail` returns, or a custom `DemosNativeClient` that carries
-`recordReader: await createPayDemRecordReader({ rpc })`, journals its signed
-transfer once through the journal the SDK hands it (with its
-`confirmedTotalDebitOs` when the payment has a `maxTotalDebitOs`) and returns
-its signed `nonce`, whose returned hash the SDK then observes and binds itself,
-also through `createPayDemClientRail`. The SDK reads the record only for a
-transfer whose nonce is above the payer's account nonce read before the call,
-and binds it only when the record's signed `content.timestamp` is not earlier
-than the start of the call, so a transfer made before a restart never settles
-a later payment; it also settles one hash at most once per process. Any other custom
-`DemosNativeClient` or `PayDemRail` is refused before its transfer or `settle`
-runs, so it can never debit the buyer and then leave the payment held; a
-payment one already made still reconciles, because recovery never calls it. See
+own read of the node record makes a fresh payment final, through the rail
+`createPayDemRail` returns: it signs, journals, fences and broadcasts the
+transfer itself, so the record it reads is this call's transfer at the fee the
+node confirmed. A custom `DemosNativeClient` or `PayDemRail` is refused before
+its transfer or `settle` runs, because the SDK could not bind a transfer it did
+not sign and broadcast to the call; it can never debit the buyer and then leave
+the payment held, and a payment one already made still reconciles, because
+recovery never calls it. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
@@ -673,13 +667,8 @@ method when its `SettlementLog` implements the optional `putAttempt` and
 `readAttempt` pair (the in-memory log does). `createPayDemRail` signs the hash
 itself and records it through that fence before its one broadcast, and does
 not broadcast if the record is refused, and `payDemSettle` does not write it
-again after the payment is final. A `createPayDemClientRail` client's journal
-entry is its own statement and can name another payment's transfer, so the
-client's fence carries no `recordAttempt`, and `payDemSettle` records its hash
-only after the SDK's own record read made it this payment's success (signed
-after the call began, its nonce above the account nonce read before it, and
-settled by no other call in this process). Any other hash it returns,
-including its own transfer the SDK has not read yet, is not recorded there.
+again after the payment is final. A payment in flight across an upgrade, or on
+a log that predates attempt records, leaves a retained hash no record names.
 A resumed audit of a retained hash that no attempt record names finishes it
 only through the store's own `once`: while the key's generation is held it
 refuses; once that generation expires the store reconciles the key exactly as
@@ -691,9 +680,6 @@ store holds nothing for starts nothing (the submit refuses and the intent is
 released), an outcome saved without a record still never binds, and any other
 store's `once` or fence never finishes it. This path trusts the reconciler as
 the restart without history does (below).
-Two payments in flight at once that a client hands one transfer cannot be told
-apart by the record; the SDK settles and records at most one of them in a
-process.
 The fence a rail receives records
 the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
 passes, and rejects a value that is not a Demos transaction hash, so a rail

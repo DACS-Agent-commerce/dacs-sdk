@@ -3,7 +3,7 @@ import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import { hasDefinitiveDemosFailure } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog,
   type SettlementBinding } from "../../src/rails/idempotency.js";
-import { createPayDemRecordReader, payDemSettle, payDemSettleCore,
+import { payDemSettle, payDemSettleCore,
   type PayDemRailResult } from "../../src/rails/payDem.js";
 import { demosNode, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
 
@@ -137,9 +137,8 @@ describe("terminal failed Demos record", () => {
     ["invalid nonce", { ...proof, nonce: -1 }],
   ])("does not promote %s proof to a permanent outcome", async (_label, value) => {
     // A client's own failure statement is never a proof: the SDK reads the
-    // record, and the mocked node holds none for a transfer it did not broadcast.
-    const recordReader = await createPayDemRecordReader({ rpc: "https://node.test",
-      inclusionPollIntervalMs: 1, statusRequestTimeoutMs: 20, transactionRecordTimeoutMs: 20 });
+    // record only for the client createPayDemRail built, so any other client
+    // is refused before its transfer runs.
     const transfer = vi.fn(async (args: { to: string; amountOs: bigint;
       journalPreparedTransfer?: (entry: object) => Promise<void> }) => {
       await args.journalPreparedTransfer?.({ txHash, nonce: proof.nonce, payer, payee: args.to,
@@ -147,10 +146,9 @@ describe("terminal failed Demos record", () => {
       return { ok: false, hash: txHash, nonce: proof.nonce,
         state: "failed", blockNumber: 42, ...(value === undefined ? {} : { failureProof: value }) };
     });
-    const result = await payDemSettleCore({ recipient: payee, amount: proof.amountOs },
-      { address: payer, recordReader, transfer } as never);
-    expect(result).toEqual({ ok: false, txHash, chainId: "demos", payer, payee });
-    expect(transfer).toHaveBeenCalledTimes(1);
+    await expect(payDemSettleCore({ recipient: payee, amount: proof.amountOs },
+      { address: payer, transfer } as never)).rejects.toThrow(/could never be final/);
+    expect(transfer).not.toHaveBeenCalled();
   });
 
   it.each([
