@@ -130,6 +130,7 @@ describe("assertDahrCommitment", () => {
       "application/json garbage",
       "application/jsonx",
       "text/plain; @charset=utf-8",
+      "text/plain; charset@=utf-8",
       "text/plain; charset=\"utf-8\"junk",
       "text/plain; junk charset=utf-8",
       "text/plain; charset=utf-8 junk",

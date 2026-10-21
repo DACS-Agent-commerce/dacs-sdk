@@ -385,6 +385,7 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
       authenticateArtifact: () => ({ status: "authenticated", signingPublicKey: "11".repeat(32), contentHash: "22".repeat(32) }),
     });
     expect(verdict.verdict).toBe("error");
+    expect(verdict.diagnostic.code).toBe("artifact-malformed");
     expect(verdict.semanticClaims).toEqual([]);
   });
 

@@ -166,6 +166,9 @@ describe("dacs doctor", () => {
     expect(report.checks.find((c) => c.id === "runtime.node")?.status).toBe("pass");
     expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("skip");
     expect(report.checks.find((c) => c.id === "storage.binding-resolution")?.status).toBe("blocked");
+    expect(report.checks.find((c) => c.id === "rail.availability")).toEqual({
+      id: "rail.availability", status: "skip", summary: "No rail selected",
+    });
   });
 
   it("fails unsupported Node versions", async () => {
@@ -529,6 +532,8 @@ describe("dacs doctor", () => {
         { ...verified, version: null, dirty: false }],
       ["another package name", { ...verified, name: "other-node", dirty: false },
         { ...verified, name: "other-node", dirty: false }],
+      ["a package name with an invalid suffix", { ...verified, name: "demos-node-software/extra", dirty: false },
+        { ...verified, name: null, dirty: false }],
       ["no package name", { commit: VERIFIED_DEMOS_NODE_REVISION, version: "0.9.8", dirty: false },
         { ...verified, name: null, dirty: false }],
     ])("warns for the verified commit with %s", async (_label, nodeVersion, reported) => {
@@ -720,6 +725,25 @@ describe("dacs doctor", () => {
   ])("classifies Node %s as %s", async (nodeVersion, status) => {
     const report = await runDoctor({ offline: true, nodeVersion });
     expect(report.checks.find((c) => c.id === "runtime.node")?.status).toBe(status);
+  });
+
+  it.each(["unreadable", "invalid JSON"])("returns a structured report when package metadata is %s", async (failure) => {
+    vi.mocked(fs.readFileSync).mockImplementationOnce(() => {
+      if (failure === "unreadable") throw new Error("package metadata unavailable");
+      return "{invalid-json";
+    });
+    const report = await runDoctor({ offline: true });
+    expect(report).toMatchObject({ tool: "dacs-doctor", mode: "offline", exitCode: 1 });
+    expect(report.checks.find((c) => c.id === "runtime.node")).toMatchObject({
+      status: "pass", data: { required: "^20.19.0 || >=22.12.0" },
+    });
+    expect(report.checks.find((c) => c.id === "runtime.module")).toMatchObject({
+      status: "fail", data: { type: null },
+    });
+    expect(report.checks.find((c) => c.id === "package.version")).toMatchObject({
+      status: "fail", data: { version: VERSION, packageVersion: null },
+    });
+    expect((await runDoctor({ offline: true })).checks.find((c) => c.id === "package.version")?.status).toBe("pass");
   });
 
   it("fails when the compiled SDK version differs from package.json", async () => {

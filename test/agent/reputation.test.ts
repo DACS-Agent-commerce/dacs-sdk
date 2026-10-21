@@ -65,6 +65,24 @@ describe("computeReputation", () => {
     });
   });
 
+  test("does not attribute a malformed domain party's completed bundle to another subject", () => {
+    const unrelated = bundle({
+      parties: [party("domain:bad/host"), { ...party(BOB), role: "buyer" }],
+      outcome: "completed",
+    });
+    expect(computeReputation(ALICE, [unrelated])).toEqual({
+      primaryClaim: ALICE,
+      totalAgreements: 0,
+      completed: 0,
+      avgRating: null,
+      exclusions: [],
+    });
+    // A malformed first party must not hide an actual match in a later slot.
+    expect(computeReputation(BOB, [unrelated])).toMatchObject({
+      primaryClaim: BOB, totalAgreements: 1, completed: 1,
+    });
+  });
+
   test("matches the subject in any party slot (buyer or seller)", () => {
     const r = computeReputation(ALICE, [
       bundle({

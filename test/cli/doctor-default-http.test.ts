@@ -32,8 +32,41 @@ describe("doctor default adapter matches demosdk's HTTP 200 connection contract"
     http.get.mockResolvedValue({ status: 200 });
     const report = await runDoctor({ rpc: "https://rpc.example" });
     expect(report.checks.find((c) => c.id === "rpc.reachable")?.status).toBe("pass");
-    expect(http.post).toHaveBeenCalled();
+    expect(http.post).toHaveBeenCalledTimes(2);
+    for (const [index, message] of ["getLastBlockNumber", "getNetworkInfo"].entries()) {
+      expect(http.post).toHaveBeenNthCalledWith(index + 1, "https://rpc.example", {
+        method: "nodeCall",
+        params: [{ type: "nodeCall", message, sender: null, receiver: null, timestamp: null, data: {}, extra: "" }],
+      }, { headers: { "Content-Type": "application/json" }, signal: expect.any(AbortSignal) });
+    }
   });
+});
+
+test.each([
+  [503, 42],
+  [400, "STATE_NOT_READY"],
+])("reports a generic RPC failure for result=%s, response=%s", async (result, response) => {
+  http.get.mockResolvedValue({ status: 200 });
+  http.post.mockResolvedValue({ data: { result, response } });
+  const report = await runDoctor({ rpc: "https://rpc.example" });
+  expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+    status: "fail", summary: "RPC endpoint did not answer the Demos block-height call",
+    detail: "Demos RPC returned an unsuccessful result",
+    remediation: "Check that the RPC URL points at a reachable Demos node.",
+  });
+  expect(report.exitCode).toBe(3);
+});
+
+test("recognizes the exact loading envelope", async () => {
+  http.get.mockResolvedValue({ status: 200 });
+  http.post.mockResolvedValue({ data: { result: 503, response: "STATE_NOT_READY" } });
+  const report = await runDoctor({ rpc: "https://rpc.example" });
+  expect(report.checks.find((c) => c.id === "rpc.reachable")).toMatchObject({
+    status: "fail", summary: "Demos node is not ready",
+    detail: "getLastBlockNumber answered STATE_NOT_READY",
+    remediation: "Wait for the Demos node to finish loading its state, then retry.",
+  });
+  expect(report.exitCode).toBe(3);
 });
 
 

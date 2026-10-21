@@ -442,9 +442,34 @@ describe("DemosAdapter", () => {
       return { outcome, getBlock, adapter, startProxy };
     }
 
-    it("returns the anchored response for the matching control", async () => {
-      const { outcome } = await dahrFetch();
-      expect(outcome).toMatchObject({ body: "ok", anchorTxRef: "0xdahr" });
+    it.each(["http://example.com/data", "https://example.com/data"])(
+      "returns the authenticated anchored response for %s", async (requestUrl) => {
+        const { outcome, startProxy } = await dahrFetch({ requestUrl });
+        expect(outcome).toMatchObject({ body: "ok", anchorTxRef: "0xdahr" });
+        expect(startProxy).toHaveBeenCalledExactlyOnceWith({
+          url: requestUrl, method: "GET", options: { headers: {} },
+        });
+      },
+    );
+
+    it.each([
+      "https://user@example.com/data",
+      "https://user:pass@example.com/data",
+      "https://:pass@example.com/data",
+      "ftp://example.com/data",
+    ])("rejects URL %s before creating or starting a proxy", async (url) => {
+      const adapter = makeAdapter();
+      Object.assign(adapter, { connected: true });
+      vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+      const startProxy = vi.fn();
+      const createDahr = vi.spyOn(
+        (adapter.raw as never as { web2: { createDahr(): Promise<unknown> } }).web2,
+        "createDahr",
+      ).mockResolvedValue({ startProxy, stopProxy: vi.fn() });
+      await expect(adapter.proxyFetch({ url }))
+        .rejects.toThrow("DAHR requires an HTTP(S) URL without embedded credentials");
+      expect(createDahr).not.toHaveBeenCalled();
+      expect(startProxy).not.toHaveBeenCalled();
     });
 
     it.each<[string, Parameters<typeof dahrFetch>[0]]>([
