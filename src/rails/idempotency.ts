@@ -123,7 +123,11 @@ export type SettlementOutcomeWrite =
   | { status: "stale" | "conflict" };
 
 export interface SettlementLog {
-  /** Read an immutable outcome without acquiring a lease or changing a generation. */
+  /**
+   * @internal Experimental: read an immutable outcome without acquiring a
+   * lease or changing a generation. No SDK path calls it yet; retained-session
+   * auditing will.
+   */
   readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
   claimIntent(input: Readonly<{
@@ -193,9 +197,10 @@ export interface SettlementReplayAuthorization {
 
 export interface SettlementIdempotencyStore {
   /**
-   * Read and validate a recorded outcome under these exact terms, without
-   * claiming an intent. Required for native retained-transaction audits.
-   * `null` means no recorded outcome, never permission to submit again.
+   * @internal Experimental: read and validate a recorded outcome under these
+   * exact terms, without claiming an intent. No SDK path calls it yet;
+   * retained-session auditing will. `null` means no recorded outcome, never
+   * permission to submit again.
    */
   readOutcome?(
     key: string,
