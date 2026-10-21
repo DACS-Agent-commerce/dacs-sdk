@@ -450,6 +450,7 @@ describe("pay-dem finishes a retained transfer no attempt record names through t
     } as unknown as SettlementIdempotencyStore;
     await expect(payDemSettle(await sdkRail(), {}, { store, reconcile })(resumed("job-t")))
       .rejects.toThrow(/finished only through the settlement store's own expired generation/);
+    expect(sdkTransfers()).toBe(0);
     await expect(log.readAttempt!(key)).resolves.toBeNull();
     await expect(log.readOutcome!(key)).resolves.toBeNull();
   });
