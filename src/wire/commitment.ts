@@ -120,23 +120,19 @@ const TP1_DELIVERABLE_KIND = "storage-program";
  * by the Listing's content hash and verifies `signature.value` against it
  * (DACS-3 §8.5.2: the complete signed Listing is validated before any
  * Agreement check). The content hash omits the signature, so the pin cannot
- * vouch for it. DACS-1 lets the signer be any claim the seller's bundle
- * carries, but a carried claim proves no control of the key without the bundle's
- * DACS-2 presentation, which the wire does not verify. So the wire takes the SDK's
- * own reader profile (src/agent/discover.ts, which refuses a signer other than the
- * Listing's `presentedBy`; publishListingCore signs with it): the signer must be
- * exactly `seller`, the presented claim, an Ed25519 key the claim names, and the
- * signature a canonical 64-byte value that verifies under it. A signature the
- * wire cannot verify (another algorithm, another signer, even one the bundle
- * carries) is refused, never assumed: a narrower rule than DACS-1, never a wider
- * one. Refused as `continuation_listing_invalid`, detail `LISTING-SIGNATURE`.
+ * vouch for it. DACS-1 §6.3.4 permits any signer in seller.identity.claims.
+ * Resolve the named Ed25519 claim and verify its own signature; presentedBy
+ * identifies the seller, but does not restrict which of its claims signs.
+ * The authenticated Listing/eligibility boundary supplies the seller bundle.
+ * Refused as continuation_listing_invalid, detail LISTING-SIGNATURE.
  */
-function assertListingSignature(listing: Listing, seller: string): void {
+function assertListingSignature(listing: Listing): void {
   const signature = listing.signature as unknown as JsonRecord;
-  if (signature.algorithm !== "ed25519" || signature.signer !== seller || typeof signature.value !== "string" || !SIGNATURE.test(signature.value) ||
+  if (signature.algorithm !== "ed25519" || !isClaim(signature.signer) ||
+      !listing.seller.identity.claims.some((claim) => claim.ref === signature.signer) || typeof signature.value !== "string" || !SIGNATURE.test(signature.value) ||
       Buffer.from(signature.value, "base64url").toString("base64url") !== signature.value) fail("continuation_listing_invalid", 500, "LISTING-SIGNATURE");
   const signed = Buffer.from(`${ARTIFACT_SEPARATORS.Listing}${contentHash(listing as unknown as JsonRecord)}`, "utf8");
-  if (!verifyEd25519(signed, Buffer.from(signature.value, "base64url"), claimKey(seller))) fail("continuation_listing_invalid", 500, "LISTING-SIGNATURE");
+  if (!verifyEd25519(signed, Buffer.from(signature.value, "base64url"), claimKey(signature.signer))) fail("continuation_listing_invalid", 500, "LISTING-SIGNATURE");
 }
 
 /**
@@ -168,7 +164,7 @@ function committedListing(value: unknown, scope: CommitmentScope): CommittedList
   const pin = scope.listingPin;
   if (listing.listingId !== pin.listingId || listing.listingVersion !== pin.version || contentHash(listing) !== pin.contentHash) listingInvalid();
   if (listing.seller.identity.presentedBy !== scope.seller) listingInvalid();
-  assertListingSignature(listing, scope.seller);
+  assertListingSignature(listing);
   const kinds = listing.pipeline.map((phase) => phase.kind as string);
   const negotiate = kinds.flatMap((kind, i) => (kind.startsWith("negotiate-") ? [i] : []));
   const commits = kinds.flatMap((kind, i) => (kind.startsWith("commit-") ? [i] : []));

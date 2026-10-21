@@ -7,6 +7,7 @@ import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { isPayeeBoundAgreementDocument, isReadableAnchorReceipt } from "../../src/artifacts/validators.js";
 import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
 import { FINALITY_COMMITMENT_SEPARATOR } from "../../src/negotiate/commitment.js";
 import { verifySellerPaymentIntake, type SellerPaymentIntakeDeps } from "../../src/seller/paymentIntake.js";
@@ -314,6 +315,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     const x = world();
     const other = party();
     const journals = testJournals();
+    let receipts = 0;
     const refused = expect.objectContaining({ code: "continuation_listing_invalid", status: 500, detail: "LISTING-SIGNATURE" });
     const { signature } = LISTING;
     const resign = (value: Record<string, unknown>) => ({ ...LISTING, signature: { ...signature, ...value } });
@@ -321,14 +323,14 @@ describe("the seller checks the job's finalized commitment on every payment and 
     const forged = (signer: { sign(bytes: Uint8Array): Uint8Array | Buffer }, hash: string) =>
       Buffer.from(signer.sign(Buffer.from(`dacs-listing:v1:${hash}`, "utf8"))).toString("base64url");
     const otherListing = tp1Listing({ seller: SELLER, listingId: "other-report" }).pin.contentHash;
-    // Another party's claim is among the seller's claims and signs the Listing: the Listing pin cannot tell, but the seller's key did not sign it.
+    // DACS-1 §6.3.4 permits this second carried claim to sign with its own key.
     const coSigned = tp1Listing({ seller: other, listingId: "co-signed", patch: { seller: { ...LISTING.seller, identity: { ...LISTING.seller.identity, claims: [{ ref: SELLER.claim }, { ref: other.claim }] } } } });
     const cases: Array<[string, unknown, ReturnType<typeof world>]> = [
       ["a signature with one bit changed", resign({ value: flipped(signature.value) }), x],
       ["the seller's signature over another Listing", resign({ value: forged(SELLER, otherListing) }), x],
       ["another key's signature naming the seller", resign({ value: forged(other, x.pin.contentHash) }), x],
       ["another algorithm", resign({ algorithm: "ecdsa-secp256k1" }), x],
-      ["a signer that is not the seller", coSigned.listing, world(coSigned, { deriveFrom: tp1Listing({ seller: SELLER, listingId: "co-signed" }) })],
+      ["seller bytes falsely attributed to a carried key", { ...coSigned.listing, signature: { ...coSigned.listing.signature, value: forged(SELLER, coSigned.pin.contentHash) } }, world(coSigned)],
     ];
     for (const [name, listing, w] of cases) {
       const given = received(listing);
@@ -336,11 +338,20 @@ describe("the seller checks the job's finalized commitment on every payment and 
       expect(contentHash(listing as never), name).toBe(w.pin.contentHash);
       for (const path of CONTINUING) {
         for (const [mode, open, extra] of [["direct", () => w.direct(w.request(path)), {}], ["delegated", () => w.delegated(w.request(path)), { requireDelegation: true, artifacts: [w.artifact] }]] as const) {
-          expect(() => wire.checkWireRequest(open(), { ...w.check(path), ...extra, requestJournal: journals.open(), signedListing: given }), `${name} ${mode} ${path}`).toThrowError(refused);
+          expect(() => wire.checkWireRequest(open(), { ...w.check(path), ...extra, requestJournal: journals.open(), signedListing: given, readCommitmentReceipt: () => { receipts++; return "valid"; } }), `${name} ${mode} ${path}`).toThrowError(refused);
         }
       }
     }
-    // Nothing was reserved; the seller's own signature continues.
+    expect(journals.reservations()).toEqual([]);
+    expect(receipts).toBe(0);
+    const authorized = world(coSigned);
+    for (const path of CONTINUING) {
+      for (const [open, extra] of [[() => authorized.direct(authorized.request(path)), {}],
+        [() => authorized.delegated(authorized.request(path)), { requireDelegation: true, artifacts: [authorized.artifact] }]] as const) {
+        expect(wire.checkWireRequest(open(), { ...authorized.check(path), ...extra, requestJournal: testJournal() }).effect).toMatchObject({ state: "new" });
+      }
+    }
+    // The primary key remains valid too.
     expect(journals.reservations()).toEqual([]);
     expect(wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journals.open() }).effect).toMatchObject({ state: "new" });
     expect(journals.reservations()).toHaveLength(1);
@@ -1081,4 +1092,61 @@ describe("a response is opened only against its principal", () => {
       .toThrowError(expect.objectContaining({ code: "peer_signer_wrong" }));
     expect(wire.openWireEnvelope(answer, "response", { ...x.context, purchaseProfile: request.profile, principal: x.seller.claim }).payload.seller).toBe(x.seller.claim);
   });
+});
+
+it("signed Agreement job, buyer and signature algorithm are independent of the recomputed hash; party order is unrestricted", () => {
+  const x = world(), other = party();
+  const make = (patch: Record<string, unknown>) => signedAgreement({ buyer: x.buyer, seller: x.seller, jobId: JOB, listingPin: PIN, patch });
+  const reversed = make({ parties: [...x.agreement.parties].reverse() });
+  const anotherBuyer = signedAgreement({ buyer: other, seller: x.seller, jobId: JOB, listingPin: PIN });
+  const algorithm = { ...x.agreement, signatures: x.agreement.signatures.map((s) => ({ ...s, algorithm: "ecdsa-secp256k1" })) };
+  expect(isPayeeBoundAgreementDocument(algorithm)).toBe(true);
+  const cases = [
+    [make({ jobId: OTHER_JOB }), false], [anotherBuyer, false],
+    [{ agreement: algorithm, agreementHash: x.agreementHash }, false], [reversed, true],
+  ] as const;
+  for (const [a, allowed] of cases) for (const path of CONTINUING) {
+    let reads = 0;
+    const journals = testJournals();
+    const request = { ...x.request(path), agreementHash: a.agreementHash };
+    const invoke = () => wire.checkWireRequest(x.direct(request), { ...x.check(path),
+      retained: { ...x.retained, agreementHash: a.agreementHash }, agreement: received(a.agreement),
+      commitment: received(x.commitment({ agreementHash: a.agreementHash })),
+      readCommitmentReceipt: () => { reads++; return "valid"; }, requestJournal: journals.open() });
+    if (allowed) { expect(invoke().effect).toMatchObject({ state: "new" }); expect(reads).toBe(1); }
+    else { expect(invoke).toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid" })); expect(reads).toBe(0); expect(journals.reservations()).toEqual([]); }
+  }
+});
+it("non-DEM payment phase fails PAY-PHASE with otherwise coherent signed terms", () => {
+  const l = tp1Listing({ seller: SELLER, patch: { pipeline: [
+    { kind: "negotiate-fixed-price" }, { kind: "commit-payee-bound-agreement" },
+    { kind: "pay-x402", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" },
+  ] } });
+  const x = world(l);
+  for (const path of CONTINUING) expect(() => wire.checkWireRequest(x.direct(x.request(path)), { ...x.check(path), requestJournal: testJournal() }))
+    .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported", detail: "PAY-PHASE" }));
+});
+it("a fully signed open-ended Listing continues at seller and buyer", async () => {
+  const l = tp1Listing({ seller: SELLER, validity: { notBefore: NOW - 600_000 } }), x = world(l);
+  const discovery = await wire.signDiscoveryDocument({ format: "dacs-seller-discovery/v1", profile: x.binding.profile,
+    seller: SELLER.claim, publicEndpoint: ENDPOINT, transport: ["dacs-seller-http/v1"], listings: [l.pin], capabilities: wire.TP1_CAPABILITIES,
+    ready: false, issuedAt: NOW, expiresAt: NOW + 60_000 }, SELLER, x.binding, LOCAL);
+  const proof = wire.verifyEndpointProof(discovery, { ...x.context, now: NOW, listing: { seller: SELLER.claim, publicEndpoint: ENDPOINT, listingPin: l.pin },
+    readListingEligibility: readFixtureListingEligibility, readCommitmentReceipt: validReceipt,
+    commitment: received(x.commitment()), agreement: received(x.agreement), signedListing: received(l.listing) });
+  for (const path of CONTINUING) {
+    const signed = await wire.signWireRequest({ ...x.context, signer: x.buyer, endpointProof: proof, publicEndpoint: ENDPOINT, path,
+      jobId: JOB, text: "{}", seller: SELLER.claim, now: NOW, job: { listingPin: l.pin, agreementHash: x.agreementHash, profile: x.binding.profile },
+      commitment: received(x.commitment()), agreement: received(x.agreement), signedListing: received(l.listing) });
+    expect(wire.checkWireRequest(wire.openWireEnvelope(signed.header, "request", x.context), { ...x.check(path), requestJournal: testJournal() }).effect).toMatchObject({ state: "new" });
+  }
+});
+it("a structurally complete indeterminate finalized receipt never authorizes continuation", () => {
+  const x = world();
+  const c = x.commitment({ receipt: { observationDisposition: "indeterminate", preservedReceiptHash: "e".repeat(64) } });
+  expect(isReadableAnchorReceipt(c.anchorReceipt)).toBe(true);
+  const journals = testJournals();
+  for (const path of CONTINUING) expect(() => wire.checkWireRequest(x.direct(x.request(path)), { ...x.check(path), commitment: received(c), requestJournal: journals.open() }))
+    .toThrowError(expect.objectContaining({ code: "continuation_commitment_invalid" }));
+  expect(journals.reservations()).toEqual([]);
 });

@@ -449,10 +449,10 @@ itself, every time. First, the signed Listing the purchase pins, passed as
 DACS-1 §6.3.4 Listing whose recomputed content hash, id and version are the
 Listing pin the request, the record and the Agreement name. That hash omits
 the Listing's signature, so the wire verifies that signature itself
-(DACS-1 §6.3.4): `ed25519` by the seller's own key (the signer must be the
-presented seller claim, the SDK reader's profile: a Listing signed by another
-claim its bundle carries is refused, because the wire does not verify the
-bundle's DACS-2 presentation that would show control of that claim) over `dacs-listing:v1:` and the content hash
+(DACS-1 §6.3.4): `ed25519` by the key named in `signature.signer`, which
+must be carried in `seller.identity.claims`. Any authorized seller claim may
+sign, including a second key distinct from `presentedBy`; the signature must
+verify under that named key over `dacs-listing:v1:` and the content hash
 (`continuation_listing_invalid`, detail `LISTING-SIGNATURE`), as well as the
 Agreement both parties signed and the record the seller signed over it. It must be presented
 by the seller, carry a positive `deadlineSecAfterCommit`, not be auto-accept,
@@ -839,7 +839,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `seller_effect_conflict`, `seller_effect_superseded` (500) | `completeWireEffect` with an outcome other than the one recorded, or from an attempt a later one superseded |
 | `seller_readiness_required` (500) | a proposal, commitment, commitment-signature or context request checked without the seller's own `ready`, or with anything but a boolean |
 | `continuation_phase_unsupported` (500) | a `commitment` checked under a Listing commit phase other than `commit-payee-bound-agreement`, or none (DACS-3 §8.5.2 check 9); or whose Listing does not have exactly one pay phase, `pay-dem` (detail `PAY-PHASE`), or exactly one delivery phase, `deliver-storage-program` (detail `DELIVERY-PHASE`) |
-| `continuation_listing_invalid` (500) | a `commitment` given without the signed Listing the request pins, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with a Listing that is not that pin's, not the seller's, not signed by the seller's key over that pin (detail `LISTING-SIGNATURE`), not one fixed-price commitment, auto-accept or without a positive `deadlineSecAfterCommit`; whose deliverable is not `storage-program` (detail `DELIVERABLE-KIND`, DACS-4 §9.6.1 step 1); or whose pricing is not fixed in DEM (detail `TP1-PRICING`) |
+| `continuation_listing_invalid` (500) | a `commitment` given without the signed Listing the request pins, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with a Listing that is not that pin's, not the seller's, not signed by the named seller claim's key over that pin (detail `LISTING-SIGNATURE`), not one fixed-price commitment, auto-accept or without a positive `deadlineSecAfterCommit`; whose deliverable is not `storage-program` (detail `DELIVERABLE-KIND`, DACS-4 §9.6.1 step 1); or whose pricing is not fixed in DEM (detail `TP1-PRICING`) |
 | `wire_artifact_rejected` (500) | `admitWireArtifact` given bytes CF-5 admission refuses; the detail is admission's own code |
 | `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with one that is not an exact fixed-price PayeeBoundAgreementDocument (a plain or identity-bound one included, or one carrying another discriminator beside it: detail `DISCRIMINATOR`; or a `terms.priorPaymentDispositionRef`, which TP-1 has no `pay-alternative` phase for: detail `PRIOR-DISPOSITION`), whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7); or whose terms the SDK's DACS-3 §8.5.2 verifier refuses against the signed Listing at `committedAt` (currency, price, rail, deliverable, pattern, parties: detail `LISTING-TERMS`, its `cause` the verifier's error) |
 | `continuation_commitment_invalid` (500) | a `commitment` given as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or as bytes admission refuses; or whose record, seller signature or finalized receipt does not check, whose receipt is not a CORE §5.1 AnchorReceipt or whose transaction reference is not a ChainTxRef, whose receipt time is before the Agreement's `generatedAt`, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
