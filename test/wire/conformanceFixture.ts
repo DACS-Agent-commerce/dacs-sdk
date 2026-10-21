@@ -31,7 +31,7 @@ export function wireWorld() {
   const publicEndpoint = "https://seller.sweep.invalid";
   const discovery: wire.DiscoveryPayload = { format: "dacs-seller-discovery/v1", profile: binding.profile, seller: seller.claim,
     publicEndpoint, transport: ["dacs-seller-http/v1"], listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: NOW, expiresAt: NOW + 120_000 };
-  const signed = (payload: unknown, who = buyer, domain = wire.DACS_SELLER_HTTP_DOMAINS.request) => ({ payload,
+  const signed = (payload: unknown, who = buyer, domain: string = wire.DACS_SELLER_HTTP_DOMAINS.request) => ({ payload,
     signature: Buffer.from(who.signBytes(Buffer.from(domain + canonicalize(payload)))).toString("base64url") });
   const document = (payload: unknown = discovery) => Buffer.from(canonicalize(signed(payload, seller, wire.DACS_SELLER_HTTP_DOMAINS.discovery)));
   const options = { binding, local, now: NOW, listing: { seller: seller.claim, publicEndpoint, listingPin: pin }, readListingEligibility: readFixtureListingEligibility };
