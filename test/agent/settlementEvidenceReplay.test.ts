@@ -59,11 +59,28 @@ describe("historical evidence inspection boundaries", () => {
   test.each(["permanent", "transient", "counterparty", "substrate", "settlement-atomicity"])(
     "accepts registered failure classification %s and rejects unknown classifications", async (errorClass) => {
       const evidence = {
-        evidenceVersion: "1", jobId: JOB, phase: "pay-dem", outcome: "failure",
+        evidenceVersion: "1", jobId: JOB, phase: "pay-cross-chain-htlc", outcome: "failure",
         observedAt: 1_700_000_000_000, reason: "settlement unavailable", signature: signature(),
       };
       expect((await inspectHistoricalSettlementEvidence(evidence, { result: { ok: false, errorClass } }, deps())).decision).toBe("valid");
       expect((await inspectHistoricalSettlementEvidence(evidence, { result: { ok: false, errorClass: "unknown" } }, deps())).decision).toBe("invalid");
+    },
+  );
+
+  test.each(["pay-dem", "pay-evm-erc20", "pay-x402", "deliver-entitlement"])(
+    "keeps PC-4's cross-chain-only settlement-atomicity out of %s replay", async (phase) => {
+      const evidence = {
+        evidenceVersion: "1", jobId: JOB, phase, outcome: "failure",
+        observedAt: 1_700_000_000_000, reason: "settlement unavailable", signature: signature(),
+      };
+      const replay = await inspectHistoricalSettlementEvidence(
+        evidence, { result: { ok: false, errorClass: "settlement-atomicity" } }, deps(),
+      );
+      expect(replay).toEqual({
+        decision: "invalid",
+        reasons: ["phase result errorClass settlement-atomicity is cross-chain only (PC-4)"],
+      });
+      expect((await inspectHistoricalSettlementEvidence(evidence, { result: { ok: false, errorClass: "transient" } }, deps())).decision).toBe("valid");
     },
   );
 

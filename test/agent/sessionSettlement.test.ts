@@ -535,6 +535,21 @@ describe("verifyFinalizedSessionSettlement", () => {
       .resolves.toMatchObject({ disposition: "rejected" });
   });
 
+  it("refuses PC-4's cross-chain-only class on a single-chain x402 failure", async () => {
+    const { settlement, proof } = fixture({ outcome: "failure" });
+    const revalidate = vi.fn((_input: Parameters<
+      SessionSettlementVerificationProvider["revalidateSettlement"]
+    >[0]) => ({ disposition: "pass" as const, outcome: "failure" as const }));
+    const result = await verifyFinalizedSessionSettlement(
+      { ...context(), phaseResult: { ok: false, errorClass: "settlement-atomicity" } },
+      settlement,
+      provider(proof, { revalidateSettlement: revalidate }),
+    );
+    expect(result).toMatchObject({ disposition: "rejected" });
+    expect(JSON.stringify(result)).toMatch(/settlement-atomicity is cross-chain only/);
+    expect(revalidate).not.toHaveBeenCalled();
+  });
+
   it("never converts a failure observation into successful settlement authority", async () => {
     const failed = fixture({ outcome: "failure" });
     const forgedSuccess = await verifyFinalizedSessionSettlement(

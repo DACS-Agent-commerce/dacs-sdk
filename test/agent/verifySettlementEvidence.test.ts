@@ -936,11 +936,44 @@ describe.skipIf(!haveVectors)("current evidence admission and historical replay"
       delete ev.settlementFinality;
       const context = paymentAuthenticatedContext();
       context.result = { ok: false, errorClass: errorClass as string };
-      const expected = typeof errorClass === "string" && ["permanent", "transient", "counterparty", "substrate", "settlement-atomicity"].includes(errorClass);
+      // PC-4: settlement-atomicity is cross-chain only, so this EVM record refuses it.
+      const expected = typeof errorClass === "string" && ["permanent", "transient", "counterparty", "substrate"].includes(errorClass);
       expect((await authenticate(ev, context)).decision).toBe(expected ? "pass" : "fail");
       expect((await validateSettlementEvidenceStructure(ev, context)).decision).toBe(expected ? "valid" : "invalid");
     },
   );
+
+  test.each([
+    ["pay-evm-erc20", "evm-erc20", false],
+    ["pay-solana-spl", "solana-spl", false],
+    ["pay-ap2", "ap2", false],
+    ["pay-x402", "x402", false],
+    ["pay-dem", "demos-native", false],
+    ["pay-cross-chain-htlc", "cross-chain-htlc", true],
+    ["pay-cross-chain-liquidity-tank", "cross-chain-liquidity-tank", true],
+  ] as const)("admits settlement-atomicity only for cross-chain payment %s", async (phase, railType, crossChain) => {
+    for (const errorClass of ["permanent", "transient", "counterparty", "substrate", "settlement-atomicity"]) {
+      const ev = read("fixtures/settlement-evidence-payment-success.json").evidence;
+      ev.phase = phase;
+      ev.outcome = "failure";
+      ev.reason = "payment unavailable";
+      delete ev.paymentTxRefs;
+      delete ev.settlementFinality;
+      const context = paymentAuthenticatedContext();
+      context.rail = { railId: "polygon-amoy-usdc", railType, asset: "USDC", network: "cross-chain", handler: phase,
+        ...(phase === "pay-cross-chain-htlc" ? { sourceFinalitySec: 60, safetyWindowSec: 300 } : {}) };
+      context.result = { ok: false, errorClass };
+      const admitted = errorClass !== "settlement-atomicity" || crossChain;
+      const authenticated = await authenticate(ev, context);
+      expect(authenticated.decision, JSON.stringify({ errorClass, reasons: authenticated.reasons }))
+        .toBe(admitted ? "pass" : "fail");
+      expect((await validateSettlementEvidenceStructure(ev, context)).decision).toBe(admitted ? "valid" : "invalid");
+      if (!admitted) {
+        expect(authenticated.reasons).toContain("phase result errorClass settlement-atomicity is cross-chain only (PC-4)");
+        expect((await inspectHistoricalSettlementEvidence(ev, context, deps)).decision).toBe("invalid");
+      }
+    }
+  });
 
   test.each(["deliver-storage-program", "deliver-entitlement", "deliver-attested-payload"])(
     "authenticates failed %s without requiring an invented payload", async (phase) => {
@@ -965,6 +998,10 @@ describe.skipIf(!haveVectors)("current evidence admission and historical replay"
       for (const fields of [{ deliverableContentHash: "bad" }, { deliverableAnchor: { kind: "storage-program" } }]) {
         expect((await authenticate({ ...ev, ...fields }, context)).decision).toBe("fail");
       }
+      // PC-4's cross-chain-only class never classifies a delivery phase.
+      const atomicity = { ...context, result: { ok: false, errorClass: "settlement-atomicity" } };
+      expect((await authenticate(ev, atomicity)).decision).toBe("fail");
+      expect((await validateSettlementEvidenceStructure(ev, atomicity)).decision).toBe("invalid");
     },
   );
 });

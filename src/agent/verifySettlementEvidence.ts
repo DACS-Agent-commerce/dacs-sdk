@@ -128,7 +128,8 @@ export interface EvidenceContext {
   /**
    * The phase-handler result envelope, when the caller has it. `ok`/`errorClass`
    * MUST be coherent: `ok: true` carries no `errorClass`; `ok: false` MUST carry
-   * one (a fault the reader can classify). Skipped when absent.
+   * one PC-4 class (a fault the reader can classify), and `settlement-atomicity`
+   * only for a cross-chain payment phase. Skipped when absent.
    */
   result?: {
     ok?: boolean;
@@ -208,9 +209,16 @@ const PHASE_RAIL_TYPE: Record<string, string> = {
   "pay-dem": "demos-native",
 };
 
-/** PC-4 failure classifications and phase-owned PC-6 finality models. */
+/**
+ * PC-4 failure classifications and phase-owned PC-6 finality models. Every
+ * phase may report the general classes; PC-4 limits `settlement-atomicity`
+ * to the cross-chain payment phases.
+ */
 const PHASE_ERROR_CLASSES = new Set([
   "permanent", "transient", "counterparty", "substrate", "settlement-atomicity",
+]);
+const CROSS_CHAIN_PAYMENT_PHASES = new Set([
+  "pay-cross-chain-htlc", "pay-cross-chain-liquidity-tank",
 ]);
 const PHASE_FINALITY_MODEL = new Map([
   ["pay-evm-erc20", "block-depth"],
@@ -538,6 +546,9 @@ async function evaluateSettlementEvidence(
     if (ctx.result.ok === false && hasErrorClass &&
         !PHASE_ERROR_CLASSES.has(ctx.result.errorClass!)) {
       fail("phase result errorClass MUST be a registered PC-4 error class");
+    } else if (ctx.result.ok === false && ctx.result.errorClass === "settlement-atomicity" &&
+        !CROSS_CHAIN_PAYMENT_PHASES.has(phase as string)) {
+      fail("phase result errorClass settlement-atomicity is cross-chain only (PC-4)");
     }
     if (ctx.result.ok === false && !hasErrorClass) {
       fail("phase result is ok:false but carries no errorClass to classify the fault");
