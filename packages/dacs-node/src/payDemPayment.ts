@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import {
   combineWalletSpendEffectFenceV1,
+  isPayDemRecordVerifyingRail,
   payDemRecordVerifiedTransfer,
   settlementKey,
   type PayDemPreparedTransfer,
@@ -36,7 +37,10 @@ import {
   loadDacsLiveOrderInputForTrackV1,
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
-import { isDacsSdkPreparedPayDemRailV1 } from "./payDemRailCapabilities.js";
+import {
+  isDacsRecordVerifyingPayDemRailV1,
+  isDacsSdkPreparedPayDemRailV1,
+} from "./payDemRailCapabilities.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -750,6 +754,9 @@ function captureChainReconciliation(
  * Compose native DEM settlement into the buyer coordinator. The SQLite outer
  * effect is the sole execution grant; the signed hash/nonce checkpoint commits
  * before broadcast, and every ambiguous restart enters read-only reconciliation.
+ * It is built only around a rail whose success the SDK can make final: the
+ * default runtime rail, a rail `isPayDemRecordVerifyingRail` accepts, or the
+ * runtime's wrapper around one. Any other rail is refused here.
  */
 export function createDacsPayDemBuyerPaymentTrackV1(
   options: Readonly<DacsPayDemBuyerPaymentTrackOptionsV1>,
@@ -769,6 +776,14 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   }
   const database = options.database;
   const rail = options.rail;
+  // Decide before the effect: a rail whose success the SDK could never make
+  // final must not reserve the wallet or debit the buyer first (#338). Only
+  // the settle checked here is called below.
+  const settle = rail.settle;
+  if (!isPayDemRecordVerifyingRail(rail) && !isDacsRecordVerifyingPayDemRailV1(rail) &&
+      !isDacsSdkPreparedPayDemRailV1(rail)) {
+    throw new DacsPayDemBuyerPaymentError("pay-dem-rail-not-record-verifying");
+  }
   const walletSpendAuthority = options.walletSpendAuthority;
   const deferWalletReservationUntilPrepared = isDacsSdkPreparedPayDemRailV1(rail);
 
@@ -869,7 +884,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
                 },
               })
             : combineWalletSpendEffectFenceV1(actorEffectFence, claim!.permit);
-          const raw = await rail.settle({
+          const raw = await settle.call(rail, {
             recipient: payment.payee,
             amount: payment.amountOs,
             maxTotalDebitOs: payment.maxTotalDebitOs,

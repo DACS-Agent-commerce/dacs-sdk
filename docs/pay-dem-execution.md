@@ -66,39 +66,53 @@ built. A custom `DemosNativeClient` or `PayDemRail` is the integrator's own
 chain access: what it returns is its statement, which the SDK cannot
 authenticate, so its own verdict never becomes final.
 
+- The SDK decides before the effect. `payDemSettleCore` refuses a client that
+  is neither the one `createPayDemRail` builds nor carries a reader
+  `createPayDemRecordReader` built, before its `transfer` runs: its result
+  could never be final, so it must not cost the buyer a transfer first.
 - A custom `DemosNativeClient` that signs and broadcasts itself carries
-  `recordReader: await createPayDemRecordReader({ rpc })` and returns the
-  signed `nonce` with the hash. `payDemSettleCore` then does what
-  `createPayDemRail` does after broadcast, against that node: it polls the
-  status index for the returned hash, reads the record, binds it to the
-  returned nonce and to this payer, payee and amount, and classifies it with
-  the table above. A bound `confirmed` record is a final success that
-  `payDemRecordVerifiedTransfer` lists; a bound `failed` record is a
-  permanent failure with a proof the SDK builds. The client's `ok`, `state`,
-  `execution`, `blockNumber` and `failureProof` are ignored; its
-  `totalDebitOs` is used only as fee accounting, within `maxTotalDebitOs`.
-  The reader holds no wallet, signs nothing and trusts its node exactly as
-  `createPayDemRail` trusts its own. A reader the SDK did not build, or a
-  copy of one, is refused before the transfer.
-- Without a reader, `payDemSettleCore` reports `ok: true`, `bft-final`
-  finality, or a permanent failure only for the client `createPayDemRail`
-  builds. Any other client's result, including
-  `ok: true, state: "included", execution: "executed"` and a bound
-  `failureProof`, is held: `ok: false` with the signed hash and nothing else.
-  So is a reader-carrying client's result without a signed nonce, or whose
-  record does not bind. A malformed result still throws.
-- `payDemSettle` treats a `PayDemRail` the same way. The `settle` function
-  `createPayDemRail` returned (also when a caller places it on its own object)
-  yields success or a permanent failure. Another rail's success is final only
-  when it is the exact frozen object `payDemSettleCore` returned from the
-  SDK's own record read for this payment's payer, payee, amount, network and
-  settlement key, as from a rail built on a reader-carrying client. Any other
-  rail's success or failure proof, including a copy of a verified success or
-  one for another settlement key, is held as `ok: false` with the hash: never
-  persisted as the outcome, and the next call for the key needs
-  reconciliation. A success without `execution: "executed"`, a failure that
-  carries `execution`, and a failure proof that does not bind the payment are
-  refused, and the intent is held in each case.
+  `recordReader: await createPayDemRecordReader({ rpc })`, journals its
+  signed transfer once through the `journalPreparedTransfer` the SDK hands
+  it, before its one broadcast, and returns the signed `nonce` with the hash.
+  `payDemSettleCore` then does what `createPayDemRail` does after broadcast,
+  against that node: it polls the status index for the returned hash, reads
+  the record, binds it to the returned nonce and to this payer, payee and
+  amount, and classifies it with the table above. A bound `confirmed` record
+  is a final success that `payDemRecordVerifiedTransfer` lists; a bound
+  `failed` record is a permanent failure with a proof the SDK builds. The
+  client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are
+  ignored; its `totalDebitOs` is used only as fee accounting, within
+  `maxTotalDebitOs`. The reader holds no wallet, signs nothing and trusts its
+  node exactly as `createPayDemRail` trusts its own. A reader the SDK did not
+  build, or a copy of one, is refused before the transfer.
+- A record shows that a transfer with these terms executed, not that this
+  call made it. So before the transfer the reader reads the payer's account
+  nonce (`getAddressNonce`, within `statusRequestTimeoutMs`), and the transfer
+  is refused if that read times out, fails or is malformed. The SDK reads the
+  record only for a transfer whose signed nonce is above that account nonce,
+  and whose hash and nonce are the ones the client journaled exactly once,
+  for this payer, payee and amount, before `transfer` returned. A journal
+  entry for other terms, a second entry, or one after `transfer` returned is
+  refused, so the client must not broadcast. One hash settles at most one
+  payment in a process: the node's account nonce can lag inclusion, so a hash
+  this path already settled is never read again. Across processes, a durable
+  session store binds a hash to one job.
+- A reader-carrying client's result is held: `ok: false` with the signed hash
+  and nothing else, when it has no signed nonce, when it is not bound to a
+  transfer this call journaled and signed, or when its record does not bind.
+  A malformed result still throws.
+- `payDemSettle` treats a `PayDemRail` the same way, before it calls `settle`.
+  It calls only the `settle` function `createPayDemRail` returned, or the one
+  `createPayDemClientRail` returned around a reader-carrying client, also when
+  a caller places either on its own object; any other rail, including a
+  wrapper around one of these, is refused when the bridge is built.
+  `isPayDemRecordVerifyingRail` answers which rails these are. The
+  `createPayDemRail` settle yields success or a permanent failure. A client
+  rail's success is final only when it is the exact frozen object
+  `payDemSettleCore` returned from the SDK's own record read for this
+  payment's payer, payee, amount, network and settlement key; its failure
+  proof is held as `ok: false` with the hash: never persisted as the outcome,
+  and the next call for the key needs reconciliation.
 - A `PayDemSettlementReconcile` returns a `PayDemReconciledSettlement` with
   `execution: "executed"` only after reading and binding a `confirmed`
   record, or a `PayDemReconciledFailure` for a bound `failed` record. The
@@ -126,9 +140,11 @@ authenticate, so its own verdict never becomes final.
   in-memory log does). The rail records the signed hash before its one
   broadcast and does not broadcast when the record is refused; `payDemSettle`
   also records any hash a rail returns before the store persists or returns
-  it, and a refused write fails the call and leaves the hash unbound. A custom
-  rail must record the exact hash it will return before it broadcasts: the
-  bridge's write after the return cannot cover a crash in between. The fence a
+  it, and a refused write fails the call and leaves the hash unbound. The only
+  rails `payDemSettle` runs (those `createPayDemRail` and
+  `createPayDemClientRail` return) record the exact hash they will return before
+  they broadcast: the bridge's write after the return cannot cover a crash in
+  between. The fence a
   rail receives records the canonical form (64 lower-case hex digits, no `0x`)
   whichever form the rail passes, and rejects a value that is not a Demos
   transaction hash before the rail can broadcast it. The write is
@@ -177,20 +193,24 @@ authenticate, so its own verdict never becomes final.
 
 Which capabilities the SDK built, and which successes its own client
 returned, is kept private to the rails module, keyed by object identity. No
-file in the package exports a way to add to it. The exports are two
-read-only checks and the reader factory: one check the settlement store uses,
-and `payDemRecordVerifiedTransfer`, which gives the exact transfer terms
-(payer, payee, `amountOs`, network and recovery settlement key) of a frozen
-success `payDemSettleCore` returned from the SDK's own record read, and
-`undefined` for anything else, including a copy of that success.
-`createPayDemRecordReader` adds a reader only by connecting to a node; every
-verdict through it is still the SDK's own read of that node.
+file in the package exports a way to add to it. The exports are three
+read-only checks and two factories. The checks are: one the settlement store
+uses; `isPayDemRecordVerifyingRail`; and `payDemRecordVerifiedTransfer`, which
+gives the exact transfer terms (payer, payee, `amountOs`, network and recovery
+settlement key) of a frozen success `payDemSettleCore` returned from the SDK's
+own record read, and `undefined` for anything else, including a copy of that
+success. `createPayDemRecordReader` adds a reader only by connecting to a
+node; every verdict through it is still the SDK's own read of that node.
+`createPayDemClientRail` builds a rail only around a client that carries such
+a reader.
 
 The settlement store records a bound permanent failure as the definitive
 outcome for that key only when it comes from `payDemSettle` over the rail
 `createPayDemRail` returned, whose proof the SDK built from the record it
 read. A failure proof from any other source, including a custom rail, a rail
-that wraps the SDK rail's `settle`, or a reconciler, leaves the intent held:
+that wraps the SDK rail's `settle`, or a reconciler, leaves the intent held
+(a custom or wrapping rail is refused before it runs; a client rail's proof
+and a reconciler's are held):
 it is never a durable verdict and never permits a second broadcast. Neither
 outcome ever permits a replacement payment. The proof type is internal; a
 custom reconciler can name it as `PayDemReconciledFailure["failureProof"]`.
@@ -201,15 +221,19 @@ fresh settlement and on recovery. It treats it as a transaction-bearing
 non-success: the hash is bound for anti-replay,
 the outcome is recorded, and the session stops as indeterminate.
 
-The dacs-node buyer track settles the wallet authority and publishes a
-payment notice for a fresh rail result only when `payDemRecordVerifiedTransfer`
-lists it with this payment's payer, payee, amount, network and settlement key,
-and its hash is the one this invocation journaled. Any other success,
+The dacs-node buyer track is built only around a rail whose success the SDK
+can make final: the default runtime rail, a rail `isPayDemRecordVerifyingRail`
+accepts, or the runtime's wrapper around such a rail. Any other rail is refused
+when the track is built, before any wallet reservation. The track settles the
+wallet authority and publishes a payment notice for a fresh rail result only
+when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee,
+amount, network and settlement key, and its hash is the one this invocation
+journaled. Any other success,
 including an injected rail's `execution: "executed"`, a copy of the SDK
 rail's result, or the SDK rail's result for another transfer or settlement
 key, leaves the payment indeterminate with the wallet reservation retained. A
 rail that relays the SDK's own result object unchanged, such as the default
-runtime rail or a rail built on a reader-carrying client, keeps it. That default rail also reports success only after the
+runtime rail or a `createPayDemClientRail` rail, keeps it. That default rail also reports success only after the
 SDK's Demos adapter reconciles the wallet journal to `canonical-confirmed`.
 Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, carries
 no attestation, so an operator reconciler must return `completed` only after
@@ -238,9 +262,9 @@ These were read from kynesyslabs/node `stabilisation@61b8e75` and
 - `content.nonce` is served as a decimal string, and `content.amount` as a
   number up to `Number.MAX_SAFE_INTEGER` and a decimal string above it;
 - not-found is `{result: 400, response: "error"}` at 61b8e75 and
-  `{result: 404, response: null}` at 52e2e569 and at
-  `11e7c8207732e25035de5a04cab25c5346046493`, which serves the same record
-  shape and status handler.
+  `{result: 404, response: null, extra: {reason: "not_found", checkedThroughBlock}}`
+  at 52e2e569 and at `11e7c8207732e25035de5a04cab25c5346046493`, which serves
+  the same record shape and status handler.
 - `getTxByHash` matches the stored lower-case hash exactly and answers any
   other spelling as not found; `getTransactionStatus` lower-cases hex but
   rejects a `0x` prefix as an invalid request. The rail always passes the

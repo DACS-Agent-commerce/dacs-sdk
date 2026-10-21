@@ -12,7 +12,7 @@ import {
   type PayDemSettlementAuditContext,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
-import { demosNode, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
 import { seedSdkOutcome } from "../fixtures/settlementOutcomeSeed.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
@@ -48,13 +48,14 @@ const failed = () => ({
   preparedTransfer: journal(),
 });
 
-function fixture(
+async function fixture(
   reconcile?: PayDemSettlementReconcile,
   store: SettlementIdempotencyStore = createIdempotencyStore(),
 ) {
   const once = vi.spyOn(store, "once");
-  const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
-  const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+  // The SDK's own rail: a retained transfer must never reach its node.
+  const submit = demosNode.transfer;
+  const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
   return { settle, once, submit };
 }
 
@@ -65,12 +66,13 @@ async function settledLog(outcome: ReturnType<typeof executed> | ReturnType<type
   const { amountOs: _amount, preparedTransfer: _journal, ...rest } = outcome;
   const { execution: _execution, ...result } = rest as typeof rest & { execution?: unknown };
   const { priorAttempts: _history, ...fresh } = request();
-  const settle = async () => ({ ...rest, chainId: network });
-  // A caller's rail is held, with the hash recorded; the outcome is then
-  // written as createPayDemRail's own settle would have left it.
-  await seedSdkOutcome(log, { ...result, chainId: network }, () =>
-    payDemSettle({ address: payer, settle }, { network },
+  // The rail signs and broadcasts but sees no inclusion, so it holds the hash
+  // with the attempt recorded; the outcome is then written as a record-read
+  // verdict would have left it.
+  await seedSdkOutcome(log, { ...result, chainId: network }, async () =>
+    payDemSettle(await heldRail(), { network },
       { store: createIdempotencyStore(log) })(fresh));
+  resetDemosNode({ payer, txHash });
   return log;
 }
 
@@ -79,13 +81,12 @@ async function settledLog(outcome: ReturnType<typeof executed> | ReturnType<type
 async function signedOnly(reconcile: PayDemSettlementReconcile) {
   const store = createIdempotencyStore();
   const once = vi.spyOn(store, "once");
-  const submit = vi.fn(async () => ({ ok: false as const, txHash, payer, payee, chainId: "demos" }));
-  const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+  const settle = payDemSettle(await heldRail(), {}, { store, reconcile });
   const { priorAttempts: _history, ...fresh } = request();
   await expect(settle(fresh)).resolves.toMatchObject({ ok: false, txHash });
   once.mockClear();
-  submit.mockClear();
-  return { settle, once, submit };
+  resetDemosNode({ payer, txHash });
+  return { settle, once, submit: demosNode.transfer };
 }
 
 describe("pay-dem retained transaction recovery is read-only even with an empty rail log", () => {
@@ -100,8 +101,8 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
         return outcome === "executed" ? executed() : failed();
       });
       const log = await settledLog(outcome === "executed" ? executed() : failed());
-      const first = fixture(reconcile, createIdempotencyStore(log));
-      const restarted = fixture(reconcile, createIdempotencyStore(log));
+      const first = await fixture(reconcile, createIdempotencyStore(log));
+      const restarted = await fixture(reconcile, createIdempotencyStore(log));
       for (const f of [first, first, restarted]) {
         const pending = f.settle(request([prior(false), prior(ok)]));
         if (ok && outcome === "failed") {
@@ -127,8 +128,8 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     const store = createIdempotencyStore();
     const once = vi.spyOn(store, "once");
     const readOutcome = vi.spyOn(store, "readOutcome");
-    const submit = vi.fn();
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store });
+    const submit = demosNode.transfer;
+    const settle = payDemSettle(await sdkRail(), {}, { store });
     await expect(settle(request([prior(ok)]))).rejects.toThrow(/requires read-only reconciliation/);
     expect(readOutcome).not.toHaveBeenCalled();
     expect(once).not.toHaveBeenCalled();
@@ -138,12 +139,12 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
   test("audits the canonical hash on a configured network at the history limit", async () => {
     const network = "demos:testnet";
     const store = createIdempotencyStore(await settledLog(executed(), network));
-    const f = fixture(undefined, store);
+    const f = await fixture(undefined, store);
     const reconcile = vi.fn(async (context: ReconcileContext) => {
       expect(context).toMatchObject({ txHash, network });
       return { ...executed(), chainId: network, preparedTransfer: journal(network) };
     });
-    const settle = payDemSettle({ address: payer, settle: f.submit }, { network }, { store, reconcile });
+    const settle = payDemSettle(await sdkRail(), { network }, { store, reconcile });
     const history = Array.from({ length: 256 }, () => ({
       ...prior(), chainId: network, txHash: `0x${txHash.toUpperCase()}`,
     }));
@@ -202,7 +203,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
       expect(context.txHash).toBe(txHash);
       return result;
     }) as unknown as PayDemSettlementReconcile;
-    const f = fixture(reconcile);
+    const f = await fixture(reconcile);
     const req = request();
     const before = structuredClone(req);
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -227,7 +228,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     [Array.from({ length: 257 }, () => prior()), count],
   ])("rejects malformed or conflicting history %# before reconciliation or submission", async (history, message) => {
     const reconcile = vi.fn(async () => executed());
-    const f = fixture(reconcile);
+    const f = await fixture(reconcile);
     await expect(f.settle(request(history as readonly SettlementRecoveryAttempt[]))).rejects.toThrow(message);
     expect(reconcile).not.toHaveBeenCalled();
     expect(f.once).not.toHaveBeenCalled();
@@ -237,7 +238,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
   test("captures history before an asynchronous audit and binds the captured hash", async () => {
     const attempt = prior();
     const history = [attempt];
-    const f = fixture(async () => {
+    const f = await fixture(async () => {
       attempt.txHash = "34".repeat(32);
       return { ...executed(), txHash: attempt.txHash };
     });
@@ -250,7 +251,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     let reads = 0;
     const req = request();
     Object.defineProperty(req, "priorAttempts", { get() { reads += 1; return [prior()]; } });
-    const f = fixture(async () => executed());
+    const f = await fixture(async () => executed());
     await expect(f.settle(req)).rejects.toThrow(/must be stable data/);
     expect(reads).toBe(0);
     expect(f.once).not.toHaveBeenCalled();
@@ -262,7 +263,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
       if (reply === "missing journal") throw new Error(reply);
       return executed();
     });
-    const f = fixture(reconcile, createIdempotencyStore(await settledLog(executed())));
+    const f = await fixture(reconcile, createIdempotencyStore(await settledLog(executed())));
     const { priorAttempts: _history, ...withoutHistory } = request();
     for (const req of [request(), withoutHistory]) {
       if (reply === "missing journal") await expect(f.settle(req)).rejects.toThrow(reply);
@@ -346,9 +347,9 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     const claimIntent = vi.spyOn(log, "claimIntent");
     const putOutcome = vi.spyOn(log, "putOutcome");
     const store = createIdempotencyStore(log);
-    const submit = vi.fn();
+    const submit = demosNode.transfer;
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
     const { priorAttempts: _history, ...withoutHistory } = request();
     // Without history the restart path compares the durable outcome itself.
     await expect(settle(withHistory ? request([prior(false)]) : withoutHistory))
@@ -423,8 +424,7 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     // The lease expires and another process reconciles a failure. A reconciled
     // failure is never recorded as the definitive outcome, so nothing is cached.
     now += 2_000;
-    const other = payDemSettle({ address: payer, settle: vi.fn() },
-      {}, { store: createIdempotencyStore(log, { ...options, owner: "b" }), reconcile });
+    const other = payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(log, { ...options, owner: "b" }), reconcile });
     await expect(other(fresh)).rejects.toThrow(/reconciliation was not definitive/);
     finish();
     // The rail recorded its hash under its own generation before it broadcast;

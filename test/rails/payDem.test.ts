@@ -3,13 +3,17 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import {
   TERMINAL_INCLUDED,
+  createPayDemClientRail,
   createPayDemRail,
+  createPayDemRecordReader,
+  isPayDemRecordVerifyingRail,
   isRecordVerifiedSource,
   payDemSettleCore,
   payDemSettle,
   type DemosNativeClient,
   type DemosTransferResult,
   type PayDemRail,
+  type PayDemRecordReader,
   type PayDemSettlementReconcile,
   type PayDemSettlementRecoveryContext,
 } from "../../src/rails/payDem.js";
@@ -62,7 +66,7 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
 // The node signs TX_HASH at nonce 9, includes it at block 4242, and records the
 // broadcast transaction with the status `recordStatus` sets (default confirmed).
 let recordStatus = "confirmed";
-beforeEach(() => {
+beforeEach(async () => {
   for (const method of Object.values(sdk)) method.mockReset();
   recordStatus = "confirmed";
   sdk.connect.mockResolvedValue(undefined);
@@ -83,7 +87,9 @@ beforeEach(() => {
     response: { data: { transaction: { hash: signed.hash, content: { ...signed.content } } } },
   }));
   sdk.broadcast.mockResolvedValue({ result: 200, response: { hash: TX_HASH } });
-  sdk.nodeCall.mockResolvedValue({ state: "included", blockNumber: 4242 });
+  // The payer had used nonce 8 before each call, so a transfer signs nonce 9.
+  sdk.nodeCall.mockImplementation(async (message: string) =>
+    message === "getAddressNonce" ? 8 : { state: "included", blockNumber: 4242 });
   sdk.getTxByHash.mockImplementation(async () => {
     const transaction = (sdk.broadcast.mock.calls.at(-1)?.[0] as {
       response: { data: { transaction: { content: { nonce: number } } } };
@@ -96,7 +102,23 @@ beforeEach(() => {
     };
   });
   sdk.waitForNonce.mockResolvedValue(undefined);
+  reader = await createPayDemRecordReader({
+    rpc: "https://node.test",
+    inclusionTimeoutMs: 50,
+    inclusionPollIntervalMs: 1,
+    statusRequestTimeoutMs: 20,
+    transactionRecordTimeoutMs: 20,
+  });
 });
+
+/**
+ * The SDK record reader each fake client carries. A client the SDK did not
+ * build is refused before its transfer without one (#338); with it, the SDK's
+ * own read of the mocked node decides the verdict, and the client's result is
+ * only its statement. That node has no record for a fake client's transfer
+ * unless the SDK rail broadcast one, so a fake client's result is held.
+ */
+let reader: PayDemRecordReader;
 
 /**
  * The SDK's own rail over the mocked node: the only rail whose verdicts are
@@ -112,7 +134,11 @@ const sdkRail = () => createPayDemRail({
 /** Native transfers the SDK rail signed over the mocked node. */
 const sdkTransfers = () => sdk.transfer.mock.calls.length;
 
-/** A fake native client recording the transfer it was asked to submit. */
+/**
+ * A fake native client carrying the SDK reader. It records the transfer it was
+ * asked to submit, journals it (hash and nonce 9) through the journal the SDK
+ * hands it, and returns its result with that nonce.
+ */
 function fakeClient(
   over: Partial<{ result: DemosTransferResult }> = {},
 ): DemosNativeClient & { sent?: Parameters<DemosNativeClient["transfer"]>[0] } {
@@ -120,17 +146,28 @@ function fakeClient(
     sent?: Parameters<DemosNativeClient["transfer"]>[0];
   } = {
     address: PAYER,
+    recordReader: reader,
     async transfer(args) {
       self.sent = args;
-      return (
-        over.result ?? {
-          ok: true,
-          state: "included",
-          execution: "executed",
-          hash: TX_HASH,
-          blockNumber: 4242,
-        }
-      );
+      const result = over.result ?? {
+        ok: true,
+        state: "included",
+        execution: "executed",
+        hash: TX_HASH,
+        blockNumber: 4242,
+      };
+      // A malformed hash is refused by the SDK's journal; the result below
+      // then shows how the SDK treats it.
+      await args.journalPreparedTransfer?.({
+        txHash: typeof result.hash === "string" ? result.hash : "",
+        nonce: 9,
+        payer: PAYER,
+        payee: args.to,
+        amountOs: args.amountOs.toString(),
+        network: args.recovery?.network ?? "demos",
+        ...(args.recovery === undefined ? {} : { recovery: args.recovery }),
+      }).catch(() => undefined);
+      return { nonce: 9, ...result };
     },
   };
   return self;
@@ -165,15 +202,34 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   // record. A custom client's `execution: "executed"` with no record read is its
   // statement, so it never mints a final payment (payDemExecutedStatus.test.ts
   // pins the SDK client's executed, failed and indeterminate verdicts).
-  test("holds a custom client's executed statement without a record read: OS base units, no final verdict", async () => {
+  test("holds a custom client's executed statement without a bound record: OS base units, no final verdict", async () => {
     const client = fakeClient();
     const res = await payDemSettleCore(params(), client);
     expect(res).toEqual(HELD);
     expect(res.finality).toBeUndefined();
     expect(res.blockNumber).toBeUndefined();
-    expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
-    // No optional hook key at all when the caller gave none.
-    expect(Object.keys(client.sent!).sort()).toEqual(["amountOs", "to"]);
+    expect(client.sent).toEqual({
+      to: RECIPIENT,
+      amountOs: 1_500_000_000n,
+      journalPreparedTransfer: expect.any(Function),
+    });
+    // The SDK's own journal is the only hook when the caller gave none.
+    expect(Object.keys(client.sent!).sort())
+      .toEqual(["amountOs", "journalPreparedTransfer", "to"]);
+  });
+
+  test.each<[string, Partial<DemosTransferResult>]>([
+    ["an executed statement", {}],
+    ["a bound failure proof", { ok: false, state: "failed" }],
+    ["a timeout", { ok: false, state: "timeout", execution: undefined }],
+  ])("refuses a client without an SDK reader before its transfer, whatever it would return: %s", async (_label, over) => {
+    const transfer = vi.fn(async (): Promise<DemosTransferResult> => ({
+      ok: true, state: "included", execution: "executed", hash: TX_HASH,
+      blockNumber: 4242, ...over,
+    }));
+    await expect(payDemSettleCore(params(), { address: PAYER, transfer }))
+      .rejects.toThrow(/carries no createPayDemRecordReader reader.*refusing transfer/);
+    expect(transfer).not.toHaveBeenCalled();
   });
 
   test("checks the recovery generation immediately before native transfer", async () => {
@@ -245,6 +301,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       to: RECIPIENT,
       amountOs: 1_500_000_000n,
       recovery: recovery(),
+      journalPreparedTransfer: expect.any(Function),
     });
   });
 
@@ -447,6 +504,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       journaledTransfers: ReadonlyArray<{ txHash: string; nonce: number }>,
     ): DemosNativeClient => ({
       address: PAYER,
+      recordReader: reader,
       async transfer(args) {
         for (const prepared of journaledTransfers) {
           await args.journalPreparedTransfer?.({
@@ -455,10 +513,10 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
             payee: RECIPIENT,
             amountOs: "1500000000",
             network: "demos:testnet",
-          });
+          }).catch(() => undefined);
         }
         return {
-          ok: false, state: "failed", hash: TX_HASH, blockNumber: 7, failureProof,
+          ok: false, state: "failed", hash: TX_HASH, nonce: 9, blockNumber: 7, failureProof,
         } as unknown as DemosTransferResult;
       },
     });
@@ -564,6 +622,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       response.promise;
     const client: DemosNativeClient = {
       address: PAYER,
+      recordReader: reader,
       transfer: originalTransfer,
     };
     const input = params();
@@ -597,6 +656,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("ignores a poisoned transfer bind while preserving its receiver", async () => {
     class ReceiverClient implements DemosNativeClient {
       readonly address = PAYER;
+      readonly recordReader = reader;
       readonly calls: bigint[] = [];
 
       async transfer(args: { to: string; amountOs: bigint }) {
@@ -655,6 +715,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     let reads = 0;
     const client: DemosNativeClient = {
       address: PAYER,
+      recordReader: reader,
       async transfer() {
         return {
           get ok() {
@@ -684,8 +745,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     client: ReturnType<typeof fakeClient>,
     cfg: { recipient?: string; network?: string } = { recipient: PAYEE_CLAIM, network: "demos" },
   ) => {
-    const rail: PayDemRail = { address: PAYER, settle: (p) => payDemSettleCore(p, client) };
-    return payDemSettle(rail, cfg);
+    return payDemSettle(createPayDemClientRail(client), cfg);
   };
   const req = (over: Record<string, unknown> = {}) => ({
     rail: "pay-dem",
@@ -714,6 +774,16 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     network: "demos",
     finality: Object.freeze({ model: "bft-final" }),
   });
+  /**
+   * A client rail whose transfer must not run: tests of a refusal, or of a
+   * reconciliation without rebroadcast, check that `transfer` stays uncalled.
+   */
+  const unusedRail = () => {
+    const client = fakeClient();
+    const transfer = vi.spyOn(client, "transfer")
+      .mockRejectedValue(new Error("must not rebroadcast"));
+    return { rail: createPayDemClientRail(client), transfer };
+  };
   const seedExpiredIntent = async (
     log: SettlementLog,
     request: ReturnType<typeof req>,
@@ -729,21 +799,11 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     leaseDurationMs: 1,
   });
 
-  test("keeps only a custom rail's transaction identity on a non-final result", async () => {
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: async () => ({
-        ok: false,
-        txHash: TX_HASH,
-        chainId: "demos",
-        payer: PAYER,
-        payee: SELLER_HEX,
-        blockNumber: 42,
-        txRefKind: "demos",
-        networkFeeOs: "1",
-      }),
-    };
-    await expect(payDemSettle(rail, { recipient: PAYEE_CLAIM, network: "demos" })(req()))
+  test("keeps only the transaction identity on a client rail's non-final result", async () => {
+    const client = fakeClient({
+      result: { ok: false, state: "timeout", hash: TX_HASH, blockNumber: 42, totalDebitOs: "5000000001" },
+    });
+    await expect(settleWith(client)(req()))
       .resolves.toStrictEqual({
         ok: false,
         txHash: TX_HASH,
@@ -753,18 +813,100 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       });
   });
 
+  // #338: a rail whose result the SDK could never make final is refused before
+  // its settle runs, so it cannot debit the buyer and then leave the payment
+  // held. Only createPayDemRail's settle and createPayDemClientRail's are
+  // called, also when a caller places either on its own object.
+  test.each<[string, (sdkOwned: PayDemRail) => PayDemRail]>([
+    ["a custom rail around a reader-carrying client", () => ({
+      address: PAYER,
+      settle: (params) => payDemSettleCore(params, fakeClient()),
+    })],
+    ["a custom rail's non-final result", () => ({
+      address: PAYER,
+      settle: async () => ({
+        ok: false, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: SELLER_HEX,
+      }),
+    })],
+    ["a custom rail's executed success", () => ({
+      address: PAYER,
+      settle: async () => ({
+        ok: true,
+        execution: "executed",
+        txHash: TX_HASH,
+        chainId: "demos",
+        payer: PAYER,
+        payee: SELLER_HEX,
+        finality: { model: "bft-final" },
+        blockNumber: 4242,
+        txRefKind: "demos",
+      }),
+    })],
+    ["a legacy rail's success without execution", () => ({
+      address: PAYER,
+      settle: async () => ({
+        ok: true, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: SELLER_HEX,
+        finality: { model: "bft-final" }, blockNumber: 42, txRefKind: "demos",
+      }) as unknown as Awaited<ReturnType<PayDemRail["settle"]>>,
+    })],
+    ["a wrapper relaying the SDK rail's genuine success", (sdkOwned) => ({
+      address: PAYER,
+      settle: (params, fence) => sdkOwned.settle(params, fence),
+    })],
+    ["a wrapper relaying a copy of the SDK rail's success", (sdkOwned) => ({
+      address: PAYER,
+      settle: async (params, fence) => ({ ...await sdkOwned.settle(params, fence) }),
+    })],
+  ])("refuses %s before its settle runs", async (_case, build) => {
+    const rail = build(await sdkRail());
+    const settle = vi.spyOn(rail, "settle");
+    expect(isPayDemRecordVerifyingRail(rail)).toBe(false);
+    expect(() => payDemSettle(rail, { network: "demos" }))
+      .toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
+    expect(settle).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(0);
+  });
+
+  test("calls only the SDK's own rails and a caller's object carrying their settle", async () => {
+    const owned = await sdkRail();
+    const clientRail = createPayDemClientRail(fakeClient());
+    for (const rail of [
+      owned,
+      { address: owned.address, settle: owned.settle },
+      clientRail,
+      { address: clientRail.address, settle: clientRail.settle },
+    ]) {
+      expect(isPayDemRecordVerifyingRail(rail)).toBe(true);
+      expect(() => payDemSettle(rail, { network: "demos" })).not.toThrow();
+    }
+    expect(isPayDemRecordVerifyingRail({ address: PAYER })).toBe(false);
+    expect(isPayDemRecordVerifyingRail(null)).toBe(false);
+  });
+
+  test("builds a client rail only around a client carrying an SDK reader", () => {
+    const transfer = vi.fn();
+    expect(() => createPayDemClientRail({ address: PAYER, transfer }))
+      .toThrow(/createPayDemRecordReader/);
+    expect(() => createPayDemClientRail({
+      address: PAYER,
+      recordReader: { ...reader },
+      transfer,
+    })).toThrow(/createPayDemRecordReader/);
+    expect(transfer).not.toHaveBeenCalled();
+  });
+
   // The store sees the bridge's submission; only one around createPayDemRail's
   // own settle may have its failure proof recorded as definitive.
   test.each([
     ["createPayDemRail's settle", true],
-    ["a custom rail", false],
+    ["a client rail", false],
   ])("lets the store treat a submission around %s as record-verified: %s", async (
     _source,
     expected,
   ) => {
     const rail: PayDemRail = expected
       ? await sdkRail()
-      : { address: PAYER, settle: (p) => payDemSettleCore(p, fakeClient()) };
+      : createPayDemClientRail(fakeClient());
     let submitted: unknown;
     const store = {
       async once(_key: string, _binding: unknown, submit: () => Promise<SettleResult>) {
@@ -789,46 +931,14 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   });
 
   // #338: the bridge reports a final verdict only from the SDK's own record
-  // read. A custom rail's success or bound failure is its statement: held,
-  // never final, never persisted.
-  test.each([
-    ["a custom client's executed statement", (): PayDemRail => ({
-      address: PAYER,
-      settle: (params) => payDemSettleCore(params, fakeClient()),
-    })],
-    ["a custom rail's executed success", (): PayDemRail => ({
-      address: PAYER,
-      settle: async () => ({
-        ok: true,
-        execution: "executed",
-        txHash: TX_HASH,
-        chainId: "demos",
-        payer: PAYER,
-        payee: SELLER_HEX,
-        finality: { model: "bft-final" },
-        blockNumber: 4242,
-        txRefKind: "demos",
-      }),
-    })],
-    ["a wrapper relaying a copy of the SDK rail's genuine success", (sdkOwned?: PayDemRail): PayDemRail => ({
-      address: PAYER,
-      settle: async (params, fence) => ({ ...await sdkOwned!.settle(params, fence) }),
-    })],
-    ["a wrapper relaying the SDK rail's success for another settlement key", (sdkOwned?: PayDemRail): PayDemRail => ({
-      address: PAYER,
-      settle: (params, fence) => sdkOwned!.settle({
-        ...params,
-        recovery: {
-          ...params.recovery!,
-          jobId: "another-job",
-          settlementKey: settlementKey(params.recovery!.railId, "another-job", params.recovery!.phaseIndex),
-        },
-      }, fence),
-    })],
-  ])("holds %s without a final verdict or a second payment", async (_case, build) => {
+  // read. A client rail whose transfer has no bound confirmed record is held:
+  // never final, never persisted, never paid twice.
+  test("holds a client rail's executed statement without a final verdict or a second payment", async () => {
     const log = createInMemorySettlementLog();
     const putOutcome = vi.spyOn(log, "putOutcome");
-    const settle = payDemSettle(build(await sdkRail()), { network: "demos" }, {
+    const client = fakeClient();
+    const transfer = vi.spyOn(client, "transfer");
+    const settle = payDemSettle(createPayDemClientRail(client), { network: "demos" }, {
       store: createIdempotencyStore(log),
     });
     const held = await settle(req());
@@ -841,22 +951,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     });
     await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
     expect(putOutcome).not.toHaveBeenCalled();
-  });
-
-  // The relayed object is the SDK's own record-verified success for this
-  // payment's terms and settlement key: the payment executed, so holding it
-  // would deny a debited payment (#338).
-  test("settles a wrapper relaying the SDK rail's genuine success for this payment", async () => {
-    const log = createInMemorySettlementLog();
-    const sdkOwned = await sdkRail();
-    const settle = payDemSettle({
-      address: PAYER,
-      settle: (params, fence) => sdkOwned.settle(params, fence),
-    }, { network: "demos" }, { store: createIdempotencyStore(log) });
-    const first = await settle(req());
-    expect(first).toMatchObject({ ok: true, txHash: TX_HASH, finality: { model: "bft-final" } });
-    await expect(settle(req())).resolves.toEqual(first);
-    expect(sdkTransfers()).toBe(1);
+    expect(transfer).toHaveBeenCalledTimes(1);
   });
 
   test("keeps the SDK rail's settle final when a caller reuses it on its own object", async () => {
@@ -889,53 +984,19 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(first).not.toHaveProperty("execution");
   });
 
-  test.each([undefined, "included", "confirmed", true, null])(
-    "holds a fresh legacy rail success without literal execution (%s)",
-    async (execution) => {
-      const log = createInMemorySettlementLog();
-      const putOutcome = vi.spyOn(log, "putOutcome");
-      const submit = vi.fn(async () => ({
-        ok: true,
-        txHash: TX_HASH,
-        chainId: "demos",
-        payer: PAYER,
-        payee: SELLER_HEX,
-        finality: { model: "bft-final" },
-        blockNumber: 42,
-        txRefKind: "demos",
-        ...(execution === undefined ? {} : { execution }),
-      }));
-      const rail = { address: PAYER, settle: submit } as unknown as PayDemRail;
-      const settle = payDemSettle(rail, { network: "demos" }, {
-        store: createIdempotencyStore(log),
-      });
-      await expect(settle(req())).rejects.toThrow(/does not attest executed/);
-      await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
-      expect(submit).toHaveBeenCalledTimes(1);
-      expect(putOutcome).not.toHaveBeenCalled();
-    },
-  );
-
   test("a tx-bearing timeout holds the intent and never submits a second payment", async () => {
-    let transfers = 0;
     const client = fakeClient({
       result: { ok: false, state: "timeout", hash: TX_HASH },
     });
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: async (params) => {
-        transfers += 1;
-        return payDemSettleCore(params, client);
-      },
-    };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const transfer = vi.spyOn(client, "transfer");
+    const settle = payDemSettle(createPayDemClientRail(client), { network: "demos" });
 
     await expect(settle(req())).resolves.toMatchObject({
       ok: false,
       txHash: TX_HASH,
     });
     await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
-    expect(transfers).toBe(1);
+    expect(transfer).toHaveBeenCalledTimes(1);
   });
 
   test("an injected durable store dedupes across bridge instances after restart", async () => {
@@ -1022,11 +1083,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   });
 
   test("refuses a request for another phase or rail before transferring", async () => {
-    const client = fakeClient();
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async (params) => payDemSettleCore(params, client)),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
 
     await expect(payDemSettle(rail, { network: "demos" })(req({ phase: "deliver" })))
       .rejects.toThrow(/requires phase "pay-dem", got "deliver"/);
@@ -1035,7 +1092,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       railId: "demos-native:DEM",
     })(req({ rail: "pay-dem" })))
       .rejects.toThrow(/request rail "pay-dem" does not match authenticated descriptor/);
-    expect(rail.settle).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
   });
 
   test("durably recovers intent → journal → ambiguity → restart under the same exact tuple", async () => {
@@ -1072,21 +1129,16 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     };
     const contexts: unknown[] = [];
     let transfers = 0;
-    const firstRail: PayDemRail = {
+    const firstRail = createPayDemClientRail({
       address: PAYER,
-      async settle(input) {
+      recordReader: reader,
+      async transfer(input) {
         transfers += 1;
         lifecycle.push(`journal:${input.recovery?.settlementKey}`);
         contexts.push(input.recovery);
-        return {
-          ok: false,
-          txHash: TX_HASH,
-          chainId: "demos",
-          payer: PAYER,
-          payee: SELLER_HEX,
-        };
+        return { ok: false, state: "timeout", hash: TX_HASH, nonce: 9 };
       },
-    };
+    });
     const request = req({
       rail: "demos-native:DEM",
       jobId: "job-restart",
@@ -1103,12 +1155,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       store: firstStore,
     })(request)).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
 
-    const restartedRail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async () => {
-        throw new Error("must not rebroadcast");
-      }),
-    };
+    const { rail: restartedRail, transfer: restartedTransfer } = unusedRail();
     const reconcile = vi.fn(async (context) => ({
       ok: true,
       txHash: TX_HASH,
@@ -1141,7 +1188,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     });
     expect(recovered).not.toHaveProperty("execution");
     expect(transfers).toBe(1);
-    expect(restartedRail.settle).not.toHaveBeenCalled();
+    expect(restartedTransfer).not.toHaveBeenCalled();
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledWith({
       railId: "demos-native:DEM",
@@ -1178,12 +1225,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       phaseIndex: 1,
     });
     await seedExpiredIntent(log, request);
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async () => {
-        throw new Error("must not rebroadcast");
-      }),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
     const reconcile = vi.fn(async (context) => ({
       ok: false,
       txHash: TX_HASH,
@@ -1197,7 +1239,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       store: createIdempotencyStore(log),
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
     })(request)).rejects.toThrow(/definitive finalized result/);
-    expect(rail.settle).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -1237,12 +1279,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       phaseIndex: 2,
     });
     await seedExpiredIntent(log, request);
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async () => {
-        throw new Error("must not rebroadcast");
-      }),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
     const reconcile = vi.fn(async (context) => {
       const reconciled: Record<string, unknown> = {
         ok: true,
@@ -1267,7 +1304,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
     })(request)).rejects.toThrow(pattern);
     expect(reconcile).toHaveBeenCalledTimes(1);
-    expect(rail.settle).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
     expect(putOutcome).not.toHaveBeenCalled();
   });
 
@@ -1285,19 +1322,14 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       phaseIndex: 6,
     });
     await seedExpiredIntent(log, request);
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async () => {
-        throw new Error("must not rebroadcast");
-      }),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
     const putOutcome = vi.spyOn(log, "putOutcome");
 
     await expect(payDemSettle(rail, { network: "demos" }, {
       store: createIdempotencyStore(log),
       reconcile: (async () => reconciled) as unknown as PayDemSettlementReconcile,
     })(request)).rejects.toThrow(/must return a settlement object or null/);
-    expect(rail.settle).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
     expect(putOutcome).not.toHaveBeenCalled();
   });
 
@@ -1318,12 +1350,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       phaseIndex: 4,
     });
     await seedExpiredIntent(log, request);
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async () => {
-        throw new Error("must not rebroadcast");
-      }),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
     const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
       ok: true,
       txHash: TX_HASH,
@@ -1345,7 +1372,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       /does not attest that the transaction record shows the transfer executed/,
     );
     expect(reconcile).toHaveBeenCalledTimes(1);
-    expect(rail.settle).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
     expect(putOutcome).not.toHaveBeenCalled();
   });
 
@@ -1429,63 +1456,17 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     });
 
     // A custom rail's proof is its statement, even one relaying the SDK rail's
-    // genuine proof: the bridge drops it and the store keeps the intent held.
-    test.each([
-      ["a custom rail", async (): Promise<PayDemRail> => ({
-        address: PAYER,
-        settle: vi.fn(async () => failure() as unknown as Awaited<ReturnType<PayDemRail["settle"]>>),
-      })],
-      ["a wrapper around a record-verified settle", async (): Promise<PayDemRail> => {
-        const verified = await recordVerifiedRail();
-        return { address: PAYER, settle: (params, fence) => verified.settle(params, fence) };
-      }],
-    ])("holds %s's bound failure proof without persisting it", async (_case, build) => {
-      const log = createInMemorySettlementLog();
-      const putOutcome = vi.spyOn(log, "putOutcome");
-      const rail = await build();
-      const settle = payDemSettle(rail, { network: "demos" }, {
-        store: createIdempotencyStore(log),
-      });
-      await expect(settle(req())).resolves.toEqual(HELD_FAILURE);
-      await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
-      expect(putOutcome).not.toHaveBeenCalled();
+    // genuine proof: such a rail is refused before its settle runs, so its
+    // failure can neither cost a transfer nor be persisted.
+    test("refuses a wrapper around a record-verified settle before it fails", async () => {
+      const verified = await recordVerifiedRail();
+      const settle = vi.fn((params: Parameters<PayDemRail["settle"]>[0], fence?: Parameters<PayDemRail["settle"]>[1]) =>
+        verified.settle(params, fence));
+      expect(() => payDemSettle({ address: PAYER, settle }, { network: "demos" }))
+        .toThrow(/refusing/);
+      expect(settle).not.toHaveBeenCalled();
+      expect(sdkTransfers()).toBe(0);
     });
-
-    test.each(NON_BINDING)("refuses a rail failure proof with %s and holds the intent", async (
-      _case,
-      override,
-    ) => {
-      const log = createInMemorySettlementLog();
-      const putOutcome = vi.spyOn(log, "putOutcome");
-      const rail: PayDemRail = {
-        address: PAYER,
-        settle: vi.fn(async () => withoutUndefined(failure(override)) as unknown as
-          Awaited<ReturnType<PayDemRail["settle"]>>),
-      };
-      const settle = payDemSettle(rail, { network: "demos" }, {
-        store: createIdempotencyStore(log),
-      });
-      await expect(settle(req())).rejects.toThrow(/invalid terminal-failure proof/);
-      await expect(settle(req())).rejects.toThrow(/refusing to resubmit/);
-      expect(rail.settle).toHaveBeenCalledTimes(1);
-      expect(putOutcome).not.toHaveBeenCalled();
-    });
-
-    test.each(["executed", "included"])(
-      "refuses a rail failure that also attests execution %s",
-      async (execution) => {
-        const log = createInMemorySettlementLog();
-        const putOutcome = vi.spyOn(log, "putOutcome");
-        const rail = {
-          address: PAYER,
-          settle: vi.fn(async () => ({ ...failure(), execution })),
-        } as unknown as PayDemRail;
-        await expect(payDemSettle(rail, { network: "demos" }, {
-          store: createIdempotencyStore(log),
-        })(req())).rejects.toThrow(/must not attest successful execution/);
-        expect(putOutcome).not.toHaveBeenCalled();
-      },
-    );
 
     // A reconciler is the caller's statement, even for a record-verified rail,
     // so its bound failure never becomes the definitive outcome.
@@ -1524,12 +1505,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       const log = createInMemorySettlementLog();
       const request = req({ rail: "demos-native:DEM", jobId: "job-failed-bad", phaseIndex: 8 });
       await seedExpiredIntent(log, request);
-      const rail: PayDemRail = {
-        address: PAYER,
-        settle: vi.fn(async () => {
-          throw new Error("must not rebroadcast");
-        }),
-      };
+      const { rail, transfer: railTransfer } = unusedRail();
       const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) =>
         withoutUndefined({ ...failure(override), amountOs: context.amountOs }));
       const putOutcome = vi.spyOn(log, "putOutcome");
@@ -1537,7 +1513,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         store: createIdempotencyStore(log),
         reconcile: reconcile as unknown as PayDemSettlementReconcile,
       })(request)).rejects.toThrow(pattern);
-      expect(rail.settle).not.toHaveBeenCalled();
+      expect(railTransfer).not.toHaveBeenCalled();
       expect(putOutcome).not.toHaveBeenCalled();
     });
 
@@ -1621,12 +1597,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         blockNumber: 7,
         txRefKind: "demos",
       }));
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async () => {
-        throw new Error("must not rebroadcast");
-      }),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
     const reconcile = vi.fn(async (context) => ({
       ok: true,
       txHash: OTHER_TX_HASH,
@@ -1650,43 +1621,11 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       amount: "2",
     }))).rejects.toThrow(/different terms/);
     expect(reconcile).not.toHaveBeenCalled();
-    expect(rail.settle).not.toHaveBeenCalled();
-  });
-
-  test("rejects a malformed fresh success before the durable store persists it", async () => {
-    const backing = createInMemorySettlementLog();
-    const putOutcome = vi.spyOn(backing, "putOutcome");
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async (input) => ({
-        ok: true,
-        txHash: TX_HASH,
-        chainId: input.network ?? "demos",
-        payer: PAYER,
-        payee: input.recipient,
-        finality: { model: "provider-receipt" },
-        blockNumber: 1,
-        txRefKind: "demos",
-      })),
-    } as unknown as PayDemRail;
-
-    await expect(payDemSettle(rail, { network: "demos" }, {
-      store: createIdempotencyStore(backing),
-    })(req({
-      rail: "demos-native:DEM",
-      jobId: "job-fresh-invalid",
-      phaseIndex: 1,
-    }))).rejects.toThrow(/bft-final finality/);
-    expect(putOutcome).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
   });
 
   test("rejects an invalid cached success without invoking submit or reconciliation", async () => {
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(async () => {
-        throw new Error("must not rebroadcast");
-      }),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
     const cached = {
       ok: true,
       txHash: TX_HASH,
@@ -1712,7 +1651,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       jobId: "job-cached-invalid",
       phaseIndex: 1,
     }))).rejects.toThrow(/bft-final finality/);
-    expect(rail.settle).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
     expect(reconcile).not.toHaveBeenCalled();
   });
 
@@ -1737,10 +1676,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   });
 
   test("cross-checks a configured phaseIndex and never silently supplies it", async () => {
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
     const settle = payDemSettle(rail, {
       network: "demos",
       railId: "demos-native:DEM",
@@ -1755,35 +1691,24 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       rail: "demos-native:DEM",
       phaseIndex: 7,
     }))).rejects.toThrow(/does not match configured phaseIndex/);
-    expect(rail.settle).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
   });
 
   test("rejects a zero DEM amount at the bridge before invoking an injected rail", async () => {
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: vi.fn(),
-    };
+    const { rail, transfer: railTransfer } = unusedRail();
 
     await expect(payDemSettle(rail)(req({ amount: "0" })))
       .rejects.toThrow(/amount must be > 0/);
-    expect(rail.settle).not.toHaveBeenCalled();
+    expect(railTransfer).not.toHaveBeenCalled();
   });
 
   test("binds the prepared transfer to the exact PC-7 rail/session/phase key", async () => {
     const client = fakeClient();
-    let captured: Parameters<PayDemRail["settle"]>[0] | undefined;
-    const rail: PayDemRail = {
-      address: PAYER,
-      settle: async (input) => {
-        captured = input;
-        return payDemSettleCore(input, client);
-      },
-    };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(createPayDemClientRail(client), { network: "demos" });
 
     await settle(req({ rail: "demos-native:DEM", jobId: "job-7", phaseIndex: 2 }));
 
-    expect(captured?.recovery).toEqual({
+    expect(client.sent?.recovery).toEqual({
       railId: "demos-native:DEM",
       jobId: "job-7",
       phaseIndex: 2,
@@ -1793,7 +1718,6 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       payee: SELLER_HEX,
       amountOs: "5000000000",
     });
-    expect(client.sent?.recovery).toEqual(captured?.recovery);
   });
 
   test("rejects a contradictory recovery key before submitting", async () => {

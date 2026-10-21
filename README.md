@@ -624,10 +624,14 @@ index reporting `included` is not execution, so a reconciled success without
 recorded outcome by itself. A non-final observation must throw. Only the SDK's
 own read of the node record is final: the rail `createPayDemRail` returns, or a
 custom `DemosNativeClient` that carries
-`recordReader: await createPayDemRecordReader({ rpc })` and returns its signed
-`nonce`, whose returned hash the SDK then observes and binds itself. Any other
-custom `DemosNativeClient` or `PayDemRail` result is held as `ok: false` with
-its hash and never becomes a final success or permanent failure. See
+`recordReader: await createPayDemRecordReader({ rpc })`, journals its signed
+transfer once through the journal the SDK hands it and returns its signed
+`nonce`, whose returned hash the SDK then observes and binds itself, also
+through `createPayDemClientRail`. The SDK reads the record only for a transfer
+whose nonce is above the payer's account nonce read before the call, and
+settles one hash at most once per process. Any other custom
+`DemosNativeClient` or `PayDemRail` is refused before its transfer or `settle`
+runs, so it can never debit the buyer and then leave the payment held. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
@@ -661,10 +665,12 @@ method when its `SettlementLog` implements the optional `putAttempt` and
 signed hash through it before its one broadcast and does not broadcast if the
 record is refused. `payDemSettle` also records any hash a rail returns before
 the store persists or returns it; when that write is refused the call fails
-and the hash stays unbound. A custom rail must call `fence.recordAttempt` with
-the exact hash it will return before it broadcasts, and must not broadcast
-when it rejects: the bridge's own write after the rail returns cannot cover a
-crash between that broadcast and the return. The fence a rail receives records
+and the hash stays unbound. The only rails `payDemSettle` runs (those
+`createPayDemRail` and `createPayDemClientRail` return) call
+`fence.recordAttempt` with the exact hash they will return before they
+broadcast, and do not broadcast when it rejects: the bridge's own write after
+the rail returns cannot cover a crash between that broadcast and the return.
+The fence a rail receives records
 the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
 passes, and rejects a value that is not a Demos transaction hash, so a rail
 that awaits it never broadcasts one. The record is compare-and-set

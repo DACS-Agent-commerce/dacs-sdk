@@ -39,11 +39,11 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(readme).toContain("(docs/pay-dem-execution.md)");
   });
 
-  it("states the attempt-record contract for custom rails and durable logs", () => {
+  it("states the attempt-record contract for the SDK's rails and durable logs", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     const readme = read("README.md").replace(/\s+/g, " ");
-    expect(doc).toContain("A custom rail must record the exact hash it will return before it broadcasts");
-    expect(readme).toContain("A custom rail must call `fence.recordAttempt` with the exact hash it will return before it broadcasts");
+    expect(doc).toContain("record the exact hash they will return before they broadcast");
+    expect(readme).toContain("call `fence.recordAttempt` with the exact hash they will return before they broadcast");
     for (const text of [doc, readme]) {
       expect(text).not.toContain("keeps working for fresh settlement");
       expect(text).toContain("starts no new transfer through a `createIdempotencyStore` store over a log without it");
@@ -67,8 +67,20 @@ describe("pay-dem execution docs match the code (#338)", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain("Only the SDK's own read of the node makes a verdict final: inside `createPayDemRail`, or through a record reader `createPayDemRecordReader` built.");
     expect(doc).toContain("The client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are ignored");
-    expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else.");
+    expect(doc).toContain("is held: `ok: false` with the signed hash and nothing else, when it has no signed nonce, when it is not bound to a transfer this call journaled and signed");
     expect(doc).toContain("No file in the package exports a way to add to it");
+  });
+
+  it("says a client or rail the SDK cannot finalise is refused before its effect, and how a transfer is bound to the call", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    expect(doc).toContain("before its `transfer` runs: its result could never be final");
+    expect(doc).toContain("any other rail, including a wrapper around one of these, is refused when the bridge is built");
+    expect(doc).toContain("whose signed nonce is above that account nonce");
+    expect(doc).toContain("One hash settles at most one payment in a process");
+    const source = read("src/rails/payDem.ts");
+    expect(source).toMatch(/"getAddressNonce"/);
+    expect(source).toMatch(/signedNonce > nonceFloor/);
+    expect(source).toMatch(/refusing transfer/);
     expect(doc).not.toMatch(/vouch/i);
   });
 
@@ -78,8 +90,13 @@ describe("pay-dem execution docs match the code (#338)", () => {
       "only when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee, amount, network and settlement key, and its hash is the one this invocation journaled",
     );
     expect(doc).not.toContain("the host's statement");
+    expect(doc).toContain(
+      "Any other rail is refused when the track is built, before any wallet reservation.",
+    );
     expect(read("packages/dacs-node/src/payDemPayment.ts"))
       .toMatch(/payDemRecordVerifiedTransfer\(raw\)/);
+    expect(read("packages/dacs-node/src/payDemPayment.ts"))
+      .toMatch(/"pay-dem-rail-not-record-verifying"/);
   });
 
   it("dates the node2 build claims and keeps the fixture historical", () => {

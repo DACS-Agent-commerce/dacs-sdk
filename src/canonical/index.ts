@@ -23,3 +23,5 @@ export {
   canonicalSignedScope,
   contentHash,
 } from "./hash.js";
+
+export { jid1AttestationAddress, jid1PaymentEvidenceAddress, jid1RatingAddress, jid1BundleAddress } from "./jid1Addressing.js";

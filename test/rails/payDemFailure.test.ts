@@ -3,9 +3,9 @@ import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import { hasDefinitiveDemosFailure } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog,
   type SettlementBinding } from "../../src/rails/idempotency.js";
-import { payDemSettle, payDemSettleCore,
+import { createPayDemRecordReader, payDemSettle, payDemSettleCore,
   type PayDemRailResult } from "../../src/rails/payDem.js";
-import { resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import { demosNode, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
 
@@ -62,8 +62,8 @@ describe("terminal failed Demos record", () => {
 
   it("refuses failure reconciliation from a different configured network", async () => {
     const log = createInMemorySettlementLog();
-    const submit = vi.fn(async () => { throw new Error("lost response"); });
-    const rail = { address: payer, settle: submit };
+    demosNode.transfer.mockRejectedValue(new Error("lost response"));
+    const rail = await sdkRail({ network: "demos:testnet" });
     const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
       payee: `did:demos:agent:${payee}`, expectedPayee: payee, jobId: "failure-proof", phaseIndex: 0 };
     await expect(payDemSettle(rail, { network: "demos:testnet" }, {
@@ -74,7 +74,7 @@ describe("terminal failed Demos record", () => {
       reconcile: async () => ({ ...failure, ok: false as const, errorClass: "permanent" as const,
         amountOs: proof.amountOs, failureProof: proof }),
     })(request)).rejects.toThrow(/network/);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
   });
 
   // A reconciler is the caller's statement, so its failure never becomes the
@@ -93,8 +93,8 @@ describe("terminal failed Demos record", () => {
 
   it.each(["demos", "demos:testnet"])("holds a reconciled permanent failure on %s through the pay-dem bridge after restart", async (network) => {
     const log = createInMemorySettlementLog();
-    const submit = vi.fn(async () => { throw new Error("lost transfer response"); });
-    const rail = { address: payer, settle: submit };
+    demosNode.transfer.mockRejectedValue(new Error("lost transfer response"));
+    const rail = await sdkRail({ network });
     const request = { rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
       payee: `did:demos:agent:${payee}`, expectedPayee: `did:demos:agent:${payee}`,
       jobId: "failure-proof", phaseIndex: 0 };
@@ -106,7 +106,7 @@ describe("terminal failed Demos record", () => {
     const after = payDemSettle(rail, { network }, { store: createIdempotencyStore(log,
       { owner: "after", now: () => 3, leaseDurationMs: 1 }), reconcile });
     await expect(after(request)).rejects.toThrow(/reconciliation was not definitive/);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
 
@@ -136,10 +136,19 @@ describe("terminal failed Demos record", () => {
     ["missing nonce", Object.fromEntries(Object.entries(proof).filter(([key]) => key !== "nonce"))],
     ["invalid nonce", { ...proof, nonce: -1 }],
   ])("does not promote %s proof to a permanent outcome", async (_label, value) => {
-    const transfer = vi.fn(async () => ({ ok: false, hash: txHash,
-      state: "failed", blockNumber: 42, ...(value === undefined ? {} : { failureProof: value }) }));
+    // A client's own failure statement is never a proof: the SDK reads the
+    // record, and the mocked node holds none for a transfer it did not broadcast.
+    const recordReader = await createPayDemRecordReader({ rpc: "https://node.test",
+      inclusionPollIntervalMs: 1, statusRequestTimeoutMs: 20, transactionRecordTimeoutMs: 20 });
+    const transfer = vi.fn(async (args: { to: string; amountOs: bigint;
+      journalPreparedTransfer?: (entry: object) => Promise<void> }) => {
+      await args.journalPreparedTransfer?.({ txHash, nonce: proof.nonce, payer, payee: args.to,
+        amountOs: args.amountOs.toString(), network: "demos" });
+      return { ok: false, hash: txHash, nonce: proof.nonce,
+        state: "failed", blockNumber: 42, ...(value === undefined ? {} : { failureProof: value }) };
+    });
     const result = await payDemSettleCore({ recipient: payee, amount: proof.amountOs },
-      { address: payer, transfer } as never);
+      { address: payer, recordReader, transfer } as never);
     expect(result).toEqual({ ok: false, txHash, chainId: "demos", payer, payee });
     expect(transfer).toHaveBeenCalledTimes(1);
   });

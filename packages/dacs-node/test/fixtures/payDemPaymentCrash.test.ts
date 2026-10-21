@@ -1,6 +1,9 @@
 import { writeFile } from "node:fs/promises";
 
-import type { PayDemRail } from "@kynesyslabs/dacs";
+import {
+  createPayDemClientRail,
+  createPayDemRecordReader,
+} from "@kynesyslabs/dacs";
 import {
   createFixedPricePayDemBuyerCoordinator,
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
@@ -10,7 +13,7 @@ import {
   type FixedPricePayDemProtocolBinding,
   type FixedPricePayDemTrackOperation,
 } from "@kynesyslabs/dacs/commerce";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../../src/config.js";
 import { putDacsLiveOrderInputV1 } from "../../src/orderInput.js";
@@ -20,6 +23,18 @@ import {
 } from "../../src/payDemPayment.js";
 import { openDacsNodeSqliteDatabase } from "../../src/sqlite.js";
 import { createPermissiveTestWalletSpendAuthorityV1 } from "../helpers/walletSpend.js";
+
+// The client rail reads through this node: before the transfer it signs at
+// nonce 9, the payer's account nonce is 8.
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class MockDemos {
+    readonly connect = async () => undefined;
+    readonly getNetworkInfo = async () => undefined;
+    readonly nodeCall = async (message: string) =>
+      message === "getAddressNonce" ? 8 : undefined;
+    readonly getTxByHash = async () => undefined;
+  },
+}));
 
 const databasePath = process.env.DACS_PAY_DEM_CRASH_DATABASE;
 const readyPath = process.env.DACS_PAY_DEM_CRASH_READY;
@@ -102,10 +117,11 @@ describe("native DEM payment crash fixture", () => {
       authority: BUYER,
     });
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
-    const rail: PayDemRail = {
+    const rail = createPayDemClientRail({
       address: PAYER,
-      async settle(input) {
-        await input.journalPreparedTransfer!({
+      recordReader: await createPayDemRecordReader({ rpc: "https://node.test" }),
+      async transfer({ recovery, journalPreparedTransfer }) {
+        await journalPreparedTransfer!({
           txHash: TX_HASH,
           nonce: 9,
           payer: PAYER,
@@ -114,7 +130,7 @@ describe("native DEM payment crash fixture", () => {
           denomination: "os",
           network: "demos",
           maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-          recovery: input.recovery!,
+          recovery: recovery!,
         });
         await writeFile(readyPath, "prepared", {
           encoding: "utf8",
@@ -127,7 +143,7 @@ describe("native DEM payment crash fixture", () => {
         const lock = new Int32Array(new SharedArrayBuffer(4));
         while (true) Atomics.wait(lock, 0, 0, 1_000);
       },
-    };
+    });
     const bootstrap = createFixedPricePayDemBuyerCoordinator({
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-bootstrap",

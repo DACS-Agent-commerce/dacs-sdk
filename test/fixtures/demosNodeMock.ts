@@ -92,7 +92,9 @@ export function resetDemosNode(over: Pick<DemosNodeScript, "payer" | "txHash"> &
     result: 200,
     response: { hash: signed.at(-1) ?? script.txHash },
   }));
-  demosNode.nodeCall.mockResolvedValue({ state: "included", blockNumber: script.blockNumber });
+  // The payer had used the nonce before the one `txHash` is signed at.
+  demosNode.nodeCall.mockImplementation(async (message: string) =>
+    message === "getAddressNonce" ? script.nonce - 1 : { state: "included", blockNumber: script.blockNumber });
   demosNode.getTxByHash.mockImplementation(async () => {
     const transaction = (demosNode.broadcast.mock.calls.at(-1)?.[0] as {
       response: { data: { transaction: { content: { nonce: number } } } };
@@ -119,3 +121,13 @@ export const sdkRail = (over: Partial<PayDemRailConfig> = {}) => createPayDemRai
 
 /** Native transfers the SDK rail signed over the mocked node. */
 export const sdkTransfers = () => demosNode.transfer.mock.calls.length;
+
+/**
+ * The SDK rail over a node that accepts the broadcast but never includes the
+ * transaction: once `inclusionTimeoutMs` passes it returns the signed hash as
+ * indeterminate, the way a rail whose answer was lost does.
+ */
+export const heldRail = (over: Partial<PayDemRailConfig> = {}) => {
+  demosNode.nodeCall.mockResolvedValue({ state: "pending" });
+  return sdkRail({ inclusionTimeoutMs: 1, ...over });
+};

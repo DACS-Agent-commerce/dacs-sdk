@@ -39,8 +39,25 @@ import {
 } from "../../src/agent/listingValidation.js";
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
-import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
+import {
+  createPayDemClientRail,
+  createPayDemRecordReader,
+  payDemSettle,
+  type DemosNativeClient,
+} from "../../src/rails/payDem.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
+
+// The node the pay-dem record reader reads: the payer had used nonce 0, and
+// the status index never reports the client's transfer included.
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class MockDemos {
+    readonly connect = async () => true;
+    readonly getNetworkInfo = async () => ({ forks: { osDenomination: { activated: true } } });
+    readonly getTxByHash = async () => null;
+    readonly nodeCall = async (message: string) =>
+      message === "getAddressNonce" ? 0 : { state: "unknown" };
+  },
+}));
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
 // listing verifier. Previously createAgent() supplied neither verifyListing nor
@@ -492,7 +509,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
   // A custom rail's `execution: "executed"` is its statement (#338): the SDK
   // did not read the record, so the session stops indeterminate after the one
   // transfer instead of completing. The request still targets the seller claim.
-  test("defaults a normative pay-dem session to the seller Demos claim and holds a custom rail's success", async () => {
+  test("defaults a normative pay-dem session to the seller Demos claim and holds a client's unread success", async () => {
     const { adapter, store } = memAdapter();
     const ref = await anchorListing(
       store,
@@ -531,20 +548,39 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         }),
       },
     });
+    // A custom client's own executed statement: the SDK's read of the node
+    // does not find it included, so the session stays indeterminate.
     const transfer = vi.fn(
-      async ({ recipient, network }: Parameters<PayDemRail["settle"]>[0]) => ({
-        ok: true as const,
-        execution: "executed" as const,
-        txHash: "11".repeat(32),
-        chainId: network ?? "demos",
-        payer: buyerDid,
-        payee: recipient,
-        finality: { model: "bft-final" as const },
-        blockNumber: 42,
-        txRefKind: "demos",
-      }),
+      async (args: Parameters<DemosNativeClient["transfer"]>[0]) => {
+        await args.journalPreparedTransfer?.({
+          txHash: "11".repeat(32),
+          nonce: 1,
+          payer: buyerHex,
+          payee: args.to,
+          amountOs: args.amountOs.toString(),
+          network: "demos:testnet",
+        });
+        return {
+          ok: true,
+          state: "included",
+          execution: "executed" as const,
+          hash: "11".repeat(32),
+          nonce: 1,
+          blockNumber: 42,
+        };
+      },
     );
-    const rail: PayDemRail = { address: buyerDid, settle: transfer };
+    const rail = createPayDemClientRail({
+      address: buyerHex,
+      recordReader: await createPayDemRecordReader({
+        rpc: "mem",
+        inclusionTimeoutMs: 20,
+        inclusionPollIntervalMs: 1,
+        statusRequestTimeoutMs: 10,
+        transactionRecordTimeoutMs: 10,
+      }),
+      transfer,
+    }, { network: "demos:testnet" });
 
     await expect(
       agent.runSession(ref, {
@@ -564,12 +600,12 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     expect(transfer).toHaveBeenCalledOnce();
     const submitted = transfer.mock.calls[0]![0];
     expect(submitted).toMatchObject({
-      recipient: sellerHex,
-      amount: "1000000000",
-      network: "demos:testnet",
+      to: sellerHex,
+      amountOs: 1_000_000_000n,
       recovery: {
         railId: "demos:native",
         phaseIndex: 0,
+        network: "demos:testnet",
       },
     });
     expect(submitted.recovery?.jobId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);

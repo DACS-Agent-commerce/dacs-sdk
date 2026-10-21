@@ -51,11 +51,22 @@ const sdkRecordReadingClients = new WeakSet<object>();
 const sdkRecordReadingSettles = new WeakSet<object>();
 const sdkRecordReadingSubmissions = new WeakSet<object>();
 /**
- * Readers `createPayDemRecordReader` built, each with the read it performs.
+ * Readers `createPayDemRecordReader` built, each with the reads it performs.
  * Private like the sets above: a custom client carrying one has its returned
  * hash observed and its record read and bound by the SDK itself.
  */
-const sdkRecordReaders = new WeakMap<object, PayDemRecordRead>();
+const sdkRecordReaders = new WeakMap<object, PayDemRecordReading>();
+/**
+ * The `settle` of each rail `createPayDemClientRail` built around a
+ * reader-carrying client. Private like the sets above.
+ */
+const sdkClientRailSettles = new WeakSet<object>();
+/**
+ * Transaction hashes a reader-carrying client's transfer already settled in
+ * this process. A record shows that a transfer with these terms executed, not
+ * that this call made it, so one hash never settles a second payment.
+ */
+const readerSettledHashes = new Set<string>();
 /**
  * Fresh successes `payDemSettleCore` returned for the SDK's own client, frozen,
  * each with the exact transfer terms that client signed. Private like the sets
@@ -420,8 +431,8 @@ export interface DemosTransferResult {
    * signed hash and it shows the prepared transfer executed at `blockNumber`
    * (#338). Inclusion alone is not execution: {@link payDemSettleCore} reports
    * success only when this is present. It is final only from the client
-   * `createPayDemRail` builds; from any other client it is a statement and the
-   * result is held.
+   * `createPayDemRail` builds; from a reader-carrying client it is a statement
+   * the SDK ignores in favour of its own record read.
    */
   execution?: "executed";
   /**
@@ -457,10 +468,11 @@ export interface DemosNativeClient {
   address: string;
   /**
    * A reader {@link createPayDemRecordReader} built. With it,
-   * {@link payDemSettleCore} observes inclusion of the returned hash and reads
-   * and binds the node's transaction record itself, and its verdict replaces
-   * the client's `ok`, `state`, `execution`, `blockNumber` and failure proof.
-   * Any other value is refused before the transfer.
+   * {@link payDemSettleCore} reads the payer's account nonce before the
+   * transfer, observes inclusion of the returned hash and reads and binds the
+   * node's transaction record itself, and its verdict replaces the client's
+   * `ok`, `state`, `execution`, `blockNumber` and failure proof. Any other
+   * value is refused before the transfer.
    */
   recordReader?: PayDemRecordReader;
   /**
@@ -469,8 +481,10 @@ export interface DemosNativeClient {
    * node's transaction record for the signed hash shows the exact prepared
    * transfer executed; inclusion alone is not success (#338). The SDK did not
    * read that record for a client it did not build, so without a
-   * {@link recordReader} {@link payDemSettleCore} holds such a client's result
-   * as `ok: false` with the hash, never final.
+   * {@link recordReader} {@link payDemSettleCore} refuses such a client before
+   * calling this. With one, the client journals its signed transfer once
+   * through `journalPreparedTransfer` before its one broadcast, and returns
+   * that transfer's hash and nonce.
    */
   transfer(args: {
     to: string;
@@ -710,16 +724,16 @@ export async function payDemSettleCore(
   );
   // Only the client createPayDemRail builds reads the node's transaction record
   // itself (#338). Any other client's `execution` and failure proof are its
-  // statements, so its result is held as indeterminate, never final, unless
-  // it carries an SDK record reader: then the SDK reads the record below.
+  // statements, so it must carry an SDK record reader: then the SDK reads the
+  // record below. Without one it is refused before its transfer.
   const recordReading = sdkRecordReadingClients.has(client);
   const readerProperty = recordReading
     ? undefined
     : stableDataProperty(client, "recordReader", "pay-dem record reader");
-  let readRecord: PayDemRecordRead | undefined;
+  let reading: PayDemRecordReading | undefined;
   if (readerProperty?.found === true && readerProperty.value !== undefined) {
-    readRecord = sdkRecordReaders.get(readerProperty.value as object);
-    if (readRecord === undefined) {
+    reading = sdkRecordReaders.get(readerProperty.value as object);
+    if (reading === undefined) {
       throw new DacsError(
         "pay-dem record reader must be one createPayDemRecordReader built; refusing transfer",
       );
@@ -769,19 +783,81 @@ export async function payDemSettleCore(
       );
     }
   }
+  // Decide before the effect: a result the SDK could never make final must
+  // not cost the buyer a transfer first.
+  if (!recordReading && reading === undefined) {
+    throw new DacsError(
+      "pay-dem client is not createPayDemRail's and carries no createPayDemRecordReader reader, so its result could never be final; refusing transfer",
+    );
+  }
+
+  // A record proves that a transfer with these terms executed, not that this
+  // call made it. For a reader-carrying client the SDK therefore binds the
+  // transfer to this call itself: its signed nonce must be above the payer's
+  // account nonce read before the call, and its hash and nonce must be the
+  // ones the client journaled, once, through the journal the SDK hands it.
+  const nonceFloor = reading === undefined
+    ? undefined
+    : await reading.accountNonce(payer);
+  let journaled: Readonly<{ txHash: string; nonce: number }> | undefined;
+  let journalEntries = 0;
+  let transferReturned = false;
+  const readerJournal = async (
+    entry: Readonly<PayDemPreparedTransfer>,
+  ): Promise<void> => {
+    if (transferReturned) {
+      throw new DacsError(
+        "pay-dem prepared transfer was journaled after the transfer returned; refusing",
+      );
+    }
+    journalEntries += 1;
+    if (journalEntries > 1) {
+      throw new DacsError(
+        "pay-dem prepared transfer was journaled more than once; refusing broadcast",
+      );
+    }
+    const owned = snapshotCanonicalJsonRead(entry, "pay-dem prepared transfer");
+    const fields = owned !== null && typeof owned === "object" && !Array.isArray(owned)
+      ? owned as unknown as Record<string, unknown>
+      : {};
+    const entryHash = canonicalDemosTxHash(fields.txHash);
+    const entryNonce = fields.nonce;
+    if (entryHash === null ||
+        typeof entryNonce !== "number" || !Number.isSafeInteger(entryNonce) ||
+        entryNonce < 0 ||
+        typeof fields.payer !== "string" ||
+        normalizeDemosNativeAddress(fields.payer) !== normalizeDemosNativeAddress(payer) ||
+        typeof fields.payee !== "string" ||
+        normalizeDemosNativeAddress(fields.payee) !== normalizeDemosNativeAddress(recipient) ||
+        fields.amountOs !== amountOs.toString()) {
+      throw new DacsError(
+        "pay-dem prepared transfer does not bind this payment's hash, nonce, payer, payee and amount; refusing broadcast",
+      );
+    }
+    await journalPreparedTransfer?.(owned);
+    journaled = Object.freeze({ txHash: entryHash, nonce: entryNonce });
+  };
+  const effectJournal = reading === undefined
+    ? journalPreparedTransfer
+    : readerJournal;
 
   await effectFence?.assertCurrent();
-  const response = await transfer({
-    to: recipient,
-    amountOs,
-    ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
-    ...(recovery === undefined ? {} : { recovery }),
-    ...(journalPreparedTransfer === undefined ? {} : { journalPreparedTransfer }),
-    ...(assertCurrentBeforeBroadcast === undefined
-      ? {}
-      : { assertCurrentBeforeBroadcast }),
-    ...(effectFence === undefined ? {} : { effectFence }),
-  });
+  let response: DemosTransferResult;
+  try {
+    response = await transfer({
+      to: recipient,
+      amountOs,
+      ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
+      ...(recovery === undefined ? {} : { recovery }),
+      ...(effectJournal === undefined ? {} : { journalPreparedTransfer: effectJournal }),
+      ...(assertCurrentBeforeBroadcast === undefined
+        ? {}
+        : { assertCurrentBeforeBroadcast }),
+      ...(effectFence === undefined ? {} : { effectFence }),
+    });
+  } finally {
+    transferReturned = true;
+  }
   const okProperty = stableDataProperty(response, "ok", "pay-dem transfer result ok");
   const hashProperty = stableDataProperty(
     response,
@@ -811,7 +887,7 @@ export async function payDemSettleCore(
   const failureProperty = stableDataProperty(response, "failureProof", "pay-dem failure proof");
   const failureProof = failureProperty.value === undefined ? undefined :
     snapshotCanonicalJsonRead(failureProperty.value, "pay-dem failure proof");
-  const signedNonce = readRecord === undefined
+  const signedNonce = reading === undefined
     ? undefined
     : stableDataProperty(response, "nonce", "pay-dem transfer result nonce").value;
   const txHash = hashProperty.found
@@ -845,17 +921,28 @@ export async function payDemSettleCore(
   // the returned hash and reads the record itself, bound to the nonce the
   // client signed and to this payer, payee and amount. Its verdict is the only
   // one used; the client's ok, state, execution, block and proof are ignored.
+  // It reads only a transfer bound to this call (above); any other is held.
   let readerVerdict: PayDemRecordVerdict | undefined;
-  if (readRecord !== undefined) {
-    readerVerdict = Number.isSafeInteger(signedNonce) && (signedNonce as number) >= 0
-      ? await readRecord({
+  if (reading !== undefined) {
+    const thisCalls = typeof signedNonce === "number" &&
+      Number.isSafeInteger(signedNonce) && signedNonce >= 0 &&
+      journalEntries === 1 && journaled !== undefined &&
+      journaled.txHash === txHash &&
+      journaled.nonce === signedNonce &&
+      nonceFloor !== undefined && signedNonce > nonceFloor &&
+      !readerSettledHashes.has(txHash);
+    readerVerdict = thisCalls
+      ? await reading.read({
           txHash,
-          nonce: signedNonce as number,
+          nonce: signedNonce,
           payer,
           payee: recipient,
           amountOs,
         })
-      : { state: "indeterminate", reason: "transfer result has no signed nonce" };
+      : {
+          state: "indeterminate",
+          reason: "transfer result is not bound to a transfer this call journaled and signed",
+        };
   }
 
   // Observed inclusion (§9.5.9): a verifiable tx id AND the exact terminal
@@ -865,7 +952,8 @@ export async function payDemSettleCore(
   // execution either (#338): the SDK's own client must also report that the
   // node's transaction record it read shows the transfer executed.
   const observedFinal = readerVerdict !== undefined
-    ? readerVerdict.state === "executed"
+    // Checked again after the read: another call may have settled it meanwhile.
+    ? readerVerdict.state === "executed" && !readerSettledHashes.has(txHash)
     : recordReading &&
       okProperty.value === true &&
       txHash.length > 0 &&
@@ -939,6 +1027,7 @@ export async function payDemSettleCore(
       ? {}
       : { networkFeeOs: (totalDebitOs - amountOs).toString() }),
   });
+  if (readerVerdict !== undefined) readerSettledHashes.add(txHash);
   // Frozen, so a holder cannot change the hash or block after it is listed.
   const verifiedPayer = normalizeDemosNativeAddress(payer);
   const verifiedPayee = normalizeDemosNativeAddress(recipient);
@@ -1042,8 +1131,9 @@ export interface PayDemRail {
    * verifying literal `confirmed` status, hash, nonce, inclusion block, payer,
    * payee and amount, then returning `execution: "executed"`. Status-index
    * inclusion alone must return a not-ok outcome retaining the signed hash.
-   * {@link payDemSettle} treats a success or failure proof as final only from
-   * the `settle` `createPayDemRail` returned; another rail's is held.
+   * {@link payDemSettle} calls only the `settle` `createPayDemRail` or
+   * {@link createPayDemClientRail} returned and refuses any other rail before
+   * calling it.
    */
   settle(
     params: PayDemSettleParams,
@@ -1492,7 +1582,8 @@ type ObservedDemosExecution =
  *   as a decimal string above it (`src/libs/blockchain/transaction.ts`
  *   `fromEntityToWireNumber`); both forms are accepted;
  * - not-found is `{result: 400, response: "error"}` at 61b8e75 and
- *   `{result: 404, response: null}` at 52e2e569 and at
+ *   `{result: 404, response: null, extra: {reason: "not_found", …}}` at
+ *   52e2e569 and at
  *   `11e7c8207732e25035de5a04cab25c5346046493`, which serves the same record
  *   shape and status handler; both are polled.
  * The default branch (`testnet`) had no `getTransactionStatus` on 2026-10-20. The recorded
@@ -2050,6 +2141,16 @@ type PayDemRecordRead = (input: Readonly<{
   amountOs: bigint;
 }>) => Promise<PayDemRecordVerdict>;
 
+/** The SDK's reads through one reader `createPayDemRecordReader` built. */
+type PayDemRecordReading = Readonly<{
+  /**
+   * The payer's account nonce, the last one its transactions used. Throws
+   * when it cannot be read, so the caller refuses before any transfer.
+   */
+  accountNonce: (payer: string) => Promise<number>;
+  read: PayDemRecordRead;
+}>;
+
 export interface PayDemRecordReaderConfig {
   /** Demos node RPC URL the SDK reads status and transaction records from. */
   rpc: string;
@@ -2209,9 +2310,100 @@ export async function createPayDemRecordReader(
       ? execution
       : { state: execution.state, blockNumber: terminal.blockNumber };
   };
+  // demosdk signs a transfer with this nonce + 1, so a transfer signed after
+  // the read carries a greater nonce than the read returned.
+  const accountNonce = async (payer: string): Promise<number> => {
+    const account = normalizedDemosAccount(payer);
+    if (account === null) {
+      throw new DacsError(
+        "pay-dem record reader: the payer is not a native Demos address; refusing transfer",
+      );
+    }
+    const answer = await boundedPromise(
+      Promise.resolve().then(() =>
+        nodeCall("getAddressNonce", { address: `0x${account}` })),
+      statusRequestTimeoutMs,
+    );
+    if (answer.status === "timeout") {
+      throw new DacsError(
+        "pay-dem record reader: the payer's account nonce read timed out; refusing transfer",
+      );
+    }
+    if (answer.status === "rejected") {
+      throw new DacsError(
+        "pay-dem record reader could not read the payer's account nonce; refusing transfer",
+        { cause: answer.reason },
+      );
+    }
+    let value: unknown;
+    try {
+      value = snapshotCanonicalJsonRead(answer.value, "pay-dem account nonce");
+    } catch {
+      value = undefined;
+    }
+    const nonce = confirmedNonce(value);
+    if (nonce === null) {
+      throw new DacsError(
+        "pay-dem record reader: the payer's account nonce is malformed; refusing transfer",
+      );
+    }
+    return nonce;
+  };
   const reader = Object.freeze({ rpc });
-  sdkRecordReaders.set(reader, read);
+  sdkRecordReaders.set(reader, Object.freeze({ accountNonce, read }));
   return reader;
+}
+
+/**
+ * A {@link PayDemRail} around a custom {@link DemosNativeClient} that carries
+ * a reader {@link createPayDemRecordReader} built: its `settle` is
+ * {@link payDemSettleCore} over that client. Besides the rail
+ * `createPayDemRail` returns, this is the only rail {@link payDemSettle}
+ * calls, because these are the only rails whose success the SDK can make
+ * final. A client without such a reader is refused here, before any transfer.
+ */
+export function createPayDemClientRail(
+  client: DemosNativeClient,
+  config: Readonly<{ network?: string }> = {},
+): PayDemRail {
+  const address = requiredStableString(client, "address", "pay-dem client rail payer");
+  stableMethodTarget(client, "transfer", "pay-dem client rail transfer");
+  const readerProperty = stableDataProperty(
+    client,
+    "recordReader",
+    "pay-dem record reader",
+  );
+  if (!readerProperty.found || readerProperty.value === undefined ||
+      !sdkRecordReaders.has(readerProperty.value as object)) {
+    throw new DacsError(
+      "pay-dem client rail needs a reader createPayDemRecordReader built; refusing",
+    );
+  }
+  const network = optionalStableString(
+    config,
+    "network",
+    "pay-dem client rail network",
+  ) ?? "demos";
+  const settle: PayDemRail["settle"] = (params, effectFence) =>
+    payDemSettleCore(params, client, network, effectFence);
+  sdkClientRailSettles.add(settle);
+  return Object.freeze({ address, settle });
+}
+
+/**
+ * Whether `rail`'s `settle` is the one `createPayDemRail` or
+ * {@link createPayDemClientRail} returned: the only rails whose success the
+ * SDK can make final. A host checks this before calling `settle`, so it never
+ * debits through a rail whose result it would have to hold. Read-only.
+ */
+export function isPayDemRecordVerifyingRail(rail: unknown): boolean {
+  let settle: AnyMethod;
+  try {
+    settle = stableMethodTarget(rail, "settle", "pay-dem rail settle");
+  } catch {
+    return false;
+  }
+  return sdkRecordReadingSettles.has(settle) || sdkClientRailSettles.has(settle);
 }
 
 const PAY_DEM_RESULT_KEYS = new Set([
@@ -2825,9 +3017,16 @@ export function payDemSettle(
     rail,
   ) as PayDemRail["settle"];
   // Only createPayDemRail's own settle reads and binds the transaction record
-  // itself. Another rail's success or failure proof is its statement: the
-  // bridge holds it as indeterminate, so the store keeps the intent held.
+  // itself. A createPayDemClientRail settle's success is final only as the
+  // exact object the SDK's own read minted for this payment (below); its
+  // failure proof stays held. Any other rail could never settle, so it is
+  // refused here, before it can transfer anything.
   const recordVerifiedRail = sdkRecordReadingSettles.has(railSettleTarget);
+  if (!recordVerifiedRail && !sdkClientRailSettles.has(railSettleTarget)) {
+    throw new DacsError(
+      "pay-dem rail settle must be the one createPayDemRail or createPayDemClientRail returned: another rail's result could never be final; refusing",
+    );
+  }
   const reconcileProperty = stableDataProperty(
     opts,
     "reconcile",

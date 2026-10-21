@@ -6,16 +6,14 @@ import {
   createInMemorySettlementLog,
   settlementBindingHash,
   type SettlementAttemptRecord,
-  type SettlementEffectFence,
   type SettlementLog,
 } from "../../src/rails/index.js";
 import {
   payDemSettle,
-  type PayDemRail,
   type PayDemSettlementAuditContext,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
-import { demosNode, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
+import { demosNode, heldRail, resetDemosNode, sdkRail, sdkTransfers } from "../fixtures/demosNodeMock.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
 
@@ -41,7 +39,6 @@ const failed = (txHash: string) => ({
   failureProof: { kind: "demos-failed-record" as const, txHash, payer, payee,
     nonce: 7, blockNumber: 42, amountOs: "1000000000" },
 });
-const ambiguous = (txHash: string) => ({ ok: false, txHash, payer, payee, chainId: "demos" });
 
 /** One durable rail log shared by "processes" that each build their own store and bridge. */
 function processes(log: SettlementLog = createInMemorySettlementLog()) {
@@ -77,16 +74,25 @@ async function savedBeforeAttemptRecords(log: SettlementLog, jobId: string) {
   }));
 }
 
-/** A process whose bridge must only audit or reconcile, never submit. */
-function auditingProcess(
+/**
+ * A process whose bridge must only audit or reconcile, never submit: its rail
+ * is the SDK's own, so `submit` is the node's transfer. A test that paid
+ * earlier clears it first.
+ */
+async function auditingProcess(
   store: ReturnType<ReturnType<typeof processes>["store"]>,
   reconcile: PayDemSettlementReconcile,
 ) {
   const once = vi.spyOn(store, "once");
-  const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
-  const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+  const submit = demosNode.transfer;
+  const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
   return { settle, once, submit };
 }
+
+/** The node's transfer never returns: the process died before it signed anything. */
+const dieBeforeSigning = () => {
+  demosNode.transfer.mockImplementation(() => new Promise<never>(() => undefined));
+};
 
 // DACS-4 §9.5.1 PC-7: a final payment is never failed, resubmitted or classed
 // unpaid. The SDK records the hash this key's own submit produced, under the
@@ -98,70 +104,62 @@ describe("pay-dem records this key's signed hash so a restart can finish a final
     ["failed", failed(hashA), { ok: false, errorClass: "permanent", txHash: hashA }],
   ] as const)("completes a restart after an ambiguous result when the transfer %s", async (_label, reply, expected) => {
     const run = processes();
-    const rail: PayDemRail = { address: payer, settle: vi.fn(async () => ambiguous(hashA) as never) };
-    const first = await payDemSettle(rail, {}, { store: run.store("A") })(request("job-a"));
+    // The rail signs, records and broadcasts, but the node never reports inclusion.
+    const first = await payDemSettle(await heldRail(), {}, { store: run.store("A") })(request("job-a"));
     expect(first).toMatchObject({ ok: false, txHash: hashA });
     expect(first.errorClass).toBeUndefined();
+    expect(sdkTransfers()).toBe(1);
+    demosNode.transfer.mockClear();
 
     run.restart();
     const reconcile = vi.fn(async () => reply);
-    const b = auditingProcess(run.store("B"), reconcile);
+    const b = await auditingProcess(run.store("B"), reconcile);
     await expect(b.settle(request("job-a", hashA))).resolves.toMatchObject(expected);
     // Repeating the audit is read-only and gives the same answer.
     await expect(b.settle(request("job-a", hashA))).resolves.toMatchObject(expected);
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-a", txHash: hashA }));
     expect(b.once).not.toHaveBeenCalled();
     expect(b.submit).not.toHaveBeenCalled();
-    expect(rail.settle).toHaveBeenCalledTimes(1);
   });
 
   test("finishes a transfer whose process died after its pre-broadcast record and broadcast, with or without history", async () => {
     const run = processes();
-    // The rail records the signed hash through the fence, broadcasts, and the
-    // process dies before the rail returns.
-    const died = new Promise<never>(() => undefined);
-    const broadcast = vi.fn();
-    const rail: PayDemRail = {
-      address: payer,
-      settle: vi.fn(async (_params, fence?: Readonly<SettlementEffectFence>) => {
-        await fence!.recordAttempt!(hashA);
-        broadcast(hashA);
-        return died;
-      }),
-    };
-    void payDemSettle(rail, {}, { store: run.store("A") })(request("job-a"));
-    await vi.waitFor(() => expect(broadcast).toHaveBeenCalledWith(hashA));
+    // The rail records the signed hash through the fence and broadcasts; the
+    // node reports no inclusion, so the process learns no outcome.
+    await payDemSettle(await heldRail(), {}, { store: run.store("A") })(request("job-a"));
+    expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
     await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toMatchObject({ txHash: hashA });
+    demosNode.transfer.mockClear();
 
     run.restart();
-    const audit = auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
     await expect(audit.settle(request("job-a", hashA, false))).resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(audit.once).not.toHaveBeenCalled();
 
     // The session never saw the hash: the store's expired-lease reconciliation
     // asks for exactly the recorded transaction and persists it.
     const reconcile = vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) => executed(context.txHash));
-    const resumed = auditingProcess(run.store("C"), reconcile as PayDemSettlementReconcile);
+    const resumed = await auditingProcess(run.store("C"), reconcile as PayDemSettlementReconcile);
     await expect(resumed.settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-a", txHash: hashA }));
     expect(resumed.submit).not.toHaveBeenCalled();
-    expect(rail.settle).toHaveBeenCalledTimes(1);
-    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  // The other side of the record: a custom rail that dies before it has
-  // broadcast nothing and recorded nothing. Proven absence alone never lets a
-  // restart submit again; it stops for the operator.
-  test("never resubmits after a custom rail died before its record", async () => {
+  // The other side of the record: a rail that dies before it has signed,
+  // broadcast or recorded anything. Proven absence alone never lets a restart
+  // submit again; it stops for the operator.
+  test("never resubmits after the SDK rail died before its record", async () => {
     const run = processes();
-    const silent: PayDemRail = { address: payer, settle: vi.fn(() => new Promise<never>(() => undefined)) };
-    void payDemSettle(silent, {}, { store: run.store("A") })(request("job-a"));
-    await vi.waitFor(() => expect(silent.settle).toHaveBeenCalled());
+    dieBeforeSigning();
+    void payDemSettle(await sdkRail(), {}, { store: run.store("A") })(request("job-a"));
+    await vi.waitFor(() => expect(demosNode.transfer).toHaveBeenCalled());
     await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
+    demosNode.transfer.mockClear();
 
     run.restart();
     const reconcile = vi.fn(async () => null);
-    const resumed = auditingProcess(run.store("B"), reconcile);
+    const resumed = await auditingProcess(run.store("B"), reconcile);
     await expect(resumed.settle(request("job-a"))).rejects.toThrow(/absence alone cannot revoke a prior external effect/);
     expect(reconcile).toHaveBeenCalledWith(expect.not.objectContaining({ txHash: expect.anything() }));
     expect(resumed.submit).not.toHaveBeenCalled();
@@ -190,30 +188,31 @@ describe("pay-dem records this key's signed hash so a restart can finish a final
     await vi.waitFor(() => expect(died).toBe(true));
     await expect(log.readAttempt!("pay-dem:job-a:0")).resolves.toMatchObject({ txHash: hashA });
     expect(demosNode.broadcast).not.toHaveBeenCalled();
+    demosNode.transfer.mockClear();
 
     run.restart();
     died = false;
     // Nothing reached the chain, so an honest reconciler finds nothing for the recorded hash.
     const reconcile = vi.fn(async () => null);
-    const resumed = auditingProcess(run.store("B"), reconcile);
+    const resumed = await auditingProcess(run.store("B"), reconcile);
     await expect(resumed.settle(request("job-a"))).rejects.toThrow(/absence alone cannot revoke a prior external effect/);
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-a", txHash: hashA }));
-    const audit = auditingProcess(run.store("C"), reconcile);
+    const audit = await auditingProcess(run.store("C"), reconcile);
     await expect(audit.settle(request("job-a", hashA))).rejects.toThrow(/contradicts reconciliation proof of absence/);
     expect(resumed.submit).not.toHaveBeenCalled();
     expect(audit.submit).not.toHaveBeenCalled();
-    expect(sdkTransfers()).toBe(1);
+    expect(sdkTransfers()).toBe(0);
     expect(demosNode.broadcast).not.toHaveBeenCalled();
     await expect(log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
   });
 
   test("a restart reconciliation cannot answer another transfer than the one this key recorded", async () => {
     const run = processes();
-    const rail: PayDemRail = { address: payer, settle: vi.fn(async () => ambiguous(hashA) as never) };
-    await payDemSettle(rail, {}, { store: run.store("A") })(request("job-a"));
+    await payDemSettle(await heldRail(), {}, { store: run.store("A") })(request("job-a"));
+    demosNode.transfer.mockClear();
     run.restart();
     // A by-key reconciler finds another job's same-amount transfer.
-    const b = auditingProcess(run.store("B"), vi.fn(async () => executed(hashB)));
+    const b = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashB)));
     await expect(b.settle(request("job-a"))).rejects.toThrow(/does not match the retained transaction/);
     await expect(run.log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
     expect(b.submit).not.toHaveBeenCalled();
@@ -221,15 +220,14 @@ describe("pay-dem records this key's signed hash so a restart can finish a final
 
   test("counts a record another process writes while the audit reads the chain", async () => {
     const run = processes();
-    const writer: PayDemRail = { address: payer, settle: vi.fn(async () => ambiguous(hashA) as never) };
     const reconcile = vi.fn(async () => {
-      await payDemSettle(writer, {}, { store: run.store("A") })(request("job-a"));
+      await payDemSettle(await heldRail(), {}, { store: run.store("A") })(request("job-a"));
       return executed(hashA);
     });
-    const audit = auditingProcess(run.store("B"), reconcile);
+    const audit = await auditingProcess(run.store("B"), reconcile);
     await expect(audit.settle(request("job-a", hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
-    expect(writer.settle).toHaveBeenCalledTimes(1);
-    expect(audit.submit).not.toHaveBeenCalled();
+    // Only the writer's own transfer reached the node, not the audit.
+    expect(sdkTransfers()).toBe(1);
   });
 });
 
@@ -238,17 +236,18 @@ describe("pay-dem records this key's signed hash so a restart can finish a final
 // cannot leave a hash counted for this key in memory.
 describe("pay-dem never binds a fresh result the attempt record refused", () => {
   test("an audit through the same bridge refuses the hash the record refused, and later calls keep the recorded one", async () => {
-    const run = processes();
-    // The rail records B through the fence, then reports A.
-    const rail: PayDemRail = {
-      address: payer,
-      settle: vi.fn(async (_params, fence?: Readonly<SettlementEffectFence>) => {
-        await fence!.recordAttempt!(hashB);
-        return ambiguous(hashA) as never;
-      }),
+    const memory = createInMemorySettlementLog();
+    // The log already holds B for this key when the rail records the hash it signed, A.
+    const log: SettlementLog = {
+      ...memory,
+      putAttempt: async (input) => {
+        await memory.putAttempt!({ ...input, txHash: hashB });
+        return memory.putAttempt!(input);
+      },
     };
+    const run = processes(log);
     const reconcile = vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) => executed(context.txHash));
-    const settle = payDemSettle(rail, {}, { store: run.store("A"), reconcile: reconcile as PayDemSettlementReconcile });
+    const settle = payDemSettle(await sdkRail(), {}, { store: run.store("A"), reconcile: reconcile as PayDemSettlementReconcile });
     await expect(settle(request("job-a"))).rejects.toThrow(/already records another transaction/);
     await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toMatchObject({ txHash: hashB });
 
@@ -259,16 +258,19 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
     await expect(settle(request("job-a", hashA))).rejects.toThrow(/different payment terms or transaction/);
     expect(reconcile).not.toHaveBeenCalledWith(expect.objectContaining({ txHash: hashA }));
     await expect(run.log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
-    expect(rail.settle).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
   });
 
   test("after a restart, a history for another hash than the record is refused and its success claim is not kept", async () => {
     const run = processes();
-    const rail: PayDemRail = { address: payer, settle: vi.fn(async () => ambiguous(hashB) as never) };
-    await payDemSettle(rail, {}, { store: run.store("A") })(request("job-a"));
+    // The node signs hash B for this key's transfer and never reports inclusion.
+    resetDemosNode({ payer, txHash: hashB });
+    await payDemSettle(await heldRail(), {}, { store: run.store("A") })(request("job-a"));
+    demosNode.transfer.mockClear();
     run.restart();
     const reconcile = vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) => failed(context.txHash));
-    const audit = auditingProcess(run.store("B"), reconcile as PayDemSettlementReconcile);
+    const audit = await auditingProcess(run.store("B"), reconcile as PayDemSettlementReconcile);
     await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
       /conflicts with this key's recorded attempt/,
     );
@@ -279,37 +281,36 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
     expect(audit.submit).not.toHaveBeenCalled();
   });
 
-  // A result without a hash names no transaction: nothing is recorded for it,
-  // so a later history hash is not this bridge's own, whatever it names.
-  test("a result without a hash never binds a later history hash through the same bridge", async () => {
+  // A transfer that failed before it signed names no transaction: nothing is
+  // recorded for it, so a later history hash is not this bridge's own, whatever
+  // it names.
+  test("a transfer that signed nothing never binds a later history hash through the same bridge", async () => {
     const run = processes();
-    const rail: PayDemRail = { address: payer, settle: vi.fn(async () => ambiguous("") as never) };
+    demosNode.transfer.mockRejectedValue(new Error("lost response"));
     const reconcile = vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) => executed(context.txHash));
-    const settle = payDemSettle(rail, {}, { store: run.store("A"), reconcile: reconcile as PayDemSettlementReconcile });
-    await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: false, txHash: "" });
+    const settle = payDemSettle(await sdkRail(), {}, { store: run.store("A"), reconcile: reconcile as PayDemSettlementReconcile });
+    await expect(settle(request("job-a"))).rejects.toThrow("lost response");
     await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
     await expect(settle(request("job-a", hashB, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
     expect(reconcile).toHaveBeenCalledTimes(1);
     await expect(run.log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
-    expect(rail.settle).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
   });
 
   test("a stale record write leaves the returned hash unbound for an audit through the same bridge", async () => {
     let now = 1_000;
     const log = createInMemorySettlementLog();
     const store = createIdempotencyStore(log, { owner: "A", leaseDurationMs: 1_000, now: () => now });
-    // The rail returns after its generation expired, so the bridge's record is refused.
-    const rail: PayDemRail = {
-      address: payer,
-      settle: vi.fn(async () => {
-        now += 60_000;
-        return ambiguous(hashA) as never;
-      }),
-    };
+    // The node signs after the rail's generation expired, so the record is refused.
+    const sign = demosNode.transfer.getMockImplementation()!;
+    demosNode.transfer.mockImplementation(async (...args: unknown[]) => {
+      now += 60_000;
+      return sign(...args);
+    });
     const reconcile = vi.fn(async () => executed(hashA));
-    const settle = payDemSettle(rail, {}, { store, reconcile });
+    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
     await expect(settle(request("job-a"))).rejects.toThrow(/attempt was produced by a stale generation/);
     await expect(log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
 
@@ -317,7 +318,8 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
       /no SDK record binds the retained transaction to this payment/,
     );
     await expect(log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
-    expect(rail.settle).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
   });
 });
 
@@ -328,18 +330,19 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
   test("an audit of job B refuses job A's hash that B's restart reconciliation saved", async () => {
     const run = processes();
     // Job B's first process claimed the intent and died before signing anything.
-    const silent: PayDemRail = { address: payer, settle: vi.fn(() => new Promise<never>(() => undefined)) };
-    void payDemSettle(silent, {}, { store: run.store("A") })(request("job-b"));
-    await vi.waitFor(() => expect(silent.settle).toHaveBeenCalled());
+    dieBeforeSigning();
+    void payDemSettle(await sdkRail(), {}, { store: run.store("A") })(request("job-b"));
+    await vi.waitFor(() => expect(demosNode.transfer).toHaveBeenCalled());
+    demosNode.transfer.mockClear();
 
     run.restart();
     // A careless reconciler finds job A's transfer of the same parties and amount.
-    const restart = auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
+    const restart = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
     await expect(restart.settle(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(run.log.readOutcome!("pay-dem:job-b:0")).resolves.toMatchObject({ result: { txHash: hashA } });
 
     run.restart();
-    const audit = auditingProcess(run.store("C"), vi.fn(async () => executed(hashA)));
+    const audit = await auditingProcess(run.store("C"), vi.fn(async () => executed(hashA)));
     await expect(audit.settle(request("job-b", hashA, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
@@ -359,7 +362,7 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
     const run = processes();
     await savedBeforeAttemptRecords(run.log, "job-a");
     run.restart();
-    const audit = auditingProcess(view(run.store("B")), vi.fn(async () => executed(hashA)));
+    const audit = await auditingProcess(view(run.store("B")), vi.fn(async () => executed(hashA)));
     await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
@@ -378,7 +381,7 @@ describe("pay-dem over a log without attempt records", () => {
 
     run.restart();
     const reconcile = vi.fn(async () => executed(hashA));
-    const audit = auditingProcess(run.store("B"), reconcile);
+    const audit = await auditingProcess(run.store("B"), reconcile);
     await expect(audit.settle(request("job-a", hashA, true)))
       .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
     // Repeating the audit, or omitting the history, is read-only and gives the same answer.
@@ -400,7 +403,7 @@ describe("pay-dem over a log without attempt records", () => {
     const run = processes(legacyLog());
     await savedBeforeAttemptRecords(run.log, "job-a");
     run.restart();
-    const audit = auditingProcess(run.store("B"), vi.fn(async () => reply));
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => reply));
     await expect(audit.settle(req)).rejects.toThrow(error);
     await expect(run.log.readOutcome!("pay-dem:job-a:0")).resolves.toMatchObject({ result: { ok: true, txHash: hashA } });
     expect(audit.submit).not.toHaveBeenCalled();
@@ -409,7 +412,7 @@ describe("pay-dem over a log without attempt records", () => {
   test("a key the log saved no outcome for still fails closed", async () => {
     const run = processes(legacyLog());
     run.restart();
-    const audit = auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
     await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
@@ -417,16 +420,12 @@ describe("pay-dem over a log without attempt records", () => {
     expect(audit.submit).not.toHaveBeenCalled();
   });
 
-  test.each([
-    ["the SDK rail", async () => sdkRail()],
-    ["a custom rail", async () => ({ address: payer, settle: vi.fn(async () => ambiguous(hashA) as never) })],
-  ] as const)("a new payment through %s is refused before the rail runs, and the key is not held", async (_label, makeRail) => {
+  test("a new payment is refused before the rail runs, and the key is not held", async () => {
     const memory = createInMemorySettlementLog();
     const run = processes(legacyLog(memory));
-    const rail = await makeRail();
+    const rail = await sdkRail();
     await expect(payDemSettle(rail, { network: "demos" }, { store: run.store("A") })(request("job-a")))
       .rejects.toThrow(/keeps no attempt records; refusing to start a new transfer/);
-    if (vi.isMockFunction(rail.settle)) expect(rail.settle).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
     expect(demosNode.broadcast).not.toHaveBeenCalled();
     await expect(memory.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
@@ -452,7 +451,7 @@ describe("pay-dem checks a cached outcome against reconciliation when the log ke
 
     run.restart();
     const reconcile = vi.fn(async () => reply);
-    const b = auditingProcess(run.store("B"), reconcile);
+    const b = await auditingProcess(run.store("B"), reconcile);
     await expect(b.settle(request("job-a"))).rejects.toThrow(/does not match the authoritative reconciled transaction/);
     expect(reconcile).toHaveBeenCalledWith(expect.not.objectContaining({ txHash: expect.anything() }));
     await expect(run.log.readOutcome!("pay-dem:job-a:0"))
@@ -469,46 +468,31 @@ describe("pay-dem records a rail's hash in canonical form", () => {
   test.each([
     ["0x-prefixed", `0x${hashA}`, hashA],
     ["upper-case", "5E".repeat(32), "5e".repeat(32)],
-  ])("a custom rail that records the %s hash it returns settles once and binds it", async (_label, exact, canonical) => {
+  ])("a transfer the node signs with the %s hash settles once and binds it", async (_label, exact, canonical) => {
     const run = processes();
-    const broadcast = vi.fn();
-    const rail: PayDemRail = {
-      address: payer,
-      settle: vi.fn(async (_params, fence?: Readonly<SettlementEffectFence>) => {
-        await fence!.recordAttempt!(exact);
-        broadcast(exact);
-        return ambiguous(exact) as never;
-      }),
-    };
-    await expect(payDemSettle(rail, {}, { store: run.store("A") })(request("job-a")))
+    resetDemosNode({ payer, txHash: exact });
+    await expect(payDemSettle(await heldRail(), {}, { store: run.store("A") })(request("job-a")))
       .resolves.toMatchObject({ ok: false, txHash: canonical });
     await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toMatchObject({ txHash: canonical });
+    expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+    demosNode.transfer.mockClear();
 
     run.restart();
-    const audit = auditingProcess(run.store("B"), vi.fn(async () => executed(canonical)));
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(canonical)));
     await expect(audit.settle(request("job-a", exact))).resolves.toMatchObject({ ok: true, txHash: canonical });
     expect(audit.submit).not.toHaveBeenCalled();
-    expect(broadcast).toHaveBeenCalledTimes(1);
   });
 
   test.each([
     ["a value that is not hex", "not-a-transaction-hash"],
     ["a short hash", "56".repeat(31)],
     ["a padded hash", ` ${hashA}`],
-  ])("a rail that records %s is refused before it broadcasts", async (_label, value) => {
+  ])("a transfer the node signs with %s is refused before it broadcasts", async (_label, value) => {
     const run = processes();
-    const broadcast = vi.fn();
-    const rail: PayDemRail = {
-      address: payer,
-      settle: vi.fn(async (_params, fence?: Readonly<SettlementEffectFence>) => {
-        await fence!.recordAttempt!(value);
-        broadcast(value);
-        return ambiguous(hashA) as never;
-      }),
-    };
-    await expect(payDemSettle(rail, {}, { store: run.store("A") })(request("job-a")))
-      .rejects.toThrow(/attempt record needs a 32-byte Demos transaction hash; refusing broadcast/);
-    expect(broadcast).not.toHaveBeenCalled();
+    resetDemosNode({ payer, txHash: value });
+    await expect(payDemSettle(await sdkRail(), {}, { store: run.store("A") })(request("job-a")))
+      .rejects.toThrow();
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
     await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
   });
 });
@@ -607,7 +591,7 @@ describe("settlement attempt records are generation-fenced and immutable", () =>
 
   test("an audit refuses a recorded attempt that is not a Demos transaction hash", async () => {
     const log = await recordedLog((record) => ({ ...record, txHash: "not-a-transaction-hash" }));
-    const audit = auditingProcess(createIdempotencyStore(log), vi.fn(async () => executed(hashA)));
+    const audit = await auditingProcess(createIdempotencyStore(log), vi.fn(async () => executed(hashA)));
     await expect(audit.settle(request("job-a", hashA))).rejects.toThrow(/records a malformed attempt hash/);
     expect(audit.submit).not.toHaveBeenCalled();
   });

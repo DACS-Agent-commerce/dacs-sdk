@@ -309,6 +309,7 @@ export {
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
   demosWriteEvidenceBindsReceiptContent,
+  demosTransactionContentMatches,
   demosWriteEvidenceToAnchorReceipt,
   type DemosAnchorReceiptProof,
   type DemosPortableAnchorReceiptInput,
@@ -1454,8 +1455,10 @@ export {
   type D402ClientLike,
   type D402PaymentRequirement,
   type D402SettlementResult,
+  createPayDemClientRail,
   createPayDemRail,
   createPayDemRecordReader,
+  isPayDemRecordVerifyingRail,
   PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,
@@ -1895,3 +1898,5 @@ export {
   type VerifyComponentSignatureInput,
   type VerifyComponentSignatureDeps,
 } from "./artifacts/index.js";
+
+export { jid1AttestationAddress, jid1PaymentEvidenceAddress, jid1RatingAddress, jid1BundleAddress } from "./canonical/jid1Addressing.js";

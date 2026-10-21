@@ -44,6 +44,7 @@ interface ForgeryReport {
   railSuccess: unknown;
   readerUnavailable: string | null;
   readerSuccess: { core: unknown; verified: unknown; bridge: unknown } | null;
+  readerReplay: unknown;
   readerFailure: unknown;
   forgedReader: unknown;
   nodeReads: string[];
@@ -92,27 +93,34 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
     expect(report.importErrors.map(({ file }) => file)
       .filter((file) => /^dist\/(?:index|agent\/|rails\/)/.test(file))).toEqual([]);
     expect(report.vouchExports).toEqual([]);
-    // Exactly the two read-only checks, whatever the export syntax.
+    // Exactly the three read-only checks and the reader factory, whatever the
+    // export syntax.
     expect(report.brandExports.filter((entry) => entry.startsWith("dist/rails/payDem.js#")).sort())
       .toEqual([
         "dist/rails/payDem.js#createPayDemRecordReader",
+        "dist/rails/payDem.js#isPayDemRecordVerifyingRail",
         "dist/rails/payDem.js#isRecordVerifiedSource",
         "dist/rails/payDem.js#payDemRecordVerifiedTransfer",
       ]);
   });
 
-  it("holds a custom rail's bound failure proof instead of keeping it as definitive", () => {
-    expect(report.failure.first).toEqual(HELD);
-    expect(report.failure.second).toEqual({
-      threw: expect.stringMatching(/refusing to resubmit/),
-    });
-    expect(report.failure.railCalls).toBe(1);
+  it("refuses a custom rail before it runs, so its failure proof is never kept", () => {
+    const refused = { threw: expect.stringMatching(/createPayDemClientRail.*refusing/) };
+    expect(report.failure.first).toEqual(refused);
+    expect(report.failure.second).toEqual(refused);
+    expect(report.failure.railCalls).toBe(0);
   });
 
-  it("mints no final payment from a custom client's or rail's executed statement", () => {
-    expect(report.coreSuccess).toEqual(HELD);
-    expect(report.bridgeSuccess).toEqual(HELD);
-    expect(report.railSuccess).toEqual(HELD);
+  it("refuses a custom client or rail before it runs, so it mints no final payment", () => {
+    expect(report.coreSuccess).toEqual({
+      threw: expect.stringMatching(/no createPayDemRecordReader reader.*refusing transfer/),
+    });
+    expect(report.bridgeSuccess).toEqual({
+      threw: expect.stringMatching(/createPayDemClientRail.*refusing/),
+    });
+    expect(report.railSuccess).toEqual({
+      threw: expect.stringMatching(/createPayDemClientRail.*refusing/),
+    });
   });
 
   it("reports no forged, copied or custom-client success as SDK record-verified", () => {
@@ -141,9 +149,15 @@ describe("the packed package cannot forge a native-DEM verdict (#338)", () => {
         amountOs: "5000000000",
         network: "demos",
       },
-      bridge: settled,
+      bridge: { ...settled, txHash: "56".repeat(32) },
     });
-    expect(report.nodeReads).toEqual(["getNetworkInfo", "getTransactionStatus", "getTxByHash"]);
+    expect(report.nodeReads).toEqual([
+      "getAddressNonce", "getNetworkInfo", "getTransactionStatus", "getTxByHash",
+    ]);
+  });
+
+  it.skipIf(demosdkVersion === "4.0.16")("holds a confirmed transfer handed back again for another payment", () => {
+    expect(report.readerReplay).toEqual(HELD);
   });
 
   it.skipIf(demosdkVersion === "4.0.16")("denies success for an included transfer whose record failed, and refuses a copied reader", () => {

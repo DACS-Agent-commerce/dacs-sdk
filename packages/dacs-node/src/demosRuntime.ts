@@ -5,6 +5,7 @@ import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   baseUnits,
   createPayDemRail as createSdkPayDemRail,
+  isPayDemRecordVerifyingRail,
   type PayDemRail,
   type PayDemSettleParams,
   type ProtocolAnchorReceipt,
@@ -34,7 +35,10 @@ import {
   type DacsLiveAgentConfig,
 } from "./config.js";
 import type { DacsLoadedSecretV1 } from "./secrets.js";
-import { markDacsSdkPreparedPayDemRailV1 } from "./payDemRailCapabilities.js";
+import {
+  markDacsRecordVerifyingPayDemRailV1,
+  markDacsSdkPreparedPayDemRailV1,
+} from "./payDemRailCapabilities.js";
 import type {
   DacsHttpEnvelopeSigner,
   DacsHttpIdentityResolverV1,
@@ -254,6 +258,8 @@ function walletCoordinatedPayDemRail(input: Readonly<{
     throw new DacsDemosRuntimeError("demos-pay-dem-wallet-authority-invalid");
   }
   const journalWallet = input.wallet.toLowerCase();
+  // The runtime marks this wrapper by the inner settle; only that one runs.
+  const innerSettle = input.rail.settle;
   return Object.freeze({
     address: input.rail.address,
     async settle(
@@ -273,7 +279,7 @@ function walletCoordinatedPayDemRail(input: Readonly<{
       let record: DemosWriteJournalRecord | undefined;
       try {
         await input.adapter.reconcileWalletJournal(lease);
-        const result = await input.rail.settle({
+        const result = await innerSettle.call(input.rail, {
           ...settlement,
           journalPreparedTransfer: async (prepared) => {
             if (prepared.denomination !== "os" && prepared.denomination !== "dem") {
@@ -446,6 +452,11 @@ export async function createDacsDemosActorRuntimeV1(
         });
         if (rawOptions.createPayDemRail === undefined) {
           payDemRail = markDacsSdkPreparedPayDemRailV1(payDemRail);
+        }
+        // The wrapper relays its inner rail's result object unchanged, so its
+        // success can be final exactly when the inner rail's can (#338).
+        if (isPayDemRecordVerifyingRail(uncoordinated)) {
+          payDemRail = markDacsRecordVerifyingPayDemRailV1(payDemRail);
         }
       }
     } catch {
