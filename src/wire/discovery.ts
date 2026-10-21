@@ -134,7 +134,7 @@ export interface VerifiedListingEligibility extends VerifiedListingEndpoint {
   /**
    * The commit phase kind of the Listing's pipeline. It selects the Agreement
    * type a continuation must carry (DACS-3 §8.5.2 check 9, CA-7); TP-1
-   * commits only `commit-agreement` (an AgreementDocument).
+   * commits only `commit-payee-bound-agreement` (a PayeeBoundAgreementDocument).
    */
   commitPhase: typeof TP1_COMMIT_PHASE;
   rail: "pay-dem";

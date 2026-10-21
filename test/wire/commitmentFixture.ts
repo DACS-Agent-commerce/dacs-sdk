@@ -25,7 +25,7 @@ export const validReceipt: CommitmentReceiptReader = () => "valid";
 export const received = (value: unknown): unknown => (value === undefined || value === null ? value : Buffer.from(JSON.stringify(value), "utf8"));
 
 /** The Listing commit phase TP-1 continues: the one tp1Listing's pipeline selects. */
-export const COMMIT_PHASE = "commit-agreement";
+export const COMMIT_PHASE = "commit-payee-bound-agreement";
 
 /**
  * An Ed25519 key pair: random, or fixed by `seed` (the byte repeated as its
@@ -74,7 +74,7 @@ export const WIDE_VALIDITY = Object.freeze({ notBefore: Date.UTC(2026, 0, 1), no
 
 /**
  * The TP-1 fixed-price Listing `seller` signs (DACS-1 §6.3.4): negotiate
- * fixed price, commit an Agreement, pay in DEM, deliver a storage-program
+ * fixed price, commit a payee-bound Agreement, pay in DEM, deliver a storage-program
  * deliverable through Demos storage. Its pin is what every
  * request, Agreement and commitment for it names, and continuations are given
  * it as `signedListing`. `patch` changes members before it is signed.
@@ -89,7 +89,7 @@ export function tp1Listing(options: {
     offering: { title: "Report", description: "A fixed-text report", category: "data.test", tags: ["report"],
       deliverable: { ...TP1_DELIVERABLE } },
     buyerRequirement: { requirementVersion: "1", required: [] },
-    pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
+    pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-payee-bound-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
     pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
     acceptedRails: [DEM], terms: { deadlineSecAfterCommit: 600 }, validity: { ...validity },
     ...options.patch,
@@ -126,7 +126,7 @@ export async function acceptedPurchase(options: { jobId: string; generatedAt: nu
     offering: { title: "Report", description: "A fixed-text report", category: "data.test", tags: ["report"],
       deliverable: { ...TP1_DELIVERABLE } },
     buyerRequirement: { requirementVersion: "1", required: [] },
-    pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
+    pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-payee-bound-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
     pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
     acceptedRails: [DEM],
     terms: { deadlineSecAfterCommit: 600 },
@@ -138,7 +138,11 @@ export async function acceptedPurchase(options: { jobId: string; generatedAt: nu
     jobId: options.jobId, verifiedListing: { disposition: "verified", listing, pin },
     buyer: { identityBundle: identity(buyer.claim, at), vetRecordRef: vet("buyer-vet", "a") },
     seller: { identityBundle: identity(seller.claim, at), vetRecordRef: vet("seller-vet", "b") },
-    selectedRail: DEM, generatedAt: options.generatedAt,
+    selectedRail: DEM,
+    ...(listing.pipeline.some((phase) => phase.kind === "commit-payee-bound-agreement")
+      ? { payoutBindings: listing.pipeline.flatMap((phase, phaseIndex) => phase.kind.startsWith("pay-")
+          ? [{ railId: DEM.railId, phaseIndex, payeeAddress: listing.seller.identity.presentedBy.slice("did:demos:agent:".length) }] : []) } : {}),
+    generatedAt: options.generatedAt,
   });
   const agreement = await signFixedPriceAgreement(draft,
     { party: buyer.claim, algorithm: "ed25519", sign: buyer.signBytes },
@@ -175,7 +179,7 @@ export async function commitPurchase(p: AcceptedPurchase, committedAt: number): 
   };
   return commitFixedPriceAgreement({
     agreement: p.agreement, verifiedListing: { disposition: "verified", listing: p.listing, pin: p.pin },
-    session: { jobId: p.agreement.jobId, listingRef: { ...p.pin }, phaseKind: "commit-agreement", orchestrator: p.orchestrator.claim, buyer: party("buyer"), seller: party("seller") },
+    session: { jobId: p.agreement.jobId, listingRef: { ...p.pin }, phaseKind: "commit-payee-bound-agreement", orchestrator: p.orchestrator.claim, buyer: party("buyer"), seller: party("seller") },
     createdAt: p.agreement.generatedAt,
     commitmentSigner: { algorithm: "ed25519", signer: p.orchestrator.claim, sign: p.orchestrator.signBytes },
   }, provider, verifySignature);
@@ -193,7 +197,7 @@ const signNow = (party: SyncSigner, bytes: Uint8Array): string => {
  * by `signers` (default: the buyer and the seller). It is derived from the
  * seller's tp1Listing as the SDK derives one, then names `listingPin` (that
  * Listing's pin, or another a test names) and is signed under
- * `dacs-agreement:v1:` over its content hash.
+ * the artifact type's domain over its content hash.
  * `patch` changes the draft before it is signed.
  */
 export function signedAgreement(options: {
@@ -210,11 +214,16 @@ export function signedAgreement(options: {
     jobId: options.jobId, verifiedListing: { disposition: "verified", listing, pin },
     buyer: { identityBundle: identity(options.buyer.claim, at), vetRecordRef: vet("buyer-vet", "a") },
     seller: { identityBundle: identity(options.seller.claim, at), vetRecordRef: vet("seller-vet", "b") },
-    selectedRail: DEM, generatedAt: at,
+    selectedRail: DEM,
+    ...(listing.pipeline.some((phase) => phase.kind === "commit-payee-bound-agreement")
+      ? { payoutBindings: listing.pipeline.flatMap((phase, phaseIndex) => phase.kind.startsWith("pay-")
+          ? [{ railId: DEM.railId, phaseIndex, payeeAddress: listing.seller.identity.presentedBy.slice("did:demos:agent:".length) }] : []) } : {}),
+    generatedAt: at,
   });
   const unsigned = { ...draft, listingRef: { ...options.listingPin }, ...options.patch } as Record<string, unknown>;
   const agreementHash = contentHash(unsigned);
-  const bytes = Buffer.from(`dacs-agreement:v1:${agreementHash}`, "utf8");
+  const domain = "agreementVersion" in unsigned ? "dacs-agreement:v1:" : "dacs-payee-bound-agreement:v1:";
+  const bytes = Buffer.from(`${domain}${agreementHash}`, "utf8");
   const signers = options.signers ?? { buyer: options.buyer, seller: options.seller };
   const agreement = { ...unsigned, signatures: [
     { party: options.buyer.claim, algorithm: "ed25519", value: signNow(signers.buyer, bytes) },

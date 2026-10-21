@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
 import { FINALITY_COMMITMENT_SEPARATOR } from "../../src/negotiate/commitment.js";
+import { verifySellerPaymentIntake, type SellerPaymentIntakeDeps } from "../../src/seller/paymentIntake.js";
 import { FINALITY_COMMITMENT_DOMAIN } from "../../src/wire/commitment.js";
 import { CONTINUING_PATHS } from "../../src/wire/discovery.js";
 import * as fixtureWire from "../../src/wire/index.js";
@@ -208,47 +209,64 @@ describe("the seller checks the job's finalized commitment on every payment and 
     }
   });
 
-  it("selects the Agreement type from the pinned Listing's own commit phase before any signature: only commit-agreement with an AgreementDocument continues", () => {
+  it("selects only the payee-bound Agreement from the pinned Listing's commit phase before any signature", () => {
     const x = world();
-    // A payee-bound document both parties signed, committed by the seller: only its type is wrong for a commit-agreement Listing.
-    const payeeBoundFor = (w: ReturnType<typeof world>) => {
-      const { signatures: _signatures, agreementVersion: _version, ...rest } = w.agreement as unknown as Record<string, unknown>;
-      void _signatures; void _version;
-      const unsigned = { ...rest, payeeBoundAgreementVersion: "1" };
-      const hash = contentHash(unsigned);
-      const signedBytes = Buffer.from(`dacs-agreement:v1:${hash}`, "utf8");
-      return { hash, document: { ...unsigned, signatures: [w.buyer, w.seller].map((p) => ({ party: p.claim, algorithm: "ed25519", value: p.sign(signedBytes).toString("base64url") })) } };
-    };
+    const plainListing = tp1Listing({ seller: SELLER, listingId: "plain", patch: { pipeline: [
+      { kind: "negotiate-fixed-price" }, { kind: "commit-agreement" },
+      { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" },
+    ] } });
+    const plain = world(plainListing);
+    const { payeeBoundAgreementVersion: _version, signatures: _signatures, terms, ...rest } = x.agreement as unknown as Record<string, unknown>;
+    const { payoutBindings: _payout, ...plainTerms } = terms as Record<string, unknown>;
+    const unsigned = { ...rest, agreementVersion: "1", terms: plainTerms };
+    const hash = contentHash(unsigned);
+    const document = { ...unsigned, signatures: [x.buyer, x.seller].map((p) => ({ party: p.claim, algorithm: "ed25519",
+      value: p.sign(Buffer.from(`dacs-agreement:v1:${hash}`)).toString("base64url") })) };
     let reads = 0;
     const reader = () => { reads++; return "valid"; };
-    const at = (w: ReturnType<typeof world>, path: string, document: "agreement" | "payee-bound", extra: Record<string, unknown> = {}) => {
-      const payee = payeeBoundFor(w);
-      const hash = document === "agreement" ? w.agreementHash : payee.hash;
-      return () => wire.checkWireRequest(w.direct({ ...w.request(path), agreementHash: hash }), {
-        ...w.check(path), requestJournal: testJournal(), readCommitmentReceipt: reader,
-        retained: { ...w.retained, agreementHash: hash }, agreement: received(document === "agreement" ? w.agreement : payee.document),
-        commitment: received(w.commitment({ agreementHash: hash })), ...extra,
-      } as wire.RequestCheck);
-    };
-    const phaseRefused = expect.objectContaining({ code: "continuation_phase_unsupported", status: 500 });
-    // The seller's own Listings whose commit phase is another kind: each is the Listing its request, Agreement and record pin.
-    const pipeline = (commit: Record<string, unknown>) => [{ kind: "negotiate-fixed-price" }, commit, { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" }];
-    const payeeBound = world(tp1Listing({ seller: SELLER, listingId: "payee-bound", patch: { pipeline: pipeline({ kind: "commit-payee-bound-agreement" }) } }),
-      { deriveFrom: tp1Listing({ seller: SELLER, listingId: "payee-bound" }) });
     for (const path of CONTINUING) {
-      // The diagonal TP-1 commits.
-      expect(at(x, path, "agreement")().effect).toMatchObject({ state: "new" });
-      // Off-diagonal: a commit-agreement Listing with a payee-bound document.
-      expect(at(x, path, "payee-bound"), path).toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid", status: 500 }));
-      // A payee-bound Listing, with either document: refused before anything is read.
-      for (const document of ["agreement", "payee-bound"] as const) expect(at(payeeBound, path, document), `${path} ${document}`).toThrowError(phaseRefused);
-      // Before any signature: a forged record signature under a payee-bound Listing is still a phase refusal.
-      expect(at(payeeBound, path, "agreement", { commitment: received(resigned(payeeBound, { value: "A".repeat(86) })) }), path).toThrowError(phaseRefused);
-      // A host's phase label decides nothing: the label an earlier version took is ignored either way.
-      expect(at(x, path, "agreement", { commitPhase: "commit-payee-bound-agreement" })().effect).toMatchObject({ state: "new" });
-      expect(at(payeeBound, path, "agreement", { commitPhase: "commit-agreement" }), path).toThrowError(phaseRefused);
+      for (const mode of ["direct", "delegated"] as const) {
+        const extra = mode === "delegated" ? { requireDelegation: true, artifacts: [x.artifact] } : {};
+        expect(wire.checkWireRequest(x[mode](x.request(path)), { ...x.check(path), ...extra,
+          requestJournal: testJournal(), readCommitmentReceipt: reader }).effect).toMatchObject({ state: "new" });
+        // A plain artifact is refused even when signed under its own domain and anchored by the seller.
+        expect(() => wire.checkWireRequest(x[mode]({ ...x.request(path), agreementHash: hash }), { ...x.check(path), ...extra,
+          requestJournal: testJournal(), retained: { ...x.retained, agreementHash: hash }, agreement: received(document),
+          commitment: received(x.commitment({ agreementHash: hash })), readCommitmentReceipt: reader }))
+          .toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid" }));
+      }
+      // The pinned Listing selects the artifact before any signature, regardless of a host's phase label.
+      expect(() => wire.checkWireRequest(plain.direct(plain.request(path)), { ...plain.check(path),
+        requestJournal: testJournal(), commitment: received(resigned(plain, { value: "A".repeat(86) })),
+        commitPhase: "commit-payee-bound-agreement" } as wire.RequestCheck))
+        .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported" }));
     }
     expect(reads).toBe(6);
+  });
+
+  it("a wire-accepted TP-1 purchase passes seller payment intake's Agreement-type check", async () => {
+    const x = world();
+    const committed = x.commitment();
+    expect(wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: testJournal() }).effect)
+      .toMatchObject({ state: "new" });
+    let listingReads = 0;
+    const unexpected = async (): Promise<never> => { throw new Error("unexpected downstream intake call"); };
+    const deps: SellerPaymentIntakeDeps = {
+      resolveCommittedAgreement: async () => ({ disposition: "verified", agreement: x.agreement as unknown as Record<string, unknown>,
+        agreementHash: x.agreementHash, railRegistryVersion: 1, commitment: { finality: "finalized", ref: committed.logicalAddress,
+          contentHash: contentHash(committed.record), jobId: JOB, agreementHash: x.agreementHash, listingRef: x.pin,
+          committedAt: committed.committedAt, signer: x.seller.claim } }),
+      // Stop at the next boundary: reaching it proves the actual intake accepted the artifact and commitment.
+      resolveListingAtCommit: async () => { listingReads++; throw new Error("stop after Agreement check"); },
+      resolveRail: unexpected, resolveIdentityBundle: unexpected, resolvePayerAddress: unexpected,
+      resolvePayeeDestination: unexpected, observeDemosTransfer: unexpected, observeX402Transfer: unexpected,
+      verifyX402ReceiptExtensions: unexpected, classifyX402SettlementChain: unexpected,
+      receiptStore: { claim: unexpected, consumePermit: unexpected },
+    };
+    const result = await verifySellerPaymentIntake({ jobId: JOB, phaseIndex: 2, railId: "demos-native:DEM",
+      payerPayingKey: x.buyer.key, receipt: { kind: "pay-dem", txHash: "a".repeat(64) } }, deps);
+    expect(result).toMatchObject({ disposition: "indeterminate", reason: "listing-resolution-unavailable" });
+    expect(listingReads).toBe(1);
   });
 
   it("reads the Listing from its own bytes: it must be the one the request, record and Agreement pin, the seller's, and select one fixed-price commitment", () => {
@@ -262,7 +280,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
       ["the seller's other Listing", x, received(tp1Listing({ seller: SELLER, listingId: "other-report" }).listing)],
       ["the Listing with one member changed after it was pinned", x, received({ ...LISTING, offering: { ...LISTING.offering, title: "Another report" } })],
       ["the Listing as another version", x, received({ ...LISTING, listingVersion: 2 })],
-      ["not a Listing", x, received({ ...LISTING, pipeline: "commit-agreement" })],
+      ["not a Listing", x, received({ ...LISTING, pipeline: "commit-payee-bound-agreement" })],
       // Pinned by the request, the record and the Agreement, but not the seller's: another party presents it.
       ["a Listing another party presents", world(tp1Listing({ seller: other, listingId: "not-the-sellers" }), { deriveFrom: tp1Listing({ seller: SELLER, listingId: "not-the-sellers" }) }),
         received(tp1Listing({ seller: other, listingId: "not-the-sellers" }).listing)],
@@ -279,7 +297,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
       ["a zero deadlineSecAfterCommit", pinned("zero-deadline", { terms: { deadlineSecAfterCommit: 0 } }), "continuation_listing_invalid"],
       ["auto-accept", pinned("auto-accept", { terms: { deadlineSecAfterCommit: 600, acceptanceModel: "auto-accept" } }), "continuation_listing_invalid"],
       // A fixed-price Listing that negotiates by RFQ is not a coherent DACS-1 Listing.
-      ["an RFQ negotiation", pinned("rfq", { pipeline: [{ kind: "negotiate-rfq" }, { kind: "commit-agreement" }, { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" }] }), "continuation_listing_invalid"],
+      ["an RFQ negotiation", pinned("rfq", { pipeline: [{ kind: "negotiate-rfq" }, { kind: "commit-payee-bound-agreement" }, { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" }] }), "continuation_listing_invalid"],
     ] as const) {
       expect(check(w, given), name).toThrowError(expect.objectContaining({ code, status: 500 }));
     }
@@ -332,7 +350,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
 
   it("continues only a TP-1 Listing: fixed DEM pricing, one pay-dem phase, and deliver-storage-program with a storage-program deliverable (DACS-4 §9.6.1)", () => {
     const pipeline = (pay: Array<Record<string, unknown>>, deliver: Array<Record<string, unknown>>) =>
-      [{ kind: "negotiate-fixed-price" }, { kind: "commit-agreement" }, ...pay, ...deliver];
+      [{ kind: "negotiate-fixed-price" }, { kind: "commit-payee-bound-agreement" }, ...pay, ...deliver];
     const PAY_DEM = { kind: "pay-dem", parameters: { rail: "demos-native:DEM" } };
     const attested = { kind: "attested-payload", payloadFormat: "text/plain", verificationMethod: { kind: "self-signed" } };
     // Each Agreement is derived from its own Listing, so its terms match it: only the Listing's TP-1 shape is wrong.
@@ -358,7 +376,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     }
     // The canonical TP-1 Listing is this shape, and continues.
     expect(LISTING.offering.deliverable.kind).toBe("storage-program");
-    expect(LISTING.pipeline.map((phase) => phase.kind)).toEqual(["negotiate-fixed-price", "commit-agreement", "pay-dem", "deliver-storage-program"]);
+    expect(LISTING.pipeline.map((phase) => phase.kind)).toEqual(["negotiate-fixed-price", "commit-payee-bound-agreement", "pay-dem", "deliver-storage-program"]);
   });
 
   it("re-evaluates DACS-3 §8.5.2 checks 5 and 6 at the receipt time from the seller's own Listing, on every continuing route, direct and delegated", () => {
@@ -437,7 +455,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     ];
     for (const [name, bytes, detail] of malformed) {
       expect(check({ commitment: bytes }), name).toThrowError(refused("continuation_commitment_invalid", detail));
-      expect(check({ agreement: Buffer.from(agreementText.replace('"agreementVersion":"1"', '"agreementVersion":"1","agreementVersion":"1"')) }), name)
+      expect(check({ agreement: Buffer.from(agreementText.replace('"payeeBoundAgreementVersion":"1"', '"payeeBoundAgreementVersion":"1","payeeBoundAgreementVersion":"1"')) }), name)
         .toThrowError(refused("continuation_agreement_invalid", "DUPLICATE-MEMBER"));
     }
     // The same evidence as a caller's object, a decoded string, or a copy of an admitted value: nothing shows its bytes were admitted.
@@ -833,17 +851,50 @@ describe("an effect is reserved only in the SDK's durable journal", () => {
     expect(at(a).effect).toMatchObject({ state: "completed", outcome: { status: 200, text: '{"delivered":1}' } });
   });
 
-  it("an attempt ended with no outcome is recovered at once; an operation that never completes stops after its attempts", () => {
+  it("more than 16 clean null ends still recover and retain a later payment outcome after restart", () => {
     const x = world();
-    const journal = wire.openWireRequestJournal(journalDirectory(), { leaseMs: 600_000 });
-    const at = () => wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal }).effect!;
-    for (let attempt = 0; attempt < wire.MAX_EFFECT_ATTEMPTS; attempt++) {
-      const effect = at();
+    const directory = journalDirectory();
+    const open = () => wire.openWireRequestJournal(directory, { leaseMs: 600_000 });
+    const at = (journal: wire.WireRequestJournal) => wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal }).effect!;
+    for (let attempt = 0; attempt < wire.MAX_EFFECT_ATTEMPTS + 4; attempt++) {
+      const journal = open();
+      const effect = at(journal);
       expect(effect).toMatchObject({ state: attempt === 0 ? "new" : "recover", attempt });
-      expect(() => at()).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+      expect(() => at(journal)).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
       wire.completeWireEffect(journal, effect, null);
     }
-    expect(() => at()).toThrowError(expect.objectContaining({ code: "seller_effect_unresolved", status: 500 }));
+    const journal = open();
+    const effect = at(journal);
+    wire.completeWireEffect(journal, effect, { status: 200, text: '{"paid":true}' });
+    expect(at(open())).toMatchObject({ state: "completed", outcome: { status: 200, text: '{"paid":true}' } });
+  });
+
+  it.each([0, 2])("16 superseded attempts stop recovery with %i clean null ends between crashes", (cleanRetries) => {
+    const x = world();
+    let clock = NOW;
+    const directory = journalDirectory();
+    const open = () => wire.openWireRequestJournal(directory, { leaseMs: 1000, clock: () => clock });
+    const at = (journal: wire.WireRequestJournal) => wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journal }).effect!;
+    let attempt = 0;
+    for (let crashes = 0; crashes < wire.MAX_EFFECT_ATTEMPTS; crashes++) {
+      // Interleave clean retries, advancing the fencing token without consuming the crash budget.
+      for (let clean = 0; clean < cleanRetries; clean++) {
+        const journal = open();
+        const effect = at(journal);
+        expect(effect).toMatchObject({ attempt: attempt++ });
+        wire.completeWireEffect(journal, effect, null);
+      }
+      const journal = open();
+      const effect = at(journal);
+      expect(effect).toMatchObject({ attempt: attempt++ });
+      clock += 1000;
+      if (crashes === wire.MAX_EFFECT_ATTEMPTS - 1) {
+        expect(() => at(open())).toThrowError(expect.objectContaining({ code: "seller_effect_unresolved", status: 500 }));
+        expect(() => wire.completeWireEffect(journal, effect, { status: 200, text: "{}" }))
+          .toThrowError(expect.objectContaining({ code: "seller_effect_superseded" }));
+      }
+    }
+    expect(() => at(open())).toThrowError(expect.objectContaining({ code: "seller_effect_unresolved" }));
   });
 });
 

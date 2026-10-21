@@ -238,8 +238,8 @@ describe("the durable journal ends each attempt once: by its outcome, or by the 
   const settle = <T>(f: () => T): { value?: T; error?: string } => {
     try { return { value: f() }; } catch (error) { if (error instanceof wire.WireError) return { error: error.code }; throw error; }
   };
-  /** Two workers on one directory and clock: the first holds payment's attempt 0, and its lease has just ended. */
-  function lapsed() {
+  /** Two workers on one directory and clock: the first holds a payment attempt whose lease has just ended. */
+  function lapsed(crashes = 0) {
     const x = world();
     let clock = NOW;
     const directory = journalDirectory();
@@ -247,9 +247,14 @@ describe("the durable journal ends each attempt once: by its outcome, or by the 
     const a = worker(), b = worker();
     const at = (journal: wire.WireRequestJournal) => wire.checkWireRequest(wire.openWireEnvelope(x.direct(x.request(P.payments, nonce())), "request", x.context),
       { ...x.check(P.payments), requestJournal: journal }).effect!;
-    const first = at(a);
+    let first = at(a);
     expect(first).toMatchObject({ state: "new", attempt: 0 });
-    clock = NOW + 1000;
+    for (let n = 0; n < crashes; n++) {
+      clock += 1000;
+      first = at(a);
+      expect(first).toMatchObject({ state: "recover", attempt: n + 1 });
+    }
+    clock += 1000;
     return { directory, a, b, at, first };
   }
   const paid = { status: 200, text: '{"paid":"first"}' };
@@ -273,6 +278,21 @@ describe("the durable journal ends each attempt once: by its outcome, or by the 
     const recovered = settle(() => at(b));
     expect(completed).toEqual({ value: undefined });
     expect(recovered).toEqual({ value: expect.objectContaining({ state: "completed", outcome: paid }) });
+    expect(at(b)).toMatchObject({ state: "completed", outcome: paid });
+  });
+
+  it.each([null, { status: 200, text: '{"paid":"first"}' }])("an end that wins the race at the crash limit is honored: %j", (outcome) => {
+    const { a, b, at, first } = lapsed(wire.MAX_EFFECT_ATTEMPTS - 1);
+    let completed: { value?: void; error?: string } = {};
+    race.beforeLink = () => { completed = settle(() => wire.completeWireEffect(a, first, outcome)); };
+    const recovered = settle(() => at(b));
+    expect(completed).toEqual({ value: undefined });
+    if (outcome === null) {
+      expect(recovered).toEqual({ value: expect.objectContaining({ state: "recover", attempt: wire.MAX_EFFECT_ATTEMPTS }) });
+      wire.completeWireEffect(b, recovered.value!, paid);
+    } else {
+      expect(recovered).toEqual({ value: expect.objectContaining({ state: "completed", outcome }) });
+    }
     expect(at(b)).toMatchObject({ state: "completed", outcome: paid });
   });
 

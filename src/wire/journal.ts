@@ -81,7 +81,7 @@ export interface EffectReservation {
   requestHash: string;
 }
 
-/** An operation that crashes on every attempt stops here and needs an operator. */
+/** An operation stops after this many superseded attempts and needs an operator. Clean null ends do not count. */
 export const MAX_EFFECT_ATTEMPTS = 16;
 const SMALL_FILE_BYTES = 4096;
 const OUTCOME_FILE_BYTES = DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes * 2 + SMALL_FILE_BYTES;
@@ -266,8 +266,14 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
     return deepFreeze({ state: "completed" as const, operationId, outcome });
   };
   if (exists(store, outcomeName(operationId))) return completed();
-  let next = 0;
-  while (next < MAX_EFFECT_ATTEMPTS && exists(store, attemptName(operationId, next))) next++;
+  let next = 0, superseded = 0;
+  while (exists(store, attemptName(operationId, next))) {
+    // A successor can only exist after its predecessor ended. Those ends are
+    // immutable, so every worker (including after restart) counts the same
+    // crash budget. Clean null ends still advance the fencing token.
+    if (next > 0 && readEnd(store, operationId, next - 1).superseded) superseded++;
+    next++;
+  }
   if (next === 0) {
     if (publish(store, attemptName(operationId, 0), lease(0))) return issue(store, { state: "new", operationId, attempt: 0, leaseUntil: at + store.leaseMs });
     // Another worker published attempt 0 first: its binding decides.
@@ -281,13 +287,12 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
   const { leaseUntil } = readAttempt(store, operationId, latest);
   if (!exists(store, endedName(operationId, latest))) {
     if (at < (leaseUntil as number)) fail("seller_effect_pending", 503);
-    if (next >= MAX_EFFECT_ATTEMPTS) fail("seller_effect_unresolved", 500);
     // Its lease ran out: end it as superseded, unless it ended itself first (the end read next decides).
     publish(store, endedName(operationId, latest), endRecord(operationId, latest, { superseded: true, outcome: null }));
   }
-  const { outcome } = readEnd(store, operationId, latest);
+  const { outcome, superseded: latestSuperseded } = readEnd(store, operationId, latest);
   if (outcome !== null) { publishOutcome(store, operationId, latest, outcome); return completed(); }
-  if (next >= MAX_EFFECT_ATTEMPTS) fail("seller_effect_unresolved", 500);
+  if (superseded + Number(latestSuperseded) >= MAX_EFFECT_ATTEMPTS) fail("seller_effect_unresolved", 500);
   if (!publish(store, attemptName(operationId, next), lease(next))) fail("seller_effect_pending", 503);
   return issue(store, { state: "recover", operationId, attempt: next, leaseUntil: at + store.leaseMs });
 }
@@ -300,6 +305,7 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
  * accepted, another is `seller_effect_conflict` (500). `null` ends an attempt
  * that caused no effect and will cause none (for example, a payment not yet
  * visible), so the next request recovers at once instead of after the lease.
+ * Clean null ends do not spend MAX_EFFECT_ATTEMPTS; only superseded attempts do.
  * An attempt whose lease ran out and that a later request ended first is
  * `seller_effect_superseded` (500), and records nothing: its successor
  * reconciles. Call it only after the effect's own write is durable.

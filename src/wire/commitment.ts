@@ -20,7 +20,7 @@ import { types } from "node:util";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { AgreementArtifact, Listing } from "../artifacts/types.js";
-import { isAgreementDocument, isChainTxRef, isListing, isReadableAnchorReceipt } from "../artifacts/validators.js";
+import { isPayeeBoundAgreementDocument, isChainTxRef, isListing, isReadableAnchorReceipt } from "../artifacts/validators.js";
 import { contentHash } from "../canonical/hash.js";
 import { DacsError } from "../errors.js";
 import { validateFixedPriceAgreementBinding } from "../negotiate/commitment.js";
@@ -55,7 +55,7 @@ function admittedInput(value: unknown, code: string): unknown {
 }
 
 /** DACS-3 §8.5.2 check 9: the only commit phase TP-1 continues, and the Agreement type it requires. */
-export const TP1_COMMIT_PHASE = "commit-agreement";
+export const TP1_COMMIT_PHASE = "commit-payee-bound-agreement";
 
 /** CORE §B.7 `dacs-finality-commitment:v1:` (src/negotiate/commitment.ts FINALITY_COMMITMENT_SEPARATOR; test/wire/continuation.test.ts pins it). */
 export const FINALITY_COMMITMENT_DOMAIN = "dacs-finality-commitment:v1:";
@@ -123,7 +123,7 @@ const TP1_DELIVERABLE_KIND = "storage-program";
  * fixed-price commitment, as the SDK gate's does: exactly one negotiate phase,
  * `negotiate-fixed-price`, directly followed by the only commit phase. That
  * phase selects the Agreement type before any signature is read (DACS-3
- * §8.5.2 check 9, CA-5, CA-7): TP-1 continues only `commit-agreement`
+ * §8.5.2 check 9, CA-5, CA-7): TP-1 continues only `commit-payee-bound-agreement`
  * (`continuation_phase_unsupported` otherwise). Its other phases must be
  * TP-1's: exactly one pay phase, `pay-dem` (`continuation_phase_unsupported`,
  * detail `PAY-PHASE`), and exactly one delivery phase,
@@ -186,27 +186,27 @@ function assertListingTerms(agreement: JsonRecord, listing: Listing, committedAt
 
 /**
  * CA-7: the Agreement the record commits is one both parties signed. The
- * Listing's `commit-agreement` phase (checked first) requires an exact DACS-3
- * §8.5 AgreementDocument, here derived from fixed price; a payee-bound or
+ * Listing's `commit-payee-bound-agreement` phase (checked first) requires an exact DACS-3
+ * §8.5 PayeeBoundAgreementDocument, here derived from fixed price; a plain or
  * identity-bound document is the off-diagonal pairing and is refused. Its
  * recomputed content hash must be the record's `agreementHash`, and its job
  * and Listing pin the record's. Its buyer and seller (by role) must be the
  * record's parties, in that order. Its two signatures, one by each party,
- * must verify under `dacs-agreement:v1:` against each party's own key.
+ * must verify under `dacs-payee-bound-agreement:v1:` against each party's own key.
  * Returns the Agreement, its `generatedAt` and `terms.deadline`; its terms are
  * checked against the Listing once the receipt time is known
  * (assertListingTerms).
  */
 function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreement: JsonRecord; generatedAt: unknown; deadline: unknown } {
   const agreement = ownedArtifact(admittedInput(value, "continuation_agreement_invalid"), "continuation_agreement_invalid", 500) as JsonRecord;
-  if (!isAgreementDocument(agreement) || agreement.derivedFromPattern !== "fixed-price") agreementInvalid();
+  if (!isPayeeBoundAgreementDocument(agreement) || agreement.derivedFromPattern !== "fixed-price") agreementInvalid();
   const hash = contentHash(agreement);
   if (hash !== record.agreementHash || agreement.jobId !== record.jobId || !sameCanonical(agreement.listingRef, record.listingRef)) agreementInvalid();
   const parties = agreement.parties as JsonRecord[];
   const claims = [parties.find((p) => p.role === "buyer")?.primaryClaim, parties.find((p) => p.role === "seller")?.primaryClaim];
   const recordParties = record.parties as unknown[];
   if (claims[0] !== recordParties[0] || claims[1] !== recordParties[1]) agreementInvalid();
-  const signed = Buffer.from(`${ARTIFACT_SEPARATORS.AgreementDocument}${hash}`, "utf8");
+  const signed = Buffer.from(`${ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument}${hash}`, "utf8");
   const signatures = agreement.signatures as JsonRecord[];
   for (const claim of claims as string[]) {
     const found = signatures.filter((s) => s.party === claim);
@@ -219,7 +219,7 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreeme
 /**
  * The receipt time (`committedAt`, DACS-3 §8.6 CA-8) of the job's finalized
  * commitment, from the evidence itself. First, `listing` must be the Listing
- * the purchase pins, and its own commit phase `commit-agreement`
+ * the purchase pins, and its own commit phase `commit-payee-bound-agreement`
  * (committedListing: `continuation_listing_invalid`, or
  * `continuation_phase_unsupported`), before any signature is read. `value`,
  * `agreement` and `listing` are admitted (CF-5) before they are read: exact
@@ -250,7 +250,7 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreeme
 export function commitmentReceiptTime(value: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: CommitmentScope): number {
   if (typeof reader !== "function") fail("commitment_reader_required", 500);
   // DACS-3 §8.5.2 check 9 and CA-5/CA-7: the pinned Listing's own phase selects the Agreement type before any
-  // signature is read. TP-1 continues only `commit-agreement`; another phase, or none, is refused.
+  // signature is read. TP-1 continues only `commit-payee-bound-agreement`; another phase, or none, is refused.
   const terms = committedListing(listing, scope);
   const c = ownedArtifact(admittedInput(value, "continuation_commitment_invalid"), "continuation_commitment_invalid", 500) as JsonRecord;
   const stated = hasKeys(c, RESULT);

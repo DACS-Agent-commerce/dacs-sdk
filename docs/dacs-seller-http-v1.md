@@ -311,14 +311,18 @@ below):
    `completeWireEffect(journal, effect, { status, text })`. The outcome is
    kept once (a different one is `seller_effect_conflict`).
    `completeWireEffect(journal, effect, null)` ends an attempt that caused no
-   effect, so the next request recovers at once. Each attempt ends exactly
-   once, in one exclusive journal entry: by its own outcome (or `null`), or,
+   effect, so the next request recovers at once without spending the crash
+   budget. Each attempt ends exactly once, in one exclusive journal entry:
+   by its own outcome (or `null`), or,
    once its lease has run out, by the request that recovers it. Whichever is
    published first stands, so an attempt ended that way records nothing
    (`seller_effect_superseded`), and no attempt starts after an outcome. An
-   operation that reaches 16 attempts with no outcome is
-   `seller_effect_unresolved` (500) and needs an operator. An entry the journal did not write (not a file, too large, a
-   malformed outcome, attempt or end record, an outcome with no first attempt)
+   operation stops with `seller_effect_unresolved` (500) after 16 attempts
+   have been superseded, including when clean `null` ends occur between them.
+   There is no automatic reset: operator recovery must reconcile the operation
+   against the chain or delivery store first. An entry the journal did not
+   write (not a file, too large, a malformed outcome, attempt or end record,
+   an outcome with no first attempt)
    fails closed (`seller_replay_guard_invalid`); an unreadable attempt is
    never taken as a lapsed lease. The journal refuses to open on Windows,
    where a directory cannot be synced. Read
@@ -408,8 +412,8 @@ unverified seller input. Any network reads belong to the authenticated reader
 and require byte/list limits and deadlines before decoding.
 
 The wire checks fixed pricing, `negotiate-fixed-price`, the commit phase
-`commitPhase: "commit-agreement"` (DACS-3 §8.5.2 check 9: the only phase TP-1
-commits, whose artifact is an AgreementDocument), `pay-dem`, Demos
+`commitPhase: "commit-payee-bound-agreement"` (DACS-3 §8.5.2 check 9: the only phase TP-1
+commits, whose artifact is a PayeeBoundAgreementDocument), `pay-dem`, Demos
 storage delivery, the bounded synchronous report output and absence of buyer
 request input. The service must be `fixed-text` or an explicitly configured,
 pure, deterministic, synchronous text module. The reader is called at proof
@@ -442,7 +446,7 @@ parties signed and the record the seller signed over it. It must be presented
 by the seller, carry a positive `deadlineSecAfterCommit`, not be auto-accept,
 and select one fixed-price commitment: exactly one `negotiate-fixed-price`
 phase, directly followed by the only commit phase. Otherwise it is
-`continuation_listing_invalid`. That commit phase must be `commit-agreement`,
+`continuation_listing_invalid`. That commit phase must be `commit-payee-bound-agreement`,
 before any signature is read (`continuation_phase_unsupported`; DACS-3 §8.5.2
 check 9, CA-5). The rest of the Listing must be TP-1's too: exactly one pay
 phase, `pay-dem` (`continuation_phase_unsupported`, detail `PAY-PHASE`), and
@@ -466,9 +470,9 @@ CORE §5.1 AnchorReceipt and the transaction reference a DACS-4 §9.3 ChainTxRef
 native address and content hash, and takes `committedAt` from its
 `blockRef.timestamp`. It checks the Agreement the record commits, passed as
 `agreement` with the commitment (DACS-3 §8.6 CA-7). It must be an exact
-fixed-price AgreementDocument whose recomputed content hash is the record's
+fixed-price PayeeBoundAgreementDocument whose recomputed content hash is the record's
 `agreementHash`, with the record's job, Listing pin and parties (by role),
-and with an Ed25519 signature by each party under `dacs-agreement:v1:`. A
+and with an Ed25519 signature by each party under `dacs-payee-bound-agreement:v1:`. A
 seller-signed record for an Agreement the buyer never signed is therefore
 refused (`continuation_agreement_invalid`), at both buyer signers and on
 every seller route. Last, it asks `readCommitmentReceipt` (the buyer's own
@@ -819,13 +823,13 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `peer_request_replayed` (409) | the journal already holds the request's nonce key: the same signed request again |
 | `seller_effect_pending` (503) | another attempt of the same operation (job and route) holds its live lease |
 | `peer_operation_mismatch` (409) | an effect request for a job and route whose operation was first reserved under another Agreement hash, buyer or tuple |
-| `seller_effect_unresolved` (500) | an operation reached 16 attempts with no outcome |
+| `seller_effect_unresolved` (500) | 16 attempts were superseded after their leases ran out |
 | `seller_effect_conflict`, `seller_effect_superseded` (500) | `completeWireEffect` with an outcome other than the one recorded, or from an attempt a later one superseded |
 | `seller_readiness_required` (500) | a proposal, commitment, commitment-signature or context request checked without the seller's own `ready`, or with anything but a boolean |
-| `continuation_phase_unsupported` (500) | a `commitment` checked under a Listing commit phase other than `commit-agreement`, or none (DACS-3 §8.5.2 check 9); or whose Listing does not have exactly one pay phase, `pay-dem` (detail `PAY-PHASE`), or exactly one delivery phase, `deliver-storage-program` (detail `DELIVERY-PHASE`) |
+| `continuation_phase_unsupported` (500) | a `commitment` checked under a Listing commit phase other than `commit-payee-bound-agreement`, or none (DACS-3 §8.5.2 check 9); or whose Listing does not have exactly one pay phase, `pay-dem` (detail `PAY-PHASE`), or exactly one delivery phase, `deliver-storage-program` (detail `DELIVERY-PHASE`) |
 | `continuation_listing_invalid` (500) | a `commitment` given without the signed Listing the request pins, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with a Listing that is not that pin's, not the seller's, not one fixed-price commitment, auto-accept or without a positive `deadlineSecAfterCommit`; whose deliverable is not `storage-program` (detail `DELIVERABLE-KIND`, DACS-4 §9.6.1 step 1); or whose pricing is not fixed in DEM (detail `TP1-PRICING`) |
 | `wire_artifact_rejected` (500) | `admitWireArtifact` given bytes CF-5 admission refuses; the detail is admission's own code |
-| `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with one that is not an exact fixed-price AgreementDocument (a payee-bound or identity-bound one included), whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7); or whose terms the SDK's DACS-3 §8.5.2 verifier refuses against the signed Listing at `committedAt` (currency, price, rail, deliverable, pattern, parties: detail `LISTING-TERMS`, its `cause` the verifier's error) |
+| `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with one that is not an exact fixed-price PayeeBoundAgreementDocument (a plain or identity-bound one included), whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7); or whose terms the SDK's DACS-3 §8.5.2 verifier refuses against the signed Listing at `committedAt` (currency, price, rail, deliverable, pattern, parties: detail `LISTING-TERMS`, its `cause` the verifier's error) |
 | `continuation_commitment_invalid` (500) | a `commitment` given as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or as bytes admission refuses; or whose record, seller signature or finalized receipt does not check, whose receipt is not a CORE §5.1 AnchorReceipt or whose transaction reference is not a ChainTxRef, whose receipt time is before the Agreement's `generatedAt`, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
 | `commitment_reader_required`, `commitment_reader_invalid` (500) | a `commitment` given without a receipt reader, or a reader that answered anything but a disposition (a promise included) |
 | `commitment_unverified` (503) | the receipt reader answered `indeterminate` or `error`: the commitment is not established, never final |

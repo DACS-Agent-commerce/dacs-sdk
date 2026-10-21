@@ -307,7 +307,7 @@ export interface RequestCheck {
    * validity window and deadlineSecAfterCommit from it, never from a host's
    * statement of them, and refuses a commitment the Standard's post-finality
    * checks 5 and 6 make invalid (commitment.ts). Another Listing, or none, is
-   * `continuation_listing_invalid`; a phase other than `commit-agreement` is
+   * `continuation_listing_invalid`; a phase other than `commit-payee-bound-agreement` is
    * `continuation_phase_unsupported` (500). It must be TP-1's Listing: one
    * `pay-dem` phase and one `deliver-storage-program` phase
    * (`continuation_phase_unsupported`), a `storage-program` deliverable and

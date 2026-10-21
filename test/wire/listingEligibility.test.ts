@@ -25,7 +25,7 @@ async function world(change: Record<string, unknown> = {}) {
   const local = { endpoint: "https://rpc.eligibility.invalid/", transportAuthority: "test", connectionId: "1" };
   const binding = bindTp1Fixture({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local });
   const selected = {
-    pricingKind: "fixed", negotiation: "negotiate-fixed-price", commitPhase: "commit-agreement", rail: "pay-dem",
+    pricingKind: "fixed", negotiation: "negotiate-fixed-price", commitPhase: "commit-payee-bound-agreement", rail: "pay-dem",
     delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output,
     buyerRequestInput: false, ...change,
   };
@@ -36,7 +36,7 @@ async function world(change: Record<string, unknown> = {}) {
       displayName: "Fixture seller", publicEndpoint: "https://seller.eligibility.invalid" },
     offering: { title: "Report", description: "Fixture report", category: "data.test", tags: [], deliverable: { kind: "storage-program" } },
     buyerRequirement: { requirementVersion: "1", required: [] },
-    pipeline: [{ kind: selected.negotiation }, { kind: "commit-agreement" }, { kind: selected.rail }, { kind: "deliver-storage-program" }],
+    pipeline: [{ kind: selected.negotiation }, { kind: selected.commitPhase ?? "commit-payee-bound-agreement" }, { kind: selected.rail }, { kind: "deliver-storage-program" }],
     pricing: selected.pricingKind === "metered" ? { kind: "metered", unitPrice: { amount: "1", currency: "DEM" }, unit: "request" } :
       { kind: selected.pricingKind, price: { amount: "1", currency: "DEM" } },
     acceptedRails: [{ railId: selected.rail }], terms: {}, validity: { notBefore: NOW - 1000, notAfter: NOW + 60_000 },
@@ -71,8 +71,8 @@ describe("authenticated Listing eligibility before purchase signing", () => {
   it.each([
     ["x402", { rail: "pay-x402" }], ["metered", { pricingKind: "metered" }],
     ["input-taking", { buyerRequestInput: true }], ["RFQ", { negotiation: "negotiate-rfq" }],
-    // DACS-3 §8.5.2 check 9: TP-1 commits only an AgreementDocument, so only a commit-agreement Listing is eligible.
-    ["payee-bound commitment", { commitPhase: "commit-payee-bound-agreement" }],
+    // DACS-3 §8.5.2 check 9: TP-1 commits the payee-bound Agreement the SDK seller accepts.
+    ["plain commitment", { commitPhase: "commit-agreement" }],
     ["identity-bound commitment", { commitPhase: "commit-identity-bound-agreement" }],
     ["identity-bound payee commitment", { commitPhase: "commit-identity-bound-payee-agreement" }],
     ["no commit phase", { commitPhase: undefined }],

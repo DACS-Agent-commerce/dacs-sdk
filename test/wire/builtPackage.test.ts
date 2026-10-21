@@ -86,7 +86,7 @@ const sellerLocal = file.localBindings.seller, buyerLocal = file.localBindings.b
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const signer = { claim: "did:demos:agent:" + publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex"), calls: 0,
   sign(bytes) { signer.calls += 1; return new Uint8Array(sign(null, Buffer.from(bytes), privateKey)); } };
-const readListingEligibility = (scope) => ({ seller: scope.seller, publicEndpoint: scope.publicEndpoint, listingPin: scope.listingPin, pricingKind: "fixed", negotiation: "negotiate-fixed-price", commitPhase: "commit-agreement", rail: "pay-dem", delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: 0, expiresAt: Number.MAX_SAFE_INTEGER });
+const readListingEligibility = (scope) => ({ seller: scope.seller, publicEndpoint: scope.publicEndpoint, listingPin: scope.listingPin, pricingKind: "fixed", negotiation: "negotiate-fixed-price", commitPhase: "commit-payee-bound-agreement", rail: "pay-dem", delivery: wire.TP1_CAPABILITIES.delivery, service: { kind: "fixed-text" }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: 0, expiresAt: Number.MAX_SAFE_INTEGER });
 const signWith = (binding, local) => code(() => wire.signWireRequest({ signer, binding, local, path: "/dacs/v1/commitments", jobId: file.job.jobId, text: "{}", seller: file.parties.seller, job: { listingPin: file.job.listingPin, agreementHash: file.job.agreementHash, profile }, now: file.now }));
 
 // Every verification entry point, on the vectors' correctly signed messages.
@@ -270,7 +270,7 @@ const { signatures: _placeholders, ...templateAgreement } = JSON.parse(readFileS
   .replaceAll(PLACEHOLDER.buyer, signer.claim).replaceAll(PLACEHOLDER.seller, sellerSigner.claim));
 const unsignedAgreement = { ...templateAgreement, listingRef: listingPin };
 const agreementHash = contentHash(unsignedAgreement);
-const agreementBytes = Buffer.from("dacs-agreement:v1:" + agreementHash);
+const agreementBytes = Buffer.from("dacs-payee-bound-agreement:v1:" + agreementHash);
 const partySignature = (party, key) => ({ party, algorithm: "ed25519", value: sign(null, agreementBytes, key).toString("base64url") });
 const agreement = { ...unsignedAgreement, signatures: [partySignature(signer.claim, privateKey), partySignature(sellerSigner.claim, sellerKeys.privateKey)] };
 // Control: the seller's signed finality record for it with its finalized receipt, as bytes a buyer receives, continues.
