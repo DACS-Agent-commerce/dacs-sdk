@@ -583,6 +583,23 @@ describe("a reader-carrying client's transfer must be this call's own (#338)", (
     expect(again).toEqual(held());
     expect(payDemRecordVerifiedTransfer(again)).toBeUndefined();
   });
+
+  // Both calls pass the check before the record read; only the check after
+  // it stops the second success.
+  it("mints a success for at most one of two overlapping calls presenting one transfer", async () => {
+    const a = customClient(await reader());
+    const b = customClient(await reader());
+
+    const results = await Promise.all([
+      payDemSettleCore({ recipient: RECIPIENT, amount: AMOUNT_OS }, a.client),
+      payDemSettleCore({ recipient: RECIPIENT, amount: AMOUNT_OS }, b.client),
+    ]);
+
+    expect(results.filter((result) => result.ok === true)).toHaveLength(1);
+    expect(results.filter((result) => payDemRecordVerifiedTransfer(result) !== undefined))
+      .toHaveLength(1);
+    expect(results).toContainEqual(held());
+  });
 });
 
 describe("payDemSettle accepts a custom rail's SDK record-verified success (#338)", () => {
@@ -694,7 +711,8 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     const rail = await build();
     const settle = vi.spyOn(rail, "settle");
 
-    expect(() => payDemSettle(rail)).toThrow(/createPayDemClientRail.*refusing/);
+    await expect(payDemSettle(rail)(request("job-custom")))
+      .rejects.toThrow(/createPayDemClientRail.*refusing/);
     expect(settle).not.toHaveBeenCalled();
   });
 

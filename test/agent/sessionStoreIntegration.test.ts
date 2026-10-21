@@ -1150,9 +1150,19 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         address: PAYER_HEX,
         settle: vi.fn(async () => failedRecord(payeeHex) as Awaited<ReturnType<PayDemRail["settle"]>>),
       };
-      expect(() => payDemSettle(rail, { network: "demos" }, {
+      const settle = payDemSettle(rail, { network: "demos" }, {
         store: createIdempotencyStore(log),
-      })).toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
+      });
+      await expect(settle({
+        rail: "pay-dem",
+        phase: "pay-dem",
+        amount: "9.5",
+        asset: "DEM",
+        payee: sellerDid,
+        expectedPayee: payeeHex,
+        jobId: "job-1",
+        phaseIndex: 0,
+      })).rejects.toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
       expect(rail.settle).not.toHaveBeenCalled();
       expect(putOutcome).not.toHaveBeenCalled();
     });
