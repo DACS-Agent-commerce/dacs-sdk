@@ -296,8 +296,12 @@ export interface DemosRawClient {
   ): Promise<string>;
   getAddress(): string;
   getAddressNonce(address: string): Promise<number>;
-  // No index signatures: demosdk >=4.0.17 returns an interface, which TypeScript
-  // will not assign to one. Callers re-validate the result at runtime anyway.
+  // Only the fields the SDK reads. No index signatures: demosdk's `NetworkInfo`
+  // and `AddressInfo` interfaces have none (demosdk >=4.0.17 returns an
+  // interface, which TypeScript will not assign to one). Under 4.0.16 its
+  // declarations do not resolve with NodeNext, so they type as `any`; from
+  // 4.0.18 they resolve and must be assignable here (#339). Callers
+  // re-validate the result at runtime anyway.
   getNetworkInfo(): Promise<
     | {
         forks?: {
@@ -4120,6 +4124,9 @@ export class DemosAdapter implements SubstrateAdapter {
       );
     }
     const identities = new Identities();
+    // Guard and call in one branch so `platform` narrows away "domain":
+    // demosdk's web2 context has no "domain", which its types enforce once
+    // they resolve with NodeNext (4.0.18; 4.0.16's are `any`) (#339).
     let accounts;
     if (parsed.kind === "web2") {
       // A local binding lets TypeScript carry the "domain" exclusion to the call.
