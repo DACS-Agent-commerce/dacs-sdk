@@ -121,12 +121,15 @@ authenticate, so its own verdict never becomes final.
   record, or a `PayDemReconciledFailure` for a bound `failed` record. That
   answer is the integrator's statement: it names a hash and claims an
   outcome. Every recovered verdict (a retained-hash audit, the store's lookup
-  by key, the restart re-check of a cached outcome) is then decided by the SDK
+  by key, the restart re-check of a cached outcome) is then decided by the
   rail's own read of the node's record for that hash, through the connection
-  `createPayDemRail` opened: one bounded `getTxByHash` that must carry the
-  hash, a terminal `confirmed` or `failed` status, an inclusion block, and a
-  native body whose payer (the rail's wallet), payee, amount and nonce bind
-  the payment. The block, nonce and fee come from that record; a claim it
+  `createPayDemRail` opened or, for a `createPayDemClientRail` rail, the one its
+  client's `createPayDemRecordReader` reader opened: one bounded `getTxByHash`
+  that must carry the hash, a terminal `confirmed` or `failed` status, an
+  inclusion block, and a native body whose payer (the rail's wallet), payee,
+  amount and nonce bind the payment. Only a rail with such a read may make a
+  fresh payment, so every payment the adapter made can be read again on a
+  resume or a repeat. The block, nonce and fee come from that record; a claim it
   contradicts is refused, and a missing, pending, timed-out or malformed
   record leaves the payment unresolved with that reason. Over any other rail
   there is no such read, so a recovered result is held as `ok: false` with

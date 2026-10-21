@@ -799,8 +799,11 @@ stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7).
 A recovered native success, and any native permanent failure, is final only
 when the SDK read the node's record for that hash itself: over the rail
 `createPayDemRail` built, the adapter reads the record through that rail's own
-connection and takes its status, block, nonce, parties, amount and fee from
-it. It reads the amount and fee in the denomination the record's signed payload
+connection, and over a `createPayDemClientRail` rail through the connection of
+the client's `createPayDemRecordReader` reader, for that client's wallet only.
+It takes the record's status, block, nonce, parties, amount and fee from it.
+These are the only rails the adapter lets make a fresh payment, so a session
+paid through either can be resumed or repeated. It reads the amount and fee in the denomination the record's signed payload
 carries (DEM numbers before the denomination fork, OS strings after it), so a
 payment saved before the fork still completes after it activates. The
 reconciler's answer only names the hash and can refuse, and one the
@@ -809,8 +812,9 @@ OS-signed record before the fork) is read from the node afresh for each
 recovery, not from demosdk's `getNetworkInfo`, which keeps a connection's
 first reply. Over any other rail the adapter returns no recovered verdict at
 all, only the hash: the session binds it and saves it as an unresolved
-attempt, so a later resume through the adapter over the SDK rail audits that
-hash instead of paying again, and never ends the session as failed on it.
+attempt, so a later resume through the adapter over one of those two rails
+audits that hash instead of paying again, and never ends the session as failed
+on it.
 
 A native DEM session calls only that adapter, as `settle` and as
 `resumeSettlement`. Any other implementation, a wrapper around the adapter

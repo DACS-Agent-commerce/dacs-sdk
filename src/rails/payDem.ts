@@ -59,11 +59,6 @@ const sdkRecordReadingSubmissions = new WeakSet<object>();
  */
 const sdkRecordReaders = new WeakMap<object, PayDemRecordReading>();
 /**
- * The `settle` of each rail `createPayDemClientRail` built around a
- * reader-carrying client. Private like the sets above.
- */
-const sdkClientRailSettles = new WeakSet<object>();
-/**
  * Transaction hashes a reader-carrying client's transfer already settled in
  * this process. A record shows that a transfer with these terms executed, not
  * that this call made it, so one hash never settles a second payment.
@@ -120,9 +115,11 @@ type SdkRecordReader = (expected: Readonly<{
 }>) => Promise<SdkRecordRead>;
 
 /**
- * The record reader of each rail `createPayDemRail` built, keyed by that rail's
- * `settle`. Private like the sets above: a recovered pay-dem verdict is final
- * only from one of these reads, never from a reconciler's answer alone.
+ * The recovery record reader of each rail `createPayDemRail` or
+ * `createPayDemClientRail` built, keyed by that rail's `settle`. Private like
+ * the sets above: a recovered pay-dem verdict is final only from one of these
+ * reads, never from a reconciler's answer alone. It is also the one list of
+ * rails that may make a fresh payment, so every payment can be read again.
  */
 const sdkRailRecordReaders = new WeakMap<object, SdkRecordReader>();
 
@@ -131,8 +128,9 @@ const sdkRailRecordReaders = new WeakMap<object, SdkRecordReader>();
  * passes such a function on as itself, never as a wrapper, so `runSession`
  * can tell that a native verdict came through this bridge. Over the rail
  * `createPayDemRail` built, every success or permanent failure it returns is
- * the SDK's own record read; over a `createPayDemClientRail` rail only a fresh
- * success is, and over any other rail it returns neither.
+ * the SDK's own record read; over a `createPayDemClientRail` rail every
+ * success is (fresh, or re-read on recovery) while a fresh failure proof is
+ * held until a recovery reads it, and over any other rail it returns neither.
  */
 const payDemSettleAdapters = new WeakSet<object>();
 
@@ -2329,8 +2327,31 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   sdkRecordReadingSettles.add(settle);
   // Recovery reads the record of a hash the SDK holds through this same
   // connection, so payDemSettle's recovered verdicts are the SDK's read too.
-  sdkRailRecordReaders.set(settle, async (expected) => {
-    if (normalizedDemosAccount(expected.payer) !== normalizedDemosAccount(address)) {
+  sdkRailRecordReaders.set(
+    settle,
+    sdkRecoveryReader(address, nodeCall, getTxByHash, statusRequestTimeoutMs),
+  );
+  return {
+    address: client.address,
+    settle,
+  };
+}
+
+/**
+ * The SDK's recovery read of a hash it holds, through one node connection: the
+ * payment's payer must be `wallet`, the node's fork state is read afresh, and
+ * then the record is read once (`readDemosRecordByHash`). Every rail that may
+ * make a fresh payment registers one of these, so a payment it made can always
+ * be read again after a restart or on a repeat.
+ */
+function sdkRecoveryReader(
+  wallet: string,
+  nodeCall: (message: string, args: Record<string, unknown>) => Promise<unknown>,
+  getTxByHash: (hash: string) => Promise<unknown>,
+  timeoutMs: number,
+): SdkRecordReader {
+  return async (expected) => {
+    if (normalizedDemosAccount(expected.payer) !== normalizedDemosAccount(wallet)) {
       return { state: "indeterminate", reason: "the payment's payer is not this rail's wallet" };
     }
     // Read the node's fork state afresh for every recovery: demosdk's
@@ -2338,7 +2359,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     // read the fork inactive would hold every payment signed after it.
     const info = await boundedPromise(
       Promise.resolve().then(() => nodeCall("getNetworkInfo", {})),
-      statusRequestTimeoutMs,
+      timeoutMs,
     );
     if (info.status === "timeout") {
       return { state: "indeterminate", reason: "denomination fork state read timed out" };
@@ -2368,13 +2389,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     return readDemosRecordByHash(
       expected.txHash,
       getTxByHash,
-      { payer: address, payee: expected.payee, amountOs: expected.amountOs, forkActive },
-      statusRequestTimeoutMs,
+      { payer: wallet, payee: expected.payee, amountOs: expected.amountOs, forkActive },
+      timeoutMs,
     );
-  });
-  return {
-    address: client.address,
-    settle,
   };
 }
 
@@ -2400,6 +2417,8 @@ type PayDemRecordReading = Readonly<{
    */
   accountNonce: (payer: string) => Promise<number>;
   read: PayDemRecordRead;
+  /** The recovery read of a hash `wallet` paid, through this reader's node. */
+  recoveryReader: (wallet: string) => SdkRecordReader;
 }>;
 
 export interface PayDemRecordReaderConfig {
@@ -2600,8 +2619,10 @@ export async function createPayDemRecordReader(
     }
     return nonce;
   };
+  const recoveryReader = (wallet: string) =>
+    sdkRecoveryReader(wallet, nodeCall, getTxByHash, statusRequestTimeoutMs);
   const reader = Object.freeze({ rpc });
-  sdkRecordReaders.set(reader, Object.freeze({ accountNonce, read }));
+  sdkRecordReaders.set(reader, Object.freeze({ accountNonce, read, recoveryReader }));
   return reader;
 }
 
@@ -2624,8 +2645,10 @@ export function createPayDemClientRail(
     "recordReader",
     "pay-dem record reader",
   );
-  if (!readerProperty.found || readerProperty.value === undefined ||
-      !sdkRecordReaders.has(readerProperty.value as object)) {
+  const reading = !readerProperty.found || readerProperty.value === undefined
+    ? undefined
+    : sdkRecordReaders.get(readerProperty.value as object);
+  if (reading === undefined) {
     throw new DacsError(
       "pay-dem client rail needs a reader createPayDemRecordReader built; refusing",
     );
@@ -2637,7 +2660,9 @@ export function createPayDemClientRail(
   ) ?? "demos";
   const settle: PayDemRail["settle"] = (params, effectFence) =>
     payDemSettleCore(params, client, network, effectFence);
-  sdkClientRailSettles.add(settle);
+  // Recovery reads a hash this rail paid through the reader's own node
+  // connection, for this client's wallet only, as createPayDemRail's does.
+  sdkRailRecordReaders.set(settle, reading.recoveryReader(address));
   return Object.freeze({ address, settle });
 }
 
@@ -2654,7 +2679,7 @@ export function isPayDemRecordVerifyingRail(rail: unknown): boolean {
   } catch {
     return false;
   }
-  return sdkRecordReadingSettles.has(settle) || sdkClientRailSettles.has(settle);
+  return sdkRailRecordReaders.has(settle);
 }
 
 const PAY_DEM_RESULT_KEYS = new Set([
@@ -3294,14 +3319,15 @@ export function payDemSettle(
   // Only createPayDemRail's own settle reads and binds the transaction record
   // itself. A createPayDemClientRail settle's success is final only as the
   // exact object the SDK's own read minted for this payment (below); its
-  // failure proof stays held. Any other rail could never settle, so its
-  // settle is never called for a fresh attempt (`submit` below). The bridge
-  // is still built around it, so a payment it already made reconciles.
+  // failure proof stays held. The same rail's own record reader decides every
+  // recovered verdict, and only a rail that has one may make a fresh payment:
+  // a payment no later run can read again would complete once and then hold
+  // for good. Any other rail's settle is never called for a fresh attempt
+  // (`submit` below). The bridge is still built around it, so a payment it
+  // already made reconciles.
   const recordVerifiedRail = sdkRecordReadingSettles.has(railSettleTarget);
-  const freshSettleRail =
-    recordVerifiedRail || sdkClientRailSettles.has(railSettleTarget);
-  // The same rail's own record reader decides every recovered verdict.
   const sdkRecordReader = sdkRailRecordReaders.get(railSettleTarget);
+  const freshSettleRail = sdkRecordReader !== undefined;
   const reconcileProperty = stableDataProperty(
     opts,
     "reconcile",

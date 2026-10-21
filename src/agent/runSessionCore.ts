@@ -332,8 +332,9 @@ export interface SessionDeps {
    * included) to be returned byte-for-byte; failure evidence without that
    * proof is held as indeterminate. A native success or permanent failure is
    * final only from that adapter (directly, from `settleFromRail` or through
-   * `Agent.runSession`) over the rail `createPayDemRail` built, which reads
-   * the node's record for the hash itself; a recovered failure only for a
+   * `Agent.runSession`) over the rail `createPayDemRail` or
+   * `createPayDemClientRail` built, which reads the node's record for the hash
+   * itself (a client rail through its reader); a recovered failure only for a
    * hash the session already held. Over any other rail the adapter reports
    * only the hash: the session binds it and saves it as an unresolved
    * attempt, then refuses to complete, so the next resume audits that hash.
@@ -4324,8 +4325,8 @@ export async function runSessionCore(
 
   /**
    * Native DEM is settled and recovered only through the SDK's `payDemSettle`
-   * adapter, whose every success or permanent failure over the rail
-   * `createPayDemRail` built is its own read of the node record (#338). Any
+   * adapter, which pays only over a rail that can read its payment's node
+   * record again (`createPayDemRail`'s or `createPayDemClientRail`'s, #338). Any
    * other `settle` or `resumeSettlement` is not called at all: it could pay,
    * or report a native outcome, that no later run can re-read, so a session
    * that completed on it once could never be resumed or repeated.

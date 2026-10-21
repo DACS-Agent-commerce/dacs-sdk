@@ -174,10 +174,19 @@ beforeEach(() => {
   // demosdk signs with the account nonce + 1: before this call the payer had
   // used NONCE - 1, so the transfer the client signs now carries NONCE.
   accountNonce = NONCE - 1;
+  // A recovery reads the fork state afresh through nodeCall.
   sdk.nodeCall.mockImplementation(async (message: string) =>
-    message === "getAddressNonce" ? accountNonce : status);
+    message === "getNetworkInfo"
+      ? { forks: { osDenomination: { activated: true } } }
+      : message === "getAddressNonce" ? accountNonce : status);
   sdk.getTxByHash.mockImplementation(async () => record());
 });
+
+/** A reconciler's claim for the transfer: the record carries no fee, so it names none. */
+const reconciled = (payer = PAYER_HEX) => {
+  const { networkFeeOs: _fee, ...claim } = settled();
+  return { ...claim, payer, payee: PAYEE_HEX, amountOs: AMOUNT_OS } as PayDemReconciledSettlement;
+};
 
 describe("a custom client settles only on the SDK's own record read (#338)", () => {
   it("settles a debited transfer whose bound record the SDK read as confirmed", async () => {
@@ -674,14 +683,66 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     accountNonce = NONCE;
     await expect(settle(request("job-2"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
 
-    const reconcile = vi.fn(async () =>
-      ({ ...settled(), payer: PAYER_HEX, payee: PAYEE_HEX, amountOs: AMOUNT_OS }) as PayDemReconciledSettlement);
+    const reconcile = vi.fn(async () => reconciled());
     const restarted = payDemSettle(createPayDemClientRail(client), {}, {
       store: createIdempotencyStore(log), reconcile,
     });
     await expect(restarted({ ...request("job-2"), priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: false }] }))
       .rejects.toThrow(/no SDK record binds the retained transaction/);
     await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
+  });
+
+  // Sweep P1-A: a client rail had no recovery read, so a session it paid
+  // completed once and then held for good on every re-run or resume.
+  it("re-reads a client rail's payment after a restart through its reader, reading the fork state afresh", async () => {
+    const { client, transfer } = customClient(await reader());
+    const log = createInMemorySettlementLog();
+    await expect(payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) })(
+      request("job-a"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    // A restarted process: a new reader, rail and bridge over the durable log.
+    // demosdk's cached getNetworkInfo would still report the fork inactive.
+    sdk.getNetworkInfo.mockResolvedValue({ forks: { osDenomination: { activated: false } } });
+    const reconcile = vi.fn(async () => reconciled());
+    const restarted = payDemSettle(createPayDemClientRail(customClient(await reader()).client), {}, {
+      store: createIdempotencyStore(log), reconcile,
+    });
+    const audit = { ...request("job-a"), priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: true }] };
+    await expect(restarted(audit)).resolves.toMatchObject({
+      ok: true, txHash: TX_HASH, blockNumber: BLOCK, finality: { model: "bft-final" },
+    });
+    // A store lookup by key re-reads the cached outcome the same way.
+    await expect(restarted(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(sdk.nodeCall).toHaveBeenCalledWith("getNetworkInfo", {});
+    expect(sdk.getTxByHash).toHaveBeenLastCalledWith(TX_HASH);
+    expect(transfer).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a client rail's recovery a node record contradicts, and never resubmits", async () => {
+    const { client, transfer } = customClient(await reader());
+    const log = createInMemorySettlementLog();
+    await payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) })(request("job-a"));
+    const restarted = payDemSettle(createPayDemClientRail(client), {}, {
+      store: createIdempotencyStore(log), reconcile: async () => reconciled(),
+    });
+    const audit = { ...request("job-a"), priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: true }] };
+    sdk.getTxByHash.mockImplementation(async () => ({ ...record(), status: "failed" }));
+    await expect(restarted(audit)).rejects.toThrow(/contradicts the node record the SDK read/);
+    sdk.getTxByHash.mockImplementation(async () => null);
+    await expect(restarted(audit)).rejects.toThrow(/could not establish the node record.*not found/);
+    expect(transfer).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a client rail's recovery for a payer other than the client's wallet", async () => {
+    const { client, transfer } = customClient(await reader());
+    const rail = createPayDemClientRail(client);
+    const other = "ef".repeat(32);
+    const settle = payDemSettle({ address: `0x${other}`, settle: rail.settle }, {}, {
+      store: createIdempotencyStore(createInMemorySettlementLog()), reconcile: async () => reconciled(other),
+    });
+    await expect(settle({ ...request("job-a"), priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: true }] }))
+      .rejects.toThrow(/payer is not this rail's wallet/);
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+    expect(transfer).not.toHaveBeenCalled();
   });
 
   // The client's journal call is the last step before its broadcast: the

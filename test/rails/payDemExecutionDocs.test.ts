@@ -117,7 +117,12 @@ describe("pay-dem execution docs match the code (#338)", () => {
   it("says a recovered verdict is the SDK's own node read and a native session calls only the adapter", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     const readme = read("README.md").replace(/\s+/g, " ");
-    expect(doc).toContain("is then decided by the SDK rail's own read of the node's record for that hash");
+    expect(doc).toContain("is then decided by the rail's own read of the node's record for that hash");
+    // Every rail that may pay can read its payment again (sweep P1-A).
+    expect(doc).toContain("for a `createPayDemClientRail` rail, the one its client's `createPayDemRecordReader` reader opened");
+    expect(doc).toContain("Only a rail with such a read may make a fresh payment");
+    expect(readme).toContain("over a `createPayDemClientRail` rail through the connection of the client's `createPayDemRecordReader` reader, for that client's wallet only");
+    expect(readme).toContain("so a session paid through either can be resumed or repeated");
     expect(doc).toContain("A failure found by a lookup by key is never final");
     expect(doc).not.toMatch(/wire one that reads the node you trust/);
     // No custom settle or recovery is called for native DEM, so no run can

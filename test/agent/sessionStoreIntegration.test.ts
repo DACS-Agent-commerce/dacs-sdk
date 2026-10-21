@@ -2236,6 +2236,64 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(demosNode.transfers).toBe(0);
     });
 
+    // Sweep P1-A: a createPayDemClientRail rail had no recovery read, so a
+    // session it paid completed once and then held on every re-run or resume.
+    test("completes, repeats and resumes a createPayDemClientRail session after a crash at the evidence anchor, paying once", async () => {
+      const kv = await demKv();
+      const log = createInMemorySettlementLog();
+      let transfers = 0;
+      // Each run is a new process: a new reader, client rail and bridge over
+      // the durable rail log.
+      const adapter = async () => payDemSettle(createPayDemClientRail({
+        address: payer,
+        recordReader: await createPayDemRecordReader({ rpc: "https://node.test", inclusionTimeoutMs: 200,
+          inclusionPollIntervalMs: 1, statusRequestTimeoutMs: 50, transactionRecordTimeoutMs: 100 }),
+        transfer: async (args) => {
+          transfers += 1;
+          await args.journalPreparedTransfer?.({ txHash, nonce: 9, payer, payee: args.to,
+            amountOs: args.amountOs.toString(), network: "demos",
+            ...(args.recovery === undefined ? {} : { recovery: args.recovery }) });
+          // The client broadcasts; the node records the transfer it signed.
+          demosNode.records.set(txHash, nodeRecord({ txHash, payer, payee: args.to,
+            amountOs: args.amountOs.toString() }));
+          return { ok: true, state: "included", execution: "executed", hash: txHash, nonce: 9, blockNumber: 42 };
+        },
+      }), {}, { store: createIdempotencyStore(log), reconcile: async (context) =>
+        executedClaim("txHash" in context ? context.txHash : txHash) });
+      const evidence = `stor:${sessionAnchorName.evidence("job-1")}`;
+      const crashAtEvidence: SessionDeps["anchor"] = async (name, value) => {
+        if (`stor:${name}` === evidence) throw new Error("process killed at the evidence anchor");
+        kv.set(`stor:${name}`, value as Record<string, unknown>);
+        return `stor:${name}`;
+      };
+
+      // Pay, save the outcome, die at the evidence anchor; then resume.
+      const crashed = createInMemorySessionStore();
+      const first = await makeDeps(crashed, { kv, settle: await adapter(), anchor: crashAtEvidence });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow("process killed at the evidence anchor");
+      expect(await lastOutcome(crashed)).toMatchObject({ ok: true, txHash });
+      expect(kv.has(evidence)).toBe(false);
+      const resumed = await makeDeps(crashed, { kv, settle: await adapter(), resumeSettlement: await adapter() });
+      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+        .resolves.toMatchObject({ outcome: "completed" });
+      expect(kv.get(evidence)).toMatchObject({ outcome: "success" });
+
+      // Re-run the completed session twice: same result, no new write.
+      const completed = await crashed.load("job-1");
+      const anchored = structuredClone([...kv]);
+      for (let repeat = 0; repeat < 2; repeat += 1) {
+        const again = await makeDeps(crashed, { kv, settle: await adapter(), resumeSettlement: await adapter() });
+        await expect(runSessionCore(again.listingRef, demTerms, again.deps, "job-1"))
+          .resolves.toMatchObject({ outcome: "completed" });
+      }
+      expect(await crashed.load("job-1")).toEqual(completed);
+      expect([...kv]).toEqual(anchored);
+      expect(transfers).toBe(1);
+      expect(demosNode.transfers).toBe(0);
+      expect(demosNode.broadcasts).toBe(0);
+    });
+
     // A process killed after the SDK rail recorded the failed
     // record it read, and before the session bound and saved it, leaves only
     // the intent. The resume's re-check returns that failure for a hash the
