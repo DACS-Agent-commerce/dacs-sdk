@@ -638,16 +638,21 @@ after every process restart before reuse; missing, absent, or contradictory
 recovery fails closed and never authorizes a broadcast.
 
 A recovery request that carries `priorAttempts` (as `runSession` sends for a
-session holding a transaction-bearing outcome) is a read-only audit of that
-retained transaction: it never calls the rail, even when the rail log lost its
-record. It requires both `settlementStore.readOutcome` and `reconcile` and
+session holding a transaction-bearing outcome) is an audit of that retained
+transaction that never submits and never acquires submit authority: it never
+calls the rail, even when the rail log lost its record. It reads only, except
+to finish a retained hash that no record names (below), which writes through
+the store's expired generation. It requires both `settlementStore.readOutcome`
+and `reconcile` and
 fails closed without either, except that a bridge without `reconcile` still
 returns the definitive result it bound to the key itself when the key's
 attempt record names that hash and the store saved that same result. A
 `SettlementLog` that keeps attempt records must implement `readOutcome`, which
 reads without a lease. The `createIdempotencyStore` lookup never claims,
-leases or binds a key; over an older log without `readOutcome` it refuses, so
-a retained hash on such a log is not audited. For an
+leases or binds a key; over an older log without `readOutcome` it refuses,
+and the audit then finishes a retained hash only through the store's expired
+generation, as for a hash no record names (below), with no earlier read of an
+outcome. For an
 audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plus
 `txHash`, the retained hash in canonical form (64 lower-case hex digits, no
 `0x`). `getTxByHash` matches that stored form exactly and answers any other form
@@ -667,7 +672,9 @@ method when its `SettlementLog` implements the optional `putAttempt` and
 `readAttempt` pair (the in-memory log does). `createPayDemRail` signs the hash
 itself and records it through that fence before its one broadcast, and does
 not broadcast if the record is refused, and `payDemSettle` does not write it
-again after the payment is final. A payment in flight across an upgrade, or on
+again after the payment is final (it writes only when the SDK rail returned a
+hash its own pre-broadcast write did not report, which `createPayDemRail`
+never does; a refusal there fails closed and leaves the hash unbound). A payment in flight across an upgrade, or on
 a log that predates attempt records, leaves a retained hash no record names.
 A resumed audit of a retained hash that no attempt record names finishes it
 only through the store's own `once`: while the key's generation is held it
@@ -678,8 +685,14 @@ accepted. That generation then records the hash as the key's attempt and saves
 the outcome, so later audits and restarts bind it through the record. A key the
 store holds nothing for starts nothing (the submit refuses and the intent is
 released), an outcome saved without a record still never binds, and any other
-store's `once` or fence never finishes it. This path trusts the reconciler as
-the restart without history does (below).
+store's `once` or fence never finishes it. Over a log without `readOutcome`
+the same path also accepts the outcome the store already holds for these exact
+terms when it names the retained hash and the reconciliation of that hash
+agrees with it on block and result. This path trusts the reconciler as
+the restart without history does (below). This is the one place an audit
+changes the log: the store's `once` claims a fresh intent for a key it holds
+nothing for and releases it at once, or acquires an expired generation, records
+the hash and saves the outcome. It never submits.
 The fence a rail receives records
 the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
 passes, and rejects a value that is not a Demos transaction hash, so a rail
@@ -691,7 +704,9 @@ log needs the attempt pair for restart audits, so `payDemSettle` starts no new
 transfer through a `createIdempotencyStore` store over a log without it: the
 call fails before the rail runs, nothing is signed or sent, and the intent is
 released. Nor does it start one through any other store, wrapper or fence: a
-new transfer runs only when the fence a store hands its submit records through
+new transfer runs only when the fence a store hands its submit is that store's
+own fence for this key and these terms (a wrapper whose `once` hands another
+key's fence starts nothing) and records through
 the same `createIdempotencyStore` store whose own `readOutcome` and
 `readAttempt` it carries, so pass that store, or an object carrying its own
 `once`, `readOutcome` and `readAttempt`. A log
@@ -704,6 +719,19 @@ its attempt record (`bindingHash` and `txHash` from that outcome). A key still
 held with no outcome is backfilled only from the rail's prepared-transfer
 journal entry whose `recovery` tuple names that key. Once the log keeps
 attempts, an outcome without a record never counts.
+
+Upgrading: this is a breaking change for stores and logs that paid before. A
+custom or class settlement store, and any log that lacks `readOutcome`,
+`putAttempt` or `readAttempt` (`createIdempotencyStore` also throws for a log
+that provides only one of the attempt pair, or the pair without `readOutcome`),
+now starts no new pay-dem transfer: the call fails before the rail runs and
+nothing is signed or sent. To migrate, add `readOutcome`, `putAttempt` and
+`readAttempt` to the durable log (`putAttempt` compare-and-set under the
+generation, a record never changing), backfill the records as described above,
+and pass the `createIdempotencyStore` store itself, or an object carrying its
+own `once`, `readOutcome` and `readAttempt`. A session still holding a paid
+hash on an older log without `readOutcome` finishes it through the store's
+expired generation, so the log needs no upgrade for that.
 
 A supplied entry is always checked as well. It must name the retained hash, the
 same payer, payee, OS amount and network, a `recovery` tuple equal to this rail,

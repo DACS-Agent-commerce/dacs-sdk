@@ -64,6 +64,21 @@ function logPredatingAttempts() {
   return { log, state };
 }
 
+/**
+ * The same log as {@link logPredatingAttempts} once the integrator's log has
+ * lost (or never had) `readOutcome` and the attempt pair: a payment the log's
+ * writer left in flight is audited through a store over this view.
+ */
+function logWithoutReadOutcome(full: SettlementLog): SettlementLog {
+  return {
+    claimIntent: (input) => full.claimIntent(input),
+    isCurrent: (input) => full.isCurrent(input),
+    grantRecovery: (input) => full.grantRecovery(input),
+    putOutcome: (input) => full.putOutcome(input),
+    releaseIntent: (input) => full.releaseIntent(input),
+  };
+}
+
 describe("pay-dem finishes a retained transfer no attempt record names through the store's expired generation", () => {
   it("refuses while held, then resolves after the lease expires and after a restart, with one transfer", async () => {
     const { log, state } = logPredatingAttempts();
@@ -97,6 +112,44 @@ describe("pay-dem finishes a retained transfer no attempt record names through t
       store: createIdempotencyStore(log, { now: () => clock, leaseDurationMs: LEASE_MS }), reconcile,
     });
     await expect(restarted(resumed("job-t"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    expect(sdkTransfers()).toBe(1);
+  });
+
+  // Sweep P3-2 (#370): a crash between the generation's attempt record and its
+  // outcome save leaves the record, which binds the next audit on its own.
+  it("binds the next audit through the record when the process dies before the outcome is saved", async () => {
+    const { log: base, state } = logPredatingAttempts();
+    let crash = false;
+    const log: SettlementLog = {
+      ...base,
+      putOutcome: async (input) => {
+        if (crash) throw new Error("process died before the outcome was saved");
+        return base.putOutcome(input);
+      },
+    };
+    let clock = 1_000_000;
+    const options = () => ({ now: () => clock, leaseDurationMs: LEASE_MS });
+    const reconcile = vi.fn(async () => executed());
+    const first = payDemSettle(await heldRail(), {}, { store: createIdempotencyStore(log, options()), reconcile });
+    await expect(first(request("job-t"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+
+    clock += LEASE_MS + 1_000;
+    state.predating = false;
+    crash = true;
+    const settle = async () => payDemSettle(await sdkRail(), {}, {
+      store: createIdempotencyStore(log, options()), reconcile,
+    });
+    await expect((await settle())(resumed("job-t"))).rejects.toThrow(/process died/);
+    const key = settlementKey("pay-dem", "job-t", 0);
+    await expect(log.readAttempt!(key)).resolves.toMatchObject({ txHash: TX_HASH });
+    await expect(log.readOutcome!(key)).resolves.toBeNull();
+
+    // The record names the hash, so the restarted audit needs no generation.
+    crash = false;
+    reconcile.mockClear();
+    await expect((await settle())(resumed("job-t")))
+      .resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ txHash: TX_HASH }));
     expect(sdkTransfers()).toBe(1);
   });
 
@@ -160,5 +213,67 @@ describe("pay-dem finishes a retained transfer no attempt record names through t
     });
     await expect(settle(resumed("job-t")))
       .rejects.toThrow(/finished only through the settlement store's own expired generation/);
+  });
+
+  // Sweep F2 (#370): the bridge's `readOutcome` refuses over a log without one,
+  // which left a paid session stuck until the log was upgraded.
+  describe("over a log without readOutcome", () => {
+    const setup = async () => {
+      const { log: full } = logPredatingAttempts();
+      let clock = 1_000_000;
+      const options = () => ({ now: () => clock, leaseDurationMs: LEASE_MS });
+      const reconcile = vi.fn(async () => executed());
+      const first = payDemSettle(await heldRail(), {}, {
+        store: createIdempotencyStore(full, options()), reconcile,
+      });
+      await expect(first(request("job-t"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+      const bare = logWithoutReadOutcome(full);
+      const bridge = async (rec: PayDemSettlementReconcile = reconcile as PayDemSettlementReconcile) =>
+        payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(bare, options()), reconcile: rec });
+      return { full, bridge, advance: () => { clock += LEASE_MS + 1_000; }, reconcile };
+    };
+
+    it("refuses while held, then finishes once the lease expires and again after a restart, with one transfer", async () => {
+      const { full, bridge, advance, reconcile } = await setup();
+      await expect((await bridge())(resumed("job-t"))).rejects.toThrow(/unresolved or in-flight current generation/);
+      advance();
+      await expect((await bridge())(resumed("job-t")))
+        .resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+      // The generation saved the outcome; the log keeps no attempt records.
+      await expect(full.readOutcome!(settlementKey("pay-dem", "job-t", 0)))
+        .resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
+      expect(reconcile).toHaveBeenCalledWith(expect.not.objectContaining({ txHash: expect.anything() }));
+      // A restarted bridge reads the store's saved outcome, which names the hash.
+      await expect((await bridge())(resumed("job-t")))
+        .resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+      expect(sdkTransfers()).toBe(1);
+    });
+
+    it("refuses when the reconciliation of this key finds no payment, or another transaction", async () => {
+      const { full, bridge, advance } = await setup();
+      advance();
+      await expect((await bridge(vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) =>
+        context.txHash === undefined ? null : executed()) as PayDemSettlementReconcile))(resumed("job-t")))
+        .rejects.toThrow(/contradicts reconciliation proof of absence/);
+      advance();
+      await expect((await bridge(vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) =>
+        context.txHash === undefined ? { ...executed(), txHash: "34".repeat(32) } : executed()) as PayDemSettlementReconcile))(
+        resumed("job-t"))).rejects.toThrow(/does not name the retained transaction/);
+      await expect(full.readOutcome!(settlementKey("pay-dem", "job-t", 0))).resolves.toBeNull();
+      expect(sdkTransfers()).toBe(1);
+    });
+
+    it("never accepts the saved outcome for another retained hash", async () => {
+      const { bridge, advance } = await setup();
+      advance();
+      await expect((await bridge())(resumed("job-t"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      // This reconciler confirms whichever hash it is asked for, so only the
+      // store's saved outcome (which names TX_HASH) could bind the other one.
+      const echo = vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) =>
+        ({ ...executed(), txHash: context.txHash ?? TX_HASH })) as PayDemSettlementReconcile;
+      const other = { ...resumed("job-t"), priorAttempts: [{ txHash: "34".repeat(32), chainId: "demos", ok: false }] };
+      await expect((await bridge(echo))(other)).rejects.toThrow(/no SDK record binds the retained transaction/);
+      expect(sdkTransfers()).toBe(1);
+    });
   });
 });

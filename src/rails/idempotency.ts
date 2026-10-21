@@ -142,8 +142,9 @@ export interface SettlementLog {
   /**
    * Read an immutable outcome without acquiring a lease or changing a generation.
    * Required on a log that keeps attempts. Optional on one that does not;
-   * without it the store's `readOutcome` refuses before touching the log, so
-   * a retained pay-dem hash on such a log is not audited.
+   * without it the store's `readOutcome` refuses before touching the log, and
+   * `payDemSettle` finishes a retained pay-dem hash on such a log only through
+   * the store's expired generation.
    */
   readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
@@ -916,6 +917,20 @@ export function isBindingCheckedOutcomeLookup(value: unknown): boolean {
 // the `putAttempt`/`readAttempt` pair.
 const outcomeOnlyLogLookups = new WeakSet<object>();
 
+// The `readOutcome` closures `createIdempotencyStore` built over a log that
+// has no `readOutcome` of its own, which refuse every lookup.
+const unreadableOutcomeLookups = new WeakSet<object>();
+
+/**
+ * Internal (not re-exported): true only for a `readOutcome` that
+ * `createIdempotencyStore` built over a log without `readOutcome` (one written
+ * before it existed), so the lookup can only refuse and a caller finishes a
+ * retained payment through the store's `once` instead.
+ */
+export function isUnreadableOutcomeLookup(value: unknown): boolean {
+  return typeof value === "function" && unreadableOutcomeLookups.has(value);
+}
+
 /**
  * Internal (not re-exported): true only for a `readOutcome` that
  * `createIdempotencyStore` built over a log that keeps no attempt records. A
@@ -926,17 +941,30 @@ export function isOutcomeOnlyLogLookup(value: unknown): boolean {
 }
 
 // Each fence `recordAttempt` a `createIdempotencyStore` store built, mapped to
-// that same store's `readAttempt`.
-const attemptRecorders = new WeakMap<object, object>();
+// that same store's `readAttempt` and the key and terms it records under.
+const attemptRecorders = new WeakMap<object, {
+  readonly readAttempt: object;
+  readonly key: string;
+  readonly bindingHash: string;
+}>();
 
 /**
  * Internal (not re-exported): true only when `recordAttempt` is a fence
- * recorder `createIdempotencyStore` built and `readAttempt` is the lookup of
- * that same store, so the hash it records is the one that lookup reads back.
+ * recorder `createIdempotencyStore` built for exactly this `key` and these
+ * `terms`, and `readAttempt` is the lookup of that same store, so the hash it
+ * records is the one that lookup reads back for this key. A recorder built for
+ * another key or other terms never counts, however a wrapper obtained it.
  */
-export function isStoreAttemptRecorder(recordAttempt: unknown, readAttempt: unknown): boolean {
-  return typeof recordAttempt === "function" && typeof readAttempt === "function" &&
-    attemptRecorders.get(recordAttempt) === readAttempt;
+export function isStoreAttemptRecorder(
+  recordAttempt: unknown,
+  readAttempt: unknown,
+  key: string,
+  terms: Readonly<SettlementBinding>,
+): boolean {
+  if (typeof recordAttempt !== "function" || typeof readAttempt !== "function") return false;
+  const built = attemptRecorders.get(recordAttempt);
+  return built !== undefined && built.readAttempt === readAttempt && built.key === key &&
+    built.bindingHash === settlementBindingHash(terms);
 }
 
 // Each `readAttempt` a `createIdempotencyStore` store built, mapped to that
@@ -1026,7 +1054,8 @@ function buildIdempotencyStore(
 
   // The lookup never claims, leases or binds a key. A log without
   // `readOutcome` (one written before it existed) refuses it before touching
-  // the log, so a retained hash on such a log is not audited.
+  // the log; `isUnreadableOutcomeLookup` tells a caller, which finishes a
+  // retained payment through `once` instead.
   const readOutcome: NonNullable<SettlementIdempotencyStore["readOutcome"]> = async (key, binding) => {
     const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
     const bindingHash = settlementBindingHash(capturedBinding);
@@ -1052,6 +1081,8 @@ function buildIdempotencyStore(
     return captureBoundResult(outcome.result as SettleResult, capturedBinding,
       "settlement read-only outcome") as SettleResult;
   };
+
+  if (durable.readOutcome === undefined) unreadableOutcomeLookups.add(readOutcome);
 
   return {
     ...attemptLookup,
@@ -1137,7 +1168,9 @@ function buildIdempotencyStore(
             }
             throw new DacsError(`settlement ${key} attempt write is invalid`);
           };
-          if (recordAttempt !== undefined) attemptRecorders.set(recordAttempt, attemptLookup.readAttempt!);
+          if (recordAttempt !== undefined) {
+            attemptRecorders.set(recordAttempt, { readAttempt: attemptLookup.readAttempt!, key, bindingHash });
+          }
           const built = Object.freeze({
             ...token,
             settlementKey: key,
