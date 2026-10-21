@@ -44,6 +44,29 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     expect(check(vetRequirements)).toMatch(reason);
   });
 
+  test("answers a refusal for a shape it does not take, and never throws", () => {
+    expect(() => check({ buyer: valid[0] })).not.toThrow();
+    expect(() => check(null)).not.toThrow();
+  });
+
+  test("refuses one Vet reference named for two different party identities", () => {
+    const sameRef = { ...seller, vetRecordRef: structuredClone(buyer.vetRecordRef) };
+    expect(sellerFulfilmentVetRequirementsViolation(valid, { jobId, buyer, seller: sameRef, buyerRequirement }))
+      .toMatch(/^one Vet record cannot represent different authenticated party identities$/);
+  });
+
+  test.each([
+    ["buyer", "a reference with no storage-program anchor", { vetRecordRef: { ...buyer.vetRecordRef, anchor: { kind: "TEST-other", locator: "TEST" } } }],
+    ["buyer", "a reference with no content hash", { vetRecordRef: { anchor: buyer.vetRecordRef.anchor, signer: sellerClaim } }],
+    ["buyer", "an empty claim", { primaryClaim: "" }],
+    ["seller", "a reference that is not one", { vetRecordRef: "TEST-not-a-reference" }],
+    ["seller", "an empty claim", { primaryClaim: "" }],
+  ] as const)("refuses a %s party with %s, with a reason that is not empty", (role, _label, change) => {
+    const parties = { buyer, seller, [role]: { ...(role === "buyer" ? buyer : seller), ...change } };
+    const reason = sellerFulfilmentVetRequirementsViolation(valid, { jobId, ...parties, buyerRequirement } as never);
+    expect(reason).toBe(`the ${role} Vet reference or claim is malformed`);
+  });
+
   test("refuses distinct party references that share one content hash", () => {
     const shared = { ...seller, vetRecordRef: { ...seller.vetRecordRef, contentHash: buyer.vetRecordRef.contentHash } };
     expect(sellerFulfilmentVetRequirementsViolation([valid[0], invocation(shared, buyerClaim)], { jobId, buyer, seller: shared, buyerRequirement }))
