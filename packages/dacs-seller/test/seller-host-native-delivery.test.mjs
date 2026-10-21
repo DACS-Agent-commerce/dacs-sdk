@@ -1,14 +1,18 @@
 // The shipped standalone host on its native path, from payment evidence to
-// delivery: startSellerHost with every operator capability scripted, and the
+// delivery: startSellerHost with the package's wallet journal over scripted
+// wallet primitives and every other operator capability scripted, and the
 // package's own native payment evidence consumer reading a scripted in-memory
-// Demos node (marked as the fixture node it requires). The buyer proposes,
-// commits, pays and claims over the host's authenticated HTTP transport.
+// Demos node (marked as the fixture node it requires). A scripted wallet with
+// no journal, which startSellerHost refuses, runs the same agent behind the
+// same transport composition. The buyer proposes, commits, pays and claims
+// over the authenticated HTTP transport.
 // Commitment, payment evidence and the Deliverable are signed storage CREATEs
 // on that node, each read back through the package's SR-2 adapter.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
@@ -246,7 +250,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
   // evidence naming another transfer.
   const walletDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-wallet-')));
   t.after(() => rmSync(walletDirectory, { recursive: true, force: true }));
-  const openJournal = () => seller.createPaymentEvidenceWalletJournal({ path: join(walletDirectory, 'wallet-journal.sqlite'),
+  const openJournal = (file = 'wallet-journal.sqlite') => seller.createPaymentEvidenceWalletJournal({ path: join(walletDirectory, file),
     signCreate: async ({ logicalAddress, artifact, artifactKind }) => {
       effects.signCreate.push(logicalAddress);
       if (faults.signCreate.shift() === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
@@ -265,11 +269,13 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
     } });
   let journal = walletJournal ? openJournal() : null;
   t.after(() => journal?.close());
+  // Reopens the wallet's journal: the host started after it anchors with the new one.
   const restartWallet = () => { journal.close(); journal = openJournal(); };
-  const nativePaymentEvidence = createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl,
-    anchorEvidence: async (input) => {
+  const evidenceConsumer = (anchorEvidence) => createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl, anchorEvidence,
+    readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) });
+  // The scripted seller wallet (no journal).
+  const scriptedEvidence = evidenceConsumer(async (input) => {
       effects.anchorEvidence.push(input.logicalAddress);
-      if (journal) return journal.anchorEvidence(input);
       const fault = faults.anchorEvidence.shift();
       if (fault === 'fail') return { status: 'refused', reason: 'TEST wallet refused before signing' };
       if (fault === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
@@ -284,15 +290,13 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
       else writeOnce(input.logicalAddress, artifact, 'SettlementEvidence');
       if (fault === 'lost') throw new Error('TEST wallet answer lost after the CREATE');
       return { status: 'submitted', txHash: signedCreates.get(input.logicalAddress).hash };
-    },
-    readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) });
-  // The wallet's journal question (DACS-4 PC-7(b)): nothing signed for the
+    });
+  // The scripted wallet's journal question (DACS-4 PC-7(b)): nothing signed for the
   // address is 'unsigned'; a signed CREATE is broadcast again as the same
   // signed transaction ('rebroadcast'). `throw` and `pending` script the answer.
-  const reconcilePaymentEvidence = async (input) => {
+  const scriptedReconcile = async (input) => {
     const { logicalAddress } = input;
     effects.reconcileEvidence.push(logicalAddress);
-    if (journal) return journal.reconcilePaymentEvidence(input);
     const fault = faults.reconcileEvidence.shift();
     if (fault === 'throw') throw Object.assign(new Error('TEST wallet journal unavailable'), { code: 'TEST-journal-down' });
     if (fault === 'pending') return { status: 'pending', txHash: signedCreates.get(logicalAddress)?.hash ?? null };
@@ -338,10 +342,24 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
   const capabilities = () => ({ signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer,
     observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); },
-    nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(), sessionAdmission: admission.sessionAdmission, now: clock,
-    ...(reconcile ? { reconcilePaymentEvidence } : {}) });
+    nativePaymentEvidence: journal ? evidenceConsumer(journal.anchorEvidence) : scriptedEvidence, demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(),
+    sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal ? journal.reconcilePaymentEvidence : scriptedReconcile } : {}) });
+  // startSellerHost takes the evidence anchor and its reconciliation only from
+  // one package wallet journal. A scripted wallet's vectors run the agent
+  // behind the same composition the host builds: its durable state, the
+  // authenticated transport and its journal, on loopback.
+  const composeHost = async () => {
+    const agent = await seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor });
+    mkdirSync(join(dataDirectory, 'transport'), { recursive: true, mode: 0o700 });
+    const store = seller.createSellerTransportStore({ path: join(dataDirectory, 'transport', 'transport.sqlite'), now: clock });
+    const authentication = seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: agent.listingPin, store, now: clock });
+    const server = createServer(seller.createSellerHttpHandler(agent, { authentication }));
+    await new Promise((resolve) => server.listen({ host: '127.0.0.1', port: 0 }, resolve));
+    return { url: `http://127.0.0.1:${server.address().port}`, issueSessionChallenge: (input) => agent.issueSessionChallenge(input),
+      close: () => new Promise((resolve) => { server.close(() => { store.close(); agent.close(); resolve(); }); server.closeIdleConnections(); }) };
+  };
   const start = async () => {
-    const host = await seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor });
+    const host = walletJournal || !reconcile ? await seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor }) : await composeHost();
     hosts.push(host);
     return host;
   };
@@ -363,7 +381,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
     assert.equal((await client().commit(jobId)).status, 'committed');
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
-    return { jobId, agreement, payout, amountOs, client,
+    return { jobId, agreement, agreementHash: plan.agreementHash, payout, amountOs, client,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
       claim: async (txHash) => { try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
         catch (error) { return { error: error.code, status: error.status }; } } };
@@ -376,10 +394,29 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, idempote
     const agent = await seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor });
     try { return agent.durableSessionOf(jobId); } finally { agent.close(); }
   };
+  // A host process that died in the middle of a buyer's payment claim: its
+  // transport journal reserved the claim (a fresh nonce for the same effect)
+  // and never finished it. Left with the host stopped, through the store's
+  // own reserve, then the host starts again.
+  const crashMidClaim = async (p, txHash) => {
+    await host.close(); hosts.splice(hosts.indexOf(host), 1);
+    const body = { jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE };
+    const signed = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim,
+      resolveJob: () => ({ listingPin: pin, agreementHash: p.agreementHash }), now: clock }).request('/dacs/v1/payments', body, JSON.stringify(body));
+    const store = seller.createSellerTransportStore({ path: join(dataDirectory, 'transport', 'transport.sqlite'), now: clock });
+    try {
+      const request = seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store, now: clock }).readRequest(signed.header);
+      assert.equal(store.reserve(request, body).disposition, 'perform', 'the claim is reserved, as a running request is');
+    } finally { store.close(); }
+    host = await start();
+  };
+  // startSellerHost over these capabilities with `changes` (for refusals).
+  const startShipped = (changes) => seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor, ...changes });
   const createsAt = (logicalAddress) => node.creates.filter((entry) => entry.logicalAddress === logicalAddress).length;
   const signedCreate = (logicalAddress) => clone(signedCreates.get(logicalAddress));
   const writtenAt = (logicalAddress) => clone(written.get(logicalAddress));
-  return { node, effects, faults, purchase, restart, restartWallet, retainedSession, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing };
+  return { node, effects, faults, purchase, restart, restartWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
+    createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
@@ -514,6 +551,85 @@ test('the host does not start without the wallet\'s journal question: a paid ord
   await assert.rejects(world(t, { reconcile: false }), { name: 'TypeError', message: /requires reconcilePaymentEvidence$/ });
 });
 
+// DACS-4 PC-7(b): the answers that let the agent sign the same evidence again
+// ('refused' from the anchor, 'unsigned' from the reconciliation) are taken
+// only from one package wallet journal, which keeps every signed CREATE and
+// reads its fate from the chain. A wallet that would answer them falsely
+// never reaches the host.
+test('the host takes the evidence anchor and its reconciliation only from one wallet journal: a scripted \'refused\' or \'unsigned\' answer cannot authorize a second signature', async (t) => {
+  const w = await world(t, { idempotentWallet: false, walletJournal: true });
+  const journal = w.walletJournal(), other = w.openJournal('other-journal.sqlite');
+  t.after(() => other.close());
+  const refused = async () => ({ status: 'refused', reason: 'TEST a wallet that says it sent nothing' });
+  const unsigned = async () => ({ status: 'unsigned', reason: 'TEST a wallet that says nothing can land' });
+  for (const [label, nativeAnchor, reconcilePaymentEvidence] of [['a scripted anchor and reconciliation', refused, unsigned],
+    ['the journal\'s anchor with a scripted reconciliation', journal.anchorEvidence, unsigned], ['a scripted anchor with the journal\'s reconciliation', refused, journal.reconcilePaymentEvidence],
+    ['the anchor and the reconciliation of two journals', journal.anchorEvidence, other.reconcilePaymentEvidence], ['the reconciliation as the anchor', journal.reconcilePaymentEvidence, journal.reconcilePaymentEvidence]]) {
+    await assert.rejects(w.startShipped({ nativePaymentEvidence: w.evidenceConsumer(nativeAnchor), reconcilePaymentEvidence }),
+      { name: 'TypeError', message: /only from one createPaymentEvidenceWalletJournal/ }, label);
+  }
+  // The running host's own journal still takes the order to delivery, signed once.
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+  assert.equal(w.effects.signed.length, 1);
+  assert.equal(w.createsAt(address), 1);
+});
+
+// DACS-4 PC-7(b): after the evidence checkpoint the agent's retained work
+// decides what a retry may send. A readback that fails on the buyer's retry
+// (the node's name index answers 503 once) is a held answer with its cause,
+// never an uncertain effect that only a read-only reconciliation can reach.
+test('a readback outage on the buyer\'s retry keeps the paid order a retry: once the node answers, the evidence is anchored once and the order is delivered, also across a restart', async (t) => {
+  for (const [label, options, kind, fault, restart] of [['a refused anchor', {}, 'anchorEvidence', 'fail', false],
+    ['a dropped broadcast (shipped wallet journal), across a restart', { idempotentWallet: false, walletJournal: true }, 'broadcast', 'drop', true]]) {
+    const w = await world(t, options);
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults[kind].push(fault);
+    assert.equal((await p.claim(tx)).status, 'held', label);
+    let outage = 1;
+    w.node.faults.indexDown = () => outage-- > 0;
+    const down = await p.claim(tx);
+    assert.equal(down.status, 'held', `${label}: ${shown(down)}`);
+    assert.equal(down.readback, 'indeterminate', label);
+    assert.match(down.reason, /^seller-commitment-readback-unavailable: /, `${label}: the cause is kept`);
+    assert.equal(typeof down.nativeReadCode, 'string', label);
+    if (restart) await w.restart();
+    let answer = down;
+    for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `${label}, restart ${restart}: ${shown(answer)}`);
+    assert.equal(typeof answer.delivery, 'object', `${label}: the paid order is handed to delivery`);
+    assert.equal(w.createsAt(address), 1, `${label}: one CREATE`);
+    if (options.walletJournal) assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
+  }
+});
+
+// The same, after a crash: a host that died during a payment claim
+// leaves the claim reserved and never finished in its transport journal. The
+// restarted host runs the retained work again through reconciliation (read
+// back first; the journal decides any resend), never sends twice, and hands
+// the claim back to the ordinary retry until the order is delivered.
+test('a payment claim a crash left reserved and unfinished is not stranded: the restarted host runs the retained work again, anchors once and delivers', async (t) => {
+  for (const [label, options, kind, fault] of [['signing threw (shipped wallet journal)', { idempotentWallet: false, walletJournal: true }, 'signCreate', 'throw'],
+    ['the broadcast was dropped (shipped wallet journal)', { idempotentWallet: false, walletJournal: true }, 'broadcast', 'drop']]) {
+    const w = await world(t, options);
+    const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+    w.faults[kind].push(fault);
+    assert.equal((await p.claim(tx)).status, 'held', label);
+    await w.crashMidClaim(p, tx);
+    let answer = { status: 'not-claimed' };
+    for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
+    assert.equal(typeof answer.delivery, 'object', `${label}: the paid order is handed to delivery`);
+    assert.equal(w.createsAt(address), 1, `${label}: one CREATE`);
+    if (options.walletJournal) {
+      assert.equal(w.effects.signed.length, 1, `${label}: signed once`);
+      assert.equal(new Set(w.effects.broadcast).size, 1, `${label}: every broadcast is the same signed bytes`);
+    }
+    assert.equal((await p.claim(tx)).status, 'payment-evidenced', `${label}: the delivered order answers again`);
+    assert.equal(w.createsAt(address), 1);
+  }
+});
+
 test('a wallet that throws is not a refusal: while the journal does not answer, the anchor is not sent again on an absent readback', async (t) => {
   const w = await world(t, { idempotentWallet: false });
   const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
@@ -542,8 +658,8 @@ test('the shipped wallet journal takes a paid order to delivery with one CREATE 
     w.faults[kind].push(fault);
     const first = await p.claim(tx);
     if (fault !== 'lost') assert.equal(first.status, 'held', `${label}: ${shown(first)}`);
-    await w.restart();
     w.restartWallet();
+    await w.restart();
     let answer = first;
     for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
     assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
@@ -570,7 +686,7 @@ test('the shipped wallet journal signs anew, once, an evidence CREATE another wr
     const overtaken = w.signedCreate(address);
     await w.purchase();
     assert.ok(w.node.accountNonce(w.sellerKey.address) > overtaken.content.nonce, 'another job\'s commitment landed above the kept nonce');
-    if (restart) { await w.restart(); w.restartWallet(); }
+    if (restart) { w.restartWallet(); await w.restart(); }
     let answer = held;
     for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
     assert.equal(answer.status, 'payment-evidenced', `restart ${restart}: ${shown(answer)}`);

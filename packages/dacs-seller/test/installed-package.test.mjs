@@ -79,6 +79,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.match(out.refusedConfigurations.unknownOption, /^TypeError: .*anchors/);
   assert.match(out.refusedConfigurations.relativeDirectory, /^TypeError: .*dataDirectory/);
   assert.match(out.refusedConfigurations.otherSigner, /does not control this Listing/);
+  assert.match(out.refusedConfigurations.scriptedJournal, /^TypeError: .*only from one createPaymentEvidenceWalletJournal/, 'the answers that allow a second evidence signature come only from the package wallet journal');
 
   assert.equal(out.host.origin.startsWith('http://127.0.0.1:'), true);
   assert.deepEqual(out.host.timeouts, { headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });
@@ -94,6 +95,8 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.notEqual(out.refusals.fabricatedVetProposal.disposition, 'complete', 'a Vet reference no record backs is not signed');
   assert.equal(out.refusals.fabricatedVetProposal.contribution, null);
   assert.deepEqual(out.refusals.replayedPresentation, { name: 'SellerRefusedError', code: 'session_not_admitted', status: 409 }, 'a presentation is admitted only on the job its challenge was issued for');
+  assert.equal(out.refusals.bareNoNonce, true);
+  assert.deepEqual(out.refusals.missingNonce, { name: 'SellerRefusedError', code: 'session_not_admitted', status: 409 }, 'DACS-1 §6.3.2: a presentation that carries no session nonce is refused');
   assert.deepEqual(out.issuedChallenge, { nonce: true, lifetimeMs: 600000 }, 'the installed host issues a fresh 256-bit challenge with its lifetime');
   assert.equal(out.presentsIssuedChallenge, true, 'the buyer presents the random challenge the host issued through the public builder');
   assert.deepEqual(out.refusals.contextChallenge, { status: 404, body: { error: 'not_found' } });

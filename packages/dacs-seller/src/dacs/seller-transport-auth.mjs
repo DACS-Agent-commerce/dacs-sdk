@@ -535,9 +535,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // The host may resolve only the SAME retained operation, after its seller
     // reducer has authenticated durable context and fresh native readback. No
     // reservation, slot or transaction is released; no expired intent retries.
-    reconcile(reservation, request, status, text) {
+    // retry (payments only): the agent ran its retained payment work again and
+    // it is not final yet; the effect goes back to `retry`, as finish would
+    // leave it, so the next claim runs that work again under the same slot.
+    reconcile(reservation, request, status, text, { retry = false } = {}) {
       requireJobId(request?.jobId);
       if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
+      if (retry && request.path !== PAYMENT) fail('peer_reconciliation_invalid', 503);
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
@@ -545,7 +549,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
             // The context step is bound by its admission record, the other steps by the job's Agreement row.
             (request.path === CONTEXT ? !admissions || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
               : get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request)))) fail('peer_reconciliation_conflict', 503);
-        run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', 'complete', status, text, reservation.effectKey);
+        run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', retry ? 'retry' : 'complete', status, text, reservation.effectKey);
         run('UPDATE peer_nonces SET status = ?, response = ? WHERE effect = ? AND (response IS NULL OR status >= 500)', status, text, reservation.effectKey);
       });
     },

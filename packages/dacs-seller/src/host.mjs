@@ -5,9 +5,10 @@
 // (a synchronous { claim, sign(bytes) } over its own custody; no key or key
 // file reaches this package) and the native capabilities, which are required:
 // the host never builds a fixture substrate, and it starts only with the whole
-// chain to delivery (native payment evidence with the wallet journal's
+// chain to delivery (native payment evidence anchored by one
+// createPaymentEvidenceWalletJournal, with that journal's
 // `reconcilePaymentEvidence`, so an anchor whose outcome is unknown always has
-// a way to land, as createPaymentEvidenceWalletJournal composes them; the DEM
+// a way to land and is never signed twice; any other pair is refused; the DEM
 // delivery context, whose Vet references the Agreement carries, and native DEM
 // delivery) and the steward-signed rail authority each session pins, so it
 // never commits an Agreement it cannot settle or holds a paid order with no
@@ -22,6 +23,7 @@
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
+import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
@@ -58,6 +60,12 @@ export async function startSellerHost(options) {
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
   privateDirectory(dataDirectory);
   if (typeof observeDemosTransfer !== 'function' || typeof now !== 'function') throw new TypeError('observeDemosTransfer and now must be functions');
+  // DACS-4 PC-7(b): the answers that let the agent sign the same evidence
+  // again (`unsigned`, `refused`) come only from the package's wallet journal,
+  // which keeps every signed CREATE and reads its fate from the chain.
+  if (!isPaymentEvidenceWalletJournalPair(nativePaymentEvidence?.anchorEvidence, reconcilePaymentEvidence)) {
+    throw new TypeError('the seller host takes the payment-evidence anchor and reconcilePaymentEvidence only from one createPaymentEvidenceWalletJournal: nativePaymentEvidence must anchor with its anchorEvidence');
+  }
   // One live process owns the state for its lifetime (this one too, for a
   // second start); taken before anything is opened, released after all of it.
   const lock = await acquireSellerStateLock(dataDirectory);

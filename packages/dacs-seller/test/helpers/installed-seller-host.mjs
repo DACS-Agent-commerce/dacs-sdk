@@ -77,12 +77,15 @@ const refuse = (name) => async () => { reached.push(name); throw new Error(`${na
 // The seller admits one session per challenge it issued (CORE SN-1..SN-4):
 // the operator issues a random one per job through the host, and the buyer
 // presents it through the public builder's `sessionNonce`. The replayed job's
-// presentation carries a nonce the host never issued.
-const jobId = core.generateCanonicalJobId(), unvettedJobId = core.generateCanonicalJobId(), fabricatedJobId = core.generateCanonicalJobId(), replayedJobId = core.generateCanonicalJobId();
+// presentation carries a nonce the host never issued; the bare job's carries
+// no session nonce at all (DACS-1 §6.3.2).
+const jobId = core.generateCanonicalJobId(), unvettedJobId = core.generateCanonicalJobId(), fabricatedJobId = core.generateCanonicalJobId(), replayedJobId = core.generateCanonicalJobId(), bareJobId = core.generateCanonicalJobId();
 const issuedNonces = new Map(), ownBundles = new Map();
 const presentFor = (id, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: buyerKey.address, presentedAt, ...(issuedNonces.has(id) ? { sessionNonce: issuedNonces.get(id) } : { sessionSeed: 'installed-package' }) });
-  ownBundles.set(id, seller.attachIdentityPresentation(unsigned, buyerKey.signWallet(unsigned.message)));
+  if (id !== bareJobId) return ownBundles.set(id, seller.attachIdentityPresentation(unsigned, buyerKey.signWallet(unsigned.message)));
+  const { sessionNonce: _nonce, ...bundle } = unsigned.bundle, bundleHash = core.sha256Hex(core.canonicalize(bundle));
+  ownBundles.set(id, seller.attachIdentityPresentation({ bundle, bundleHash }, buyerKey.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash))));
 };
 const bundleFor = (id) => ownBundles.get(id);
 // The operator's seller-owned session admission: the counterparty-verified
@@ -172,6 +175,7 @@ out.refusedConfigurations = {
   unknownOption: await refusal({ signer, listing, dataDirectory, ...capabilities(), anchors: { read: async () => null, write: async () => null } }),
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
   otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
+  scriptedJournal: await refusal({ signer, listing, dataDirectory, ...capabilities(), reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
 };
 
 // The buyer derives the Agreement from the vetted input and signs its contribution.
@@ -187,7 +191,7 @@ const proposalFor = async (input) => {
 // another, whose Vet context names hashes no record backs; and a fresh
 // presentation on a job the seller issued no challenge for.
 fabricatedJobs.add(fabricatedJobId);
-let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted, fabricated, replayed;
+let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted, fabricated, replayed, bare;
 const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: seller.createSellerTransportClientAuth({
   buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin, agreementHash }) }) });
 // Independent of the package: node:crypto against the seller's own key.
@@ -205,13 +209,14 @@ out.host = { origin: new URL(host.url).origin, listingPin: host.listingPin, time
 // The operator issues each job's challenge through the host (CORE SN-1/SN-3),
 // the nonce its buyer then presents; the replayed job gets none.
 for (const id of [jobId, unvettedJobId, fabricatedJobId]) issuedNonces.set(id, host.issueSessionChallenge({ jobId: id, buyer: buyerKey.claim }).sessionNonce);
-for (const [index, id] of [jobId, unvettedJobId, fabricatedJobId, replayedJobId].entries()) presentFor(id, now - index);
+for (const [index, id] of [jobId, unvettedJobId, fabricatedJobId, replayedJobId, bareJobId].entries()) presentFor(id, now - index);
 out.presentsIssuedChallenge = [jobId, unvettedJobId, fabricatedJobId].every((id) => /^[0-9a-f]{64}$/.test(issuedNonces.get(id)) && bundleFor(id).sessionNonce === issuedNonces.get(id));
 buyerBundle = bundleFor(jobId);
 ({ plan, buyerContribution, proposal, transportIdentity } = await proposalFor(await vettedInput(jobId)));
 unvetted = await proposalFor(seller.agreementInput({ jobId: unvettedJobId, listing, buyerBundle: bundleFor(unvettedJobId), generatedAt: now }));
 fabricated = await proposalFor(fabricatedInput(fabricatedJobId));
 replayed = await proposalFor(await vettedInput(replayedJobId));
+bare = await proposalFor(await vettedInput(bareJobId));
 out.issuedChallenge = (({ sessionNonce, issuedAt, expiresAt }) => ({ nonce: /^[0-9a-f]{64}$/.test(sessionNonce), lifetimeMs: expiresAt - issuedAt }))(host.issueSessionChallenge({ jobId: core.generateCanonicalJobId(), buyer: buyerKey.claim }));
 const client = clientFor(host.url);
 const first = await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
@@ -230,6 +235,8 @@ out.refusals = {
   fabricatedVetProposal: await (async () => { try { const answer = await clientFor(host.url, pin, fabricated.plan.agreementHash).propose({ proposal: fabricated.proposal, transportIdentity: fabricated.transportIdentity, buyerIdentityBundle: bundleFor(fabricatedJobId) });
     return { disposition: answer.disposition ?? null, contribution: answer.contribution ?? null }; } catch (error) { return { name: error.name, code: error.code ?? null, contribution: null }; } })(),
   replayedPresentation: await refusedCode(() => clientFor(host.url, pin, replayed.plan.agreementHash).propose({ proposal: replayed.proposal, transportIdentity: replayed.transportIdentity, buyerIdentityBundle: bundleFor(replayedJobId) })),
+  bareNoNonce: !Object.hasOwn(bundleFor(bareJobId), 'sessionNonce'),
+  missingNonce: await refusedCode(() => clientFor(host.url, pin, bare.plan.agreementHash).propose({ proposal: bare.proposal, transportIdentity: bare.transportIdentity, buyerIdentityBundle: bundleFor(bareJobId) })),
   contextChallenge: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/context/challenge`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); return { status: response.status, body: await response.json() }; })(),
   secondHostSameDirectory: await refusal({ signer, listing, dataDirectory, ...capabilities() }),
   secondProcessSameDirectory: JSON.parse(spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--second', dataDirectory], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: 60000 }).stdout.trim().split('\n').at(-1)).secondProcess,
@@ -249,7 +256,7 @@ await host.close();
   process.exitCode = 1;
 }
 out.reached = reached;
-const label = (id) => id === jobId ? 'vetted' : id === unvettedJobId ? 'unvetted' : id === fabricatedJobId ? 'fabricated' : id === replayedJobId ? 'replayed' : 'other';
+const label = (id) => id === jobId ? 'vetted' : id === unvettedJobId ? 'unvetted' : id === fabricatedJobId ? 'fabricated' : id === replayedJobId ? 'replayed' : id === bareJobId ? 'bare' : 'other';
 out.vetContextJobs = [...new Set(vetContextCalls)].map(label);
 out.admittedJobs = [...new Set(admissionCalls)].map(label);
 journal.close();

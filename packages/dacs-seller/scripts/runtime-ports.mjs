@@ -36,6 +36,7 @@ function main(){
  const write=args.includes('--write'),check=args.includes('--check');
  if((source===null)!==(!write&&!check)||(write&&check))throw new Error('usage: runtime-ports.mjs [--source <http-mcp directory> (--write|--check)]');
  const spec=JSON.parse(readFileSync(SPEC,'utf8'));
+ if(spec.format!=='dacs-seller-runtime-ports/v1'||!Array.isArray(spec.ports))throw new Error('RUNTIME-PORTS.json is not the dacs-seller-runtime-ports/v1 format');
  for(const port of spec.ports){
   const target=join(PKG,port.target);
   if(source===null){

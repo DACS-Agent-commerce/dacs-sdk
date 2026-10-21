@@ -30,7 +30,9 @@ const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_una
 // claim reaches intake again. After it, the agent retains its work and its
 // next call reads back first, so a `held` evidence answer or a delivery that
 // is not done yet runs the route again (journal retry). The agent sends its
-// evidence anchor again only when that readback proves it absent.
+// evidence anchor again only when that readback proves it absent. A claim
+// whose effect a thrown error or a crash left uncertain runs that retained
+// work again through reconciliation, and goes back to the retry.
 const PAYMENT_PATH = '/dacs/v1/payments';
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
@@ -145,19 +147,24 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         if (reservation.disposition === 'cached') agent.assertSettlementCredit?.(request.jobId);
         if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
         if (reservation.disposition === 'uncertain') {
-          // Never call the route or resume work here, with one exception
+          // Never call the route or resume work here, with two exceptions
           // below. This seller-owned seam can only reduce trusted retained
           // state plus fresh authenticated native records to a response;
           // absent/unknown facts remain fenced.
           const reconcile = contextStep ? context.reconcile : typeof agent.reconcileTransport === 'function' ? agent.reconcileTransport : null;
           const proof = reconcile && typeof authentication.store.reconcile === 'function' ? await reconcile({ request, body, rawBody }) : null;
-          if (proof?.disposition === 'present') {
+          // The first exception: a payment claim whose retained native
+          // evidence work ran again (`retry`, seller-agent.mjs
+          // reconcileTransport) and is not final. Its effect goes back to the
+          // ordinary retry, so the next claim runs that work again.
+          const retry = !contextStep && req.url === PAYMENT_PATH && proof?.disposition === 'retry';
+          if (proof?.disposition === 'present' || retry) {
             const text = JSON.stringify(proof.value);
-            authentication.store.reconcile(reservation, request, 200, text);
+            authentication.store.reconcile(reservation, request, 200, text, { retry });
             if (contextStep) await context.settled({ jobId: request.jobId });
             return await send(res, 200, proof.value, request, { text: await pointed(200, text, request.jobId, req.url) });
           }
-          // The exception: the context route proved a shutdown cut its step
+          // The second exception: the context route proved a shutdown cut its step
           // before anything of it was signed or sent; the same effect runs
           // again below under the reservation the journal hands back.
           const resumed = contextStep && proof?.disposition === 'resume' && typeof context.resume === 'function' ? await context.resume(reservation, request, authentication.store, proof) : null;

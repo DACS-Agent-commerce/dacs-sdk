@@ -38,6 +38,12 @@ const presentWith = (party, presentedAt, sessionNonce) => {
   const bundle = { ...unsigned.bundle, sessionNonce }, bundleHash = core.sha256Hex(core.canonicalize(bundle));
   return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
+// A presentation that carries no session nonce at all, signed by the party.
+const presentWithout = (party, presentedAt) => {
+  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'settlement-profile' });
+  const { sessionNonce: _nonce, ...bundle } = unsigned.bundle, bundleHash = core.sha256Hex(core.canonicalize(bundle));
+  return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
+};
 
 async function world(t) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), reached = [], steward = railSteward();
@@ -198,6 +204,14 @@ test('a rail authority that is not the steward-signed demos-native:DEM PA-1 defi
     [unsigned, /signed by the steward \(signature-missing\)/],
     [{ ...w.steward.railAuthority(), stewardClaim: other.stewardClaim, stewardPublicKey: other.stewardPublicKey }, /signed by the steward/],
     [w.steward.railAuthority({ changes: { railVersion: 2 } }), /not demos-native:DEM version 1 on pay-dem/],
+    // DACS-4 §9.5.9 step 1: a steward-signed definition of another asset,
+    // network, rail type or handler is refused before any Agreement is signed
+    // (by the SDK's RailDefinition check, or by the package's own DEM guard).
+    [w.steward.railAuthority({ changes: { asset: { kind: 'native-dem', symbol: 'DEM', decimals: 18 } } }), /not demos-native:DEM version 1 on pay-dem|is not a RailDefinition/],
+    [w.steward.railAuthority({ changes: { asset: { kind: 'native-dem', symbol: 'TEST', decimals: 9 } } }), /not demos-native:DEM version 1 on pay-dem|is not a RailDefinition/],
+    [w.steward.railAuthority({ changes: { network: { kind: 'demos', extra: 1 } } }), /not demos-native:DEM version 1 on pay-dem|is not a RailDefinition/],
+    [w.steward.railAuthority({ changes: { railType: 'x402' } }), /not demos-native:DEM version 1 on pay-dem|is not a RailDefinition/],
+    [w.steward.railAuthority({ changes: { phaseHandler: 'TEST-other' } }), /not demos-native:DEM version 1 on pay-dem|is not a RailDefinition/],
     [w.steward.railAuthority({ changes: { governance: { proposedBy: w.steward.stewardClaim, acceptedAt: 1, anchoring: 'single-signer' } } }), /PA-1 in-code definition/],
     [{ ...w.steward.railAuthority(), production: 'yes' }, /local operator policy/],
     [{ ...w.steward.railAuthority(), extra: 1 }, /railAuthority must be exactly/],
@@ -673,6 +687,33 @@ test('a presentation nonce the seller did not issue, issued for another job or b
   agent = await open();
   assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution, 'the accepted presentation continues after a restart');
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+// DACS-1 §6.3.2: a session-context presentation that carries no session nonce
+// MUST be rejected. It names no challenge, so the seller refuses it before its
+// ledger or the operator's admission is asked, keeps no session, and the
+// buyer's issued challenge still admits its real presentation.
+test('a presentation that carries no session nonce is refused before the admission is asked and keeps no session, through the agent and over HTTP (DACS-1 §6.3.2)', async (t) => {
+  const NO_NONCE = { code: 'session_not_admitted', status: 409 }, message = 'the presentation carries no session nonce (DACS-1 §6.3.2)';
+  const w = await world(t), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
+  t.after(() => agent.close());
+  const admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
+  const request = await w.proposalFor(w.vetted), bare = presentWithout(w.buyerKey, w.now - 1);
+  assert.equal(Object.hasOwn(bare, 'sessionNonce'), false);
+  assert.equal(core.isIdentityBundle(bare), true, 'an IdentityBundle: only the session context needs the nonce');
+  let error = null;
+  try { await agent.receiveProposal({ ...request, buyerIdentityBundle: bare }); } catch (caught) { error = caught; }
+  assert.deepEqual({ code: error?.code, status: error?.status }, NO_NONCE);
+  assert.equal(error.message, message);
+  assert.equal(admits(), 0, 'the admission is not asked');
+  assert.equal(agent.stageOf(w.jobId), null, 'no session is kept');
+  assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'the buyer\'s issued challenge is untouched and admits its presentation');
+  const v = await world(t), h = await httpSeller(t, v);
+  await answered(() => h.client.propose({ ...h.proposal, buyerIdentityBundle: presentWithout(v.buyerKey, v.now - 1) }));
+  assert.deepEqual([h.last.status, h.last.answer.error, h.last.answer.message], [409, 'session_not_admitted', message]);
+  assert.equal(h.agent.stageOf(v.jobId), null, 'no session is kept over HTTP');
+  assert.equal(v.admission.calls.filter(([call]) => call === 'admit').length, 0);
+  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete', 'the refusal kept no transport effect: the presentation under its own challenge is signed');
 });
 
 test('the seller issues a fresh 256-bit challenge bound to one job and buyer; a nonce is issued once', async (t) => {

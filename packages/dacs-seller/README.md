@@ -24,16 +24,18 @@ const host = await startSellerHost({
   artifactAnchor,       // { writer, publish, readRetained, verifyReceipt }: native artifact publication
   deliverableProducer,  // (input) -> the deliverable bound to the Agreement and settlement
   observeDemosTransfer, // (txHash) -> pay-dem transfer observation, e.g. the core seller observer
-  nativePaymentEvidence, // createNativePaymentEvidenceConsumer(...): payment evidence anchoring and readback
+  nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
+                         // payment evidence anchored by the wallet journal (below), and its readback
   demDeliveryContext,    // createDemDeliveryContext(...): the Vet context the Agreement derives from
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
   sessionAdmission,      // { admit, resolveVetRecord, readRevocationSurfaces, readRevocationMarker }: the seller-owned
                          // session admission and revocation readers (src/dacs/session-admission.mjs)
-  reconcilePaymentEvidence, // (input) -> the wallet journal's answer for an evidence anchor that was sent or
-                         // whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending'); see below
+  reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
+                         // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
 });
+// journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
 // host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
 ```
@@ -76,16 +78,26 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   intake again; after the checkpoint a `held` answer, or a delivery that is not
   done yet, runs the agent's retained work again on the buyer's next request
   (which reads back first), and a different claim for the job is still
-  refused (`peer_operation_conflict`).
-- Payment evidence is anchored through the operator's
-  `nativePaymentEvidence` `anchorEvidence` (DACS-4 PC-7(b), write-once) and
-  answered for by the required `reconcilePaymentEvidence`. The
-  agent keeps each attempt before it calls the wallet. It sends the same
+  refused (`peer_operation_conflict`). After the checkpoint the retained work
+  alone decides what a claim may send: a readback that fails on a retry (a
+  node or name-index outage) is a `held` answer with its cause
+  (`nativeReadCode`), and a claim whose effect a thrown error or a crashed
+  host left uncertain runs that retained work again through reconciliation,
+  then goes back to the same retry, so a paid order is never stranded.
+- Payment evidence is anchored through `nativePaymentEvidence`'s
+  `anchorEvidence` (DACS-4 PC-7(b), write-once) and answered for by the
+  required `reconcilePaymentEvidence`. The host takes the two only from one
+  `createPaymentEvidenceWalletJournal` (the journal's own `anchorEvidence`
+  inside the consumer, and its `reconcilePaymentEvidence`): any other pair,
+  a wrapper or two journals included, is refused at start, so the answers
+  that allow a second signature come only from the journal's own records.
+  The agent keeps each attempt before it calls the wallet. It sends the same
   bytes again on the buyer's next claim (or after a restart) only when no
   attempt can have written them: the last attempt never reached the wallet
   (a crash after the evidence checkpoint), the wallet answered
-  `{ status: "refused", reason }`, which must mean it signed and sent
-  nothing, or the wallet's journal answered `{ status: "unsigned" }` (below).
+  `{ status: "refused", reason }` (only an agent composed with
+  `createSellerAgent` can get it: the journal never answers it), or the
+  wallet's journal answered `{ status: "unsigned" }` (below).
   It also needs a readback that finds nothing: at most once per request,
   never in the request of the first attempt, and never once a readback has
   authenticated it. A name-index miss is no proof that nothing landed
@@ -110,20 +122,34 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   readAccountNonce, readTransactionState })` gives both functions from the
   operator's wallet primitives. `signCreate(input)` signs, and does not send,
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
+  `signedTransaction` is the JSON of the Demos signed transaction `{ hash,
+  content, signature }`. Before it is kept, the journal checks it is what it
+  claims: `hash` is `txHash` and the SHA-256 of `JSON.stringify(content)`, its
+  nonce is `nonce`, and it is the `CREATE_STORAGE_PROGRAM` of exactly this
+  evidence at this logical address, from the writer's address, with the
+  writer's Ed25519 signature over the hash. Anything else is refused
+  (`wallet_sign_invalid`), and nothing is kept or sent.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads the wallet account's nonce on the chain, and
-  `readTransactionState({ txHash })` answers `applied`, `pending` or `absent`.
+  `readTransactionState({ txHash })` answers `applied` (executed), `pending`
+  (in the mempool, not yet included) or `absent` (anything else). Node 61b8e75
+  includes a mempool transaction whose nonce another write reached as failed,
+  and then reports it `included`. So on that node both reads come from the
+  same node, account nonce first: `getTransactionStatus` `pending` is
+  `pending`; `included` with `getTxByHash` `status: "confirmed"` is `applied`;
+  `included` with `status: "failed"`, or `unknown`, is `absent`.
   The journal keeps the signed CREATE and its nonce in its SQLite file (a
   private 0600 file) before it broadcasts it, and keeps at most one live signed
   CREATE per address. While that CREATE can still be included, the journal
   broadcasts the same signed bytes again (`rebroadcast`, or `pending` when the
-  broadcast fails). The node refuses a transaction whose nonce the account has
-  reached. So once the account nonce has reached the kept nonce (read first),
-  and the CREATE is then neither applied nor pending, the journal marks it
-  superseded (and keeps it). It then answers `unsigned`, and the next anchor
-  signs the same evidence anew, with a higher nonce. A read that fails, times
-  out (`readTimeoutMs`, 10 s by default) or answers anything else never
-  supersedes it. An unknown readback sends nothing and asks nothing.
+  broadcast fails). The node never executes a transaction whose nonce the
+  account has reached: it refuses it, or includes it as failed. So once the
+  account nonce has reached the kept nonce (read first), and the CREATE is
+  then neither applied nor pending, the journal marks it superseded (and keeps
+  it). It then answers `unsigned`, and the next anchor signs the same evidence
+  anew, with a higher nonce. A read that fails, times out (`readTimeoutMs`,
+  10 s by default) or answers anything else never supersedes it. An unknown
+  readback sends nothing and asks nothing.
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
@@ -155,15 +181,21 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
     SN-1..SN-3; delivering the challenge to the buyer is up to the operator).
   - **Operator-generated nonces.** An operator whose own issuer generates
     nonces may pass `sessionNonce`: lowercase hex, at least 128 bits from a
-    CSPRNG (SN-2 is the issuer's duty). A nonce is issued only once.
+    CSPRNG (SN-2 is the issuer's duty), and at most 128 hex characters, a
+    local limit of this seller that SN-2 does not set. A nonce is issued
+    only once.
   - **Consumption.** A presentation attempt for a new session consumes the
     nonce its bundle carries, durably and before the attempt is validated:
     before its signature, its buyer and job binding, the revocation check and
     `admit` (CORE SN-4, IBH-4). A refused attempt consumes it too, a `503`
-    included, so the buyer asks the operator for a new challenge after any
-    refusal. Only the configuration gates, the operator's buyer access, a
-    bundle that is not an IdentityBundle at all and the rail selection, which
-    read the seller's own state, come first: those refusals consume nothing.
+    included, so after a refused attempt the buyer asks the operator for a
+    new challenge. After an admitted one, the buyer sends the admitted
+    presentation again (a new challenge would be another bundle, refused as
+    `job_taken`). Only the configuration gates, the operator's buyer access, a
+    bundle that is not an IdentityBundle at all, a presentation that carries
+    no session nonce (refused as `session_not_admitted`, DACS-1 §6.3.2) and
+    the rail selection, which read the seller's own state, come first: those
+    refusals consume nothing.
   - **Later presentations.** Any later presentation that carries the nonce is
     refused (`session_not_admitted`): another one, a re-signed one, or one
     for another job. The presentation that was admitted is the one exception:

@@ -98,6 +98,9 @@ const FINALISED_SKEW_MS = 5 * 60 * 1000;
 // reached the wallet, the wallet refused it before signing, or the wallet's
 // journal answered that nothing it signed for the address can be included.
 const UNSENT_ANCHOR_OUTCOMES = Object.freeze(['not-sent', 'refused', 'unsigned']);
+// Readback failures of retained native evidence work (the commitment and
+// Agreement readback): a retry answers them as held, with the cause.
+const RETAINED_READBACK_FAILURES = new Set(['commitment_failed', 'commitment_readback_required', 'substrate_unavailable', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'seller_agreement_readback_required']);
 // What is kept of a wallet answer: its status, transaction hash and reason, bounded.
 const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ? answer.status.slice(0, 32) : 'missing',
   ...(typeof answer?.txHash === 'string' ? { txHash: answer.txHash.slice(0, 128) } : {}), ...(typeof answer?.reason === 'string' ? { reason: answer.reason.slice(0, 240) } : {}) });
@@ -414,6 +417,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // admitted, continues. A session in flight continues without one.
     const newSession = nativeProfile && !inFlight;
     const nonce = buyerIdentityBundle.sessionNonce, bundleHash = identityBundleHash(buyerIdentityBundle);
+    // DACS-1 §6.3.2: a presentation for a new session that carries no session
+    // nonce is refused. It names no challenge, so it consumes none.
+    if (newSession && (typeof nonce !== 'string' || nonce === '')) throw new SellerAgentError('session_not_admitted', 'the presentation carries no session nonce (DACS-1 §6.3.2)', 409);
     const issued = newSession ? challenges.attemptChallenge(nonce, { jobId, bundleHash, attemptedAt: now(), admitted: false }) : null;
     authenticateBuyerBundle(buyerIdentityBundle);
     if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
@@ -1432,15 +1438,24 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // readback is waited for, so a write that landed but is not indexed yet is
   // never created twice. An unknown readback sends nothing and asks nothing.
   // Once a readback authenticated it (work.nativeReceipt), it is never sent again.
+  // Once the work is retained, it alone decides what a retry may send, so a
+  // readback that fails (a node or index outage) answers held with its cause
+  // instead of throwing: the claim stays a retry, never an uncertain effect
+  // with no way on (seller-http.mjs). A settlement collision still refuses.
   async function submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence }) {
     if (!nativeEvidence || requestedEvidence !== NATIVE_PAYMENT_EVIDENCE) throw new SellerAgentError('native_evidence_held', 'the explicit native evidence capability/terms are absent');
     if (!session.commitment || !session.agreementAnchor) throw new SellerAgentError('not_committed', 'native Agreement and seller commitment must be retained');
     const hash = String(txHash).toLowerCase();
     let work = session.nativeEvidenceWork, retry = false;
     if (work) {
-      await commit({ jobId });
       if (work.txHash !== hash || work.payerPayingKey !== payerPayingKey || work.agreementHash !== contentHash(session.agreement)
           || work.commitmentHash !== contentHash(session.commitment.record)) throw new SellerAgentError('seller_native_evidence_conflict', 'the retained exact payment/Agreement/commitment cannot change', 409);
+      try { await commit({ jobId }, { readbackOnly: true }); }
+      catch (error) {
+        if (error instanceof SellerAgentError && !RETAINED_READBACK_FAILURES.has(error.code)) throw error;
+        return heldNativeEvidence(work, { disposition: 'indeterminate', reason: `seller-commitment-readback-unavailable: ${String(error?.message ?? error).slice(0, 200)}`,
+          code: typeof error?.code === 'string' ? error.code : 'unclassified' });
+      }
       retry = !work.nativeReceipt;
     } else {
       const started = await startNativePaymentEvidence({ session, jobId, hash, payerPayingKey });
@@ -1470,6 +1485,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       read = { ...read, disposition: 'indeterminate', reason: `native-payment-evidence-anchor-${work.anchorOutcome === 'sent' ? 'sent' : 'outcome-unknown'}-not-read-back` };
     }
     if (read.disposition === 'present') return advanceAuthenticatedNativeDelivery(session, work, read);
+    return heldNativeEvidence(work, read);
+  }
+  function heldNativeEvidence(work, read) {
     return { status: read.disposition === 'rejected' ? 'rejected' : 'held', reason: read.reason ?? 'native-evidence-readback-incomplete',
       ...(work.anchorError ? { anchorError: work.anchorError } : {}), ...(work.reconcileError ? { reconcileError: work.reconcileError } : {}),
       evidenceAddress: work.address, evidenceHash: work.intake.evidenceHash, intake: 'pinned-SDK-verified-on-owned-fixture', readback: read.disposition,
@@ -1551,9 +1569,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   // A read-only reducer for an ALREADY reserved authenticated HTTP command.
   // Commit-on-signature reconciliation uses the readback-only gate; it cannot
-  // sign or submit. The one native
-  // fulfilment branch first authenticates the original applied CREATE and then
-  // re-enters the same consumed SDK WAL, where only reconciliation is possible.
+  // sign or submit. The one exception is a payment claim with retained native
+  // evidence work: it runs that work's own retained step (submitNativePaymentEvidence),
+  // whose durable anchor record governs every send, and answers `retry` while
+  // it is not final.
   // A transport cached answer is never evidence; retained seller-authenticated work must
   // agree with the pinned receipt authority and exact fresh native readback.
   // Local authenticated snapshots may advance after those facts are verified.
@@ -1697,11 +1716,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
                 body.payerPayingKey !== request.buyer || work.payerPayingKey !== request.buyer) {
               return held('seller_native_delivery_context_mismatch');
             }
-            await commitment();
-            const read = await reduceNativeEvidenceWork(session, work, { jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey });
-            if (read.disposition !== 'present') return held(read.reason ?? 'seller_native_evidence_readback_required');
-            const answer = await advanceAuthenticatedNativeDelivery(session, work, read);
-            return ['delivery-ready','delivered'].includes(answer?.delivery?.status) ? present(answer) : held(answer?.delivery?.reason ?? 'seller_native_delivery_readback_required');
+            // The retained work, not how an earlier request ended (a thrown
+            // readback, a crash mid-request), decides what this claim may do:
+            // the same retained step as submitPayment runs. It reads back
+            // first, and sends the anchor again only on a proven absence (after
+            // a send, only on the wallet journal's 'unsigned'), so it never
+            // sends twice. An answer that is not final hands the effect back to
+            // the ordinary retry (`retry`, seller-http.mjs).
+            const answer = await submitNativePaymentEvidence({ session, jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, requestedEvidence: body.nativePaymentEvidence });
+            if (['delivery-ready','delivered'].includes(answer?.delivery?.status)) return present(answer);
+            return ['held', 'payment-evidenced'].includes(answer?.status) ? { disposition: 'retry', value: answer } : held(answer?.reason ?? 'seller_native_evidence_readback_required');
           }
           if (!session.paymentWork || session.paymentWork.txHash !== String(body.txHash).toLowerCase() || body.payerPayingKey !== request.buyer ||
               session.paymentWork.payerPayingKey !== request.buyer) return held('seller_payment_context_mismatch');

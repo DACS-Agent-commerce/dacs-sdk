@@ -7,8 +7,9 @@
 // the chain: the kept CREATE is broadcast again as the same bytes
 // (`rebroadcast`) while it can still be included, and it is superseded (kept,
 // never sent again) only once it provably cannot: the account nonce has reached
-// its nonce (the node refuses a transaction whose nonce is not above the
-// account's), read first, and then it is neither applied nor pending. Only an
+// its nonce (the node never executes a transaction whose nonce is not above
+// the account's: it refuses it, or includes it as failed), read first, and
+// then it is neither applied nor pending. Only an
 // address with no live signed CREATE is `unsigned`, and only then is it signed
 // anew. A read that fails, times out or answers anything else keeps the same
 // bytes alive.
@@ -20,28 +21,70 @@
 //  - signCreate(input) -> { signedTransaction, txHash, nonce }: signs, and must
 //    not send, the storage CREATE for input ({ logicalAddress, artifact, writer,
 //    artifactKind, jobId, receiptContentHash }); nonce is the transaction's
-//    account nonce (a positive safe integer);
+//    account nonce (a positive safe integer). signedTransaction is the JSON of
+//    the Demos signed transaction { hash, content, signature } (the public
+//    signed projection the SR-2 readback authenticates). It is checked before it
+//    is kept: hash is txHash and the SHA-256 of JSON.stringify(content), its
+//    nonce is nonce, it is this CREATE_STORAGE_PROGRAM of exactly input.artifact
+//    at input.logicalAddress, from the writer's address, with the writer's
+//    Ed25519 signature over the hash. Anything else is refused (wallet_sign_invalid),
+//    and nothing is kept or sent;
 //  - broadcast({ signedTransaction, txHash }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
 //  - readAccountNonce() -> the wallet account's current nonce on the chain (the
 //    nonce of its last applied transaction), a non-negative safe integer;
-//  - readTransactionState({ txHash }) -> 'applied' (the chain applied it),
-//    'pending' (in the mempool, or included and not yet applied) or 'absent'
-//    (not applied and not pending).
+//  - readTransactionState({ txHash }) -> 'applied' (the chain executed it),
+//    'pending' (in the mempool, not yet included) or 'absent' (anything else,
+//    a transaction the chain included as failed too). Node 61b8e75 includes a
+//    mempool transaction whose nonce another write reached as FAILED and its
+//    getTransactionStatus then answers `included`, so a wallet on that node
+//    reads both from the same node, account nonce first: getTransactionStatus
+//    `pending` is 'pending'; `included` with getTxByHash `status: "confirmed"`
+//    is 'applied'; `included` with `status: "failed"`, or `unknown`, is 'absent'.
 //  Each read is given readTimeoutMs (default 10 s) to answer.
 // Returns { anchorEvidence, reconcilePaymentEvidence, close }: the first goes
 // into createNativePaymentEvidenceConsumer, the second is the host option.
+// startSellerHost takes the two only from one journal
+// (isPaymentEvidenceWalletJournalPair): their answers are the only authority
+// for a second signature of the same evidence.
 import { closeSync, constants, lstatSync, openSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
+import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
 
 // Bounds on what signCreate answers before it is kept.
 const MAX_SIGNED_TRANSACTION = 1024 * 1024;
-const TX_HASH = /^(0x)?[0-9a-fA-F]{64}$/;
+const TX_HASH = /^[0-9a-f]{64}$/;
 const TX_STATES = new Set(['applied', 'pending', 'absent']);
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const reason = (error) => String(error?.message ?? error).slice(0, 200);
 const nonceOf = (value, least) => (Number.isSafeInteger(value) && value >= least ? value : null);
+// Each journal's own anchorEvidence and reconcilePaymentEvidence, mapped to it.
+const journals = new WeakMap();
+// True only for the two functions of one createPaymentEvidenceWalletJournal.
+export function isPaymentEvidenceWalletJournalPair(anchorEvidence, reconcilePaymentEvidence) {
+  const journal = typeof anchorEvidence === 'function' ? journals.get(anchorEvidence) : undefined;
+  return journal !== undefined && journal.anchorEvidence === anchorEvidence && journal.reconcilePaymentEvidence === reconcilePaymentEvidence;
+}
+
+// Why signCreate's answer is not the signed CREATE it names, or null. The fate
+// of a kept CREATE is read by its hash and nonce, so both must be the bytes'.
+function signedCreateProblem(answer, input) {
+  let signed;
+  try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
+  const content = signed?.content, op = content?.data?.[1];
+  if (!object(signed) || !object(content) || !Array.isArray(content.data) || !object(op)) return 'is not a signed Demos transaction { hash, content, signature }';
+  if (signed.hash !== answer.txHash || sha256Hex(JSON.stringify(content)) !== answer.txHash) return 'does not hash to its txHash';
+  if (content.nonce !== answer.nonce) return 'carries another nonce';
+  let from;
+  try { from = addressForClaim(input.writer); } catch { return 'names no writer address'; }
+  if (content.type !== 'storageProgram' || content.data.length !== 2 || content.data[0] !== 'storageProgram' || op.operation !== 'CREATE_STORAGE_PROGRAM'
+      || op.programName !== logicalToStorageProgramName(input.logicalAddress) || op.metadata?.logicalAddress !== input.logicalAddress
+      || canonicalize(op.data) !== canonicalize(input.artifact)) return 'is not this evidence\'s storage CREATE';
+  if (content.from !== from || signed.signature?.type !== 'ed25519' || !verifyDemosSignature({ address: from, message: answer.txHash, signature: signed.signature.data })) return 'is not signed by the writer';
+  return null;
+}
 
 export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000 } = {}) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('the wallet journal path must be absolute');
@@ -112,6 +155,8 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       const answer = await signCreate(structuredClone(input));
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || answer.signedTransaction.length > MAX_SIGNED_TRANSACTION
           || typeof answer.txHash !== 'string' || !TX_HASH.test(answer.txHash) || nonceOf(answer.nonce, 1) === null) throw Object.assign(new Error('signCreate answered no signed transaction, hash and nonce'), { code: 'wallet_sign_invalid' });
+      const problem = signedCreateProblem(answer, input);
+      if (problem) throw Object.assign(new Error(`signCreate's signed transaction ${problem}`), { code: 'wallet_sign_invalid' });
       // A new signature must be able to land where the kept ones cannot.
       if (answer.nonce <= highestNonce) throw Object.assign(new Error(`signCreate answered nonce ${answer.nonce}, not above the kept nonce ${highestNonce}`), { code: 'wallet_sign_invalid' });
       signed = { signedTransaction: answer.signedTransaction, txHash: answer.txHash, nonce: answer.nonce };
@@ -132,5 +177,8 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     return { status: 'rebroadcast', txHash: signed.txHash, ...(unread ? { reason: unread } : {}) };
   }
 
-  return Object.freeze({ anchorEvidence, reconcilePaymentEvidence, close: () => db.close() });
+  const journal = Object.freeze({ anchorEvidence, reconcilePaymentEvidence, close: () => db.close() });
+  journals.set(anchorEvidence, journal);
+  journals.set(reconcilePaymentEvidence, journal);
+  return journal;
 }
