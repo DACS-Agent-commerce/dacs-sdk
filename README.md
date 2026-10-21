@@ -730,9 +730,10 @@ nothing is signed or sent. To migrate, add `readOutcome`, `putAttempt` and
 `readAttempt` to the durable log (`putAttempt` compare-and-set under the
 generation, a record never changing), backfill the records as described above,
 and pass the `createIdempotencyStore` store itself, or an object carrying its
-own `once`, `readOutcome` and `readAttempt`. A session still holding a paid
-hash on an older log without `readOutcome` finishes it through the store's
-expired generation, so the log needs no upgrade for that.
+own `once`, `readOutcome` and `readAttempt`. Recovery of payments or saved
+outcomes written by older SDK versions is outside the current support scope.
+The restart guarantees here apply to payments made with the current SDK and
+a log implementing all three methods.
 
 A supplied entry is always checked as well. It must name the retained hash, the
 same payer, payee, OS amount and network, a `recovery` tuple equal to this rail,

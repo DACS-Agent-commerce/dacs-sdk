@@ -144,7 +144,9 @@ export interface SettlementLog {
    * Required on a log that keeps attempts. Optional on one that does not;
    * without it the store's `readOutcome` refuses before touching the log, and
    * `payDemSettle` finishes a retained pay-dem hash on such a log only through
-   * the store's expired generation.
+   * the store's expired generation or an outcome returned by that same
+   * store's own `once` for the exact terms. Recovery of pre-upgrade state is
+   * outside the current SDK's support scope.
    */
   readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
