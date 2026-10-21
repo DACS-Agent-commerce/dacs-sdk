@@ -589,7 +589,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       terms: TERMS,
       settle: async () => {
         settled = true;
-        return { ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
+        return { finality: { model: "block-depth" as const, finalityBlocks: 1 }, ok: true, txHash: "0xpaid", chainId: "c", payer: buyerDid, payee: sellerDid };
       },
     });
     expect(res.profile).toBe("legacy-mvp-settlement-only");
@@ -629,6 +629,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const settle = async () => {
       settleCalls += 1;
       return {
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xbundle-retry",
         chainId: "demos",
@@ -798,6 +799,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     await expect(supportedAgent.runSession(supportedRef, {
       terms: TERMS,
       settle: async () => ({
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xexplicit-method-paid",
         chainId: "c",
@@ -856,6 +858,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       const settle = async () => {
         settleCalls += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xpaid-once",
           chainId: "c",
@@ -1094,6 +1097,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         settle: async () => {
           settleCalls += 1;
           return {
+            finality: { model: "block-depth" as const, finalityBlocks: 1 },
             ok: true,
             txHash: "0xpublicvet",
             chainId: "test",

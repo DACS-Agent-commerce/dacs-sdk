@@ -161,8 +161,10 @@ export interface SettleResult {
   /**
    * Rail-specific finality (§9.5.x / PC-6). When a rail knows the finality model
    * it settled under, it reports it here and runSessionCore records it on the
-   * evidence instead of the default provider-receipt. E.g. §9.5.9 pay-dem →
-   * `{ model: "bft-final" }`. Omit for a receipt-confirmed rail.
+   * evidence. Required for successful non-AP2 payments: PC-6 requires the
+   * finality actually applied, so no other rail can default to an AP2 receipt.
+   * E.g. §9.5.9 pay-dem → `{ model: "bft-final" }`. AP2 may omit for its
+   * provider-receipt model.
    */
   finality?: SettlementFinalityParameters;
   /** Block/ledger height the settlement landed at, when the rail reports it (§9.5.9 `demos`). */
@@ -2163,6 +2165,24 @@ function sameSettlementOutcome(
   );
 }
 
+/** PC-7 catch-up may add missing finality to the exact already-paid outcome. */
+function completesMissingSettlementFinality(
+  prior: DurableSettlementOutcome,
+  next: DurableSettlementOutcome,
+): boolean {
+  const finality = settlementFinalityFromDurable(next);
+  return prior.ok && next.ok && prior.finalityModel === undefined &&
+    finality !== undefined &&
+    (prior.finalityObservedAt === undefined ||
+      prior.finalityObservedAt === next.finalityObservedAt) &&
+    sameSettlementOutcome({
+      ...prior,
+      ...durableFinalityFields(finality),
+      ...(next.finalityObservedAt === undefined
+        ? {} : { finalityObservedAt: next.finalityObservedAt }),
+    }, next);
+}
+
 function sameAuthenticatedEvidenceOutcome(
   left: AuthenticatedEvidenceSettlementOutcome,
   right: AuthenticatedEvidenceSettlementOutcome,
@@ -2553,6 +2573,7 @@ function isValidSettlementOutcomeProgression(
     }
     return (
       sameSettlementOutcome(prior.outcome, next.outcome) ||
+      completesMissingSettlementFinality(prior.outcome, next.outcome) ||
       (sameSettlementBinding(prior.outcome, next.outcome) &&
         prior.outcome.ok === false &&
         prior.outcome.txHash.length > 0 &&
@@ -4081,7 +4102,7 @@ export async function runSessionCore(
           prior.outcome.chainId === outcome.chainId) ||
           (outcome.supersedesTxHash === prior.outcome.txHash &&
             outcome.supersedesChainId === prior.outcome.chainId));
-      if (!canResolveAmbiguous) {
+      if (!canResolveAmbiguous && !completesMissingSettlementFinality(prior.outcome, outcome)) {
         throw new CounterpartyError(
           `could not record settlement outcome for ${jobId}: existing outcome conflicts with ${outcome.txHash}`,
         );
@@ -4264,6 +4285,10 @@ export async function runSessionCore(
         outcome,
       );
     }
+    if (outcome.ok && outcome.finalityModel === undefined &&
+        paymentEvidencePhase !== "pay-ap2") {
+      return recoverRailOutcome("successful settlement lacks finality", outcome);
+    }
     // Re-bind historical/current outcomes before reuse to close any old
     // outcome-before-binding crash residue.
     await bindSettlementTransaction(outcome);
@@ -4383,9 +4408,17 @@ export async function runSessionCore(
             }
           : { ...evidenceBase, phaseIndex: 0, outcome: "failure" };
       } else {
-        const finality = settlementFinalityFromDurable(settlement) ?? {
-          model: "provider-receipt" as const,
-        };
+        const finality = settlementFinalityFromDurable(settlement) ??
+          (paymentEvidencePhase === "pay-ap2"
+            ? { model: "provider-receipt" as const }
+            : undefined);
+        if (finality === undefined) {
+          // The durable outcome is already retained above: refusing to invent
+          // a finality claim must never cause this payment to be submitted again.
+          throw new CounterpartyError(
+            `successful ${paymentEvidencePhase} settlement requires rail-reported finality (PC-6) before signing evidence`,
+          );
+        }
         const settlementFinality: SettlementFinality = {
           ...finality,
           finalityObservedAt: settlement.finalityObservedAt ?? observedAt,

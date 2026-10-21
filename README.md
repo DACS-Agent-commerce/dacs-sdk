@@ -169,6 +169,15 @@ DEM uses BFT finality, and the other payment phases must use their own finality
 models. Failed delivery evidence may omit output fields; any supplied fields
 are still validated.
 
+Custom `runSessionCore` settlement adapters must report `finality` on successful
+non-AP2 payments before evidence can be signed (DACS-4 PC-6). Only `pay-ap2`
+can default to `provider-receipt`. A missing finality value leaves any durable
+payment outcome retained for reconciliation and never authorizes a second payment.
+
+`verifyBundleCore()` also requires a canonical job ID, including on legacy-MVP
+bundle shapes. A non-canonical ID returns a specific CORE JID-1 diagnostic;
+current bundle verification does not admit pre-JID-1 bundles.
+
 For retained historical records, explicitly call
 `inspectHistoricalSettlementEvidence(record, context, cryptoDeps)`. It checks
 the original signature and returns the non-authorizing

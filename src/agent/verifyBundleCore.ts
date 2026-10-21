@@ -1299,10 +1299,28 @@ export async function verifyBundleCore(
   callerDeps: VerifyBundleDeps,
 ): Promise<BundleVerification> {
   const deps = captureVerifyBundleDeps(callerDeps);
-  const raw = snapshotDependencyRecord(
-    await deps.readArtifact(bundleRef),
-    "resolved attestation bundle",
-  );
+  const resolved = await deps.readArtifact(bundleRef);
+  let raw: Record<string, unknown> | null;
+  try {
+    const wire = resolved === null ? null : snapshotWireJsonRead(
+      resolved, "resolved attestation bundle",
+    );
+    // Preserve the diagnostic before the general dependency reader discards
+    // malformed IDs. Inspect exact wire bytes before CF-1 normalization.
+    if (wire && typeof wire === "object" && !Array.isArray(wire) &&
+        Object.hasOwn(wire, "jobId") && !isCanonicalJobId(wire.jobId)) {
+      return {
+        ok: false,
+        reason: "attestation bundle jobId must be a canonical uppercase ULID (CORE JID-1)",
+        fullyVerified: false,
+        signatures: [],
+        refs: [],
+      };
+    }
+    raw = snapshotDependencyRecord(wire, "resolved attestation bundle");
+  } catch {
+    raw = {};
+  }
   if (raw && isAbsoluteFaultBundle(raw) && !faultedPartyIsPermitted(raw)) {
     return {
       ok: false,

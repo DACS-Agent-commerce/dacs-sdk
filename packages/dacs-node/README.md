@@ -517,7 +517,7 @@ this metadata about itself and nothing authenticates it. In testnet policy the g
 `sellerNodeBuild` facts and does not block start, setup or purchase. Each run
 asks both nodes through the uncached `raw.nodeCall("getNetworkInfo", {})`,
 because demosdk's `getNetworkInfo()` keeps its first success for the client's
-lifetime and would hide a later outage. The check fails only when the RPC is
+lifetime and would hide a later outage. With the testnet policy, the check fails when the RPC is
 unreachable, including explicit node error replies and demosdk's
 `{ result, response }` transport-failure envelope (`demos-rpc-unavailable`), or
 when the reply lacks the boolean `forks.osDenomination.activated` status
@@ -533,6 +533,10 @@ self-reported build. No environment revision string can override that result.
 A production host integration must authenticate the deployed artifact and endpoint
 against the reviewed pin and retain provenance and contract-probe results; the
 generated project supplies no deployment attestation verifier.
+
+An unset or empty `DACS_DEMOS_DEPLOYMENT_POLICY` defaults to `testnet`. Otherwise
+the value must be exactly `testnet` or `production` (case-sensitive, without
+surrounding spaces); invalid values fail with `demos-deployment-policy-invalid`.
 
 The read-only capture from node2, the generated default RPC, on 2026-10-16
 reports `dirty: true`, so the doctor reports `demos-node-build-dirty` for it on

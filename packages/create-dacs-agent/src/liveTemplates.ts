@@ -1280,7 +1280,11 @@ function baseProbes(
       // Generated profiles support public testnet operation. A production
       // deployment needs authenticated build provenance; self-reported node
       // metadata and an operator-set revision string cannot establish it.
-      if ((process.env.DACS_DEMOS_DEPLOYMENT_POLICY ?? "testnet") !== "testnet") {
+      const deploymentPolicy = process.env.DACS_DEMOS_DEPLOYMENT_POLICY || "testnet";
+      if (deploymentPolicy !== "testnet" && deploymentPolicy !== "production") {
+        return fail("demos-deployment-policy-invalid");
+      }
+      if (deploymentPolicy === "production") {
         return blocked("demos-deployment-pin-unverified");
       }
       if ([actors.buyer.runtime, actors.seller.runtime].some(
@@ -4886,9 +4890,12 @@ The \`demos.rpc-chain\` check reports each node's self-described build as the
 reports a dirty build (\`demos-node-build-dirty\`). This is informational and does
 not block start, setup or purchase; settlement is still verified from
 transaction and block evidence. Each run asks both nodes directly instead of
-reusing an earlier answer. The check fails only when the RPC is unreachable or
-returns a malformed reply. Generated readiness supports public testnet operation
-only. Set \`DACS_DEMOS_DEPLOYMENT_POLICY=production\` to declare production
+reusing an earlier answer. With the testnet policy, RPC failures include an
+unreachable endpoint or a malformed reply. Generated readiness supports public testnet operation
+only. An unset or empty \`DACS_DEMOS_DEPLOYMENT_POLICY\` defaults to \`testnet\`;
+other values must be exactly \`testnet\` or \`production\` (case-sensitive, no
+surrounding spaces), or doctor fails with \`demos-deployment-policy-invalid\`.
+Set \`DACS_DEMOS_DEPLOYMENT_POLICY=production\` to declare production
 intent: readiness blocks with \`demos-deployment-pin-unverified\` for every build,
 including clean self-reported metadata. Production integration must authenticate
 the deployed artifact and RPC endpoint against the reviewed pin before enabling

@@ -73,6 +73,26 @@ const clean = {
 };
 
 describe("generated doctor RPC compatibility probe", () => {
+  it.each([undefined, "", "testnet"])("uses testnet for policy %j", async (policy) => {
+    vi.stubEnv("DACS_DEMOS_DEPLOYMENT_POLICY", policy);
+    const runtime = nodeRuntime(async () => structuredClone(clean));
+    expect(await generatedProbe(runtime, runtime)()).toEqual({
+      status: "pass", facts: compatibleFacts,
+    });
+    expect(runtime.adapter.raw.nodeCall).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["Testnet", "test", "testnet ", " production", "PRODUCTION", " "])(
+    "reports invalid policy %j before calling the RPC", async (policy) => {
+      vi.stubEnv("DACS_DEMOS_DEPLOYMENT_POLICY", policy);
+      const runtime = nodeRuntime(async () => structuredClone(clean));
+      expect(await generatedProbe(runtime, runtime)()).toEqual({
+        status: "fail", reasonCode: "demos-deployment-policy-invalid",
+      });
+      expect(runtime.adapter.raw.nodeCall).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     clean,
     { ...clean, nodeVersion: { ...clean.nodeVersion, dirty: true } },

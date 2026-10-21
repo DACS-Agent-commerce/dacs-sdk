@@ -456,6 +456,24 @@ function depsFor(
 }
 
 describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
+  test.each(["job-legacy", "550e8400-e29b-41d4-a716-446655440000", JOB_ID.toLowerCase(), null])(
+    "diagnoses a malformed bundle jobId %j before any authentication callback", async (jobId) => {
+      const fx = await buildFixture(buyerDid, signBuyer);
+      const deps = depsFor(fx);
+      (fx.bundle as unknown as Record<string, unknown>).jobId = jobId;
+      deps.resolvePublicKey = async () => { throw new Error("must not resolve keys"); };
+      deps.resolveAttestationRef = async () => { throw new Error("must not resolve artifacts"); };
+      deps.verify = () => { throw new Error("must not verify signatures"); };
+      expect(await verifyBundleCore("bundle", deps)).toEqual({
+        ok: false,
+        reason: "attestation bundle jobId must be a canonical uppercase ULID (CORE JID-1)",
+        fullyVerified: false,
+        signatures: [],
+        refs: [],
+      });
+    },
+  );
+
   test.each([undefined, buyerDid, `${buyerDid}?role=publisher`, sellerDid])(
     "binds a reference issuer before a permissive evidence callback: %s", async (signer) => {
       const fx = await buildFixture(buyerDid, signBuyer);

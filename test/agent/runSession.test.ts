@@ -22,6 +22,10 @@ import {
 import { UnsupportedCapabilityError } from "../../src/errors.js";
 import { identityBundleHash } from "../../src/identity/index.js";
 import { signedBytes } from "../../src/crypto/index.js";
+import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { validateSettlementEvidenceStructure } from "../../src/agent/verifySettlementEvidence.js";
+import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import { isLegacyMvpSettlementEvidence } from "../../src/artifacts/legacyMvp.js";
 import type {
   FinalizedVetAnchor,
   VetProduction,
@@ -165,6 +169,7 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
       chainId: "eip155:11155111",
       payer: "0xbob",
       payee: "0xalice",
+      finality: { model: "block-depth", finalityBlocks: 1 },
     }),
     newJobId: () => "job-1",
     now: () => "2026-01-01T00:00:00Z",
@@ -303,6 +308,7 @@ describe("runSession orchestration (T4)", () => {
         settle: async () => {
           settleCalls += 1;
           return {
+            finality: { model: "block-depth" as const, finalityBlocks: 1 },
             ok: true,
             txHash: "0xidentity",
             chainId: "eip155:11155111",
@@ -378,6 +384,7 @@ describe("runSession orchestration (T4)", () => {
         settle: async (request) => {
           settled = request;
           return {
+            finality: { model: "block-depth" as const, finalityBlocks: 1 },
             ok: true,
             txHash: "0xabc",
             chainId: "eip155:11155111",
@@ -539,6 +546,7 @@ describe("runSession orchestration (T4)", () => {
     ).rejects.toThrow(/settlement rail returned a malformed result/);
 
     const retained = {
+      finality: { model: "block-depth" as const, finalityBlocks: 1 },
       ok: true,
       txHash: "0xowned",
       chainId: "chain",
@@ -603,6 +611,7 @@ describe("runSession orchestration (T4)", () => {
           selectedRail = request.rail;
           selectedPhase = request.phase;
           return {
+            finality: { model: "block-depth" as const, finalityBlocks: 1 },
             ok: true,
             txHash: "0xabc",
             chainId: "eip155:8453",
@@ -830,6 +839,7 @@ describe("runSession orchestration (T4)", () => {
         settle: async () => {
           settles += 1;
           return {
+            finality: { model: "block-depth" as const, finalityBlocks: 1 },
             ok: true,
             txHash: "0xabc",
             chainId: "eip155:8453",
@@ -1018,17 +1028,21 @@ describe("runSession orchestration (T4)", () => {
     const anchored: Record<string, unknown> = {};
     await runSessionCore(
       "stor-listing",
-      TERMS,
+      { ...TERMS, price: { ...TERMS.price, rail: "pay-dem" } },
       makeDeps({
+        newJobId: () => "01JZ0000000000000000000360",
+        readListing: async () => ({ ...LISTING, supportedPaymentRails: ["pay-dem"] }),
         settle: async () => ({
           ok: true,
-          txHash: "demos:0xfeed",
-          chainId: "demos",
+          txHash: "a".repeat(64),
+          chainId: "demos:testnet",
           payer: "0xbob",
           payee: "0xalice",
           finality: { model: "bft-final" },
+          finalityObservedAt: 1780000000000,
           blockNumber: 909,
           txRefKind: "demos",
+          txRef: { kind: "demos", txHash: "a".repeat(64), blockNumber: 909 },
         }),
         anchor: async (name: string, value: object) => {
           if (name.includes("evidence")) anchored.evidence = value;
@@ -1044,14 +1058,20 @@ describe("runSession orchestration (T4)", () => {
     expect(ev.settlementFinality.finalityBlocks).toBeUndefined();
     expect(ev.paymentTxRefs[0]!.kind).toBe("demos");
     expect(ev.paymentTxRefs[0]!.blockNumber).toBe(909);
+    expect(await validateSettlementEvidenceStructure(ev)).toEqual({ decision: "valid", reasons: [] });
   });
 
-  test("evidence defaults to provider-receipt when the rail reports no finality", async () => {
+  test("AP2 receipt-confirmed adapters may omit the provider-receipt finality model", async () => {
     const anchored: Record<string, unknown> = {};
     await runSessionCore(
       "stor-listing",
-      TERMS,
+      { ...TERMS, price: { ...TERMS.price, rail: "pay-ap2" } },
       makeDeps({
+        newJobId: () => "01JZ0000000000000000000360",
+        readListing: async () => ({ ...LISTING, supportedPaymentRails: ["pay-ap2"] }),
+        settle: async () => ({
+          ok: true, txHash: "receipt", chainId: "ap2-provider", payer: "0xbob", payee: "0xalice",
+        }),
         anchor: async (name: string, value: object) => {
           if (name.includes("evidence")) anchored.evidence = value;
           return `stor-${name}`;
@@ -1066,6 +1086,90 @@ describe("runSession orchestration (T4)", () => {
     expect(ev.settlementFinality.finalityBlocks).toBeUndefined();
     expect(ev.paymentTxRefs[0]!.kind).toBe("payment");
     expect(ev.paymentTxRefs[0]!.blockNumber).toBeUndefined();
+    expect(isLegacyMvpSettlementEvidence(ev)).toBe(true);
+  });
+
+  test("missing non-AP2 finality is never signed, and a retained payment is not submitted again", async () => {
+    const store = createInMemorySessionStore();
+    const artifacts = new Map<string, Record<string, unknown>>();
+    let payments = 0;
+    let evidenceSignatures = 0;
+    const deps = makeDeps({
+      sessionStore: store,
+      settle: async () => {
+        payments += 1;
+        return { ok: true, txHash: "0xpaid", chainId: "eip155:11155111", payer: "0xbob", payee: "0xalice" };
+      },
+      signBytes: async (bytes) => {
+        if (new TextDecoder().decode(bytes).startsWith(ARTIFACT_SEPARATORS.SettlementEvidence)) evidenceSignatures += 1;
+        return new Uint8Array(64);
+      },
+      anchor: async (name, value) => {
+        const ref = `stor-${name}`;
+        artifacts.set(name, value as Record<string, unknown>);
+        return ref;
+      },
+      resolveAnchor: async (name) => artifacts.has(name)
+        ? { status: "present", ref: `stor-${name}`, value: artifacts.get(name)! }
+        : { status: "absent" },
+      authenticateRecoveredArtifact: () => true,
+    });
+    await expect(runSessionCore("stor-listing", TERMS, deps))
+      .rejects.toThrow(/requires rail-reported finality \(PC-6\) before signing/);
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-1"))
+      .rejects.toThrow(/requires authenticated rail reconciliation \(successful settlement lacks finality\)/);
+    expect(payments).toBe(1);
+    expect(evidenceSignatures).toBe(0);
+    const loaded = await store.load("job-1");
+    expect(loaded.status).toBe("ok");
+    if (loaded.status === "ok") {
+      expect(loaded.record.checkpoints.some((checkpoint) => checkpoint.key.startsWith("settle") && checkpoint.stage === "outcome")).toBe(true);
+    }
+    const recovered = {
+      ok: true, txHash: "0xpaid", chainId: "eip155:11155111", payer: "0xbob", payee: "0xalice",
+      finality: { model: "block-depth" as const, finalityBlocks: 1 },
+      finalityObservedAt: 1780000000000,
+    };
+    let reconciliations = 0;
+    deps.resumeSettlement = async (request) => {
+      reconciliations += 1;
+      expect(request.priorAttempts).toEqual([
+        { txHash: "0xpaid", chainId: "eip155:11155111", ok: true },
+      ]);
+      return { ...recovered, txHash: "0xother" };
+    };
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-1"))
+      .rejects.toThrow(/does not authenticate the prior/);
+    deps.resumeSettlement = async () => { reconciliations += 1; return recovered; };
+    expect((await runSessionCore("stor-listing", TERMS, deps, "job-1")).outcome).toBe("completed");
+    expect(reconciliations).toBe(2);
+    expect(payments).toBe(1);
+    expect(evidenceSignatures).toBe(1);
+    expect((await runSessionCore("stor-listing", TERMS, deps, "job-1")).outcome).toBe("completed");
+    expect(reconciliations).toBe(2);
+    expect(payments).toBe(1);
+  });
+
+  test.each([
+    "pay-evm-erc20", "pay-solana-spl", "pay-cross-chain-htlc",
+    "pay-cross-chain-liquidity-tank", "pay-x402", "pay-dem",
+  ])("never substitutes provider-receipt for missing %s finality", async (phase) => {
+    let evidenceSignatures = 0;
+    await expect(runSessionCore(
+      "stor-listing",
+      { ...TERMS, price: { ...TERMS.price, rail: phase } },
+      makeDeps({
+        readListing: async () => ({ ...LISTING, supportedPaymentRails: [phase] }),
+        settle: async () => ({
+          ok: true, txHash: "paid", chainId: "test", payer: "buyer", payee: "0xalice",
+        }),
+        signBytes: async (bytes) => {
+          if (new TextDecoder().decode(bytes).startsWith(ARTIFACT_SEPARATORS.SettlementEvidence)) evidenceSignatures += 1;
+          return new Uint8Array(64);
+        },
+      }),
+    )).rejects.toThrow(/requires rail-reported finality/);
+    expect(evidenceSignatures).toBe(0);
   });
 
   test("failed settlement yields outcome=failed", async () => {
@@ -1258,7 +1362,7 @@ describe("runSession orchestration (T4)", () => {
       },
       settle: async () => {
         settleCalls += 1;
-        return { ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "0xalice" };
+        return { finality: { model: "block-depth" as const, finalityBlocks: 1 }, ok: true, txHash: "0x", chainId: "c", payer: "p", payee: "0xalice" };
       },
       vet: async ({ evaluatedParty, jobId }) =>
         currentVetProduction(evaluatedParty, jobId, "pass", store),
@@ -1347,6 +1451,7 @@ describe("runSession orchestration (T4)", () => {
       settle: async (request) => {
         settleCalls += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0x",
           chainId: "c",
@@ -1425,6 +1530,7 @@ describe("runSession orchestration (T4)", () => {
       settle: async (request) => {
         settleCalls += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0x",
           chainId: "c",
@@ -1783,7 +1889,7 @@ describe("runSession orchestration (T4)", () => {
       },
       settle: async () => {
         settleCalls += 1;
-        return { ok: true, txHash: "0xabc", chainId: "c", payer: "p", payee: "0xalice" };
+        return { finality: { model: "block-depth" as const, finalityBlocks: 1 }, ok: true, txHash: "0xabc", chainId: "c", payer: "p", payee: "0xalice" };
       },
     });
 
@@ -1856,6 +1962,7 @@ describe("runSession orchestration (T4)", () => {
       settle: async () => {
         settleCalls += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xexpiry",
           chainId: "eip155:8453",
@@ -2063,6 +2170,7 @@ describe("runSession orchestration (T4)", () => {
       settle: async () => {
         settleCalls += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xauth-swap",
           chainId: "eip155:8453",
@@ -2137,6 +2245,7 @@ describe("runSession orchestration (T4)", () => {
       settle: async () => {
         settleCalls += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xlisting-snapshot",
           chainId: "eip155:8453",
@@ -2204,6 +2313,7 @@ describe("runSession orchestration (T4)", () => {
         settle: async () => {
           settleCalls += 1;
           return {
+            finality: { model: "block-depth" as const, finalityBlocks: 1 },
             ok: true,
             txHash: `0x${direction.name}`,
             chainId: "eip155:8453",
@@ -2253,6 +2363,7 @@ describe("runSession orchestration (T4)", () => {
       settle: async () => {
         settleCalls += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xabc",
           chainId: "eip155:8453",
@@ -2499,6 +2610,7 @@ describe("runSession orchestration (T4)", () => {
       settle: async (request) => {
         settledRequest = structuredClone(request);
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xterms",
           chainId: "test",
@@ -2542,6 +2654,7 @@ describe("runSession orchestration (T4)", () => {
       settle: async (request) => {
         settledPayee = request.payee;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xlisting",
           chainId: "test",
@@ -2566,6 +2679,7 @@ describe("runSession orchestration (T4)", () => {
       expect(this).toBe(deps);
       expect(this.buyerId).toBe("did:demos:attacker");
       return {
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xdeps",
         chainId: "test",

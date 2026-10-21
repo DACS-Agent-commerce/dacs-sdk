@@ -123,7 +123,7 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
       over.settle ??
       (async (req): Promise<SettleResult> => {
         settleCalls.n++;
-        return { ok: true, txHash: "0xpaid", chainId: "eip155:84532", payer: "0xbuyer", payee: req.payee };
+        return { finality: { model: "block-depth" as const, finalityBlocks: 1 }, ok: true, txHash: "0xpaid", chainId: "eip155:84532", payer: "0xbuyer", payee: req.payee };
       }),
     ...(over.resumeSettlement
       ? { resumeSettlement: over.resumeSettlement }
@@ -677,6 +677,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const settle: SessionDeps["settle"] = async (req) => {
       submits += 1;
       durableRailOutcome = {
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xdurable-paid",
         chainId: "eip155:84532",
@@ -799,6 +800,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       entered();
       await hold;
       return {
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xpaid",
         chainId: "c",
@@ -870,6 +872,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         recoveries += 1;
         recoveredPhase = req.phase;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xlegacy-paid",
           chainId: "eip155:84532",
@@ -999,6 +1002,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const resolved = await makeDeps(store, {
       kv,
       resumeSettlement: async (req) => ({
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
         ok: true,
         txHash: "0xambiguous",
         chainId: "eip155:84532",
@@ -1068,6 +1072,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       resumeSettlement: async (req) => {
         thirdHistory = req.priorAttempts;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xsafe-success",
           chainId: "eip155:84532",
@@ -1094,6 +1099,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       settle: async (req) => {
         submits += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xprior-paid",
           chainId: "eip155:84532",
@@ -1143,6 +1149,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       settle: async (req) => {
         submits += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xphase-bound-payment",
           chainId: "eip155:84532",
@@ -1192,6 +1199,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       settle: async (req) => {
         submits += 1;
         return {
+          finality: { model: "block-depth" as const, finalityBlocks: 1 },
           ok: true,
           txHash: "0xlatest-paid",
           chainId: "eip155:84532",
