@@ -1277,17 +1277,25 @@ function baseProbes(
     },
     "local.deployment-runtime": dockerRuntime,
     "demos.rpc-chain": actors === undefined ? actorUnavailable : async () => {
+      // demosdk's getNetworkInfo() keeps its first success for the client's
+      // lifetime, so a later outage would still look healthy. Ask each node.
       let infos: unknown[];
       try {
-        infos = await Promise.all([
-          actors.buyer.runtime.networkInfo(), actors.seller.runtime.networkInfo(),
-        ]);
+        infos = await Promise.all([actors.buyer.runtime, actors.seller.runtime].map(
+          (runtime) => runtime.adapter.raw.nodeCall?.("getNetworkInfo", {}),
+        ));
       } catch { return fail("demos-rpc-unavailable"); }
-      // demosdk resolves null when the RPC is unreachable.
-      if (infos.some((info) => info === null || info === undefined)) {
+      // No raw reader, or demosdk's { result, response } transport-failure
+      // envelope, means the RPC was not reached.
+      if (infos.some((info) => info === null || info === undefined ||
+          (typeof info === "object" && !Array.isArray(info) && !("forks" in info) &&
+            typeof (info as { result?: unknown }).result === "number"))) {
         return fail("demos-rpc-unavailable");
       }
-      if (infos.some((info) => typeof info !== "object" || Array.isArray(info))) {
+      // A node reply carries the fork status demosdk itself requires.
+      if (infos.some((info) => typeof info !== "object" || Array.isArray(info) ||
+          typeof (info as { forks?: { osDenomination?: { activated?: unknown } } | null })
+            .forks?.osDenomination?.activated !== "boolean")) {
         return fail("demos-rpc-response-malformed");
       }
       // Build metadata is self-reported by the node: report it, never gate on it.
@@ -4860,8 +4868,9 @@ The \`demos.rpc-chain\` check reports each node's self-described build as the
 \`buyerNodeBuild\` and \`sellerNodeBuild\` facts. The default public testnet RPC
 reports a dirty build (\`demos-node-build-dirty\`). This is informational and does
 not block start, setup or purchase; settlement is still verified from
-transaction and block evidence. The check fails only when the RPC is unreachable
-or returns a malformed reply.
+transaction and block evidence. Each run asks both nodes directly instead of
+reusing an earlier answer. The check fails only when the RPC is unreachable or
+returns a malformed reply.
 
 Payment capability: **${options.rails}**. Dual-rail mode publishes two separately
 signed sibling Listings for the same offer. Setup and purchase select one exact

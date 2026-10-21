@@ -263,9 +263,20 @@ receiving its secret or substituting another signer identity.
 
 `addressNonce()` uses the uncoerced `raw.nodeCall("getAddressNonce", { address })`
 response and accepts only a safe non-negative integer or its canonical decimal
-string. Custom Demos adapters must expose `raw.nodeCall` for this probe; an
-unavailable method or malformed response fails readiness. The demosdk convenience
-method's fallback zero is never treated as a successful read.
+string. Custom Demos adapters must expose `raw.nodeCall` for this probe and for
+the generated doctor's network check; an unavailable method or malformed
+response fails readiness. The demosdk convenience method's fallback zero is
+never treated as a successful read. A custom adapter that wraps a demosdk
+`Demos` instance forwards its reader unchanged:
+
+```ts
+raw: {
+  getNetworkInfo: () => demos.getNetworkInfo(),
+  getAddressNonce: (address) => demos.getAddressNonce(address),
+  getAddressInfo: (address) => demos.getAddressInfo(address),
+  nodeCall: (message, args) => demos.nodeCall(message, args),
+},
+```
 
 `createDacsFixedPriceX402OperationSetV1()` admits only the complete set of
 role-owned coordinator tracks. Core coordinators continue to support partial
@@ -499,9 +510,14 @@ this exact node revision and version, the `demos-node-software` identity, and
 `demos-node-build-dirty` or `demos-node-revision-unsupported`. A node reports
 this metadata about itself and nothing authenticates it, so the generated
 `demos.rpc-chain` doctor check reports it as the `buyerNodeBuild` and
-`sellerNodeBuild` facts and does not block start, setup or purchase. The check
-fails only when the RPC is unreachable (`demos-rpc-unavailable`) or returns a
-non-object reply (`demos-rpc-response-malformed`). The endpoint URL is not a
+`sellerNodeBuild` facts and does not block start, setup or purchase. Each run
+asks both nodes through the uncached `raw.nodeCall("getNetworkInfo", {})`,
+because demosdk's `getNetworkInfo()` keeps its first success for the client's
+lifetime and would hide a later outage. The check fails only when the RPC is
+unreachable, which includes a missing `raw.nodeCall` and demosdk's
+`{ result, response }` transport-failure envelope (`demos-rpc-unavailable`), or
+when the reply lacks the boolean `forks.osDenomination.activated` status
+(`demos-rpc-response-malformed`). The endpoint URL is not a
 compatibility pin. Independently verified transaction and block evidence, not
 build metadata, establish settlement.
 
@@ -518,7 +534,7 @@ The pinned response contract is:
 
 | Read | Required interpretation |
 | --- | --- |
-| `getNetworkInfo` | SDK-unwrapped object with exact `nodeVersion` build identity; denomination fork metadata is evaluated separately. |
+| `getNetworkInfo` | SDK-unwrapped object with boolean `forks.osDenomination.activated` and exact `nodeVersion` build identity; the doctor reads it uncached on every run, and the denomination fork value is evaluated separately. |
 | `getAddressNonce` | SDK-unwrapped nonnegative safe integer or canonical decimal integer string. No partial parsing, fallback zero, or RPC error envelope is accepted. This is the retained nonce; the SDK reserves the next nonce separately. |
 | `getTransactionStatus` | `included` plus a block number is inclusion. `unknown` is not evidence of payment. Transport errors remain unavailable. |
 | `getTxByHash` | Native send payload contains canonical OS amount and matching payer/payee. A numeric outer amount may be a projection; `confirmed` in the transaction body alone does not prove payment. |
