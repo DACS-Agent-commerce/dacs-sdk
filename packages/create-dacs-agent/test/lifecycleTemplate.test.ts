@@ -61,7 +61,7 @@ it("admits backups from this or an earlier SDK, refusing newer or unparseable on
     ...manifest, release: { ...manifest.release, sdkVersion },
   });
   for (const sdkVersion of [
-    "1.2.3-beta.2", "1.2.3-beta.2+build.7", "1.2.3-beta.1", "1.2.3-beta", "1.2.3-alpha.9",
+    "1.2.3-beta.2", "1.2.3-beta.2+build.7", "1.2.3-beta.2+001", "1.2.3-beta.1", "1.2.3-beta", "1.2.3-alpha.9",
     "1.2.3-2", "1.2.2", "1.1.9", "0.0.0", "0.1.0-alpha.0",
   ]) {
     expect(() => api.assertGeneratedBackupRestorableV1(withSdk(sdkVersion)), sdkVersion)
@@ -70,7 +70,7 @@ it("admits backups from this or an earlier SDK, refusing newer or unparseable on
   for (const sdkVersion of [
     "1.2.3", "1.2.3-beta.3", "1.2.3-beta.10", "1.2.3-beta.2.0", "1.2.3-gamma", "1.2.4",
     "1.3.0", "2.0.0", "999.0.0", "invalid", "", "01.2.3", "1.2", "1.2.3-", "v1.2.3",
-    "1.2.3\n", 123, null, undefined,
+    "1.2.3\n", "1.2.3-01", "1.2.3-beta.01", "1.2.3-00", 123, null, undefined,
   ]) {
     expect(() => api.assertGeneratedBackupRestorableV1(withSdk(sdkVersion)), String(sdkVersion))
       .toThrow("restore-backup-release-incompatible");
@@ -143,5 +143,16 @@ it("rejects an authenticated backup from a newer SDK before replacing actor dire
   })).rejects.toThrow("restore-backup-release-incompatible");
   for (const directory of [paths.buyer, paths.seller]) {
     expect(await readFile(join(directory, "actor.sqlite"), "utf8")).toBe("current");
+  }
+});
+
+ it("orders arbitrarily long numeric prerelease identifiers without Number rounding", async () => {
+  const { api } = await lifecycle("1.2.3-9007199254740993");
+  const manifest = (sdkVersion: string) => ({ release: { ...release.dacs, sdkVersion } });
+  for (const sdkVersion of ["1.2.3-9007199254740992", "1.2.3-9007199254740993", "1.2.3-999999999999999"]) {
+    expect(() => api.assertGeneratedBackupRestorableV1(manifest(sdkVersion))).not.toThrow();
+  }
+  for (const sdkVersion of ["1.2.3-9007199254740994", "1.2.3-10000000000000000"]) {
+    expect(() => api.assertGeneratedBackupRestorableV1(manifest(sdkVersion))).toThrow("restore-backup-release-incompatible");
   }
 });

@@ -1277,6 +1277,15 @@ function baseProbes(
     },
     "local.deployment-runtime": dockerRuntime,
     "demos.rpc-chain": actors === undefined ? actorUnavailable : async () => {
+      // Generated profiles support public testnet operation. A production
+      // deployment needs authenticated build provenance; self-reported node
+      // metadata and an operator-set revision string cannot establish it.
+      if ((process.env.DACS_DEMOS_DEPLOYMENT_POLICY ?? "testnet") !== "testnet") {
+        return blocked("demos-deployment-pin-unverified");
+      }
+      if ([actors.buyer.runtime, actors.seller.runtime].some(
+        (runtime) => typeof runtime.adapter.raw.nodeCall !== "function",
+      )) return fail("demos-adapter-raw-reader-missing");
       // demosdk's getNetworkInfo() keeps its first success for the client's
       // lifetime, so a later outage would still look healthy. Ask each node.
       let infos: unknown[];
@@ -1289,7 +1298,8 @@ function baseProbes(
       // envelope, means the RPC was not reached.
       if (infos.some((info) => info === null || info === undefined ||
           (typeof info === "object" && !Array.isArray(info) && !("forks" in info) &&
-            typeof (info as { result?: unknown }).result === "number"))) {
+            (typeof (info as { result?: unknown }).result === "number" ||
+             typeof (info as { error?: unknown }).error === "string")))) {
         return fail("demos-rpc-unavailable");
       }
       // A node reply carries the fork status demosdk itself requires.
@@ -1301,6 +1311,7 @@ function baseProbes(
       // Build metadata is self-reported by the node: report it, never gate on it.
       return pass({
         actorCount: 2,
+        deploymentPolicy: "testnet",
         buyerNodeBuild: inspectDacsDemosNodeCompatibilityV1(infos[0]).reasonCode,
         sellerNodeBuild: inspectDacsDemosNodeCompatibilityV1(infos[1]).reasonCode,
       });
@@ -4694,6 +4705,8 @@ function compose(options: LiveProjectTemplateOptions): string {
 function envExample(options: LiveProjectTemplateOptions): string {
   const template = `# Public configuration only. Never put secret values in this file.
 DACS_DEPLOYMENT=${options.deployment}
+# Generated readiness supports testnet only; production needs authenticated deployment provenance.
+DACS_DEMOS_DEPLOYMENT_POLICY=testnet
 DACS_RUNTIME_UID=${options.runtimeUid}
 DACS_RUNTIME_GID=${options.runtimeGid}
 DACS_BUYER_DATA_DIRECTORY=./data/buyer
@@ -4874,7 +4887,12 @@ reports a dirty build (\`demos-node-build-dirty\`). This is informational and do
 not block start, setup or purchase; settlement is still verified from
 transaction and block evidence. Each run asks both nodes directly instead of
 reusing an earlier answer. The check fails only when the RPC is unreachable or
-returns a malformed reply.
+returns a malformed reply. Generated readiness supports public testnet operation
+only. Set \`DACS_DEMOS_DEPLOYMENT_POLICY=production\` to declare production
+intent: readiness blocks with \`demos-deployment-pin-unverified\` for every build,
+including clean self-reported metadata. Production integration must authenticate
+the deployed artifact and RPC endpoint against the reviewed pin before enabling
+commerce; this template supplies no deployment attestation verifier.
 
 Payment capability: **${options.rails}**. Dual-rail mode publishes two separately
 signed sibling Listings for the same offer. Setup and purchase select one exact

@@ -869,7 +869,7 @@ describe.skipIf(!haveVectors)("current evidence admission and historical replay"
     const result = await inspectHistoricalSettlementEvidence(fx.evidence, {
       orchestrator: ORCH, attestationRef: fx.result.attestationRef,
     }, realDeps(keys));
-    expect(result).toEqual({ decision: "valid", reasons: [] });
+    expect(result).toEqual({ decision: "valid", reasons: [expect.stringContaining("no current DACS semantic conformance")] });
     const tampered = { ...fx.evidence, observedAt: 1 };
     expect((await inspectHistoricalSettlementEvidence(tampered, {}, realDeps(keys))).decision).toBe("invalid");
     expect((await verifySettlementEvidence(fx.evidence, paymentAuthenticatedContext(), realDeps(keys))).decision).toBe("error");

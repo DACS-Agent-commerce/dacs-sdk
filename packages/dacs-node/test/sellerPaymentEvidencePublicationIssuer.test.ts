@@ -25,6 +25,7 @@ import {
   createDacsFixedPricePayDemSellerPaymentEvidenceV1,
   createDacsFixedPriceX402SellerPaymentEvidenceV1,
 } from "../src/fixedPriceX402SellerPaymentEvidence.js";
+import { createSellerPaymentEvidenceReceiptVerifier } from "../src/paymentEvidenceReceipt.js";
 import type { DacsLiveRoleOperationContextV1 } from "../src/roleRuntime.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -104,7 +105,7 @@ function fixture(rail: "x402" | "pay-dem") {
         context,
         observeDemosTransfer: vi.fn(),
       });
-  return { composed, evidenceHash, receipt, putEffectIntent, verifyDemosAnchorReceipt, readAnchor };
+  return { composed, evidence, context, evidenceHash, receipt, putEffectIntent, verifyDemosAnchorReceipt, readAnchor };
 }
 
 describe.each(["x402", "pay-dem"] as const)("%s publication issuer admission", (rail) => {
@@ -166,6 +167,40 @@ describe.each(["x402", "pay-dem"] as const)("%s publication issuer admission", (
         anchorReceipt: f.receipt,
       })).resolves.toMatchObject({ disposition: "indeterminate" });
       expect(f.putEffectIntent).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// Call the exact callback directly, so no core handshake guard can mask a
+// missing host issuer check. All other receipt bindings are valid.
+describe.each(["x402", "pay-dem", "default"] as const)("%s direct completion receipt verifier", (kind) => {
+  it.each([SELLER, QUALIFIED_SELLER, undefined, OTHER_ISSUER, BUYER])(
+    "checks reference issuer before readback: %s", async (signer) => {
+      const f = fixture(kind === "default" ? "pay-dem" : kind);
+      const verifyReceipt = kind === "default"
+        ? createSellerPaymentEvidenceReceiptVerifier(f.context)
+        : f.composed.paymentEvidence.verifyAnchorReceipt!;
+      const result = await verifyReceipt({
+        request: {
+          evidence: f.evidence, logicalAddress: LOGICAL_ADDRESS, evidenceHash: f.evidenceHash,
+        },
+        completion: {
+          evidenceRef: {
+            anchor: { kind: "storage-program", locator: LOGICAL_ADDRESS },
+            contentHash: f.evidenceHash,
+            ...(signer === undefined ? {} : { signer }),
+          },
+          anchorReceipt: f.receipt,
+        },
+      } as never);
+      if (signer === SELLER || signer === QUALIFIED_SELLER || signer === undefined) {
+        expect(result).toEqual({ disposition: "valid" });
+        expect(f.verifyDemosAnchorReceipt).toHaveBeenCalledOnce();
+      } else {
+        expect(result.disposition).toBe("invalid");
+        expect(f.verifyDemosAnchorReceipt).not.toHaveBeenCalled();
+        expect(f.readAnchor).not.toHaveBeenCalled();
+      }
     },
   );
 });

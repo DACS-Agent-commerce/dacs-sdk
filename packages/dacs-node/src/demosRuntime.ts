@@ -520,7 +520,10 @@ export async function createDacsDemosActorRuntimeV1(
     addressNonce: async () => {
       // demosdk's convenience method turns malformed responses into zero and
       // partially parses strings. Neither is evidence of a healthy nonce read.
-      const response = await adapter.raw.nodeCall?.("getAddressNonce", {
+      if (typeof adapter.raw.nodeCall !== "function") {
+        throw new DacsDemosRuntimeError("demos-adapter-raw-reader-missing");
+      }
+      const response = await adapter.raw.nodeCall("getAddressNonce", {
         address: walletAddress,
       });
       const nonce = typeof response === "string" && /^(0|[1-9][0-9]*)$/.test(response)

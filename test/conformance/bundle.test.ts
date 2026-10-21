@@ -1,3 +1,5 @@
+import { currentBundleFixture } from "../helpers/currentBundleFixture.js";
+
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,12 +17,11 @@ import {
 
 /**
  * DACS-Standard §14 conformance — the `bundle` area (§10.4). Drives the real
- * reference attestation-bundle fixtures through verifyBundleCore + our
+ * freshly signed canonical-ID copies through verifyBundleCore + our
  * canonical hashing, asserting the golden bundle hashes (byte-stability) and the
  * §10.4.1 signature decisions (pass / fail / error) the spec's reference
- * verifier produces. Signer keys are derived from the golden seeds, so this
- * checks our Ed25519 + canonicalisation against the spec oracle, not a fixture
- * we authored.
+ * verifier produces. The frozen original hashes remain pinned; malformed
+ * historical IDs are explicitly refused by the current verifier.
  */
 
 const VENDOR = join(
@@ -73,13 +74,23 @@ describe.skipIf(!haveVectors)("§14 conformance — bundle (§10.4)", () => {
   const resolveCorrect = async (did: string) => keyByDid[did] ?? null;
 
   const runFixture = (rel: string, resolve = resolveCorrect) => {
-    const fixture = load(rel);
+    const fixture = currentBundleFixture(load(rel), golden.seeds);
     return verifyBundleCore("ref", {
       readArtifact: async () => fixture,
       resolvePublicKey: resolve,
       verify,
     });
   };
+
+  it("refuses the original pre-JID-1 bundle without a current key lookup", async () => {
+    let calls = 0;
+    const result = await verifyBundleCore("ref", {
+      readArtifact: async () => load(golden.fixture),
+      resolvePublicKey: async () => { calls += 1; return null; }, verify,
+    });
+    expect(result.ok).toBe(false);
+    expect(calls).toBe(0);
+  });
 
   it("bundle-0004: byte-stable signed-scope hash matches the golden", () => {
     expect(bundleHash(load(golden.fixture))).toBe(golden.bundleHash);

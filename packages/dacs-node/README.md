@@ -502,24 +502,37 @@ may trust the HTTP body as identity or authorization evidence.
 `DACS_NODE_DEMOS_RPC_COMPATIBILITY_V1` identifies the source-reviewed contract:
 Demos node `0.9.8` at
 [`61b8e75aa8db5e408c49e1c3a89db4d673f45578`](https://github.com/kynesyslabs/node/tree/61b8e75aa8db5e408c49e1c3a89db4d673f45578),
-with demosdk `4.0.16` at published source revision
+with source-reviewed demosdk `4.0.16` at published source revision
 [`d3620ae24f657ae7442e63e7adaefef7094b22e2`](https://github.com/kynesyslabs/sdks/tree/d3620ae24f657ae7442e63e7adaefef7094b22e2).
+`contractVersion` names this response contract and `sdkVersion` records the
+reviewed SDK source; neither authenticates the installed SDK. Generated projects
+pin demosdk exactly. Other consumers must pin the reviewed SDK themselves when
+they need that exact source contract; the optional peer range allows later SDKs.
 `inspectDacsDemosNodeCompatibilityV1()` reports `demos-node-compatible` only for
 this exact node revision and version, the `demos-node-software` identity, and
 `dirty: false`; otherwise it reports `demos-node-build-unidentified`,
 `demos-node-build-dirty` or `demos-node-revision-unsupported`. A node reports
-this metadata about itself and nothing authenticates it, so the generated
+this metadata about itself and nothing authenticates it. In testnet policy the generated
 `demos.rpc-chain` doctor check reports it as the `buyerNodeBuild` and
 `sellerNodeBuild` facts and does not block start, setup or purchase. Each run
 asks both nodes through the uncached `raw.nodeCall("getNetworkInfo", {})`,
 because demosdk's `getNetworkInfo()` keeps its first success for the client's
 lifetime and would hide a later outage. The check fails only when the RPC is
-unreachable, which includes a missing `raw.nodeCall` and demosdk's
+unreachable, including explicit node error replies and demosdk's
 `{ result, response }` transport-failure envelope (`demos-rpc-unavailable`), or
 when the reply lacks the boolean `forks.osDenomination.activated` status
-(`demos-rpc-response-malformed`). The endpoint URL is not a
+(`demos-rpc-response-malformed`). Missing `raw.nodeCall` reports
+`demos-adapter-raw-reader-missing`. The endpoint URL is not a
 compatibility pin. Independently verified transaction and block evidence, not
 build metadata, establish settlement.
+
+Generated readiness supports public testnet only. Declare production intent with
+`DACS_DEMOS_DEPLOYMENT_POLICY=production`: the doctor blocks start, setup and
+purchase with `demos-deployment-pin-unverified`, even for a clean matching
+self-reported build. No environment revision string can override that result.
+A production host integration must authenticate the deployed artifact and endpoint
+against the reviewed pin and retain provenance and contract-probe results; the
+generated project supplies no deployment attestation verifier.
 
 The read-only capture from node2, the generated default RPC, on 2026-10-16
 reports `dirty: true`, so the doctor reports `demos-node-build-dirty` for it on

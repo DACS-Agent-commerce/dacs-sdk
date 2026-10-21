@@ -31,9 +31,10 @@ artifacts inherit the exact one-shot consumed payment authorization retained by
 the seller fulfilment stack. Recovery reauthenticates the retained seller state
 and the live settlement observation before continuing.
 
-DACS-4 SB-2 is a closed-set consumer rule: the earlier `observedAt` record wins,
-with lower evidence hash as the tie-break. SDK issue #33 remains responsible for
-applying that rule across bundle verification and reputation ingestion, where a
-later-discovered winning record can demote a previously observed loser. This
-point verifier does not expose a mutable global-winner claim that could be
-mistaken for durable effect authority.
+DACS-4 SB-2 applies to the complete presented evidence set. A collision across
+`(jobId, phaseIndex)` tuples makes the whole group indeterminate and non-countable
+unless independently authenticated settlement-side authority binds the exact
+canonical settlement identity, pinned rail/profile, job ID and phase index to
+one tuple. Timestamps, evidence hashes and publication order cannot select a
+winner. A later collision requires recomputing the group and removing any
+provisional count. This point verifier supplies no global uniqueness authority.

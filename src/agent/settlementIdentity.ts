@@ -4,7 +4,7 @@ import { types as nodeTypes } from "node:util";
 import { isComponentSignature } from "../artifacts/signatures.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { ChainTxRef } from "../artifacts/types.js";
-import { isSettlementEvidence } from "../artifacts/validators.js";
+import { isCanonicalJobId, isSettlementEvidence } from "../artifacts/validators.js";
 import {
   canonicalizeDecimal,
   contentHash,
@@ -519,7 +519,7 @@ function parsePaymentAnchor(
   const jobId = parts[2]!;
   const encodedRailId = parts[3]!;
   const phaseText = parts[4]!;
-  if (jobId.length === 0 || encodedRailId.length === 0 ||
+  if (!isCanonicalJobId(jobId) || encodedRailId.length === 0 ||
       !/^(0|[1-9][0-9]*)$/.test(phaseText)) return null;
   const phaseIndex = Number(phaseText);
   if (!isSafeUint(phaseIndex)) return null;
@@ -604,7 +604,7 @@ export async function resolveSettlementEventIdentity(
       evidenceValue,
       "settlement evidence",
     );
-    if (!isRecord(evidence) || !isSettlementEvidence(evidence)) {
+    if (!isRecord(evidence) || !isCanonicalJobId(evidence.jobId) || !isSettlementEvidence(evidence)) {
       return { decision: "error", reason: "settlement evidence is malformed" };
     }
     const capturedContext = snapshotExactJson(
@@ -649,7 +649,7 @@ async function resolveCapturedSettlementEventIdentity(
     };
   }
   if (evidenceValue.outcome !== "success" ||
-      typeof evidenceValue.jobId !== "string" || evidenceValue.jobId.length === 0 ||
+      !isCanonicalJobId(evidenceValue.jobId) ||
       !Array.isArray(evidenceValue.paymentTxRefs) ||
       evidenceValue.paymentTxRefs.length !== 1) {
     return { decision: "error", reason: "success evidence has no singular transaction ref" };

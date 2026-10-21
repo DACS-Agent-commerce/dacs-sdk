@@ -2,13 +2,15 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 import ts from "typescript";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DACS_NODE_DEMOS_RPC_COMPATIBILITY_V1,
   inspectDacsDemosNodeCompatibilityV1,
 } from "../../dacs-node/src/demosCompatibility.js";
 import { liveProjectTemplates } from "../src/liveTemplates.js";
+
+afterEach(() => vi.unstubAllEnvs());
 
 type Probe = () => Promise<{ status: string; reasonCode?: string; facts?: unknown }>;
 type NodeCall = (message: string, args: Readonly<Record<string, unknown>>) => Promise<unknown>;
@@ -71,8 +73,23 @@ const clean = {
 };
 
 describe("generated doctor RPC compatibility probe", () => {
+  it.each([
+    clean,
+    { ...clean, nodeVersion: { ...clean.nodeVersion, dirty: true } },
+    { ...clean, nodeVersion: { ...clean.nodeVersion, commit: "0".repeat(40) } },
+  ])("blocks production without authenticated deployment provenance: %j", async (reply) => {
+    vi.stubEnv("DACS_DEMOS_DEPLOYMENT_POLICY", "production");
+    const runtime = nodeRuntime(async () => reply);
+    expect(await generatedProbe(runtime, runtime)()).toEqual({
+      status: "blocked", reasonCode: "demos-deployment-pin-unverified",
+    });
+    expect(runtime.adapter.raw.nodeCall).not.toHaveBeenCalled();
+    vi.stubEnv("DACS_DEMOS_DEPLOYMENT_POLICY", "testnet");
+    expect((await generatedProbe(runtime, runtime)()).status).toBe("pass");
+  });
   const compatibleFacts = {
     actorCount: 2,
+    deploymentPolicy: "testnet",
     buyerNodeBuild: "demos-node-compatible",
     sellerNodeBuild: "demos-node-compatible",
   };
@@ -114,6 +131,8 @@ describe("generated doctor RPC compatibility probe", () => {
     // transport fails; any other reply without fork status is malformed.
     it.each([
       [null, "demos-rpc-unavailable"],
+      [{ error: "STATE_NOT_READY", message: "booting" }, "demos-rpc-unavailable"],
+      [{ error: "unavailable" }, "demos-rpc-unavailable"],
       [undefined, "demos-rpc-unavailable"],
       [{ result: 500, response: {}, require_reply: false, extra: null }, "demos-rpc-unavailable"],
       ["unavailable", "demos-rpc-response-malformed"],
@@ -144,6 +163,7 @@ describe("generated doctor RPC compatibility probe", () => {
       status: "pass",
       facts: {
         actorCount: 2,
+        deploymentPolicy: "testnet",
         buyerNodeBuild: "demos-node-build-dirty",
         sellerNodeBuild: "demos-node-build-dirty",
       },
@@ -162,7 +182,7 @@ describe("generated doctor RPC compatibility probe", () => {
     const cached = vi.fn(async () => structuredClone(clean));
     const legacy = { adapter: { raw: { getNetworkInfo: cached } }, networkInfo: cached };
     expect(await generatedProbe(legacy, nodeRuntime(async () => clean))()).toEqual({
-      status: "fail", reasonCode: "demos-rpc-unavailable",
+      status: "fail", reasonCode: "demos-adapter-raw-reader-missing",
     });
     expect(cached).not.toHaveBeenCalled();
   });

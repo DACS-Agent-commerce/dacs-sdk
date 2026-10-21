@@ -498,7 +498,10 @@ function parseSdkVersionV1(value: unknown): SdkVersionV1 | null {
   if (match === null) return null;
   const core = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
   if (!core.every((part) => Number.isSafeInteger(part))) return null;
-  return { core, prerelease: match[4] === undefined ? [] : match[4].split(".") };
+  const prerelease = match[4] === undefined ? [] : match[4].split(".");
+  if (prerelease.some((part) => part.length > 1 && part[0] === "0" &&
+      part.split("").every((char) => char >= "0" && char <= "9"))) return null;
+  return { core, prerelease };
 }
 
 // SemVer 2.0.0 precedence, build metadata ignored.
@@ -519,7 +522,8 @@ function compareSdkVersionsV1(left: SdkVersionV1, right: SdkVersionV1): number {
     if (a === b) continue;
     const aNumeric = a.split("").every((char) => char >= "0" && char <= "9");
     const bNumeric = b.split("").every((char) => char >= "0" && char <= "9");
-    if (aNumeric && bNumeric) return Number(a) < Number(b) ? -1 : 1;
+    if (aNumeric && bNumeric) return a.length !== b.length
+      ? (a.length < b.length ? -1 : 1) : (a < b ? -1 : 1);
     if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
     return a < b ? -1 : 1;
   }

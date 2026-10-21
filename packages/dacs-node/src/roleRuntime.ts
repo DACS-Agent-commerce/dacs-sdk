@@ -52,9 +52,9 @@ import {
   type DacsLiveRoleServiceOptionsV1,
   type DacsLiveRoleServiceV1,
 } from "./service.js";
-import {
+import type {
   openDacsNodeSqliteDatabase,
-  type DacsNodeSqliteDatabase,
+  DacsNodeSqliteDatabase,
 } from "./sqlite.js";
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
 import type {
@@ -315,7 +315,8 @@ export async function createDacsLiveRoleRuntimeV1(
   });
   let database: DacsNodeSqliteDatabase | undefined;
   try {
-    const openDatabase = rawOptions.openDatabase ?? openDacsNodeSqliteDatabase;
+    const openDatabase = rawOptions.openDatabase ??
+      (await import("./sqlite.js")).openDacsNodeSqliteDatabase;
     database = await openDatabase({
       databasePath: resolve(
         rawOptions.databasePath ?? resolve(config.dataDirectory, "actor.sqlite"),

@@ -173,7 +173,11 @@ For retained historical records, explicitly call
 `inspectHistoricalSettlementEvidence(record, context, cryptoDeps)`. It checks
 the original signature and returns the non-authorizing
 `valid|invalid|incomplete|error` vocabulary, allowing the original legacy job ID
-without granting current settlement authority. `isSettlementEvidence()` remains
+without granting current settlement authority. Legacy IDs are classified before
+Unicode normalization. For those records, inspection checks only structure,
+content hash and signature, ignores current agreement/rail/orchestrator/phase
+comparisons, and reports that no current semantic conformance was evaluated.
+Canonical IDs retain the contextual historical checks. `isSettlementEvidence()` remains
 a wire-shape predicate, including historical shapes; it is not an admission or
 signature-verification API.
 

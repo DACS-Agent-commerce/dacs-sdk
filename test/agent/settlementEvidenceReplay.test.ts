@@ -162,7 +162,39 @@ describe("historical evidence inspection boundaries", () => {
     ])("a legacy jobId gives the same result whether the reference %s", async (_name, locator) => {
       const { evidence, attestationRef } = located(LEGACY, locator);
       expect(await inspectHistoricalSettlementEvidence(evidence, context(attestationRef), deps()))
-        .toEqual({ decision: "valid", reasons: [] });
+        .toMatchObject({ decision: "valid", reasons: [expect.stringContaining("no current DACS semantic conformance")] });
+    });
+
+    test.each(["01JZ000000000000000000036K"])(
+      "classifies the original wire spelling before NFC: %s", async (ascii) => {
+        const wire = ascii.replace("K", "\u212a");
+        for (const locator of [`dacs4:payment:${ascii}:rail-1:0`, "elsewhere"]) {
+          const { evidence, attestationRef } = located(wire, locator);
+          const result = await inspectHistoricalSettlementEvidence(evidence, {
+            attestationRef, paymentAddress: { railId: "rail-1", phaseIndex: 0 },
+            agreement: { amount: "999", currency: "OTHER" },
+            orchestrator: "did:demos:another-orchestrator",
+            result: { ok: true, errorClass: "unknown" },
+            rail: { railId: "other", railType: "x402" },
+          } as never, deps());
+          expect(result.decision).toBe("valid");
+          expect(result.reasons).toEqual([expect.stringContaining("no current DACS semantic conformance")]);
+          expect((await validateSettlementEvidenceStructure(evidence)).decision).toBe("error");
+        }
+      },
+    );
+
+    test("legacy text IDs ignore current agreement, authority, phase and finality comparisons", async () => {
+      const { evidence, attestationRef } = located(LEGACY, "anywhere");
+      evidence.settlementFinality.model = "block-depth";
+      attestationRef.contentHash = contentHash(stripSignature(evidence));
+      const result = await inspectHistoricalSettlementEvidence(evidence, {
+        attestationRef, paymentAddress: { railId: "rail-1", phaseIndex: 0 }, agreement: { amount: "999", currency: "OTHER" },
+        orchestrator: "did:demos:another-orchestrator", result: { ok: true, errorClass: "unknown" },
+        rail: { railId: "other", railType: "x402" },
+      } as never, deps());
+      expect(result.decision).toBe("valid");
+      expect(result.reasons).toEqual([expect.stringContaining("no current DACS semantic conformance")]);
     });
 
     test("a legacy jobId is still checked for the content hash and the signature", async () => {

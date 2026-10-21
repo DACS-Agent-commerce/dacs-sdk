@@ -254,7 +254,7 @@ describe("role-owned Demos runtime", () => {
       raw: { ...mock.raw, nodeCall: undefined },
     });
     await expect(opened.addressNonce()).rejects.toMatchObject({
-      reasonCode: "demos-nonce-unavailable",
+      reasonCode: "demos-adapter-raw-reader-missing",
     });
   });
 

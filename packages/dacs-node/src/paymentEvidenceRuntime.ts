@@ -1,3 +1,5 @@
+import { createSellerPaymentEvidenceReceiptVerifier } from "./paymentEvidenceReceipt.js";
+
 import {
   demosWriteEvidenceToAnchorReceipt,
   type ProtocolAnchorReceipt,
@@ -720,32 +722,8 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
   const context = options.context;
   const store = context.database.createPaymentEvidenceHandshakeStore();
   const retryDelayMs = timing(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS);
-  const verifyAnchorReceipt = options.verifyAnchorReceipt ?? (async ({ request, completion }) => {
-    // The core handshake already requires any reference signer to be the
-    // evidence signer (DACS-2 §7.5.2(3)); this repeats it for direct callers.
-    if (completion.evidenceRef.signer !== undefined &&
-        !sameCanonicalClaimIdentity(
-          completion.evidenceRef.signer, request.evidence.signature.signer,
-        )) {
-      return { disposition: "invalid" as const,
-        reason: "seller payment-evidence issuer is unsupported" };
-    }
-    try {
-      return await context.demos.adapter.verifyDemosAnchorReceipt(
-        completion.anchorReceipt,
-      ) === true
-        ? { disposition: "valid" as const }
-        : {
-            disposition: "indeterminate" as const,
-            reason: "seller payment-evidence receipt is unverified",
-          };
-    } catch {
-      return {
-        disposition: "indeterminate" as const,
-        reason: "seller payment-evidence receipt verification failed",
-      };
-    }
-  });
+  const verifyAnchorReceipt = options.verifyAnchorReceipt ??
+    createSellerPaymentEvidenceReceiptVerifier(context);
 
   const createHandshake = (
     order: Pick<DacsLiveOrderRecordV1, "seller" | "buyer" | "protocol">,
