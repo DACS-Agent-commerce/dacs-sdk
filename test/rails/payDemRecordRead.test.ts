@@ -7,6 +7,7 @@ import {
   createIdempotencyStore,
   createInMemorySettlementLog,
   type SettlementIdempotencyStore,
+  type SettlementLog,
 } from "../../src/rails/idempotency.js";
 import {
   payDemSettle,
@@ -92,6 +93,17 @@ async function settledLog(outcome: "executed" | "failed", network = "demos") {
   return log;
 }
 
+// A transfer whose response was lost: the SDK rail's transfer throws before it
+// signs, so only the intent is in the log. Its lease (owner "a") has expired by
+// the time owner "b" looks the key up.
+async function lostResponse(log: SettlementLog, req: SettleRequest) {
+  submit.mockImplementationOnce(async () => { throw new Error("response lost"); });
+  await expect(payDemSettle(rail, {}, {
+    store: createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }),
+  })(req)).rejects.toThrow("response lost");
+  submit.mockClear();
+}
+
 // A reconciler's `execution: "executed"` is its claim. The verdict of every
 // recovery path is the SDK rail's own read of the node's record for the hash.
 describe("a recovered pay-dem verdict is the SDK rail's own read of the node record", () => {
@@ -153,11 +165,8 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
     const { priorAttempts: _history, ...fresh } = request();
     let settle: (req: SettleRequest) => Promise<SettleResult>;
     if (path === "lookup by key") {
-      // A transfer whose response was lost: only the intent is in the log.
       const log = createInMemorySettlementLog();
-      await expect(payDemSettle({ address: payer, settle: async () => { throw new Error("response lost"); } }, {},
-        { store: createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }) })(fresh))
-        .rejects.toThrow("response lost");
+      await lostResponse(log, fresh);
       settle = payDemSettle(rail, {}, {
         store: createIdempotencyStore(log, { owner: "b", now: () => 3, leaseDurationMs: 1 }), reconcile });
     } else {
@@ -190,27 +199,31 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
   test("holds every recovered verdict of a rail the SDK did not build, even one wrapping the SDK rail", async () => {
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed());
     const { priorAttempts: _history, ...fresh } = request();
-    for (const custom of [
+    const customs = [
       { address: payer, settle: vi.fn(async () => ({ ok: false as const, txHash, payer, payee, chainId: "demos" })) },
       { address: payer, settle: vi.fn((...args: Parameters<PayDemRail["settle"]>) => rail.settle(...args)) },
-    ]) {
+    ];
+    for (const custom of customs) {
+      // The SDK rail's bridge paid and recorded the hash, but the node's record
+      // was still pending, so only the hash is held.
       demosNode.recordStatus = "pending";
-      const settle = payDemSettle(custom, {}, { store: createIdempotencyStore(), reconcile });
-      await expect(settle(fresh)).resolves.toMatchObject({ ok: false, txHash });
-      // The bridge bound the hash itself, yet its audit returns no verdict.
-      const audited = await settle(request());
+      const log = createInMemorySettlementLog();
+      await expect(payDemSettle(rail, {}, { store: createIdempotencyStore(log) })(fresh))
+        .resolves.toMatchObject({ ok: false, txHash });
+      // The rail log binds the hash, yet an audit over this rail returns no verdict.
+      const audited = await payDemSettle(custom, {}, { store: createIdempotencyStore(log), reconcile })(request());
       expect(audited).toMatchObject({ ok: false, txHash });
       expect(audited).not.toHaveProperty("finality");
       expect(audited).not.toHaveProperty("errorClass");
     }
     // A lookup by key over such a rail is never definitive either.
     const log = createInMemorySettlementLog();
-    const lost = { address: payer, settle: async () => { throw new Error("response lost"); } };
-    await expect(payDemSettle(lost, {}, { store: createIdempotencyStore(log,
-      { owner: "a", now: () => 1, leaseDurationMs: 1 }) })(fresh)).rejects.toThrow("response lost");
-    await expect(payDemSettle(lost, {}, { store: createIdempotencyStore(log,
+    await lostResponse(log, fresh);
+    await expect(payDemSettle(customs[0]!, {}, { store: createIdempotencyStore(log,
       { owner: "b", now: () => 3, leaseDurationMs: 1 }), reconcile })(fresh))
       .rejects.toThrow(/reconciliation was not definitive/);
+    // Neither rail is ever called: the SDK makes no fresh attempt through it.
+    for (const custom of customs) expect(custom.settle).not.toHaveBeenCalled();
   });
 });
 
@@ -297,10 +310,7 @@ describe("a recovered pay-dem verdict reads node2's recorded record, numeric fee
     const reconcile = claim(echoFee);
     const log = createInMemorySettlementLog();
     if (path === "lookup by key") {
-      // A transfer whose response was lost: only the intent is in the log.
-      await expect(payDemSettle({ address: node2Payer, settle: async () => { throw new Error("response lost"); } },
-        {}, { store: createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }) })(ask()))
-        .rejects.toThrow("response lost");
+      await lostResponse(log, ask());
     } else {
       await expect(payDemSettle(rail, {}, { store: createIdempotencyStore(log) })(ask()))
         .resolves.toMatchObject({ ok: true, txHash: hash, networkFeeOs: feeOs });
@@ -341,10 +351,7 @@ describe("a payment signed before the denomination fork is read in DEM after it 
     const log = createInMemorySettlementLog();
     Object.assign(demosNode, { postFork: false, feeOs });
     if (path === "lookup by key") {
-      // A transfer whose response was lost: only the intent is in the log.
-      await expect(payDemSettle({ address: payer, settle: async () => { throw new Error("response lost"); } }, {},
-        { store: createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }) })(fresh))
-        .rejects.toThrow("response lost");
+      await lostResponse(log, fresh);
     } else {
       await expect(payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log) })(fresh))
         .resolves.toMatchObject({ ok: true, txHash, networkFeeOs: feeOs });

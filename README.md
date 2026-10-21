@@ -621,10 +621,18 @@ the hash and finding it `confirmed` for this payer, payee and amount; a
 authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
-recorded outcome by itself. A non-final observation must throw. Only the rail
-`createPayDemRail` returns reads the node's record itself, so a custom
-`DemosNativeClient` or `PayDemRail` result is held as `ok: false` with its
-hash and never becomes a final success or permanent failure. See
+recorded outcome by itself. A non-final observation must throw. Only the SDK's
+own read of the node record is final: the rail `createPayDemRail` returns, or a
+custom `DemosNativeClient` that carries
+`recordReader: await createPayDemRecordReader({ rpc })`, journals its signed
+transfer once through the journal the SDK hands it and returns its signed
+`nonce`, whose returned hash the SDK then observes and binds itself, also
+through `createPayDemClientRail`. The SDK reads the record only for a transfer
+whose nonce is above the payer's account nonce read before the call, and
+settles one hash at most once per process. Any other custom
+`DemosNativeClient` or `PayDemRail` is refused before its transfer or `settle`
+runs, so it can never debit the buyer and then leave the payment held; a
+payment one already made still reconciles, because recovery never calls it. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
@@ -658,15 +666,30 @@ method when its `SettlementLog` implements the optional `putAttempt` and
 signed hash through it before its one broadcast and does not broadcast if the
 record is refused. `payDemSettle` also records any hash a rail returns before
 the store persists or returns it; when that write is refused the call fails
-and the hash stays unbound. A custom rail must call `fence.recordAttempt` with
-the exact hash it will return before it broadcasts, and must not broadcast
-when it rejects: the bridge's own write after the rail returns cannot cover a
-crash between that broadcast and the return. The record is compare-and-set
+and the hash stays unbound. The only rails `payDemSettle` runs (those
+`createPayDemRail` and `createPayDemClientRail` return) call
+`fence.recordAttempt` with the exact hash they will return before they
+broadcast, and do not broadcast when it rejects: the bridge's own write after
+the rail returns cannot cover a crash between that broadcast and the return.
+The fence a rail receives records
+the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
+passes, and rejects a value that is not a Demos transaction hash, so a rail
+that awaits it never broadcasts one. The record is compare-and-set
 under the submit generation and never changes, so after a crash, a timeout or
 an ambiguous result a restarted process can still audit the payment and never
 fails, resubmits or reports unpaid a final one (DACS-4 §9.5.1 PC-7). A durable
-log needs the attempt pair for restart audits: one without it keeps working for
-fresh settlement, but after a restart its audits fail closed.
+log needs the attempt pair for restart audits, so `payDemSettle` starts no new
+transfer through a `createIdempotencyStore` store over a log without it: the
+call fails before the rail runs, nothing is signed or sent, and the intent is
+released. Such a log still serves the payments it saved before attempt records
+existed: an audit counts the hash that the store's own outcome for these exact
+terms names, once the reconciliation agrees with that outcome on block and
+result, and a key the log saved no outcome for stays fail closed. Before adding
+the pair to an existing log, backfill each outcome that names a transaction as
+its attempt record (`bindingHash` and `txHash` from that outcome). A key still
+held with no outcome is backfilled only from the rail's prepared-transfer
+journal entry whose `recovery` tuple names that key. Once the log keeps
+attempts, an outcome without a record never counts.
 
 A supplied entry is always checked as well. It must name the retained hash, the
 same payer, payee, OS amount and network, a `recovery` tuple equal to this rail,
@@ -674,20 +697,29 @@ job and phase, and (when present) a known denomination and debit bounds no
 lower than the amount; for a permanent failure its nonce must also be the
 proof's nonce. The entry is the reconciler's object, not the one the rail wrote
 before broadcast, so it can refuse an audit but never counts the hash on its
-own. Nor does an injected store's records, or any rail-log outcome: a restart
-reconciliation can have written that outcome from a lookup by key alone.
+own. Nor does an injected store's records, or a rail-log outcome on a log that
+keeps attempts: a restart reconciliation can have written that outcome from a
+lookup by key alone.
 
 So an audit never counts another job's transfer of the same amount to the same
 payee for this one, even when the reconciler returns an entry naming this job.
 The reconciler throws when the entry it loads conflicts with the node's record,
 and never returns `null` for the retained hash.
 
+A process that dies after the record and before its broadcast leaves a recorded
+hash that nothing sent. The SDK never signs or sends again for that key: when
+the reconciler finds nothing for the recorded hash, the restart is refused and
+the key stays held. The operator clears it in the durable log only after
+establishing that the recorded transaction can no longer land, for example
+that the payer account's nonce has moved past the transaction's journaled
+nonce.
+
 A restart without history (the lease expired and the session holds no hash)
 reconciles in the store. When the key has an attempt record, the reconciler
 receives its hash as `txHash` and any other transaction is refused. Without
 one, the SDK still accepts the reconciler's answer for the key and saves it, so
-that path trusts the reconciler to look up this exact payment. That saved
-outcome never binds a later audit. A supplied entry is checked on this path
+that path trusts the reconciler to look up this exact payment. On a log that
+keeps attempts that saved outcome never binds a later audit. A supplied entry is checked on this path
 too and never persisted. A payment that the bridge, its rail log or the
 session already recorded as successful is never reported unpaid: a reconciliation that
 contradicts it is refused rather than returned as a permanent failure (DACS-4
@@ -702,8 +734,8 @@ must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
-requests used by broadcast, status, and nonce reads have no cancellation or
-request timeout. An open transport socket may therefore keep a Node process
+requests used by broadcast, status, transaction-record and nonce reads have no
+cancellation or request timeout. An open transport socket may therefore keep a Node process
 alive after the rail has returned an unresolved result. Terminating that process
 does not make the marked attempt retryable: retain the marker and checkpoint and
 reconcile read-only from another process. demosdk may internally retry the same

@@ -7,6 +7,7 @@
 // name looks like a brand, vouch, mark or registrar with the forged rail and
 // client, then asks the shipped entry points for a verdict.
 import { readdir } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -135,13 +136,15 @@ const outcome = async (run) => {
 };
 
 // Forgery 1: a custom rail's bound failed record must not become a definitive
-// (persisted, reused) permanent failure.
-const failureSettle = sdk.payDemSettle(forgedRail, { network: "demos" });
-const failureFirst = await outcome(() => failureSettle(request));
-const failureSecond = await outcome(() => failureSettle(request));
+// (persisted, reused) permanent failure. The rail is refused before it runs.
+const failureFirst = await outcome(() =>
+  sdk.payDemSettle(forgedRail, { network: "demos" })(request));
+const failureSecond = await outcome(() =>
+  sdk.payDemSettle(forgedRail, { network: "demos" })(request));
 
 // Forgery 2: a custom client's `execution: "executed"` statement must not mint
-// a final payment, directly or through the runSession bridge.
+// a final payment, directly or through the runSession bridge. Without an SDK
+// reader the client, and a custom rail, are refused before they run.
 const coreSuccess = await outcome(() => sdk.payDemSettleCore(
   { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
   forgedClient,
@@ -197,7 +200,8 @@ const adapterMark = {
 
 // Forgery 5: a reconciler's `execution: "executed"` through the genuine
 // adapter, over a rail the SDK did not build, must not mint a recovered
-// success: the SDK has no node read of its own behind it.
+// success: the SDK has no node read of its own behind it. That rail is refused
+// on a fresh attempt, so its earlier attempt is the one the rail log records.
 let reconcilerCalls = 0;
 const forgedReconcile = async () => {
   reconcilerCalls += 1;
@@ -214,19 +218,136 @@ const forgedReconcile = async () => {
     amountOs: AMOUNT_OS,
   };
 };
+const auditRequest = { ...request, jobId: "forged-audit" };
+const railLog = sdk.createInMemorySettlementLog();
+await sdk.createIdempotencyStore(railLog).once("pay-dem:forged-audit:0", {
+  bindingVersion: "1", railId: "pay-dem", jobId: "forged-audit", phaseIndex: 0, phase: "pay-dem",
+  amount: AMOUNT_OS, agreementAsset: "DEM", settlementAsset: "DEM", payer: PAYER, payee: SELLER,
+  network: "demos", finality: { model: "bft-final" },
+}, async (fence) => {
+  await fence.recordAttempt(TX_HASH);
+  return { ok: false, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: SELLER };
+});
 const audited = sdk.payDemSettle(
   { address: PAYER, settle: async () => ({ ok: false, txHash: TX_HASH, chainId: "demos", payer: PAYER, payee: SELLER }) },
   { network: "demos" },
-  { reconcile: forgedReconcile },
+  { store: sdk.createIdempotencyStore(railLog), reconcile: forgedReconcile },
 );
-const auditRequest = { ...request, jobId: "forged-audit" };
-const reconcilerFresh = await outcome(() => audited(auditRequest));
+const reconcilerFresh = await outcome(() => audited({ ...auditRequest, jobId: "forged-fresh" }));
 const reconcilerAudit = await outcome(() => audited({
   ...auditRequest,
   priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: true }],
 }));
 
+// The legitimate custom-client path: the shipped reader reads a local node
+// (the real demosdk transport, over loopback) and binds the record itself.
+// One hash's record is confirmed, the other's failed though included.
+const FAILED_HASH = "34".repeat(32);
+const nodeRecord = (hash, status) => ({
+  hash,
+  status,
+  blockNumber: 42,
+  content: {
+    type: "native",
+    from: PAYER,
+    from_ed25519_address: PAYER,
+    to: SELLER,
+    amount: Number(AMOUNT_OS),
+    nonce: "7",
+    data: ["native", { nativeOperation: "send", args: [SELLER, AMOUNT_OS] }],
+  },
+});
+const nodeReads = [];
+const node = createServer((req, res) => {
+  let body = "";
+  req.on("data", (chunk) => { body += chunk; });
+  req.on("end", () => {
+    let response = null;
+    if (req.method === "POST") {
+      const { message, data } = JSON.parse(body).params[0];
+      nodeReads.push(message);
+      // The payer had used nonce 6, so the client's transfer carries 7.
+      if (message === "getAddressNonce") response = 6;
+      if (message === "getTransactionStatus") response = { state: "included", blockNumber: 42 };
+      if (message === "getNetworkInfo") response = { forks: { osDenomination: { activated: true } } };
+      if (message === "getTxByHash") {
+        response = nodeRecord(data.hash, data.hash === FAILED_HASH ? "failed" : "confirmed");
+      }
+    }
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ result: 200, response }));
+  });
+});
+await new Promise((ready) => node.listen(0, "127.0.0.1", ready));
+// The locked demosdk 4.0.16 build cannot be imported by plain Node ESM (a
+// directory import); CI runs this file again against 4.0.18, which can. The
+// reader's own lazy import reports which one the package resolved.
+let readerUnavailable = null;
+let recordReader;
+try {
+  recordReader = await sdk.createPayDemRecordReader({
+    rpc: `http://127.0.0.1:${node.address().port}`,
+    inclusionPollIntervalMs: 1,
+    transactionRecordTimeoutMs: 5_000,
+  });
+} catch (error) {
+  readerUnavailable = String(error?.code ?? error?.message ?? error).slice(0, 200);
+}
+// A client that journals its signed transfer through the journal the SDK
+// hands it, then returns the hash and nonce it signed.
+const readerClient = (hash) => ({
+  address: PAYER,
+  recordReader,
+  transfer: async (args) => {
+    await args.journalPreparedTransfer?.({
+      txHash: hash, nonce: 7, payer: PAYER, payee: SELLER, amountOs: AMOUNT_OS,
+      network: "demos",
+      ...(args.recovery === undefined ? {} : { recovery: args.recovery }),
+    });
+    return { ok: false, state: "timeout", hash, nonce: 7 };
+  },
+});
+const BRIDGE_HASH = "56".repeat(32);
+let readerSuccess = null;
+let readerReplay = null;
+let readerFailure = null;
+let forgedReader = null;
+if (recordReader !== undefined) {
+  const readerCore = await sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    readerClient(TX_HASH),
+  );
+  readerSuccess = {
+    core: await outcome(async () => readerCore),
+    verified: sdk.payDemRecordVerifiedTransfer(readerCore) ?? null,
+    bridge: await outcome(() => sdk.payDemSettle(
+      sdk.createPayDemClientRail(readerClient(BRIDGE_HASH)),
+      { network: "demos" },
+    )({ ...request, jobId: "reader-success" })),
+  };
+  // The same confirmed transfer handed back for another payment.
+  readerReplay = await outcome(() => sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    readerClient(TX_HASH),
+  ));
+  readerFailure = await outcome(() => sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    readerClient(FAILED_HASH),
+  ));
+  forgedReader = await outcome(() => sdk.payDemSettleCore(
+    { recipient: SELLER, amount: AMOUNT_OS, network: "demos" },
+    { ...readerClient(TX_HASH), recordReader: { ...recordReader } },
+  ));
+}
+node.close();
+
 process.stdout.write(`${JSON.stringify({
+  readerUnavailable,
+  readerSuccess,
+  readerReplay,
+  readerFailure,
+  forgedReader,
+  nodeReads: [...new Set(nodeReads)].sort(),
   shippedFiles: modules.size,
   importErrors,
   brandExports,

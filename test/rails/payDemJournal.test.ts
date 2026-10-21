@@ -14,7 +14,7 @@ import {
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
 import {
-  resetDemosNode, sdkAuditRail, sdkRail, sdkTransfers, serveNodeRecord, setNodeRecordStatus,
+  demosNode, resetDemosNode, sdkAuditRail, sdkRail, sdkTransfers, serveNodeRecord, setNodeRecordStatus,
 } from "../fixtures/demosNodeMock.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () => (await import("../fixtures/demosNodeMock.js")).demosSdkModule());
@@ -105,10 +105,8 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     const restarted = await auditor(byHash, store);
     await expect(restarted.settle(request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
     await expect(restarted.settle(request("job-b", 0, hashB))).resolves.toMatchObject({ ok: true, txHash: hashB });
-    for (const audit of [f, restarted]) {
-      expect(audit.once).not.toHaveBeenCalled();
-      expect(audit.submit).not.toHaveBeenCalled();
-    }
+    for (const audit of [f, restarted]) expect(audit.once).not.toHaveBeenCalled();
+    // The audits submitted nothing: only the two payments above reached the node.
     expect(sdkTransfers()).toBe(2);
   });
 
@@ -133,7 +131,6 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
           .rejects.toThrow(/no SDK record binds the retained transaction/);
       }
       expect(f.once).not.toHaveBeenCalled();
-      expect(f.submit).not.toHaveBeenCalled();
     }
     expect(reconcile).toHaveBeenCalledTimes(4);
     // Job A's own audit still counts its hash through that rail log.
@@ -289,16 +286,21 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
   test("does not take an injected store's outcome as this payment's record", async () => {
     const { amountOs: _amount, execution: _execution, ...outcomeA } = executed(hashA);
     const once = vi.fn(async () => { throw new Error("must never claim a retained transfer"); });
-    // Answers job A's outcome whatever key and terms it is asked for.
-    const store = { once, readOutcome: vi.fn(async () => outcomeA) };
-    const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile: honest() });
+    // Answers job A's outcome and attempt whatever key and terms it is asked for.
+    const store = { once, readOutcome: vi.fn(async () => outcomeA), readAttempt: vi.fn(async () => hashA) };
+    // The node has job A's record, so only the binding decides.
+    serveNodeRecord(hashA, { payer, payee, nonce: 7 });
+    const submit = demosNode.transfer;
+    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile: honest() });
     await expect(settle(request("job-b", 0, hashA)))
-      .rejects.toThrow(/no SDK record binds the retained transaction/);
+      .rejects.toThrow(/no SDK record binds the retained transaction.*an injected store's records never count/);
     expect(store.readOutcome).toHaveBeenCalled();
+    // Its attempt lookup is never even asked: only the SDK store's own counts.
+    expect(store.readAttempt).not.toHaveBeenCalled();
     // The SDK store's own attempt lookup still binds, even on another object.
     const inner = createIdempotencyStore();
     await payDemSettle(await unjournaledRail(), {}, { store: inner })(request("job-a"));
+    submit.mockClear();
     const borrowed = { once, readOutcome: inner.readOutcome, readAttempt: inner.readAttempt };
     const audit = await sdkAuditRail();
     await expect(payDemSettle(audit.rail, {}, { store: borrowed, reconcile: honest() })(
@@ -315,8 +317,10 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     // A store whose lookup never answers, on a bridge that never paid job A.
     const once = vi.fn(async () => { throw new Error("must never claim a retained transfer"); });
     const store = { once, readOutcome: vi.fn(async () => null) };
-    const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
+    // The node has job A's record, so only the binding decides.
+    serveNodeRecord(hashA, { payer, payee, nonce: 7 });
+    const submit = demosNode.transfer;
+    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
     // An entry that binds job A cannot show that the rail wrote it, so the
     // audit fails closed and binds nothing for the next one.
     for (let attempt = 0; attempt < 2; attempt += 1) {

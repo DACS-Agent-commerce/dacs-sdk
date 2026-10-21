@@ -33,6 +33,8 @@ import {
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import {
+  createPayDemClientRail,
+  createPayDemRecordReader,
   payDemSettle,
   type PayDemRail,
   type PayDemSettlementReconcile,
@@ -2201,14 +2203,25 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
 
     // Daybreak P1-2: a self-consistent failure proof from a callback must not
-    // end the session as failed while the transfer executed. The adapter over
-    // a custom rail holds it.
-    test("holds a custom rail's permanent failure, then completes on the SDK adapter's read of the executed record", async () => {
+    // end the session as failed while the transfer executed. The adapter calls
+    // only a custom client that carries the SDK's record reader, and holds that
+    // client's proof: the SDK's own read has not yet seen the transfer included.
+    test("holds a custom client's permanent failure, then completes on the SDK adapter's read of the executed record", async () => {
       const store = createInMemorySessionStore();
       const kv = await demKv();
-      const { amountOs: _amount, ...failed } = failedClaim(txHash);
-      const first = await makeDeps(store, { kv, settle: payDemSettle({ address: payer,
-        settle: async () => failed as Awaited<ReturnType<PayDemRail["settle"]>> }, {}, {}) });
+      const { failureProof } = failedClaim(txHash);
+      const client = createPayDemClientRail({
+        address: payer,
+        recordReader: await createPayDemRecordReader({ rpc: "https://node.test", inclusionTimeoutMs: 20,
+          inclusionPollIntervalMs: 1, statusRequestTimeoutMs: 10, transactionRecordTimeoutMs: 10 }),
+        transfer: async (args) => {
+          await args.journalPreparedTransfer?.({ txHash, nonce: 9, payer, payee: args.to,
+            amountOs: args.amountOs.toString(), network: "demos",
+            ...(args.recovery === undefined ? {} : { recovery: args.recovery }) });
+          return { ok: false, state: "failed", hash: txHash, nonce: 9, blockNumber: 42, failureProof };
+        },
+      });
+      const first = await makeDeps(store, { kv, settle: payDemSettle(client, {}, {}) });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps))
         .rejects.toThrow(`settlement demos:${txHash} remains indeterminate`);
       const held = await lastOutcome(store);
@@ -2271,8 +2284,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const store = createInMemorySessionStore();
       const kv = await demKv();
       const log = createInMemorySettlementLog();
-      const lost = { address: payer, settle: vi.fn(async () => { throw new Error("transfer response lost"); }) };
-      const first = await makeDeps(store, { kv, settle: payDemSettle(lost, {}, {
+      // The SDK rail's transfer is lost before it signs: only the intent is in the log.
+      const lost = vi.fn(async () => { throw new Error("transfer response lost"); });
+      demosNode.onTransfer = lost;
+      const first = await makeDeps(store, { kv, settle: payDemSettle(await sdkPayDemRail(), {}, {
         store: createIdempotencyStore(log, { owner: "before", now: () => 1, leaseDurationMs: 1 }),
       }) });
       await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("transfer response lost");
@@ -2288,8 +2303,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(reconcile).toHaveBeenCalledOnce();
       expect(await lastOutcome(store)).toBeUndefined();
       expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
-      expect(demosNode.transfers).toBe(0);
-      expect(lost.settle).toHaveBeenCalledOnce();
+      // Only the first run's lost transfer was ever started, and nothing was broadcast.
+      expect(lost).toHaveBeenCalledOnce();
+      expect(demosNode.transfers).toBe(1);
+      expect(demosNode.broadcasts).toBe(0);
     });
   });
 
@@ -2869,12 +2886,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(await outcomes(store)).toHaveLength(1);
     });
 
-    // The proof binds shape, not origin: one no node served, from a custom
-    // rail, must leave the settlement intent held and never be recorded as
-    // the definitive outcome, so a restarted session cannot reuse or resend.
-    test("keeps an invented proof from a custom pay-dem rail held, not a durable verdict", async () => {
-      const store = createInMemorySessionStore();
-      const kv = await demKv();
+    // The proof binds shape, not origin: a custom rail that could invent one
+    // no node served is refused before the session can call it, so it can
+    // neither pay nor leave a durable verdict (#338).
+    test("refuses a custom pay-dem rail that could invent a proof before calling it", async () => {
       const log = createInMemorySettlementLog();
       const putOutcome = vi.spyOn(log, "putOutcome");
       const rail: PayDemRail = {
@@ -2884,16 +2899,17 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const settle = payDemSettle(rail, { network: "demos" }, {
         store: createIdempotencyStore(log),
       });
-      const first = await makeDeps(store, { kv, settle });
-      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
-        .rejects.toThrow(/remains indeterminate/);
-      expect(putOutcome).not.toHaveBeenCalled();
-
-      // The session sends the held hash, so the adapter audits it read-only.
-      const resumed = await makeDeps(store, { kv, resumeSettlement: settle });
-      await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
-        .rejects.toThrow(/requires read-only reconciliation; refusing reuse or rebroadcast/);
-      expect(rail.settle).toHaveBeenCalledTimes(1);
+      await expect(settle({
+        rail: "pay-dem",
+        phase: "pay-dem",
+        amount: "9.5",
+        asset: "DEM",
+        payee: sellerDid,
+        expectedPayee: payeeHex,
+        jobId: "job-1",
+        phaseIndex: 0,
+      })).rejects.toThrow(/createPayDemRail or createPayDemClientRail.*refusing/);
+      expect(rail.settle).not.toHaveBeenCalled();
       expect(putOutcome).not.toHaveBeenCalled();
     });
 

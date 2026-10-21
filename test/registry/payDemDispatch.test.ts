@@ -22,12 +22,18 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   createEvmErc20Rail: mocks.createEvmErc20Rail,
   evmErc20Settle: mocks.evmErc20Settle,
 }));
+// A scripted node, for the case that runs the SDK's own rail.
+vi.mock("@kynesyslabs/demosdk/websdk", async () =>
+  (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
 
 import {
   createIdempotencyStore,
+  createInMemorySettlementLog,
   isBindingCheckedOutcomeLookup,
+  isOutcomeOnlyLogLookup,
   type SettlementBinding,
   type SettlementIdempotencyStore,
+  type SettlementLog,
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
@@ -53,6 +59,7 @@ import {
   type RailRegistrySelectionProvider,
 } from "../../src/registry/index.js";
 import type { RailDefinition } from "../../src/registry/types.js";
+import { demosNode } from "../fixtures/demosNodeScript.js";
 
 const STEWARD_SEED = Uint8Array.from(Buffer.alloc(32, 42));
 const stewardPrivateKey = privateKeyFromSeed(STEWARD_SEED);
@@ -572,6 +579,29 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(injected.keys).toEqual(["rail:job:4"]);
   });
 
+  // payDemSettle starts no transfer through a log without attempt records and
+  // binds only that store's own outcomes, so dispatch must pass its lookup on as is.
+  test("passes on the outcome lookup of an SDK store over a log without attempt records", async () => {
+    const memory = createInMemorySettlementLog();
+    const { putAttempt: _put, readAttempt: _read, ...outcomesOnly } = memory;
+    const legacyStore = createIdempotencyStore(outcomesOnly as SettlementLog);
+    mocks.createPayDemRail.mockResolvedValue({});
+    mocks.payDemSettle.mockReturnValue(vi.fn());
+    const descriptor = await authenticatedDefinition();
+    for (const settlementStore of [legacyStore, createIdempotencyStore(memory)]) {
+      await settleFromRail(descriptor, {
+        demosRpc: "https://demos.example",
+        demosSecret: "test-secret",
+        payDem: { settlementStore },
+      });
+    }
+    const [legacyCaptured, currentCaptured] = mocks.payDemSettle.mock.calls.map((call) => call[2].store!);
+    expect(legacyCaptured.readOutcome).toBe(legacyStore.readOutcome);
+    expect(legacyCaptured.readAttempt).toBeUndefined();
+    expect(isOutcomeOnlyLogLookup(legacyCaptured.readOutcome)).toBe(true);
+    expect(isOutcomeOnlyLogLookup(currentCaptured.readOutcome)).toBe(false);
+  });
+
   test("retains a class store receiver across restart-style dispatch reconstruction", async () => {
     class DurableClassStore implements SettlementIdempotencyStore {
       readonly keys: string[] = [];
@@ -979,8 +1009,17 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
   });
 
   test("settles under the same rail, phase and phase index the pay-dem adapter checked", async () => {
-    const settle = vi.fn(async () => { throw new Error("rail reached"); });
-    mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle });
+    // payDemSettle calls only the SDK's own rail. Its prepared-transfer journal
+    // is the last call before broadcast: it sees what reached the rail and
+    // stops the transfer there.
+    demosNode.reset();
+    const journal = vi.fn(async () => { throw new Error("rail reached"); });
+    mocks.createPayDemRail.mockImplementation(() => actualPayDem.createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-wallet",
+      journalPreparedTransfer: journal,
+      statusRequestTimeoutMs: 50,
+    }));
     mocks.payDemSettle.mockImplementation(actualPayDem.payDemSettle);
     const changing = request();
     let railReads = 0;
@@ -1006,10 +1045,11 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     });
 
     await expect(dispatched(changing as never)).rejects.toThrow("rail reached");
-    expect(settle).toHaveBeenCalledTimes(1);
-    expect(settle).toHaveBeenCalledWith(expect.objectContaining({
+    expect(journal).toHaveBeenCalledTimes(1);
+    expect(journal).toHaveBeenCalledWith(expect.objectContaining({
       recovery: expect.objectContaining({ railId: DEM_RAIL_ID, phaseIndex: 4 }),
-    }), expect.anything());
+    }));
+    expect(demosNode.broadcasts).toBe(0);
     expect(railReads).toBe(1);
     expect(phaseReads).toBe(1);
     expect(phaseIndexReads).toBe(1);

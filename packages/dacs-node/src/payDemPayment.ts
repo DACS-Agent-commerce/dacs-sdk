@@ -2,6 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import {
   combineWalletSpendEffectFenceV1,
+  isPayDemRecordVerifyingRail,
   payDemRecordVerifiedTransfer,
   settlementKey,
   type PayDemPreparedTransfer,
@@ -36,7 +37,10 @@ import {
   loadDacsLiveOrderInputForTrackV1,
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
-import { isDacsSdkPreparedPayDemRailV1 } from "./payDemRailCapabilities.js";
+import {
+  isDacsRecordVerifyingPayDemRailV1,
+  isDacsSdkPreparedPayDemRailV1,
+} from "./payDemRailCapabilities.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -750,6 +754,10 @@ function captureChainReconciliation(
  * Compose native DEM settlement into the buyer coordinator. The SQLite outer
  * effect is the sole execution grant; the signed hash/nonce checkpoint commits
  * before broadcast, and every ambiguous restart enters read-only reconciliation.
+ * A fresh payment runs only on a rail whose success the SDK can make final:
+ * the default runtime rail, a rail `isPayDemRecordVerifyingRail` accepts, or
+ * the runtime's wrapper around one. Any other rail is refused before any
+ * wallet reservation, but still reconciles a payment it already made.
  */
 export function createDacsPayDemBuyerPaymentTrackV1(
   options: Readonly<DacsPayDemBuyerPaymentTrackOptionsV1>,
@@ -769,6 +777,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   }
   const database = options.database;
   const rail = options.rail;
+  // Decide before the effect: a rail whose success the SDK could never make
+  // final must not reserve the wallet or debit the buyer first (#338), so
+  // `execute` refuses it. `reconcile` never calls the rail, so a payment it
+  // already made still recovers. Only the settle checked here is called below.
+  const settle = rail.settle;
+  const freshSettleRail = isPayDemRecordVerifyingRail(rail) ||
+    isDacsRecordVerifyingPayDemRailV1(rail) || isDacsSdkPreparedPayDemRailV1(rail);
   const walletSpendAuthority = options.walletSpendAuthority;
   const deferWalletReservationUntilPrepared = isDacsSdkPreparedPayDemRailV1(rail);
 
@@ -804,6 +819,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
     adapter: {
       async execute({ input, fence }) {
         const payment = capturePaymentInput(input);
+        if (!freshSettleRail) {
+          return Object.freeze({
+            effectControlVersion: "1" as const,
+            status: "operator-action" as const,
+            reasonCode: "pay-dem-rail-not-record-verifying",
+          });
+        }
         await fence.assertCurrent();
         const reservation = walletReservation(payment);
         let claim: Extract<WalletSpendReservationClaimV1, { status: "reserved" }> |
@@ -869,7 +891,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
                 },
               })
             : combineWalletSpendEffectFenceV1(actorEffectFence, claim!.permit);
-          const raw = await rail.settle({
+          const raw = await settle.call(rail, {
             recipient: payment.payee,
             amount: payment.amountOs,
             maxTotalDebitOs: payment.maxTotalDebitOs,

@@ -13,8 +13,8 @@ import {
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
 import {
-  demosNode, forbidTransfers, resetDemosNode, sdkAuditRail, sdkRail, sdkTransfers, serveNodeRecord,
-  setNodeRecordStatus,
+  demosNode, forbidTransfers, heldRail, resetDemosNode, sdkAuditRail, sdkRail, sdkTransfers,
+  serveNodeRecord, setNodeRecordStatus,
 } from "../fixtures/demosNodeMock.js";
 import { seedSdkOutcome } from "../fixtures/settlementOutcomeSeed.js";
 
@@ -81,12 +81,13 @@ async function settledLog(outcome: ReturnType<typeof executed> | ReturnType<type
   const { amountOs: _amount, preparedTransfer: _journal, ...rest } = outcome;
   const { execution: _execution, ...result } = rest as typeof rest & { execution?: unknown };
   const { priorAttempts: _history, ...fresh } = request();
-  const settle = async () => ({ ...rest, chainId: network });
-  // A caller's rail is held, with the hash recorded; the outcome is then
-  // written as createPayDemRail's own settle would have left it.
-  await seedSdkOutcome(log, { ...result, chainId: network }, () =>
-    payDemSettle({ address: payer, settle }, { network },
+  // The rail signs and broadcasts but sees no inclusion, so it holds the hash
+  // with the attempt recorded; the outcome is then written as a record-read
+  // verdict would have left it.
+  await seedSdkOutcome(log, { ...result, chainId: network }, async () =>
+    payDemSettle(await heldRail(), { network },
       { store: createIdempotencyStore(log) })(fresh));
+  resetDemosNode({ payer, txHash });
   return log;
 }
 
@@ -145,8 +146,8 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     const store = createIdempotencyStore();
     const once = vi.spyOn(store, "once");
     const readOutcome = vi.spyOn(store, "readOutcome");
-    const submit = vi.fn();
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store });
+    const submit = demosNode.transfer;
+    const settle = payDemSettle(await sdkRail(), {}, { store });
     await expect(settle(request([prior(ok)]))).rejects.toThrow(/requires read-only reconciliation/);
     expect(readOutcome).not.toHaveBeenCalled();
     expect(once).not.toHaveBeenCalled();
@@ -396,6 +397,26 @@ describe("pay-dem never reports a recorded success as a permanent failure", () =
     await expect(store.readOutcome!(key, binding)).resolves.toEqual(storedSuccess);
     expect(sdkTransfers()).toBe(1);
     expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  // The cached-outcome path: a store answers another writer's failure for this
+  // key after this bridge's own record-verified success, and the
+  // reconciliation agrees with that failure. The success still stands.
+  test("a cached failure the reconciliation agrees with cannot demote this bridge's success", async () => {
+    let cached: SettleResult | undefined;
+    const store = {
+      once: vi.fn(async (_key: string, _binding: unknown, run: () => Promise<SettleResult>) => cached ?? run()),
+      readOutcome: vi.fn(async () => null),
+    };
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
+    const settle = payDemSettle(await sdkRail(), { network: "demos" }, { store: store as never, reconcile });
+    const { priorAttempts: _history, ...fresh } = request();
+    await expect(settle(fresh)).resolves.toMatchObject({ ok: true, txHash });
+    const { amountOs: _amount, preparedTransfer: _journal, ...storedFailure } = failed();
+    cached = storedFailure as SettleResult;
+    await expect(settle(fresh)).rejects.toThrow(demoted);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(sdkTransfers()).toBe(1);
   });
 
   test("another writer's reconciled failure cannot demote this bridge's success", async () => {

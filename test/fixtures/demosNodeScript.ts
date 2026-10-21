@@ -21,6 +21,8 @@ export const demosNode = {
   nextHash: "cd".repeat(32),
   nonce: 9,
   blockNumber: 42,
+  /** The payer's account nonce `getAddressNonce` reports: the last one it used. */
+  accountNonce: 0,
   /** The `transaction_fee.network_fee` (OS) of a signed transfer, if any. */
   feeOs: undefined as string | undefined,
   /** The record status a broadcast transfer ends with. */
@@ -47,6 +49,7 @@ export const demosNode = {
     this.nextHash = "cd".repeat(32);
     this.nonce = 9;
     this.blockNumber = 42;
+    this.accountNonce = 0;
     this.feeOs = undefined;
     this.recordStatus = "confirmed";
     this.postFork = true;
@@ -192,6 +195,8 @@ class MockDemos {
       demosNode.networkInfoReads.push(demosNode.postFork);
       return { forks: { osDenomination: { activated: demosNode.postFork } } };
     }
+    // `createPayDemRecordReader` reads it before a reader-carrying client's transfer.
+    if (message === "getAddressNonce") return demosNode.accountNonce;
     if (message !== "getTransactionStatus") throw new Error(`unexpected nodeCall ${message}`);
     return demosNode.records.has(args.hash)
       ? { state: "included", blockNumber: demosNode.blockNumber }
