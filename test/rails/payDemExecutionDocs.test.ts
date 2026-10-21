@@ -57,7 +57,9 @@ describe("pay-dem execution docs match the code (#338)", () => {
   it("says a client or rail the SDK cannot finalise is refused before its effect, and how a transfer is bound to the call", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain("before its `transfer` runs: its result could never be final");
-    expect(doc).toContain("any other rail, including a wrapper around one of these, is refused when the bridge is built");
+    expect(doc).toContain("any other rail, including a wrapper around one of these, is refused on a fresh attempt before its `settle` runs");
+    expect(doc).toContain("so an attempt it made before reconciles through `reconcile` without calling it");
+    expect(doc).not.toContain("refused when the bridge is built");
     expect(doc).toContain("whose signed nonce is above that account nonce");
     expect(doc).toContain("One hash settles at most one payment in a process");
     const source = read("src/rails/payDem.ts");
@@ -74,8 +76,12 @@ describe("pay-dem execution docs match the code (#338)", () => {
     );
     expect(doc).not.toContain("the host's statement");
     expect(doc).toContain(
-      "Any other rail is refused when the track is built, before any wallet reservation.",
+      "With any other rail a fresh payment stops for operator action (`pay-dem-rail-not-record-verifying`) before any wallet reservation.",
     );
+    expect(doc).toContain(
+      "so a payment it made before reconciles through the operator reconciler without calling it",
+    );
+    expect(doc).not.toContain("refused when the track is built");
     expect(read("packages/dacs-node/src/payDemPayment.ts"))
       .toMatch(/payDemRecordVerifiedTransfer\(raw\)/);
     expect(read("packages/dacs-node/src/payDemPayment.ts"))

@@ -631,7 +631,8 @@ through `createPayDemClientRail`. The SDK reads the record only for a transfer
 whose nonce is above the payer's account nonce read before the call, and
 settles one hash at most once per process. Any other custom
 `DemosNativeClient` or `PayDemRail` is refused before its transfer or `settle`
-runs, so it can never debit the buyer and then leave the payment held. See
+runs, so it can never debit the buyer and then leave the payment held; a
+payment one already made still reconciles, because recovery never calls it. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize

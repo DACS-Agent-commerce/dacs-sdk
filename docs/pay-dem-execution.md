@@ -105,7 +105,10 @@ authenticate, so its own verdict never becomes final.
   It calls only the `settle` function `createPayDemRail` returned, or the one
   `createPayDemClientRail` returned around a reader-carrying client, also when
   a caller places either on its own object; any other rail, including a
-  wrapper around one of these, is refused when the bridge is built.
+  wrapper around one of these, is refused on a fresh attempt before its
+  `settle` runs, and the settlement key is left free. The bridge is still
+  built around such a rail, so an attempt it made before reconciles through
+  `reconcile` without calling it.
   `isPayDemRecordVerifyingRail` answers which rails these are. The
   `createPayDemRail` settle yields success or a permanent failure. A client
   rail's success is final only when it is the exact frozen object
@@ -152,10 +155,13 @@ fresh settlement and on recovery. It treats it as a transaction-bearing
 non-success: the hash is bound for anti-replay,
 the outcome is recorded, and the session stops as indeterminate.
 
-The dacs-node buyer track is built only around a rail whose success the SDK
-can make final: the default runtime rail, a rail `isPayDemRecordVerifyingRail`
-accepts, or the runtime's wrapper around such a rail. Any other rail is refused
-when the track is built, before any wallet reservation. The track settles the
+The dacs-node buyer track runs a fresh payment only on a rail whose success
+the SDK can make final: the default runtime rail, a rail
+`isPayDemRecordVerifyingRail` accepts, or the runtime's wrapper around such a
+rail. With any other rail a fresh payment stops for operator action
+(`pay-dem-rail-not-record-verifying`) before any wallet reservation. The track
+is still built around such a rail, so a payment it made before reconciles
+through the operator reconciler without calling it. The track settles the
 wallet authority and publishes a payment notice for a fresh rail result only
 when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee,
 amount, network and settlement key, and its hash is the one this invocation
