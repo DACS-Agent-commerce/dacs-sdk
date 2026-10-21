@@ -144,7 +144,9 @@ export interface SettlementLog {
    * Required on a log that keeps attempts. Optional on one that does not;
    * without it the store's `readOutcome` refuses before touching the log, and
    * `payDemSettle` finishes a retained pay-dem hash on such a log only through
-   * the store's expired generation.
+   * the store's expired generation or an outcome returned by that same
+   * store's own `once` for the exact terms. Recovery of pre-upgrade state is
+   * outside the current SDK's support scope.
    */
   readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
@@ -997,12 +999,29 @@ export function isStoreReconcileFence(fence: unknown, readOutcome: unknown): boo
     storeFences.get(fence) === readOutcome;
 }
 
+// Each `once` a `createIdempotencyStore` store built, mapped to that same
+// store's `readOutcome`.
+const storeOnces = new WeakMap<object, object>();
+
+/**
+ * Internal (not re-exported): true only when `once` is the method of the
+ * `createIdempotencyStore` store whose lookup is `readOutcome`. A lookup that
+ * is the SDK's says nothing about the `once` a wrapper puts next to it: only
+ * this pair proves the settlement `once` returns, a held outcome included,
+ * came from the log that lookup stands for, under the key it was asked for.
+ */
+export function isStoreOnceFor(once: unknown, readOutcome: unknown): boolean {
+  return typeof once === "function" && typeof readOutcome === "function" &&
+    storeOnces.get(once) === readOutcome;
+}
+
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),
   options: Readonly<SettlementIdempotencyStoreOptions> = {},
 ): SettlementIdempotencyStore {
   const store = buildIdempotencyStore(log, options);
+  storeOnces.set(store.once, store.readOutcome!);
   bindingCheckedOutcomeLookups.add(store.readOutcome!);
   if (store.readAttempt !== undefined) {
     bindingCheckedOutcomeLookups.add(store.readAttempt);

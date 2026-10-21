@@ -72,7 +72,10 @@ describe("pay-dem execution docs match the code (#338)", () => {
     // the gate is per key, and the upgrade is stated.
     for (const text of [doc, readme]) {
       expect(text).not.toContain("is a read-only audit");
-      expect(text).toContain("never submits and never acquires submit authority");
+      expect(text).toContain("that never submits");
+      expect(text).not.toContain("acquires submit authority");
+      expect(text).toContain("returned by that same");
+      expect(text).toContain("own `once` (not a wrapper's, nor another");
       expect(text).toContain("It reads only, except to finish a retained hash that no record names");
       expect(text).toContain("This is the one place an audit changes the log");
       expect(text).toContain("It never submits.");

@@ -107,8 +107,7 @@ below).
   block, success or any failure-proof field, the nonce included, are refused.
 - A settlement request carrying `priorAttempts` (which `runSession` sends for
   a session holding a transaction-bearing outcome) is an audit of that
-  retained transaction that never submits and never acquires submit
-  authority. It reads only, except to finish a retained hash that no record
+  retained transaction that never submits. It reads only, except to finish a retained hash that no record
   names (below), which writes through the store's expired generation.
   `payDemSettle` never calls the rail for it, even
   when the rail log lost its record, and requires both
@@ -135,7 +134,8 @@ below).
   reconciler is asked for the key's payment, without the hash); only an
   answer naming the retained hash is accepted, recorded as the key's attempt
   and saved. Over a log without `readOutcome` the same path also accepts the
-  outcome the store already holds for these exact terms when it names the
+  outcome the store already holds for these exact terms, returned by that same
+  store's own `once` (not a wrapper's, nor another store's), when it names the
   retained hash and the reconciliation of that hash agrees with it on block
   and result. This is the one place an audit changes the log: the store's
   `once` claims a fresh intent for a key it holds nothing for and releases it
@@ -275,9 +275,10 @@ below).
   compare-and-set under the generation, a record never changing), backfill
   the records as described above, and pass the `createIdempotencyStore` store
   itself, or an object carrying its own `once`, `readOutcome` and
-  `readAttempt`. A session still holding a paid hash on an older log without
-  `readOutcome` finishes it through the store's expired generation, so the
-  log needs no upgrade for that.
+  `readAttempt`. Recovery of payments or saved outcomes written by older SDK
+  versions is outside the current support scope. The restart guarantees here
+  apply to payments made with the current SDK and a log implementing all
+  three methods.
 
 For native DEM sessions, retain a durable rail `SettlementLog` with its immutable
 attempt records alongside the `SessionStore`, and reopen it with a reconciler
