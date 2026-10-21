@@ -26,6 +26,8 @@ export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required',
 // (seller_native_evidence_conflict) is refused before anything of it runs.
 const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', ...SELLER_PRE_EFFECT_REFUSALS]);
 
+// Unfinished proposals (`waiting` or `indeterminate`) retain their retry
+// slot and resume through the durable responder on a fresh request nonce.
 // Payment answers that are not final are never cached as final. Before the
 // evidence checkpoint the agent keeps nothing and answers `indeterminate`
 // (for example a transfer not yet included): a no-effect answer, so the same
@@ -41,6 +43,7 @@ const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_una
 // is the agent's retained work for exactly that claim (retainsPaymentClaim),
 // never its answer alone: once work is retained, no answer or refusal of the
 // claim releases its slot, so another claim cannot take it.
+const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) === true; } catch { return true; } };
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
@@ -156,8 +159,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         if (reservation.disposition === 'cached') agent.assertSettlementCredit?.(request.jobId);
         if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
         if (reservation.disposition === 'uncertain') {
-          // Never call the route or resume work here, with two exceptions
-          // below. This seller-owned seam can only reduce trusted retained
+          // Resume only retained work through the authenticated reducers
+          // below. This seller-owned seam reduces trusted retained
           // state plus fresh authenticated native records to a response;
           // absent/unknown facts remain fenced.
           const reconcile = contextStep ? context.reconcile : typeof agent.reconcileTransport === 'function' ? agent.reconcileTransport : null;
@@ -172,7 +175,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           // A start that kept nothing and answered `rejected` or
           // `indeterminate` (`no-effect`) is released as on the ordinary path.
           const payment = !contextStep && req.url === PAYMENT_PATH && !readOnly;
-          const retry = payment && proof?.disposition === 'retry';
+          const retry = (payment || (!contextStep && req.url === PROPOSAL_PATH && !readOnly)) && proof?.disposition === 'retry';
           const released = payment && proof?.disposition === 'no-effect' && !retainsClaim(agent, request.jobId, body);
           if (proof?.disposition === 'present' || retry || released) {
             const text = JSON.stringify(proof.value);
@@ -198,7 +201,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const retained = payment && retainsClaim(agent, request?.jobId ?? body.jobId, body);
       const noEffect = !reservation?.resumed && !retained && answer?.code !== 'party_vet_non_pass' && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate'));
       const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
-      if (authentication) authentication.store.finish(reservation, 200, text, { noEffect, retry: payment && !noEffect && (paymentPending(answer) || (retained && !final)) });
+      if (authentication) authentication.store.finish(reservation, 200, text, { noEffect, retry: (req.url === PROPOSAL_PATH && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && !noEffect && (paymentPending(answer) || (retained && !final))) });
       if (contextStep) await context.settled(reservation.contextHold);
       return await send(res, 200, answer, request, { text: await pointed(200, text, request?.jobId ?? body.jobId, req.url) });
     } catch (error) {

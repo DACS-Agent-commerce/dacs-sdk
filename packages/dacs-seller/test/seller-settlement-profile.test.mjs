@@ -45,12 +45,13 @@ const presentWithout = (party, presentedAt) => {
   return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 
-async function world(t) {
+async function world(t, { listingChanges = () => {} } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), reached = [], steward = railSteward();
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'settlement-profile', listingVersion: 1, title: 'Settlement profile report', description: 'Settlement profile vectors.',
     category: 'services.market-report', tags: ['profile'], priceDem: '2.5', notBefore: now - 60000 });
+  listingChanges(draft);
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft)));
   const refuse = (name) => async () => { reached.push(name); throw new Error(`${name} is not reached`); };
   const dir = () => { const path = realpathSync(mkdtempSync(join(tmpdir(), 'seller-settlement-profile-'))); t.after(() => rmSync(path, { recursive: true, force: true })); return path; };
@@ -962,4 +963,142 @@ test('a buyer presentation signature is accepted only in canonical unpadded Base
     assert.equal((await refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: bundle })))?.code, 'buyer_bundle_unauthenticated', variant);
   }
   assert.deepEqual(w.admission.calls, [], 'refused before any admission');
+});
+
+// Cold review regressions: real signer, authenticated state and durable HTTP journal.
+test('failed Agreement signing leaves no in-flight rail; live recovery signs once and a signed pin continues under a disabled revision', async (t) => {
+  const w = await world(t), durableDirectory = w.dir(), request = await w.proposalFor(w.vetted);
+  let fail = true, attempts = 0;
+  const signer = { ...w.signer, sign: (bytes) => {
+    if (Buffer.from(bytes).toString().startsWith('dacs-payee-bound-agreement:v1:')) {
+      attempts++;
+      if (fail) throw new Error('TEST signing unavailable');
+    }
+    return w.signer.sign(bytes);
+  } };
+  let agent = await w.agent(complete(w, { durableDirectory, signer }));
+  assert.equal((await agent.receiveProposal(request)).disposition, 'indeterminate');
+  assert.notEqual(agent.durableSessionOf(w.jobId).railPinSigned, true);
+  agent.close(); fail = false;
+  agent = await w.agent(complete(w, { durableDirectory, signer, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'rail_unavailable', status: 503 });
+  assert.equal(attempts, 1, 'disabled retry never reaches the signer');
+  agent.close();
+  agent = await w.agent(complete(w, { durableDirectory, signer }));
+  const signed = await agent.receiveProposal(request);
+  assert.equal(signed.disposition, 'complete');
+  assert.equal(attempts, 2);
+  agent.close();
+  agent = await w.agent(complete(w, { durableDirectory, signer, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  t.after(() => agent.close());
+  assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution);
+  assert.equal(attempts, 2, 'a successfully signed session continues without another signature');
+});
+
+test('DEM seller context refuses a foreign payout before signing and accepts its intrinsic seller address', async (t) => {
+  const w = await world(t), foreign = structuredClone(w.vetted);
+  foreign.payoutBindings[0].payeeAddress = w.buyerKey.address;
+  const bad = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext(foreign) }));
+  assert.equal((await bad.receiveProposal(await w.proposalFor(foreign))).disposition, 'rejected');
+  assert.equal(bad.durableSessionOf(w.jobId).sellerContribution, undefined);
+  bad.close();
+  const good = await w.agent(complete(w, { durableDirectory: w.dir() }));
+  t.after(() => good.close());
+  assert.equal((await good.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
+});
+
+test('new Listing sessions use the current inclusive validity interval, before and after restart; an already signed session still replays', async (t) => {
+  const w = await world(t, { listingChanges: (draft) => { draft.validity.notAfter = draft.validity.notBefore + 60010; } });
+  const request = await w.proposalFor(w.vetted), durableDirectory = w.dir();
+  let at = w.now;
+  const options = complete(w, { durableDirectory, now: () => at });
+  let agent = await w.agent(options);
+  at = w.now + 11;
+  assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 });
+  assert.equal(agent.stageOf(w.jobId), null);
+  agent.close();
+  agent = await w.agent(options);
+  assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 });
+  at = w.now + 10;
+  const signed = await agent.receiveProposal(request);
+  assert.equal(signed.disposition, 'complete', 'notAfter itself remains allowed');
+  agent.close(); at++;
+  agent = await w.agent(options);
+  t.after(() => agent.close());
+  assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution, 'signed session remains available after expiry');
+});
+
+test('an indeterminate proposal is retried over authenticated HTTP after recovery and restart', async (t) => {
+  const w = await world(t), original = w.chain.demDeliveryContext;
+  let unavailable = true;
+  w.chain.demDeliveryContext = () => unavailable
+    ? createDemDeliveryContext({ authority: 'TEST-temporary-context', resolveBuyer: notCalled, resolveSeller: async () => ({ disposition: 'indeterminate', reason: 'TEST context offline' }) })
+    : original();
+  const h = await httpSeller(t, w);
+  assert.equal((await h.client.propose(h.proposal)).disposition, 'indeterminate');
+  unavailable = false;
+  await h.restart(w.steward.railAuthority());
+  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
+});
+
+test('HTTP proposal recovery completes a contribution saved before its transport binding without signing twice', async (t) => {
+  const w = await world(t), h = await httpSeller(t, w);
+  // Fail authentication of the first session snapshot that carries the final
+  // proposal binding. The contribution and core durable checkpoints precede it.
+  let cut = true, agreementSigns = 0;
+  const sign = w.signer.sign;
+  w.signer.sign = (bytes) => {
+    const text = Buffer.from(bytes).toString();
+    if (text.startsWith('dacs-payee-bound-agreement:v1:')) agreementSigns++;
+    if (cut && text.includes('"kind":"session"') && text.includes('"transportIdentity"')) {
+      cut = false; throw new Error('TEST interrupted final session persistence');
+    }
+    return sign(bytes);
+  };
+  await answered(() => h.client.propose(h.proposal));
+  assert.equal(h.last.status, 503);
+  assert.ok(h.agent.durableSessionOf(w.jobId).sellerContribution, 'contribution was saved');
+  assert.equal(h.agent.durableSessionOf(w.jobId).transportIdentity, undefined, 'transport binding was not saved');
+  await h.restart(w.steward.railAuthority());
+  const answer = await h.client.propose(h.proposal);
+  assert.equal(answer.disposition, 'complete');
+  assert.equal(agreementSigns, 1, 'the durable signature is reused');
+});
+
+test('a completed durable signature keeps its rail pin when the next session save fails', async (t) => {
+  const w = await world(t), durableDirectory = w.dir(), request = await w.proposalFor(w.vetted);
+  let cut = true, signed = 0;
+  const signer = { ...w.signer, sign: (bytes) => {
+    const text = Buffer.from(bytes).toString();
+    if (text.startsWith('dacs-payee-bound-agreement:v1:')) signed++;
+    if (cut && text.includes('"kind":"session"') && text.includes('"railPinSigned":true')) {
+      cut = false; throw new Error('TEST lost post-signature session save');
+    }
+    return w.signer.sign(bytes);
+  } };
+  const first = await w.agent(complete(w, { durableDirectory, signer }));
+  assert.equal((await first.receiveProposal(request)).disposition, 'indeterminate');
+  assert.notEqual(first.durableSessionOf(w.jobId).railPinSigned, true);
+  assert.equal(typeof first.durableSessionOf(w.jobId).agreementSignatureKey, 'string');
+  first.close();
+  const after = await w.agent(complete(w, { durableDirectory, signer, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
+  t.after(() => after.close());
+  assert.equal((await after.receiveProposal(request)).disposition, 'complete');
+  assert.equal(signed, 1, 'the completed durable signature continues its original pin');
+});
+
+test('a Listing that expires during context resolution signs no new Agreement', async (t) => {
+  const w = await world(t, { listingChanges: (draft) => { draft.validity.notAfter = draft.validity.notBefore + 60010; } });
+  let at = w.now;
+  const context = createDemDeliveryContext({ authority: 'TEST-expiry-during-context', resolveBuyer: notCalled, resolveSeller: async () => {
+    at = w.now + 11;
+    return { disposition: 'present', value: { input: w.vetted, vetRequirements: [['buyer', w.buyerKey.claim, w.sellerKey.claim], ['seller', w.sellerKey.claim, w.buyerKey.claim]].map(([role, evaluatedParty, verifier]) => ({
+      vetRecordRef: w.vetted[role].vetRecordRef, evaluatedParty, verifier, requirement: w.listing.buyerRequirement, freshness: [], dealSpecific: [] })) } };
+  } });
+  const agent = await w.agent(complete(w, { durableDirectory: w.dir(), demDeliveryContext: context, now: () => at }));
+  t.after(() => agent.close());
+  const answer = await agent.receiveProposal(await w.proposalFor(w.vetted));
+  assert.notEqual(answer.disposition, 'complete');
+  assert.equal(agent.durableSessionOf(w.jobId).sellerContribution, undefined);
+  assert.equal(agent.durableSessionOf(w.jobId).agreementSignatureKey, undefined);
 });

@@ -14,7 +14,7 @@
           "from './demos-claims.mjs'"
         ],
         [
-          "  source: 'vendored support-branch build dacs-sdk@6658691cefed76e2bb576ae959d1ad3bc7eeafec (sha256 79934553…a69a3); not SDK main',",
+          "  source: 'vendored support-branch build dacs-sdk@6658691cefed76e2bb576ae959d1ad3bc7eeafec (sha256 79934553\u2026a69a3); not SDK main',",
           "  source: 'the @kynesyslabs/dacs peer dependency at this package\\'s own version, built from the same repository',",
           "the SDK provenance source (this package's core peer)"
         ],
@@ -279,7 +279,7 @@
       "replace": [
         [
           "// and every Vet reference must name a seller/orchestrator-produced composite\n// at the canonical DACS-2 address.",
-          "// and every Vet reference must name a composite signed by its counterparty\n// verifier (DACS-2 §7.7.2: the buyer's by the seller, the seller's by the\n// buyer) at the canonical DACS-2 address.",
+          "// and every Vet reference must name a composite signed by its counterparty\n// verifier (DACS-2 \u00a77.7.2: the buyer's by the seller, the seller's by the\n// buyer) at the canonical DACS-2 address.",
           "the counterparty Vet verifier"
         ],
         [
@@ -306,11 +306,21 @@
           "  if (!same(input.seller.identityBundle, listing.seller.identity) || input.seller.identityBundle.presentedBy !== scope.seller) return 'seller identity differs';\n",
           "  // The Listing's seller bundle, or this session's presentation of exactly it.\n  const sellerProblem = sellerSessionPresentationProblem(input.seller.identityBundle, listing.seller.identity);\n  if (sellerProblem || input.seller.identityBundle.presentedBy !== scope.seller) return `seller identity differs${sellerProblem ? `: ${sellerProblem}` : ''}`;\n",
           "the session seller presentation"
+        ],
+        [
+          "import { DEM_RAIL }",
+          "import { addressForClaim } from './demos-claims.mjs';\nimport { DEM_RAIL }",
+          "the intrinsic DEM payout destination (DACS-4 PB-2 tier 1)"
+        ],
+        [
+          "payee: input.payoutBindings?.[0]?.payeeAddress, generatedAt,",
+          "// DACS-4 \u00a79.5.1 PB-2 tier 1: pay-dem has an intrinsic destination.\n    payee: addressForClaim(listing.seller.identity.presentedBy), generatedAt,",
+          "the intrinsic DEM payout destination (DACS-4 PB-2 tier 1)"
         ]
       ],
       "omitted": "the buyer-side resolver and its answer capture",
       "sourceSha256": "6757fcc43ed5c02cecc83673834174383d64b51741700458f4e9e7adb7758ef8",
-      "sha256": "8cff1873c0a72820411395d6704acfb44607c5050b0b1b4310c7e2a6883ad48e"
+      "sha256": "31a2072b8f6d975fea2d564232d21021e227d58962469731b8a861a26c3c6ec0"
     },
     {
       "target": "src/dacs/agreement-context-consumer.mjs",

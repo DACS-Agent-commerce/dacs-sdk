@@ -27,6 +27,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   const core = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   assert.equal(manifest.name, '@kynesyslabs/dacs-seller');
+  assert.equal(manifest.private, true, 'the fixture kit cannot be published independently of its unreleased core peer');
   assert.equal(manifest.version, core.version);
   assert.equal(manifest.type, 'module');
   assert.deepEqual(manifest.exports, { '.': './src/index.mjs', './src/*': './src/*', './package.json': './package.json' });

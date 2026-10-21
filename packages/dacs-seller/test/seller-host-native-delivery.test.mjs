@@ -177,7 +177,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast.
-async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null } = {}) {
+async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {} } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -188,6 +188,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
     category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
   if (!schemaUrl) delete draft.offering.deliverable.schemaUrl;
+  Object.assign(draft.offering.deliverable, deliverableExtension);
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
   // One buyer presentation per job, of the challenge the host issued for it
   // (CORE SN-1..SN-4: a session nonce admits one session).
@@ -1151,4 +1152,47 @@ test('the package builds capabilities only for the loopback fixture node and TES
   const operations = { submit: async () => null, reconcile: async () => null, read: async () => null, verifyReceipt: async () => null };
   assert.throws(() => createNativeDemDeliveryCapability({ authority: 'node2.demos.sh', ...operations }), { name: 'TypeError', message: /explicit TEST authority/ });
   assert.doesNotThrow(() => createNativeDemDeliveryCapability({ authority: 'TEST-scope', ...operations }));
+});
+
+test('a paid native order with an additive signature field in its DeliverableSpec reaches delivery, including restart', async (t) => {
+  const w = await world(t, { deliverableExtension: { signature: { format: 'TEST-spec-extension' } } });
+  const p = await w.purchase(), tx = p.pay();
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  await w.restart();
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 1);
+});
+
+test('a supersession decision lost before the agent checkpoint replays after restart and delivers once', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  const old = w.signedCreate(address);
+  await w.purchase(); // Its commitment overtakes the dropped evidence nonce.
+  const kept = await w.retainedSession(p.jobId); // Stop the host before the cut.
+  const answer = await w.walletJournal().reconcilePaymentEvidence({ logicalAddress: address, receiptContentHash: kept.nativeEvidenceWork.intake.evidenceHash,
+    attempt: { answer: { txHash: old.hash } } });
+  assert.equal(answer.status, 'unsigned');
+  assert.equal(answer.txHash, old.hash);
+  // Process death here: the wallet decision is durable, the agent saw none of it.
+  w.restartWallet(); await w.restart();
+  const delivered = await p.claim(tx);
+  assert.equal(delivered.delivery?.status, 'delivery-ready', shown(delivered));
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.effects.signed.length, 2);
+});
+
+test('a commitment readback outage on the first payment claim stays indeterminate and recovers', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  let outage = 1;
+  w.node.faults.indexDown = () => outage-- > 0;
+  const held = await p.claim(tx);
+  assert.equal(held.status, 'indeterminate', shown(held));
+  assert.equal(w.effects.signCreate.length, 0);
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(w.createsAt(paymentAddress(p)), 1);
 });

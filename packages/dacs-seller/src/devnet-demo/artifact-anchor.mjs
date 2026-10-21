@@ -121,9 +121,16 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
     return `demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
   };
 
-  function liveNonceRows(rows,outcomes=rows) {
+  async function liveNonceRows(rows,outcomes=rows) {
     const rejected=outcomes.map(([,row])=>row).filter(row=>broadcastRejected(row)&&row.transaction?.content?.from===owner);
-    return rows.filter(([,row])=>!rejected.some(done=>canonicalize(done.transaction.content)===canonicalize((row?.signedTransaction??row?.transaction)?.content??null)))
+    // An abandoned unsigned intent reserves no nonce. Use the same proof as
+    // read/publish, including both signed journals, for this and other jobs.
+    const unsigned=new Set();
+    for(const [,row] of rows) {
+      const address=row?.transaction?.content?.data?.[1]?.metadata?.logicalAddress;
+      if(address && await signedNothing(address,row)) unsigned.add(row);
+    }
+    return rows.filter(([,row])=>!unsigned.has(row)).filter(([,row])=>!rejected.some(done=>canonicalize(done.transaction.content)===canonicalize((row?.signedTransaction??row?.transaction)?.content??null)))
       .filter(([,row])=>!(!row?.hash&&!row?.signedTransaction&&(['closing','unsigned','rejected'].includes(row?.stage)||(row?.stage==='denied'&&row.error==='user_rejected'))));
   }
 
@@ -171,7 +178,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
   // seller CREATE. Release it only after a fresh authenticated readback shows
   // that exact original signed CREATE included; no new transaction is signed.
   async function reconcilePriorWalletLane() {
-    const rows=liveNonceRows(await journal.entries()).filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.stage==='broadcast-started'&&value?.signedTransaction?.content?.from===owner);
+    const rows=(await liveNonceRows(await journal.entries())).filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.stage==='broadcast-started'&&value?.signedTransaction?.content?.from===owner);
     for(const [key,value] of rows){
       const projection=typeof value.hash==='string'?await publicProjection(value.hash):null;
       if(!projection||value.signedTransaction?.hash!==value.hash||canonicalize(projection)!==canonicalize(value.signedTransaction)) fail('indeterminate','the retained seller wallet CREATE differs from its original public projection');
@@ -276,7 +283,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
       // Retained signed or reserved bytes fence this nonce even after inclusion.
       // Wait for the RPC to catch up instead of preparing a duplicate CREATE.
       const priorRows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
-      const retainedNonces=liveNonceRows(priorRows).flatMap(([,row])=>[row?.transaction,row?.signedTransaction])
+      const retainedNonces=(await liveNonceRows(priorRows)).flatMap(([,row])=>[row?.transaction,row?.signedTransaction])
         .filter(tx=>tx?.content?.from===owner).map(tx=>tx.content.nonce);
       if(retainedNonces.some(n=>!Number.isSafeInteger(n)||n<0)) fail('indeterminate','retained seller nonce is invalid');
       if(current===Number.MAX_SAFE_INTEGER||retainedNonces.some(n=>n>current)) fail('indeterminate','seller nonce RPC has not caught up with retained CREATEs');
@@ -318,7 +325,7 @@ export function createDevnetDemoArtifactAnchor({ sourceCapability, journal, wall
         // completed failure with no signed transaction in either durable journal
         // proves an unsigned attempt. Ambiguous signed outcomes keep the floor.
         const rows=[...(await journal.entries()),...(await sourceCapability.journal.entries())];
-        const signed=liveNonceRows(rows).some(([,row])=>row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
+        const signed=(await liveNonceRows(rows)).some(([,row])=>row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
         const code=answer?.error?.code;
         const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
         await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});

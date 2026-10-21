@@ -116,16 +116,16 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   that from a CREATE it signed and lost. Its `read` returns
   `provenUnsignedAbsence(reason)` (from
   `@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs`)
-  exactly when it holds no signed CREATE for the address and never asked its
-  wallet to sign one; the agent then asks again, and the paid order is
+  exactly when it can prove no signed CREATE for the address was sent or
+  remains available to send; the agent then asks again, and the paid order is
   delivered with one CREATE. Any other answer (a miss, a lagging name index,
   an error, or a CREATE it signed that is not on the chain) holds the
   delivery and never submits again: a landed CREATE would be made twice. A
   `read` that never returns the proof strands a paid order after one failed
-  submission. The package's devnet artifact anchor returns it, on every read
-  and for `readRetained` too, for an address with no stored intent, and for a
-  stored intent that carries no hash and no signed transaction when neither the
-  source nor the seller's wallet retains a signed CREATE for the address: one a
+  submission. The package's devnet artifact anchor returns it from `read` for an
+  address with no stored intent (`readRetained` reports plain absence there),
+  and from both readers for a stored intent that carries no hash and no signed
+  transaction when neither the source nor the seller's wallet retains a signed CREATE for the address: one a
   shutdown cut before it was signed (`closing`), one the wallet answered
   without signing (`unsigned`), and one the process died on while the wallet
   was asked (`intent`; the wallet journals a signature before it sends
@@ -378,3 +378,6 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).
+
+The workspace package is marked `private` while its required core exports are
+unreleased. Local tarball installation uses a core built from the same checkout.

@@ -214,7 +214,11 @@ test('a dropped CREATE overtaken by another write of the wallet is superseded: u
     assert.equal(answer.txHash, first, 'it names the superseded CREATE');
     assert.match(answer.reason, /can no longer be included/);
     assert.deepEqual(w.calls.reads, ['nonce', 'state'], 'the account nonce is read before the transaction state');
-    assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned', 'superseded stays superseded');
+    journal.close(); journal = w.open();
+    // The agent still holds the earlier attempt: its checkpoint was lost.
+    const replay = await journal.reconcilePaymentEvidence({ ...w.input(), attempt: { answer: { txHash: first } } });
+    assert.equal(replay.status, 'unsigned', 'superseded stays superseded');
+    assert.equal(replay.txHash, first, 'the durable answer still names the transaction the agent must release');
     if (reopen) { journal.close(); journal = w.open(); }
     const second = (await journal.anchorEvidence(w.input())).txHash;
     assert.equal(second, w.calls.signed[1], 'signed anew');

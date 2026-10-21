@@ -419,14 +419,24 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const existing = sessions.get(jobId);
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
     // signed definition pinned before the Agreement is signed. The pin is in
-    // flight only from the seller's signature (railPinSigned, saved before
-    // it): until then every attempt, a retry after a rejection or a crash
+    // flight only from a successful retained seller signature: until then
+    // every attempt, a retry after a rejection or a crash
     // included, selects again under the current authority as a new session.
     // The Agreement names only the rail id and version, so a new pin never
     // changes what is signed. The rail is the seller's own state, read before
     // the presentation is looked at: a `rail_unavailable` refusal consumes no
     // challenge.
-    const inFlight = existing?.railPinSigned === true;
+    const inFlight = Boolean(existing?.sellerContribution || (existing?.agreementSignatureKey &&
+      durable?.signature(existing.agreementSignatureKey).disposition === 'present'));
+    // DACS-1 §6.3.4 step 3 is a current read-time gate, independent of the
+    // historical admission retained for payment intake. Both endpoints count.
+    const assertListingCurrent = () => {
+      const at = now();
+      if (at < listing.validity?.notBefore || (listing.validity?.notAfter !== undefined && at > listing.validity.notAfter)) {
+        throw new SellerAgentError('session_not_admitted', 'the Listing is outside its validity interval', 409);
+      }
+    };
+    if (!inFlight) assertListingCurrent();
     const railPin = nativeProfile ? (inFlight ? existing.railPin : rail.pin()) : undefined;
     assertRailPin(railPin, inFlight ? 'in-flight' : 'new');
     // CORE SN-4: a presentation attempt for a new session (not yet signed
@@ -470,8 +480,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const session = sessions.get(jobId);
     persist(session);
     const signUnderPin = (bytes) => {
-      if (session.railPin && session.railPinSigned !== true) { session.railPinSigned = true; persist(session); }
-      return sign(bytes);
+      if (!inFlight) assertListingCurrent();
+      // The key is only a pointer. An intent or a thrown signer never makes
+      // this pin in flight; signOnce's completed record is the authority.
+      session.agreementSignatureKey = `signature:${sha256Hex(bytes)}`;
+      persist(session);
+      const signature = sign(bytes);
+      if (session.railPin) { session.railPinSigned = true; persist(session); }
+      return signature;
     };
     const progress = await respondToFixedPriceAgreementProposalDurable(
       { proposal, transportIdentity, seller: { party: claim, algorithm: 'ed25519', sign: signUnderPin } },
@@ -831,11 +847,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       listingPin: structuredClone(pin),
       buyer: { primaryClaim: buyer.primaryClaim, bundleHash: buyer.bundleHash, vetRecordRef: structuredClone(buyer.vetRecordRef) },
       seller: { primaryClaim: seller.primaryClaim, bundleHash: seller.bundleHash, vetRecordRef: structuredClone(seller.vetRecordRef) },
-      deliverableRef: {
-        deliverableType: listing.offering.deliverable.kind,
-        hash: contentHash(listing.offering.deliverable),
-        ...(listing.offering.deliverable.schemaUrl ? { schemaUrl: listing.offering.deliverable.schemaUrl } : {}),
-      },
+      // The committed Agreement already binds the complete canonical spec,
+      // including additive fields named `signature` (not an artifact signature).
+      deliverableRef: structuredClone(session.agreement.terms.deliverable),
       commitment: {
         status: 'finalized',
         ref: session.commitment.logicalAddress,
@@ -1435,7 +1449,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (durable.loadSession(jobId)?.nativeEvidenceWork) throw error;
       delete session.nativeEvidenceWork;
       const cause = typeof error?.code === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(error.code) ? error.code : 'unclassified';
-      return { answer: { status: 'rejected', reason: 'seller_native_evidence_not_started', step, cause } };
+      return { answer: { status: step === 'commitment-readback' || error?.status === 503 ? 'indeterminate' : 'rejected', reason: 'seller_native_evidence_not_started', step, cause } };
     }
   }
 
@@ -1649,7 +1663,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   // A read-only reducer for an ALREADY reserved authenticated HTTP command.
   // Commit-on-signature reconciliation uses the readback-only gate; it cannot
-  // sign or submit. The one exception is a payment claim with retained native
+  // sign or submit. An interrupted proposal resumes through the durable
+  // responder under its original authenticated request and live delegation.
+  // The other exception is a payment claim with retained native
   // evidence work: it runs that work's own retained step (submitNativePaymentEvidence),
   // whose durable anchor record governs every send, and answers `retry` while
   // it is not final, or `no-effect` when it ended before the work checkpoint
@@ -1662,6 +1678,21 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const held = (reason) => ({ disposition: 'indeterminate', reason });
     const same = (a, b) => canonicalize(a) === canonicalize(b);
     const session = sessions.get(request.jobId);
+    // A proposal interrupted at any persistence boundary resumes through the
+    // durable responder, whose authenticated checkpoints and signOnce govern
+    // every signature/publication. The HTTP cache cannot seal an unfinished
+    // proposal. Validate the exact authenticated request before resuming it.
+    if (request.path === '/dacs/v1/agreements/proposals' && !readOnly) {
+      const identity = body.transportIdentity;
+      if (request.method !== 'POST' || request.jobId !== identity?.jobId || request.seller !== claim ||
+          request.buyer !== identity?.buyer || identity?.seller !== claim || request.buyer !== body.buyerIdentityBundle?.presentedBy ||
+          request.agreementHash !== identity?.agreementHash || !same(request.listingPin, pin) ||
+          sha256Hex(rawBody) !== request.bodyHash || !same(JSON.parse(Buffer.from(rawBody).toString('utf8')), body)) return held('seller_transport_context_mismatch');
+      try {
+        const answer = await receiveProposal(body);
+        return { disposition: answer.disposition === 'complete' ? 'present' : 'retry', value: answer };
+      } catch (error) { return held(error.code ?? 'seller_proposal_indeterminate'); }
+    }
     if (!session?.transportIdentity || request.method !== 'POST' || request.jobId !== (body.transportIdentity?.jobId ?? body.jobId) ||
         request.seller !== claim || request.buyer !== session.buyerBundle.presentedBy || !same(request.listingPin, pin) ||
         request.agreementHash !== session.agreementHash || request.agreementHash !== session.transportIdentity.agreementHash ||

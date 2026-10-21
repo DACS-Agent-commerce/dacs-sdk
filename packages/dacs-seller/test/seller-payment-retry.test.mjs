@@ -26,7 +26,7 @@ const identityFor = (party, presentedAt) => {
 };
 const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
 
-async function world(t, answers) {
+async function world(t, answers, { proposalAnswers = [{ disposition: 'complete', contribution: null }] } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now();
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Retry seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'payment-retry', listingVersion: 1, title: 'Retry report', description: 'Payment retry vectors.', category: 'services.market-report', tags: ['retry'], priceDem: '2.5', notBefore: now - 60000 });
@@ -40,8 +40,9 @@ async function world(t, answers) {
   const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite') });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [];
+  let proposalCalls = 0;
   const facade = { claim: sellerKey.claim, listingPin: pin,
-    receiveProposal: async () => ({ disposition: 'complete', contribution: null }),
+    receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
     submitPayment: async (body) => { calls.push(body.txHash); return structuredClone(answers[Math.min(calls.length - 1, answers.length - 1)]); } };
   const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store }) });
   const fetchImpl = async (url, init) => {
@@ -58,7 +59,8 @@ async function world(t, answers) {
   await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
   const claim = { jobId, txHash: 'a1'.repeat(32), payerPayingKey: buyerKey.claim, nativePaymentEvidence: 'sdk-pay-dem-intake-native-evidence/loopback-v1' };
   const pay = async (body = claim) => { try { return await client.submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
-  return { calls, claim, pay };
+  return { calls, claim, pay, proposalCalls: () => proposalCalls,
+    propose: () => client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) };
 }
 
 test('an indeterminate answer before the evidence checkpoint keeps nothing: the same claim reaches intake again and the delivery is then final', async (t) => {
@@ -88,20 +90,23 @@ test('a held answer after the evidence checkpoint runs the agent again on a fres
   assert.equal(w.calls.length, 3, 'the conflicting body and the final answer never reach the agent');
 });
 
-// Only a payment claim goes back to the retry from reconciliation: any other
-// route's reconciliation with `retry` is refused before the journal is read.
-test('the transport store hands an uncertain effect back to the retry only for a payment claim', (t) => {
+// Only payment claims and durable proposals resume through reconciliation.
+// Other routes stay read-only; only unstarted payment claims may be released.
+test('the transport store permits retained retries for payment claims and proposals, with payment-only release', (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-store-')));
   const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite') });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const jobId = core.generateCanonicalJobId(), reservation = { disposition: 'uncertain', effectKey: 'TEST-effect', owner: 'TEST-owner' };
-  for (const path of ['/dacs/v1/commitments', '/dacs/v1/agreements/proposals', '/dacs/v1/commitments/signature', '/dacs/v1/bundles/buyer-copy']) {
+  for (const path of ['/dacs/v1/commitments', '/dacs/v1/commitments/signature', '/dacs/v1/bundles/buyer-copy']) {
     assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { retry: true }), { code: 'peer_reconciliation_invalid' }, path);
     assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { noEffect: true }), { code: 'peer_reconciliation_invalid' }, `${path}: no release either`);
   }
   assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/payments' }, 200, '{}', { retry: true, noEffect: true }), { code: 'peer_reconciliation_invalid' });
-  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/payments' }, 200, '{}', { retry: true }), (error) => error.code !== 'peer_reconciliation_invalid',
-    'a payment claim passes the guard and is checked against its retained effect');
+  for (const path of ['/dacs/v1/payments', '/dacs/v1/agreements/proposals']) {
+    assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { retry: true }), (error) => error.code !== 'peer_reconciliation_invalid',
+      `${path} passes the guard and is checked against its retained effect`);
+  }
+  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/agreements/proposals' }, 200, '{}', { noEffect: true }), { code: 'peer_reconciliation_invalid' });
 });
 
 test('evidenced payment with a delivery not done yet is retried until the delivery is final', async (t) => {
@@ -188,4 +193,13 @@ test('an uncertain payment claim reconciles read only once its session delegatio
   assert.deepEqual(await w.pay(), { error: 'seller_unavailable', status: undefined }, 'still uncertain');
   assert.deepEqual(w.reconciles, [true], 'the agent is asked to reconcile read only');
   assert.equal(w.calls.length, 1, 'and the claim never runs again');
+});
+
+test('a waiting proposal keeps its HTTP retry slot until the durable responder completes', async (t) => {
+  const w = await world(t, [], { proposalAnswers: [{ disposition: 'waiting', stage: 'lease', reason: 'TEST another worker holds the lease' }, { disposition: 'complete', contribution: null }] });
+  assert.equal(w.proposalCalls(), 1);
+  assert.equal((await w.propose()).disposition, 'complete');
+  assert.equal(w.proposalCalls(), 2);
+  assert.equal((await w.propose()).disposition, 'complete');
+  assert.equal(w.proposalCalls(), 2, 'only the completed proposal is cached');
 });

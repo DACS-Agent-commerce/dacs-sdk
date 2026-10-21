@@ -267,3 +267,15 @@ test('only a row that carries no hash or signed transaction can be an unsigned p
   assert.notEqual((await w.open().read(input)).provenUnsigned,true,JSON.stringify(Object.keys(changed))+changed.stage);
  }
 });
+
+for (const restart of [false, true]) for (const otherJob of [false, true]) test(`interrupted unsigned intent releases its nonce for ${otherJob ? 'another' : 'the same'} job, restart=${restart}`, async () => {
+  const w = await anchorFixture(), anchor = w.open();
+  w.controls.request = async () => { throw new Error('TEST process died inside wallet request'); };
+  await assert.rejects(w.publish(anchor, JOBS[0]), /process died/);
+  let asks = 0;
+  w.controls.request = async () => { asks++; return { success: false, error: { code: 'capture-without-signing' } }; };
+  const result = await w.publish(restart ? w.open() : anchor, JOBS[otherJob ? 1 : 0]);
+  assert.equal(result.status, 'indeterminate');
+  assert.equal(asks, 1, 'the wallet is asked exactly once more');
+  assert.deepEqual(w.captured.map((request) => request.transaction.content.nonce), [1, 1]);
+});

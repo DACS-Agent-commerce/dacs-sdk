@@ -1,6 +1,6 @@
 // Run-time port of http-mcp/src/dacs/dem-delivery-context-consumer.mjs at
 // DACS-Agent-commerce/frontend 15fdf23: lines 1-9, 11, 13-16, 21-30, 37-99, 133-152.
-// The source lines below are unchanged except the counterparty Vet verifier and the session seller presentation (RUNTIME-PORTS.json).
+// The source lines below are unchanged except the counterparty Vet verifier and the session seller presentation and the intrinsic DEM payout destination (DACS-4 PB-2 tier 1) (RUNTIME-PORTS.json).
 // Left out: the buyer-side resolver and its answer capture.
 // Explicit application capability for the fixed-price DEM delivery profile.
 //
@@ -12,6 +12,7 @@
 // verification provenance are kept seller-side; this consumer only binds the
 // exact Agreement derivation input to the already prepared purchase scope.
 import { canonicalize, compositeVerificationAddress, identityBundleHash } from '@kynesyslabs/dacs';
+import { addressForClaim } from './demos-claims.mjs';
 import { DEM_RAIL } from './listing.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
@@ -107,7 +108,8 @@ export async function resolveDemDeliverySellerContext(capability, { jobId, listi
   const syntheticScope = {
     jobId, buyer: buyerBundle.presentedBy, buyerBundleHash: identityBundleHash(buyerBundle), seller: listing.seller.identity.presentedBy,
     listingPin: listingPin(listing), rail: { railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion },
-    payee: input.payoutBindings?.[0]?.payeeAddress, generatedAt,
+    // DACS-4 §9.5.1 PB-2 tier 1: pay-dem has an intrinsic destination.
+    payee: addressForClaim(listing.seller.identity.presentedBy), generatedAt,
   };
   const problem = inputProblem(input, { scope: syntheticScope, listing, buyerBundle });
   if (problem) return held('rejected', `DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: ${problem}`);

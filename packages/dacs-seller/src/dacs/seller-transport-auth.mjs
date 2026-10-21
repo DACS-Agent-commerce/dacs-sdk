@@ -539,8 +539,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // The host may resolve only the SAME retained operation, after its seller
     // reducer has authenticated durable context and fresh native readback. No
     // reservation, slot or transaction is released; no expired intent retries.
-    // retry (payments only): the agent ran the payment claim again (its
-    // retained work, or its start when it ended before the work checkpoint)
+    // retry (payments and proposals): the agent resumed its durable operation.
+    // A payment claim runs again from its retained work, or its start when
+    // it ended before the work checkpoint,
     // and it is not final yet; the effect goes back to `retry`, as finish would
     // leave it, so the next claim runs it again under the same slot.
     // noEffect (payments only): the claim ended before the agent's work
@@ -549,7 +550,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     reconcile(reservation, request, status, text, { retry = false, noEffect = false } = {}) {
       requireJobId(request?.jobId);
       if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
-      if ((retry || noEffect) && request.path !== PAYMENT) fail('peer_reconciliation_invalid', 503);
+      if ((noEffect && request.path !== PAYMENT) || (retry && request.path !== PAYMENT && request.path !== '/dacs/v1/agreements/proposals')) fail('peer_reconciliation_invalid', 503);
       if (retry && noEffect) fail('peer_reconciliation_invalid', 503);
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);

@@ -215,8 +215,12 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${named.slice(0, 64)} for this address`), { code: 'wallet_journal_unknown_attempt' });
     }
     const { live: signed, superseded, reason: unread } = await liveFor(input);
-    if (superseded) return { status: 'unsigned', txHash: superseded.txHash, reason: superseded.reason };
-    if (!signed) return { status: 'unsigned', reason: 'the wallet journal keeps no live signed CREATE for this address' };
+    if (!signed) {
+      // Replay the transaction-bound decision after a crash between this
+      // journal's supersession and the agent's checkpoint of that answer.
+      const prior = rows(input.logicalAddress).filter((row) => row.superseded_at !== null).at(-1);
+      return { status: 'unsigned', ...(prior ? { txHash: typeof named === 'string' ? named : prior.tx_hash } : {}), reason: superseded?.reason ?? 'the wallet journal keeps no live signed CREATE for this address' };
+    }
     try { await broadcast({ signedTransaction: signed.signedTransaction, txHash: signed.txHash }); }
     catch (error) { return { status: 'pending', txHash: signed.txHash, reason: `the same signed CREATE was not broadcast again: ${reason(error)}` }; }
     return { status: 'rebroadcast', txHash: signed.txHash, ...(unread ? { reason: unread } : {}) };
