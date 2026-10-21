@@ -310,8 +310,13 @@ below):
    effect's own write is durable, the handler records its outcome with
    `completeWireEffect(journal, effect, { status, text })`. The outcome is
    kept once (a different one is `seller_effect_conflict`). The text must be
-   well-formed UTF-8 and is stored as its bytes, so a repeat returns exactly
-   what the handler signed (canonical JSON would normalize its Unicode).
+   a body the wire can sign: well-formed UTF-8 that CF-5 admission admits as a
+   JSON object (NFC strings, no duplicate members), or `completeWireEffect`
+   refuses it as `wire_input_invalid`, detail `OUTCOME-INVALID`, before it
+   publishes anything. It is stored as its bytes, so a repeat returns exactly
+   what the handler signed (canonical JSON would normalize its Unicode), and
+   a stored record whose bytes are not well-formed UTF-8 is a corrupt store,
+   never decoded with replacement characters.
    `completeWireEffect(journal, effect, null)` ends an attempt that caused no
    effect, so the next request recovers at once without spending the crash
    budget. Each attempt ends exactly once, in one exclusive journal entry:
@@ -445,7 +450,9 @@ DACS-1 §6.3.4 Listing whose recomputed content hash, id and version are the
 Listing pin the request, the record and the Agreement name. That hash omits
 the Listing's signature, so the wire verifies that signature itself
 (DACS-1 §6.3.4): `ed25519` by the seller's own key (the signer must be the
-seller) over `dacs-listing:v1:` and the content hash
+presented seller claim, the SDK reader's profile: a Listing signed by another
+claim its bundle carries is refused, because the wire does not verify the
+bundle's DACS-2 presentation that would show control of that claim) over `dacs-listing:v1:` and the content hash
 (`continuation_listing_invalid`, detail `LISTING-SIGNATURE`), as well as the
 Agreement both parties signed and the record the seller signed over it. It must be presented
 by the seller, carry a positive `deadlineSecAfterCommit`, not be auto-accept,

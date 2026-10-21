@@ -120,11 +120,16 @@ const TP1_DELIVERABLE_KIND = "storage-program";
  * by the Listing's content hash and verifies `signature.value` against it
  * (DACS-3 §8.5.2: the complete signed Listing is validated before any
  * Agreement check). The content hash omits the signature, so the pin cannot
- * vouch for it. TP-1's seller is its orchestrator (G3) and presents one key,
- * so the signer must be exactly `seller`, an Ed25519 key the claim names, and
- * the signature a canonical 64-byte value that verifies under it. A signature
- * the wire cannot verify (another algorithm, another signer) is refused, not
- * assumed. Refused as `continuation_listing_invalid`, detail `LISTING-SIGNATURE`.
+ * vouch for it. DACS-1 lets the signer be any claim the seller's bundle
+ * carries, but a carried claim proves no control of the key without the bundle's
+ * DACS-2 presentation, which the wire does not verify. So the wire takes the SDK's
+ * own reader profile (src/agent/discover.ts, which refuses a signer other than the
+ * Listing's `presentedBy`; publishListingCore signs with it): the signer must be
+ * exactly `seller`, the presented claim, an Ed25519 key the claim names, and the
+ * signature a canonical 64-byte value that verifies under it. A signature the
+ * wire cannot verify (another algorithm, another signer, even one the bundle
+ * carries) is refused, never assumed: a narrower rule than DACS-1, never a wider
+ * one. Refused as `continuation_listing_invalid`, detail `LISTING-SIGNATURE`.
  */
 function assertListingSignature(listing: Listing, seller: string): void {
   const signature = listing.signature as unknown as JsonRecord;

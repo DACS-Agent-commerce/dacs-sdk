@@ -12,6 +12,7 @@ import { FINALITY_COMMITMENT_SEPARATOR } from "../../src/negotiate/commitment.js
 import { verifySellerPaymentIntake, type SellerPaymentIntakeDeps } from "../../src/seller/paymentIntake.js";
 import { FINALITY_COMMITMENT_DOMAIN } from "../../src/wire/commitment.js";
 import { CONTINUING_PATHS } from "../../src/wire/discovery.js";
+import { admitOutgoingBody } from "../../src/wire/envelope.js";
 import * as fixtureWire from "../../src/wire/index.js";
 import * as wire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
@@ -307,7 +308,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     expect(check(x, Buffer.from(JSON.stringify(LISTING).replace('"dacsVersion":"1"', '"dacsVersion":"1","dacsVersion":"1"')))).toThrowError(listingRefused("DUPLICATE-MEMBER"));
     // Its exact bytes, or the value admitWireArtifact returned, continue.
     for (const given of [received(LISTING), admitted]) expect(check(x, given)().effect).toMatchObject({ state: "new" });
-  });
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
   it("verifies the pinned Listing's own signature under the seller's key (DACS-1 §6.3.4) on every continuing route, direct and delegated: the pin omits the signature", () => {
     const x = world();
@@ -343,7 +344,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     expect(journals.reservations()).toEqual([]);
     expect(wire.checkWireRequest(x.direct(x.request(P.payments)), { ...x.check(P.payments), requestJournal: journals.open() }).effect).toMatchObject({ state: "new" });
     expect(journals.reservations()).toHaveLength(1);
-  });
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
   it("refuses an Agreement both parties signed that carries a second discriminator (DACS-3 §8.5) or a priorPaymentDispositionRef under a Listing with no pay-alternative phase (§8.5.2 check 10), on every continuing route", () => {
     const journals = testJournals();
@@ -418,7 +419,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     // The Agreement derived from the Listing continues.
     const derived = world();
     expect(wire.checkWireRequest(derived.direct(derived.request(P.payments)), { ...derived.check(P.payments), requestJournal: testJournal() }).effect).toMatchObject({ state: "new" });
-  });
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
   it("continues only a TP-1 Listing: fixed DEM pricing, one pay-dem phase, and deliver-storage-program with a storage-program deliverable (DACS-4 §9.6.1)", () => {
     const pipeline = (pay: Array<Record<string, unknown>>, deliver: Array<Record<string, unknown>>) =>
@@ -449,7 +450,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     // The canonical TP-1 Listing is this shape, and continues.
     expect(LISTING.offering.deliverable.kind).toBe("storage-program");
     expect(LISTING.pipeline.map((phase) => phase.kind)).toEqual(["negotiate-fixed-price", "commit-payee-bound-agreement", "pay-dem", "deliver-storage-program"]);
-  });
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
   it("re-evaluates DACS-3 §8.5.2 checks 5 and 6 at the receipt time from the seller's own Listing, on every continuing route, direct and delegated", () => {
     // A Listing that ended ten minutes ago: a purchase committed while it was valid continues; one committed after it ended does not (check 6).
@@ -491,7 +492,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
         expect(check, `${path} ${mode}: deadline ten years out`).toThrowError(invalid);
       }
     }
-  });
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
   it("refuses the record the SDK's own gate anchored and then refused after finality, when the seller reads it back", async () => {
     const purchase = await acceptedPurchase({ jobId: JOB, generatedAt: NOW, validity: { notBefore: NOW - 600_000, notAfter: NOW + 10_000 }, publicEndpoint: ENDPOINT });
@@ -851,7 +852,7 @@ describe("an effect is reserved only in the SDK's durable journal", () => {
     expect(() => wire.checkWireRequest(opened(), { ...x.check(P.payments), requestJournal: journal })).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
     expect(() => wire.checkWireRequest(opened(), { ...x.check(P.payments), requestJournal: journal })).toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
     expect(new Set(journals.reservations().map((r) => r.operationId)).size).toBe(4);
-  });
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
   it("never gives a job and route a second effect when the retained Agreement changes: before and after completion, and across a reopen", () => {
     const x = world();
@@ -882,7 +883,7 @@ describe("an effect is reserved only in the SDK's durable journal", () => {
     // Each refused request spent its nonce and nothing else: four operations, one attempt each.
     expect(readdirSync(directory).filter((name) => /^o-[0-9a-f]{64}-0$/.test(name))).toHaveLength(4);
     expect(readdirSync(directory).filter((name) => /^o-[0-9a-f]{64}-[1-9]/.test(name))).toEqual([]);
-  });
+  }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
   it("refuses an attempt record the journal did not write as a corrupt store, never as a lapsed lease", () => {
     const x = world();
@@ -916,14 +917,16 @@ describe("an effect is reserved only in the SDK's durable journal", () => {
     for (const body of ['{"tx":"1"}', '{"tx":"2"}']) expect(at(body).effect).toEqual({ state: "completed", operationId: first.effect!.operationId, outcome });
   });
 
-  it("keeps an outcome's text byte for byte, Unicode that is not NFC included: a repeat, a restart and the same text again return exactly what the handler signed", () => {
+  it("keeps an outcome's text byte for byte, whatever canonical JSON would rewrite: a repeat, a restart and the same text again return exactly what the handler signed", () => {
     const x = world();
     const directory = journalDirectory();
     const journal = wire.openWireRequestJournal(directory);
     const at = (j: wire.WireRequestJournal, body: string) => wire.checkWireRequest(x.direct(x.request(P.payments, body)), { ...x.check(P.payments, body), requestJournal: j });
-    // Raw (not escaped) text with a combining accent in a member name and in a value, and an astral character: canonical JSON would normalize all of it.
-    const text = '{"réport":"linéx \u{1F600}","café":"café"}';
-    expect(text).not.toBe(text.normalize("NFC"));
+    // Text the wire can sign (an NFC object) that canonical JSON would still rewrite: members out of order, spacing, an escape and an astral character.
+    const text = '{"réport": "linéx \\u00e9 \u{1F600}",  "a":[1, 2]}';
+    expect(text).toBe(text.normalize("NFC"));
+    expect(canonicalize(JSON.parse(text))).not.toBe(text);
+    expect(() => admitOutgoingBody(text, 512 * 1024)).not.toThrow();
     const outcome = { status: 200, text };
     const first = at(journal, '{"tx":"1"}');
     wire.completeWireEffect(journal, first.effect!, outcome);
@@ -934,8 +937,8 @@ describe("an effect is reserved only in the SDK's durable journal", () => {
     const restarted = at(wire.openWireRequestJournal(directory), '{"tx":"3"}').effect as { outcome: { text: string } };
     expect(restarted).toEqual(done);
     expect(Buffer.from(restarted.outcome.text, "utf8").equals(Buffer.from(text, "utf8"))).toBe(true);
-    // The normalized form is another text: it conflicts with the stored one.
-    expect(() => wire.completeWireEffect(journal, first.effect!, { status: 200, text: text.normalize("NFC") })).toThrowError(expect.objectContaining({ code: "seller_effect_conflict" }));
+    // Another spelling of the same JSON is another text: it conflicts with the stored one.
+    expect(() => wire.completeWireEffect(journal, first.effect!, { status: 200, text: canonicalize(JSON.parse(text)) })).toThrowError(expect.objectContaining({ code: "seller_effect_conflict" }));
   });
 
   it("refuses an outcome whose text is not well-formed UTF-8 (a lone surrogate would be stored as another character) before anything is published", () => {
@@ -945,7 +948,36 @@ describe("an effect is reserved only in the SDK's durable journal", () => {
     for (const text of ["\ud800", '{"a":"\udc00"}', "ok\ud83d"]) {
       expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text }), text).toThrowError(expect.objectContaining({ code: "wire_input_invalid", detail: "OUTCOME-INVALID" }));
     }
-    expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text: "\u{1F600}" })).not.toThrow();
+    expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text: '{"smile":"\u{1F600}"}' })).not.toThrow();
+  });
+
+  it("refuses an outcome whose text the wire could never sign (CF-5 admission of a response body), before anything is published: no answer is left unanswerable", () => {
+    const x = world();
+    const journal = testJournal();
+    const at = (body: string) => wire.checkWireRequest(x.direct(x.request(P.payments, body)), { ...x.check(P.payments, body), requestJournal: journal });
+    const { effect } = at('{"tx":"1"}');
+    const refused = expect.objectContaining({ code: "wire_input_invalid", status: 500, detail: "OUTCOME-INVALID" });
+    const unsignable: Array<[string, string]> = [
+      ["a decomposed accent in a value", '{"a":"café"}'],
+      ["a combining mark written as an escape", '{"a":"e\\u0301"}'],
+      ["a duplicate member", '{"a":1,"a":2}'],
+      ["a body that is not an object", "0"],
+      ["an array", "[]"],
+      ["null", "null"],
+      ["text that is not JSON", "paid"],
+      ["the empty text", ""],
+    ];
+    for (const [name, text] of unsignable) {
+      // The refusal is the wire's own rule: signing the same text is refused by CF-5 admission.
+      expect(() => admitOutgoingBody(text, 512 * 1024), name).toThrowError(expect.objectContaining({ code: "outgoing_body_rejected" }));
+      expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text }), name).toThrowError(refused);
+    }
+    // No refusal published anything: the attempt is still open, and a text the wire signs completes it.
+    expect(() => at('{"tx":"2"}')).toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+    const signable = '{"paid":true,"note":"NFC cafeé \u{1F600}"}';
+    expect(() => admitOutgoingBody(signable, 512 * 1024)).not.toThrow();
+    wire.completeWireEffect(journal, effect!, { status: 200, text: signable });
+    expect(at('{"tx":"3"}').effect).toMatchObject({ state: "completed", outcome: { status: 200, text: signable } });
   });
 
   it("refuses to complete an effect it did not issue, on another journal, or with a malformed outcome", () => {

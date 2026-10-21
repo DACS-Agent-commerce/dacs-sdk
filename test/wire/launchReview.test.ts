@@ -141,6 +141,10 @@ describe("effect request replay reservations", () => {
       ["an outcome with no attempt", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, textBytes: Buffer.from("{}").toString("base64url") } })), "STORE-ATTEMPT-MISSING"],
       // The outcome's text is stored as its UTF-8 bytes; plain text there, or bytes that are not canonical base64url, was not written by this journal.
       ["an outcome with its text stored plain", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, text: "{}" } })), "STORE-OUTCOME-INVALID"],
+      // Damaged bytes must not decode to U+FFFD and be signed as another answer; text the wire could never sign is no outcome either.
+      ["an outcome whose bytes are not well-formed UTF-8", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, textBytes: Buffer.from([0x7b, 0xff, 0x7d]).toString("base64url") } })), "STORE-OUTCOME-INVALID"],
+      ["an outcome whose bytes are a lone 0xff", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, textBytes: "_w" } })), "STORE-OUTCOME-INVALID"],
+      ["an outcome whose text is not a JSON object", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, textBytes: Buffer.from("paid").toString("base64url") } })), "STORE-OUTCOME-INVALID"],
       ["an outcome whose bytes are not canonical base64url", (d) => writeFileSync(join(d, `o-${operationId}.done`), JSON.stringify({ operationId, attempt: 0, outcome: { status: 200, textBytes: "e30=" } })), "STORE-OUTCOME-INVALID"],
     ];
     for (const [name, plant, detail] of cases) {

@@ -33,7 +33,7 @@ import { isAbsolute, join } from "node:path";
 
 import { canonicalize } from "../canonical/jcs.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
-import { deepFreeze, fail, hasKeys, isHash, isRecord, isUint, ownedFields, uncurry, type JsonRecord } from "./validate.js";
+import { admitWireJson, deepFreeze, fail, hasKeys, isHash, isRecord, isUint, ownedFields, uncurry, type JsonRecord } from "./validate.js";
 
 /** The outcome an effect handler answered with: what a repeat of its operation is answered with again. */
 export interface WireEffectOutcome {
@@ -169,18 +169,32 @@ function assertBinding(store: Store, operationId: string, binding: string): void
 }
 const outcomeName = (operationId: string) => `o-${operationId}.done`;
 
-/** Well-formed UTF-8 text: one that survives its own encoding, so the bytes stored are the text given. */
-const isWellFormedText = (text: string) => Buffer.from(text, "utf8").toString("utf8") === text;
+/**
+ * Text the wire can sign as a response body: well-formed UTF-8 (one that survives its own encoding, so the bytes
+ * stored are the text given) that CF-5 admission, the profile `signWireResponse` applies to every body it signs
+ * (admitOutgoingBody), admits as a JSON object. A text it would refuse could be stored but never answered.
+ */
+function isSignableText(text: string): boolean {
+  if (Buffer.from(text, "utf8").toString("utf8") !== text) return false;
+  try {
+    const body = admitWireJson(Buffer.from(text, "utf8"), DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes, "outcome_text_rejected", 500);
+    return body !== null && typeof body === "object" && !Array.isArray(body);
+  } catch {
+    return false;
+  }
+}
 
 function isOutcome(value: unknown): value is WireEffectOutcome {
   return hasKeys(value, ["status", "text"]) && isUint(value.status) && value.status >= 200 && value.status <= 599 &&
-    typeof value.text === "string" && Buffer.byteLength(value.text) <= DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes && isWellFormedText(value.text);
+    typeof value.text === "string" && Buffer.byteLength(value.text) <= DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes && isSignableText(value.text);
 }
 
 /**
  * An outcome as stored. The records are canonical JSON, which normalizes the
  * Unicode of every string, so the answer's text is stored as the base64url of
  * its UTF-8 bytes: what a repeat returns is exactly what the handler signed.
+ * A reader accepts only bytes that are well-formed UTF-8 (decoding and encoding
+ * them again gives the same bytes), never a lossy decoding of damaged ones.
  */
 type StoredOutcome = { status: number; textBytes: string };
 const toStored = (outcome: WireEffectOutcome): StoredOutcome => ({ status: outcome.status, textBytes: Buffer.from(outcome.text, "utf8").toString("base64url") });
@@ -191,7 +205,7 @@ function fromStored(value: unknown): WireEffectOutcome | null {
   const bytes = Buffer.from(value.textBytes, "base64url");
   if (bytes.toString("base64url") !== value.textBytes) return null;
   const outcome = { status: value.status, text: bytes.toString("utf8") };
-  return isOutcome(outcome) ? outcome : null;
+  return Buffer.from(outcome.text, "utf8").equals(bytes) && isOutcome(outcome) ? outcome : null;
 }
 
 function readOutcome(store: Store, operationId: string): WireEffectOutcome {
@@ -323,7 +337,9 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
  * Record the end of an effect attempt checkWireRequest issued (`new` or
  * `recover`), on the journal it was issued from. `outcome` is the answer the
  * handler signed: a later request for the same operation is answered with it
- * and runs no effect. It is published once: the same outcome again is
+ * and runs no effect, so its text must be a body the wire can sign: a JSON
+ * object CF-5 admission admits, in well-formed UTF-8 (`wire_input_invalid`,
+ * detail `OUTCOME-INVALID`, before anything is published). It is published once: the same outcome again is
  * accepted, another is `seller_effect_conflict` (500). `null` ends an attempt
  * that caused no effect and will cause none (for example, a payment not yet
  * visible), so the next request recovers at once instead of after the lease.

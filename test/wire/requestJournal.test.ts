@@ -303,7 +303,10 @@ describe("the durable journal ends each attempt once: by its outcome, or by the 
     const kept = JSON.parse(readFileSync(file, "utf8"));
     expect(kept).toEqual({ operationId: first.operationId, attempt: 0, superseded: false, outcome: null });
     const corrupt = expect.objectContaining({ code: "seller_replay_guard_invalid", status: 500, detail: "STORE-END-INVALID" });
-    for (const contents of ["{}", "not json", JSON.stringify({ ...kept, attempt: 1 }), JSON.stringify({ ...kept, superseded: true, outcome: paid }), JSON.stringify({ ...kept, outcome: { status: 200 } })]) {
+    for (const contents of ["{}", "not json", JSON.stringify({ ...kept, attempt: 1 }), JSON.stringify({ ...kept, superseded: true, outcome: paid }), JSON.stringify({ ...kept, outcome: { status: 200 } }),
+      // Bytes that are not well-formed UTF-8 (0xff), and bytes of text the wire could not sign, were not written by this journal.
+      JSON.stringify({ ...kept, outcome: { status: 200, textBytes: Buffer.from([0xff]).toString("base64url") } }),
+      JSON.stringify({ ...kept, outcome: { status: 200, textBytes: Buffer.from("0").toString("base64url") } })]) {
       writeFileSync(file, contents);
       expect(() => at(b), contents).toThrowError(corrupt);
       expect(() => wire.completeWireEffect(a, first, null), contents).toThrowError(corrupt);
@@ -326,9 +329,9 @@ describe("the durable journal keyed by operation across a reopen", () => {
       // A second journal handle over the same directory stands for another or restarted worker.
       const other = openJournal(directory);
       for (const path of PAYMENT_AND_DELIVERY) expect(() => check(path, other)).toThrowError(expect.objectContaining({ code: "seller_effect_pending", status: 503 }));
-      expect(() => wire.completeWireEffect(other, effects[0]!, { status: 200, text: "0" })).toThrowError(expect.objectContaining({ code: "wire_input_invalid", detail: "EFFECT-NOT-ISSUED" }));
-      effects.forEach((effect, i) => wire.completeWireEffect(issuer, effect, { status: 200, text: `${i}` }));
-      PAYMENT_AND_DELIVERY.forEach((path, i) => expect(check(path, openJournal(directory)).effect).toMatchObject({ state: "completed", outcome: { status: 200, text: `${i}` } }));
+      expect(() => wire.completeWireEffect(other, effects[0]!, { status: 200, text: '{"n":0}' })).toThrowError(expect.objectContaining({ code: "wire_input_invalid", detail: "EFFECT-NOT-ISSUED" }));
+      effects.forEach((effect, i) => wire.completeWireEffect(issuer, effect, { status: 200, text: `{"n":${i}}` }));
+      PAYMENT_AND_DELIVERY.forEach((path, i) => expect(check(path, openJournal(directory)).effect).toMatchObject({ state: "completed", outcome: { status: 200, text: `{"n":${i}}` } }));
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 });
