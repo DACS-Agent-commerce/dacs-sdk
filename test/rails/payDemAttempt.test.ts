@@ -637,45 +637,48 @@ function claimOnlyLog(memory: SettlementLog = createInMemorySettlementLog()): Se
 }
 
 // A log without the optional `readOutcome` (written before it existed): the
-// store's lookup refuses before touching the log, so an audit there claims,
-// leases and binds nothing, and the key keeps whatever state it had.
+// store's lookup refuses before touching the log, so an audit there reads no
+// outcome. A retained hash is finished only through the store's own `once`
+// (sweep F2, #370): a key the log holds nothing for starts nothing, and an
+// expired generation is reconciled under the exact terms.
 describe("pay-dem over a log without a read-only outcome lookup", () => {
-  const legacyRefusal = /settlement log requires read-only outcome lookup for retained recovery/;
-
-  test("an audit refuses without claiming, leasing or binding the key", async () => {
+  test("an audit of a key the log holds nothing for starts nothing and releases its claim", async () => {
     const memory = createInMemorySettlementLog();
     const claimIntent = vi.spyOn(memory, "claimIntent");
     const run = processes(claimOnlyLog(memory));
     run.restart();
     const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(legacyRefusal);
-    expect(claimIntent).not.toHaveBeenCalled();
-    expect(audit.once).not.toHaveBeenCalled();
+    await expect(audit.settle(request("job-a", hashA, true)))
+      .rejects.toThrow(/no SDK record binds the retained transaction to this payment/);
+    expect(claimIntent).toHaveBeenCalledTimes(1);
     expect(sdkTransfers()).toBe(0);
-    // Other terms for the key are still free: the refused lookup bound none.
+    await expect(memory.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
+    // The intent it claimed was released, not left held: the same terms are free.
     await expect(memory.claimIntent({
-      key: "pay-dem:job-a:0",
-      bindingHash: settlementBindingHash({ ...bindingFor("job-a"), amount: "2000000000" }),
+      key: "pay-dem:job-a:0", bindingHash: settlementBindingHash(bindingFor("job-a")),
       owner: "probe", now: 70_000, leaseDurationMs: 1_000,
     })).resolves.toMatchObject({ status: "acquired", lease: { stage: "fresh" } });
   });
 
-  test("an expired attempt the log never resolved is left for the store's reconciliation", async () => {
+  test("an expired attempt the log never resolved is finished through the store's reconciliation", async () => {
     const memory = createInMemorySettlementLog();
     const run = processes(claimOnlyLog(memory));
     const bindingHash = settlementBindingHash(bindingFor("job-a"));
     // A pre-upgrade process claimed the key, may have broadcast, then died.
     await memory.claimIntent({ key: "pay-dem:job-a:0", bindingHash, owner: "A", now: 1_000, leaseDurationMs: 1_000 });
-    const claimIntent = vi.spyOn(memory, "claimIntent");
+
+    // Held, the generation refuses.
+    const reconcile = vi.fn(async () => executed(hashA));
+    await expect((await auditingProcess(run.store("B"), reconcile)).settle(request("job-a", hashA, true)))
+      .rejects.toThrow(/unresolved or in-flight current generation/);
 
     run.restart();
-    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(legacyRefusal);
-    expect(claimIntent).not.toHaveBeenCalled();
+    const audit = await auditingProcess(run.store("B"), reconcile);
+    await expect(audit.settle(request("job-a", hashA, true)))
+      .resolves.toMatchObject({ ok: true, txHash: hashA });
     expect(sdkTransfers()).toBe(0);
-    await expect(memory.claimIntent({
-      key: "pay-dem:job-a:0", bindingHash, owner: "probe", now: 200_000, leaseDurationMs: 1_000,
-    })).resolves.toMatchObject({ status: "acquired", lease: { stage: "reconcile" } });
+    await expect(memory.readOutcome!("pay-dem:job-a:0"))
+      .resolves.toMatchObject({ bindingHash, result: { ok: true, txHash: hashA } });
   });
 });
 
@@ -719,6 +722,41 @@ describe("pay-dem starts a transfer only through a fence whose record a restart 
       const inner = createIdempotencyStore();
       return { once: inner.once, readOutcome: createIdempotencyStore().readOutcome, readAttempt: inner.readAttempt };
     }],
+    // Sweep F1 (#370): the fence must be this key's, not just the SDK store's.
+    ["a wrapper whose once hands the SDK store another key's fence", (): Store => {
+      const inner = createIdempotencyStore();
+      return {
+        once: (_key, binding, submit, reconcile) => inner.once(
+          "pay-dem:job-other:0", { ...binding, jobId: "job-other" }, submit, reconcile,
+        ),
+        readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+      };
+    }],
+    ["a wrapper whose once hands the SDK store this key under other terms", (): Store => {
+      const inner = createIdempotencyStore();
+      return {
+        once: (key, binding, submit, reconcile) => inner.once(key, { ...binding, amount: "2" }, submit, reconcile),
+        readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+      };
+    }],
+    ["a wrapper whose fence names another key over the store's own recorder", (): Store => {
+      const inner = createIdempotencyStore();
+      return {
+        once: (key, binding, submit, reconcile) => inner.once(key, binding, async (fence) => submit(Object.freeze({
+          ...fence!, settlementKey: "pay-dem:job-other:0",
+        })), reconcile),
+        readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+      };
+    }],
+    ["a wrapper whose fence names other terms over the store's own recorder", (): Store => {
+      const inner = createIdempotencyStore();
+      return {
+        once: (key, binding, submit, reconcile) => inner.once(key, binding, async (fence) => submit(Object.freeze({
+          ...fence!, bindingHash: "00".repeat(32),
+        })), reconcile),
+        readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+      };
+    }],
     ["a host store whose fence brings its own recorder", (): Store => {
       const inner = createIdempotencyStore();
       return {
@@ -733,6 +771,24 @@ describe("pay-dem starts a transfer only through a fence whose record a restart 
     await expect(payDemSettle(await sdkRail(), {}, { store })(request("job-a"))).rejects.toThrow(refused);
     expect(sdkTransfers()).toBe(0);
     expect(demosNode.broadcast).not.toHaveBeenCalled();
+  });
+
+  test("a key-remapping wrapper leaves no record or outcome under any key and signs nothing", async () => {
+    const memory = createInMemorySettlementLog();
+    const inner = createIdempotencyStore(memory);
+    const store = {
+      once: (_key: string, binding: Parameters<typeof inner.once>[1], submit: Parameters<typeof inner.once>[2],
+        reconcile: Parameters<typeof inner.once>[3]) =>
+        inner.once("pay-dem:job-other:0", { ...binding, jobId: "job-other" }, submit, reconcile),
+      readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+    };
+    await expect(payDemSettle(await sdkRail(), {}, { store })(request("job-k"))).rejects.toThrow(refused);
+    expect(sdkTransfers()).toBe(0);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+    for (const key of ["pay-dem:job-k:0", "pay-dem:job-other:0"]) {
+      await expect(memory.readAttempt!(key)).resolves.toBeNull();
+      await expect(memory.readOutcome!(key)).resolves.toBeNull();
+    }
   });
 
   test("a store object carrying the SDK store's own once and readAttempt settles once and records the hash", async () => {

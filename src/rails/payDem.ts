@@ -20,6 +20,8 @@ import {
   isStoreAttemptRecorder,
   isStoreLookupPair,
   isStoreReconcileFence,
+  isUnreadableOutcomeLookup,
+  settlementBindingHash,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -311,7 +313,7 @@ export interface PayDemSettlementRecoveryContext {
 }
 
 /**
- * Reconciliation context of a read-only audit of a retained transaction (a
+ * Reconciliation context of an audit of a retained transaction (a
  * settlement request carrying `priorAttempts`), and of a restart
  * reconciliation for a key whose attempt record names its hash. Restart
  * reconciliation of a key without one receives the plain
@@ -2539,6 +2541,11 @@ export function payDemSettle(
   // its log without a claim, so a restart can finish what the transfer did.
   const storeLookupsPaired = readOutcomeProperty.found &&
     isStoreLookupPair(storeReadAttempt, readOutcomeProperty.value);
+  // A `createIdempotencyStore` store over a log with no `readOutcome` (one
+  // written before it existed): its lookup refuses, so a retained hash is
+  // finished through its `once` alone.
+  const outcomeUnreadable = readOutcomeProperty.found &&
+    isUnreadableOutcomeLookup(readOutcomeProperty.value);
   // The store's own outcome lookup, which checks its key and terms itself.
   const storeOutcomeLookup = readOutcomeProperty.found &&
     isBindingCheckedOutcomeLookup(readOutcomeProperty.value)
@@ -2836,7 +2843,10 @@ export function payDemSettle(
           }
           throw new DacsError("pay-dem retained transaction requires read-only reconciliation; refusing reuse or rebroadcast");
         }
-        const before = await readOutcome();
+        // Over a log that cannot answer, no outcome is read before or after the
+        // reconciliation; the store's `once` checks the one it holds below.
+        const readOutcomeIfAny = outcomeUnreadable ? async (): Promise<SettleResult | null> => null : readOutcome;
+        const before = await readOutcomeIfAny();
         // The durable record is always checked, even when this bridge bound the
         // hash itself: the record wins over anything held in memory.
         const recordedBefore = await attemptNames() ||
@@ -2848,7 +2858,7 @@ export function payDemSettle(
         const captured = capturePayDemReconciliation(recovered, context, retainedTxHash);
         // A different store/bridge can finish while the chain read is pending.
         // Recheck without a lease or outcome write before returning any verdict.
-        const after = await readOutcome();
+        const after = await readOutcomeIfAny();
         for (const existing of [priorAuthenticated?.result, before, after]) {
           if (existing === undefined || existing === null || existing.txHash.length === 0) continue;
           if (existing.blockNumber !== undefined && existing.blockNumber !== captured.blockNumber) {
@@ -2921,7 +2931,13 @@ export function payDemSettle(
             return confirmed;
           },
         );
-        if (!reconciledUnderLease) throw new DacsError(unbound);
+        // Over a log whose outcomes cannot be read back, the outcome the store
+        // itself holds for these exact terms names the hash, as on a log that
+        // keeps no attempt records, once the checks below agree with the
+        // reconciliation of the hash.
+        const heldNamesHash = outcomeUnreadable &&
+          canonicalDemosTxHash((finishedRaw as { txHash?: unknown } | null)?.txHash) === retainedTxHash;
+        if (!reconciledUnderLease && !heldNamesHash) throw new DacsError(unbound);
         const finished = capturePayDemResult(finishedRaw, context, "pay-dem retained settlement finished by the store");
         assertHash(finished);
         if (finished.blockNumber !== captured.blockNumber || !sameSettledOutcome(finished, captured)) {
@@ -2945,17 +2961,26 @@ export function payDemSettle(
             }),
           });
         }
-        // A new transfer runs only when this fence records its hash through
-        // the same `createIdempotencyStore` store whose own `readAttempt` and
-        // `readOutcome` a restart reads back. Any other store, wrapper or
-        // fence, or a log without the attempt pair, could leave a broadcast
-        // no restart can bind or finish. Nothing is signed or sent, so the
-        // store releases the intent.
+        // A new transfer runs only when this fence records its hash, under this
+        // very key and these terms, through the same `createIdempotencyStore`
+        // store whose own `readAttempt` and `readOutcome` a restart reads back.
+        // Any other store, wrapper or fence (a wrapper's `once` can hand the
+        // store another key's fence), or a log without the attempt pair, could
+        // leave a broadcast no restart can bind or finish under this key.
+        // Nothing is signed or sent, so the store releases the intent.
         const recorderProperty = effectFence === undefined
           ? undefined
           : stableDataProperty(effectFence, "recordAttempt", "pay-dem effect fence attempt record");
-        const recordAttempt = storeLookupsPaired && recorderProperty?.found === true &&
-            isStoreAttemptRecorder(recorderProperty.value, storeReadAttempt)
+        const fenceKey = effectFence === undefined
+          ? undefined
+          : stableDataProperty(effectFence, "settlementKey", "pay-dem effect fence settlementKey");
+        const fenceTerms = effectFence === undefined
+          ? undefined
+          : stableDataProperty(effectFence, "bindingHash", "pay-dem effect fence bindingHash");
+        const fenceIsThisKeys = fenceKey?.found === true && fenceKey.value === key &&
+          fenceTerms?.found === true && fenceTerms.value === settlementBindingHash(binding);
+        const recordAttempt = storeLookupsPaired && fenceIsThisKeys && recorderProperty?.found === true &&
+            isStoreAttemptRecorder(recorderProperty.value, storeReadAttempt, key, binding)
           ? recorderProperty.value as NonNullable<SettlementEffectFence["recordAttempt"]>
           : undefined;
         if (recordAttempt === undefined) {

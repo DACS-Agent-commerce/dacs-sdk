@@ -68,6 +68,20 @@ describe("pay-dem execution docs match the code (#338)", () => {
     for (const text of [doc, readme]) {
       expect(text).toContain("records the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail passes");
     }
+    // #370 sweep: the audit writes through the store's generation in one place,
+    // the gate is per key, and the upgrade is stated.
+    for (const text of [doc, readme]) {
+      expect(text).not.toContain("is a read-only audit");
+      expect(text).toContain("never submits and never acquires submit authority");
+      expect(text).toContain("It reads only, except to finish a retained hash that no record names");
+      expect(text).toContain("This is the one place an audit changes the log");
+      expect(text).toContain("It never submits.");
+      expect(text).toContain("that store's own fence for this key and these terms");
+      expect(text).toContain("finishes a retained hash only through the store's expired generation");
+      expect(text).toContain("Upgrading: this is a breaking change for stores and logs that paid before.");
+      expect(text).toContain("`createIdempotencyStore` also throws for a log that provides only one of the attempt pair");
+      expect(text).toContain("it writes only when the SDK rail returned a hash its own pre-broadcast write did not report");
+    }
     for (const text of [doc, readme]) {
       expect(text).toContain("Nor does it start one through any other store, wrapper or fence");
       expect(text).toContain("whose own `readOutcome` and `readAttempt` it carries");

@@ -93,15 +93,20 @@ below).
   transaction, the block, success or any failure-proof field, the nonce
   included, are refused.
 - A settlement request carrying `priorAttempts` (which `runSession` sends for
-  a session holding a transaction-bearing outcome) is a read-only audit of
-  that retained transaction. `payDemSettle` never calls the rail for it, even
+  a session holding a transaction-bearing outcome) is an audit of that
+  retained transaction that never submits and never acquires submit
+  authority. It reads only, except to finish a retained hash that no record
+  names (below), which writes through the store's expired generation.
+  `payDemSettle` never calls the rail for it, even
   when the rail log lost its record, and requires both
   `settlementStore.readOutcome` and `reconcile` (a bridge without `reconcile`
   returns only the definitive result it bound to the key itself, when the
   attempt record and the saved outcome agree). A log that keeps attempt
   records must implement `readOutcome`, which reads without a lease. The
   `createIdempotencyStore` lookup never claims, leases or binds a key; over
-  an older log without `readOutcome` it refuses.
+  an older log without `readOutcome` it refuses, and the audit then finishes
+  a retained hash only through the store's expired generation, as for a hash
+  no record names (below), with no earlier read of an outcome.
   The reconciler then receives a
   `PayDemSettlementAuditContext` with `txHash`, the retained hash in canonical
   form (64 lower-case hex digits, no `0x`). It returns the node's record for
@@ -114,14 +119,23 @@ below).
   and an expired one is reconciled as a restart without history would (the
   reconciler is asked for the key's payment, without the hash); only an
   answer naming the retained hash is accepted, recorded as the key's attempt
-  and saved. Every audit reads the attempt record, and a record naming
-  another hash refuses it, whatever the bridge holds in memory.
+  and saved. Over a log without `readOutcome` the same path also accepts the
+  outcome the store already holds for these exact terms when it names the
+  retained hash and the reconciliation of that hash agrees with it on block
+  and result. This is the one place an audit changes the log: the store's
+  `once` claims a fresh intent for a key it holds nothing for and releases it
+  at once, or acquires an expired generation, records the hash and saves the
+  outcome. It never submits. Every audit reads the attempt record, and a
+  record naming another hash refuses it, whatever the bridge holds in memory.
 - The attempt record is written through the settlement fence's
   `recordAttempt`, which a `createIdempotencyStore` store provides when its
   `SettlementLog` implements the optional `putAttempt`/`readAttempt` pair (the
   in-memory log does). `createPayDemRail` signs the hash itself, records it
   before its one broadcast and does not broadcast when the record is refused;
-  `payDemSettle` does not write it again after the payment is final. A
+  `payDemSettle` does not write it again after the payment is final (it
+  writes only when the SDK rail returned a hash its own pre-broadcast write
+  did not report, which `createPayDemRail` never does; a refusal there fails
+  closed and leaves the hash unbound). A
   payment in flight across an upgrade, or on a log that predates attempt
   records, leaves a retained hash no record names; a resumed audit finishes
   it only through the store's expired generation, as above. The fence a
@@ -135,7 +149,9 @@ below).
   store over a log without it: the call fails before the rail runs, nothing is
   signed or sent, and the intent is released. Nor does it start one through
   any other store, wrapper or fence: a new transfer runs only when the fence a
-  store hands its submit records through the same `createIdempotencyStore`
+  store hands its submit is that store's own fence for this key and these
+  terms (a wrapper whose `once` hands another key's fence starts nothing) and
+  records through the same `createIdempotencyStore`
   store whose own `readOutcome` and `readAttempt` it carries. A log without
   the pair still
   serves the payments it holds. An audit counts the hash that an outcome the
@@ -173,6 +189,19 @@ below).
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).
+- Upgrading: this is a breaking change for stores and logs that paid before.
+  A custom or class settlement store, and any log that lacks `readOutcome`,
+  `putAttempt` or `readAttempt` (`createIdempotencyStore` also throws for a
+  log that provides only one of the attempt pair, or the pair without
+  `readOutcome`), now starts no new pay-dem transfer: the call fails before
+  the rail runs and nothing is signed or sent. To migrate, add `readOutcome`,
+  `putAttempt` and `readAttempt` to the durable log (`putAttempt`
+  compare-and-set under the generation, a record never changing), backfill
+  the records as described above, and pass the `createIdempotencyStore` store
+  itself, or an object carrying its own `once`, `readOutcome` and
+  `readAttempt`. A session still holding a paid hash on an older log without
+  `readOutcome` finishes it through the store's expired generation, so the
+  log needs no upgrade for that.
 
 Which capabilities the SDK built, and which successes its own client
 returned, is kept private to the rails module, keyed by object identity. No
