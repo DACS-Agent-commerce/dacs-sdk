@@ -292,7 +292,9 @@ export interface RequestCheck {
    * Required with `commitment`: the retained Agreement both parties signed
    * that it commits, as bytes or an admitted value, like `commitment`. Its
    * hash, job, Listing, parties and both signatures are checked (DACS-3 §8.6
-   * CA-7; `continuation_agreement_invalid`).
+   * CA-7), and its terms against `signedListing` at the receipt time by the
+   * SDK's DACS-3 §8.5.2 verifier (checks 1-4: detail `LISTING-TERMS`); either
+   * fault is `continuation_agreement_invalid`.
    */
   agreement?: unknown;
   /** The seller's SR-2 receipt reader for `commitment` (commitment.ts); required with it. */
@@ -306,7 +308,10 @@ export interface RequestCheck {
    * statement of them, and refuses a commitment the Standard's post-finality
    * checks 5 and 6 make invalid (commitment.ts). Another Listing, or none, is
    * `continuation_listing_invalid`; a phase other than `commit-agreement` is
-   * `continuation_phase_unsupported` (500).
+   * `continuation_phase_unsupported` (500). It must be TP-1's Listing: one
+   * `pay-dem` phase and one `deliver-storage-program` phase
+   * (`continuation_phase_unsupported`), a `storage-program` deliverable and
+   * fixed DEM pricing (`continuation_listing_invalid`).
    */
   signedListing?: unknown;
   /**

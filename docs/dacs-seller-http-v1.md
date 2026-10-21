@@ -259,7 +259,9 @@ below):
    statement of them. It checks them as the buyer's signers do (see the
    endpoint proof section), against the retained job, Agreement hash, parties
    and Listing pin, before any reservation, including the Standard's
-   post-finality checks 5 and 6 at the receipt time. `commitment: null`, the host's own reader having found none,
+   post-finality checks 5 and 6 at the receipt time, TP-1's Listing shape and
+   the Agreement's terms against the Listing (DACS-3 §8.5.2 checks 1-4).
+   `commitment: null`, the host's own reader having found none,
    refuses the request as `peer_agreement_uncommitted` (409); omitted, it is
    `seller_commitment_required` (500).
    Before returning a checked body on an effect route, `checkWireRequest`
@@ -442,7 +444,16 @@ and select one fixed-price commitment: exactly one `negotiate-fixed-price`
 phase, directly followed by the only commit phase. Otherwise it is
 `continuation_listing_invalid`. That commit phase must be `commit-agreement`,
 before any signature is read (`continuation_phase_unsupported`; DACS-3 §8.5.2
-check 9, CA-5). The eligibility decision's `commitPhase` gates new purchases
+check 9, CA-5). The rest of the Listing must be TP-1's too: exactly one pay
+phase, `pay-dem` (`continuation_phase_unsupported`, detail `PAY-PHASE`), and
+exactly one delivery phase, `deliver-storage-program` (detail
+`DELIVERY-PHASE`). That delivery first validates that the Agreement's
+`deliverableType` is `storage-program` (`spec/DACS-4-SETTLE.md:831-839` at
+`d45c0a2`), so the Listing's `offering.deliverable` must be a
+`storage-program` DeliverableSpec (`continuation_listing_invalid`, detail
+`DELIVERABLE-KIND`). Its pricing must be `fixed`, in DEM (detail
+`TP1-PRICING`). A Listing whose delivery step must fail never reaches a
+payment. The eligibility decision's `commitPhase` gates new purchases
 only; no phase a host states selects a continuation's Agreement type. It
 checks the record's members
 (`finalityCommitmentVersion` `"1"`,
@@ -485,9 +496,21 @@ whose receipt time precedes the Listing's `notBefore` or follows its
 `notAfter`, or whose Agreement `terms.deadline` is past `committedAt +
 deadlineSecAfterCommit`, is invalid (`continuation_commitment_invalid`). So
 is one whose receipt time follows that `terms.deadline` (the Agreement's
-settle-by time, which seller payment intake also requires). This
-holds on every seller route and at both buyer signers, so a record the gate
-anchored and then refused after finality, read back later, continues nothing.
+settle-by time, which seller payment intake also requires). Then, at
+`committedAt`, the wire runs the SDK's own DACS-3 §8.5.2 verifier,
+`validateFixedPriceAgreementBinding`, the one seller payment intake runs, on
+the Agreement and the signed Listing. It checks checks 1-4 (currency, the
+exact listed price, a recognized pricing kind, the rail as a complete
+`acceptedRails` reference bound by the pay phase, and the deliverable's type,
+hash and schemaUrl), the pattern, the artifact the commit phase selects,
+and the parties against the Listing's seller. An Agreement both parties
+signed, and the seller anchored, whose terms are not the Listing's (2 DEM
+under a 1 DEM Listing, another rail, another deliverable) is refused
+(`continuation_agreement_invalid`, detail `LISTING-TERMS`, with the
+verifier's error as its `cause`): a finalized record does not show that the
+commitment gate ran. This holds on every seller route and at both buyer
+signers, so a record the gate anchored and then refused after finality, read
+back later, continues nothing.
 A proposal, commitment or context request is always a new purchase. A reader therefore returns an ended
 window as it is; it still throws for a revoked, missing or unavailable
 Listing, and every other proof check applies.
@@ -799,9 +822,10 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `seller_effect_unresolved` (500) | an operation reached 16 attempts with no outcome |
 | `seller_effect_conflict`, `seller_effect_superseded` (500) | `completeWireEffect` with an outcome other than the one recorded, or from an attempt a later one superseded |
 | `seller_readiness_required` (500) | a proposal, commitment, commitment-signature or context request checked without the seller's own `ready`, or with anything but a boolean |
-| `continuation_phase_unsupported` (500) | a `commitment` checked under a Listing commit phase other than `commit-agreement`, or none (DACS-3 §8.5.2 check 9) |
+| `continuation_phase_unsupported` (500) | a `commitment` checked under a Listing commit phase other than `commit-agreement`, or none (DACS-3 §8.5.2 check 9); or whose Listing does not have exactly one pay phase, `pay-dem` (detail `PAY-PHASE`), or exactly one delivery phase, `deliver-storage-program` (detail `DELIVERY-PHASE`) |
+| `continuation_listing_invalid` (500) | a `commitment` given without the signed Listing the request pins, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with a Listing that is not that pin's, not the seller's, not one fixed-price commitment, auto-accept or without a positive `deadlineSecAfterCommit`; whose deliverable is not `storage-program` (detail `DELIVERABLE-KIND`, DACS-4 §9.6.1 step 1); or whose pricing is not fixed in DEM (detail `TP1-PRICING`) |
 | `wire_artifact_rejected` (500) | `admitWireArtifact` given bytes CF-5 admission refuses; the detail is admission's own code |
-| `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with one that is not an exact fixed-price AgreementDocument (a payee-bound or identity-bound one included), whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7) |
+| `continuation_agreement_invalid` (500) | a `commitment` given without the Agreement it commits, as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or bytes admission refuses, or with one that is not an exact fixed-price AgreementDocument (a payee-bound or identity-bound one included), whose content hash, job, Listing pin or parties differ from the record's, or whose buyer or seller signature does not verify (CA-7); or whose terms the SDK's DACS-3 §8.5.2 verifier refuses against the signed Listing at `committedAt` (currency, price, rail, deliverable, pattern, parties: detail `LISTING-TERMS`, its `cause` the verifier's error) |
 | `continuation_commitment_invalid` (500) | a `commitment` given as a value the wire did not admit (`ARTIFACT-NOT-ADMITTED`) or as bytes admission refuses; or whose record, seller signature or finalized receipt does not check, whose receipt is not a CORE §5.1 AnchorReceipt or whose transaction reference is not a ChainTxRef, whose receipt time is before the Agreement's `generatedAt`, that is legacy or pending, that names another job, Agreement, buyer, seller or Listing pin, whose stated members differ from its evidence, whose receipt time is more than 30 s after the actor's clock, or that the receipt reader finds invalid |
 | `commitment_reader_required`, `commitment_reader_invalid` (500) | a `commitment` given without a receipt reader, or a reader that answered anything but a disposition (a promise included) |
 | `commitment_unverified` (503) | the receipt reader answered `indeterminate` or `error`: the commitment is not established, never final |

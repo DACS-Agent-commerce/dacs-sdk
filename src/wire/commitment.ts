@@ -6,8 +6,10 @@
 // finality commitment record for exactly that Agreement, signed by the TP-1
 // orchestrator (the seller, G3, CA-6), and its finalized SR-2 receipt,
 // authenticated by the actor's own receipt reader. Every Listing fact the
-// continuation needs (its commit phase, validity window and deadline) is read
-// from the Listing itself, never from a host's statement of it. The three are
+// continuation needs (its TP-1 phases and deliverable, validity window and
+// deadline) is read from the Listing itself, never from a host's statement of
+// it, and the Agreement's terms are checked against it by the SDK's own
+// DACS-3 §8.5.2 verifier (validateFixedPriceAgreementBinding). The three are
 // external DACS documents (CORE CF-5): each is given as its exact received
 // bytes, admitted here, or as a value the wire's own admission returned
 // (admitWireArtifact, or part of an admitted request or response body). The
@@ -17,8 +19,11 @@
 import { types } from "node:util";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import type { AgreementArtifact, Listing } from "../artifacts/types.js";
 import { isAgreementDocument, isChainTxRef, isListing, isReadableAnchorReceipt } from "../artifacts/validators.js";
 import { contentHash } from "../canonical/hash.js";
+import { DacsError } from "../errors.js";
+import { validateFixedPriceAgreementBinding } from "../negotiate/commitment.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
@@ -95,11 +100,18 @@ const listingInvalid = (): never => fail("continuation_listing_invalid", 500);
 
 /** The Listing facts a continuation is checked against (the SDK gate's AgreementBinding and Listing validity). */
 interface CommittedListing {
+  /** The admitted Listing itself, for the SDK's DACS-3 §8.5.2 verifier. */
+  listing: Listing;
   notBefore: number;
   notAfter: number | undefined;
   /** `terms.deadlineSecAfterCommit`, in ms. */
   deadlineMs: number;
 }
+
+/** TP-1's only pay and delivery phases (FP-DEM; DACS-4 §9.5.9 and §9.6.1), and the DeliverableSpec kind its delivery requires. */
+const TP1_PAY_PHASE = "pay-dem";
+const TP1_DELIVERY_PHASE = "deliver-storage-program";
+const TP1_DELIVERABLE_KIND = "storage-program";
 
 /**
  * The Listing the purchase pins (DACS-1 §6.3.4), from its own bytes: an exact
@@ -112,9 +124,16 @@ interface CommittedListing {
  * `negotiate-fixed-price`, directly followed by the only commit phase. That
  * phase selects the Agreement type before any signature is read (DACS-3
  * §8.5.2 check 9, CA-5, CA-7): TP-1 continues only `commit-agreement`
- * (`continuation_phase_unsupported` otherwise). It must carry a positive
- * `deadlineSecAfterCommit` and not be auto-accept, as the gate requires.
- * Anything else is `continuation_listing_invalid`.
+ * (`continuation_phase_unsupported` otherwise). Its other phases must be
+ * TP-1's: exactly one pay phase, `pay-dem` (`continuation_phase_unsupported`,
+ * detail `PAY-PHASE`), and exactly one delivery phase,
+ * `deliver-storage-program` (detail `DELIVERY-PHASE`). That delivery
+ * validates a `storage-program` deliverable (DACS-4 §9.6.1 step 1), so the
+ * Listing's DeliverableSpec must be one (`continuation_listing_invalid`,
+ * detail `DELIVERABLE-KIND`); its pricing must be fixed, in DEM (detail
+ * `TP1-PRICING`). It must carry a positive `deadlineSecAfterCommit` and not
+ * be auto-accept, as the gate requires. Anything else is
+ * `continuation_listing_invalid`.
  */
 function committedListing(value: unknown, scope: CommitmentScope): CommittedListing {
   const listing = ownedArtifact(admittedInput(value, "continuation_listing_invalid"), "continuation_listing_invalid", 500) as JsonRecord;
@@ -127,11 +146,42 @@ function committedListing(value: unknown, scope: CommitmentScope): CommittedList
   const commits = kinds.flatMap((kind, i) => (kind.startsWith("commit-") ? [i] : []));
   if (negotiate.length !== 1 || kinds[negotiate[0]!] !== "negotiate-fixed-price" || commits.length !== 1 || commits[0] !== negotiate[0]! + 1 ||
       kinds[commits[0]!] !== TP1_COMMIT_PHASE) fail("continuation_phase_unsupported", 500);
+  const pays = kinds.filter((kind) => kind.startsWith("pay-")), deliveries = kinds.filter((kind) => kind.startsWith("deliver-"));
+  if (pays.length !== 1 || pays[0] !== TP1_PAY_PHASE) fail("continuation_phase_unsupported", 500, "PAY-PHASE");
+  if (deliveries.length !== 1 || deliveries[0] !== TP1_DELIVERY_PHASE) fail("continuation_phase_unsupported", 500, "DELIVERY-PHASE");
+  if (listing.offering.deliverable.kind !== TP1_DELIVERABLE_KIND) fail("continuation_listing_invalid", 500, "DELIVERABLE-KIND");
+  if (listing.pricing.kind !== "fixed" || listing.pricing.price.currency !== "DEM") fail("continuation_listing_invalid", 500, "TP1-PRICING");
   const seconds = listing.terms.deadlineSecAfterCommit;
   if (!isUint(seconds) || seconds <= 0 || !Number.isSafeInteger(seconds * 1000) || listing.terms.acceptanceModel === "auto-accept") listingInvalid();
   const { notBefore, notAfter } = listing.validity;
   if (!isUint(notBefore) || (notAfter !== undefined && !isUint(notAfter))) listingInvalid();
-  return { notBefore, notAfter, deadlineMs: (seconds as number) * 1000 };
+  return { listing, notBefore, notAfter, deadlineMs: (seconds as number) * 1000 };
+}
+
+/**
+ * DACS-3 §8.5.2 checks 1-9 for the committed Agreement against the pinned
+ * Listing, at the receipt time: the SDK's own post-finality verifier
+ * (validateFixedPriceAgreementBinding, the one seller payment intake runs).
+ * It checks currency, the exact listed price, a recognized pricing kind, the
+ * rail as a complete `acceptedRails` reference bound by the pay phase, the
+ * deliverable's type, hash and schemaUrl, the pattern, the Agreement type
+ * the commit phase selects, the parties against the Listing seller, and
+ * checks 5 and 6. CA-7 already verified both signatures, so a mismatch
+ * means the parties signed terms the Listing does not offer, and a
+ * finalized record for them does not make them right. It is refused as
+ * `continuation_agreement_invalid`, detail `LISTING-TERMS`, with the
+ * verifier's own error as its cause.
+ */
+function assertListingTerms(agreement: JsonRecord, listing: Listing, committedAt: number): void {
+  const pin = { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing as unknown as JsonRecord) };
+  try {
+    validateFixedPriceAgreementBinding({
+      agreement: cloneJson(agreement) as unknown as AgreementArtifact, verifiedListing: { disposition: "verified", listing: cloneJson(listing), pin }, committedAt,
+    });
+  } catch (error) {
+    if (error instanceof DacsError) fail("continuation_agreement_invalid", 500, "LISTING-TERMS", error);
+    throw error;
+  }
 }
 
 /**
@@ -143,9 +193,11 @@ function committedListing(value: unknown, scope: CommitmentScope): CommittedList
  * and Listing pin the record's. Its buyer and seller (by role) must be the
  * record's parties, in that order. Its two signatures, one by each party,
  * must verify under `dacs-agreement:v1:` against each party's own key.
- * Returns the Agreement's `generatedAt` and `terms.deadline`.
+ * Returns the Agreement, its `generatedAt` and `terms.deadline`; its terms are
+ * checked against the Listing once the receipt time is known
+ * (assertListingTerms).
  */
-function assertCommittedAgreement(value: unknown, record: JsonRecord): { generatedAt: unknown; deadline: unknown } {
+function assertCommittedAgreement(value: unknown, record: JsonRecord): { agreement: JsonRecord; generatedAt: unknown; deadline: unknown } {
   const agreement = ownedArtifact(admittedInput(value, "continuation_agreement_invalid"), "continuation_agreement_invalid", 500) as JsonRecord;
   if (!isAgreementDocument(agreement) || agreement.derivedFromPattern !== "fixed-price") agreementInvalid();
   const hash = contentHash(agreement);
@@ -161,7 +213,7 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { generat
     if (found.length !== 1 || found[0]!.algorithm !== "ed25519") agreementInvalid();
     if (!verifyEd25519(signed, Buffer.from(found[0]!.value as string, "base64url"), claimKey(claim))) agreementInvalid();
   }
-  return { generatedAt: agreement.generatedAt, deadline: (agreement.terms as JsonRecord).deadline };
+  return { agreement, generatedAt: agreement.generatedAt, deadline: (agreement.terms as JsonRecord).deadline };
 }
 
 /**
@@ -188,8 +240,10 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { generat
  * receipt time after the Agreement's own deadline is refused too.
  * `agreement` is the signed Agreement the record commits (CA-7,
  * assertCommittedAgreement): absent, malformed, another Agreement, or a party
- * signature that does not verify is `continuation_agreement_invalid`. The
- * reader runs last, on an owned frozen copy: "invalid" is refused the same
+ * signature that does not verify is `continuation_agreement_invalid`; so are
+ * terms (price, currency, rail, deliverable) that are not the pinned
+ * Listing's (DACS-3 §8.5.2 checks 1-4, assertListingTerms: detail
+ * `LISTING-TERMS`). The reader runs last, on an owned frozen copy: "invalid" is refused the same
  * way; "indeterminate" or "error" is `commitment_unverified` (503: never
  * final); any other answer, a promise included, is `commitment_reader_invalid`.
  */
@@ -217,7 +271,7 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, listin
   const signed = Buffer.from(`${FINALITY_COMMITMENT_DOMAIN}${contentHash(record)}`, "utf8");
   if (!verifyEd25519(signed, Buffer.from(signature.value as string, "base64url"), claimKey(scope.seller))) invalid();
   // CA-6 says who committed; CA-7 that both parties agreed to what was committed.
-  const { generatedAt, deadline } = assertCommittedAgreement(agreement, record);
+  const { agreement: committed, generatedAt, deadline } = assertCommittedAgreement(agreement, record);
   const receipt = c.anchorReceipt as JsonRecord;
   const blockRef = isRecord(receipt) ? receipt.blockRef : undefined;
   const logicalAddress = `dacs3:commit:${jobId}`;
@@ -239,6 +293,8 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, listin
   const limit = committedAt + terms.deadlineMs;
   if (committedAt < terms.notBefore || (terms.notAfter !== undefined && terms.notAfter < committedAt) ||
       !isUint(deadline) || !Number.isSafeInteger(limit) || deadline > limit || committedAt > deadline) invalid();
+  // DACS-3 §8.5.2 checks 1-9: the terms both parties signed must be the pinned Listing's, by the SDK's own verifier.
+  assertListingTerms(committed, terms.listing, committedAt);
   const anchored = deepFreeze(cloneJson({ record, nativeAddress: c.nativeAddress, anchorTxRef: c.anchorTxRef, anchorReceipt: receipt })) as WireAnchoredCommitment;
   const verdict = (reader as CommitmentReceiptReader)(anchored);
   if (verdict === "valid") return committedAt;

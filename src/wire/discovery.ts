@@ -121,7 +121,12 @@ export interface EndpointProof {
  * An authenticated local reader's selection for one exact Listing content hash.
  * The reader must derive this from the verified full Listing and locally
  * configured service, including pipeline/accepted-rail resolution. Never
- * populate it from discovery or other unverified seller assertions.
+ * populate it from discovery or other unverified seller assertions. Return
+ * it only for a TP-1 Listing: fixed DEM pricing, exactly one `pay-dem` phase,
+ * and exactly one `deliver-storage-program` phase with a `storage-program`
+ * `offering.deliverable` (DACS-4 §9.6.1 step 1). A continuation checks the
+ * same from the Listing's own bytes (commitment.ts), so no payment follows a
+ * purchase whose Listing is not one.
  */
 export interface VerifiedListingEligibility extends VerifiedListingEndpoint {
   pricingKind: "fixed";
@@ -179,11 +184,12 @@ export const isContinuingRoute = (path: string): boolean => listHas(CONTINUING_P
  * caller states. `commitment` is the job's finality commitment as received
  * bytes or a value the wire admitted (the gate's result, the seller's copy,
  * or one read again after a restart). Under the commit phase of `signedListing`
- * (the Listing the purchase pins, never the reader's statement of it), the
- * wire checks its record, the seller's signature, the signed Agreement it
- * commits (`agreement`: both parties' signatures, CA-7), the finalized
- * receipt and the Listing's window and deadline at its receipt time (DACS-3
- * §8.5.2 checks 5 and 6), and asks the buyer's receipt reader to authenticate
+ * (the Listing the purchase pins, never the reader's statement of it, and
+ * TP-1's shape), the wire checks its record, the seller's signature, the
+ * signed Agreement it commits (`agreement`: both parties' signatures, CA-7),
+ * the finalized receipt, the Listing's window and deadline at its receipt
+ * time (DACS-3 §8.5.2 checks 5 and 6) and the Agreement's terms against the
+ * Listing (checks 1-4), and asks the buyer's receipt reader to authenticate
  * it, every time (commitment.ts). At signing it must name the request's job,
  * Agreement hash and buyer. At signing, a request on any other route is a new
  * purchase: undefined.

@@ -62,12 +62,20 @@ const identity = (claim: string, at: number): IdentityBundle => ({
 });
 const vet = (locator: string, digit: string) => ({ anchor: { kind: "storage-program" as const, locator }, contentHash: digit.repeat(64) });
 
+/**
+ * TP-1's deliverable: delivered by `deliver-storage-program` at
+ * `dacs4:deliverable:{jobId}`, which validates `deliverableType ==
+ * "storage-program"` (DACS-4 §9.6.1 step 1).
+ */
+const TP1_DELIVERABLE = Object.freeze({ kind: "storage-program" as const });
+
 /** A Listing validity wide enough for every test clock in 2026. */
 export const WIDE_VALIDITY = Object.freeze({ notBefore: Date.UTC(2026, 0, 1), notAfter: Date.UTC(2027, 0, 1) });
 
 /**
  * The TP-1 fixed-price Listing `seller` signs (DACS-1 §6.3.4): negotiate
- * fixed price, commit an Agreement, pay in DEM, deliver. Its pin is what every
+ * fixed price, commit an Agreement, pay in DEM, deliver a storage-program
+ * deliverable through Demos storage. Its pin is what every
  * request, Agreement and commitment for it names, and continuations are given
  * it as `signedListing`. `patch` changes members before it is signed.
  */
@@ -79,7 +87,7 @@ export function tp1Listing(options: {
     dacsVersion: "1", listingVersion: 1, listingId: options.listingId ?? "report",
     seller: { identity: identity(options.seller.claim, validity.notBefore), displayName: "Report", publicEndpoint: options.publicEndpoint ?? "https://seller.agreement.invalid" },
     offering: { title: "Report", description: "A fixed-text report", category: "data.test", tags: ["report"],
-      deliverable: { kind: "attested-payload", payloadFormat: "text/plain", verificationMethod: { kind: "self-signed" } } },
+      deliverable: { ...TP1_DELIVERABLE } },
     buyerRequirement: { requirementVersion: "1", required: [] },
     pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
     pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },
@@ -116,7 +124,7 @@ export async function acceptedPurchase(options: { jobId: string; generatedAt: nu
     dacsVersion: "1", listingVersion: 1, listingId: options.listingId ?? "report",
     seller: { identity: identity(seller.claim, at), displayName: "Report", publicEndpoint: options.publicEndpoint },
     offering: { title: "Report", description: "A fixed-text report", category: "data.test", tags: ["report"],
-      deliverable: { kind: "attested-payload", payloadFormat: "text/plain", verificationMethod: { kind: "self-signed" } } },
+      deliverable: { ...TP1_DELIVERABLE } },
     buyerRequirement: { requirementVersion: "1", required: [] },
     pipeline: [{ kind: "negotiate-fixed-price" }, { kind: "commit-agreement" }, { kind: "pay-dem", parameters: { rail: DEM.railId } }, { kind: "deliver-storage-program" }],
     pricing: { kind: "fixed", price: { amount: "1", currency: "DEM" } },

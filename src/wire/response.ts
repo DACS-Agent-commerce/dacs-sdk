@@ -77,11 +77,13 @@ export interface WireRequestInput extends SigningContext {
    * returned). The seller (TP-1's orchestrator) sends it; the result
    * commitFixedPriceAgreement returned, or a copy read again after a restart,
    * is checked the same way. A caller's object is refused. The wire first
-   * checks `signedListing` (the Listing the purchase pins) and its own commit phase,
-   * then the record, the seller's
+   * checks `signedListing` (the Listing the purchase pins), its own commit
+   * phase and TP-1 shape (pay-dem, deliver-storage-program, a storage-program
+   * deliverable, fixed DEM pricing), then the record, the seller's
    * signature, `agreement` (both parties' signatures, CA-7), the finalized
-   * receipt and the Listing's window and deadline at its receipt time
-   * (DACS-3 §8.5.2 checks 5 and 6), and the receipt reader kept with
+   * receipt, the Listing's window and deadline at its receipt time
+   * (DACS-3 §8.5.2 checks 5 and 6) and the Agreement's terms against the
+   * Listing (checks 1-4, the SDK's own verifier), and the receipt reader kept with
    * `endpointProof` (verifyEndpointProof's `readCommitmentReceipt`)
    * authenticates it at every signing. The request then continues, so
    * `ready: false` does not refuse it and the Listing's window is compared at

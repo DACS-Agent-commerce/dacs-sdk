@@ -30,14 +30,16 @@ export class WireError extends DacsError {
     readonly code: string,
     readonly status: number = 401,
     readonly detail?: string,
+    cause?: unknown,
   ) {
-    super(detail === undefined ? code : `${code}: ${detail}`, { category: wireFaultCategory(status) });
+    super(detail === undefined ? code : `${code}: ${detail}`, { category: wireFaultCategory(status), ...(cause === undefined ? {} : { cause }) });
     this.name = "WireError";
   }
 }
 
-export function fail(code: string, status = 401, detail?: string): never {
-  throw new WireError(code, status, detail);
+/** Refuse with `code`; `cause`, when given, is the underlying error, kept as the refusal's cause. */
+export function fail(code: string, status = 401, detail?: string, cause?: unknown): never {
+  throw new WireError(code, status, detail, cause);
 }
 
 export const HASH = /^[0-9a-f]{64}$/;
