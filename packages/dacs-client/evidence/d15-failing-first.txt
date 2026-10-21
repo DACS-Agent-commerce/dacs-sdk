@@ -1,0 +1,17 @@
+Pre-D15 source: f10db24 (for *first files); destination D15 source: current commit (for *pass files).
+not ok 1 - D15 completion-orders/existing-b-observation/other-purchase-lane: reported-B, stale A included
+not ok 2 - D15 completion-orders/existing-b-observation/other-purchase-lane: reported-B, stale A pending
+not ok 3 - D15 completion-orders/existing-b-observation/other-purchase-lane: observed-B, stale A included
+not ok 4 - D15 completion-orders/existing-b-observation/other-purchase-lane: observed-B, stale A pending
+not ok 5 - D15 completion-orders/existing-b-observation/other-purchase-lane/restart: reported-B, stale A included
+not ok 6 - D15 completion-orders/existing-b-observation/other-purchase-lane/restart: reported-B, stale A pending
+not ok 7 - D15 completion-orders/existing-b-observation/other-purchase-lane/restart: observed-B, stale A included
+not ok 8 - D15 completion-orders/existing-b-observation/other-purchase-lane/restart: observed-B, stale A pending
+not ok 9 - D15 completion-orders: B settles before included A returns
+not ok 10 - D15 completion-orders/restart: B settles before included A returns
+not ok 11 - D15 coordinate CAS: stale A unverified observation cannot replace B
+not ok 12 - D15 coordinate CAS: stale A verified observation cannot replace B
+# tests 12
+# pass 0
+# fail 12
+# skipped 0
