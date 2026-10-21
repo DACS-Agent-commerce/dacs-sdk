@@ -785,6 +785,15 @@ signed evidence alone (no `SessionStore`, or one without that checkpoint), a
 success is kept only when the re-read matches the evidence's block, kind and
 finality, the request-bound payee, and the payer and any fee the session
 signed into the evidence (`dacsSdkSettlementPayer`, `dacsSdkNetworkFeeOs`).
+These two are SDK extension members inside the signed scope (a verifier that
+does not know them keeps them, as SIG-5 requires). `dacsSdkNetworkFeeOs` is the
+fee the node's record declares in `transaction_fee`, which can differ from the
+debit the chain took; it is not the Standard's `paymentFee`. When the rail log
+has lost the key's attempt record, evidence that signed the payer binds the
+retained hash to the payment instead, beside the SDK's own read of the node's
+record for it (payer, payee, amount, block, nonce): the session passes the
+transaction that evidence names to `resumeSettlement` as
+`req.anchoredEvidence`, only after the evidence's signature is authenticated.
 Evidence signed before those fields existed is audited the same way, and its
 payer is the one the `payDemSettle` rail log recorded for the job's settlement
 key (that log's binding names the paying wallet; the audit fails closed when
@@ -818,10 +827,10 @@ still completes after it activates. The
 reconciler's answer only names the hash and can refuse, and one the
 record contradicts is refused. The fork state that bounds this read (no
 OS-signed record before the fork) is read from the node afresh for each
-recovery, not from demosdk's `getNetworkInfo`, which keeps a connection's
-first reply. Over any other rail the adapter returns no recovered verdict at
+recovery, not from demosdk's `getNetworkInfo`, which in 4.0.16 keeps a
+connection's first reply (later versions may refresh it). Over any other rail the adapter returns no recovered verdict at
 all, only the hash: the session binds it and saves it as an unresolved
-attempt, so a later resume through the adapter over one of those two rails
+attempt, so a later resume through the adapter over that rail
 audits that hash instead of paying again, and never ends the session as failed
 on it.
 

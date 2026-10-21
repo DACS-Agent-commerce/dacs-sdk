@@ -129,6 +129,21 @@ below).
   answer naming the retained hash is accepted, recorded as the key's attempt
   and saved. Every audit reads the attempt record, and a record naming
   another hash refuses it, whatever the bridge holds in memory.
+  One more source binds the hash. When `runSession` re-audits a saved success
+  named by SettlementEvidence the buyer signed and anchored for the job, and
+  that evidence signed the payer, the request also carries
+  `anchoredEvidence` (`{ txHash, chainId }` of the evidence's transaction).
+  It is accepted only beside a retained history naming that same hash and
+  network, and only after the SDK's own read of the node's record for the hash
+  (payer, payee, amount, block, nonce) and the reconciler agree. It lets a
+  paid session finish when the rail log lost its attempt record (for
+  example, an in-memory log over a restart); it never overrides a record
+  naming another hash, and evidence that signed no payer (minted before
+  payers were bound) is not passed, so it still binds only through the log.
+- Checkpoint and evidence members the SDK now writes (`errorClass`,
+  `failureProofJson`, `networkFeeOs`, the evidence `payer`) carry no schema
+  version. An older SDK reads such a record as invalid, so there is no
+  downgrade after a native session has run on this version.
 - The attempt record is written through the settlement fence's
   `recordAttempt`, which a `createIdempotencyStore` store provides when its
   `SettlementLog` implements the optional `putAttempt`/`readAttempt` pair (the
@@ -194,7 +209,8 @@ below).
   after it activates. An OS-signed record on a node that reports the fork
   inactive is indeterminate. The SDK reads that fork state from the node for
   each recovery (`nodeCall("getNetworkInfo")`), not from demosdk's
-  `getNetworkInfo`, which keeps a `Demos` instance's first reply, so a rail
+  `getNetworkInfo`, which in 4.0.16 keeps a `Demos` instance's first reply
+  (later versions may refresh it), so a rail
   that saw the fork inactive still reads a payment signed after it activated.
   A reconciler may omit the fee, and one that
   reports another fee is refused. `runSession` re-asserts a saved fee, so a

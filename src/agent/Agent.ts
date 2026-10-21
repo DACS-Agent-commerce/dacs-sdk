@@ -439,9 +439,9 @@ export interface RunSessionOptions {
    * artifacts are reused, except that a saved native DEM payment outcome
    * (success or permanent failure, checkpoint or anchored evidence) is re-read
    * through `resumeSettlement` before it is reported again, also when re-running
-   * a completed session. Anchored native failure evidence without the
-   * `sessionStore` that holds its proof is never reported again: the resume
-   * fails as indeterminate. Crash-safe no-repayment across processes additionally
+   * a completed session. Anchored failure evidence that names a transaction,
+   * on any rail, without the `sessionStore` that holds its proof is never
+   * reported again: the resume fails as indeterminate. Crash-safe no-repayment across processes additionally
    * requires both `sessionStore` and a durable/idempotent `resumeSettlement`
    * implementation; a job id alone cannot prove what happened after a lost rail
    * response. Omit for a new session.

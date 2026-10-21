@@ -156,7 +156,7 @@ function transferContent(
     to: payee,
     amount: wire(amountOs),
     nonce,
-    // demosdk signs the timestamp; reader-carrying clients bind it to this call.
+    // demosdk signs the timestamp.
     timestamp: String(Date.now()),
     data: ["native", { nativeOperation: "send", args: [payee, wire(amountOs)] }],
     ...(feeOs === undefined
@@ -223,7 +223,7 @@ class MockDemos {
       demosNode.networkInfoReads.push(demosNode.postFork);
       return { forks: { osDenomination: { activated: demosNode.postFork } } };
     }
-    // `createPayDemRecordReader` reads it before a reader-carrying client's transfer.
+    // The next nonce of the paying account.
     if (message === "getAddressNonce") return demosNode.accountNonce;
     if (message !== "getTransactionStatus") throw new Error(`unexpected nodeCall ${message}`);
     return demosNode.records.has(args.hash)

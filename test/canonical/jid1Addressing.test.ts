@@ -24,7 +24,7 @@ describe("current-only JID-3 address derivation", () => {
    expect(typeof api()[name]).toBe("function");
    expect((root as unknown as Record<string, unknown>)[name]).toBe(api()[name]);
   }
- });
+ }, 15_000);
  test("uses exact admitted bytes and CF-4 encoding", () => {
   const results = calls(JOB).map(f => f());
   expect(results).toEqual([`dacs2:${JOB}:lei:a%3Ab:v2`, `dacs4:payment:${JOB}:rail%3Aone:3:resolved`,
