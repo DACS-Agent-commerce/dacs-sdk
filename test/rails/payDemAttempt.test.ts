@@ -422,6 +422,33 @@ describe("pay-dem over a log without attempt records", () => {
     expect(audit.submit).not.toHaveBeenCalled();
   });
 
+  // Cold2 P2: the store keeps a failure as this key's outcome only from the
+  // SDK rail's own read, so on a log without attempt records that outcome
+  // still names the hash once the SDK reads the failed record again.
+  test("a restart returns the permanent failure the log's own outcome names once the SDK reads it again", async () => {
+    const memory = createInMemorySettlementLog();
+    resetDemosNode({ payer, txHash: hashA, nonce: 7, recordStatus: "failed" });
+    await expect(payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(memory) })(request("job-a")))
+      .resolves.toMatchObject({ ok: false, errorClass: "permanent", txHash: hashA });
+    expect(sdkTransfers()).toBe(1);
+
+    // A restarted process reads the same outcomes through a log that keeps no attempt records.
+    const run = processes(legacyLog(memory));
+    run.restart();
+    const reconcile = vi.fn(async () => failed(hashA));
+    const audit = await auditingProcess(run.store("B"), reconcile);
+    await expect(audit.settle(request("job-a")))
+      .resolves.toMatchObject({ ok: false, errorClass: "permanent", txHash: hashA, blockNumber: 42 });
+    expect(reconcile).toHaveBeenCalledOnce();
+
+    // The SDK's own read decides: a record that now shows it executed is refused.
+    serveNodeRecord(hashA, { payer, payee, nonce: 7, status: "confirmed" });
+    const reread = await auditingProcess(processes(legacyLog(memory)).store("C"), vi.fn(async () => failed(hashA)));
+    await expect(reread.settle(request("job-a"))).rejects.toThrow(/contradicts the node record the SDK read/);
+    expect(audit.submit).not.toHaveBeenCalled();
+    expect(reread.submit).not.toHaveBeenCalled();
+  });
+
   test("a key the log saved no outcome for still fails closed", async () => {
     const run = processes(legacyLog());
     run.restart();

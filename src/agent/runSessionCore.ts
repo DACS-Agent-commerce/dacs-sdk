@@ -4575,6 +4575,7 @@ export async function runSessionCore(
       // again. Without this the anchoring guard alone would re-pay in that window.
       let settlement: DurableSettlementOutcome;
       let prior: SettlementOutcomeRead = { status: "absent" };
+      let claimed = false;
       if (store) {
         const loaded = await store.load(jobId);
         assertSessionAgreementBinding(
@@ -4589,10 +4590,15 @@ export async function runSessionCore(
           );
         }
         prior = readSettleOutcome(loaded);
+        claimed = loaded.record.checkpoints.some((checkpoint) => checkpoint.key === "settle:0");
       }
       if (prior.status !== "absent") {
         settlement = await acceptRecordedOutcome(prior);
       } else {
+        // Refuse a `settle` that is not called before claiming the phase: a
+        // claim would hold an intent for a payment that was never attempted.
+        // A held intent goes on to `resumeSettlement` below instead.
+        if (!claimed) assertNativeAdapter("settle", deps.settle, "fresh native settlement");
         // CLAIM the settlement phase via the intent checkpoint's atomic CAS, AND
         // write-ahead the intent, BEFORE the irreversible payment. A lost claim
         // means a concurrent worker already advanced this phase — abort rather than

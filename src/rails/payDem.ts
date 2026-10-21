@@ -73,6 +73,16 @@ const readerSettledHashes = new Set<string>();
  * above: a copy, a caller-built object or a relabelled result is not in it.
  */
 const sdkRecordVerifiedResults = new WeakMap<object, Readonly<PayDemRecordVerifiedTransfer>>();
+/**
+ * The fee of the executed record the SDK read for a fresh success, as a
+ * recovery read of that record returns it (`recordTransactionFeeOs`), keyed by
+ * the SDK client's transfer response and by the success `payDemSettleCore`
+ * built from it. Private like the sets above. A rail's `networkFeeOs` is its
+ * debit accounting (the confirmation's fee, or a client's own report), which
+ * the record need not carry; `payDemSettle` reports this fee instead, so a
+ * saved success re-reads the same fee on every restart.
+ */
+const sdkRecordFees = new WeakMap<object, Readonly<{ feeOs?: string }>>();
 
 /** The exact transfer an SDK record-verified pay-dem success settled. */
 export interface PayDemRecordVerifiedTransfer {
@@ -133,7 +143,9 @@ const sdkRailRecordReaders = new WeakMap<object, SdkRecordReader>();
  * `createPayDemRail` built, every success or permanent failure it returns is
  * the SDK's own record read; over a `createPayDemClientRail` rail every
  * success is (fresh, or re-read on recovery) while a fresh failure proof is
- * held until a recovery reads it, and over any other rail it returns neither.
+ * held, and over any other rail it returns neither. A held client-rail hash
+ * has no attempt record (only a success the SDK read records one), so a
+ * recovery through that rail's own log cannot bind it and it stays held.
  */
 const payDemSettleAdapters = new WeakSet<object>();
 
@@ -1123,12 +1135,20 @@ export async function payDemSettleCore(
     // Fee accounting only, never part of the verdict: the SDK client's comes
     // from the node's confirmation, a reader-carrying client's is its own
     // report (journaled before broadcast when capped), checked above against
-    // the amount and the debit ceiling.
+    // the amount and the debit ceiling. `payDemSettle` reports the executed
+    // record's fee instead (`sdkRecordFees`), the one a restart reads back.
     ...(debitOs === undefined
       ? {}
       : { networkFeeOs: (debitOs - amountOs).toString() }),
   });
   if (readerVerdict !== undefined) readerSettledHashes.add(txHash);
+  // The record's own fee, from the reader's read or the SDK client's.
+  const recordFee = readerVerdict?.state === "executed"
+    ? readerVerdict
+    : sdkRecordFees.get(response as object);
+  sdkRecordFees.set(executed, Object.freeze(
+    recordFee?.feeOs === undefined ? {} : { feeOs: recordFee.feeOs },
+  ));
   // Frozen, so a holder cannot change the hash or block after it is listed.
   const verifiedPayer = normalizeDemosNativeAddress(payer);
   const verifiedPayee = normalizeDemosNativeAddress(recipient);
@@ -1318,6 +1338,23 @@ function confirmedTransactionFeeOs(
   const additional = component(fee.additional_fee, postFork);
   if (network === null || rpc === null || additional === null) return null;
   return network + rpc + additional;
+}
+
+/**
+ * The fee a stored native record carries: its `transaction_fee` in the
+ * query's projection (see `recordFeeComponentOs`), read in the denomination
+ * the record was signed in. `undefined` when the record carries none, `null`
+ * when it carries one in any other form. A fresh success and a recovery read
+ * of the same record take its fee from here, so they agree.
+ */
+function recordTransactionFeeOs(
+  content: Record<string, unknown>,
+  postFork: boolean,
+): bigint | null | undefined {
+  const served = content.transaction_fee;
+  return served === undefined
+    ? undefined
+    : confirmedTransactionFeeOs(served, postFork, recordFeeComponentOs);
 }
 
 function confirmedWireAmountOs(value: unknown, postFork: boolean): bigint | null {
@@ -1673,6 +1710,15 @@ type ObservedDemosExecution =
   | Readonly<{ state: "indeterminate"; reason: string }>;
 
 /**
+ * {@link observeDemosExecutionByHash}'s verdict with the executed record's
+ * fee (`recordTransactionFeeOs`), when it carries one the SDK can read.
+ */
+type ObservedDemosRecordExecution =
+  | Readonly<{ state: "executed"; feeOs?: string }>
+  | Readonly<{ state: "failed" }>
+  | Readonly<{ state: "indeterminate"; reason: string }>;
+
+/**
  * Establish whether an included transaction executed (#338). The status index
  * can report `included` for a transaction the node recorded as `failed`, so read
  * the node's transaction record for the retained signed hash. Only a
@@ -1717,27 +1763,47 @@ type ObservedDemosExecution =
 export async function observeDemosExecutionByHash(
   txHash: string,
   getTxByHash: (hash: string) => Promise<unknown>,
-  expected: Readonly<{
-    blockNumber: number;
-    transfer: Readonly<{
-      payer: string;
-      payee: string;
-      amountOs: bigint;
-      nonce: number;
-      postFork: boolean;
-    }>;
-    /**
-     * For a transfer the SDK did not sign: the record binds only when its
-     * signed `content.timestamp` (ms) is not earlier than this.
-     */
-    signedNotBeforeMs?: number;
-  }>,
-  options: Readonly<{
-    transactionRecordTimeoutMs: number;
-    inclusionPollIntervalMs: number;
-    statusRequestTimeoutMs: number;
-  }>,
+  expected: ObservedExecutionExpectation,
+  options: ObservedExecutionOptions,
 ): Promise<ObservedDemosExecution> {
+  const observed = await observeDemosRecordExecution(txHash, getTxByHash, expected, options);
+  return observed.state === "executed" ? { state: "executed" } : observed;
+}
+
+type ObservedExecutionExpectation = Readonly<{
+  blockNumber: number;
+  transfer: Readonly<{
+    payer: string;
+    payee: string;
+    amountOs: bigint;
+    nonce: number;
+    postFork: boolean;
+  }>;
+  /**
+   * For a transfer the SDK did not sign: the record binds only when its
+   * signed `content.timestamp` (ms) is not earlier than this.
+   */
+  signedNotBeforeMs?: number;
+}>;
+
+type ObservedExecutionOptions = Readonly<{
+  transactionRecordTimeoutMs: number;
+  inclusionPollIntervalMs: number;
+  statusRequestTimeoutMs: number;
+}>;
+
+/**
+ * {@link observeDemosExecutionByHash}, also returning the fee of the executed
+ * record it read. A fee it cannot parse binds none here; a recovery read of
+ * that record is then indeterminate (`readDemosRecordByHash`), so it is never
+ * reported as another fee.
+ */
+async function observeDemosRecordExecution(
+  txHash: string,
+  getTxByHash: (hash: string) => Promise<unknown>,
+  expected: ObservedExecutionExpectation,
+  options: ObservedExecutionOptions,
+): Promise<ObservedDemosRecordExecution> {
   const deadline = Date.now() + options.transactionRecordTimeoutMs;
   let pending = "transaction record was not observed";
   while (true) {
@@ -1813,9 +1879,14 @@ export async function observeDemosExecutionByHash(
             };
           }
         }
-        return record.status === DEMOS_FAILED_RECORD_STATUS
-          ? { state: "failed" }
-          : { state: "executed" };
+        if (record.status === DEMOS_FAILED_RECORD_STATUS) return { state: "failed" };
+        const feeOs = recordTransactionFeeOs(
+          identity.transaction.content as Record<string, unknown>,
+          expected.transfer.postFork,
+        );
+        return feeOs === undefined || feeOs === null
+          ? { state: "executed" }
+          : { state: "executed", feeOs: feeOs.toString() };
       } else {
         pending = "transaction record has no terminal execution status";
       }
@@ -1942,18 +2013,15 @@ async function readDemosRecordByHash(
   // A record without a fee binds none, as a confirmation without one does
   // without a spend ceiling. A fee the SDK cannot parse is not "no fee": it
   // would then contradict a fee the session saved and hide why.
-  const servedFee = (content as Record<string, unknown>).transaction_fee;
-  const feeOs = servedFee === undefined
-    ? null
-    : confirmedTransactionFeeOs(servedFee, postFork, recordFeeComponentOs);
-  if (servedFee !== undefined && feeOs === null) {
+  const feeOs = recordTransactionFeeOs(content as Record<string, unknown>, postFork);
+  if (feeOs === null) {
     return { state: "indeterminate", reason: "transaction record fee is malformed" };
   }
   return {
     state: record.status === DEMOS_FAILED_RECORD_STATUS ? "failed" : "executed",
     blockNumber,
     nonce,
-    ...(feeOs === null ? {} : { networkFeeOs: feeOs.toString() }),
+    ...(feeOs === undefined ? {} : { networkFeeOs: feeOs.toString() }),
   };
 }
 
@@ -2309,7 +2377,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // `included` is not execution (#338): the node can include the signed
       // transaction and record it failed. Require the transaction record to
       // show this exact prepared transfer executed before reporting success.
-      const execution = await observeDemosExecutionByHash(
+      const execution = await observeDemosRecordExecution(
         txHash,
         getTxByHash,
         { blockNumber: terminal.blockNumber, transfer: transferBinding },
@@ -2352,7 +2420,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         nonceVisibilityTimeoutMs,
       );
 
-      return {
+      const executed = {
         ok: true,
         state: "included",
         execution: "executed",
@@ -2361,7 +2429,12 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         ...(confirmedDebitOs === null
           ? {}
           : { totalDebitOs: confirmedDebitOs.toString() }),
-      };
+      } as const;
+      // The debit above is the confirmation's; the record read keeps its own.
+      sdkRecordFees.set(executed, Object.freeze(
+        execution.feeOs === undefined ? {} : { feeOs: execution.feeOs },
+      ));
+      return executed;
     },
   };
 
@@ -2462,7 +2535,7 @@ function sdkRecoveryReader(
 
 /** The SDK's verdict on one custom-client transfer, from its own record read. */
 type PayDemRecordVerdict =
-  | Readonly<{ state: "executed"; blockNumber: number }>
+  | Readonly<{ state: "executed"; blockNumber: number; feeOs?: string }>
   | Readonly<{ state: "failed"; blockNumber: number }>
   | Readonly<{ state: "indeterminate"; reason: string }>;
 
@@ -2637,7 +2710,7 @@ export async function createPayDemRecordReader(
           : "denomination fork state is unavailable",
       };
     }
-    const execution = await observeDemosExecutionByHash(
+    const execution = await observeDemosRecordExecution(
       txHash,
       getTxByHash,
       {
@@ -2647,8 +2720,9 @@ export async function createPayDemRecordReader(
       },
       { transactionRecordTimeoutMs, inclusionPollIntervalMs, statusRequestTimeoutMs },
     );
-    return execution.state === "indeterminate"
-      ? execution
+    if (execution.state === "indeterminate") return execution;
+    return execution.state === "executed" && execution.feeOs !== undefined
+      ? { state: "executed", blockNumber: terminal.blockNumber, feeOs: execution.feeOs }
       : { state: execution.state, blockNumber: terminal.blockNumber };
   };
   // demosdk signs a transfer with this nonce + 1, so a transfer signed after
@@ -3120,7 +3194,13 @@ function captureFreshPayDemResult(
     return heldPayDemResult(captured);
   }
   // The attestation authenticates this invocation, not a durable cache entry.
-  return captured;
+  if (!captured.ok) return captured;
+  // The rail's fee is its debit accounting, which the record need not carry.
+  // Report the fee of the record the SDK read instead, the one every recovery
+  // read returns, so a saved success is never contradicted by its own record.
+  const { networkFeeOs: _debitFeeOs, ...executed } = captured;
+  const recordFeeOs = sdkRecordFees.get(value as object)?.feeOs;
+  return recordFeeOs === undefined ? executed : { ...executed, networkFeeOs: recordFeeOs };
 }
 
 /** A verdict the SDK did not read itself: only its transaction identity. */
@@ -3909,9 +3989,11 @@ export function payDemSettle(
         // already authenticated, even when the reconciliation agrees with it.
         assertPayDemSuccessKept(known?.result.ok === true, reconciled);
         // The cached outcome is reused only after the SDK reads its record
-        // again; a failure only when this key's SDK rail log recorded it. The
-        // read agrees with the claim's success or failure, or it throws.
-        const confirmed = await readRecovered(reconciled, recorded !== null);
+        // again; a failure only when this key's SDK rail log recorded it: its
+        // attempt record or, on a log that keeps none, its own outcome, which
+        // names this hash, block and proof (checked above), as a retained
+        // audit counts it. The read agrees with the claim, or it throws.
+        const confirmed = await readRecovered(reconciled, recorded !== null || outcomeOnlyLog);
         if (isHeldPayDemResult(confirmed)) {
           throw new DacsError(
             "pay-dem durable outcome is not confirmed by the SDK's own node record read; " +

@@ -25,6 +25,12 @@ export const demosNode = {
   accountNonce: 0,
   /** The `transaction_fee.network_fee` (OS) of a signed transfer, if any. */
   feeOs: undefined as string | undefined,
+  /**
+   * The `gas_operation.fees.network_fee` (OS) the confirmation reports, if
+   * any: demosdk's authoritative debit view, which the signed record need not
+   * carry (the record keeps `feeOs`).
+   */
+  confirmFeeOs: undefined as string | undefined,
   /** The record status a broadcast transfer ends with. */
   recordStatus: "confirmed",
   /**
@@ -56,6 +62,7 @@ export const demosNode = {
     this.blockNumber = 42;
     this.accountNonce = 0;
     this.feeOs = undefined;
+    this.confirmFeeOs = undefined;
     this.recordStatus = "confirmed";
     this.postFork = true;
     this.networkInfoReads = [];
@@ -158,7 +165,12 @@ function transferContent(
 class MockDemos {
   readonly tx = {
     confirm: async (signed: { hash: string; content: NodeRecord }) => ({
-      response: { data: { transaction: { hash: signed.hash, content: { ...signed.content } } } },
+      response: { data: {
+        ...(demosNode.confirmFeeOs === undefined ? {} : { gas_operation: {
+          fees: { network_fee: demosNode.confirmFeeOs, rpc_fee: "0", additional_fee: "0" },
+        } }),
+        transaction: { hash: signed.hash, content: { ...signed.content } },
+      } },
     }),
   };
 

@@ -816,7 +816,11 @@ they are when it is built, and pays through those too, so a later change to the
 client object never leaves a payment its own recovery cannot read. It takes the
 record's status, block, nonce, parties, amount and fee from it. These are the
 only rails the adapter lets make a fresh payment, so a session paid through
-either can be resumed or repeated. It reads the amount and fee in the
+either can be resumed or repeated. A fresh success reports that same record
+fee as `networkFeeOs`, which the session saves and signs: the rail's own
+`networkFeeOs` (the confirmation's fee, or a client's reported debit) bounds
+`maxTotalDebitOs` and stays on the rail's result, but the record need not carry
+it, so a saved success never contradicts its own record on a restart. It reads the amount and fee in the
 denomination the record's signed payload carries (DEM numbers before the
 denomination fork, OS strings after it), so a payment saved before the fork
 still completes after it activates. The

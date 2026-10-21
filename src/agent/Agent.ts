@@ -457,7 +457,8 @@ export interface RunSessionOptions {
    * before returning; a native transfer is never replaced by another hash.
    * A native DEM success or permanent failure is final only from the SDK's
    * `payDemSettle` adapter (directly or from `settleFromRail`, not wrapped)
-   * over the rail `createPayDemRail` built. A native DEM session calls only
+   * over the rail `createPayDemRail` or `createPayDemClientRail` built, which
+   * reads the node's record for the hash itself. A native DEM session calls only
    * that adapter, as the settlement and as this recovery; any other
    * implementation is not called, so it makes no payment.
    */

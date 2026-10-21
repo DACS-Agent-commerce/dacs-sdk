@@ -85,9 +85,10 @@ authenticate, so its own verdict never becomes final.
   `maxTotalDebitOs`, the client's journal entry must carry its
   `confirmedTotalDebitOs`, at least the amount and within that ceiling, or the
   entry is refused and the client must not broadcast, as `createPayDemRail`
-  refuses; the success's `networkFeeOs` is that journaled debit less the
+  refuses; the rail's success's `networkFeeOs` is that journaled debit less the
   amount, or else the client's `totalDebitOs`, which must match the journaled
-  debit when both are given. The reader holds no wallet, signs nothing and trusts its
+  debit when both are given. `payDemSettle` reports the record's fee instead
+  (see below). The reader holds no wallet, signs nothing and trusts its
   node exactly as `createPayDemRail` trusts its own. A reader the SDK did not
   build, or a copy of one, is refused before the transfer.
 - A record shows that a transfer with these terms executed, not that this
@@ -223,7 +224,14 @@ authenticate, so its own verdict never becomes final.
   the retained hash.
 
   A recovered success carries the fee of the record the SDK read (the sum of
-  its `transaction_fee` components in OS) as `networkFeeOs`. After the
+  its `transaction_fee` components in OS) as `networkFeeOs`, and so does a
+  fresh success `payDemSettle` returns. A rail's own `networkFeeOs` is its
+  debit accounting: the confirmation's fee (`gas_operation.fees` when the node
+  reports one) for `createPayDemRail`, the client's journaled debit or
+  `totalDebitOs` for `createPayDemClientRail`. That debit bounds
+  `maxTotalDebitOs` and stays on the rail's result, but the signed record need
+  not carry it, so the adapter reports the fee of the record it read; a saved
+  success then re-reads the same fee on every restart. After the
   denomination fork the transaction query serves each component as an OS
   number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it, as
   it serves `content.amount`; node2's recorded envelopes carry
