@@ -160,6 +160,7 @@ export {
   type SolanaSplBroadcastResult,
   type SolanaSplEffectFence,
   type SolanaSplNoSubmissionEvidence,
+  type SolanaSplPreparation,
   type SolanaSplAdapter,
   type SolanaSplSettlementResult,
   type SolanaSplLease,
