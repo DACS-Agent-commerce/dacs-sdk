@@ -890,7 +890,12 @@ async function evaluateSettlementEvidence(
 
   // ── Attestation ref (§7.5.2 content addressing) ─────────────────────────
   const scopeHash = contentHash(ev);
+  // CORE §B.1: a legacy-replay path must not build a current address from a
+  // jobId that is not JID-1 canonical, so it checks only structure, content
+  // hash and signature for such evidence.
+  const legacyJobId = historicalReplay && !isCanonicalJobId(ev["jobId"]);
   if (
+    !legacyJobId &&
     ctx.paymentAddress && isObj(ctx.paymentAddress) &&
     isStr(ctx.paymentAddress.railId) && ctx.paymentAddress.railId.length > 0 &&
     isSafeUint(ctx.paymentAddress.phaseIndex) &&

@@ -136,4 +136,61 @@ describe("historical evidence inspection boundaries", () => {
       ...context, expectedAnchorLocator: evidence.deliverableAnchor.locator,
     }, deps())).decision).toBe("pass");
   });
+
+  describe("payment address derivation (CORE §B.1)", () => {
+    const LEGACY = "DACS-VERIFY-SETTLE-0001";
+    const demos = { kind: "demos", txHash: "a".repeat(64) };
+    const located = (jobId: string, locator: string) => {
+      const evidence = { ...payment("pay-dem", "bft-final", demos), jobId };
+      const { signature: _signature, ...unsigned } = evidence;
+      void _signature;
+      return {
+        evidence,
+        attestationRef: {
+          anchor: { kind: "storage-program", locator },
+          contentHash: contentHash(unsigned),
+        },
+      };
+    };
+    const context = (attestationRef: object) => ({
+      attestationRef, paymentAddress: { railId: "rail-1", phaseIndex: 0 },
+    }) as never;
+
+    test.each([
+      ["equals the locator a PC-2 address would give", `dacs4:payment:${LEGACY}:rail-1:0`],
+      ["differs from every PC-2 address", "dacs4:payment:other:rail-9:3"],
+    ])("a legacy jobId gives the same result whether the reference %s", async (_name, locator) => {
+      const { evidence, attestationRef } = located(LEGACY, locator);
+      expect(await inspectHistoricalSettlementEvidence(evidence, context(attestationRef), deps()))
+        .toEqual({ decision: "valid", reasons: [] });
+    });
+
+    test("a legacy jobId is still checked for the content hash and the signature", async () => {
+      const { evidence, attestationRef } = located(LEGACY, "anywhere");
+      const wrongHash = { ...attestationRef, contentHash: "0".repeat(64) };
+      expect((await inspectHistoricalSettlementEvidence(evidence, context(wrongHash), deps())).decision)
+        .toBe("invalid");
+      expect((await inspectHistoricalSettlementEvidence(
+        evidence, context(attestationRef), { ...deps(), verify: () => false },
+      )).decision).toBe("invalid");
+    });
+
+    test("a canonical jobId keeps the full PC-2 address binding", async () => {
+      const good = located(JOB, `dacs4:payment:${JOB}:rail-1:0`);
+      expect((await inspectHistoricalSettlementEvidence(good.evidence, context(good.attestationRef), deps())).decision)
+        .toBe("valid");
+      const bad = located(JOB, "dacs4:payment:other:rail-9:3");
+      const result = await inspectHistoricalSettlementEvidence(bad.evidence, context(bad.attestationRef), deps());
+      expect(result.decision).toBe("invalid");
+      expect(result.reasons.join(" ")).toMatch(/PC-2 payment address/);
+    });
+
+    test("current verification still refuses a legacy jobId outright", async () => {
+      const { evidence } = located(LEGACY, `dacs4:payment:${LEGACY}:rail-1:0`);
+      expect(await validateSettlementEvidenceStructure(evidence)).toEqual({
+        decision: "error",
+        reasons: ["current evidence jobId MUST be a canonical uppercase ULID"],
+      });
+    });
+  });
 });
