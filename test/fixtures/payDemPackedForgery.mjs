@@ -197,6 +197,8 @@ const nodeRecord = (hash, status) => ({
     to: SELLER,
     amount: Number(AMOUNT_OS),
     nonce: "7",
+    // Signed now, so after the call that reads it began.
+    timestamp: String(Date.now()),
     data: ["native", { nativeOperation: "send", args: [SELLER, AMOUNT_OS] }],
   },
 });

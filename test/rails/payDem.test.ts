@@ -96,7 +96,12 @@ beforeEach(async () => {
     }).response.data.transaction;
     return {
       ...transaction,
-      content: { ...transaction.content, nonce: String(transaction.content.nonce) },
+      content: {
+        // A reader-carrying client's record shows it signed after the call began.
+        timestamp: String(Date.now()),
+        ...transaction.content,
+        nonce: String(transaction.content.nonce),
+      },
       status: recordStatus,
       blockNumber: 4242,
     };

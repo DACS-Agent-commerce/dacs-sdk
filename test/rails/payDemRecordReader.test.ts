@@ -51,6 +51,12 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
   },
 }));
 
+/**
+ * When the transfer was signed, in ms, as its signed `content.timestamp`
+ * records it. Unset, it is the time of the read, so after the call began.
+ */
+let signedAtMs: number | undefined;
+
 /** The node record for the transfer, in the shape node2 served it. */
 function record(): Record<string, unknown> & { content: Record<string, unknown> } {
   return {
@@ -64,6 +70,8 @@ function record(): Record<string, unknown> & { content: Record<string, unknown> 
       to: PAYEE_HEX,
       amount: Number(AMOUNT_OS),
       nonce: String(NONCE),
+      // node2 serves the signed timestamp as a decimal string.
+      timestamp: String(signedAtMs ?? Date.now()),
       data: ["native", { nativeOperation: "send", args: [PAYEE_HEX, AMOUNT_OS] }],
     },
   };
@@ -166,6 +174,7 @@ beforeEach(() => {
   // transfer has its own hash.
   transfers += 1;
   TX_HASH = `${String(transfers).padStart(4, "0")}${"85".repeat(30)}`;
+  signedAtMs = undefined;
   sdk.connect.mockResolvedValue(true);
   sdk.getNetworkInfo.mockResolvedValue({
     forks: { osDenomination: { activated: true } },
@@ -222,7 +231,9 @@ describe("a custom client settles only on the SDK's own record read (#338)", () 
   });
 
   it("refuses a reader-carrying client's total debit above the ceiling before reading", async () => {
-    const { client } = customClient(await reader(), { totalDebitOs: "20000000000" });
+    const { client } = customClient(await reader(), { totalDebitOs: "20000000000" }, async (args) => {
+      await args.journalPreparedTransfer!(prepared({ confirmedTotalDebitOs: "10500000000" }));
+    });
 
     await expect(payDemSettleCore(
       { recipient: RECIPIENT, amount: AMOUNT_OS, maxTotalDebitOs: "10500000000" },
@@ -765,5 +776,181 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     });
     await expect(settle(request("job-failed"))).rejects.toThrow(/refusing to resubmit/);
     expect(transfer).toHaveBeenCalledTimes(1);
+  });
+});
+
+// P1-1 (#369 review): the process-local hash set and a lagging account nonce
+// cannot stop a transfer that executed before a restart from settling another
+// job. The record's signed timestamp can: it is in the signed bytes.
+describe("a transfer signed before this call never settles it, across a restart (#369)", () => {
+  const request = (jobId: string) => ({
+    rail: "pay-dem",
+    phase: "pay-dem" as const,
+    amount: "9.5",
+    asset: "DEM",
+    payee: `did:demos:agent:${PAYEE_HEX}`,
+    expectedPayee: PAYEE_HEX,
+    jobId,
+    phaseIndex: 0,
+  });
+  /** A client that signs now: the record carries this signing time. */
+  const signingClient = (recordReader: PayDemRecordReader) => customClient(
+    recordReader,
+    {},
+    async (args) => {
+      signedAtMs = Date.now();
+      await args.journalPreparedTransfer?.(prepared(
+        args.recovery === undefined ? {} : { recovery: args.recovery },
+      ));
+    },
+  );
+  /** A fresh copy of the rails modules: what a restarted process loads. */
+  const restart = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    vi.resetModules();
+    const idempotency = await import("../../src/rails/idempotency.js");
+    return Object.assign(await import("../../src/rails/payDem.js"), {
+      createIdempotencyStore: idempotency.createIdempotencyStore,
+    });
+  };
+
+  it("holds job-2 at the bridge presenting job-1's executed transfer after a restart", async () => {
+    const first = signingClient(await reader());
+    await expect(payDemSettle(createPayDemClientRail(first.client))(request("job-1")))
+      .resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+
+    const restarted = await restart();
+    // The node's account nonce still lags, so the floor admits NONCE again.
+    accountNonce = NONCE - 1;
+    const replay = customClient(await restarted.createPayDemRecordReader({
+      rpc: "https://node.test",
+      ...FAST,
+    }));
+    const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const second = await restarted.payDemSettle(
+      restarted.createPayDemClientRail(replay.client),
+      {},
+      { store: restarted.createIdempotencyStore(log) },
+    )(request("job-2"));
+
+    expect(second).toEqual({ ...held(), payer: PAYER_HEX, payee: PAYEE_HEX });
+    expect(restarted.payDemRecordVerifiedTransfer(second)).toBeUndefined();
+    expect(putOutcome).not.toHaveBeenCalled();
+    expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
+  });
+
+  it("holds a direct settle presenting an earlier executed transfer after a restart", async () => {
+    const first = signingClient(await reader());
+    await expect(payDemSettleCore({ recipient: RECIPIENT, amount: AMOUNT_OS }, first.client))
+      .resolves.toEqual(settled());
+
+    const restarted = await restart();
+    accountNonce = NONCE - 1;
+    const replay = customClient(await restarted.createPayDemRecordReader({
+      rpc: "https://node.test",
+      ...FAST,
+    }));
+    const again = await restarted.payDemSettleCore(
+      { recipient: RECIPIENT, amount: AMOUNT_OS },
+      replay.client,
+    );
+
+    expect(again).toEqual(held());
+    expect(restarted.payDemRecordVerifiedTransfer(again)).toBeUndefined();
+  });
+
+  it.each<[string, (beganAtMs: number) => unknown]>([
+    ["signed before the call began", (beganAtMs) => String(beganAtMs - 1)],
+    ["with no signed timestamp", () => undefined],
+    ["with a malformed signed timestamp", () => "1e12"],
+  ])("holds a bound record %s, confirmed or failed", async (_label, stamp) => {
+    for (const recordStatus of ["confirmed", "failed"]) {
+      // No later than the SDK's own reading of its clock at the call's start.
+      const beganAtMs = Date.now();
+      sdk.getTxByHash.mockImplementation(async () => {
+        const body = record();
+        const value = stamp(beganAtMs);
+        if (value === undefined) delete body.content.timestamp;
+        else body.content.timestamp = value;
+        return { ...body, status: recordStatus };
+      });
+      const { client } = customClient(await reader());
+
+      const result = await payDemSettleCore(
+        { recipient: RECIPIENT, amount: AMOUNT_OS },
+        client,
+      );
+
+      expect(result).toEqual(held());
+    }
+  });
+});
+
+// Cold review (#369): a capped reader-client payment needs its confirmed
+// debit before broadcast, as createPayDemRail does, so its success always
+// carries the fee a wallet authority settles.
+describe("a capped reader-carrying client journals its confirmed debit (#369)", () => {
+  const CAP = "10500000000";
+
+  it("refuses the broadcast without a confirmed debit under maxTotalDebitOs", async () => {
+    let broadcast = false;
+    const { client } = customClient(await reader(), {}, async (args) => {
+      await args.journalPreparedTransfer!(prepared());
+      broadcast = true;
+    });
+
+    await expect(payDemSettleCore(
+      { recipient: RECIPIENT, amount: AMOUNT_OS, maxTotalDebitOs: CAP },
+      client,
+    )).rejects.toThrow(/no confirmedTotalDebitOs; refusing broadcast under maxTotalDebitOs/);
+    expect(broadcast).toBe(false);
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["above the ceiling", "10500000001"],
+    ["below the amount", "9499999999"],
+    ["not canonical text", "010500000000"],
+  ])("refuses the broadcast with a confirmed debit %s", async (_label, debit) => {
+    let broadcast = false;
+    const { client } = customClient(await reader(), {}, async (args) => {
+      await args.journalPreparedTransfer!(prepared({
+        confirmedTotalDebitOs: debit,
+      }));
+      broadcast = true;
+    });
+
+    await expect(payDemSettleCore(
+      { recipient: RECIPIENT, amount: AMOUNT_OS, maxTotalDebitOs: CAP },
+      client,
+    )).rejects.toThrow(/invalid confirmedTotalDebitOs; refusing broadcast/);
+    expect(broadcast).toBe(false);
+  });
+
+  it("settles with the journaled fee when the client reports no total debit", async () => {
+    const { client } = customClient(await reader(), { totalDebitOs: undefined }, async (args) => {
+      await args.journalPreparedTransfer!(prepared({
+        confirmedTotalDebitOs: CAP,
+      }));
+    });
+
+    await expect(payDemSettleCore(
+      { recipient: RECIPIENT, amount: AMOUNT_OS, maxTotalDebitOs: CAP },
+      client,
+    )).resolves.toEqual(settled());
+  });
+
+  it("refuses a reported total debit other than the journaled one", async () => {
+    const { client } = customClient(await reader(), { totalDebitOs: "10000000000" }, async (args) => {
+      await args.journalPreparedTransfer!(prepared({
+        confirmedTotalDebitOs: CAP,
+      }));
+    });
+
+    await expect(payDemSettleCore(
+      { recipient: RECIPIENT, amount: AMOUNT_OS, maxTotalDebitOs: CAP },
+      client,
+    )).rejects.toThrow(/invalid total debit accounting/);
   });
 });

@@ -60,11 +60,14 @@ seconds before the SDK sees its result.
 
 ## Custom clients, rails and reconcilers
 
-Only the SDK's own read of the node makes a verdict final: inside
-`createPayDemRail`, or through a record reader `createPayDemRecordReader`
+Only the SDK's own read of the node makes a fresh payment's verdict final:
+inside `createPayDemRail`, or through a record reader `createPayDemRecordReader`
 built. A custom `DemosNativeClient` or `PayDemRail` is the integrator's own
 chain access: what it returns is its statement, which the SDK cannot
-authenticate, so its own verdict never becomes final.
+authenticate, so its own verdict never becomes final. Recovery is different:
+after a restart a held intent is settled by the integrator's reconciler, and
+the SDK checks only that statement's shape and bindings (see the last item
+below).
 
 - The SDK decides before the effect. `payDemSettleCore` refuses a client that
   is neither the one `createPayDemRail` builds nor carries a reader
@@ -81,8 +84,13 @@ authenticate, so its own verdict never becomes final.
   is a final success that `payDemRecordVerifiedTransfer` lists; a bound
   `failed` record is a permanent failure with a proof the SDK builds. The
   client's `ok`, `state`, `execution`, `blockNumber` and `failureProof` are
-  ignored; its `totalDebitOs` is used only as fee accounting, within
-  `maxTotalDebitOs`. The reader holds no wallet, signs nothing and trusts its
+  ignored. Its fee is accounting only: when the payment has a
+  `maxTotalDebitOs`, the client's journal entry must carry its
+  `confirmedTotalDebitOs`, at least the amount and within that ceiling, or the
+  entry is refused and the client must not broadcast, as `createPayDemRail`
+  refuses; the success's `networkFeeOs` is that journaled debit less the
+  amount, or else the client's `totalDebitOs`, which must match the journaled
+  debit when both are given. The reader holds no wallet, signs nothing and trusts its
   node exactly as `createPayDemRail` trusts its own. A reader the SDK did not
   build, or a copy of one, is refused before the transfer.
 - A record shows that a transfer with these terms executed, not that this
@@ -93,10 +101,19 @@ authenticate, so its own verdict never becomes final.
   and whose hash and nonce are the ones the client journaled exactly once,
   for this payer, payee and amount, before `transfer` returned. A journal
   entry for other terms, a second entry, or one after `transfer` returned is
-  refused, so the client must not broadcast. One hash settles at most one
-  payment in a process: the node's account nonce can lag inclusion, so a hash
-  this path already settled is never read again. Across processes, a durable
-  session store binds a hash to one job.
+  refused, so the client must not broadcast.
+- The node's account nonce can lag inclusion, so the nonce alone could admit
+  a transfer that executed just before this call, for example one that
+  settled another job before a restart. The record therefore binds only when
+  its signed `content.timestamp` (milliseconds, as demosdk sets it when it
+  signs) is not earlier than the SDK's clock when the call began; a record
+  without one, or signed earlier, confirmed or failed, is indeterminate. The
+  timestamp is part of the signed transaction, so an earlier transfer cannot
+  carry a later one, in any process and after any restart. The client must
+  sign with a clock that does not run behind the SDK's, or its transfers are
+  held. Calls that overlap can each see the same newly signed transfer: in one
+  process a hash settles at most one payment, and across processes that run
+  at the same time a durable session store binds a hash to one job.
 - A reader-carrying client's result is held: `ok: false` with the signed hash
   and nothing else, when it has no signed nonce, when it is not bound to a
   transfer this call journaled and signed, or when its record does not bind.

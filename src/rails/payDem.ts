@@ -65,7 +65,9 @@ const sdkClientRailSettles = new WeakSet<object>();
 /**
  * Transaction hashes a reader-carrying client's transfer already settled in
  * this process. A record shows that a transfer with these terms executed, not
- * that this call made it, so one hash never settles a second payment.
+ * that this call made it, so one hash never settles a second payment. A
+ * transfer signed before a call began, in any process, is refused by its
+ * record's signed timestamp instead; this set covers calls that overlap.
  */
 const readerSettledHashes = new Set<string>();
 /**
@@ -484,8 +486,10 @@ export interface DemosNativeClient {
    * read that record for a client it did not build, so without a
    * {@link recordReader} {@link payDemSettleCore} refuses such a client before
    * calling this. With one, the client journals its signed transfer once
-   * through `journalPreparedTransfer` before its one broadcast, and returns
-   * that transfer's hash and nonce.
+   * through `journalPreparedTransfer` before its one broadcast, with its
+   * `confirmedTotalDebitOs` when `maxTotalDebitOs` is given, and returns
+   * that transfer's hash and nonce. The SDK binds the record only when its
+   * signed `content.timestamp` is not earlier than the start of the call.
    */
   transfer(args: {
     to: string;
@@ -794,13 +798,21 @@ export async function payDemSettleCore(
 
   // A record proves that a transfer with these terms executed, not that this
   // call made it. For a reader-carrying client the SDK therefore binds the
-  // transfer to this call itself: its signed nonce must be above the payer's
-  // account nonce read before the call, and its hash and nonce must be the
-  // ones the client journaled, once, through the journal the SDK hands it.
+  // transfer to this call itself: the record must show it was signed after
+  // this call began, its signed nonce must be above the payer's account nonce
+  // read before the call, and its hash and nonce must be the ones the client
+  // journaled, once, through the journal the SDK hands it. The signing time is
+  // in the signed bytes, so unlike the account nonce it cannot lag, and an
+  // earlier transfer is refused in any process, after any restart.
+  const callStartedAtMs = reading === undefined ? undefined : Date.now();
   const nonceFloor = reading === undefined
     ? undefined
     : await reading.accountNonce(payer);
-  let journaled: Readonly<{ txHash: string; nonce: number }> | undefined;
+  let journaled: Readonly<{
+    txHash: string;
+    nonce: number;
+    confirmedTotalDebitOs?: bigint;
+  }> | undefined;
   let journalEntries = 0;
   let transferReturned = false;
   const readerJournal = async (
@@ -835,8 +847,30 @@ export async function payDemSettleCore(
         "pay-dem prepared transfer does not bind this payment's hash, nonce, payer, payee and amount; refusing broadcast",
       );
     }
+    // As createPayDemRail does, a capped payment needs the confirmed debit
+    // before its broadcast, within the ceiling; it is the success's fee.
+    const entryDebit = fields.confirmedTotalDebitOs;
+    if (entryDebit !== undefined &&
+        (typeof entryDebit !== "string" || !/^[1-9][0-9]*$/.test(entryDebit) ||
+          BigInt(entryDebit) < amountOs ||
+          (maxTotalDebitOs !== undefined && BigInt(entryDebit) > maxTotalDebitOs))) {
+      throw new DacsError(
+        "pay-dem prepared transfer has invalid confirmedTotalDebitOs; refusing broadcast",
+      );
+    }
+    if (maxTotalDebitOs !== undefined && entryDebit === undefined) {
+      throw new DacsError(
+        "pay-dem prepared transfer has no confirmedTotalDebitOs; refusing broadcast under maxTotalDebitOs",
+      );
+    }
     await journalPreparedTransfer?.(owned);
-    journaled = Object.freeze({ txHash: entryHash, nonce: entryNonce });
+    journaled = Object.freeze({
+      txHash: entryHash,
+      nonce: entryNonce,
+      ...(entryDebit === undefined
+        ? {}
+        : { confirmedTotalDebitOs: BigInt(entryDebit as string) }),
+    });
     // Record the hash as this key's attempt before the client broadcasts, but
     // only for a transfer signed after this call began and not one this
     // process already settled: another payment's transfer relayed for this
@@ -921,9 +955,14 @@ export async function payDemSettleCore(
   if (totalDebitOs === null ||
       (totalDebitOs !== undefined && totalDebitOs < amountOs) ||
       (totalDebitOs !== undefined && maxTotalDebitOs !== undefined &&
-        totalDebitOs > maxTotalDebitOs)) {
+        totalDebitOs > maxTotalDebitOs) ||
+      (totalDebitOs !== undefined && journaled?.confirmedTotalDebitOs !== undefined &&
+        totalDebitOs !== journaled.confirmedTotalDebitOs)) {
     throw new DacsError("pay-dem transfer result has invalid total debit accounting");
   }
+  // A reader-carrying client's fee is the debit it journaled before its
+  // broadcast, when it journaled one.
+  const debitOs = journaled?.confirmedTotalDebitOs ?? totalDebitOs;
 
   // A custom client with an SDK record reader: the SDK observes inclusion of
   // the returned hash and reads the record itself, bound to the nonce the
@@ -946,6 +985,7 @@ export async function payDemSettleCore(
           payer,
           payee: recipient,
           amountOs,
+          signedNotBeforeMs: callStartedAtMs as number,
         })
       : {
           state: "indeterminate",
@@ -1030,10 +1070,11 @@ export async function payDemSettleCore(
     txRefKind: "demos" as const,
     // Fee accounting only, never part of the verdict: the SDK client's comes
     // from the node's confirmation, a reader-carrying client's is its own
-    // report, checked above against the amount and the debit ceiling.
-    ...(totalDebitOs === undefined
+    // report (journaled before broadcast when capped), checked above against
+    // the amount and the debit ceiling.
+    ...(debitOs === undefined
       ? {}
-      : { networkFeeOs: (totalDebitOs - amountOs).toString() }),
+      : { networkFeeOs: (debitOs - amountOs).toString() }),
   });
   if (readerVerdict !== undefined) readerSettledHashes.add(txHash);
   // Frozen, so a holder cannot change the hash or block after it is listed.
@@ -1614,6 +1655,11 @@ export async function observeDemosExecutionByHash(
       nonce: number;
       postFork: boolean;
     }>;
+    /**
+     * For a transfer the SDK did not sign: the record binds only when its
+     * signed `content.timestamp` (ms) is not earlier than this.
+     */
+    signedNotBeforeMs?: number;
   }>,
   options: Readonly<{
     transactionRecordTimeoutMs: number;
@@ -1681,6 +1727,20 @@ export async function observeDemosExecutionByHash(
             state: "indeterminate",
             reason: "transaction record does not match the prepared transfer",
           };
+        }
+        // The signing time is part of the signed body, so an earlier transfer
+        // cannot carry a later one. Without it the record binds no call.
+        if (expected.signedNotBeforeMs !== undefined) {
+          // A bound record's content is an object (transactionIdentityBinding).
+          const signedAt = confirmedNonce(
+            (identity.transaction.content as Record<string, unknown>).timestamp,
+          );
+          if (signedAt === null || signedAt < expected.signedNotBeforeMs) {
+            return {
+              state: "indeterminate",
+              reason: "transaction record was not signed after this call began",
+            };
+          }
         }
         return record.status === DEMOS_FAILED_RECORD_STATUS
           ? { state: "failed" }
@@ -2147,6 +2207,8 @@ type PayDemRecordRead = (input: Readonly<{
   payer: string;
   payee: string;
   amountOs: bigint;
+  /** The record binds only when its signed `content.timestamp` is not earlier. */
+  signedNotBeforeMs: number;
 }>) => Promise<PayDemRecordVerdict>;
 
 /** The SDK's reads through one reader `createPayDemRecordReader` built. */
@@ -2192,7 +2254,8 @@ export interface PayDemRecordReader {
  * then reads the transaction record and binds it exactly as for
  * `createPayDemRail`: literal `confirmed` or `failed`, the inclusion block, the
  * signed nonce the client returns, payer, payee, amount and a plain native
- * `send`. A bound `confirmed` record is a final, record-verified success
+ * `send`, and also a signed `content.timestamp` not earlier than the start of
+ * the call. A bound `confirmed` record is a final, record-verified success
  * ({@link payDemRecordVerifiedTransfer}); a bound `failed` record is a
  * permanent failure with a proof the SDK builds. Anything else, including a
  * read past its budget, holds the result with its hash and never resubmits.
@@ -2266,7 +2329,9 @@ export async function createPayDemRecordReader(
     });
   }
 
-  const read: PayDemRecordRead = async ({ txHash, nonce, payer, payee, amountOs }) => {
+  const read: PayDemRecordRead = async ({
+    txHash, nonce, payer, payee, amountOs, signedNotBeforeMs,
+  }) => {
     const terminal = await observeDemosTerminalByHash(txHash, nodeCall, {
       inclusionTimeoutMs,
       inclusionPollIntervalMs,
@@ -2311,6 +2376,7 @@ export async function createPayDemRecordReader(
       {
         blockNumber: terminal.blockNumber,
         transfer: { payer, payee, amountOs, nonce, postFork },
+        signedNotBeforeMs,
       },
       { transactionRecordTimeoutMs, inclusionPollIntervalMs, statusRequestTimeoutMs },
     );

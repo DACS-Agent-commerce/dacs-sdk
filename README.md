@@ -622,14 +622,17 @@ authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
 recorded outcome by itself. A non-final observation must throw. Only the SDK's
-own read of the node record is final: the rail `createPayDemRail` returns, or a
-custom `DemosNativeClient` that carries
+own read of the node record makes a fresh payment final: the rail
+`createPayDemRail` returns, or a custom `DemosNativeClient` that carries
 `recordReader: await createPayDemRecordReader({ rpc })`, journals its signed
-transfer once through the journal the SDK hands it and returns its signed
-`nonce`, whose returned hash the SDK then observes and binds itself, also
-through `createPayDemClientRail`. The SDK reads the record only for a transfer
-whose nonce is above the payer's account nonce read before the call, and
-settles one hash at most once per process. Any other custom
+transfer once through the journal the SDK hands it (with its
+`confirmedTotalDebitOs` when the payment has a `maxTotalDebitOs`) and returns
+its signed `nonce`, whose returned hash the SDK then observes and binds itself,
+also through `createPayDemClientRail`. The SDK reads the record only for a
+transfer whose nonce is above the payer's account nonce read before the call,
+and binds it only when the record's signed `content.timestamp` is not earlier
+than the start of the call, so a transfer made before a restart never settles
+a later payment; it also settles one hash at most once per process. Any other custom
 `DemosNativeClient` or `PayDemRail` is refused before its transfer or `settle`
 runs, so it can never debit the buyer and then leave the payment held; a
 payment one already made still reconciles, because recovery never calls it. See
