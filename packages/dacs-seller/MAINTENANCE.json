@@ -142,7 +142,7 @@
     {
       "path": "packages/dacs-seller/test/provenance-checkout.test.mjs",
       "originalSha256": null,
-      "sha256": "79e5cf6bbcaa43b70c8244e50a827034da4f52f453104c6dac464fbe40c64740",
+      "sha256": "e68927884df3d0284d166c53d9cec9622a07bb16b5e427540d5db38c08aaff64",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -262,8 +262,8 @@
     {
       "path": "packages/dacs-seller/src/dacs/listing.mjs",
       "originalSha256": null,
-      "sha256": "4b128a3b8151cd0ced7a1602152560bd8e4fac8c047dee6990fd69a3a6e849ed",
-      "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
+      "sha256": "9852290f894aebaf8775fa38a48bd740bb3cc665ac66e52a813f8b6a30f94521",
+      "reason": "Seller run time: port from the plugin seller kit; the SDK provenance source and the issued session nonce are named replacements (RUNTIME-PORTS.json)."
     },
     {
       "path": "packages/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs",

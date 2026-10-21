@@ -14,6 +14,7 @@ test('provenance checks need only published history in a fresh local clone',()=>
   cpSync(join(root,'packages/dacs-seller'),join(dir,'packages/dacs-seller'),{recursive:true});
   // Also verify an exported source checkout with no historical Git objects.
   rmSync(join(dir,'.git'),{recursive:true,force:true});execFileSync('git',['init','--quiet',dir]);
-  for(const args of [['check-provenance.mjs'],['publication-provenance.mjs','--check']])assert.match(execFileSync(process.execPath,[join(dir,'packages/dacs-seller/scripts',args[0]),...args.slice(1)],{encoding:'utf8',maxBuffer:8*1024*1024}),/verified|ok/);
+  // Every run-time port matches its pin: an edit is recorded as a named replacement (RUNTIME-PORTS.json).
+  for(const args of [['check-provenance.mjs'],['publication-provenance.mjs','--check'],['runtime-ports.mjs']])assert.match(execFileSync(process.execPath,[join(dir,'packages/dacs-seller/scripts',args[0]),...args.slice(1)],{encoding:'utf8',maxBuffer:8*1024*1024}),/verified|ok|match their pins/);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

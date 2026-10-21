@@ -12,10 +12,25 @@
         [
           "from '../wallet/demos-signature.mjs'",
           "from './demos-claims.mjs'"
+        ],
+        [
+          "  source: 'vendored support-branch build dacs-sdk@6658691cefed76e2bb576ae959d1ad3bc7eeafec (sha256 79934553…a69a3); not SDK main',",
+          "  source: 'the @kynesyslabs/dacs peer dependency at this package\\'s own version, built from the same repository',",
+          "the SDK provenance source (this package's core peer)"
+        ],
+        [
+          "export function buildUnsignedIdentityBundle({ address, presentedAt, sessionSeed }) {\n  const claim = claimForAddress(address);\n",
+          "// `sessionNonce`, when given, is the challenge the seller issued for this\n// presentation (CORE SN-1..SN-3: lowercase hex, 32 to 128 characters) and is\n// presented as it is; without it the nonce is derived from `sessionSeed`, which\n// a seller host that issues its own challenges refuses.\nexport function buildUnsignedIdentityBundle({ address, presentedAt, sessionSeed, sessionNonce }) {\n  const claim = claimForAddress(address);\n  if (sessionNonce !== undefined && (typeof sessionNonce !== 'string' || !/^[0-9a-f]{32,128}$/.test(sessionNonce))) throw new TypeError('sessionNonce must be the issued challenge: lowercase hex of 32 to 128 characters');\n",
+          "the issued session nonce (CORE SN-1..SN-3)"
+        ],
+        [
+          "    sessionNonce: sha256Hex(`dacs-chatgpt-plugin:",
+          "    sessionNonce: sessionNonce ?? sha256Hex(`dacs-chatgpt-plugin:",
+          "the issued session nonce (CORE SN-1..SN-3)"
         ]
       ],
       "sourceSha256": "a57eb4285cf7002229f796cfaa12512624c49aba00f0b2262eb13c10af33919d",
-      "sha256": "fbeb16beb9bff72f1304b08ce5279ad96406c37d844fa981158e311f758adb21"
+      "sha256": "9852290f894aebaf8775fa38a48bd740bb3cc665ac66e52a813f8b6a30f94521"
     },
     {
       "target": "src/dacs/delivery-evidence.mjs",
