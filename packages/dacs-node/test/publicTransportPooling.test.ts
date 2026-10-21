@@ -6,6 +6,11 @@ const httpsRequest = vi.fn();
 
 vi.mock("node:https", () => ({ request: httpsRequest }));
 
+// Load both modules once, after the mock is registered: the cold import of
+// the whole dacs module is slow and must not count against a test timeout.
+const { createDacsPublicHttpsFetchV1 } = await import("../src/publicFetch.js");
+const { readDacsPublicJsonV1 } = await import("../src/publicJson.js");
+
 function failingRequest() {
   const request = new EventEmitter() as EventEmitter & {
     setTimeout: ReturnType<typeof vi.fn>;
@@ -25,7 +30,6 @@ describe("pinned public HTTPS connection isolation", () => {
   });
 
   test("x402 public fetch disables shared-agent socket reuse", async () => {
-    const { createDacsPublicHttpsFetchV1 } = await import("../src/publicFetch.js");
     const fetchImpl = createDacsPublicHttpsFetchV1();
     await expect(fetchImpl("https://8.8.8.8/pay", { redirect: "error" }))
       .rejects.toThrow("stop");
@@ -34,7 +38,6 @@ describe("pinned public HTTPS connection isolation", () => {
   });
 
   test("public JSON reader disables shared-agent socket reuse", async () => {
-    const { readDacsPublicJsonV1 } = await import("../src/publicJson.js");
     await expect(readDacsPublicJsonV1("https://8.8.8.8/index.json"))
       .rejects.toThrow("public-json-request-unavailable");
     expect(httpsRequest).toHaveBeenCalledOnce();

@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 
-import type { PayDemRail } from "@kynesyslabs/dacs";
+import { createPayDemRail } from "@kynesyslabs/dacs";
 import {
   createFixedPricePayDemBuyerCoordinator,
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
@@ -10,7 +10,7 @@ import {
   type FixedPricePayDemProtocolBinding,
   type FixedPricePayDemTrackOperation,
 } from "@kynesyslabs/dacs/commerce";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../../src/config.js";
 import { putDacsLiveOrderInputV1 } from "../../src/orderInput.js";
@@ -20,6 +20,66 @@ import {
 } from "../../src/payDemPayment.js";
 import { openDacsNodeSqliteDatabase } from "../../src/sqlite.js";
 import { createPermissiveTestWalletSpendAuthorityV1 } from "../helpers/walletSpend.js";
+
+// The SDK rail's node: it signs TX_HASH at nonce 9 and confirms a 1 DEM fee.
+// The process is killed in the broadcast, after the prepared checkpoint and
+// the pre-broadcast fence, so the node never answers it.
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class MockDemos {
+    readonly connect = async () => undefined;
+    readonly connectWallet = async () => undefined;
+    readonly getNetworkInfo = async () => ({ forks: { osDenomination: { activated: true } } });
+    readonly nodeCall = async () => undefined;
+    readonly getTxByHash = async () => undefined;
+    readonly waitForNonce = async () => undefined;
+    readonly transfer = async (to: string, amountOs: bigint) => ({
+      hash: TX_HASH,
+      content: {
+        type: "native",
+        from: `0x${PAYER}`,
+        to,
+        amount: amountOs.toString(),
+        nonce: 9,
+        data: ["native", { nativeOperation: "send", args: [to, amountOs.toString()] }],
+      },
+    });
+    readonly tx = {
+      confirm: async (signed: { hash: string; content: Record<string, unknown> }) => ({
+        response: {
+          data: {
+            transaction: {
+              hash: signed.hash,
+              content: {
+                ...signed.content,
+                transaction_fee: {
+                  network_fee: "400000000",
+                  rpc_fee: "500000000",
+                  additional_fee: "100000000",
+                },
+              },
+            },
+          },
+        },
+      }),
+    };
+    readonly broadcast = async () => {
+      await writeFile(readyPath!, "prepared", {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      // A nested Vitest controller may terminate a worker whose only active
+      // handle is a timer. Block the worker synchronously so the process group
+      // can exit only when the parent deliberately sends SIGKILL.
+      const lock = new Int32Array(new SharedArrayBuffer(4));
+      while (true) Atomics.wait(lock, 0, 0, 1_000);
+    };
+
+    getAddress(): string {
+      return `0x${PAYER}`;
+    }
+  },
+}));
 
 const databasePath = process.env.DACS_PAY_DEM_CRASH_DATABASE;
 const readyPath = process.env.DACS_PAY_DEM_CRASH_READY;
@@ -102,32 +162,7 @@ describe("native DEM payment crash fixture", () => {
       authority: BUYER,
     });
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
-    const rail: PayDemRail = {
-      address: PAYER,
-      async settle(input) {
-        await input.journalPreparedTransfer!({
-          txHash: TX_HASH,
-          nonce: 9,
-          payer: PAYER,
-          payee: PAYEE,
-          amountOs: AUTHORITY.amountOs,
-          denomination: "os",
-          network: "demos",
-          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-          recovery: input.recovery!,
-        });
-        await writeFile(readyPath, "prepared", {
-          encoding: "utf8",
-          flag: "wx",
-          mode: 0o600,
-        });
-        // A nested Vitest controller may terminate a worker whose only active
-        // handle is a timer. Block the worker synchronously so the process group
-        // can exit only when the parent deliberately sends SIGKILL.
-        const lock = new Int32Array(new SharedArrayBuffer(4));
-        while (true) Atomics.wait(lock, 0, 0, 1_000);
-      },
-    };
+    const rail = await createPayDemRail({ rpc: "https://node.test", secret: "test-only-secret" });
     const bootstrap = createFixedPricePayDemBuyerCoordinator({
       store: database.createPayDemCoordinatorStore("buyer"),
       workerId: "buyer-coordinator-bootstrap",

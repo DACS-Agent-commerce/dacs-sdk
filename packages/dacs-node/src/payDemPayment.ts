@@ -3,6 +3,8 @@ import { types as nodeTypes } from "node:util";
 import {
   combineWalletSpendEffectFenceV1,
   isDemosExecutedTransferObservation,
+  isPayDemRecordVerifyingRail,
+  payDemRecordVerifiedTransfer,
   settlementKey,
   type PayDemPreparedTransfer,
   type PayDemRail,
@@ -36,7 +38,10 @@ import {
   loadDacsLiveOrderInputForTrackV1,
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
-import { isDacsSdkPreparedPayDemRailV1 } from "./payDemRailCapabilities.js";
+import {
+  isDacsRecordVerifyingPayDemRailV1,
+  isDacsSdkPreparedPayDemRailV1,
+} from "./payDemRailCapabilities.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -783,6 +788,10 @@ function captureChainReconciliation(
  * Compose native DEM settlement into the buyer coordinator. The SQLite outer
  * effect is the sole execution grant; the signed hash/nonce checkpoint commits
  * before broadcast, and every ambiguous restart enters read-only reconciliation.
+ * A fresh payment runs only on a rail whose success the SDK can make final:
+ * the default runtime rail, a rail `isPayDemRecordVerifyingRail` accepts, or
+ * the runtime's wrapper around one. Any other rail is refused before any
+ * wallet reservation, but still reconciles a payment it already made.
  */
 export function createDacsPayDemBuyerPaymentTrackV1(
   options: Readonly<DacsPayDemBuyerPaymentTrackOptionsV1>,
@@ -802,6 +811,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   }
   const database = options.database;
   const rail = options.rail;
+  // Decide before the effect: a rail whose success the SDK could never make
+  // final must not reserve the wallet or debit the buyer first (#338), so
+  // `execute` refuses it. `reconcile` never calls the rail, so a payment it
+  // already made still recovers. Only the settle checked here is called below.
+  const settle = rail.settle;
+  const freshSettleRail = isPayDemRecordVerifyingRail(rail) ||
+    isDacsRecordVerifyingPayDemRailV1(rail) || isDacsSdkPreparedPayDemRailV1(rail);
   const walletSpendAuthority = options.walletSpendAuthority;
   const deferWalletReservationUntilPrepared = isDacsSdkPreparedPayDemRailV1(rail);
 
@@ -837,6 +853,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
     adapter: {
       async execute({ input, fence }) {
         const payment = capturePaymentInput(input);
+        if (!freshSettleRail) {
+          return Object.freeze({
+            effectControlVersion: "1" as const,
+            status: "operator-action" as const,
+            reasonCode: "pay-dem-rail-not-record-verifying",
+          });
+        }
         await fence.assertCurrent();
         const reservation = walletReservation(payment);
         let claim: Extract<WalletSpendReservationClaimV1, { status: "reserved" }> |
@@ -864,6 +887,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         let settlement: Readonly<SettleResult>;
         try {
           let preparedCheckpointed = false;
+          let preparedTxHash: string | undefined;
           let beginEffect: Promise<void> | undefined;
           const beginPreparedEffect = async (): Promise<void> => {
             if (!preparedCheckpointed) {
@@ -901,7 +925,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
                 },
               })
             : combineWalletSpendEffectFenceV1(actorEffectFence, claim!.permit);
-          const raw = await rail.settle({
+          const raw = await settle.call(rail, {
             recipient: payment.payee,
             amount: payment.amountOs,
             maxTotalDebitOs: payment.maxTotalDebitOs,
@@ -910,6 +934,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             journalPreparedTransfer: async (rawPrepared) => {
               const captured = capturePrepared(rawPrepared, payment);
               await fence.checkpoint(PREPARED_CHECKPOINT, captured);
+              preparedTxHash = captured.txHash;
               preparedCheckpointed = true;
             },
             assertCurrentBeforeBroadcast: async () => {
@@ -923,7 +948,16 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             );
           }
           await beginEffect;
-          if (!plainObject(raw) || raw.execution !== "executed") {
+          // #338: success needs the executed record the SDK rail read itself,
+          // for this payment's exact transfer and the hash journaled above. A
+          // rail's own `execution: "executed"` is its statement and stays held.
+          const verified = payDemRecordVerifiedTransfer(raw);
+          if (verified === undefined || !plainObject(raw) ||
+              raw.execution !== "executed" || raw.txHash !== preparedTxHash ||
+              verified.payer !== payment.payer || verified.payee !== payment.payee ||
+              verified.amountOs !== payment.amountOs ||
+              verified.network !== payment.network ||
+              verified.settlementKey !== payment.settlementKey) {
             throw new DacsPayDemBuyerPaymentError("pay-dem-chain-execution-unconfirmed");
           }
           const { execution: _execution, ...settlementData } = raw;

@@ -3,9 +3,17 @@ import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  settlementKey,
+} from "../../src/rails/idempotency.js";
+import {
   createPayDemRail,
   observeDemosExecutionByHash,
+  payDemRecordVerifiedTransfer,
   payDemSettle,
+  type PayDemSettlementReconcile,
+  type PayDemSettlementRecoveryContext,
 } from "../../src/rails/payDem.js";
 
 // #338: the status index reports `included` for a transaction the node records
@@ -40,12 +48,16 @@ vi.mock("@kynesyslabs/demosdk/websdk", () => ({
     readonly connectWallet = sdk.connectWallet;
     readonly getNetworkInfo = sdk.getNetworkInfo;
     readonly getTxByHash = sdk.getTxByHash;
-    readonly nodeCall = sdk.nodeCall;
     readonly transfer = sdk.transfer;
     readonly waitForNonce = sdk.waitForNonce;
 
     getAddress(): string {
       return WALLET;
+    }
+
+    // The node serves its fork state to `nodeCall("getNetworkInfo")` too.
+    nodeCall(message: string, args: Record<string, unknown>): Promise<unknown> {
+      return message === "getNetworkInfo" ? sdk.getNetworkInfo() : sdk.nodeCall(message, args);
     }
   },
 }));
@@ -194,6 +206,61 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  // A host that accepts any PayDemRail settles a payment only on this lookup,
+  // never on the result's `execution` string.
+  it("lists its frozen success with the exact transfer terms it signed", async () => {
+    const payDem = await rail();
+    const recovery = {
+      railId: "demos-native:DEM",
+      jobId: "job-verified",
+      phaseIndex: 0,
+      settlementKey: settlementKey("demos-native:DEM", "job-verified", 0),
+      network: "demos",
+      payer: WALLET.slice(2),
+      payee: PAYEE_HEX,
+      amountOs: AMOUNT_OS,
+    };
+    const result = await payDem.settle({
+      recipient: RECIPIENT,
+      amount: AMOUNT_OS,
+      recovery,
+    });
+
+    expect(payDemRecordVerifiedTransfer(result)).toEqual({
+      payer: WALLET.slice(2),
+      payee: PAYEE_HEX,
+      amountOs: AMOUNT_OS,
+      network: "demos",
+      settlementKey: recovery.settlementKey,
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.finality)).toBe(true);
+    expect(payDemRecordVerifiedTransfer({ ...result })).toBeUndefined();
+    expect(payDemRecordVerifiedTransfer(structuredClone(result))).toBeUndefined();
+  });
+
+  it.each([
+    ["failed", "permanent failure"],
+    ["pending", "held result"],
+  ])("lists no %s record's %s", async (status) => {
+    sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+      record.status = status;
+    }));
+    const payDem = await rail();
+
+    const result = await payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS });
+
+    expect(result.ok).toBe(false);
+    expect(payDemRecordVerifiedTransfer(result)).toBeUndefined();
+  });
+
+  it.each([undefined, null, 0, "result", Symbol("result"), {}])(
+    "lists nothing for %s",
+    (value) => {
+      expect(payDemRecordVerifiedTransfer(value)).toBeUndefined();
+    },
+  );
+
   it("accepts a record that keeps the signed wire amount and numeric nonce", async () => {
     sdk.getTxByHash.mockImplementation(recordReturning((record) => {
       record.content.amount = AMOUNT_OS;
@@ -296,6 +363,26 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
   });
 
+  // A recovery read of a record with a fee it cannot parse is indeterminate
+  // (payDemRecordRead.test.ts): a fresh payment may not complete from it either,
+  // or a restart could never re-read the success it saved.
+  it.each([
+    ["a null fee", null],
+    ["a fractional fee component", { network_fee: 1.5, rpc_fee: 0, additional_fee: 0 }],
+    ["a fee that is an array", []],
+  ])("is not ok for a confirmed record with %s, and sends once", async (_case, fee) => {
+    sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+      (record.content as Record<string, unknown>).transaction_fee = fee;
+    }));
+    const payDem = await rail();
+
+    await expect(
+      payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }),
+    ).resolves.toEqual(NOT_OK);
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["no record", async () => null],
     ["a pending record", recordReturning((record) => {
@@ -303,6 +390,16 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     })],
     ["a record without a status", recordReturning((record) => {
       delete (record as Record<string, unknown>).status;
+    })],
+    // Execution is the literal record status `confirmed`, nothing near it.
+    ["an included record", recordReturning((record) => {
+      record.status = "included";
+    })],
+    ["a finalized record", recordReturning((record) => {
+      record.status = "finalized";
+    })],
+    ["a Confirmed record", recordReturning((record) => {
+      record.status = "Confirmed";
     })],
     ["a record for another hash", recordReturning((record) => {
       record.hash = "34".repeat(32);
@@ -624,6 +721,9 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
         delete record.content;
         return record;
       }],
+    ["a record with null content",
+      "transaction record does not bind the signed nonce",
+      async () => ({ ...executedRecord(), content: null })],
     ["a failed record for another amount",
       "transaction record does not match the prepared transfer",
       async () => {
@@ -635,6 +735,53 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
     ["a failed record at another block",
       "transaction record block does not match the observed inclusion",
       async () => ({ ...executedRecord(), status: "failed", blockNumber: BLOCK + 1 })],
+    // The record body is held to the same native send as the signed body.
+    ["a record with custom charges", "transaction record does not match the prepared transfer",
+      async () => {
+        const record = executedRecord();
+        (record.content as Record<string, unknown>).custom_charges = { rpc_fee: "1" };
+        return record;
+      }],
+    ["a record of another transaction type",
+      "transaction record does not match the prepared transfer",
+      async () => {
+        const record = executedRecord();
+        (record.content as Record<string, unknown>).type = "web2Request";
+        return record;
+      }],
+    ["a record of another native operation",
+      "transaction record does not match the prepared transfer",
+      async () => {
+        const record = executedRecord();
+        record.content.data[1].nativeOperation = "tokenTransfer";
+        return record;
+      }],
+    ["a failed record with custom charges",
+      "transaction record does not match the prepared transfer",
+      async () => {
+        const record = { ...executedRecord(), status: "failed" };
+        (record.content as Record<string, unknown>).custom_charges = { rpc_fee: "1" };
+        return record;
+      }],
+    // A recovery read of a record with a fee it cannot parse is indeterminate
+    // (payDemRecordRead.test.ts), so a fresh success may not be saved from it.
+    ["a confirmed record with a null fee", "transaction record fee is malformed",
+      async () => {
+        const record = executedRecord();
+        (record.content as Record<string, unknown>).transaction_fee = null;
+        return record;
+      }],
+    ["a confirmed record with a fractional fee component",
+      "transaction record fee is malformed",
+      async () => {
+        const record = executedRecord();
+        (record.content as Record<string, unknown>).transaction_fee = {
+          network_fee: 1.5,
+          rpc_fee: 0,
+          additional_fee: 0,
+        };
+        return record;
+      }],
   ])("is indeterminate at once for %s", async (_case, reason, read) => {
     const spy = vi.fn(read);
 
@@ -647,6 +794,18 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
       async () => "Transaction not found"],
     ["a pending record", "transaction record has no terminal execution status",
       async () => ({ ...executedRecord(), status: "pending" })],
+    ["an included record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "included" })],
+    ["a finalized record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "finalized" })],
+    ["a Confirmed record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "Confirmed" })],
+    ["a FAILED record", "transaction record has no terminal execution status",
+      async () => ({ ...executedRecord(), status: "FAILED" })],
+    // Fields the binding does not compare must still be canonical JSON.
+    ["an unsafe integer in a field that is not compared",
+      "transaction record is missing or malformed",
+      async () => ({ ...executedRecord(), gcr_edits: [{ amount: 2 ** 53 + 2 }] })],
     ["a rejected read", "transaction record read failed",
       async () => {
         throw new Error("socket hang up");
@@ -686,7 +845,10 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
   const node2 = JSON.parse(readFileSync(
     new URL("../fixtures/demos-node2-records.json", import.meta.url),
     "utf8",
-  )) as { getTxByHash: Record<string, { response: Record<string, unknown> }> };
+  )) as {
+    getTxByHash: Record<string, { response: Record<string, unknown> }>;
+    getTransactionStatus: Record<string, { response: Record<string, unknown> }>;
+  };
   const PAYER = "0xc0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a";
   const PAYEE = "0x706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1";
   const CONFIRMED_HASH = "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918";
@@ -736,6 +898,14 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
       FAST,
     )).resolves.toEqual({ state: "failed" });
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("records node2's status index reporting that failed record as included", () => {
+    // Why inclusion alone is not execution: same hash, same block.
+    expect(node2.getTransactionStatus[FAILED_HASH]!.response)
+      .toEqual({ state: "included", blockNumber: 480_877 });
+    expect(node2.getTxByHash[FAILED_HASH]!.response)
+      .toMatchObject({ status: "failed", blockNumber: 480_877 });
   });
 
   it.each([
@@ -843,5 +1013,65 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     expect(sdk.confirm).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
-});
 
+  // The process dies after the record read and before the outcome write lands.
+  // The restart sees only the held intent in the durable log and must recover
+  // read-only: a confirmed record settles, a failed one stays held, and neither
+  // broadcasts again.
+  it.each([
+    ["a confirmed record", "confirmed"],
+    ["a failed record", "failed"],
+  ])("recovers %s read before death at the outcome write without rebroadcast", async (
+    _case,
+    status,
+  ) => {
+    sdk.getTxByHash.mockImplementation(recordReturning((record) => {
+      record.status = status;
+    }));
+    let clock = 1_000_000;
+    const log = createInMemorySettlementLog();
+    const putOutcome = log.putOutcome.bind(log);
+    let died = false;
+    log.putOutcome = async (input) => {
+      if (!died) {
+        died = true;
+        throw new Error("process died before the outcome write");
+      }
+      return putOutcome(input);
+    };
+    const options = { now: () => clock, leaseDurationMs: 1_000 };
+    await expect(payDemSettle(await rail(), { network: "demos" }, {
+      store: createIdempotencyStore(log, options),
+    })(request)).rejects.toThrow(/process died/);
+    expect(sdk.getTxByHash).toHaveBeenCalled();
+
+    clock += 10_000;
+    const proof = {
+      kind: "demos-failed-record", txHash: TX_HASH, nonce: NONCE, blockNumber: BLOCK,
+      payer: "ab".repeat(32), payee: PAYEE_HEX, amountOs: AMOUNT_OS,
+    };
+    const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
+      txHash: TX_HASH, chainId: context.network, payer: context.payer, payee: context.payee,
+      blockNumber: BLOCK, txRefKind: "demos", amountOs: context.amountOs,
+      ...(status === "confirmed"
+        ? { ok: true, execution: "executed", finality: { model: "bft-final" } }
+        : { ok: false, errorClass: "permanent", failureProof: proof }),
+    }));
+    const restarted = payDemSettle(await rail(), { network: "demos" }, {
+      store: createIdempotencyStore(log, options),
+      reconcile: reconcile as unknown as PayDemSettlementReconcile,
+    });
+    if (status === "confirmed") {
+      await expect(restarted(request)).resolves.toMatchObject({
+        ok: true, txHash: TX_HASH, blockNumber: BLOCK, finality: { model: "bft-final" },
+      });
+      await expect(restarted(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    } else {
+      await expect(restarted(request)).rejects.toThrow(/reconciliation was not definitive/);
+      clock += 10_000;
+      await expect(restarted(request)).rejects.toThrow(/reconciliation was not definitive/);
+    }
+    expect(sdk.transfer).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+});

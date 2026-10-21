@@ -12,8 +12,9 @@ import {
   type PayDemPreparedTransfer,
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
-import type {
-  SettlementIdempotencyStore,
+import {
+  isBindingCheckedOutcomeLookup,
+  type SettlementIdempotencyStore,
 } from "../rails/idempotency.js";
 import {
   isAuthenticatedRailDefinition,
@@ -57,7 +58,18 @@ export interface RailDispatchOptions {
    * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
    * restart recovery should supply all three of `settlementStore`,
    * `reconcile`, and `journalPreparedTransfer`; omitting them preserves the
-   * low-level process-local compatibility behavior but is not restart-safe.
+   * low-level process-local compatibility behavior (a resumed call gets the
+   * bridge's own bound result back) but is not restart-safe.
+   * A new transfer, and auditing a retained hash after a restart, need
+   * `settlementStore` to be a `createIdempotencyStore` store over a
+   * `SettlementLog` with `readOutcome` and the `putAttempt`/`readAttempt` pair
+   * (or an object carrying that store's own `once`, `readOutcome` and
+   * `readAttempt`): an injected store's
+   * own lookups never bind a hash, any other store starts no new transfer,
+   * and without that record the audit finishes only through that store's
+   * expired generation, whose reconciliation of the key must name the hash.
+   * A store over a log without the pair starts no new transfer and binds only
+   * the hashes the outcomes the log holds name.
    */
   payDem?: {
     /** Maximum transfer amount plus confirmed Demos fees, in OS base units. */
@@ -105,7 +117,7 @@ function bindDescriptorRequest(
   executor: (req: SettleRequest) => Promise<SettleResult>,
 ): (req: SettleRequest) => Promise<SettleResult> {
   const expectedPhase = descriptor.phaseHandler;
-  return async (req) => {
+  return async (req: SettleRequest): Promise<SettleResult> => {
     // Capture the two authority-bearing request fields once, then overwrite any
     // accessor/proxy values copied by the compatibility spread below. The rail
     // executor must receive the same descriptor id and phase that this gate
@@ -306,15 +318,27 @@ function captureSettlementStore(
     "once",
     "pay-dem settlement store once",
   );
-  const readOutcome = optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
-    source,
-    "readOutcome",
-    "pay-dem settlement store readOutcome",
-  );
+  // A `createIdempotencyStore` lookup is a closure over its own log; passing it
+  // unbound keeps the provenance `payDemSettle` checks before it lets that
+  // store's attempt record bind a retained hash.
+  const lookup = stableDispatchProperty(source, "readOutcome", "pay-dem settlement store readOutcome");
+  const readOutcome = lookup.found && isBindingCheckedOutcomeLookup(lookup.value)
+    ? lookup.value as NonNullable<SettlementIdempotencyStore["readOutcome"]>
+    : optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
+        source,
+        "readOutcome",
+        "pay-dem settlement store readOutcome",
+      );
+  // Another store's attempt lookup is never consulted, so it is not passed on.
+  const attempt = stableDispatchProperty(source, "readAttempt", "pay-dem settlement store readAttempt");
+  const readAttempt = attempt.found && isBindingCheckedOutcomeLookup(attempt.value)
+    ? attempt.value as NonNullable<SettlementIdempotencyStore["readAttempt"]>
+    : undefined;
   const wrapper: SettlementIdempotencyStore = {
     once: (key, binding, submit, reconcile) =>
       once(key, binding, submit, reconcile),
     ...(readOutcome === undefined ? {} : { readOutcome }),
+    ...(readAttempt === undefined ? {} : { readAttempt }),
   };
   return Object.freeze(wrapper);
 }
@@ -814,7 +838,11 @@ export async function settleFromRail(
           ? {}
           : { transactionRecordTimeoutMs }),
       });
-      return bindDescriptorRequest(descriptorIdentity, payDemSettle(rail, {
+      // Returned as itself, not behind the descriptor gate, so runSession can
+      // recognise the SDK adapter. It enforces the gate's checks: the request
+      // rail must be this descriptor's id (`railId` below) and the phase must
+      // be `pay-dem`, each read once.
+      return payDemSettle(rail, {
         ...(demRecipient === undefined
           ? {}
           : { recipient: demRecipient }),
@@ -830,7 +858,7 @@ export async function settleFromRail(
         ...(reconcile === undefined
           ? {}
           : { reconcile }),
-      }));
+      });
     }
     default:
       throw new DacsError(
