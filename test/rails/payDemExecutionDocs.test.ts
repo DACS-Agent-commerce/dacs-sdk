@@ -103,6 +103,18 @@ describe("pay-dem execution docs match the code (#338)", () => {
       "the transaction query serves each component as an OS number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it",
     );
     expect(doc).toContain("node2's recorded envelopes carry `network_fee: 1000000000`");
+    expect(doc).toContain("one with a fee in any other form (`null`, `{}`, an array, a fraction, a negative)");
+  });
+
+  it("says a recovered record is read in the denomination it was signed in", () => {
+    const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    expect(doc).toContain(
+      "the SDK reads a record in the denomination its signed payload carries, not the node's current one",
+    );
+    expect(doc).toContain("A payment saved before the fork therefore still completes after it activates.");
+    const readme = read("README.md").replace(/\s+/g, " ");
+    expect(readme).toContain("It reads the amount and fee in the denomination the record's signed payload carries");
+    expect(doc).not.toContain("a fee in any other form leaves the read indeterminate");
   });
 
   it("dates the node2 build claims and keeps the fixture historical", () => {

@@ -2322,6 +2322,51 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     },
   );
 
+  // demosdk signs in DEM numbers before the denomination fork, and the node
+  // keeps the transaction as signed after it activates.
+  test("completes a payment saved before the denomination fork after the fork activates, paying once", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+      supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    const txHash = "cd".repeat(32);
+    const payer = "ab".repeat(32);
+    const payee = sellerDid.split(":").at(-1)!;
+    const railStore = createIdempotencyStore();
+    // Before the fork the SDK rail signs 1 DEM with a 1 DEM fee.
+    Object.assign(demosNode, { postFork: false, feeOs: "1000000000" });
+    const first = await makeDeps(store, { kv, settle: payDemSettle(await sdkPayDemRail(), {}, { store: railStore }),
+      anchor: async (name, value) => {
+        if (name === sessionAnchorName.evidence("job-1")) throw new Error("evidence crash");
+        const ref = `stor:${name}`; kv.set(ref, value as Record<string, unknown>); return ref;
+      } });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("evidence crash");
+    expect((demosNode.records.get(txHash) as { content: Record<string, unknown> }).content)
+      .toMatchObject({ amount: 1, data: ["native", { nativeOperation: "send", args: [payee, 1] }] });
+    const saved = await store.load("job-1");
+    expect(saved.status === "ok" && saved.record.checkpoints.at(-1)?.data)
+      .toMatchObject({ ok: true, txHash, networkFeeOs: "1000000000" });
+    // The fork activates, and a restarted process re-reads the saved success.
+    demosNode.postFork = true;
+    const resumed = await makeDeps(store, { kv, resumeSettlement: payDemSettle(await sdkPayDemRail(), {}, {
+      store: railStore, reconcile: async (context) => ({
+        ok: true, execution: "executed", txHash, chainId: "demos", payer, payee,
+        blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, amountOs: "1000000000",
+        preparedTransfer: { txHash: "txHash" in context ? context.txHash : "", nonce: 9, payer, payee,
+          amountOs: "1000000000", denomination: "dem", network: "demos", recovery: { railId: "pay-dem",
+            jobId: "job-1", phaseIndex: 0, settlementKey: "pay-dem:job-1:0", network: "demos", payer, payee,
+            amountOs: "1000000000" } },
+      }) }) });
+    await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+      .resolves.toMatchObject({ outcome: "completed" });
+    expect(resumed.settleCalls.n).toBe(0);
+    expect(demosNode.transfers).toBe(1);
+    expect(demosNode.broadcasts).toBe(1);
+    expect(kv.get(`stor:${sessionAnchorName.evidence("job-1")}`))
+      .toMatchObject({ outcome: "success", dacsSdkSettlementPayer: payer, dacsSdkNetworkFeeOs: "1000000000" });
+  });
+
   test.each(["0", "1000000000"])("retains a payDemSettle fee of %s OS across session restart", async (networkFeeOs) => {
     const store = createInMemorySessionStore();
     const kv = new Map<string, Record<string, unknown>>();

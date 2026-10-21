@@ -760,7 +760,10 @@ A recovered native success, and any native permanent failure, is final only
 when the SDK read the node's record for that hash itself: over the rail
 `createPayDemRail` built, the adapter reads the record through that rail's own
 connection and takes its status, block, nonce, parties, amount and fee from
-it; the reconciler's answer only names the hash and can refuse, and one the
+it. It reads the amount and fee in the denomination the record's signed payload
+carries (DEM numbers before the denomination fork, OS strings after it), so a
+payment saved before the fork still completes after it activates. The
+reconciler's answer only names the hash and can refuse, and one the
 record contradicts is refused. Over any other rail the adapter returns no
 recovered verdict at all. A success or failure proof that any other
 `resumeSettlement` reports, and a failure proof that any other `settle`

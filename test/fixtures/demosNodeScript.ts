@@ -25,6 +25,7 @@ export const demosNode = {
   feeOs: undefined as string | undefined,
   /** The record status a broadcast transfer ends with. */
   recordStatus: "confirmed",
+  /** The fork state `getNetworkInfo` reports, and the form transfers are signed in. */
   postFork: true,
   /** `getTxByHash` replies by hash; a missing hash is not found (`null`). */
   records: new Map<string, unknown>(),
@@ -65,11 +66,14 @@ export function nodeRecord(input: {
   blockNumber?: number;
   status?: string;
   feeOs?: string;
+  /** How the transfer was signed: OS strings after the fork, DEM numbers before. */
+  denomination?: "os" | "dem";
 }): NodeRecord {
   return {
     hash: input.txHash,
     content: servedContent(
-      transferContent(input.payer, input.payee, input.amountOs, input.nonce ?? 9, input.feeOs),
+      transferContent(input.payer, input.payee, input.amountOs, input.nonce ?? 9, input.feeOs,
+        input.denomination ?? "os"),
     ),
     status: input.status ?? "confirmed",
     blockNumber: input.blockNumber ?? 42,
@@ -102,23 +106,34 @@ function servedContent(content: NodeRecord): NodeRecord {
   };
 }
 
+/**
+ * A signed native transfer body. demosdk 4.0.16 (`DemosTransactions.pay`) signs
+ * the amount as a decimal-string OS amount after the denomination fork and as
+ * a DEM number before it; the node stores either as signed.
+ */
 function transferContent(
   payer: string,
   payee: string,
   amountOs: string,
   nonce: number,
   feeOs: string | undefined,
+  denomination: "os" | "dem",
 ): NodeRecord {
+  const wire = (os: string): string | number => {
+    if (denomination === "os") return os;
+    if (BigInt(os) % 1_000_000_000n !== 0n) throw new Error(`pre-fork amount ${os} OS is not whole DEM`);
+    return Number(BigInt(os) / 1_000_000_000n);
+  };
   return {
     type: "native",
     from: payer,
     to: payee,
-    amount: amountOs,
+    amount: wire(amountOs),
     nonce,
-    data: ["native", { nativeOperation: "send", args: [payee, amountOs] }],
+    data: ["native", { nativeOperation: "send", args: [payee, wire(amountOs)] }],
     ...(feeOs === undefined
       ? {}
-      : { transaction_fee: { network_fee: feeOs, rpc_fee: "0", additional_fee: "0" } }),
+      : { transaction_fee: { network_fee: wire(feeOs), rpc_fee: wire("0"), additional_fee: wire("0") } }),
   };
 }
 
@@ -144,6 +159,7 @@ class MockDemos {
       hash: demosNode.nextHash,
       content: transferContent(
         demosNode.address, to, amountOs.toString(), demosNode.nonce, demosNode.feeOs,
+        demosNode.postFork ? "os" : "dem",
       ),
     };
   }

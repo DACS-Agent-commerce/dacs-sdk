@@ -96,7 +96,8 @@ async function settledLog(outcome: "executed" | "failed", network = "demos") {
 // recovery path is the SDK rail's own read of the node's record for the hash.
 describe("a recovered pay-dem verdict is the SDK rail's own read of the node record", () => {
   type Script = "failed" | "pending" | "at another block" | "for another payee" | "with another fee" |
-    "with a malformed fee" | "absent";
+    "with a malformed fee" | "with a negative fee" | "with a non-canonical fee" | "with an unsafe fee" |
+    "with a null fee" | "with an empty fee" | "with a fee list" | "absent";
   const withFee = (record: Record<string, unknown>, transaction_fee: unknown) =>
     ({ ...record, content: { ...(record.content as object), transaction_fee } });
   const scripts: Record<Script, (record: Record<string, unknown>) => unknown> = {
@@ -108,6 +109,14 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
     "with another fee": (record) => withFee(record, { network_fee: "1", rpc_fee: "0", additional_fee: "0" }),
     // Not an OS amount in either served form: never read as "no fee".
     "with a malformed fee": (record) => withFee(record, { network_fee: 0.5, rpc_fee: 0, additional_fee: 0 }),
+    "with a negative fee": (record) => withFee(record, { network_fee: -1, rpc_fee: 0, additional_fee: 0 }),
+    "with a non-canonical fee": (record) => withFee(record, { network_fee: "01", rpc_fee: 0, additional_fee: 0 }),
+    // Beyond the safe range a number is no exact JSON value: the read stops there.
+    "with an unsafe fee": (record) => withFee(record, { network_fee: 1e16, rpc_fee: 0, additional_fee: 0 }),
+    // A fee that is present is never "no fee", whatever its shape.
+    "with a null fee": (record) => withFee(record, null),
+    "with an empty fee": (record) => withFee(record, {}),
+    "with a fee list": (record) => withFee(record, [0, 0, 0]),
     "absent": () => null,
   };
   const messages: Record<Script, RegExp> = {
@@ -117,6 +126,12 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
     "for another payee": /could not establish the node record .*does not match the payment/,
     "with another fee": /contradicts the node record the SDK read/,
     "with a malformed fee": /could not establish the node record .*transaction record fee is malformed/,
+    "with a negative fee": /could not establish the node record .*transaction record fee is malformed/,
+    "with a non-canonical fee": /could not establish the node record .*transaction record fee is malformed/,
+    "with an unsafe fee": /could not establish the node record .*transaction record is not stable JSON/,
+    "with a null fee": /could not establish the node record .*transaction record fee is malformed/,
+    "with an empty fee": /could not establish the node record .*transaction record fee is malformed/,
+    "with a fee list": /could not establish the node record .*transaction record fee is malformed/,
     // node2 serves a hash from before its reset as not found.
     "absent": /could not establish the node record .*transaction record was not found/,
   };
@@ -278,4 +293,95 @@ describe("a recovered pay-dem verdict reads node2's recorded record, numeric fee
     expect(demosNode.reads).toContain(hash);
     expect(submit).not.toHaveBeenCalled();
   });
+});
+
+// The node keeps a transaction as it was signed: its denomination fork migrates
+// balances, not transaction rows. demosdk signs a transfer in DEM numbers before
+// the fork, so a payment saved then must still be read in DEM once the node
+// reports the fork active, or a paid session could never complete.
+describe("a payment signed before the denomination fork is read in DEM after it activates", () => {
+  // 1 DEM, and a 1 DEM network fee, as demosdk signs them before the fork.
+  const feeOs = "1000000000";
+  const claim = (echoFee: boolean) => vi.fn<PayDemSettlementReconcile>(async () => {
+    const { networkFeeOs: _postForkFee, ...answer } = executed();
+    return { ...answer, ...(echoFee ? { networkFeeOs: feeOs } : {}),
+      preparedTransfer: { ...journal(), denomination: "dem" as const } };
+  });
+  // `executed()` scripts a post-fork record; serve the one signed before the fork.
+  const preForkRecord = (overrides: Partial<Parameters<typeof nodeRecord>[0]> = {}) =>
+    nodeRecord({ txHash, payer, payee, amountOs: "1000000000", feeOs, denomination: "dem", ...overrides });
+
+  test.each([
+    ...(["retained-hash audit", "restart re-check", "lookup by key"] as const)
+      .flatMap((path) => [true, false].map((echoFee) => ({ path, echoFee }))),
+  ])("completes the $path from the pre-fork record, without paying again (fee echoed: $echoFee)", async ({ path, echoFee }) => {
+    const { priorAttempts: _history, ...fresh } = request();
+    const log = createInMemorySettlementLog();
+    Object.assign(demosNode, { postFork: false, feeOs });
+    if (path === "lookup by key") {
+      // A transfer whose response was lost: only the intent is in the log.
+      await expect(payDemSettle({ address: payer, settle: async () => { throw new Error("response lost"); } }, {},
+        { store: createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }) })(fresh))
+        .rejects.toThrow("response lost");
+    } else {
+      await expect(payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log) })(fresh))
+        .resolves.toMatchObject({ ok: true, txHash, networkFeeOs: feeOs });
+      expect((demosNode.records.get(txHash) as { content: { data: unknown } }).content.data)
+        .toEqual(["native", { nativeOperation: "send", args: [payee, 1] }]);
+    }
+    submit.mockClear();
+    // The fork activates; a restarted process builds a new rail.
+    demosNode.postFork = true;
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async (context) => {
+      const answer = await claim(echoFee)(context);
+      demosNode.records.set(txHash, preForkRecord());
+      return answer;
+    });
+    const settle = payDemSettle(await sdkPayDemRail(), {}, { reconcile, store: path === "lookup by key"
+      ? createIdempotencyStore(log, { owner: "b", now: () => 3, leaseDurationMs: 1 })
+      : createIdempotencyStore(log) });
+    await expect(settle(path === "retained-hash audit" ? request() : fresh))
+      .resolves.toMatchObject({ ok: true, txHash, blockNumber: 42, networkFeeOs: feeOs });
+    expect(demosNode.reads).toContain(txHash);
+    expect(submit).not.toHaveBeenCalled();
+    expect(demosNode.broadcasts).toBe(path === "lookup by key" ? 0 : 1);
+  });
+
+  // The signed payload says how the record is denominated; anything that does
+  // not read the same way in that denomination is not this payment.
+  const refusals = {
+    "signed in DEM for another amount": {
+      record: () => preForkRecord({ amountOs: "2000000000" }), postFork: true,
+      reason: /transaction record does not match the payment/ },
+    "signed in DEM, served with an OS amount": {
+      record: () => {
+        const record = preForkRecord();
+        return { ...record, content: { ...(record.content as object), amount: "1000000000" } };
+      }, postFork: true, reason: /transaction record does not match the payment/ },
+    "signed with no amount": {
+      record: () => {
+        const record = preForkRecord();
+        return { ...record, content: { ...(record.content as object),
+          data: ["native", { nativeOperation: "send", args: [payee, null] }] } };
+      }, postFork: true, reason: /transaction record does not match the payment/ },
+    "signed in OS on a node that reports the fork inactive": {
+      record: () => nodeRecord({ txHash, payer, payee, amountOs: "1000000000", feeOs }), postFork: false,
+      reason: /transaction record is signed in OS, but the node reports the denomination fork inactive/ },
+  } as const;
+  test.each(Object.keys(refusals) as (keyof typeof refusals)[])(
+    "holds a retained success whose record is %s", async (name) => {
+      const { record, postFork, reason } = refusals[name];
+      demosNode.postFork = postFork;
+      const reconcile = vi.fn<PayDemSettlementReconcile>(async (context) => {
+        const answer = await claim(false)(context);
+        demosNode.records.set(txHash, record());
+        return answer;
+      });
+      const log = await settledLog("executed");
+      await expect(fixture(reconcile, createIdempotencyStore(log)).settle(request()))
+        .rejects.toThrow(reason);
+      expect(demosNode.reads).toContain(txHash);
+      expect(submit).not.toHaveBeenCalled();
+    },
+  );
 });

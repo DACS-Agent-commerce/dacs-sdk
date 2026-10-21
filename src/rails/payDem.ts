@@ -1075,8 +1075,7 @@ function confirmedFeeComponentOs(value: unknown, postFork: boolean): bigint | nu
  * before broadcast keeps the strict form above.
  */
 function recordFeeComponentOs(value: unknown, postFork: boolean): bigint | null {
-  if (postFork && typeof value === "number" && Number.isSafeInteger(value) &&
-      value >= 0 && !Object.is(value, -0)) {
+  if (postFork && typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
     return BigInt(value);
   }
   return confirmedFeeComponentOs(value, postFork);
@@ -1582,11 +1581,38 @@ export async function observeDemosExecutionByHash(
 }
 
 /**
+ * The denomination a native transfer record was signed in, from its signed
+ * payload: demosdk signs `args[1]` as a DEM number before the denomination fork
+ * and as a decimal-string OS amount after it. The node keeps a transaction as
+ * signed (its fork migration moves balances, not transaction rows), so a record
+ * from before the fork stays in DEM after the fork activates. `null` when the
+ * payload carries no amount in either form.
+ */
+function recordSignedDenomination(transaction: Record<string, unknown>): "os" | "dem" | null {
+  const content = transaction.content;
+  if (content === null || typeof content !== "object" || Array.isArray(content)) return null;
+  const data = (content as Record<string, unknown>).data;
+  if (!Array.isArray(data) || data.length !== 2 || data[1] === null ||
+      typeof data[1] !== "object" || Array.isArray(data[1])) {
+    return null;
+  }
+  const args = (data[1] as Record<string, unknown>).args;
+  if (!Array.isArray(args) || args.length !== 2) return null;
+  if (typeof args[1] === "string") return "os";
+  if (typeof args[1] === "number") return "dem";
+  return null;
+}
+
+/**
  * Read the node's record for a hash the SDK already holds, once, for recovery.
  * The record must carry that hash, a terminal `confirmed` or `failed` status,
  * an inclusion block, and a native body whose payer, payee, amount and nonce
  * bind the payment (the nonce is the record's own: the signed hash covers it).
- * The fee is the record's `transaction_fee` in the query's projection (see
+ * The record is read in the denomination it was signed in (see
+ * `recordSignedDenomination`), not the node's current one, so a payment made
+ * before the fork is still read in DEM after it; an OS-signed record on a node
+ * that reports the fork inactive contradicts that node. The fee is the
+ * record's `transaction_fee` in the query's projection (see
  * `recordFeeComponentOs`); a record without one binds no fee. Anything else, a
  * malformed fee, a timeout or a failed read included, is indeterminate with
  * its reason; this never polls, retries or broadcasts.
@@ -1594,7 +1620,7 @@ export async function observeDemosExecutionByHash(
 async function readDemosRecordByHash(
   txHash: string,
   getTxByHash: (hash: string) => Promise<unknown>,
-  transfer: Readonly<{ payer: string; payee: string; amountOs: bigint; postFork: boolean }>,
+  transfer: Readonly<{ payer: string; payee: string; amountOs: bigint; forkActive: boolean }>,
   timeoutMs: number,
 ): Promise<SdkRecordRead> {
   const result = await boundedPromise(
@@ -1645,7 +1671,19 @@ async function readDemosRecordByHash(
   if (blockNumber === null) {
     return { state: "indeterminate", reason: "transaction record has no inclusion block" };
   }
-  if (!nativeTransferBodyMatches(identity.transaction, { ...transfer, nonce }, "confirmed")) {
+  const denomination = recordSignedDenomination(identity.transaction);
+  if (denomination === "os" && !transfer.forkActive) {
+    return {
+      state: "indeterminate",
+      reason: "transaction record is signed in OS, but the node reports the denomination fork inactive",
+    };
+  }
+  const postFork = denomination === "os";
+  if (denomination === null || !nativeTransferBodyMatches(
+    identity.transaction,
+    { payer: transfer.payer, payee: transfer.payee, amountOs: transfer.amountOs, nonce, postFork },
+    "confirmed",
+  )) {
     return { state: "indeterminate", reason: "transaction record does not match the payment" };
   }
   // A record without a fee binds none, as a confirmation without one does
@@ -1654,7 +1692,7 @@ async function readDemosRecordByHash(
   const servedFee = (content as Record<string, unknown>).transaction_fee;
   const feeOs = servedFee === undefined
     ? null
-    : confirmedTransactionFeeOs(servedFee, transfer.postFork, recordFeeComponentOs);
+    : confirmedTransactionFeeOs(servedFee, postFork, recordFeeComponentOs);
   if (servedFee !== undefined && feeOs === null) {
     return { state: "indeterminate", reason: "transaction record fee is malformed" };
   }
@@ -2119,6 +2157,8 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         cause: info.reason,
       };
     }
+    // The record's own payload decides its denomination; the node's current
+    // fork state only bounds it (no OS-signed record before the fork).
     let forkActive: unknown;
     try {
       forkActive = (snapshotCanonicalJsonRead(info.value, "pay-dem network information") as {
@@ -2133,7 +2173,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     return readDemosRecordByHash(
       expected.txHash,
       getTxByHash,
-      { payer: address, payee: expected.payee, amountOs: expected.amountOs, postFork: forkActive },
+      { payer: address, payee: expected.payee, amountOs: expected.amountOs, forkActive },
       statusRequestTimeoutMs,
     );
   });

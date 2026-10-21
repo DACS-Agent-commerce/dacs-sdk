@@ -140,8 +140,17 @@ cannot authenticate, so a fresh result from it never becomes a final verdict.
   denomination fork the transaction query serves each component as an OS
   number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it, as
   it serves `content.amount`; node2's recorded envelopes carry
-  `network_fee: 1000000000`. Both forms are read, and a fee in any other form
-  leaves the read indeterminate. A reconciler may omit the fee, and one that
+  `network_fee: 1000000000`. Both forms are read. A record without
+  `transaction_fee` binds no fee; one with a fee in any other form (`null`,
+  `{}`, an array, a fraction, a negative) leaves the read indeterminate.
+  The node keeps each transaction as it was signed: its denomination fork
+  migrates balances, not transaction rows. So the SDK reads a record in the
+  denomination its signed payload carries, not the node's current one: a
+  numeric `args[1]` (how demosdk signs before the fork) is DEM, and its amount
+  and fee components are converted at 1 DEM = 1,000,000,000 OS. A decimal
+  string is OS. A payment saved before the fork therefore still completes
+  after it activates. An OS-signed record on a node that reports the fork
+  inactive is indeterminate. A reconciler may omit the fee, and one that
   reports another fee is refused. `runSession` re-asserts a saved fee, so a
   record with another fee, or none, leaves the saved success unresolved (not
   completed, never reported unpaid).
