@@ -424,6 +424,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
         // The exception is an effect the agent answered as not final yet
         // (finish with retry): it runs again under the same effect and slot, so
         // the agent's own retained work decides, and another body still conflicts.
+        // Running it again is new work (it may sign and send): under an expired
+        // delegation (journaledOnly) it answers its last journaled answer instead.
+        if (existing?.state === 'retry' && journaledOnly) return { disposition: 'cached', status: existing.status, text: existing.response };
         const retry = existing?.state === 'retry' && !contextStep;
         if (existing && !retry) return existing.state === 'complete' ? { disposition: 'cached', status: existing.status, text: existing.response } : { disposition: 'uncertain', effectKey, owner: existing.owner };
         const time = now();
@@ -507,11 +510,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
       return row ? { status: row.status, text: row.response } : null;
     },
     // noEffect: a definite answer that started nothing (its rows go). retry:
-    // a 200 answer the agent marks as not final yet; its effect stays bound to
-    // its slot and runs again on a fresh nonce (reserve). Otherwise complete.
+    // an answer the agent marks as not final yet (a 200 answer, or a refusal
+    // of a claim whose work the agent retains); its effect stays bound to its
+    // slot and runs again on a fresh nonce (reserve). Otherwise complete.
     finish(reservation, status, text, { noEffect = false, retry = false } = {}) {
       if (Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_response_too_large', 503);
-      if (retry && (noEffect || reservation.readOnly || status !== 200)) fail('peer_store_conflict', 503);
+      if (retry && (noEffect || reservation.readOnly || !uint(status))) fail('peer_store_conflict', 503);
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (!current || current.owner !== reservation.owner || current.state !== 'pending') fail('peer_store_conflict', 503);
@@ -539,10 +543,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
     // retained work, or its start when it ended before the work checkpoint)
     // and it is not final yet; the effect goes back to `retry`, as finish would
     // leave it, so the next claim runs it again under the same slot.
-    reconcile(reservation, request, status, text, { retry = false } = {}) {
+    // noEffect (payments only): the claim ended before the agent's work
+    // checkpoint with a definite answer that kept nothing; its effect, slot
+    // and transaction go, as finish's noEffect, so another claim can start.
+    reconcile(reservation, request, status, text, { retry = false, noEffect = false } = {}) {
       requireJobId(request?.jobId);
       if (status !== 200 || Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) fail('peer_reconciliation_invalid', 503);
-      if (retry && request.path !== PAYMENT) fail('peer_reconciliation_invalid', 503);
+      if ((retry || noEffect) && request.path !== PAYMENT) fail('peer_reconciliation_invalid', 503);
+      if (retry && noEffect) fail('peer_reconciliation_invalid', 503);
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
@@ -550,8 +558,15 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxChalle
             // The context step is bound by its admission record, the other steps by the job's Agreement row.
             (request.path === CONTEXT ? !admissions || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
               : get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request)))) fail('peer_reconciliation_conflict', 503);
-        run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', retry ? 'retry' : 'complete', status, text, reservation.effectKey);
         run('UPDATE peer_nonces SET status = ?, response = ? WHERE effect = ? AND (response IS NULL OR status >= 500)', status, text, reservation.effectKey);
+        if (noEffect) {
+          run('DELETE FROM peer_effects WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_slots WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_transactions WHERE effect = ?', reservation.effectKey);
+          run('DELETE FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey);
+          return;
+        }
+        run('UPDATE peer_effects SET state = ?, status = ?, response = ? WHERE effect = ?', retry ? 'retry' : 'complete', status, text, reservation.effectKey);
       });
     },
     // The context step only: an uncertain step (finished with its 503) whose
@@ -594,7 +609,9 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     ...(typeof store.contextAdmission === 'function' ? { contextAdmission: (jobId) => store.contextAdmission(jobId) } : {}),
     ...(typeof store.contextAnswer === 'function' ? { contextAnswer: (jobId) => store.contextAnswer(jobId) } : {}),
     finish: (...args) => store.finish(...args),
-    ...(typeof store.reconcile === 'function' ? { reconcile: (...args) => store.reconcile(...args) } : {}),
+    // Handing an effect back to the retry, or releasing it, lets a later claim run it: never for an expired delegation.
+    ...(typeof store.reconcile === 'function' ? { reconcile: (reservation, request, status, text, options = {}) => readbackOnly.has(request) && (options.retry || options.noEffect)
+      ? fail('peer_delegation_expired', 408) : store.reconcile(reservation, request, status, text, options) } : {}),
     // Running a step again is new work: never for an expired delegation.
     ...(typeof store.resume === 'function' ? { resume: (reservation, request) => readbackOnly.has(request) ? fail('peer_delegation_expired', 408) : store.resume(reservation, request) } : {}),
     close: () => store.close?.(),
@@ -606,6 +623,9 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     listingPin: pin,
     store: requireDelegation ? guardedStore : store,
     requireDelegation,
+    // True for a request its expired session delegation admits only to read
+    // back already journaled effects: its reconciliation runs read only.
+    readbackOnly: (request) => readbackOnly.has(request),
     readRequest: (header) => verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) }),
     validate(request, { method, path, rawBody, body, agreement, onAuthenticatedBody }) {
       requireJobId(request?.jobId);

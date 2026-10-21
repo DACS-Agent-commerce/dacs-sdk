@@ -81,6 +81,33 @@ test('an address is signed once: the kept signed CREATE is broadcast again as th
   assert.equal(new Set(w.calls.broadcast).size, 1, 'every broadcast is the same signed bytes');
 });
 
+// A lost or replaced journal file keeps nothing of an anchor the earlier one
+// sent: it never answers `unsigned` about an attempt whose transaction it
+// did not keep. Its id is its file's; the live CREATE's projection reads back.
+test('a journal asked about a transaction it never kept refuses; its id and the live projection belong to its file', async (t) => {
+  const w = wallet(t);
+  let journal = w.open();
+  const id = journal.journalId;
+  assert.match(id, /^[0-9a-f]{32}$/);
+  assert.equal(await journal.readSignedProjection(w.input()), null, 'nothing kept, nothing to read');
+  const { txHash } = await journal.anchorEvidence(w.input());
+  const projection = await journal.readSignedProjection(w.input());
+  assert.equal(projection.hash, txHash, 'the live kept CREATE');
+  assert.equal(JSON.stringify(projection), w.calls.broadcast.at(-1), 'exactly the bytes broadcast');
+  assert.deepEqual(await journal.reconcilePaymentEvidence({ ...w.input(), attempt: { outcome: 'sent', answer: { status: 'submitted', txHash } } }), { status: 'rebroadcast', txHash }, 'its own attempt is answered');
+  journal.close();
+  journal = w.open();
+  assert.equal(journal.journalId, id, 'the same file is the same journal');
+  journal.close();
+  rmSync(w.path);
+  journal = w.open();
+  t.after(() => journal.close());
+  assert.notEqual(journal.journalId, id, 'a new file is another journal');
+  await assert.rejects(journal.reconcilePaymentEvidence({ ...w.input(), attempt: { outcome: 'sent', answer: { status: 'submitted', txHash } } }), { code: 'wallet_journal_unknown_attempt' });
+  assert.deepEqual(await journal.reconcilePaymentEvidence(w.input()), { status: 'unsigned', reason: 'the wallet journal keeps no live signed CREATE for this address' }, 'asked about no attempt, it holds nothing');
+  assert.equal(w.calls.sign, 1, 'nothing signed anew');
+});
+
 test('nothing signed is unsigned: a throw before signing or a signature that is not one keeps nothing, so the evidence can be anchored again', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());

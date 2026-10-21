@@ -454,6 +454,12 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true } });
         });
       },
+      // A signature leaves signOnce only after its completion record, written
+      // under the job fence. So a retained intent for the same bytes is a
+      // signing that released nothing (its signer threw, or its holder died or
+      // lost the job before the record): the current holder signs it again,
+      // under the same fence. Without that, one signer failure would refuse
+      // these bytes for good, a paid order's evidence included.
       signOnce(id, bytes) {
         const bytesHash = sha256Hex(bytes), jobId = scopedJob();
         return transaction(() => {
@@ -461,6 +467,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           const prior = effect(id);
           if (prior) {
             if (prior.kind !== 'signature' || prior.bytesHash !== bytesHash) fail('seller_effect_conflict');
+            if (prior.state === 'intent') return null;
             if (prior.state !== 'complete') fail('seller_signature_reconciliation_required');
             const signature = Buffer.from(prior.signature, 'base64url');
             if (!verify(null, Buffer.from(bytes), key, signature)) fail('seller_state_corrupt');
@@ -471,8 +478,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         }) ?? (() => {
           transaction(() => {
             fence(jobId);
-            if (effect(id)) fail('seller_state_busy');
-            putEffect(id, { kind: 'signature', bytesHash, state: 'intent' });
+            const prior = effect(id);
+            if (prior && !(prior.kind === 'signature' && prior.bytesHash === bytesHash && prior.state === 'intent')) fail('seller_state_busy');
+            if (!prior) putEffect(id, { kind: 'signature', bytesHash, state: 'intent' });
           });
           const signature = Buffer.from(signer.sign(Buffer.from(bytes)));
           if (signature.length !== 64 || !verify(null, Buffer.from(bytes), key, signature)) fail('seller_state_signer_invalid');

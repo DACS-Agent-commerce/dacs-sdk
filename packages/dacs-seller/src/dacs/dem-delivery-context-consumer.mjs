@@ -1,6 +1,6 @@
 // Run-time port of http-mcp/src/dacs/dem-delivery-context-consumer.mjs at
 // DACS-Agent-commerce/frontend 15fdf23: lines 1-9, 11, 13-16, 21-30, 37-99, 133-152.
-// The source lines below are unchanged except the counterparty Vet verifier (RUNTIME-PORTS.json).
+// The source lines below are unchanged except the counterparty Vet verifier and the session seller presentation (RUNTIME-PORTS.json).
 // Left out: the buyer-side resolver and its answer capture.
 // Explicit application capability for the fixed-price DEM delivery profile.
 //
@@ -14,6 +14,7 @@
 import { canonicalize, compositeVerificationAddress, identityBundleHash } from '@kynesyslabs/dacs';
 import { DEM_RAIL } from './listing.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
+import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { cutText } from '../util/text.mjs';
 
 export const DEM_DELIVERY_CONTEXT_SOURCE = 'dacs-chatgpt-plugin/dem-delivery-context/v1';
@@ -81,7 +82,9 @@ function inputProblem(input, { scope, listing, buyerBundle }) {
       || !same(verified.pin, listingPin(listing)) || !same(verified.pin, scope.listingPin)) return 'verified Listing or pin differs';
   if (!exactKeys(input.buyer, ['identityBundle', 'vetRecordRef']) || !exactKeys(input.seller, ['identityBundle', 'vetRecordRef'])) return 'party context is not exact';
   if (!same(input.buyer.identityBundle, buyerBundle) || identityBundleHash(buyerBundle) !== scope.buyerBundleHash) return 'buyer identity differs';
-  if (!same(input.seller.identityBundle, listing.seller.identity) || input.seller.identityBundle.presentedBy !== scope.seller) return 'seller identity differs';
+  // The Listing's seller bundle, or this session's presentation of exactly it.
+  const sellerProblem = sellerSessionPresentationProblem(input.seller.identityBundle, listing.seller.identity);
+  if (sellerProblem || input.seller.identityBundle.presentedBy !== scope.seller) return `seller identity differs${sellerProblem ? `: ${sellerProblem}` : ''}`;
   const vet = vetRefProblem(input.buyer.vetRecordRef, scope.jobId, scope.buyer, scope.seller, 'buyer')
     ?? vetRefProblem(input.seller.vetRecordRef, scope.jobId, scope.seller, scope.buyer, 'seller');
   if (vet) return vet;

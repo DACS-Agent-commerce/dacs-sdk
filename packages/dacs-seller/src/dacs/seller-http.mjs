@@ -22,7 +22,9 @@ export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required',
 // may follow an effect and stays uncertain; in particular, commitment_failed
 // is deliberately absent: a write may have happened. A session the seller's
 // admission did not admit (or could not answer for) kept nothing either.
-const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', ...SELLER_PRE_EFFECT_REFUSALS]);
+// A payment claim other than the one whose work the agent retains
+// (seller_native_evidence_conflict) is refused before anything of it runs.
+const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', ...SELLER_PRE_EFFECT_REFUSALS]);
 
 // Payment answers that are not final are never cached as final. Before the
 // evidence checkpoint the agent keeps nothing and answers `indeterminate`
@@ -33,8 +35,14 @@ const NO_EFFECT_ERRORS = new Set(['session_not_admitted', 'session_admission_una
 // evidence anchor again only when that readback proves it absent. A claim
 // whose effect a thrown error or a crash left uncertain runs again through
 // reconciliation, from that retained work or, when the claim ended before the
-// checkpoint (nothing sent), from its start, and goes back to the retry.
+// checkpoint (nothing sent), from its start, and goes back to the retry (or,
+// when that run kept nothing and answered `rejected` or `indeterminate`, is
+// released as a no-effect answer). Whether a claim's effect may be released
+// is the agent's retained work for exactly that claim (retainsPaymentClaim),
+// never its answer alone: once work is retained, no answer or refusal of the
+// claim releases its slot, so another claim cannot take it.
 const PAYMENT_PATH = '/dacs/v1/payments';
+const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) === true; } catch { return true; } };
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
 
@@ -118,6 +126,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   return async (req, res) => {
     let request;
     let reservation;
+    let body;
     let counted = false;
     try {
       if (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress)) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
@@ -135,7 +144,6 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') return await send(res, 415, { error: 'encoded_body_unsupported' }, null, { close: true });
       if (req.headers['content-length'] && Number(req.headers['content-length']) > MAX_BODY) return await send(res, 413, { error: 'body_too_large' }, null, { close: true });
       const rawBody = await readRequest(req, bodyTimeoutMs);
-      let body;
       try { body = admitRawJson(rawBody); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       if (authentication) {
@@ -153,16 +161,22 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           // state plus fresh authenticated native records to a response;
           // absent/unknown facts remain fenced.
           const reconcile = contextStep ? context.reconcile : typeof agent.reconcileTransport === 'function' ? agent.reconcileTransport : null;
-          const proof = reconcile && typeof authentication.store.reconcile === 'function' ? await reconcile({ request, body, rawBody }) : null;
+          // A request its expired delegation admits only for readback reconciles read only.
+          const readOnly = authentication.readbackOnly?.(request) === true;
+          const proof = reconcile && typeof authentication.store.reconcile === 'function' ? await reconcile({ request, body, rawBody, ...(readOnly ? { readOnly } : {}) }) : null;
           // The first exception: a native payment claim that ran again from
           // what the agent retained (`retry`, seller-agent.mjs
           // reconcileTransport: its retained evidence work, or its start when
           // it ended before the work checkpoint) and is not final. Its effect
           // goes back to the ordinary retry, so the next claim runs it again.
-          const retry = !contextStep && req.url === PAYMENT_PATH && proof?.disposition === 'retry';
-          if (proof?.disposition === 'present' || retry) {
+          // A start that kept nothing and answered `rejected` or
+          // `indeterminate` (`no-effect`) is released as on the ordinary path.
+          const payment = !contextStep && req.url === PAYMENT_PATH && !readOnly;
+          const retry = payment && proof?.disposition === 'retry';
+          const released = payment && proof?.disposition === 'no-effect' && !retainsClaim(agent, request.jobId, body);
+          if (proof?.disposition === 'present' || retry || released) {
             const text = JSON.stringify(proof.value);
-            authentication.store.reconcile(reservation, request, 200, text, { retry });
+            authentication.store.reconcile(reservation, request, 200, text, { retry, noEffect: released });
             if (contextStep) await context.settled({ jobId: request.jobId });
             return await send(res, 200, proof.value, request, { text: await pointed(200, text, request.jobId, req.url) });
           }
@@ -178,8 +192,13 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const text = JSON.stringify(answer);
       // A resumed context step has written before: no answer of it deletes its records.
       const payment = req.url === PAYMENT_PATH;
-      const noEffect = !reservation?.resumed && answer?.code !== 'party_vet_non_pass' && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate'));
-      if (authentication) authentication.store.finish(reservation, 200, text, { noEffect, retry: payment && !noEffect && paymentPending(answer) });
+      // A payment claim whose work the agent retains is never released: a
+      // definite answer of it (`rejected` included) is not final either, and
+      // runs again under its own slot.
+      const retained = payment && retainsClaim(agent, request?.jobId ?? body.jobId, body);
+      const noEffect = !reservation?.resumed && !retained && answer?.code !== 'party_vet_non_pass' && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate'));
+      const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
+      if (authentication) authentication.store.finish(reservation, 200, text, { noEffect, retry: payment && !noEffect && (paymentPending(answer) || (retained && !final)) });
       if (contextStep) await context.settled(reservation.contextHold);
       return await send(res, 200, answer, request, { text: await pointed(200, text, request?.jobId ?? body.jobId, req.url) });
     } catch (error) {
@@ -189,7 +208,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const status = refusal ? error.status : agentRefusal ? error.status : 503;
       const answer = refusal || agentRefusal ? { error: error.code, message: error.message } : { error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' };
       if (authentication && reservation?.disposition === 'perform') {
-        try { authentication.store.finish(reservation, status, JSON.stringify(answer), { noEffect: agentRefusal && !reservation.resumed }); } catch { /* durable intent remains uncertain */ }
+        // A refusal of a payment claim whose work the agent retains (a gate
+        // that refuses it for now) keeps its effect and slot, as a retry.
+        const retained = agentRefusal && req.url === PAYMENT_PATH && retainsClaim(agent, request?.jobId ?? body?.jobId, body);
+        try { authentication.store.finish(reservation, status, JSON.stringify(answer), retained ? { retry: true } : { noEffect: agentRefusal && !reservation.resumed }); } catch { /* durable intent remains uncertain */ }
         // The context step has ended either way: its unused write reservation
         // is released (its writes keep their own rows; it runs again only as a resume).
         if (context !== null) await context.settled(reservation.contextHold);

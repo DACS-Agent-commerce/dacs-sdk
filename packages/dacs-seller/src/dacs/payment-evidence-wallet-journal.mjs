@@ -48,11 +48,20 @@
 //    `pending` is 'pending'; `included` with getTxByHash `status: "confirmed"`
 //    is 'applied'; `included` with `status: "failed"`, or `unknown`, is 'absent'.
 //  Each read is given readTimeoutMs (default 10 s) to answer.
-// Returns { anchorEvidence, reconcilePaymentEvidence, close }: the first goes
-// into createNativePaymentEvidenceConsumer, the second is the host option.
-// createSellerAgent (and so startSellerHost) takes the two only from one
-// journal (isPaymentEvidenceWalletJournalPair): their answers are the only
-// authority for a second signature of the same evidence.
+// Returns { anchorEvidence, reconcilePaymentEvidence, readSignedProjection,
+// journalId, close }: the first goes into createNativePaymentEvidenceConsumer,
+// the second is the host option. createSellerAgent (and so startSellerHost)
+// takes the two only from one journal (isPaymentEvidenceWalletJournalPair):
+// their answers are the only authority for a second signature of the same
+// evidence. readSignedProjection({ logicalAddress }) answers the live kept
+// CREATE's public signed projection (or null), read only; the agent reads the
+// evidence back with it, so the consumer needs no reader of its own.
+// journalId names the journal's file: it is made when the file is, so a lost
+// or replaced file is another journal, which the agent never asks about an
+// anchor the earlier one kept. reconcilePaymentEvidence refuses
+// (wallet_journal_unknown_attempt) an attempt whose answer names a txHash this
+// journal never kept.
+import { randomBytes } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -75,6 +84,11 @@ const journals = new WeakMap();
 export function isPaymentEvidenceWalletJournalPair(anchorEvidence, reconcilePaymentEvidence) {
   const journal = typeof anchorEvidence === 'function' ? journals.get(anchorEvidence) : undefined;
   return journal !== undefined && journal.anchorEvidence === anchorEvidence && journal.reconcilePaymentEvidence === reconcilePaymentEvidence;
+}
+// The journal whose own anchorEvidence this is, or null.
+export function paymentEvidenceWalletJournalOf(anchorEvidence) {
+  const journal = typeof anchorEvidence === 'function' ? journals.get(anchorEvidence) : undefined;
+  return journal?.anchorEvidence === anchorEvidence ? journal : null;
 }
 
 // Why signCreate's answer is not the signed CREATE it names, or null. The fate
@@ -126,8 +140,11 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     CREATE TABLE IF NOT EXISTS evidence_creates (logical_address TEXT NOT NULL, receipt_content_hash TEXT NOT NULL,
       tx_hash TEXT NOT NULL UNIQUE, nonce INTEGER NOT NULL, signed_transaction TEXT NOT NULL, signed_at INTEGER NOT NULL,
       superseded_at INTEGER, PRIMARY KEY (logical_address, nonce));
-    CREATE UNIQUE INDEX IF NOT EXISTS evidence_creates_live ON evidence_creates (logical_address) WHERE superseded_at IS NULL;`);
-  const rows = (logicalAddress) => db.prepare('SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM evidence_creates WHERE logical_address = ? ORDER BY nonce').all(logicalAddress);
+    CREATE UNIQUE INDEX IF NOT EXISTS evidence_creates_live ON evidence_creates (logical_address) WHERE superseded_at IS NULL;
+    CREATE TABLE IF NOT EXISTS journal_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+  db.prepare("INSERT OR IGNORE INTO journal_meta VALUES ('journal-id', ?)").run(randomBytes(16).toString('hex'));
+  const journalId = db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get().value;
+  const rows =(logicalAddress) => db.prepare('SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM evidence_creates WHERE logical_address = ? ORDER BY nonce').all(logicalAddress);
   // One evidence per address: a question about other bytes at a kept address is refused.
   const keptFor = (input) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
@@ -190,6 +207,13 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
   }
 
   async function reconcilePaymentEvidence(input) {
+    // An attempt whose answer names a transaction this journal never kept was
+    // anchored through another journal (a lost or replaced file): its fate is
+    // not this journal's to answer, and `unsigned` would allow a second CREATE.
+    const named = input?.attempt?.answer?.txHash;
+    if (typeof named === 'string' && !db.prepare('SELECT 1 AS found FROM evidence_creates WHERE logical_address = ? AND tx_hash = ?').get(input.logicalAddress, named)) {
+      throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${named.slice(0, 64)} for this address`), { code: 'wallet_journal_unknown_attempt' });
+    }
     const { live: signed, superseded, reason: unread } = await liveFor(input);
     if (superseded) return { status: 'unsigned', txHash: superseded.txHash, reason: superseded.reason };
     if (!signed) return { status: 'unsigned', reason: 'the wallet journal keeps no live signed CREATE for this address' };
@@ -198,7 +222,14 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     return { status: 'rebroadcast', txHash: signed.txHash, ...(unread ? { reason: unread } : {}) };
   }
 
-  const journal = Object.freeze({ anchorEvidence, reconcilePaymentEvidence, close: () => db.close() });
+  // Read only: the live kept CREATE's public signed projection, as signCreate gave it.
+  async function readSignedProjection(input) {
+    if (!object(input) || typeof input.logicalAddress !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
+    const live = db.prepare('SELECT signed_transaction FROM evidence_creates WHERE logical_address = ? AND superseded_at IS NULL').get(input.logicalAddress);
+    return live ? JSON.parse(live.signed_transaction) : null;
+  }
+
+  const journal = Object.freeze({ anchorEvidence, reconcilePaymentEvidence, readSignedProjection, journalId, close: () => db.close() });
   journals.set(anchorEvidence, journal);
   journals.set(reconcilePaymentEvidence, journal);
   return journal;

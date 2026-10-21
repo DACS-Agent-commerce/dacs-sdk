@@ -32,7 +32,7 @@
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
 //    `requirementHash` and replayed aggregation are checked here.
-import { ARTIFACT_SEPARATORS, canonicalize, checkListingRevocation, contentHash, isCanonicalBase64Url, isCompositeVerificationRecord, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, canonicalize, checkListingRevocation, contentHash, identityBundleHash, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 
 // PROFILE.json: the exact corrective profile this package implements (the
@@ -50,6 +50,26 @@ const object = (value) => value !== null && typeof value === 'object' && !Array.
 const exactKeys = (value, keys) => object(value) && canonicalize(Object.keys(value).sort()) === canonicalize([...keys].sort());
 const same = (left, right) => { try { return canonicalize(left) === canonicalize(right); } catch { return false; } };
 const ADMITTED_KEYS = ['disposition', 'jobId', 'buyer', 'buyerBundleHash', 'listingPin', 'participants'];
+
+// Why `bundle` is not the seller's identity for a session, or null: the
+// Listing's own bundle, or a presentation of exactly it made for this session
+// (the seller's Vet provider presents it afresh to the buyer's challenge),
+// which differs only in presentedAt, sessionNonce and presentation, and whose
+// presentation the seller signed (CORE SIG-6, as a buyer bundle's). The seller
+// Vet record the buyer signs binds this bundle's hash (DACS-2 §7.7.2).
+export function sellerSessionPresentationProblem(bundle, listingIdentity) {
+  if (same(bundle, listingIdentity)) return null;
+  if (!isIdentityBundle(bundle)) return 'the seller bundle is not an IdentityBundle';
+  const fixed = ({ presentedAt: _at, sessionNonce: _nonce, presentation: _presentation, ...rest }) => rest;
+  if (!same(fixed(bundle), fixed(listingIdentity))) return 'the seller bundle is not a presentation of the Listing identity';
+  const proof = bundle.presentation?.kind === 'per-claim' && Array.isArray(bundle.presentation.signatures) && bundle.presentation.signatures.length === 1
+    && bundle.presentation.signatures.find((entry) => entry?.ref === bundle.presentedBy);
+  const valid = proof && typeof proof.signature === 'string' && proof.signature.length === 86 && isCanonicalBase64Url(proof.signature) && verifyComponent({
+    signedBytes: Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`, 'utf8'),
+    signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature },
+  });
+  return valid ? null : 'the seller bundle presentation does not verify';
+}
 
 export function sessionAdmissionConfig(value) {
   if (value == null) return null;

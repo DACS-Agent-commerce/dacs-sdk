@@ -54,7 +54,8 @@ import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProbl
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
-import { isPaymentEvidenceWalletJournalPair } from './payment-evidence-wallet-journal.mjs';
+import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
+import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
 import { nativeDemDeliveryConfig, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
 import {
@@ -103,6 +104,9 @@ const UNSENT_ANCHOR_OUTCOMES = Object.freeze(['not-sent', 'unsigned']);
 // Readback failures of retained native evidence work (the commitment and
 // Agreement readback): a retry answers them as held, with the cause.
 const RETAINED_READBACK_FAILURES = new Set(['commitment_failed', 'commitment_readback_required', 'substrate_unavailable', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'seller_agreement_readback_required']);
+// A claimed pay-dem transaction hash as core payment intake reads it
+// (lower case, without `0x`): the transport admits either form.
+const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
 // What is kept of a wallet answer: its status, transaction hash and reason, bounded.
 const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ? answer.status.slice(0, 32) : 'missing',
   ...(typeof answer?.txHash === 'string' ? { txHash: answer.txHash.slice(0, 128) } : {}), ...(typeof answer?.reason === 'string' ? { reason: answer.reason.slice(0, 240) } : {}) });
@@ -218,6 +222,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (settlementChain && !isPaymentEvidenceWalletJournalPair(nativeEvidence.anchorEvidence, reconcilePaymentEvidence)) {
     throw new TypeError('the native settlement profile takes the payment-evidence anchor and reconcilePaymentEvidence only from one createPaymentEvidenceWalletJournal: nativePaymentEvidence must anchor with its anchorEvidence');
   }
+  // That journal also keeps the exact signed CREATE, whose public projection
+  // the evidence readback needs (the name index alone cannot authenticate
+  // it): the agent reads it from the journal, read only, so a consumer
+  // composed without a reader of its own still reads its evidence back.
+  const walletJournal = settlementChain ? paymentEvidenceWalletJournalOf(nativeEvidence.anchorEvidence) : null;
   // Checked before any session, signature, read or write. These profile gates
   // (and native_evidence_required, bundle_finalization_unavailable) are
   // seller-http.mjs SELLER_PRE_EFFECT_REFUSALS: definite no-effect refusals.
@@ -503,8 +512,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             if (invocationProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${invocationProblem}` };
             // DACS-2 §7.7.1: a reference is relied on only through the record it names.
             // §7.7.2: each party's record is verified by its counterparty, the
-            // buyer's by the seller and the seller's by the buyer.
-            const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sellerBundle, session.buyerBundle.presentedBy]];
+            // buyer's by the seller and the seller's by the buyer. The seller's
+            // record is of the bundle the Agreement carries: the Listing's, or
+            // this session's presentation of exactly it, which must verify.
+            const sessionSeller = resolved.input.seller.identityBundle;
+            const presentationProblem = sellerSessionPresentationProblem(sessionSeller, sellerBundle);
+            if (presentationProblem) return { disposition: 'rejected', reason: `seller identity differs: ${presentationProblem}` };
+            const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sessionSeller, session.buyerBundle.presentedBy]];
             for (const [role, party, bundle, verifier] of parties) {
               const ref = resolved.input[role].vetRecordRef;
               const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
@@ -1006,6 +1020,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           // submission at its intent (an answer such as 'rejected' would be its retained outcome), so the
           // next holder reads back authoritative absence and submits once.
           heldFor(session.jobId)?.();
+          // Kept before the capability is asked: from here on only a readback
+          // (or the reader's proven absence) tells whether this CREATE exists.
+          session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];persist(session);
           const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:contentHash(report),deliveryBinding:binding});
           if(answer.status!=='accepted')return answer;
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,reconciliationId:answer.reconciliationId,substrate:'source-native-delivery'};
@@ -1077,6 +1094,22 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       reconcilePayloadAttestation: async () => ({ status: 'absent', reason: 'storage-program delivery has no payload attestation' }),
       reconcileDeliverySubmission: async (input) => {
         if (!await validCurrentFulfilmentFence(input.fence, session.jobId)) return { status: 'indeterminate', reason: 'delivery reconciliation fence is not current' };
+        // The runner submits again only on an absence that is authoritative: this
+        // seller never asked the capability for this fulfilment (a lost job lock
+        // or a crash before it), or the reader proved nothing was signed. A name
+        // index miss or an unavailable read is no proof (CORE §5.1): a CREATE
+        // that landed would be made twice.
+        if (nativeDelivery) {
+          if (!(session.deliverySubmitted ?? []).includes(input.fulfilmentId)) return { status: 'absent', reason: 'this seller never submitted the Deliverable for this fulfilment' };
+          const report = deliveryReport(session, work.intake.settlementId);
+          let read;
+          try { read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: input.logicalAddress, report, receiptContentHash: contentHash(report), deliveryBinding: deliveryBinding(input.fulfilmentId) }); }
+          catch (error) { return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` }; }
+          if (isProvenUnsignedAbsence(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved the Deliverable CREATE was never signed' };
+          if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
+          if (!reportMatches(read.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
+          return { status: 'accepted', reconciliationId: read.receipt.transactionRef.value };
+        }
         const record = await readDelivery(input.logicalAddress,input.fulfilmentId);
         if (!record) return { status: 'absent', reason: 'current fence registered canonical delivery absence' };
         if (!reportMatches(record.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
@@ -1107,13 +1140,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // fixture substrate, which the native profile does not have.
     if (nativeProfile) throw new SellerAgentError('native_evidence_required', 'the native seller profile takes payment only as native payment evidence', 409);
     if (session.payment) {
-      if (session.payment.txHash !== String(txHash).toLowerCase()) throw new SellerAgentError('payment_already_recorded', 'this job already has a verified payment', 409);
+      if (session.payment.txHash !== paymentTxHash(txHash)) throw new SellerAgentError('payment_already_recorded', 'this job already has a verified payment', 409);
       return publicPayment(session);
     }
     if (!session.commitment) throw new SellerAgentError('not_committed', 'the Agreement is not committed; no payment is accepted before commitment');
     if (durable) await commit({ jobId }); // fresh authenticated commitment readback
     const terms = agreementTerms(session.agreement);
-    if (session.paymentWork && (session.paymentWork.txHash !== String(txHash).toLowerCase() || session.paymentWork.payerPayingKey !== payerPayingKey)) throw new SellerAgentError('seller_payment_work_conflict', 'a different verified claim is retained for this job', 503);
+    if (session.paymentWork && (session.paymentWork.txHash !== paymentTxHash(txHash) || session.paymentWork.payerPayingKey !== payerPayingKey)) throw new SellerAgentError('seller_payment_work_conflict', 'a different verified claim is retained for this job', 503);
     const intake = session.paymentWork?.intake ?? await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash } }, intakeDepsFor(jobId));
     if ([...settlementJobs].some(([id,claims]) => claims.has(jobId) && !hasSettlementCredit(id,jobId))) return { status: 'indeterminate', reason: 'settlement-collision' };
     if (intake.disposition !== 'verified' || (intake.fulfilment !== 'claim' && intake.fulfilment !== 'already-claimed')) {
@@ -1121,7 +1154,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
     if (!bindSettlement(intake.settlementId, jobId)) return { status: 'indeterminate', reason: 'settlement-collision' };
     if (durable && !session.paymentWork) {
-      session.paymentWork = { txHash: String(txHash).toLowerCase(), payerPayingKey, intake: JSON.parse(JSON.stringify(intake)), deliveredAt: now() };
+      session.paymentWork = { txHash: paymentTxHash(txHash), payerPayingKey, intake: JSON.parse(JSON.stringify(intake)), deliveredAt: now() };
       persist(session);
     }
     const evidence = await signEvidence(structuredClone(intake.evidenceInput));
@@ -1195,7 +1228,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // after an attempt that cannot have written it) and neither an old HTTP response nor the signed seller
   // snapshot is treated as a receipt/public projection.
   async function reduceNativeEvidenceWork(session, work, { jobId, txHash, payerPayingKey }) {
-    const terms = agreementTerms(session.agreement), hash = String(txHash).toLowerCase(), intake = work?.intake;
+    const terms = agreementTerms(session.agreement), hash = paymentTxHash(txHash), intake = work?.intake;
     const held = (reason, disposition = 'indeterminate') => ({ disposition, reason });
     if (!work || session.jobId !== jobId || hash !== work.txHash || payerPayingKey !== work.payerPayingKey ||
         payerPayingKey !== session.buyerBundle.presentedBy || payerPayingKey !== terms.buyer ||
@@ -1216,9 +1249,15 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // demosEvidence.signedTransaction is canonical proof text, not a lossless
     // reconstruction of the JSON.stringify-ordered wallet signing bytes. Only
     // the exact retained public projection may be supplied as a fallback; an
-    // earlier checkpoint recovers it independently through readEvidence's
-    // explicit seller-journal reader.
-    const projection = retainedNativeEvidenceProjection(work);
+    // earlier checkpoint recovers it from the wallet journal that kept the
+    // signed CREATE (or readEvidence's own reader, which comes first). Either
+    // way the readback authenticates the bytes against the chain.
+    const retainedProjection = retainedNativeEvidenceProjection(work);
+    let projection = retainedProjection;
+    if (!projection && typeof work.publicSignedProjectionJson !== 'string' && walletJournal) {
+      try { projection = await walletJournal.readSignedProjection({ logicalAddress: work.address }); }
+      catch { projection = null; }
+    }
     const read = await nativeEvidence.readEvidence({ agreement: session.agreement, writer: claim, txHash: hash,
       blockNumber: intake.settlementIdentity.blockNumber, committedAt: session.commitment.committedAt,
       ...(projection ? { signedProjection: projection } : {}) });
@@ -1226,14 +1265,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (contentHash(read.artifact) !== intake.evidenceHash || canonicalize(read.artifact) !== canonicalize(work.evidence)) return held('seller_native_evidence_artifact_readback_mismatch', 'rejected');
     if (work.nativeReceipt && !sameNativeDeliveryReceipt(work.nativeReceipt, read.receipt)) return held('seller_native_evidence_receipt_readback_mismatch', 'rejected');
     if (work.publicSignedProjection && canonicalize(work.publicSignedProjection) !== canonicalize(read.signedProjection)) return held('seller_native_evidence_projection_readback_mismatch', 'rejected');
-    if (work.publicSignedProjectionJson && (!projection || canonicalize(projection) !== canonicalize(read.signedProjection))) return held('seller_native_evidence_projection_bytes_mismatch', 'rejected');
+    if (work.publicSignedProjectionJson && (!retainedProjection || canonicalize(retainedProjection) !== canonicalize(read.signedProjection))) return held('seller_native_evidence_projection_bytes_mismatch', 'rejected');
     // A fresh native observation may carry new observer timestamps/proofs even
     // though it authenticated the same immutable CREATE. Preserve the exact
     // receipt/projection bytes already recorded in the SDK phase result; after
     // stable identity and signed-projection checks above, those are the only
     // bytes that can resume the existing phase without rewriting its history.
     const authenticatedReceipt = work.nativeReceipt ? structuredClone(work.nativeReceipt) : structuredClone(read.receipt);
-    const authenticatedProjection = projection ? structuredClone(projection) : structuredClone(read.signedProjection);
+    const authenticatedProjection = retainedProjection ? structuredClone(retainedProjection) : structuredClone(read.signedProjection);
     work.nativeReceipt ??= structuredClone(authenticatedReceipt);
     work.publicSignedProjection ??= structuredClone(authenticatedProjection);
     work.publicSignedProjectionJson ??= JSON.stringify(authenticatedProjection);
@@ -1396,6 +1435,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
     work.anchorAttempts = (work.anchorAttempts ?? 1) + 1;
     work.anchorOutcome = 'unknown';
+    // The journal this attempt goes through: only it may later answer for it.
+    // An earlier attempt's answer is not this one's.
+    work.walletJournal = walletJournal.journalId;
+    delete work.anchorAnswer;
     persist(session);
     try {
       const answer = await nativeEvidence.anchorEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId: session.jobId, receiptContentHash: work.intake.evidenceHash });
@@ -1419,6 +1462,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // waiting. Any other answer or a throw keeps the claim held, with its cause.
   async function reconcileNativePaymentEvidence(session, work) {
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
+    // A lost or replaced journal file is another journal: it keeps nothing of
+    // this attempt, so its `unsigned` would sign a second CREATE. Not asked.
+    if (typeof work.walletJournal === 'string' && work.walletJournal !== walletJournal.journalId) {
+      work.reconcileError = { code: 'wallet_journal_changed', message: 'the wallet journal that kept this anchor attempt is not the configured one; restore its file to resolve the attempt' };
+      persist(session);
+      return;
+    }
     let answer;
     try {
       answer = await reconcilePaymentEvidence({ logicalAddress: work.address, artifact: structuredClone(work.evidence), writer: claim, artifactKind: 'SettlementEvidence', jobId: session.jobId,
@@ -1430,7 +1480,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
     work.reconcileAnswer = walletAnswer(answer);
     delete work.reconcileError;
-    if (answer?.status === 'unsigned') work.anchorOutcome = 'unsigned';
+    // 'unsigned' about a sent attempt names the transaction it superseded:
+    // the one the anchor answered. Any other is not about this attempt.
+    const sent = work.anchorAnswer?.txHash;
+    if (answer?.status === 'unsigned' && sent !== undefined && answer.txHash !== sent) {
+      work.reconcileError = { code: 'wallet_journal_answer_mismatch', message: 'the wallet journal answered unsigned for a transaction other than the one this attempt sent' };
+    } else if (answer?.status === 'unsigned') work.anchorOutcome = 'unsigned';
     persist(session);
   }
 
@@ -1457,7 +1512,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   async function submitNativePaymentEvidence({ session, jobId, txHash, payerPayingKey, requestedEvidence }) {
     if (!nativeEvidence || requestedEvidence !== NATIVE_PAYMENT_EVIDENCE) throw new SellerAgentError('native_evidence_held', 'the explicit native evidence capability/terms are absent');
     if (!session.commitment || !session.agreementAnchor) throw new SellerAgentError('not_committed', 'native Agreement and seller commitment must be retained');
-    const hash = String(txHash).toLowerCase();
+    const hash = paymentTxHash(txHash);
     let work = session.nativeEvidenceWork, retry = false;
     if (work) {
       if (work.txHash !== hash || work.payerPayingKey !== payerPayingKey || work.agreementHash !== contentHash(session.agreement)
@@ -1584,11 +1639,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // sign or submit. The one exception is a payment claim with retained native
   // evidence work: it runs that work's own retained step (submitNativePaymentEvidence),
   // whose durable anchor record governs every send, and answers `retry` while
-  // it is not final.
+  // it is not final, or `no-effect` when it ended before the work checkpoint
+  // with a definite answer that kept nothing. `readOnly` (a request whose
+  // session delegation expired) never runs it: the claim stays uncertain.
   // A transport cached answer is never evidence; retained seller-authenticated work must
   // agree with the pinned receipt authority and exact fresh native readback.
   // Local authenticated snapshots may advance after those facts are verified.
-  async function reconcileTransport({ request, body, rawBody }) {
+  async function reconcileTransport({ request, body, rawBody, readOnly = false }) {
     const held = (reason) => ({ disposition: 'indeterminate', reason });
     const same = (a, b) => canonicalize(a) === canonicalize(b);
     const session = sessions.get(request.jobId);
@@ -1725,7 +1782,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (session.nativeEvidenceWork || (nativeEvidence && body.nativePaymentEvidence === NATIVE_PAYMENT_EVIDENCE)) {
             const work = session.nativeEvidenceWork ?? null;
             if (body.nativePaymentEvidence !== NATIVE_PAYMENT_EVIDENCE || body.payerPayingKey !== request.buyer ||
-                (work && (work.txHash !== String(body.txHash).toLowerCase() || work.payerPayingKey !== request.buyer))) {
+                (work && (work.txHash !== paymentTxHash(body.txHash) || work.payerPayingKey !== request.buyer))) {
               return held('seller_native_delivery_context_mismatch');
             }
             // What the agent retained, not how an earlier request ended (a
@@ -1738,14 +1795,20 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             // every step is replay-idempotent (startNativePaymentEvidence), so
             // the same claim runs again from its start under submitPayment's
             // gates. An answer that is not final hands the effect back to the
-            // ordinary retry (`retry`, seller-http.mjs).
+            // ordinary retry (`retry`, seller-http.mjs). A run that kept no
+            // work and answered `rejected` or `indeterminate` started nothing,
+            // as on the ordinary path: `no-effect` releases the claim's slot,
+            // so a corrected claim reaches payment intake.
+            // Either run can sign and send: never under an expired delegation.
+            if (readOnly) return held('peer_delegation_expired: a payment claim runs again only under a live session delegation');
             const answer = work
               ? await submitNativePaymentEvidence({ session, jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, requestedEvidence: body.nativePaymentEvidence })
               : await submitPayment({ jobId: request.jobId, txHash: body.txHash, payerPayingKey: body.payerPayingKey, nativePaymentEvidence: body.nativePaymentEvidence });
             if (['delivery-ready','delivered'].includes(answer?.delivery?.status)) return present(answer);
+            if (!work && !session.nativeEvidenceWork && ['rejected', 'indeterminate'].includes(answer?.status)) return { disposition: 'no-effect', value: answer };
             return !work || ['held', 'payment-evidenced'].includes(answer?.status) ? { disposition: 'retry', value: answer } : held(answer?.reason ?? 'seller_native_evidence_readback_required');
           }
-          if (!session.paymentWork || session.paymentWork.txHash !== String(body.txHash).toLowerCase() || body.payerPayingKey !== request.buyer ||
+          if (!session.paymentWork || session.paymentWork.txHash !== paymentTxHash(body.txHash) || body.payerPayingKey !== request.buyer ||
               session.paymentWork.payerPayingKey !== request.buyer) return held('seller_payment_context_mismatch');
           return present(await payment());
         }
@@ -1817,6 +1880,15 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // an operator whose seller policy and resume pass read seller records
     // (sellerApproval.purchaseSource "seller"). Synchronous; never signs or reads the chain.
     durableSessionOf: durable ? (jobId) => sessionView(durable.loadSession(jobId)) : undefined,
+    // Whether this seller retains payment work for exactly this claim (its
+    // transaction and payer): the transport then never releases the claim's
+    // effect as one that started nothing. Synchronous and read only.
+    retainsPaymentClaim: (jobId, { txHash, payerPayingKey } = {}) => {
+      if (!isCanonicalJobId(jobId)) return false;
+      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      const work = session?.nativeEvidenceWork ?? session?.paymentWork;
+      return Boolean(work) && work.txHash === paymentTxHash(txHash) && work.payerPayingKey === payerPayingKey;
+    },
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     reconcile: durable ? async({ jobId }) => {
       const session=durable.loadSession(jobId);

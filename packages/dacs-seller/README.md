@@ -25,7 +25,8 @@ const host = await startSellerHost({
   deliverableProducer,  // (input) -> the deliverable bound to the Agreement and settlement
   observeDemosTransfer, // (txHash) -> pay-dem transfer observation, e.g. the core seller observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
-                         // payment evidence anchored by the wallet journal (below), and its readback
+                         // payment evidence anchored by the wallet journal (below), and its readback; the
+                         // agent reads the signed CREATE's projection from the same journal
   demDeliveryContext,    // createDemDeliveryContext(...): the Vet context the Agreement derives from
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
@@ -87,9 +88,22 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   (a crash during the first claim) nothing was sent and every step is
   replay-idempotent, so the same claim runs again from its start, under the
   same gates. Either way the claim then goes back to the same retry, so a
-  paid order is never stranded. Until a gate that refuses the claim (a closed
-  buyer access, an unusable rail) passes again, its claims answer `503
-  operation_uncertain` and run again on the next one.
+  paid order is never stranded; a first claim that ran again from its start
+  and kept nothing (a transfer not on the node, an underpaid one) is released
+  as on the ordinary path, so the buyer's corrected claim reaches payment
+  intake. Until a gate that refuses the claim (a closed buyer access, an
+  unusable rail) passes again, its claims answer `503 operation_uncertain` and
+  run again on the next one. Once the agent retains work for a claim, no
+  answer or refusal of it releases its slot: a different claim for the job is
+  refused until it is delivered. A transaction hash is read as core payment
+  intake reads it (lower case, with or without `0x`). Under a seller session
+  delegation that has expired, a held claim answers its last answer and an
+  uncertain one stays uncertain: neither runs again, since a run can sign and
+  send. The Deliverable is submitted again only on an absence that is
+  authoritative (the agent never asked for it, or the delivery reader proved
+  nothing was signed); a readback that misses or fails holds the delivery. A
+  seller signature whose signer failed released nothing, so the next holder of
+  the job signs the same bytes again.
 - Payment evidence is anchored through `nativePaymentEvidence`'s
   `anchorEvidence` (DACS-4 PC-7(b), write-once) and answered for by the
   required `reconcilePaymentEvidence`. The agent, whether the host composes
@@ -156,7 +170,14 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   `included` with `status: "failed"`, or `unknown`, is `absent`.
   The journal keeps the signed CREATE and its nonce in its SQLite file (a
   private 0600 file) before it broadcasts it, and keeps at most one live signed
-  CREATE per address. While that CREATE can still be included, the journal
+  CREATE per address. Its `readSignedProjection({ logicalAddress })` answers
+  that CREATE's public projection, read only; the agent authenticates the
+  evidence readback with it. The file has its own `journalId`: the agent keeps
+  it with each anchor attempt and never asks another journal (a lost or
+  replaced file) about that attempt, so such a file holds the claim (`held`,
+  `reconcileError.code: "wallet_journal_changed"`) instead of signing a second
+  CREATE; restore the file to resolve it. The journal also refuses
+  (`wallet_journal_unknown_attempt`) an attempt whose `txHash` it never kept. While that CREATE can still be included, the journal
   broadcasts the same signed bytes again (`rebroadcast`, or `pending` when the
   broadcast fails). The node never executes a transaction whose nonce the
   account has reached: it refuses it, or includes it as failed. So once the
@@ -250,7 +271,11 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   `pass` decision (DACS-2 §7.7.1). It must be signed by the party's
   counterparty verifier, which the reference names as `signer` (DACS-2
   §7.7.2): the buyer's record by this seller, the seller's own record by the
-  buyer. The context's Vet requirement invocations go into the delivery
+  buyer. The seller's bundle in the context is the Listing's, or a
+  presentation of exactly that identity made for the session (another
+  `presentedAt` and `sessionNonce`, as the package's Vet provider presents it
+  to the buyer's challenge) whose presentation the seller signed; the seller's
+  record must be of that bundle. The context's Vet requirement invocations go into the delivery
   audit source, so the agent checks them with the SDK delivery runner's own
   check (`sellerFulfilmentVetRequirementsViolation`) before it signs: exactly
   one per record, evaluating its party, naming that counterparty as

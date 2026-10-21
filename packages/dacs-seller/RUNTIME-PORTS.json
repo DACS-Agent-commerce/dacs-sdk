@@ -296,11 +296,21 @@
           "vetRefProblem(input.seller.vetRecordRef, scope.jobId, scope.seller, scope.seller, 'seller')",
           "vetRefProblem(input.seller.vetRecordRef, scope.jobId, scope.seller, scope.buyer, 'seller')",
           "the counterparty Vet verifier"
+        ],
+        [
+          "import { listingPin, protocolSupport } from './purchase-protocol.mjs';\n",
+          "import { listingPin, protocolSupport } from './purchase-protocol.mjs';\nimport { sellerSessionPresentationProblem } from './session-admission.mjs';\n",
+          "the session seller presentation"
+        ],
+        [
+          "  if (!same(input.seller.identityBundle, listing.seller.identity) || input.seller.identityBundle.presentedBy !== scope.seller) return 'seller identity differs';\n",
+          "  // The Listing's seller bundle, or this session's presentation of exactly it.\n  const sellerProblem = sellerSessionPresentationProblem(input.seller.identityBundle, listing.seller.identity);\n  if (sellerProblem || input.seller.identityBundle.presentedBy !== scope.seller) return `seller identity differs${sellerProblem ? `: ${sellerProblem}` : ''}`;\n",
+          "the session seller presentation"
         ]
       ],
       "omitted": "the buyer-side resolver and its answer capture",
       "sourceSha256": "6757fcc43ed5c02cecc83673834174383d64b51741700458f4e9e7adb7758ef8",
-      "sha256": "08e64abdf526bb1b724d8c1a3ab0bb96f491ff44816282bb845379669c0f8f94"
+      "sha256": "8cff1873c0a72820411395d6704acfb44607c5050b0b1b4310c7e2a6883ad48e"
     },
     {
       "target": "src/dacs/agreement-context-consumer.mjs",

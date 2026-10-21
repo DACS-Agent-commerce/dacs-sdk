@@ -14,6 +14,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import * as core from '@kynesyslabs/dacs';
 import * as seller from '../src/index.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
@@ -167,8 +168,15 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // transfer, as another tool holding the seller's key could write);
 // `faults.readAccountNonce`: 'throw'. `restartWallet()` reopens the journal.
 // The host requires the journal's question (reconcilePaymentEvidence);
-// `reconcile: false` leaves it out.
-async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true } = {}) {
+// `reconcile: false` leaves it out. `projectionReader: false` composes the
+// evidence consumer as the README does, without a reader of its own.
+// `sellerPresentation`: 'session' gives the Vet context a fresh seller
+// presentation of the Listing identity, as the package's Vet provider makes,
+// 'forged' one not signed by the seller. `faults.sign`: 'throw-evidence' fails
+// the seller signer's next SettlementEvidence signature; `faults.deliverySubmit`: 'fail' refuses
+// before signing, 'land-lose-lock' lands the Deliverable and then the job's
+// seller-state lock row is lost, so nothing after it is recorded.
+async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -192,7 +200,19 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], published: [], signCreate: [], signed: [], broadcast: [] };
-  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], beforeDeliveryReconcile: async () => {} };
+  const faults = { deliverySubmit: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {} };
+  const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
+  const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
+    if (faults.sign[0] === 'throw-evidence' && evidenceBytes(bytes)) { faults.sign.shift(); throw new Error('TEST the seller signer failed'); }
+    return sellerKey.sign(bytes);
+  } };
+  // A seller bundle for the session: the Listing identity presented afresh.
+  const sessionSeller = (signerKey) => {
+    const { presentation: _publication, ...identity } = listing.seller.identity;
+    const bundle = { ...identity, presentedAt: now, sessionNonce: core.sha256Hex(`TEST seller session ${Math.random()}`) };
+    const signature = signerKey.sign(Buffer.from(`dacs-bundle-presentation:v1:${core.identityBundleHash(bundle)}`)).toString('base64url');
+    return { ...bundle, presentation: { kind: 'per-claim', signatures: [{ ref: sellerKey.claim, signature }] } };
+  };
 
   // The operator's Vet context for each job: references to the
   // counterparty-verified records its session admission keeps (DACS-2 §7.7.2).
@@ -200,8 +220,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const vettedInput = async (jobId) => {
     if (!inputs.has(jobId)) {
       const buyerBundle = buyerBundleFor(jobId), input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
+      const sellerBundle = sellerPresentation ? sessionSeller(sellerPresentation === 'forged' ? buyerKey : sellerKey) : listing.seller.identity;
       inputs.set(jobId, { ...input, buyer: { ...input.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
-        seller: { ...input.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: listing.buyerRequirement }) } });
+        seller: { identityBundle: sellerBundle, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, sellerBundle, { requirement: listing.buyerRequirement }) } });
     }
     return clone(inputs.get(jobId));
   };
@@ -280,8 +301,10 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   t.after(() => journal.close());
   // Reopens the wallet's journal: the host started after it anchors with the new one.
   const restartWallet = () => { journal.close(); journal = openJournal(); };
+  // Another journal file (the earlier one lost, moved or misconfigured).
+  const replaceWallet = (file) => { journal.close(); journal = openJournal(file); };
   const evidenceConsumer = (anchorEvidence) => createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl, anchorEvidence,
-    readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) });
+    ...(projectionReader ? { readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) } : {}) });
   const demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-host-native-delivery',
     resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
     resolveSeller: async ({ jobId }) => {
@@ -297,8 +320,10 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const nativeDemDelivery = createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
     submit: async (input) => {
       effects.deliverySubmit.push(input.logicalAddress);
-      if (faults.deliverySubmit.shift() === 'fail') throw new Error('TEST delivery wallet refused before signing');
+      const fault = faults.deliverySubmit.shift();
+      if (fault === 'fail') throw new Error('TEST delivery wallet refused before signing');
       writeOnce(input.logicalAddress, input.report, 'Deliverable', input.deliveryBinding);
+      if (fault === 'land-lose-lock') loseJobLock(input.logicalAddress.slice('dacs4:deliverable:'.length));
       return { status: 'accepted', reconciliationId: signedCreates.get(input.logicalAddress).hash };
     },
     reconcile: async (input) => {
@@ -314,12 +339,15 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
 
   const dataDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-native-')));
   t.after(() => rmSync(dataDirectory, { recursive: true, force: true }));
+  // The job's seller-state lock row is lost (a raw DELETE): its holder records nothing more.
+  const loseJobLock = (jobId) => { const db = new DatabaseSync(join(dataDirectory, 'seller', 'seller-state.sqlite')); try { db.prepare('DELETE FROM seller_locks WHERE job=?').run(jobId); } finally { db.close(); } };
+  const rails = { authority: steward.railAuthority() };
   const hosts = [];
   t.after(async () => { for (const host of hosts) await host.close(); });
-  const capabilities = () => ({ signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing,
+  const capabilities = () => ({ signer: sellerSigner, listing,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer,
     observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); },
-    nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: steward.railAuthority(),
+    nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: rails.authority,
     sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}) });
   const start = async () => {
     const host = await seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor });
@@ -339,7 +367,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     const client = () => seller.createSellerAgentClient({ url: host.url, authentication: seller.createSellerTransportClientAuth({
       buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock }) });
     const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundleFor(jobId) });
-    assert.equal(answer.disposition, 'complete', 'the seller signs the vetted Agreement');
+    assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);
     const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
     assert.equal((await client().commit(jobId)).status, 'committed');
@@ -375,11 +403,23 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   };
   // startSellerHost over these capabilities with `changes` (for refusals).
   const startShipped = (changes) => seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor, ...changes });
+  // The host stopped and its agent composed over the same state (the caller closes it).
+  const agentFor = async () => {
+    await host.close(); hosts.splice(hosts.indexOf(host), 1);
+    return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor });
+  };
+  // A buyer-signed payment claim as the transport authenticates it.
+  const signedClaim = async (p, txHash) => {
+    const body = { jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }, text = JSON.stringify(body);
+    const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim,
+      resolveJob: () => ({ listingPin: pin, agreementHash: p.agreementHash }), now: clock }).request('/dacs/v1/payments', body, text);
+    return { request: payload, body, rawBody: Buffer.from(text) };
+  };
   const createsAt = (logicalAddress) => node.creates.filter((entry) => entry.logicalAddress === logicalAddress).length;
   const signedCreate = (logicalAddress) => clone(signedCreates.get(logicalAddress));
   const writtenAt = (logicalAddress) => clone(written.get(logicalAddress));
-  return { node, effects, faults, purchase, restart, restartWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
-    createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing };
+  return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
+    createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
@@ -892,4 +932,160 @@ test('settlement credit is checked again before the Deliverable is sent: a claim
   const retained = await w.retainedSession(a.jobId);
   assert.equal(retained.settlementCredit, 'indeterminate');
   assert.deepEqual([retained.deliveryHold?.result?.decision, retained.deliveryHold?.result?.code], ['rejected', 'payment-permit-invalid'], shown(retained.deliveryHold));
+});
+
+// A crash during a first claim that is not a valid payment (a transfer the
+// node does not have, or an underpaid one): the restarted host runs it again
+// from its start; it keeps nothing, so its effect is released as on the
+// ordinary path and the buyer's corrected claim is delivered.
+test('a crash during a first claim that keeps nothing does not bind the job to it: the corrected claim after the restart is delivered', async (t) => {
+  const w = await world(t);
+  for (const [label, wrong] of [['a transfer the node does not have', () => 'ab'.repeat(32)], ['an underpaid transfer', (p) => w.node.pay({ from: w.buyerKey.address, to: p.payout.payeeAddress, amountOs: '1' })]]) {
+    const p = await w.purchase(), first = wrong(p);
+    await w.crashMidClaim(p, first);
+    const reconciled = await p.claim(first);
+    assert.ok(['indeterminate', 'rejected'].includes(reconciled.status), `${label}: ${shown(reconciled)}`);
+    const tx = p.pay(), answer = await p.claim(tx);
+    assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
+    assert.equal(answer.delivery?.status, 'delivery-ready', `${label}: ${shown(answer.delivery)}`);
+    assert.deepEqual((await p.claim(first)).error, 'peer_operation_conflict', `${label}: the paid claim now holds the job`);
+    assert.equal(w.createsAt(paymentAddress(p)), 1, label);
+  }
+});
+
+// The README composes the evidence consumer with only the journal's anchor;
+// the agent reads the signed CREATE's public projection from that journal.
+test('a consumer composed as the README shows, without a projection reader, takes a paid order to delivery: the agent reads the projection from the wallet journal', async (t) => {
+  const w = await world(t, { projectionReader: false });
+  const p = await w.purchase(), tx = p.pay();
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
+  assert.deepEqual(answer.signedProjection, w.signedCreate(paymentAddress(p)), 'the journal\'s exact signed CREATE');
+  await w.restart();
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.deepEqual(w.effects.signCreate, [paymentAddress(p)]);
+  assert.deepEqual(await w.walletJournal().readSignedProjection({ logicalAddress: paymentAddress(p) }), w.signedCreate(paymentAddress(p)));
+  assert.equal(await w.walletJournal().readSignedProjection({ logicalAddress: `${paymentAddress(p)}:TEST-other` }), null);
+});
+
+// A Deliverable that landed while the seller's records after it were lost: a
+// later run reads it back first and never submits it again on a name-index miss.
+test('a landed Deliverable whose records were lost is not submitted again while its readback lags: one CREATE, then delivery', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`, name = core.logicalToStorageProgramName(deliverable);
+  w.faults.deliverySubmit.push('land-lose-lock');
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the job lost its lock during the submission');
+  await w.restart();
+  for (const claim of [1, 2]) {
+    const held = await p.claim(tx);
+    assert.notEqual(held.delivery?.status, 'delivery-ready', `claim ${claim}: ${shown(held)}`);
+  }
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
+  w.node.faults.indexEmpty = () => false;
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
+// The package's Vet provider presents the seller's Listing identity afresh for
+// each session (to the buyer's challenge): the seller accepts that exact
+// presentation, signed by itself, and refuses one it did not sign.
+test('the seller takes its own session presentation from the Vet context to delivery, and refuses one it did not sign', async (t) => {
+  const w = await world(t, { sellerPresentation: 'session' });
+  const p = await w.purchase(), tx = p.pay();
+  const seller = p.agreement.parties.find((party) => party.role === 'seller');
+  assert.notEqual(seller.bundleHash, core.identityBundleHash(w.listing.seller.identity), 'the Agreement carries the session presentation');
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  const forged = await world(t, { sellerPresentation: 'forged' });
+  await assert.rejects(forged.purchase(), /the seller signs the vetted Agreement: .*seller identity differs: the seller bundle presentation does not verify/);
+});
+
+// A signer that fails while signing the payment evidence released no
+// signature: the next claim signs the same evidence and the order is delivered.
+test('a seller signer failure while signing the payment evidence does not strand the paid order, also across a restart', async (t) => {
+  const w = await world(t);
+  for (const restart of [false, true]) {
+    const p = await w.purchase(), tx = p.pay();
+    w.faults.sign.push('throw-evidence');
+    const refused = await p.claim(tx);
+    assert.deepEqual([refused.status, refused.reason, refused.step], ['rejected', 'seller_native_evidence_not_started', 'evidence-signing'], shown(refused));
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', `restart ${restart}: ${shown(answer)}`);
+    assert.equal(w.createsAt(paymentAddress(p)), 1);
+  }
+});
+
+// The transport admits a 0x-prefixed transaction hash; the agent reads it as
+// core payment intake does.
+test('a payment claimed with a 0x-prefixed transaction hash is delivered, its evidence naming the plain hash', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay();
+  const answer = await p.claim(`0x${tx}`);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(w.writtenAt(paymentAddress(p)).paymentTxRefs[0].txHash, tx);
+  assert.equal((await p.claim(`0x${tx}`)).delivery?.status, 'delivery-ready');
+});
+
+// A held paid claim whose next run a gate refuses (a rotated steward key
+// refuses its pinned rail) keeps its effect and slot: a different claim in the
+// meantime is refused, never bound to the job, and the paid claim is delivered.
+test('a gate that refuses a held paid claim for now keeps it bound to the job: another claim cannot take it, and the claim is delivered once the gate passes', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), name = core.logicalToStorageProgramName(paymentAddress(p)), original = w.rails.authority;
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  assert.equal((await p.claim(tx)).status, 'held');
+  w.rails.authority = w.otherRail(); await w.restart();
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the pinned rail is refused for now');
+  w.rails.authority = original; await w.restart();
+  const second = p.pay();
+  for (const other of [`0x${tx}`, second]) assert.equal((await p.claim(other)).error, 'peer_operation_conflict', `another claim (${other.slice(0, 6)}) is refused`);
+  w.node.faults.indexEmpty = () => false;
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  await w.restart();
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+});
+
+// DACS-4 PC-7(b): a lost or replaced wallet-journal file keeps nothing of the
+// anchor already sent; the agent never asks it about that attempt, so nothing
+// is signed twice, and the order goes on once the one CREATE reads back.
+test('a replaced wallet-journal file never signs a second evidence CREATE for an anchor the earlier one sent', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  assert.equal((await p.claim(tx)).anchorOutcome, 'sent');
+  w.replaceWallet('replaced-wallet-journal.sqlite'); await w.restart();
+  for (const claim of [1, 2]) {
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', `claim ${claim}: ${shown(held)}`);
+    assert.equal(held.reconcileError?.code, 'wallet_journal_changed', shown(held));
+  }
+  assert.deepEqual(w.effects.signCreate, [address], 'signed once');
+  assert.equal(w.createsAt(address), 1);
+  w.node.faults.indexEmpty = () => false;
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.equal(w.createsAt(address), 1);
+});
+
+// The agent's own reconciliation of an uncertain payment claim for a request
+// whose session delegation expired (readOnly) runs nothing that can sign or send.
+test('read-only reconciliation of a held payment claim neither signs nor sends: it is not run again', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  assert.equal((await p.claim(tx)).status, 'held');
+  const agent = await w.agentFor();
+  try {
+    const before = { signCreate: [...w.effects.signCreate], broadcast: w.effects.broadcast.length };
+    const proof = await agent.reconcileTransport({ ...(await w.signedClaim(p, tx)), readOnly: true });
+    assert.equal(proof.disposition, 'indeterminate', shown(proof));
+    assert.match(proof.reason, /peer_delegation_expired/);
+    assert.deepEqual({ signCreate: w.effects.signCreate, broadcast: w.effects.broadcast.length }, before, 'nothing signed or broadcast');
+    assert.equal((await agent.reconcileTransport(await w.signedClaim(p, tx))).disposition, 'retry', 'control: a live request runs the retained work');
+  } finally { agent.close(); }
 });
