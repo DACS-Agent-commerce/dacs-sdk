@@ -480,10 +480,64 @@ export async function inspectGeneratedBackupV1(input: Readonly<{
   return manifest;
 }
 
+interface SdkVersionV1 {
+  core: readonly [number, number, number];
+  prerelease: readonly string[];
+}
+
+const SDK_VERSION_IDENTIFIER = "[0-9A-Za-z-]+";
+const SDK_VERSION = new RegExp(
+  "^(0|[1-9][0-9]*)\\\\.(0|[1-9][0-9]*)\\\\.(0|[1-9][0-9]*)" +
+  "(?:-(" + SDK_VERSION_IDENTIFIER + "(?:\\\\." + SDK_VERSION_IDENTIFIER + ")*))?" +
+  "(?:\\\\+" + SDK_VERSION_IDENTIFIER + "(?:\\\\." + SDK_VERSION_IDENTIFIER + ")*)?$",
+);
+
+function parseSdkVersionV1(value: unknown): SdkVersionV1 | null {
+  if (typeof value !== "string") return null;
+  const match = SDK_VERSION.exec(value);
+  if (match === null) return null;
+  const core = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  if (!core.every((part) => Number.isSafeInteger(part))) return null;
+  return { core, prerelease: match[4] === undefined ? [] : match[4].split(".") };
+}
+
+// SemVer 2.0.0 precedence, build metadata ignored.
+function compareSdkVersionsV1(left: SdkVersionV1, right: SdkVersionV1): number {
+  for (let index = 0; index < 3; index += 1) {
+    if (left.core[index] !== right.core[index]) {
+      return left.core[index]! < right.core[index]! ? -1 : 1;
+    }
+  }
+  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
+    return left.prerelease.length === right.prerelease.length ? 0
+      : left.prerelease.length === 0 ? 1 : -1;
+  }
+  const shared = Math.min(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < shared; index += 1) {
+    const a = left.prerelease[index]!;
+    const b = right.prerelease[index]!;
+    if (a === b) continue;
+    const aNumeric = a.split("").every((char) => char >= "0" && char <= "9");
+    const bNumeric = b.split("").every((char) => char >= "0" && char <= "9");
+    if (aNumeric && bNumeric) return Number(a) < Number(b) ? -1 : 1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return a < b ? -1 : 1;
+  }
+  return left.prerelease.length === right.prerelease.length ? 0
+    : left.prerelease.length < right.prerelease.length ? -1 : 1;
+}
+
 export function assertGeneratedBackupRestorableV1(
   manifest: Readonly<BackupManifestV1>,
 ): void {
-  if (manifest.release.sdkVersion !== VERSION ||
+  // The generated upgrade procedure restores a backup from the previous
+  // release into the new project, so older SDK versions are admitted and newer
+  // or unparseable ones refused. Data compatibility is gated by the release's
+  // declared metadata: Standard revision, configuration schema, and SQLite
+  // schema plus supported migration sources.
+  const created = parseSdkVersionV1(manifest.release.sdkVersion);
+  const running = parseSdkVersionV1(VERSION);
+  if (created === null || running === null || compareSdkVersionsV1(created, running) > 0 ||
       manifest.release.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
       manifest.release.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION ||
       manifest.release.sqliteSchemaVersion > DACS_NODE_SQLITE_SCHEMA_VERSION ||
@@ -491,7 +545,9 @@ export function assertGeneratedBackupRestorableV1(
         !DACS_NODE_SUPPORTED_SQLITE_MIGRATION_SOURCES.some(
           (version) => version === manifest.release.sqliteSchemaVersion,
         ))) {
-    throw new Error("restore-backup-release-incompatible");
+    throw new Error("restore-backup-release-incompatible: backup created by SDK " +
+      (created === null ? "(unparseable version)" : manifest.release.sdkVersion) +
+      ", running SDK " + VERSION);
   }
 }
 

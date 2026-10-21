@@ -49,33 +49,53 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-it("admits the current SDK and supported schemas, refusing other SDK releases", async () => {
-  const { api } = await lifecycle();
+it("admits backups from this or an earlier SDK, refusing newer or unparseable ones", async () => {
+  const { api } = await lifecycle("1.2.3-beta.2");
   const manifest = { release: {
     sdkVersion: release.version,
     standardRevision: release.dacs.standardRevision,
     configSchemaVersion: release.dacs.configSchemaVersion,
     sqliteSchemaVersion: release.dacs.sqliteSchemaVersion,
   } };
-  expect(() => api.assertGeneratedBackupRestorableV1(manifest)).not.toThrow();
-  for (const sdkVersion of ["0.0.0", "999.0.0", "invalid", ""]) {
-    expect(() => api.assertGeneratedBackupRestorableV1({
-      ...manifest, release: { ...manifest.release, sdkVersion },
-    })).toThrow("restore-backup-release-incompatible");
+  const withSdk = (sdkVersion: unknown) => ({
+    ...manifest, release: { ...manifest.release, sdkVersion },
+  });
+  for (const sdkVersion of [
+    "1.2.3-beta.2", "1.2.3-beta.2+build.7", "1.2.3-beta.1", "1.2.3-beta", "1.2.3-alpha.9",
+    "1.2.3-2", "1.2.2", "1.1.9", "0.0.0", "0.1.0-alpha.0",
+  ]) {
+    expect(() => api.assertGeneratedBackupRestorableV1(withSdk(sdkVersion)), sdkVersion)
+      .not.toThrow();
   }
-  for (const sqliteSchemaVersion of [0, release.dacs.sqliteSchemaVersion + 1]) {
+  for (const sdkVersion of [
+    "1.2.3", "1.2.3-beta.3", "1.2.3-beta.10", "1.2.3-beta.2.0", "1.2.3-gamma", "1.2.4",
+    "1.3.0", "2.0.0", "999.0.0", "invalid", "", "01.2.3", "1.2", "1.2.3-", "v1.2.3",
+    "1.2.3\n", 123, null, undefined,
+  ]) {
+    expect(() => api.assertGeneratedBackupRestorableV1(withSdk(sdkVersion)), String(sdkVersion))
+      .toThrow("restore-backup-release-incompatible");
+  }
+  // The other declared compatibility metadata still gates an older SDK's backup.
+  for (const changed of [
+    { standardRevision: "another-revision" },
+    { configSchemaVersion: release.dacs.configSchemaVersion + 1 },
+    { sqliteSchemaVersion: 0 },
+    { sqliteSchemaVersion: release.dacs.sqliteSchemaVersion + 1 },
+  ]) {
     expect(() => api.assertGeneratedBackupRestorableV1({
-      ...manifest, release: { ...manifest.release, sqliteSchemaVersion },
+      release: { ...manifest.release, sdkVersion: "1.2.2", ...changed },
     })).toThrow("restore-backup-release-incompatible");
   }
   expect(() => api.assertGeneratedBackupRestorableV1({
-    ...manifest, release: { ...manifest.release, sqliteSchemaVersion: 1 },
+    release: { ...manifest.release, sdkVersion: "1.2.2", sqliteSchemaVersion: 1 },
   })).not.toThrow();
+  expect(() => api.assertGeneratedBackupRestorableV1(withSdk("2.0.0")))
+    .toThrow("backup created by SDK 2.0.0, running SDK 1.2.3-beta.2");
+  expect(() => api.assertGeneratedBackupRestorableV1(withSdk("nope")))
+    .toThrow("backup created by SDK (unparseable version), running SDK 1.2.3-beta.2");
 });
 
-it("rejects an authenticated backup from another SDK before replacing actor directories", async () => {
-  const { root, api: current } = await lifecycle();
-  const { api: previous } = await lifecycle("0.0.0");
+async function populatedPaths(root: string) {
   const paths = {
     buyer: join(root, "buyer"), seller: join(root, "seller"),
     authKeyFile: join(root, "backup-auth.hex"),
@@ -85,8 +105,35 @@ it("rejects an authenticated backup from another SDK before replacing actor dire
     await writeFile(join(directory, "actor.sqlite"), "backup", { mode: 0o600 });
   }
   await writeFile(paths.authKeyFile, "12".repeat(32), { mode: 0o600 });
+  return paths;
+}
+
+it("restores a previous-release backup into the regenerated project (documented upgrade path)", async () => {
+  const { root, api: current } = await lifecycle("0.2.0");
+  const { api: previous } = await lifecycle("0.1.0");
+  const paths = await populatedPaths(root);
   const backupDirectory = join(root, "backup");
   const backup = await previous.createGeneratedBackupV1({ outputDirectory: backupDirectory, paths });
+  expect(backup.release.sdkVersion).toBe("0.1.0");
+  for (const directory of [paths.buyer, paths.seller]) {
+    await writeFile(join(directory, "actor.sqlite"), "regenerated");
+  }
+  const restored = await current.restoreGeneratedBackupV1({
+    backupDirectory, expectedBackupId: backup.backupId,
+    safetyBackupDirectory: join(root, "safety"), paths,
+  });
+  expect(restored.backupId).toBe(backup.backupId);
+  for (const directory of [paths.buyer, paths.seller]) {
+    expect(await readFile(join(directory, "actor.sqlite"), "utf8")).toBe("backup");
+  }
+});
+
+it("rejects an authenticated backup from a newer SDK before replacing actor directories", async () => {
+  const { root, api: current } = await lifecycle();
+  const { api: newer } = await lifecycle("999.0.0");
+  const paths = await populatedPaths(root);
+  const backupDirectory = join(root, "backup");
+  const backup = await newer.createGeneratedBackupV1({ outputDirectory: backupDirectory, paths });
   for (const directory of [paths.buyer, paths.seller]) {
     await writeFile(join(directory, "actor.sqlite"), "current");
   }

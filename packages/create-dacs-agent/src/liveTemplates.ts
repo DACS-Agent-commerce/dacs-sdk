@@ -4211,7 +4211,11 @@ test("authenticated lifecycle backup restores both roles and rejects tampering",
     paths,
   });
   assert.equal(backup.backupId, "11111111-1111-4111-8111-111111111111");
-  for (const sdkVersion of ["0.0.0", "999.0.0", "invalid", ""]) {
+  assert.doesNotThrow(() => assertGeneratedBackupRestorableV1({
+    ...backup,
+    release: { ...backup.release, sdkVersion: "0.0.0" },
+  }));
+  for (const sdkVersion of ["999.0.0", "invalid", ""]) {
     assert.throws(() => assertGeneratedBackupRestorableV1({
       ...backup,
       release: { ...backup.release, sdkVersion },
@@ -4954,10 +4958,13 @@ Backup stops both services and writes separate buyer/seller data trees plus a
 keyed manifest into a new directory. Restore is plan-only unless
 \`DACS_RESTORE_CONFIRM=1\` is supplied for that invocation; it authenticates and
 rehashes every file, creates a separate safety backup, then replaces both actor
-directories with rollback on partial failure. Restore requires the exact creating
-SDK version, including patch releases. Reinstall the retained creating project
-and exact lockfile with \`npm ci\` before restore, then follow the supported
-upgrade procedure after recovery. Example:
+directories with rollback on partial failure. Restore admits a backup created by
+this or an earlier SDK release, so a backup taken before the supported upgrade
+procedure restores into the regenerated project. It refuses a backup from a newer
+or unparseable SDK version, or with a different Standard revision, configuration
+schema or unsupported SQLite schema; the error names both SDK versions. For
+rollback, reinstall the retained project and exact lockfile with \`npm ci\`
+first. Example:
 
 \`\`\`bash
 npm run dacs:restore -- --from ../backups/agent-YYYYMMDD \\

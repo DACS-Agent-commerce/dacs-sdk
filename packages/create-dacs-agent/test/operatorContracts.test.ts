@@ -87,7 +87,9 @@ describe("generated operator contracts", () => {
     }
     if (rails !== "x402") expect(readme).toContain("--max-total-debit-dem 3");
     if (!nativeOnly) expect(readme).toContain("--max-network-fee-eth 0.001");
-    expect(readme).toContain("exact creating\nSDK version, including patch releases");
+    expect(readme).toContain("Restore admits a backup created by\nthis or an earlier SDK release");
+    expect(readme).toContain("refuses a backup from a newer\nor unparseable SDK version");
+    expect(readme).not.toContain("exact creating");
     // Self-reported node build metadata is a reported fact, never a gate.
     expect(files["src/doctor.ts"]).toContain(
       "buyerNodeBuild: inspectDacsDemosNodeCompatibilityV1(infos[0]).reasonCode",
