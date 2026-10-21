@@ -351,6 +351,7 @@ describe("bundle signature HTTP transport", () => {
   it.each([
     ["buyer-audit-native-finality-invalid", "rejected"],
     ["buyer-audit-native-execution-unconfirmed", "pending"],
+    ["buyer-audit-native-observation-unavailable", "pending"],
   ] as const)("maps native DEM audit reason %s to a %s request", async (reasonCode, outcome) => {
     const buyerDatabase = await open("buyer");
     const error = Object.assign(new Error(reasonCode), { reasonCode });

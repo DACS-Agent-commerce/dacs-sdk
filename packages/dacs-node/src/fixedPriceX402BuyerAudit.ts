@@ -745,6 +745,12 @@ export function createDacsFixedPriceBuyerAuditV1(
         const sellerReceivingKey = sellerKey === null
           ? undefined : Buffer.from(sellerKey).toString("hex");
         const expectedAmountOs = baseUnits(agreement.terms.price.amount, 9);
+        if (observation.status === "pending" || observation.status === "not-found" ||
+            observation.status === "unavailable") {
+          throw new DacsFixedPriceX402BuyerAuditError(
+            "buyer-audit-native-observation-unavailable",
+          );
+        }
         if (observation.status !== "included" || buyerPayingKey === undefined ||
             sellerReceivingKey === undefined || observation.txHash !== event.txHash ||
             observation.blockNumber !== event.blockNumber ||

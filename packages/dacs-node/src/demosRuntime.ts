@@ -456,7 +456,7 @@ export async function createDacsDemosActorRuntimeV1(
         // The wrapper relays its inner rail's result object unchanged, so its
         // success can be final exactly when the inner rail's can (#338).
         if (isPayDemRecordVerifyingRail(uncoordinated)) {
-          payDemRail = markDacsRecordVerifyingPayDemRailV1(payDemRail);
+          payDemRail = markDacsRecordVerifyingPayDemRailV1(payDemRail, uncoordinated);
         }
       }
     } catch {

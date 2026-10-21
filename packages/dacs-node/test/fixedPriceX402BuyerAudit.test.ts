@@ -908,6 +908,8 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     ]),
     ...["initial", "revalidation"].map((stage) =>
       ({ stage, execution: "executed", nonce: 7, status: "pending" })),
+    ...["unavailable", "not-found", "failed", "invalid"].map((status) =>
+      ({ stage: "initial", execution: undefined, nonce: undefined, status })),
   ])("requires executed native DEM at $stage with status $status, attestation $execution and nonce $nonce", async ({ stage, execution, nonce, status }) => {
     const f = await payDemFixture();
     const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-buyer-audit-"));
@@ -1024,7 +1026,14 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
         authenticated, request: f.preliminaryRequest as never,
       })).rejects.toMatchObject({ reasonCode: status === "included"
         ? "buyer-audit-native-execution-unconfirmed"
-        : "buyer-audit-native-finality-invalid" });
+        : ["pending", "not-found", "unavailable"].includes(status)
+          ? "buyer-audit-native-observation-unavailable"
+          : "buyer-audit-native-finality-invalid" });
+      if (["pending", "not-found", "unavailable"].includes(status)) {
+        await expect(audit.bundleTransport.resolveVerification({
+          authenticated, request: f.preliminaryRequest as never,
+        })).resolves.toHaveProperty("input");
+      }
       if (status === "included") {
         // A conflicting transfer still rejects whether or not it executed.
         observeDemosTransfer.mockResolvedValueOnce(

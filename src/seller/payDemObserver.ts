@@ -11,8 +11,10 @@ const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const INCLUDED_STATE = "included";
 // `getTransactionStatus` exposes the normative Demos inclusion state. The
 // transaction projection returned by `getTxByHash` labels an executed record
-// `confirmed`; the pinned node (61b8e75) writes only `confirmed`, `failed` and
+// `confirmed`; the historical node (61b8e75) writes only `confirmed`, `failed` and
 // `pending`, so `included` and `finalized` come only from other clients.
+// These recorded testnet envelopes predate its reset on or after 2026-10-20;
+// the reported dirty build is not an exact pin of deployed source.
 // These labels are accepted only while the independent status and confirmed
 // block checks below establish inclusion; the body label is never sufficient.
 // Inclusion is not execution: only a literal `confirmed` record with a valid

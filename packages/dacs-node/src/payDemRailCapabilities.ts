@@ -2,6 +2,7 @@ import type { PayDemRail } from "@kynesyslabs/dacs";
 
 const deferredWalletReservationRails = new WeakSet<object>();
 const recordVerifyingRuntimeRails = new WeakSet<object>();
+const runtimeRecordReadingRails = new WeakMap<object, Readonly<PayDemRail>>();
 
 /** Internal capability: only the SDK-owned Demos runtime may mark its default rail. */
 export function markDacsSdkPreparedPayDemRailV1<T extends Readonly<PayDemRail>>(
@@ -24,9 +25,18 @@ export function isDacsSdkPreparedPayDemRailV1(
  */
 export function markDacsRecordVerifyingPayDemRailV1<T extends Readonly<PayDemRail>>(
   rail: T,
+  source?: Readonly<PayDemRail>,
 ): T {
   recordVerifyingRuntimeRails.add(rail);
+  if (source !== undefined) runtimeRecordReadingRails.set(rail, source);
   return rail;
+}
+
+/** Internal: recover through the SDK connection behind the runtime wrapper. */
+export function dacsPayDemRecordReadingRailV1(
+  rail: Readonly<PayDemRail>,
+): Readonly<PayDemRail> {
+  return runtimeRecordReadingRails.get(rail) ?? rail;
 }
 
 /**

@@ -325,8 +325,8 @@ the SDK can make final: the default runtime rail, a rail
 `isPayDemRecordVerifyingRail` accepts, or the runtime's wrapper around such a
 rail. With any other rail a fresh payment stops for operator action
 (`pay-dem-rail-not-record-verifying`) before any wallet reservation. The track
-is still built around such a rail, so a payment it made before reconciles
-through the operator reconciler without calling it. The track settles the
+can still be built around such a rail, but recovery stays held unless its
+connection has an SDK-owned record reader. Recovery never calls `settle`. The track settles the
 wallet authority and publishes a payment notice for a fresh rail result only
 when `payDemRecordVerifiedTransfer` lists it with this payment's payer, payee,
 amount, network and settlement key, and its hash is the one this invocation
@@ -337,13 +337,22 @@ key, leaves the payment indeterminate with the wallet reservation retained. A
 rail that relays the SDK's own result object unchanged, such as the default
 runtime rail, keeps it. That default rail also reports success only after the
 SDK's Demos adapter reconciles the wallet journal to `canonical-confirmed`.
-Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, must
-return `completed` only after reading a bound `confirmed` record, and the
-completed settlement carries `execution: "executed"` with that record's signed
-`nonce`. The track checks the attestation against the prepared checkpoint before
-it settles the wallet or publishes a notice: any other execution value leaves
-the payment indeterminate, and a missing checkpoint or another hash or nonce
-needs an operator.
+Its operator reconciler type, `DacsPayDemBuyerChainReconciliationV1`, proposes
+`completed` with `execution: "executed"` and the record's signed `nonce`.
+The track checks those fields against the prepared checkpoint, then independently
+calls `readPayDemTransferRecord` through the connection `createPayDemRail` opened.
+The runtime wrapper retains that connection for recovery. The read binds the
+exact hash, native-send payload, payer, payee, amount and network; the track also
+requires the prepared signed nonce, the proposed inclusion block and the
+checkpoint's confirmed debit. A pending, missing or unavailable record stays
+indeterminate, a failed or conflicting record cannot complete, and a custom
+rail without this SDK reader stays held. Every recovery retry repeats the read
+before wallet reconciliation or notice publication, including a retry after
+notice queueing failed. It never signs or broadcasts.
+
+This unreleased V1 reconciliation contract requires the execution/nonce fields
+and an SDK-owned record read. Integrators must use `createPayDemRail` or the
+runtime's wrapper around it when upgrading.
 
 ## Finality
 

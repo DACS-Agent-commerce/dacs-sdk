@@ -594,9 +594,14 @@ accounting and the payment notice held; and an executed one completes only
 when its `nonce` equals the prepared signed nonce (otherwise it needs an
 operator). A custom `reconcile` callback's completed settlement carries
 `execution: "executed"` and that `nonce`. The payment track checks it against
-the prepared checkpoint itself: without a checkpoint, or with another
-`txHash` or `nonce`, the payment needs an operator, and no wallet accounting or
-notice happens.
+the prepared checkpoint and independently re-reads the exact native record
+through the SDK rail's connection (`readPayDemTransferRecord`), including when
+using the runtime wrapper. A callback alone cannot finalize recovery: a pending,
+missing or unavailable record stays held; a failed or conflicting record cannot
+complete. The read binds the hash, parties, amount and network, and the track
+checks the signed nonce, inclusion block and checkpoint's confirmed debit before
+wallet accounting or notice publication. A rail without an SDK-owned record
+reader stays held. Recovery never signs or broadcasts.
 
 The funded boundary test is disabled by default. It requires two independent
 Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), an

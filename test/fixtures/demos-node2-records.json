@@ -3,6 +3,7 @@
     "node": "https://node2.demos.sh",
     "reportedVersion": "0.9.9 RC",
     "reportedCommit": "kynesyslabs/node stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+    "history": "Historical envelopes: the testnet reset on or after 2026-10-20; these hashes and blocks are no longer available from node2. Later node2 reported 11e7c8207732e25035de5a04cab25c5346046493, also a dirty build.",
     "sourcePin": "none: node2 reports a dirty build (nodeVersion.dirty is true), so the reported commit is the nearest source, not the deployed source; the tests use only these recorded envelopes",
     "read": "2026-10-15, read-only nodeCall; raw JSON-RPC envelopes as served",
     "failedStatusRead": "2026-10-20, read-only nodeCall: getTransactionStatus for the failed record 85b8fc...; the node reports a stored failed transaction as included",

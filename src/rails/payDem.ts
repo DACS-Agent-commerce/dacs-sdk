@@ -126,6 +126,36 @@ type SdkRecordReader = (expected: Readonly<{
 const sdkRailRecordReaders = new WeakMap<object, SdkRecordReader>();
 
 /**
+ * Read a retained native transfer through the connection createPayDemRail
+ * opened, without signing or broadcasting. The SDK binds the record's hash,
+ * native-send body, parties and amount; callers must also bind its returned
+ * nonce and block to their retained checkpoint and proposed settlement.
+ * A caller-built rail has no SDK reader and cannot establish execution.
+ */
+export async function readPayDemTransferRecord(
+  rail: Readonly<PayDemRail>,
+  expected: Readonly<Pick<PayDemPreparedTransfer,
+    "txHash" | "payer" | "payee" | "amountOs" | "network">>,
+): Promise<SdkRecordRead> {
+  const captured = snapshotCanonicalJsonRead(expected, "pay-dem retained transfer") as
+    typeof expected;
+  const txHash = canonicalDemosTxHash(captured.txHash);
+  const payer = normalizedDemosAccount(captured.payer);
+  const payee = normalizedDemosAccount(captured.payee);
+  if (txHash === null || payer === null || payee === null ||
+      captured.network !== "demos" || typeof captured.amountOs !== "string" ||
+      !/^[1-9][0-9]*$/.test(captured.amountOs)) {
+    return { state: "indeterminate", reason: "retained transfer is invalid" };
+  }
+  const settle = stableMethodTarget(rail, "settle", "pay-dem rail settle");
+  const reader = sdkRailRecordReaders.get(settle);
+  if (reader === undefined) {
+    return { state: "indeterminate", reason: "rail has no SDK transaction record reader" };
+  }
+  return reader(Object.freeze({ txHash, payer, payee, amountOs: BigInt(captured.amountOs) }));
+}
+
+/**
  * The functions `payDemSettle` returned. Private like the sets above: SDK code
  * passes such a function on as itself, never as a wrapper, so `runSession`
  * can tell that a native verdict came through this bridge. Over the rail

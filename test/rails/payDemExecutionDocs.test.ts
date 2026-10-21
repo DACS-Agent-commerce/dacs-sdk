@@ -140,8 +140,12 @@ describe("pay-dem execution docs match the code (#338)", () => {
       "With any other rail a fresh payment stops for operator action (`pay-dem-rail-not-record-verifying`) before any wallet reservation.",
     );
     expect(doc).toContain(
-      "so a payment it made before reconciles through the operator reconciler without calling it",
+      "recovery stays held unless its connection has an SDK-owned record reader",
     );
+    expect(doc).toContain("independently calls `readPayDemTransferRecord`");
+    expect(doc).toContain("Every recovery retry repeats the read");
+    expect(read("packages/dacs-node/src/payDemPayment.ts"))
+      .toMatch(/readPayDemTransferRecord\(/);
     expect(doc).not.toContain("refused when the track is built");
     expect(read("packages/dacs-node/src/payDemPayment.ts"))
       .toMatch(/payDemRecordVerifiedTransfer\(raw\)/);
@@ -219,6 +223,8 @@ describe("pay-dem execution docs match the code (#338)", () => {
     const source = read("src/rails/payDem.ts").replace(/\s*\*\s*/g, " ");
     expect(doc).not.toMatch(/node2 reports [0-9a-f]{7}/);
     expect(source).not.toMatch(/node2 reports [0-9a-f]{7}/);
+    expect(read("src/seller/payDemObserver.ts")).toContain("historical node");
+    expect(read("test/fixtures/demos-node2-records.json")).toContain("testnet reset");
     expect(doc).toContain("Later on 2026-10-20 node2 reported `11e7c8207732e25035de5a04cab25c5346046493`");
     expect(doc).toContain("`stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308`");
     expect(source).toContain("stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308");

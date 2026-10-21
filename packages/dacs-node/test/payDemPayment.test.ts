@@ -147,7 +147,9 @@ beforeEach(() => {
   }));
   demosSdk.broadcast.mockResolvedValue({ result: 200, response: { hash: TX_HASH } });
   demosSdk.nodeCall.mockImplementation(async (message: string) =>
-    message === "getAddressNonce" ? 6 : { state: "included", blockNumber: 42 });
+    message === "getAddressNonce" ? 6
+      : message === "getNetworkInfo" ? { forks: { osDenomination: { activated: true } } }
+      : { state: "included", blockNumber: 42 });
   demosSdk.getTxByHash.mockImplementation(async () => {
     const validity = demosSdk.broadcast.mock.calls.at(-1)?.[0] as {
       response: { data: { transaction: { content: Record<string, unknown> } } };
@@ -608,7 +610,7 @@ describe("native DEM buyer payment track", () => {
 
   async function composedGeneratedRail(
     directory: string,
-    innerRail: Readonly<PayDemRail>,
+    innerRail: Readonly<PayDemRail> | undefined,
     events: string[],
   ): Promise<Readonly<{
     rail: Readonly<PayDemRail>;
@@ -649,14 +651,15 @@ describe("native DEM buyer payment track", () => {
         instrumentJournal(journal, events);
         return adapter;
       },
-      createPayDemRail: async () => innerRail,
+      ...(innerRail === undefined ? {} : { createPayDemRail: async () => innerRail }),
     });
     if (runtime.payDem === undefined) throw new Error("expected native DEM rail");
     // T1 independently proves the default factory marks this exact frozen
     // wrapper. Marking here composes that capability with a deterministic
     // inner-rail fixture without replacing the real wrapper or journal.
     return Object.freeze({
-      rail: markDacsSdkPreparedPayDemRailV1(runtime.payDem.rail),
+      rail: innerRail === undefined ? runtime.payDem.rail
+        : markDacsSdkPreparedPayDemRailV1(runtime.payDem.rail),
       journal,
     });
   }
@@ -956,85 +959,6 @@ describe("native DEM buyer payment track", () => {
     expect(await walletSpendAuthority.inspect()).toMatchObject({
       assets: [{ cumulativeSettledDebit: "0" }],
     });
-  });
-
-  it.each([
-    ["missing network fee", undefined, "executed"],
-    ["missing execution", "1000000000", undefined],
-    ["inclusion-only execution", "1000000000", "included"],
-    ["confirmed alias execution", "1000000000", "confirmed"],
-    ["boolean execution", "1000000000", true],
-    ["null execution", "1000000000", null],
-  ])("keeps funded wallet settlement indeterminate with %s", async (
-    _label, networkFeeOs, execution,
-  ) => {
-    const database = await open(join(root(), "buyer.sqlite"));
-    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
-    const publishNotice = vi.fn();
-    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
-      wallet: PAYER,
-      chainId: "demos",
-      asset: "DEM",
-      maximumConcurrentEffects: 1,
-    });
-    let submissions = 0;
-    const rail = markDacsSdkPreparedPayDemRailV1<PayDemRail>({
-      address: PAYER,
-      async settle(input) {
-        submissions += 1;
-        await input.journalPreparedTransfer!({
-          txHash: TX_HASH,
-          nonce: 7,
-          payer: PAYER,
-          payee: PAYEE,
-          amountOs: AUTHORITY.amountOs,
-          network: "demos",
-          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
-          recovery: input.recovery!,
-        });
-        await input.assertCurrentBeforeBroadcast!();
-        return {
-          ok: true,
-          ...(execution === undefined ? {} : { execution }),
-          txHash: TX_HASH,
-          chainId: "demos",
-          payer: PAYER,
-          payee: PAYEE,
-          finality: { model: "bft-final" },
-          blockNumber: 42,
-          txRefKind: "demos",
-          ...(networkFeeOs === undefined ? {} : { networkFeeOs }),
-        } as unknown as PayDemRailResult;
-      },
-    });
-    const payment = createDacsPayDemBuyerPaymentTrackV1({
-      walletSpendAuthority,
-      database,
-      workerId: "buyer-dem-missing-fee",
-      rail,
-      resolveAuthority: () => AUTHORITY,
-      reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
-      publishNotice,
-    });
-    const coordinator = createFixedPricePayDemBuyerCoordinator({
-      store: database.createPayDemCoordinatorStore("buyer"),
-      workerId: "buyer-coordinator-missing-fee",
-      operations: { agreement: success, payment },
-    });
-
-    await coordinator.startOrder(ORDER);
-    await coordinator.runPending({ limit: 2 });
-
-    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
-      .toMatchObject({ state: "indeterminate" });
-    expect(publishNotice).not.toHaveBeenCalled();
-    expect(await walletSpendAuthority.inspect()).toMatchObject({
-      activeEffects: 1,
-      assets: [{ cumulativeSettledDebit: "0" }],
-    });
-    await coordinator.runPending({ limit: 2 });
-    expect(submissions).toBe(1);
-    expect(publishNotice).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1660,10 +1584,8 @@ describe("native DEM buyer payment track", () => {
     expect(settle).not.toHaveBeenCalled();
   });
 
-  // Refusing the rail when the track is built would strand a payment it made
-  // before the upgrade. Recovery settles the wallet and publishes the notice
-  // from the reconciliation without calling the rail.
-  it("reconciles an unmarked custom rail's retained payment without calling the rail", async () => {
+  // A retained checkpoint and a callback cannot create an SDK record reader.
+  it("holds an unmarked custom rail's retained payment without calling settle", async () => {
     const settle = vi.fn<PayDemRail["settle"]>();
     const authority = createPermissiveTestWalletSpendAuthorityV1();
     const reserve = vi.fn<WalletSpendAuthorityV1["reserve"]>();
@@ -1702,18 +1624,96 @@ describe("native DEM buyer payment track", () => {
     });
 
     await expect(payment(operation)).resolves.toMatchObject({
-      status: "final",
-      outcome: "success",
-      authenticationHash: TX_HASH,
+      status: "indeterminate",
+      reasonCode: "pay-dem-chain-execution-unconfirmed",
     });
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({
       prepared: expect.objectContaining({ txHash: TX_HASH, nonce: 7 }),
     }));
-    expect(walletReconcile).toHaveBeenCalledOnce();
-    expect(publishNotice).toHaveBeenCalledOnce();
-    expect(writes).toEqual(["reconciliation:performed"]);
+    expect(walletReconcile).not.toHaveBeenCalled();
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect(writes).toEqual(["reconciliation:indeterminate"]);
     expect(reserve).not.toHaveBeenCalled();
     expect(settle).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["direct", "pending"], ["direct", "failed"],
+    ["runtime wrapper", "pending"], ["runtime wrapper", "failed"],
+    ["direct", "confirmed"], ["runtime wrapper", "confirmed"],
+    ["direct", "wrong nonce"], ["direct", "wrong block"],
+    ["direct", "wrong payee"], ["direct", "wrong amount"],
+    ["direct", "wrong hash"], ["direct", "unavailable"],
+  ] as const)("rechecks the SDK record on %s restart despite a forged %s completion", async (
+    setup, recordStatus,
+  ) => {
+    const checkpoints = new Map<string, unknown>();
+    const first = retainedEffectDatabase("fresh", checkpoints);
+    const rail = await sdkPayDemRailSigning(TX_HASH, 7);
+    const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      database: first.database, workerId: "buyer-before-record-recheck", rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
+      publishNotice: () => { throw new Error("notice queue unavailable"); },
+    });
+    await expect(firstPayment(first.operation)).resolves.toMatchObject({ status: "indeterminate" });
+    expect(checkpoints.has("pay-dem-prepared-transfer")).toBe(true);
+    expect(demosSdk.broadcast).toHaveBeenCalledOnce();
+    const record = await demosSdk.getTxByHash(TX_HASH);
+    demosSdk.getTxByHash.mockImplementation(async () => {
+      if (recordStatus === "unavailable") throw new Error("test node unavailable");
+      return { ...record,
+        status: ["pending", "failed"].includes(recordStatus) ? recordStatus : "confirmed",
+        ...(recordStatus === "wrong hash" ? { hash: "e".repeat(64) } : {}),
+        ...(recordStatus === "wrong block" ? { blockNumber: 43 } : {}),
+        content: { ...record.content,
+          ...(recordStatus === "wrong nonce" ? { nonce: "8" } : {}),
+          ...(recordStatus === "wrong payee" ? { to: "e".repeat(64) } : {}),
+          ...(recordStatus === "wrong amount" ? { amount: "2" } : {}),
+        },
+      };
+    });
+    // Recovery must read fork state afresh, rather than the demosdk cache.
+    demosSdk.nodeCall.mockResolvedValue({ forks: { osDenomination: { activated: true } } });
+    demosSdk.getTxByHash.mockClear();
+    const restarted = retainedEffectDatabase("reconcile", checkpoints);
+    const recoveryRail = setup === "direct" ? rail
+      : (await composedGeneratedRail(root(), undefined, [])).rail;
+    const baseWallet = createPermissiveTestWalletSpendAuthorityV1();
+    const walletReconcile = vi.fn(baseWallet.reconcile);
+    const publishNotice = vi.fn();
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: { ...baseWallet, reconcile: walletReconcile },
+      database: restarted.database, workerId: "buyer-after-record-recheck", rail: recoveryRail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: setup === "runtime wrapper"
+        ? createDacsFixedPricePayDemBuyerReconciliationV1(async () => ({
+            status: "included", execution: "executed", nonce: 7,
+            txHash: TX_HASH, payer: PAYER, payee: PAYEE, amountOs: AUTHORITY.amountOs,
+            blockNumber: 42, includedAt: 1_000,
+          }))
+        : ({ prepared }) => ({ status: "completed", settlement: {
+        execution: "executed", nonce: prepared!.nonce, ok: true,
+        txHash: prepared!.txHash, chainId: "demos", payer: PAYER, payee: PAYEE,
+        finality: { model: "bft-final" }, blockNumber: 42, txRefKind: "demos",
+        amountOs: AUTHORITY.amountOs, networkFeeOs: "1000000000",
+      } }),
+      publishNotice,
+    });
+    const outcome = await payment(restarted.operation);
+    if (recordStatus === "confirmed") {
+      expect(walletReconcile).toHaveBeenCalledOnce();
+      expect(publishNotice).toHaveBeenCalledOnce();
+      expect(outcome).toMatchObject({ status: "final", outcome: "success" });
+    } else {
+      expect(walletReconcile).not.toHaveBeenCalled();
+      expect(publishNotice).not.toHaveBeenCalled();
+      expect(outcome.status).not.toBe("final");
+    }
+    expect(demosSdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
+    expect(demosSdk.broadcast).toHaveBeenCalledOnce();
+    expect(demosSdk.transfer).toHaveBeenCalledOnce();
   });
 
   // The crash point between settling the wallet and queueing the notice: the
@@ -2007,33 +2007,11 @@ describe("native DEM buyer payment track", () => {
     }));
     expect(vi.mocked(reconcile).mock.calls[0]?.[0].prepared)
       .not.toHaveProperty("denomination");
-    if (!("execution" in attestation) || attestation.execution !== "executed") {
-      expect(publishNotice).not.toHaveBeenCalled();
-      expect(walletReconcile).not.toHaveBeenCalled();
-      expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
-        state: "indeterminate", reasonCode: "pay-dem-chain-execution-unconfirmed",
-      });
-      return;
-    }
-    expect(walletReconcile).toHaveBeenCalledTimes(1);
-    expect(publishNotice).toHaveBeenCalledWith(expect.objectContaining({
-      notice: expect.objectContaining({ settlement: {
-        ok: true,
-        txHash: TX_HASH,
-        chainId: "demos",
-        payer: PAYER,
-        payee: PAYEE,
-        finality: { model: "bft-final" },
-        blockNumber: 43,
-        txRefKind: "demos",
-      } }),
-    }));
-    expect(vi.mocked(publishNotice).mock.calls[0]?.[0].notice.settlement)
-      .not.toHaveProperty("networkFeeOs");
-    expect(vi.mocked(publishNotice).mock.calls[0]?.[0].notice.settlement)
-      .not.toHaveProperty("execution");
-    expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment)
-      .toMatchObject({ state: "final", outcome: "success" });
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect(walletReconcile).not.toHaveBeenCalled();
+    expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+      state: "indeterminate", reasonCode: "pay-dem-chain-execution-unconfirmed",
+    });
   });
 
   it.each([

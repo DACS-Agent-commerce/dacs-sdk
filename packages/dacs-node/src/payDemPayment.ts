@@ -5,6 +5,7 @@ import {
   isDemosExecutedTransferObservation,
   isPayDemRecordVerifyingRail,
   payDemRecordVerifiedTransfer,
+  readPayDemTransferRecord,
   settlementKey,
   type PayDemPreparedTransfer,
   type PayDemRail,
@@ -39,6 +40,7 @@ import {
   type DacsLiveOrderInputV1,
 } from "./orderInput.js";
 import {
+  dacsPayDemRecordReadingRailV1,
   isDacsRecordVerifyingPayDemRailV1,
   isDacsSdkPreparedPayDemRailV1,
 } from "./payDemRailCapabilities.js";
@@ -182,8 +184,10 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * alone is not execution: a node reports it for a transaction whose record
    * `failed` (#338). Every completed settlement must attest
    * `execution: "executed"` with the record's signed `nonce` after checking a
-   * bound confirmed record. The track checks and removes both before storing
-   * the settlement or publishing its notice. Missing or other execution
+   * bound confirmed record. The track independently re-reads that record
+   * through the SDK rail's connection, binds its nonce and block, and removes
+   * both fields before storing the settlement or publishing its notice.
+   * A rail without an SDK reader cannot finalize recovery. Missing or other execution
    * evidence stays indeterminate without changing wallet accounting or
    * publishing a notice. An executed settlement without a prepared checkpoint,
    * or whose hash or nonce differs from the prepared transfer's, needs an
@@ -791,7 +795,8 @@ function captureChainReconciliation(
  * A fresh payment runs only on a rail whose success the SDK can make final:
  * the default runtime rail, a rail `isPayDemRecordVerifyingRail` accepts, or
  * the runtime's wrapper around one. Any other rail is refused before any
- * wallet reservation, but still reconciles a payment it already made.
+ * wallet reservation. Recovery requires the SDK reader behind the rail; a
+ * callback alone cannot settle the wallet or publish a payment notice.
  */
 export function createDacsPayDemBuyerPaymentTrackV1(
   options: Readonly<DacsPayDemBuyerPaymentTrackOptionsV1>,
@@ -813,8 +818,8 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   const rail = options.rail;
   // Decide before the effect: a rail whose success the SDK could never make
   // final must not reserve the wallet or debit the buyer first (#338), so
-  // `execute` refuses it. `reconcile` never calls the rail, so a payment it
-  // already made still recovers. Only the settle checked here is called below.
+  // `execute` refuses it. Recovery never calls settle and requires the SDK
+  // reader behind this rail. Only the settle checked here is called below.
   const settle = rail.settle;
   const freshSettleRail = isPayDemRecordVerifyingRail(rail) ||
     isDacsRecordVerifyingPayDemRailV1(rail) || isDacsSdkPreparedPayDemRailV1(rail);
@@ -992,6 +997,32 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         const captured = captureChainReconciliation(reconciled, payment, prepared);
         const reservation = walletReservation(payment);
         if (captured.status === "completed") {
+          // PC-4 / §9.5.9: the callback's fields are only a proposed verdict.
+          // Reauthenticate current-code checkpoints on every restart, including
+          // retries after wallet accounting succeeded but notice queueing failed.
+          let record: Awaited<ReturnType<typeof readPayDemTransferRecord>>;
+          try {
+            record = await readPayDemTransferRecord(
+              dacsPayDemRecordReadingRailV1(rail),
+              prepared!,
+            );
+            await fence.assertCurrent();
+          } catch {
+            return Object.freeze({ status: "indeterminate" as const,
+              reasonCode: "pay-dem-chain-observation-unavailable" });
+          }
+          if (record.state === "indeterminate") {
+            return Object.freeze({ status: "indeterminate" as const,
+              reasonCode: "pay-dem-chain-execution-unconfirmed" });
+          }
+          if (record.state !== "executed" || record.nonce !== prepared!.nonce ||
+              record.blockNumber !== captured.result.settlement.blockNumber ||
+              prepared!.confirmedTotalDebitOs === undefined ||
+              BigInt(prepared!.confirmedTotalDebitOs) - BigInt(payment.amountOs) !==
+                BigInt(captured.result.settlement.networkFeeOs!)) {
+            return Object.freeze({ status: "operator-action" as const,
+              reasonCode: "pay-dem-chain-observation-conflict" });
+          }
           try {
             await walletSpendAuthority.reconcile(
               reservation,

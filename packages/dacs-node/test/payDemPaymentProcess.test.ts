@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { PayDemRail } from "@kynesyslabs/dacs";
+import { createPayDemRail } from "@kynesyslabs/dacs";
 import {
   createFixedPricePayDemBuyerCoordinator,
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
@@ -24,6 +24,24 @@ import {
   type DacsNodeSqliteDatabase,
 } from "../src/sqlite.js";
 import { createPermissiveTestWalletSpendAuthorityV1 } from "./helpers/walletSpend.js";
+
+const { recoveryTransfer, recoveryRecordRead } = vi.hoisted(() => ({
+  recoveryTransfer: vi.fn(), recoveryRecordRead: vi.fn(),
+}));
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class {
+    connect = async () => undefined;
+    connectWallet = async () => undefined;
+    getAddress = () => PAYER;
+    getNetworkInfo = async () => ({ forks: { osDenomination: { activated: true } } });
+    nodeCall = this.getNetworkInfo;
+    transfer = recoveryTransfer;
+    broadcast = recoveryTransfer;
+    tx = { confirm: recoveryTransfer };
+    waitForNonce = async () => undefined;
+    getTxByHash = recoveryRecordRead;
+  },
+}));
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = "did:example:pay-dem-buyer";
@@ -214,8 +232,15 @@ describe("native DEM process recovery", () => {
       authority: BUYER,
     });
     databases.push(database);
-    const settle: PayDemRail["settle"] = vi.fn(async () => {
-      throw new Error("settle must not run during process recovery");
+    recoveryRecordRead.mockResolvedValue({
+      hash: TX_HASH, status: "confirmed", blockNumber: 43,
+      content: { type: "native", from: PAYER, to: PAYEE, nonce: "9",
+        amount: AUTHORITY.amountOs,
+        data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
+      },
+    });
+    const rail = await createPayDemRail({
+      rpc: "https://node.test", secret: "test-only-secret", network: "demos",
     });
     const reconcile = vi.fn(async ({ prepared }) => {
       expect(prepared).toEqual(expect.objectContaining({
@@ -251,7 +276,7 @@ describe("native DEM process recovery", () => {
       walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
       database,
       workerId: "buyer-payment-after-kill",
-      rail: { address: PAYER, settle },
+      rail,
       resolveAuthority: () => AUTHORITY,
       reconcile,
       publishNotice,
@@ -269,7 +294,8 @@ describe("native DEM process recovery", () => {
 
     await coordinator.runPending({ limit: 1 });
 
-    expect(settle).not.toHaveBeenCalled();
+    expect(recoveryTransfer).not.toHaveBeenCalled();
+    expect(recoveryRecordRead).toHaveBeenCalledWith(TX_HASH);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(publishNotice).toHaveBeenCalledTimes(1);
     expect(await coordinator.getOrderStatus(JOB_ID)).toMatchObject({
