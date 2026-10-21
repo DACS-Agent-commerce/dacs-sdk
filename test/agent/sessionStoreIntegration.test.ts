@@ -37,7 +37,12 @@ import {
   type PayDemRail,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
-import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  type SettlementBinding,
+  type SettlementReconcile,
+} from "../../src/rails/idempotency.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
@@ -1013,6 +1018,50 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         after.record.checkpoints.filter((checkpoint) => checkpoint.stage === "outcome")
           .length,
     ).toBe(0);
+  });
+
+  test.each(["cached", "reconciled"])("refuses another job's native transaction from a %s no-history outcome before evidence or session completion", async (mode) => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+      supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    const rail = await sdkPayDemRail();
+    const first = await makeDeps(store, { kv, newJobId: () => "job-a",
+      settle: payDemSettle(rail, {}, { store: createIdempotencyStore() }),
+    });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+      .resolves.toMatchObject({ outcome: "completed" });
+    const cached: SettleResult = {
+      ok: true, txHash: demosNode.nextHash, chainId: "demos", payer: demosNode.address,
+      payee: sellerDid.split(":").at(-1)!, blockNumber: 42, txRefKind: "demos",
+      finality: { model: "bft-final" },
+    };
+    const outcomeStore = {
+      once: async (key: string, _binding: SettlementBinding, _submit: unknown, reconcile?: SettlementReconcile) =>
+        mode === "cached" ? cached : await reconcile!(key) as SettleResult,
+      readOutcome: async () => null,
+    };
+    const adapter = payDemSettle(rail, {}, {
+      store: outcomeStore,
+      reconcile: async () => ({ ...cached, amountOs: "1000000000", execution: "executed" }),
+    });
+    const second = await makeDeps(store, { kv, newJobId: () => "job-b", settle: adapter });
+    const anchor = vi.spyOn(second.deps, "anchor");
+    await expect(runSessionCore(second.listingRef, demTerms, second.deps))
+      .rejects.toThrow(/already bound to session job-a.*transaction replay/);
+    expect(anchor.mock.calls.some(([name]) =>
+      name === sessionAnchorName.evidence("job-b") || name === sessionAnchorName.bundle("job-b"),
+    )).toBe(false);
+    const saved = await store.load("job-b");
+    expect(saved.status).toBe("ok");
+    if (saved.status === "ok") {
+      expect(saved.record.phase).not.toBe("completed");
+      expect(saved.record.checkpoints.some((cp) => cp.key === "settle:0" && cp.stage === "outcome"))
+        .toBe(false);
+    }
+    expect(demosNode.transfers).toBe(1);
+    expect(demosNode.broadcasts).toBe(1);
   });
 
   test.each(["fresh", "recovered"].flatMap((mode) =>

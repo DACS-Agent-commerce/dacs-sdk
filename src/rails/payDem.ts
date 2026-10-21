@@ -3283,7 +3283,8 @@ export function payDemSettle(
         }
         // Over a log that cannot answer, no outcome is read before or after the
         // reconciliation; the store's `once` checks the one it holds below.
-        const readOutcomeIfAny = outcomeUnreadable ? async (): Promise<SettleResult | null> => null : readOutcome;
+        const unreadableOutcome = async (): Promise<SettleResult | null> => null;
+        const readOutcomeIfAny = outcomeUnreadable ? unreadableOutcome : readOutcome;
         const before = await readOutcomeIfAny();
         // The durable record is always checked, even when this bridge bound the
         // hash itself: the record wins over anything held in memory.

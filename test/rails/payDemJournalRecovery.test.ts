@@ -22,6 +22,69 @@ const request = (): SettleRequest => ({
 beforeEach(() => resetDemosNode({ payer, txHash }));
 
 describe("recovery of the SDK's own prepared-transfer journal", () => {
+  test.each([false, true])("a crash after journaling and before recording the attempt never replaces the payment (history=%s)", async (withHistory) => {
+    let now = 1_000;
+    let journalReturned = false;
+    let stoppedBeforeAttempt = false;
+    const journal: Readonly<PayDemPreparedTransfer>[] = [];
+    const memory = createInMemorySettlementLog();
+    const putAttempt = vi.fn(async () => {
+      stoppedBeforeAttempt = journalReturned;
+      // The journal hook returned, but the process dies before this write.
+      return new Promise<never>(() => undefined);
+    });
+    const log = { ...memory, putAttempt };
+    const network = "demos:testnet";
+    const rail = await sdkRail({
+      network: "demos:mainnet",
+      journalPreparedTransfer: async (prepared) => {
+        journal.push(prepared);
+        journalReturned = true;
+      },
+    });
+    void payDemSettle(rail, { network }, {
+      store: createIdempotencyStore(log, { owner: "before-crash", leaseDurationMs: 1_000, now: () => now }),
+    })(request());
+    await vi.waitFor(() => expect(stoppedBeforeAttempt).toBe(true));
+    expect(journal).toHaveLength(1);
+    const prepared = journal[0]!;
+    expect(prepared).toMatchObject({
+      txHash, nonce: 9, network,
+      recovery: { network, jobId: request().jobId, settlementKey: "pay-dem:journal-recovery:0" },
+    });
+    expect(putAttempt).toHaveBeenCalledTimes(1);
+    await expect(memory.readAttempt!("pay-dem:journal-recovery:0")).resolves.toBeNull();
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+
+    // Restart from this version's durable state after the old lease expires.
+    // A journal is not proof of execution, even when a reconciler claims it is.
+    now += 60_000;
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({
+      ok: true, execution: "executed", txHash: prepared.txHash,
+      payer: prepared.payer, payee: prepared.payee, amountOs: prepared.amountOs,
+      chainId: prepared.network, blockNumber: 42, txRefKind: "demos",
+      finality: { model: "bft-final" }, preparedTransfer: prepared,
+    }));
+    const restarted = payDemSettle(await sdkRail(), { network }, {
+      store: createIdempotencyStore(memory, { owner: "after-crash", leaseDurationMs: 1_000, now: () => now }),
+      reconcile,
+    });
+    const req = { ...request(), ...(withHistory ? {
+      priorAttempts: [{ txHash: prepared.txHash, chainId: network, ok: false }],
+    } : {}) };
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await expect(restarted(req)).rejects.toThrow(/could not establish the node record/);
+      now += 2_000;
+    }
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(sdkTransfers()).toBe(1);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+    expect(putAttempt).toHaveBeenCalledTimes(1);
+    expect(journal).toEqual([prepared]);
+    await expect(memory.readAttempt!("pay-dem:journal-recovery:0")).resolves.toBeNull();
+    await expect(memory.readOutcome!("pay-dem:journal-recovery:0")).resolves.toBeNull();
+  });
+
   test.each([
     { railNetwork: undefined, invocationNetwork: undefined, expectedNetwork: "demos" },
     { railNetwork: undefined, invocationNetwork: "demos:testnet", expectedNetwork: "demos:testnet" },
