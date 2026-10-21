@@ -192,9 +192,10 @@ export interface SettlementLog {
    * first record needs the exact current unexpired generation (`stale`
    * otherwise). After that the record never changes or disappears: the same
    * hash again is `existing`, any other hash or binding is `conflict`.
-   * Optional, but a log provides both attempt methods or neither, and a
-   * durable log needs them: without them a pay-dem audit after a restart
-   * cannot bind its retained hash and fails closed.
+   * Optional, but a log provides both attempt methods or neither. pay-dem
+   * starts no new transfer through a log without them, because a restart
+   * could not bind its hash; such a log still serves audits and restarts of
+   * the outcomes it saved before.
    */
   putAttempt?(input: Readonly<{
     key: string;
@@ -234,9 +235,12 @@ export interface SettlementIdempotencyStore {
    * Read and validate a recorded outcome under these exact terms, without
    * claiming an intent. Required for native retained-transaction audits:
    * `payDemSettle` refuses a request carrying `priorAttempts` without it.
-   * `null` means no recorded outcome, never permission to submit again. An
-   * outcome never binds a retained hash to its payment (a key-only
-   * reconciliation can have written it); see {@link readAttempt}.
+   * `null` means no recorded outcome, never permission to submit again. On a
+   * log that keeps attempts an outcome never binds a retained hash to its
+   * payment (a key-only reconciliation can have written it); see
+   * {@link readAttempt}. On a log without them, whose outcomes predate the
+   * records, this store's own lookup binds a hash its outcome names once the
+   * reconciliation agrees on the block and outcome.
    */
   readOutcome?(
     key: string,
@@ -894,6 +898,19 @@ export function isBindingCheckedOutcomeLookup(value: unknown): boolean {
   return typeof value === "function" && bindingCheckedOutcomeLookups.has(value);
 }
 
+// The `readOutcome` closures `createIdempotencyStore` built over a log without
+// the `putAttempt`/`readAttempt` pair.
+const outcomeOnlyLogLookups = new WeakSet<object>();
+
+/**
+ * Internal (not re-exported): true only for a `readOutcome` that
+ * `createIdempotencyStore` built over a log that keeps no attempt records. A
+ * store over a log that keeps them never qualifies, whatever a wrapper hides.
+ */
+export function isOutcomeOnlyLogLookup(value: unknown): boolean {
+  return typeof value === "function" && outcomeOnlyLogLookups.has(value);
+}
+
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),
@@ -902,6 +919,7 @@ export function createIdempotencyStore(
   const store = buildIdempotencyStore(log, options);
   bindingCheckedOutcomeLookups.add(store.readOutcome!);
   if (store.readAttempt !== undefined) bindingCheckedOutcomeLookups.add(store.readAttempt);
+  else outcomeOnlyLogLookups.add(store.readOutcome!);
   return store;
 }
 

@@ -134,8 +134,19 @@ authenticate, so its own verdict never becomes final.
   transaction hash before the rail can broadcast it. The write is
   compare-and-set under the submit generation and the record never changes. A
   crash after broadcast, a timeout or an ambiguous result therefore still lets
-  a restarted process audit the payment. A durable log needs the pair: over a
-  log without it, audits after a restart fail closed.
+  a restarted process audit the payment. A durable log needs the pair, so
+  `payDemSettle` starts no new transfer through a `createIdempotencyStore`
+  store over a log without it: the call fails before the rail runs, nothing is
+  signed or sent, and the intent is released. Such a log still serves the
+  payments it saved before attempt records existed. An audit counts the hash
+  that the store's own outcome for these exact terms names, once the
+  reconciliation agrees with it on block and result; a key with no saved
+  outcome stays fail closed. Before adding the pair to an existing log,
+  backfill each outcome that names a transaction as its attempt record
+  (`bindingHash` and `txHash` from that outcome), and a key still held with no
+  outcome only from the rail's prepared-transfer journal entry whose
+  `recovery` tuple names that key. Once the log keeps attempts, an outcome
+  without a record never counts.
 
   A supplied entry is always checked: it must name that hash, the same payer,
   payee, OS amount and network, a `recovery` tuple equal to this rail, job and
@@ -143,8 +154,9 @@ authenticate, so its own verdict never becomes final.
   than the amount; a permanent failure's proof must also carry the journaled
   nonce. The entry is the reconciler's object, not the one the rail wrote
   before broadcast, so it can refuse an audit but never counts the hash on its
-  own. Nor does an injected store's records, or any rail-log outcome, which a
-  key-only restart reconciliation can have written. The reconciler throws
+  own. Nor does an injected store's records, or a rail-log outcome on a log
+  that keeps attempts, which a key-only restart reconciliation can have
+  written. The reconciler throws
   when a loaded entry conflicts with the record and never returns `null` for
   the retained hash.
 - A crash after the record and before the broadcast leaves a recorded hash
@@ -157,7 +169,8 @@ authenticate, so its own verdict never becomes final.
   the reconciler receives its hash as `txHash`, and any other transaction is
   refused. Without one, the reconciler's answer for the key is still accepted
   and saved, so that path relies on the reconciler to look up this exact
-  payment, but the saved outcome never binds a later audit.
+  payment. On a log that keeps attempts the saved outcome never binds a later
+  audit.
 - A success that the bridge, its rail log or the session recorded is never
   reported unpaid: a reconciliation that contradicts it is refused rather than
   returned as a permanent failure (DACS-4 §9.5.1 PC-7).

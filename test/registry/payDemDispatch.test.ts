@@ -24,9 +24,12 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
 
 import {
   createIdempotencyStore,
+  createInMemorySettlementLog,
   isBindingCheckedOutcomeLookup,
+  isOutcomeOnlyLogLookup,
   type SettlementBinding,
   type SettlementIdempotencyStore,
+  type SettlementLog,
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
@@ -552,6 +555,29 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     await expect(injectedCaptured.readOutcome!("rail:job:4", storeBinding())).resolves.toBeNull();
     expect(injected.readOutcome).toHaveBeenCalledWith("rail:job:4", storeBinding());
     expect(injected.keys).toEqual(["rail:job:4"]);
+  });
+
+  // payDemSettle starts no transfer through a log without attempt records and
+  // binds only that store's own outcomes, so dispatch must pass its lookup on as is.
+  test("passes on the outcome lookup of an SDK store over a log without attempt records", async () => {
+    const memory = createInMemorySettlementLog();
+    const { putAttempt: _put, readAttempt: _read, ...outcomesOnly } = memory;
+    const legacyStore = createIdempotencyStore(outcomesOnly as SettlementLog);
+    mocks.createPayDemRail.mockResolvedValue({});
+    mocks.payDemSettle.mockReturnValue(vi.fn());
+    const descriptor = await authenticatedDefinition();
+    for (const settlementStore of [legacyStore, createIdempotencyStore(memory)]) {
+      await settleFromRail(descriptor, {
+        demosRpc: "https://demos.example",
+        demosSecret: "test-secret",
+        payDem: { settlementStore },
+      });
+    }
+    const [legacyCaptured, currentCaptured] = mocks.payDemSettle.mock.calls.map((call) => call[2].store!);
+    expect(legacyCaptured.readOutcome).toBe(legacyStore.readOutcome);
+    expect(legacyCaptured.readAttempt).toBeUndefined();
+    expect(isOutcomeOnlyLogLookup(legacyCaptured.readOutcome)).toBe(true);
+    expect(isOutcomeOnlyLogLookup(currentCaptured.readOutcome)).toBe(false);
   });
 
   test("retains a class store receiver across restart-style dispatch reconstruction", async () => {

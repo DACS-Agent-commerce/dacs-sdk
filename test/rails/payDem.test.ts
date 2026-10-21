@@ -1061,6 +1061,14 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         lifecycle.push(`release:${input.key}`);
         return backing.releaseIntent(input);
       },
+      // pay-dem starts no transfer through a log that cannot record its hash.
+      async putAttempt(input) {
+        lifecycle.push(`attempt:${input.key}`);
+        return backing.putAttempt!(input);
+      },
+      readAttempt(key) {
+        return backing.readAttempt!(key);
+      },
     };
     const contexts: unknown[] = [];
     let transfers = 0;
@@ -1144,6 +1152,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       payer: PAYER,
       payee: SELLER_HEX,
       amountOs: "1250000000",
+      // The restart asks for exactly the hash the first process recorded.
+      txHash: TX_HASH,
     });
     expect(contexts).toEqual([expect.objectContaining({
       settlementKey: key,
@@ -1152,7 +1162,12 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(lifecycle.indexOf(`intent:${key}`)).toBeLessThan(
       lifecycle.indexOf(`journal:${key}`),
     );
-    expect(lifecycle).toContain(`outcome:${key}`);
+    expect(lifecycle.indexOf(`journal:${key}`)).toBeLessThan(
+      lifecycle.indexOf(`attempt:${key}`),
+    );
+    expect(lifecycle.indexOf(`attempt:${key}`)).toBeLessThan(
+      lifecycle.indexOf(`outcome:${key}`),
+    );
   });
 
   test("a non-final reconciliation cannot authorize rebroadcast", async () => {

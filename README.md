@@ -671,8 +671,18 @@ that awaits it never broadcasts one. The record is compare-and-set
 under the submit generation and never changes, so after a crash, a timeout or
 an ambiguous result a restarted process can still audit the payment and never
 fails, resubmits or reports unpaid a final one (DACS-4 §9.5.1 PC-7). A durable
-log needs the attempt pair for restart audits: one without it keeps working for
-fresh settlement, but after a restart its audits fail closed.
+log needs the attempt pair for restart audits, so `payDemSettle` starts no new
+transfer through a `createIdempotencyStore` store over a log without it: the
+call fails before the rail runs, nothing is signed or sent, and the intent is
+released. Such a log still serves the payments it saved before attempt records
+existed: an audit counts the hash that the store's own outcome for these exact
+terms names, once the reconciliation agrees with that outcome on block and
+result, and a key the log saved no outcome for stays fail closed. Before adding
+the pair to an existing log, backfill each outcome that names a transaction as
+its attempt record (`bindingHash` and `txHash` from that outcome). A key still
+held with no outcome is backfilled only from the rail's prepared-transfer
+journal entry whose `recovery` tuple names that key. Once the log keeps
+attempts, an outcome without a record never counts.
 
 A supplied entry is always checked as well. It must name the retained hash, the
 same payer, payee, OS amount and network, a `recovery` tuple equal to this rail,
@@ -680,8 +690,9 @@ job and phase, and (when present) a known denomination and debit bounds no
 lower than the amount; for a permanent failure its nonce must also be the
 proof's nonce. The entry is the reconciler's object, not the one the rail wrote
 before broadcast, so it can refuse an audit but never counts the hash on its
-own. Nor does an injected store's records, or any rail-log outcome: a restart
-reconciliation can have written that outcome from a lookup by key alone.
+own. Nor does an injected store's records, or a rail-log outcome on a log that
+keeps attempts: a restart reconciliation can have written that outcome from a
+lookup by key alone.
 
 So an audit never counts another job's transfer of the same amount to the same
 payee for this one, even when the reconciler returns an entry naming this job.
@@ -700,8 +711,8 @@ A restart without history (the lease expired and the session holds no hash)
 reconciles in the store. When the key has an attempt record, the reconciler
 receives its hash as `txHash` and any other transaction is refused. Without
 one, the SDK still accepts the reconciler's answer for the key and saves it, so
-that path trusts the reconciler to look up this exact payment. That saved
-outcome never binds a later audit. A supplied entry is checked on this path
+that path trusts the reconciler to look up this exact payment. On a log that
+keeps attempts that saved outcome never binds a later audit. A supplied entry is checked on this path
 too and never persisted. A payment that the bridge, its rail log or the
 session already recorded as successful is never reported unpaid: a reconciliation that
 contradicts it is refused rather than returned as a permanent failure (DACS-4

@@ -44,8 +44,12 @@ describe("pay-dem execution docs match the code (#338)", () => {
     const readme = read("README.md").replace(/\s+/g, " ");
     expect(doc).toContain("A custom rail must record the exact hash it will return before it broadcasts");
     expect(readme).toContain("A custom rail must call `fence.recordAttempt` with the exact hash it will return before it broadcasts");
-    expect(doc).toContain("A durable log needs the pair");
-    expect(readme).toContain("A durable log needs the attempt pair for restart audits");
+    for (const text of [doc, readme]) {
+      expect(text).not.toContain("keeps working for fresh settlement");
+      expect(text).toContain("starts no new transfer through a `createIdempotencyStore` store over a log without it");
+      expect(text).toContain("backfill each outcome that names a transaction as its attempt record");
+      expect(text).toContain("Once the log keeps attempts, an outcome without a record never counts.");
+    }
     expect(doc).toContain("a refused write fails the call and leaves the hash unbound");
     for (const text of [doc, readme]) {
       expect(text).toContain("records the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail passes");

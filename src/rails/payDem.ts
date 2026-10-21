@@ -16,10 +16,12 @@ export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddre
 import {
   createIdempotencyStore,
   isBindingCheckedOutcomeLookup,
+  isOutcomeOnlyLogLookup,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
   type SettlementIdempotencyStore,
+  type SettlementNotInvokedResult,
   type SettlementReconcile,
 } from "./idempotency.js";
 
@@ -2699,7 +2701,11 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * whatever this bridge holds. A custom rail must record the hash it returns
  * before it broadcasts: the bridge's write after the return cannot cover a
  * crash in between. Its fence records the canonical form and refuses a value
- * that is not a Demos hash. A rail-log outcome or an injected store's records never do, and
+ * that is not a Demos hash. A store over a log without the attempt pair starts
+ * no new transfer (nothing is signed or sent, and the intent is released), and
+ * its own outcome for the exact terms, which predates the records, names the
+ * hash once the reconciliation agrees on block and outcome. Any other rail-log
+ * outcome or an injected store's records never do, and
  * neither does a prepared-transfer journal entry the reconciliation returns:
  * that entry is checked against this exact payment tuple and can refuse the
  * audit, but never counts the hash on its own. Once
@@ -2759,6 +2765,12 @@ export function payDemSettle(
       isBindingCheckedOutcomeLookup(readAttemptProperty.value)
     ? readAttemptProperty.value as NonNullable<SettlementIdempotencyStore["readAttempt"]>
     : undefined;
+  // A `createIdempotencyStore` store over a log that keeps no attempt records
+  // (one written before they existed). A restart could never bind a new
+  // transfer's hash, so it starts none; the hashes its outcomes name predate
+  // the records, and only its own outcome lookup can bind them.
+  const outcomeOnlyLog = storeReadAttempt === undefined && readOutcomeProperty.found &&
+    isOutcomeOnlyLogLookup(readOutcomeProperty.value);
   const configuredRecipient = optionalStableString(
     cfg,
     "recipient",
@@ -3064,8 +3076,15 @@ export function payDemSettle(
           }
         }
         assertPayDemSuccessKept(historySucceeded, captured);
+        // On a log that keeps no attempt records, its own outcome for these
+        // exact terms names the hash when the reconciliation agrees on the
+        // block and outcome, as a cached outcome must on a restart without
+        // history. A log that keeps them never counts an outcome.
+        const outcomeNames = (existing: SettleResult | null) => outcomeOnlyLog &&
+          existing !== null && existing.txHash === retainedTxHash &&
+          existing.blockNumber === captured.blockNumber && sameSettledOutcome(existing, captured);
         // Another process may record this key's attempt while the chain read runs.
-        if (!recordedBefore && !await attemptNames()) {
+        if (!recordedBefore && !outcomeNames(before) && !outcomeNames(after) && !await attemptNames()) {
           throw new DacsError(
             "pay-dem: no SDK record binds the retained transaction to this payment (no attempt record of this key in a createIdempotencyStore store names it; an injected store's records never count); refusing reuse or rebroadcast",
           );
@@ -3073,7 +3092,20 @@ export function payDemSettle(
         authenticatedResults.set(key, { context, result: captured, boundToKey: true });
         return publicPayDemResult(captured, expectedPayee);
       }
-      const submit = async (effectFence?: Readonly<SettlementEffectFence>) => {
+      let refusedWithoutAttemptRecords = false;
+      const submit = async (
+        effectFence?: Readonly<SettlementEffectFence>,
+      ): Promise<SettleResult | SettlementNotInvokedResult> => {
+        if (outcomeOnlyLog) {
+          // Nothing is signed or sent, so the store releases the intent.
+          refusedWithoutAttemptRecords = true;
+          return Object.freeze({
+            disposition: "not-invoked" as const,
+            result: Object.freeze({
+              ok: false, txHash: "", payer: payerAddress, payee: payeeAddress, chainId: network,
+            }),
+          });
+        }
         const submitted = await railSettle({
           recipient: payeeAddress,
           amount: amountOs,
@@ -3145,6 +3177,11 @@ export function payDemSettle(
         submit,
         reconcileForStore,
       );
+      if (refusedWithoutAttemptRecords) {
+        throw new DacsError(
+          "pay-dem settlement log keeps no attempt records; refusing to start a new transfer whose hash a restart could not bind (nothing was signed or sent; give the log putAttempt and readAttempt)",
+        );
+      }
       let captured = capturePayDemResult(
         result,
         context,

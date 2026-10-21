@@ -52,8 +52,7 @@ function processes(log: SettlementLog = createInMemorySettlementLog()) {
 }
 
 /** A durable log written before attempt records existed: it keeps outcomes only. */
-function legacyLog(): SettlementLog {
-  const memory = createInMemorySettlementLog();
+function legacyLog(memory: SettlementLog = createInMemorySettlementLog()): SettlementLog {
   return {
     readOutcome: (key) => memory.readOutcome!(key),
     claimIntent: (input) => memory.claimIntent(input),
@@ -62,6 +61,20 @@ function legacyLog(): SettlementLog {
     putOutcome: (input) => memory.putOutcome(input),
     releaseIntent: (input) => memory.releaseIntent(input),
   };
+}
+
+const bindingFor = (jobId: string) => ({
+  bindingVersion: "1" as const, railId: "pay-dem", jobId, phaseIndex: 0, phase: "pay-dem",
+  amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer, payee,
+  network: "demos", finality: { model: "bft-final" },
+});
+
+/** A final success an SDK saved before it kept attempt records: no record names its hash. */
+async function savedBeforeAttemptRecords(log: SettlementLog, jobId: string) {
+  await createIdempotencyStore(log).once(`pay-dem:${jobId}:0`, bindingFor(jobId), async () => ({
+    ok: true, txHash: hashA, payer, payee, chainId: "demos", blockNumber: 42, txRefKind: "demos",
+    finality: { model: "bft-final" },
+  }));
 }
 
 /** A process whose bridge must only audit or reconcile, never submit. */
@@ -334,19 +347,95 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
     expect(audit.submit).not.toHaveBeenCalled();
   });
 
-  test("an audit over a log without attempt records fails closed after a restart", async () => {
-    const run = processes(legacyLog());
-    // The SDK's own rail reports a final success, but the log cannot record its hash.
-    const rail = await sdkRail();
-    await expect(payDemSettle(rail, { network: "demos" }, { store: run.store("A") })(request("job-a")))
-      .resolves.toMatchObject({ ok: true, txHash: hashA });
+  // A log that keeps attempts can show that an outcome without a record came
+  // from a key-only reconciliation, so a wrapper that hides the attempt lookup
+  // does not make its outcome count either.
+  test.each([
+    ["the store itself", (store: ReturnType<ReturnType<typeof processes>["store"]>) => store],
+    ["a wrapper that hides its attempt lookup",
+      (store: ReturnType<ReturnType<typeof processes>["store"]>) =>
+        ({ once: store.once, readOutcome: store.readOutcome }) as typeof store],
+  ] as const)("an outcome without a record on a log that keeps attempts never binds, through %s", async (_label, view) => {
+    const run = processes();
+    await savedBeforeAttemptRecords(run.log, "job-a");
+    run.restart();
+    const audit = auditingProcess(view(run.store("B")), vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
+      /no SDK record binds the retained transaction to this payment/,
+    );
+    expect(audit.once).not.toHaveBeenCalled();
+    expect(audit.submit).not.toHaveBeenCalled();
+  });
+});
 
+// DACS-4 §9.5.1 PC-7 on a log that keeps no attempt records (one written
+// before they existed): a final payment it saved still completes after a
+// restart, and it never starts a payment a restart could not bind.
+describe("pay-dem over a log without attempt records", () => {
+  test("an audit after a restart counts the hash the log's own outcome names when the reconciliation agrees", async () => {
+    const run = processes(legacyLog());
+    await savedBeforeAttemptRecords(run.log, "job-a");
+
+    run.restart();
+    const reconcile = vi.fn(async () => executed(hashA));
+    const audit = auditingProcess(run.store("B"), reconcile);
+    await expect(audit.settle(request("job-a", hashA, true)))
+      .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
+    // Repeating the audit, or omitting the history, is read-only and gives the same answer.
+    await expect(audit.settle(request("job-a", hashA, true))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    await expect(audit.settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-a", txHash: hashA }));
+    expect(audit.once).not.toHaveBeenCalled();
+    expect(audit.submit).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["history for another hash than the outcome", request("job-a", hashB, true), executed(hashB),
+      /retained transaction conflicts with the rail outcome/],
+    ["a reconciliation at another block", request("job-a", hashA, true), { ...executed(hashA), blockNumber: 43 },
+      /retained transaction block conflicts with the rail outcome/],
+    ["a reconciliation that finds the transfer failed", request("job-a", hashA), failed(hashA),
+      /refusing to report a final payment unpaid/],
+  ] as const)("refuses %s", async (_label, req, reply, error) => {
+    const run = processes(legacyLog());
+    await savedBeforeAttemptRecords(run.log, "job-a");
+    run.restart();
+    const audit = auditingProcess(run.store("B"), vi.fn(async () => reply));
+    await expect(audit.settle(req)).rejects.toThrow(error);
+    await expect(run.log.readOutcome!("pay-dem:job-a:0")).resolves.toMatchObject({ result: { ok: true, txHash: hashA } });
+    expect(audit.submit).not.toHaveBeenCalled();
+  });
+
+  test("a key the log saved no outcome for still fails closed", async () => {
+    const run = processes(legacyLog());
     run.restart();
     const audit = auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
     await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
+    expect(audit.once).not.toHaveBeenCalled();
     expect(audit.submit).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["the SDK rail", async () => sdkRail()],
+    ["a custom rail", async () => ({ address: payer, settle: vi.fn(async () => ambiguous(hashA) as never) })],
+  ] as const)("a new payment through %s is refused before the rail runs, and the key is not held", async (_label, makeRail) => {
+    const memory = createInMemorySettlementLog();
+    const run = processes(legacyLog(memory));
+    const rail = await makeRail();
+    await expect(payDemSettle(rail, { network: "demos" }, { store: run.store("A") })(request("job-a")))
+      .rejects.toThrow(/keeps no attempt records; refusing to start a new transfer/);
+    if (vi.isMockFunction(rail.settle)) expect(rail.settle).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(0);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+    await expect(memory.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
+
+    // Nothing was signed, so nothing is held: once the log keeps attempts, the key settles once.
+    await expect(payDemSettle(await sdkRail(), { network: "demos" }, { store: createIdempotencyStore(memory) })(
+      request("job-a"),
+    )).resolves.toMatchObject({ ok: true, txHash: hashA });
+    expect(sdkTransfers()).toBe(1);
   });
 });
 
@@ -359,8 +448,7 @@ describe("pay-dem checks a cached outcome against reconciliation when the log ke
     ["the cached transaction at another block", { ...executed(hashA), blockNumber: 43 }],
   ] as const)("refuses %s on a restart", async (_label, reply) => {
     const run = processes(legacyLog());
-    await expect(payDemSettle(await sdkRail(), { network: "demos" }, { store: run.store("A") })(request("job-a")))
-      .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
+    await savedBeforeAttemptRecords(run.log, "job-a");
 
     run.restart();
     const reconcile = vi.fn(async () => reply);
@@ -370,7 +458,7 @@ describe("pay-dem checks a cached outcome against reconciliation when the log ke
     await expect(run.log.readOutcome!("pay-dem:job-a:0"))
       .resolves.toMatchObject({ result: { txHash: hashA, blockNumber: 42 } });
     expect(b.submit).not.toHaveBeenCalled();
-    expect(sdkTransfers()).toBe(1);
+    expect(sdkTransfers()).toBe(0);
   });
 });
 
