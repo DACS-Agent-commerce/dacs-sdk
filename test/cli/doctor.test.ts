@@ -497,6 +497,20 @@ describe("dacs doctor", () => {
       expect(JSON.stringify(report)).not.toContain("demos-fork");
     });
 
+    it("withholds a credential-bearing version after a null build name", async () => {
+      const version = "credential-version";
+      const report = await runDoctor({ rpc: `https://rpc.example/${version}`, adapterFactory: () => ({
+        connect: async () => {}, getAddress: () => "unused", getLastBlockNumber: async () => 7,
+        getNetworkInfo: build({ ...verified, name: null, version, dirty: false }),
+      }) });
+      expect(report.checks.find((c) => c.id === "rpc.node-revision")?.data).toEqual({
+        verified: VERIFIED_DEMOS_NODE_REVISION,
+        reported: { name: null, commit: VERIFIED_DEMOS_NODE_REVISION, version: null, dirty: false },
+        withheld: ["version"],
+      });
+      expect(JSON.stringify(report)).not.toContain(version);
+    });
+
     it("pins the verified node package to kynesyslabs/node at the verified revision", () => {
       expect(VERIFIED_DEMOS_NODE_PACKAGE).toEqual({ name: NAME, version: "0.9.8" });
     });

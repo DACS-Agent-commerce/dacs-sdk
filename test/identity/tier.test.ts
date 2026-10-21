@@ -42,6 +42,27 @@ describe("deriveIdentityTier (§6.3.2.1, IT-1..IT-3)", () => {
     expect(deriveIdentityTier({ bundleVersion: "2", claims: [original] }, isVerified)).toBe("self-declared");
   });
 
+  test.each(["web2:domain:https://agent.example", "web2:domain:", "web2:domain:a b.example"])(
+    "skips the malformed historical domain %s even when the predicate accepts everything",
+    (ref) => {
+      const isVerified = vi.fn((_claim: BundleClaimLike) => true);
+      const claim = verified(ref);
+      expect(deriveIdentityTier({ bundleVersion: "1", claims: [claim] }, isVerified)).toBe("self-declared");
+      expect(isVerified).not.toHaveBeenCalled();
+      // A well-formed claim beside it still counts, and only it reaches the predicate.
+      const good = verified("key:abcd");
+      expect(deriveIdentityTier({ bundleVersion: "1", claims: [claim, good] }, isVerified)).toBe("verified");
+      expect(isVerified.mock.calls.map(([c]) => c)).toEqual([good]);
+    },
+  );
+
+  test("ignores null and non-string claim refs without throwing or calling the predicate", () => {
+    const isVerified = vi.fn((_claim: BundleClaimLike) => true);
+    const claims = [null, undefined, { ref: 7 }, { ref: null }, {}] as never;
+    expect(deriveIdentityTier({ bundleVersion: "1", claims }, isVerified)).toBe("self-declared");
+    expect(isVerified).not.toHaveBeenCalled();
+  });
+
   test("claimScheme reads the scheme before the first colon, lower-cased", () => {
     expect(claimScheme("lei:529900T8BM49AURSDO55")).toBe("lei");
     expect(claimScheme("DOMAIN:example.com")).toBe("domain");

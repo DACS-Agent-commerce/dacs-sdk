@@ -497,4 +497,173 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
     expect(verdict.verdict).toBe("error");
     expect(verdict.diagnostic.code).toBe("source-malformed");
   });
+
+  describe("producer input boundary", () => {
+    const base = () => structuredClone(
+      fixture.vectors.find((v) => v.name === "canonical-production")!.producerInput!,
+    );
+    type Native = Record<string, unknown> & { sourceTransaction: Record<string, unknown> };
+    const native = (input: DomainClaimProducerInput) =>
+      input.claims[0]!.metadata["demosGcrDomain"] as Native;
+    const hex = "11".repeat(32);
+    const secondClaim = (input: DomainClaimProducerInput, hostname: string) => {
+      const claim = structuredClone(input.claims[0]!);
+      claim.hostname = hostname;
+      const meta = claim.metadata["demosGcrDomain"] as Record<string, unknown>;
+      meta["hostname"] = hostname;
+      meta["proofUrl"] = `https://${hostname}/.well-known/demos-cci.txt`;
+      input.claims.push(claim);
+    };
+
+    test("emits the corpus bytes for the unmodified control input", () => {
+      expect(Buffer.from(serializeDomainClaimArtifact(base()), "utf8").toString("hex")).toBe(
+        fixture.vectors.find((v) => v.name === "canonical-production")!.artifact.canonicalHex,
+      );
+    });
+
+    test.each([
+      ["an extra top-level member", (i: Record<string, unknown>) => { i["extra"] = 1; }],
+      ["a missing top-level member", (i: Record<string, unknown>) => { delete i["presentedAt"]; }],
+      ["another producer version", (i: Record<string, unknown>) => { i["producerVersion"] = "dacs1-domain-v2"; }],
+      ["another bundle version", (i: Record<string, unknown>) => { i["bundleVersion"] = "2"; }],
+      ["a numeric bundle version", (i: Record<string, unknown>) => { i["bundleVersion"] = 1; }],
+      ["a numeric subject", (i: Record<string, unknown>) => { i["subject"] = 7; }],
+      ["no claims", (i: Record<string, unknown>) => { i["claims"] = []; }],
+      ["claims that are not an array", (i: Record<string, unknown>) => { i["claims"] = {}; }],
+      ["a negative presenter index", (i: Record<string, unknown>) => { i["presentedByClaimIndex"] = -1; }],
+      ["a presenter index equal to the claim count", (i: Record<string, unknown>) => { i["presentedByClaimIndex"] = 1; }],
+      ["a fractional presenter index", (i: Record<string, unknown>) => { i["presentedByClaimIndex"] = 0.5; }],
+      ["a negative presentation time", (i: Record<string, unknown>) => { i["presentedAt"] = -1; }],
+      ["a fractional presentation time", (i: Record<string, unknown>) => { i["presentedAt"] = 1.5; }],
+    ] as const)("refuses %s before emitting bytes", (_label, change) => {
+      const input = base();
+      change(input as unknown as Record<string, unknown>);
+      expect(() => serializeDomainClaimArtifact(input)).toThrow("invalid domain producer input");
+    });
+
+    test.each([
+      ["an extra member", (c: Record<string, unknown>) => { c["extra"] = 1; }],
+      ["a missing member", (c: Record<string, unknown>) => { delete c["metadata"]; }],
+    ] as const)("refuses a native claim with %s", (_label, change) => {
+      const input = base();
+      change(input.claims[0] as unknown as Record<string, unknown>);
+      expect(() => serializeDomainClaimArtifact(input)).toThrow("invalid native domain claim input");
+    });
+
+    test("refuses a non-domain native context even with valid hostname and metadata", () => {
+      const input = base();
+      (input.claims[0] as { nativeContext: string }).nativeContext = "web2.other";
+      expect(() => serializeDomainClaimArtifact(input)).toThrow(/valid native web2\.domain hostname/);
+    });
+
+    test.each([
+      ["an array-wrapped account", (n: Native) => { n["account"] = [hex]; }],
+      ["an account with a suffix", (n: Native) => { n["account"] = `${hex}x`; }],
+      ["a short account", (n: Native) => { n["account"] = hex.slice(1); }],
+      ["an array-wrapped transaction hash", (n: Native) => { n.sourceTransaction["txHash"] = [hex]; }],
+      ["a transaction hash with a suffix", (n: Native) => { n.sourceTransaction["txHash"] = `${hex}x`; }],
+      ["a transaction hash with a prefix", (n: Native) => { n.sourceTransaction["txHash"] = `x${hex}`; }],
+      ["a negative recordedAt", (n: Native) => { n["recordedAt"] = -1; }],
+      ["a negative blockNumber", (n: Native) => { n.sourceTransaction["blockNumber"] = -1; }],
+      ["a fractional blockNumber", (n: Native) => { n.sourceTransaction["blockNumber"] = 0.5; }],
+      ["a string recordedAt", (n: Native) => { n["recordedAt"] = "1"; }],
+    ] as const)("refuses %s in native metadata", (_label, change) => {
+      const input = base();
+      change(native(input));
+      expect(() => serializeDomainClaimArtifact(input)).toThrow("invalid persistent Demos domain metadata");
+    });
+
+    test("accepts zero for every nonnegative time and height", () => {
+      const input = base();
+      input.presentedAt = 0;
+      native(input)["recordedAt"] = 0;
+      native(input).sourceTransaction["blockNumber"] = 0;
+      const emitted = JSON.parse(serializeDomainClaimArtifact(input));
+      expect(emitted.presentedAt).toBe(0);
+      expect(emitted.claims[0].metadata.demosGcrDomain.recordedAt).toBe(0);
+      expect(emitted.claims[0].metadata.demosGcrDomain.sourceTransaction.blockNumber).toBe(0);
+    });
+
+    test("accepts the last claim index and binds presentedBy to that claim", () => {
+      const input = base();
+      secondClaim(input, "other.example");
+      input.presentedByClaimIndex = 1;
+      const emitted = JSON.parse(serializeDomainClaimArtifact(input));
+      expect(emitted.claims.map((c: { ref: string }) => c.ref)).toEqual(["domain:agent.example", "domain:other.example"]);
+      expect(emitted.presentedBy).toBe("domain:other.example");
+      input.presentedByClaimIndex = 0;
+      expect(JSON.parse(serializeDomainClaimArtifact(input)).presentedBy).toBe("domain:agent.example");
+    });
+  });
+
+  describe("authenticatedIdentityBundleSemantics", () => {
+    const presentation = { kind: "siwd", message: "m", signature: "s", address: "a" } as const;
+    const bundle = (claims: IdentityBundle["claims"], presentedBy: string, bundleVersion: unknown = "1") =>
+      ({ bundleVersion, presentedBy, presentedAt: 1, claims, presentation }) as unknown as IdentityBundle;
+
+    test.each([undefined, "2", 1])("refuses bundleVersion %s before folding any claim", (version) => {
+      const input = bundle([{ ref: "domain:agent.example" }], "domain:agent.example", version);
+      if (version === undefined) delete (input as { bundleVersion?: unknown }).bundleVersion;
+      expect(() => authenticatedIdentityBundleSemantics(input)).toThrow("domain aliases require bundleVersion 1");
+    });
+
+    test("refuses a domain presenter that the bundle does not carry", () => {
+      for (const presentedBy of ["domain:other.example", "web2:domain:Other.Example"]) {
+        expect(() => authenticatedIdentityBundleSemantics(
+          bundle([{ ref: "domain:agent.example" }], presentedBy),
+        )).toThrow("semantic domain presenter is not carried by the bundle");
+      }
+    });
+
+    test("accepts a domain presenter beside another domain and keeps both claims", () => {
+      for (const presentedBy of ["domain:other.example", "web2:domain:Other.Example"]) {
+        const semantic = authenticatedIdentityBundleSemantics(bundle(
+          [{ ref: "domain:agent.example" }, { ref: presentedBy }], presentedBy,
+        ));
+        expect(semantic.claims.map((c) => c.ref)).toEqual(["domain:agent.example", "domain:other.example"]);
+        expect(semantic.presentedBy).toBe("domain:other.example");
+      }
+    });
+
+    test("keeps every distinct non-presenter domain", () => {
+      const semantic = authenticatedIdentityBundleSemantics(bundle([
+        { ref: "domain:a.example", metadata: { n: 1 } },
+        { ref: "domain:b.example", metadata: { n: 2 } },
+        { ref: "web2:domain:C.Example", metadata: { n: 3 } },
+      ], "domain:a.example"));
+      expect(semantic.claims.map((c) => [c.ref, c.metadata])).toEqual([
+        ["domain:a.example", { n: 1 }], ["domain:b.example", { n: 2 }], ["domain:c.example", { n: 3 }],
+      ]);
+    });
+
+    test("folds aliases to one claim and keeps the one the presenter signed", () => {
+      const claims = [
+        { ref: "web2:domain:Agent.Example", metadata: { source: "alias" } },
+        { ref: "domain:agent.example", metadata: { source: "canonical" } },
+      ];
+      for (const [presentedBy, source] of [
+        ["domain:agent.example", "canonical"], ["web2:domain:Agent.Example", "alias"],
+      ] as const) {
+        const semantic = authenticatedIdentityBundleSemantics(bundle(structuredClone(claims), presentedBy));
+        expect(semantic.claims).toEqual([{ ref: "domain:agent.example", metadata: { source } }]);
+      }
+    });
+
+    test("preserves non-domain duplicates so ambiguity gates still see them", () => {
+      const semantic = authenticatedIdentityBundleSemantics(bundle([
+        { ref: "lei:5493001KJTIIGC8Y1R12" }, { ref: "lei:5493001KJTIIGC8Y1R12" },
+        { ref: "key:ed25519:abc" }, { ref: "key:ed25519:abc" }, { ref: "domain:agent.example" },
+      ], "key:ed25519:abc"));
+      expect(semantic.claims.map((c) => c.ref)).toEqual([
+        "lei:5493001KJTIIGC8Y1R12", "lei:5493001KJTIIGC8Y1R12", "key:ed25519:abc", "key:ed25519:abc", "domain:agent.example",
+      ]);
+    });
+
+    test("does not mutate the authenticated original", () => {
+      const original = bundle([{ ref: "web2:domain:Agent.Example" }], "web2:domain:Agent.Example");
+      const before = structuredClone(original);
+      authenticatedIdentityBundleSemantics(original);
+      expect(original).toEqual(before);
+    });
+  });
 });
