@@ -644,8 +644,11 @@ A recovery request that carries `priorAttempts` (as `runSession` sends for a
 session holding a transaction-bearing outcome) is a read-only audit of that
 retained transaction: it never claims a submit generation, even when the rail
 log lost its record. It requires both `settlementStore.readOutcome` and
-`reconcile` and fails closed without either; a durable `SettlementLog` used for
-recovery must therefore implement the optional `readOutcome` method. For an
+`reconcile` and fails closed without either. Over a `SettlementLog` without the
+optional `readOutcome` method, the `createIdempotencyStore` lookup reads through
+`claimIntent`: it returns a saved outcome, releases at once an intent it had to
+install (running nothing), and refuses a held or expired generation without
+releasing it. For an
 audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plus
 `txHash`, the retained hash in canonical form (64 lower-case hex digits, no
 `0x`). `getTxByHash` matches that stored form exactly and answers any other form
@@ -664,13 +667,15 @@ memory. A
 method when its `SettlementLog` implements the optional `putAttempt` and
 `readAttempt` pair (the in-memory log does). `createPayDemRail` records the
 signed hash through it before its one broadcast and does not broadcast if the
-record is refused. `payDemSettle` also records any hash a rail returns before
-the store persists or returns it; when that write is refused the call fails
-and the hash stays unbound. The only rails `payDemSettle` runs (those
-`createPayDemRail` and `createPayDemClientRail` return) call
-`fence.recordAttempt` with the exact hash they will return before they
-broadcast, and do not broadcast when it rejects: the bridge's own write after
-the rail returns cannot cover a crash between that broadcast and the return.
+record is refused. `payDemSettle` records that hash again before the store
+persists or returns it; when that write is refused the call fails and the hash
+stays unbound. The only rails `payDemSettle` runs (those `createPayDemRail` and
+`createPayDemClientRail` return) call `fence.recordAttempt` with the exact hash they will return before they
+broadcast, and do not broadcast when it rejects. A client rail does so through
+the journal hook the SDK hands its client, and only for a transfer signed after
+the call began that this process has not settled; any other hash it returns,
+such as another payment's transfer relayed for this one, is never recorded and
+stays unbound.
 The fence a rail receives records
 the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
 passes, and rejects a value that is not a Demos transaction hash, so a rail
@@ -681,10 +686,14 @@ fails, resubmits or reports unpaid a final one (DACS-4 §9.5.1 PC-7). A durable
 log needs the attempt pair for restart audits, so `payDemSettle` starts no new
 transfer through a `createIdempotencyStore` store over a log without it: the
 call fails before the rail runs, nothing is signed or sent, and the intent is
-released. Such a log still serves the payments it saved before attempt records
-existed: an audit counts the hash that the store's own outcome for these exact
-terms names, once the reconciliation agrees with that outcome on block and
-result, and a key the log saved no outcome for stays fail closed. Before adding
+released. Nor does it start one through any other store, wrapper or fence: a
+new transfer runs only when the fence a store hands its submit records through
+the same `createIdempotencyStore` store whose own `readAttempt` it carries, so
+pass that store, or an object carrying its own `once` and `readAttempt`. A log
+without the pair still serves the payments it holds: an audit counts the hash
+that an outcome the log holds for these exact terms names, once the
+reconciliation agrees with that outcome on block and result, and a key the log
+holds no outcome for stays fail closed. Before adding
 the pair to an existing log, backfill each outcome that names a transaction as
 its attempt record (`bindingHash` and `txHash` from that outcome). A key still
 held with no outcome is backfilled only from the rail's prepared-transfer

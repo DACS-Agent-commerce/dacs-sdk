@@ -438,7 +438,7 @@ describe("pay-dem over a log without attempt records", () => {
     const run = processes(legacyLog(memory));
     const rail = await sdkRail();
     await expect(payDemSettle(rail, { network: "demos" }, { store: run.store("A") })(request("job-a")))
-      .rejects.toThrow(/keeps no attempt records; refusing to start a new transfer/);
+      .rejects.toThrow(/records no attempt this bridge can read back; refusing to start a new transfer/);
     expect(sdkTransfers()).toBe(0);
     expect(demosNode.broadcast).not.toHaveBeenCalled();
     await expect(memory.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
@@ -626,5 +626,158 @@ describe("settlement attempt records are generation-fenced and immutable", () =>
     const { putAttempt: _put, ...partial } = log;
     expect(() => createIdempotencyStore(partial as SettlementLog))
       .toThrow(/settlement log must provide both putAttempt and readAttempt/);
+  });
+});
+
+/** A durable log written before the read-only lookup existed: no `readOutcome`, no attempt pair. */
+function claimOnlyLog(memory: SettlementLog = createInMemorySettlementLog()): SettlementLog {
+  const { readOutcome: _read, putAttempt: _put, readAttempt: _attempt, ...rest } = memory;
+  return rest;
+}
+
+// DACS-4 §9.5.1 PC-7 on a log without the optional `readOutcome`: the store's
+// lookup reads through `claimIntent`, so a final payment it saved still
+// completes after a restart, and a key it saved nothing for stays fail closed
+// without being held or made fresh.
+describe("pay-dem over a log without a read-only outcome lookup", () => {
+  test("an audit after a restart completes a final payment the log saved, and submits nothing", async () => {
+    const memory = createInMemorySettlementLog();
+    const run = processes(claimOnlyLog(memory));
+    await savedBeforeAttemptRecords(run.log, "job-a");
+
+    run.restart();
+    const reconcile = vi.fn(async () => executed(hashA));
+    const audit = await auditingProcess(run.store("B"), reconcile);
+    await expect(audit.settle(request("job-a", hashA, true)))
+      .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
+    await expect(audit.settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-a", txHash: hashA }));
+    expect(audit.once).not.toHaveBeenCalled();
+    expect(sdkTransfers()).toBe(0);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+  });
+
+  test("a key the log saved nothing for fails closed and is left free, never held", async () => {
+    const memory = createInMemorySettlementLog();
+    const run = processes(claimOnlyLog(memory));
+    run.restart();
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
+      /no SDK record binds the retained transaction to this payment/,
+    );
+    expect(sdkTransfers()).toBe(0);
+    // The intent the lookup installed was released: a later claim is fresh, not held or expired.
+    await expect(memory.claimIntent({
+      key: "pay-dem:job-a:0", bindingHash: settlementBindingHash(bindingFor("job-a")),
+      owner: "probe", now: 70_000, leaseDurationMs: 1_000,
+    })).resolves.toMatchObject({ status: "acquired", lease: { stage: "fresh" } });
+  });
+
+  test("an expired attempt the log never resolved is refused and stays fenced for reconciliation", async () => {
+    const memory = createInMemorySettlementLog();
+    const run = processes(claimOnlyLog(memory));
+    const bindingHash = settlementBindingHash(bindingFor("job-a"));
+    // A pre-upgrade process claimed the key, may have broadcast, then died.
+    await memory.claimIntent({ key: "pay-dem:job-a:0", bindingHash, owner: "A", now: 1_000, leaseDurationMs: 1_000 });
+
+    run.restart();
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(/expired unresolved attempt/);
+    expect(sdkTransfers()).toBe(0);
+    // Never released: once the audit's own lease lapses, the key still needs reconciliation.
+    await expect(memory.claimIntent({
+      key: "pay-dem:job-a:0", bindingHash, owner: "probe", now: 200_000, leaseDurationMs: 1_000,
+    })).resolves.toMatchObject({ status: "acquired", lease: { stage: "reconcile" } });
+  });
+});
+
+// A fresh transfer runs only when the fence the store hands `submit` carries
+// the attempt recorder of the same `createIdempotencyStore` store whose own
+// `readAttempt` this bridge reads: otherwise a restart could not bind its hash.
+// Function identity on a wrapper is not trusted to say so.
+describe("pay-dem starts a transfer only through a fence whose record a restart can read back", () => {
+  const refused = /refusing to start a new transfer whose hash a restart could not bind/;
+  type Store = ReturnType<typeof createIdempotencyStore>;
+
+  test.each([
+    ["a forwarding wrapper over a store whose log keeps no attempts", (): Store => {
+      const inner = createIdempotencyStore(legacyLog());
+      return {
+        once: (...args) => inner.once(...args),
+        readOutcome: (...args) => inner.readOutcome!(...args),
+      };
+    }],
+    ["a host store over an SDK store's once and readOutcome", (): Store => {
+      const inner = createIdempotencyStore();
+      return { once: inner.once, readOutcome: inner.readOutcome };
+    }],
+    ["a store whose readAttempt belongs to another SDK store", (): Store => {
+      const inner = createIdempotencyStore();
+      return { once: inner.once, readOutcome: inner.readOutcome, readAttempt: createIdempotencyStore().readAttempt };
+    }],
+    ["a host store that hands submit no fence", (): Store => {
+      const inner = createIdempotencyStore();
+      return {
+        once: async (_key, _binding, submit) => submit() as never,
+        readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+      };
+    }],
+    ["a host store whose fence brings its own recorder", (): Store => {
+      const inner = createIdempotencyStore();
+      return {
+        once: (key, binding, submit, reconcile) => inner.once(key, binding, async (fence) => submit(Object.freeze({
+          ...fence!, recordAttempt: async (hash: string) => fence!.recordAttempt!(hash),
+        })), reconcile),
+        readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+      };
+    }],
+  ] as const)("refuses %s before the rail signs", async (_label, build) => {
+    const store = build();
+    await expect(payDemSettle(await sdkRail(), {}, { store })(request("job-a"))).rejects.toThrow(refused);
+    expect(sdkTransfers()).toBe(0);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+  });
+
+  test("a store object carrying the SDK store's own once and readAttempt settles once and records the hash", async () => {
+    const memory = createInMemorySettlementLog();
+    const inner = createIdempotencyStore(memory);
+    const store = { once: inner.once, readOutcome: inner.readOutcome, readAttempt: inner.readAttempt };
+    await expect(payDemSettle(await sdkRail(), {}, { store })(request("job-a")))
+      .resolves.toMatchObject({ ok: true, txHash: hashA });
+    expect(sdkTransfers()).toBe(1);
+    await expect(memory.readAttempt!("pay-dem:job-a:0")).resolves.toMatchObject({ txHash: hashA });
+  });
+
+  test("a second bridge sharing a refused attempt gets the same clear refusal", async () => {
+    const store = createIdempotencyStore(legacyLog());
+    const rail = await sdkRail();
+    const results = await Promise.allSettled([
+      payDemSettle(rail, {}, { store, reconcile: vi.fn(async () => null) })(request("job-a")),
+      payDemSettle(rail, {}, { store, reconcile: vi.fn(async () => null) })(request("job-a")),
+    ]);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      expect(String((result as PromiseRejectedResult).reason)).toMatch(refused);
+    }
+    expect(sdkTransfers()).toBe(0);
+  });
+});
+
+// A mixed store: the outcome lookup of a store whose log keeps no attempts
+// and the attempt lookup of one that does. Its outcomes never bind a hash,
+// because this bridge reads attempt records through it.
+describe("pay-dem never binds an outcome through a store that has an attempt lookup", () => {
+  test("an outcome-only store's saved outcome does not bind beside another store's attempt lookup", async () => {
+    const run = processes(legacyLog());
+    await savedBeforeAttemptRecords(run.log, "job-a");
+    run.restart();
+    const outcomeOnly = run.store("B");
+    const store = Object.assign(Object.create(null) as object, {
+      once: outcomeOnly.once, readOutcome: outcomeOnly.readOutcome, readAttempt: createIdempotencyStore().readAttempt,
+    }) as typeof outcomeOnly;
+    const audit = await auditingProcess(store, vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(request("job-a", hashA, true)))
+      .rejects.toThrow(/no SDK record binds the retained transaction to this payment/);
+    expect(sdkTransfers()).toBe(0);
   });
 });

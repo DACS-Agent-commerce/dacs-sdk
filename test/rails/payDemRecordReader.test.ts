@@ -15,6 +15,7 @@ import {
   type DemosTransferResult,
   type PayDemPreparedTransfer,
   type PayDemRail,
+  type PayDemReconciledSettlement,
   type PayDemRecordReader,
 } from "../../src/rails/payDem.js";
 
@@ -660,6 +661,42 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     await expect(log.readOutcome!(settlementKey("pay-dem", "job-2", 0)))
       .resolves.toBeNull();
     await expect(settle(request("job-2"))).rejects.toThrow(/refusing to resubmit/);
+  });
+
+  // The attempt record says this key's own effect signed the hash. job-1's
+  // transfer relayed for job-2 is held, and a restart audit of job-2 must not
+  // bind it through a record either.
+  it("never records job-1's relayed transfer as job-2's attempt", async () => {
+    const { client } = customClient(await reader());
+    const log = createInMemorySettlementLog();
+    const settle = payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) });
+    await expect(settle(request("job-1"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+    accountNonce = NONCE;
+    await expect(settle(request("job-2"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+
+    const reconcile = vi.fn(async () =>
+      ({ ...settled(), payer: PAYER_HEX, payee: PAYEE_HEX, amountOs: AMOUNT_OS }) as PayDemReconciledSettlement);
+    const restarted = payDemSettle(createPayDemClientRail(client), {}, {
+      store: createIdempotencyStore(log), reconcile,
+    });
+    await expect(restarted({ ...request("job-2"), priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: false }] }))
+      .rejects.toThrow(/no SDK record binds the retained transaction/);
+    await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
+  });
+
+  // The client's journal call is the last step before its broadcast: the
+  // attempt record is written there, so a process that dies before the client
+  // returns leaves a hash a restart can bind.
+  it("records a client's own transfer before it broadcasts, so a restart after a crash can bind it", async () => {
+    const { client, transfer } = customClient(await reader(), {}, async (args) => {
+      await args.journalPreparedTransfer?.(prepared(args.recovery === undefined ? {} : { recovery: args.recovery }));
+      await new Promise<never>(() => undefined);
+    });
+    const log = createInMemorySettlementLog();
+    void payDemSettle(createPayDemClientRail(client), {}, { store: createIdempotencyStore(log) })(request("job-a"));
+    await vi.waitFor(() => expect(transfer).toHaveBeenCalled());
+    await vi.waitFor(async () =>
+      expect(await log.readAttempt!(settlementKey("pay-dem", "job-a", 0))).toMatchObject({ txHash: TX_HASH }));
   });
 
   it("holds job-2 presenting job-1's genuine transfer even before the account nonce shows it", async () => {

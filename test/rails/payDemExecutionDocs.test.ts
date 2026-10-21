@@ -54,6 +54,15 @@ describe("pay-dem execution docs match the code (#338)", () => {
     for (const text of [doc, readme]) {
       expect(text).toContain("records the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail passes");
     }
+    for (const text of [doc, readme]) {
+      expect(text).toContain("Nor does it start one through any other store, wrapper or fence");
+      expect(text).toContain("whose own `readAttempt` it carries");
+      expect(text).toContain("lookup reads through `claimIntent`");
+      expect(text).toContain("any other hash it returns, such as another payment's transfer relayed for this one, is never recorded");
+      expect(text).not.toContain("saved before attempt records existed");
+      expect(text).not.toContain("also records any hash a rail returns");
+      expect(text).not.toContain("must therefore implement the optional `readOutcome` method");
+    }
   });
 
   it("says a failure proof from outside createPayDemRail never becomes the recorded outcome", () => {
