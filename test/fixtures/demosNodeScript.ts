@@ -31,6 +31,8 @@ export const demosNode = {
    * carry (the record keeps `feeOs`).
    */
   confirmFeeOs: undefined as string | undefined,
+  /** Whether the node records a broadcast transfer; off, it is never seen included. */
+  recordsBroadcasts: true,
   /** The record status a broadcast transfer ends with. */
   recordStatus: "confirmed",
   /**
@@ -63,6 +65,7 @@ export const demosNode = {
     this.accountNonce = 0;
     this.feeOs = undefined;
     this.confirmFeeOs = undefined;
+    this.recordsBroadcasts = true;
     this.recordStatus = "confirmed";
     this.postFork = true;
     this.networkInfoReads = [];
@@ -205,12 +208,14 @@ class MockDemos {
   }): Promise<unknown> {
     demosNode.broadcasts += 1;
     const { hash, content } = validity.response.data.transaction;
-    demosNode.records.set(hash, {
-      hash,
-      content: servedContent(content),
-      status: demosNode.recordStatus,
-      blockNumber: demosNode.blockNumber,
-    });
+    if (demosNode.recordsBroadcasts) {
+      demosNode.records.set(hash, {
+        hash,
+        content: servedContent(content),
+        status: demosNode.recordStatus,
+        blockNumber: demosNode.blockNumber,
+      });
+    }
     return { result: 200, response: { hash } };
   }
   async nodeCall(message: string, args: { hash: string }): Promise<unknown> {

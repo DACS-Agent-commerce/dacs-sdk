@@ -622,20 +622,14 @@ authoritative observation proves no transfer for that tuple landed. A status
 index reporting `included` is not execution, so a reconciled success without
 `execution: "executed"` is refused, and a reconciled failure never becomes the
 recorded outcome by itself. A non-final observation must throw. Only the SDK's
-own read of the node record makes a fresh payment final: the rail
-`createPayDemRail` returns, or a custom `DemosNativeClient` that carries
-`recordReader: await createPayDemRecordReader({ rpc })`, journals its signed
-transfer once through the journal the SDK hands it (with its
-`confirmedTotalDebitOs` when the payment has a `maxTotalDebitOs`) and returns
-its signed `nonce`, whose returned hash the SDK then observes and binds itself,
-also through `createPayDemClientRail`. The SDK reads the record only for a
-transfer whose nonce is above the payer's account nonce read before the call,
-and binds it only when the record's signed `content.timestamp` is not earlier
-than the start of the call, so a transfer made before a restart never settles
-a later payment; it also settles one hash at most once per process. Any other custom
-`DemosNativeClient` or `PayDemRail` is refused before its transfer or `settle`
-runs, so it can never debit the buyer and then leave the payment held; a
-payment one already made still reconciles, because recovery never calls it. See
+own read of the node record makes a fresh payment final, through the rail
+`createPayDemRail` returns: it signs, journals, fences and broadcasts the
+transfer itself, so the record it reads is this call's transfer at the fee the
+node confirmed. A custom `DemosNativeClient` or `PayDemRail` is refused before
+its transfer or `settle` runs, because the SDK could not bind a transfer it did
+not sign and broadcast to the call; it can never debit the buyer and then leave
+the payment held, and a payment one already made still reconciles, because
+recovery never calls it. See
 [`docs/pay-dem-execution.md`](docs/pay-dem-execution.md) for the execution gate
 and the contracts for custom clients, rails and reconcilers. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
@@ -645,15 +639,15 @@ recovery fails closed and never authorizes a broadcast.
 
 A recovery request that carries `priorAttempts` (as `runSession` sends for a
 session holding a transaction-bearing outcome) is a read-only audit of that
-retained transaction: it never calls the store's `once` or the rail, even when
-the rail log lost its record. It requires both `settlementStore.readOutcome` and
-`reconcile` and fails closed without either. A `SettlementLog` that keeps
-attempt records must implement `readOutcome`, which reads without a lease.
-Over an older log with neither, the `createIdempotencyStore` lookup reads
-through `claimIntent`, so it is not read-only: it returns a saved outcome,
-takes a short lease on a key it had to install and releases it at once
-(running nothing), refuses a held generation, and on an expired one takes a
-reconcile lease that it leaves to lapse and refuses. For an
+retained transaction: it never calls the rail, even when the rail log lost its
+record. It requires both `settlementStore.readOutcome` and `reconcile` and
+fails closed without either, except that a bridge without `reconcile` still
+returns the definitive result it bound to the key itself when the key's
+attempt record names that hash and the store saved that same result. A
+`SettlementLog` that keeps attempt records must implement `readOutcome`, which
+reads without a lease. The `createIdempotencyStore` lookup never claims,
+leases or binds a key; over an older log without `readOutcome` it refuses, so
+a retained hash on such a log is not audited. For an
 audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plus
 `txHash`, the retained hash in canonical form (64 lower-case hex digits, no
 `0x`). `getTxByHash` matches that stored form exactly and answers any other form
@@ -672,19 +666,20 @@ memory. A
 method when its `SettlementLog` implements the optional `putAttempt` and
 `readAttempt` pair (the in-memory log does). `createPayDemRail` signs the hash
 itself and records it through that fence before its one broadcast, and does
-not broadcast if the record is refused. `payDemSettle` records that hash again
-before the store persists or returns it; when that write is refused the call
-fails and the hash stays unbound. A `createPayDemClientRail` client's journal
-entry is its own statement and can name another payment's transfer, so the
-client's fence carries no `recordAttempt`, and `payDemSettle` records its hash
-only after the SDK's own record read made it this payment's success (signed
-after the call began, its nonce above the account nonce read before it, and
-settled by no other call in this process). Any other hash it returns,
-including its own transfer the SDK has not read yet, is not recorded and stays
-unbound, so a restart reconciles that key by key and an audit of it refuses.
-Two payments in flight at once that a client hands one transfer cannot be told
-apart by the record; the SDK settles and records at most one of them in a
-process.
+not broadcast if the record is refused, and `payDemSettle` does not write it
+again after the payment is final. A payment in flight across an upgrade, or on
+a log that predates attempt records, leaves a retained hash no record names.
+A resumed audit of a retained hash that no attempt record names finishes it
+only through the store's own `once`: while the key's generation is held it
+refuses; once that generation expires the store reconciles the key exactly as
+a restart without history would (the reconciler is asked for this key's
+payment, without the hash), and only an answer naming the retained hash is
+accepted. That generation then records the hash as the key's attempt and saves
+the outcome, so later audits and restarts bind it through the record. A key the
+store holds nothing for starts nothing (the submit refuses and the intent is
+released), an outcome saved without a record still never binds, and any other
+store's `once` or fence never finishes it. This path trusts the reconciler as
+the restart without history does (below).
 The fence a rail receives records
 the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail
 passes, and rejects a value that is not a Demos transaction hash, so a rail
@@ -809,16 +804,12 @@ stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7).
 A recovered native success, and any native permanent failure, is final only
 when the SDK read the node's record for that hash itself: over the rail
 `createPayDemRail` built, the adapter reads the record through that rail's own
-connection, and over a `createPayDemClientRail` rail through the connection of
-the client's `createPayDemRecordReader` reader, for that client's wallet only.
-A client rail keeps the client's `address`, `recordReader` and `transfer` as
-they are when it is built, and pays through those too, so a later change to the
-client object never leaves a payment its own recovery cannot read. It takes the
-record's status, block, nonce, parties, amount and fee from it. These are the
-only rails the adapter lets make a fresh payment, so a session paid through
-either can be resumed or repeated. A fresh success reports that same record
+connection, for that rail's wallet only. It takes the
+record's status, block, nonce, parties, amount and fee from it. This is the
+only rail the adapter lets make a fresh payment, so a session paid through it
+can be resumed or repeated. A fresh success reports that same record
 fee as `networkFeeOs`, which the session saves and signs: the rail's own
-`networkFeeOs` (the confirmation's fee, or a client's reported debit) bounds
+`networkFeeOs` (the confirmation's fee) bounds
 `maxTotalDebitOs` and stays on the rail's result, but the record need not carry
 it, so a saved success never contradicts its own record on a restart. It reads the amount and fee in the
 denomination the record's signed payload carries (DEM numbers before the
