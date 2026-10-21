@@ -47,15 +47,18 @@ describe("pay-dem execution docs match the code (#338)", () => {
       expect(text).toContain("`createPayDemRail` signs the hash itself");
       expect(text).toContain("fence carries no `recordAttempt`");
       expect(text).toContain("records its hash only after the SDK's own record read made it this payment's success");
-      expect(text).toContain("including its own transfer the SDK has not read yet, is not recorded and stays unbound");
+      expect(text).toContain("including its own transfer the SDK has not read yet, is not recorded there");
+      expect(text).not.toContain("is not recorded and stays unbound");
       expect(text).toContain("the SDK settles and records at most one of them in a process");
       expect(text).not.toContain("record the exact hash they will return before they broadcast");
       expect(text).not.toContain("through the journal hook the SDK hands");
-      // A log that can start a transfer reads outcomes without a claim; the
-      // claim-based lookup of an older log is not read-only.
+      // A log that can start a transfer reads outcomes without a claim, and
+      // the lookup of an older log refuses rather than claims.
       expect(text).toContain("that keeps attempt records must implement `readOutcome`");
-      expect(text).toContain("so it is not read-only");
-      expect(text).toContain("takes a reconcile lease that it leaves to lapse and refuses");
+      expect(text).toContain("`createIdempotencyStore` lookup never claims, leases or binds a key");
+      expect(text).not.toContain("so it is not read-only");
+      expect(text).not.toContain("records that hash again");
+      expect(text).toContain("does not write it again after the payment is final");
       expect(text).not.toContain("never claims a submit generation");
     }
     for (const text of [doc, readme]) {
@@ -64,14 +67,14 @@ describe("pay-dem execution docs match the code (#338)", () => {
       expect(text).toContain("backfill each outcome that names a transaction as its attempt record");
       expect(text).toContain("Once the log keeps attempts, an outcome without a record never counts.");
     }
-    expect(doc).toContain("a refused write fails the call and leaves the hash unbound");
     for (const text of [doc, readme]) {
       expect(text).toContain("records the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail passes");
     }
     for (const text of [doc, readme]) {
       expect(text).toContain("Nor does it start one through any other store, wrapper or fence");
       expect(text).toContain("whose own `readOutcome` and `readAttempt` it carries");
-      expect(text).toContain("lookup reads through `claimIntent`");
+      expect(text).not.toContain("lookup reads through `claimIntent`");
+      expect(text).toContain("over an older log without `readOutcome` it refuses");
       expect(text).not.toContain("is never recorded");
       expect(text).not.toContain("saved before attempt records existed");
       expect(text).not.toContain("also records any hash a rail returns");

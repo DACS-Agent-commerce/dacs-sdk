@@ -142,11 +142,8 @@ export interface SettlementLog {
   /**
    * Read an immutable outcome without acquiring a lease or changing a generation.
    * Required on a log that keeps attempts. Optional on one that does not;
-   * there the store's `readOutcome` reads through `claimIntent`, so it is not
-   * read-only: it returns a saved outcome, takes a short lease on a key it had
-   * to install and releases it at once (running nothing), refuses a held
-   * generation, and on an expired one takes a reconcile lease that it leaves
-   * to lapse and refuses.
+   * without it the store's `readOutcome` refuses before touching the log, so
+   * a retained pay-dem hash on such a log is not audited.
    */
   readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
@@ -244,7 +241,8 @@ export interface SettlementIdempotencyStore {
    * payment (a key-only reconciliation can have written it); see
    * {@link readAttempt}. On a log without them, this store's own lookup binds
    * a hash an outcome the log holds names, once the reconciliation agrees on
-   * the block and outcome.
+   * the block and outcome. `createIdempotencyStore`'s lookup never claims,
+   * leases or binds the key; over a log without `readOutcome` it refuses.
    */
   readOutcome?(
     key: string,
@@ -956,6 +954,21 @@ export function isStoreLookupPair(readAttempt: unknown, readOutcome: unknown): b
     storeOutcomeLookups.get(readAttempt) === readOutcome;
 }
 
+// Each effect fence a `createIdempotencyStore` store's `once` built, mapped to
+// that same store's `readOutcome`.
+const storeFences = new WeakMap<object, object>();
+
+/**
+ * Internal (not re-exported): true only when `fence` is one the `once` of the
+ * `createIdempotencyStore` store whose lookup is `readOutcome` built. That
+ * `once` calls `reconcile` only for an expired generation it acquired under the
+ * exact terms, and persists what it returns through that generation.
+ */
+export function isStoreReconcileFence(fence: unknown, readOutcome: unknown): boolean {
+  return fence !== null && typeof fence === "object" && typeof readOutcome === "function" &&
+    storeFences.get(fence) === readOutcome;
+}
+
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),
@@ -1011,90 +1024,38 @@ function buildIdempotencyStore(
         },
       };
 
-  // A log without `readOutcome` (one written before it existed, which keeps no
-  // attempts and so starts no pay-dem transfer) answers the lookup through
-  // `claimIntent`, so the lookup writes: a saved outcome is returned, and an
-  // intent the claim had to install is released at once, with nothing run. A
-  // held generation refuses, and so does an expired one, whose reconcile lease
-  // is left to lapse and never released: its effect may have been sent, and
-  // only reconciliation may resolve it.
-  const readOutcomeThroughClaim = async (
-    key: string,
-    capturedBinding: Readonly<SettlementBinding>,
-    bindingHash: string,
-  ): Promise<SettleResult | null> => {
-    const claim = captureIntentClaim(await durable.claimIntent({
-      key,
-      bindingHash,
-      owner: policy.owner,
-      now: now(),
-      leaseDurationMs: policy.leaseDurationMs,
-    }));
-    if (claim.status === "conflict") {
-      throw new DacsError(`settlement ${key} is retained under different terms; refusing reuse or resubmission`);
+  // The lookup never claims, leases or binds a key. A log without
+  // `readOutcome` (one written before it existed) refuses it before touching
+  // the log, so a retained hash on such a log is not audited.
+  const readOutcome: NonNullable<SettlementIdempotencyStore["readOutcome"]> = async (key, binding) => {
+    const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
+    const bindingHash = settlementBindingHash(capturedBinding);
+    if (settlementKey(capturedBinding.railId, capturedBinding.jobId, capturedBinding.phaseIndex) !== key) {
+      throw new DacsError("settlement outcome lookup binding does not match its idempotency key");
     }
-    if (claim.status === "outcome") {
-      if (claim.outcome.bindingHash !== bindingHash) {
-        throw new DacsError(`settlement ${key} outcome binding conflicts with requested terms`);
+    if (durable.readOutcome === undefined) {
+      throw new DacsError("settlement log requires read-only outcome lookup for retained recovery");
+    }
+    const flying = inflight.get(key);
+    if (flying !== undefined) {
+      if (flying.bindingHash !== bindingHash) {
+        throw new DacsError(`settlement ${key} is already running under different terms`);
       }
-      return captureBoundResult(claim.outcome.result as SettleResult, capturedBinding,
-        "settlement read-only outcome") as SettleResult;
+      await flying.promise;
     }
-    if (claim.bindingHash !== bindingHash) {
-      throw new DacsError(`settlement ${key} is held under different terms`);
+    const raw = await durable.readOutcome(key);
+    if (raw === null) return null;
+    const outcome = captureStoredOutcome(raw, "settlement read-only outcome");
+    if (outcome.bindingHash !== bindingHash) {
+      throw new DacsError(`settlement ${key} outcome binding conflicts with requested terms`);
     }
-    if (claim.status === "held") {
-      throw new DacsError(
-        `settlement ${key} has an unresolved or in-flight current generation; the read-only lookup cannot resolve it`,
-      );
-    }
-    if (claim.lease.owner !== policy.owner) {
-      throw new DacsError(`settlement ${key} returned an invalid acquired generation`);
-    }
-    if (claim.lease.stage !== "fresh") {
-      throw new DacsError(
-        `settlement ${key} has an expired unresolved attempt; the read-only lookup never resolves or releases it (double-pay risk)`,
-      );
-    }
-    const released = await durable.releaseIntent({
-      key,
-      bindingHash,
-      lease: Object.freeze({ owner: claim.lease.owner, generation: claim.lease.generation }),
-      now: now(),
-    });
-    if (released !== "released") {
-      throw new DacsError(`settlement ${key} read-only lookup could not release the intent it installed`);
-    }
-    return null;
+    return captureBoundResult(outcome.result as SettleResult, capturedBinding,
+      "settlement read-only outcome") as SettleResult;
   };
 
   return {
     ...attemptLookup,
-    async readOutcome(key, binding) {
-      const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
-      const bindingHash = settlementBindingHash(capturedBinding);
-      if (settlementKey(capturedBinding.railId, capturedBinding.jobId, capturedBinding.phaseIndex) !== key) {
-        throw new DacsError("settlement outcome lookup binding does not match its idempotency key");
-      }
-      const flying = inflight.get(key);
-      if (flying !== undefined) {
-        if (flying.bindingHash !== bindingHash) {
-          throw new DacsError(`settlement ${key} is already running under different terms`);
-        }
-        await flying.promise;
-      }
-      if (durable.readOutcome === undefined) {
-        return readOutcomeThroughClaim(key, capturedBinding, bindingHash);
-      }
-      const raw = await durable.readOutcome(key);
-      if (raw === null) return null;
-      const outcome = captureStoredOutcome(raw, "settlement read-only outcome");
-      if (outcome.bindingHash !== bindingHash) {
-        throw new DacsError(`settlement ${key} outcome binding conflicts with requested terms`);
-      }
-      return captureBoundResult(outcome.result as SettleResult, capturedBinding,
-        "settlement read-only outcome") as SettleResult;
-    },
+    readOutcome,
     async once(key, binding, submit, reconcile) {
       const capturedBinding = frozenClone(
         binding,
@@ -1177,7 +1138,7 @@ function buildIdempotencyStore(
             throw new DacsError(`settlement ${key} attempt write is invalid`);
           };
           if (recordAttempt !== undefined) attemptRecorders.set(recordAttempt, attemptLookup.readAttempt!);
-          return Object.freeze({
+          const built = Object.freeze({
             ...token,
             settlementKey: key,
             bindingHash,
@@ -1196,6 +1157,8 @@ function buildIdempotencyStore(
             },
             ...(recordAttempt === undefined ? {} : { recordAttempt }),
           });
+          storeFences.set(built, readOutcome);
+          return built;
         };
 
         const persist = async (

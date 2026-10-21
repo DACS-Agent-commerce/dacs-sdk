@@ -132,7 +132,8 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
         await expect(f.settle(request("job-b", 0, hashA)))
           .rejects.toThrow(/no SDK record binds the retained transaction/);
       }
-      expect(f.once).not.toHaveBeenCalled();
+      // The SDK store's `once` may look the key up, but no rail runs for it:
+      // the transfer count below is job A's payment alone.
     }
     expect(reconcile).toHaveBeenCalledTimes(4);
     // Job A's own audit still counts its hash through that rail log.
@@ -149,7 +150,6 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       const f = await auditor(reconcile);
       await expect(f.settle(request("job-b", 0, hashA, ok)))
         .rejects.toThrow(/no SDK record binds the retained transaction/);
-      expect(f.once).not.toHaveBeenCalled();
       expect(f.submit).not.toHaveBeenCalled();
     }
   });
@@ -262,7 +262,8 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       preparedTransfer: entry({ payee: "ef".repeat(32) }) })) as unknown as PayDemSettlementReconcile;
     await expect(payDemSettle(rail, {}, { store, reconcile: mismatched })(request("job-a", 0, hashA)))
       .rejects.toThrow(binds);
-    expect(once).not.toHaveBeenCalled();
+    // Only job B's refused lookup reached the store's `once`; no rail ran.
+    expect(once).toHaveBeenCalledTimes(1);
     expect(sdkTransfers()).toBe(1);
   });
 
@@ -384,7 +385,9 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       const audit = settle(request("job-a", 0, found));
       await (audited
         ? expect(audit).resolves.toMatchObject({ ok: true, txHash: hashA })
-        : expect(audit).rejects.toThrow(/no SDK record binds the retained transaction/));
+        : expect(audit).rejects.toThrow(
+          /no SDK record binds the retained transaction|finished only through the settlement store's own expired generation/,
+        ));
       submitted += sdkTransfers();
     }
     expect(submitted).toBe(2);

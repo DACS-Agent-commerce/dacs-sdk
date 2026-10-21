@@ -1753,7 +1753,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   // A class store is a valid store, but a new transfer needs the fence of the
   // SDK store whose own attempt lookup it carries; one that runs submit itself
   // starts none, because a restart could not bind the hash.
-  test("accepts a structurally valid class-based settlement store", async () => {
+  test("starts no transfer through a class store that runs submit itself, but pays through one carrying the SDK store's methods", async () => {
     class ClassStore {
       async once(
         _key: string,

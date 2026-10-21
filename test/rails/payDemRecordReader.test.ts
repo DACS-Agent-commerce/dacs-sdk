@@ -34,6 +34,10 @@ let TX_HASH = "85".repeat(32);
 const NONCE = 9;
 const BLOCK = 480_877;
 const AMOUNT_OS = "9500000000";
+// A relayed or unread client hash binds no record: the audit refuses it, and
+// while the key's own generation is held the store refuses before any audit
+// could finish it.
+const unboundOrHeld = /no SDK record binds the retained transaction|unresolved or in-flight current generation/;
 
 const sdk = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -699,7 +703,7 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
       store: createIdempotencyStore(log), reconcile,
     });
     await expect(restarted({ ...request("job-2"), priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: false }] }))
-      .rejects.toThrow(/no SDK record binds the retained transaction/);
+      .rejects.toThrow(unboundOrHeld);
     await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
   });
 
@@ -721,7 +725,7 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     const restarted = payDemSettle(createPayDemClientRail(customClient(await reader()).client), {}, {
       store: createIdempotencyStore(log), reconcile: reconciled(),
     });
-    await expect(restarted(retained("job-a"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+    await expect(restarted(retained("job-a"))).rejects.toThrow(unboundOrHeld);
     expect(transfer).toHaveBeenCalledTimes(1);
   });
 
@@ -769,7 +773,7 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     const restarted = payDemSettle(createPayDemClientRail(client), {}, {
       store: createIdempotencyStore(log), reconcile: reconciled(),
     });
-    await expect(restarted(retained(heldJob))).rejects.toThrow(/no SDK record binds the retained transaction/);
+    await expect(restarted(retained(heldJob))).rejects.toThrow(unboundOrHeld);
   });
 
   // Code F2 (#370 sweep): job-1's transfer is still pending (its record cannot
@@ -793,7 +797,7 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     const restarted = payDemSettle(createPayDemClientRail(client), {}, {
       store: createIdempotencyStore(log), reconcile: reconciled(),
     });
-    await expect(restarted(retained("job-2"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+    await expect(restarted(retained("job-2"))).rejects.toThrow(unboundOrHeld);
   });
 
   // Code F1 (#370 sweep): job-1 settled in this process and the account nonce
@@ -809,7 +813,7 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     await expect(settle(request("job-2"))).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
 
     await expect(log.readAttempt!(settlementKey("pay-dem", "job-2", 0))).resolves.toBeNull();
-    await expect(settle(retained("job-2"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+    await expect(settle(retained("job-2"))).rejects.toThrow(unboundOrHeld);
   });
 
   // A reader-carrying client gets the store's fence without its recorder: it
@@ -832,7 +836,7 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
     const restarted = payDemSettle(createPayDemClientRail(client), {}, {
       store: createIdempotencyStore(log), reconcile: reconciled(),
     });
-    await expect(restarted(retained("job-2"))).rejects.toThrow(/no SDK record binds the retained transaction/);
+    await expect(restarted(retained("job-2"))).rejects.toThrow(unboundOrHeld);
   });
 
   it("holds job-2 presenting job-1's genuine transfer even before the account nonce shows it", async () => {
@@ -973,7 +977,7 @@ describe("a transfer signed before this call never settles it, across a restart 
       {},
       { store: restarted.createIdempotencyStore(log), reconcile },
     )({ ...request("job-2"), priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: false }] }))
-      .rejects.toThrow(/no SDK record binds the retained transaction/);
+      .rejects.toThrow(unboundOrHeld);
   });
 
   it("holds a direct settle presenting an earlier executed transfer after a restart", async () => {

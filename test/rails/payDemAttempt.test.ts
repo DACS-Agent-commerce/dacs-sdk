@@ -291,8 +291,9 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
     const settle = payDemSettle(await sdkRail(), {}, { store: run.store("A"), reconcile: reconcile as PayDemSettlementReconcile });
     await expect(settle(request("job-a"))).rejects.toThrow("lost response");
     await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
+    // The key's generation is still held, so nothing can finish it yet.
     await expect(settle(request("job-a", hashB, true))).rejects.toThrow(
-      /no SDK record binds the retained transaction to this payment/,
+      /unresolved or in-flight current generation/,
     );
     expect(reconcile).toHaveBeenCalledTimes(1);
     await expect(run.log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
@@ -309,14 +310,18 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
       now += 60_000;
       return sign(...args);
     });
-    const reconcile = vi.fn(async () => executed(hashA));
-    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile });
+    // The node never saw hash A: asked for this key's payment, the reconciler
+    // finds none, though it confirms the retained hash when asked for it.
+    const reconcile = vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) =>
+      context.txHash === undefined ? null : executed(hashA));
+    const settle = payDemSettle(await sdkRail(), {}, { store, reconcile: reconcile as PayDemSettlementReconcile });
     await expect(settle(request("job-a"))).rejects.toThrow(/attempt was produced by a stale generation/);
     await expect(log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
 
     await expect(settle(request("job-a", hashA, true))).rejects.toThrow(
-      /no SDK record binds the retained transaction to this payment/,
+      /contradicts reconciliation proof of absence/,
     );
+    await expect(log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
     await expect(log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
     expect(sdkTransfers()).toBe(1);
     expect(demosNode.broadcast).not.toHaveBeenCalled();
@@ -346,7 +351,8 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
     await expect(audit.settle(request("job-b", hashA, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
-    expect(audit.once).not.toHaveBeenCalled();
+    // The store's `once` returned the saved outcome; nothing ran or was recorded.
+    await expect(run.log.readAttempt!("pay-dem:job-b:0")).resolves.toBeNull();
     expect(audit.submit).not.toHaveBeenCalled();
   });
 
@@ -366,7 +372,7 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
     await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
-    expect(audit.once).not.toHaveBeenCalled();
+    await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
     expect(audit.submit).not.toHaveBeenCalled();
   });
 });
@@ -416,7 +422,7 @@ describe("pay-dem over a log without attempt records", () => {
     await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
-    expect(audit.once).not.toHaveBeenCalled();
+    // The store's `once` held nothing to finish: its submit refused and no rail ran.
     expect(audit.submit).not.toHaveBeenCalled();
   });
 
@@ -630,56 +636,43 @@ function claimOnlyLog(memory: SettlementLog = createInMemorySettlementLog()): Se
   return rest;
 }
 
-// DACS-4 §9.5.1 PC-7 on a log without the optional `readOutcome`: the store's
-// lookup reads through `claimIntent`, so a final payment it saved still
-// completes after a restart, and a key it saved nothing for stays fail closed
-// without being held or made fresh.
+// A log without the optional `readOutcome` (written before it existed): the
+// store's lookup refuses before touching the log, so an audit there claims,
+// leases and binds nothing, and the key keeps whatever state it had.
 describe("pay-dem over a log without a read-only outcome lookup", () => {
-  test("an audit after a restart completes a final payment the log saved, and submits nothing", async () => {
-    const memory = createInMemorySettlementLog();
-    const run = processes(claimOnlyLog(memory));
-    await savedBeforeAttemptRecords(run.log, "job-a");
+  const legacyRefusal = /settlement log requires read-only outcome lookup for retained recovery/;
 
-    run.restart();
-    const reconcile = vi.fn(async () => executed(hashA));
-    const audit = await auditingProcess(run.store("B"), reconcile);
-    await expect(audit.settle(request("job-a", hashA, true)))
-      .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
-    await expect(audit.settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: hashA });
-    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ jobId: "job-a", txHash: hashA }));
-    expect(audit.once).not.toHaveBeenCalled();
-    expect(sdkTransfers()).toBe(0);
-    expect(demosNode.broadcast).not.toHaveBeenCalled();
-  });
-
-  test("a key the log saved nothing for fails closed and is left free, never held", async () => {
+  test("an audit refuses without claiming, leasing or binding the key", async () => {
     const memory = createInMemorySettlementLog();
+    const claimIntent = vi.spyOn(memory, "claimIntent");
     const run = processes(claimOnlyLog(memory));
     run.restart();
     const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
-      /no SDK record binds the retained transaction to this payment/,
-    );
+    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(legacyRefusal);
+    expect(claimIntent).not.toHaveBeenCalled();
+    expect(audit.once).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
-    // The intent the lookup installed was released: a later claim is fresh, not held or expired.
+    // Other terms for the key are still free: the refused lookup bound none.
     await expect(memory.claimIntent({
-      key: "pay-dem:job-a:0", bindingHash: settlementBindingHash(bindingFor("job-a")),
+      key: "pay-dem:job-a:0",
+      bindingHash: settlementBindingHash({ ...bindingFor("job-a"), amount: "2000000000" }),
       owner: "probe", now: 70_000, leaseDurationMs: 1_000,
     })).resolves.toMatchObject({ status: "acquired", lease: { stage: "fresh" } });
   });
 
-  test("an expired attempt the log never resolved is refused and stays fenced for reconciliation", async () => {
+  test("an expired attempt the log never resolved is left for the store's reconciliation", async () => {
     const memory = createInMemorySettlementLog();
     const run = processes(claimOnlyLog(memory));
     const bindingHash = settlementBindingHash(bindingFor("job-a"));
     // A pre-upgrade process claimed the key, may have broadcast, then died.
     await memory.claimIntent({ key: "pay-dem:job-a:0", bindingHash, owner: "A", now: 1_000, leaseDurationMs: 1_000 });
+    const claimIntent = vi.spyOn(memory, "claimIntent");
 
     run.restart();
     const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(/expired unresolved attempt/);
+    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(legacyRefusal);
+    expect(claimIntent).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
-    // Never released: once the audit's own lease lapses, the key still needs reconciliation.
     await expect(memory.claimIntent({
       key: "pay-dem:job-a:0", bindingHash, owner: "probe", now: 200_000, leaseDurationMs: 1_000,
     })).resolves.toMatchObject({ status: "acquired", lease: { stage: "reconcile" } });
@@ -784,4 +777,41 @@ describe("pay-dem never binds an outcome through a store that has an attempt loo
       .rejects.toThrow(/no SDK record binds the retained transaction to this payment/);
     expect(sdkTransfers()).toBe(0);
   });
+});
+
+// Without a reconciler a bridge still answers a resumed call with the
+// definitive result it bound to the key itself, when the key's attempt record
+// names that hash and the store saved the same result; anything else refuses.
+describe("pay-dem without reconcile returns its own bound result to a call carrying history", () => {
+  test.each([
+    ["executed", "confirmed", { ok: true, txHash: hashA }],
+    ["failed", "failed", { ok: false, errorClass: "permanent", txHash: hashA }],
+  ] as const)("a transfer the SDK read as %s", async (_label, recordStatus, expected) => {
+    resetDemosNode({ payer, txHash: hashA, nonce: 7, blockNumber: 42, recordStatus });
+    const log = createInMemorySettlementLog();
+    const settle = payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(log) });
+    const first = await settle(request("job-a"));
+    expect(first).toMatchObject(expected);
+    await expect(settle(request("job-a", hashA, expected.ok))).resolves.toEqual(first);
+    await expect(settle(request("job-a"))).resolves.toEqual(first);
+    expect(sdkTransfers()).toBe(1);
+    // Another bridge never bound it, so it still needs a reconciler.
+    await expect(payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(log) })(request("job-a", hashA)))
+      .rejects.toThrow(/requires read-only reconciliation/);
+    // Nor does a history naming another hash get this bridge's result.
+    await expect(settle(request("job-a", hashB))).rejects.toThrow(/belongs to different payment terms or transaction/);
+    expect(sdkTransfers()).toBe(1);
+  });
+});
+
+// `createPayDemRail` records its signed hash through the fence before the
+// broadcast; the bridge does not write it again once the payment is final.
+test("records a createPayDemRail hash once, before the broadcast", async () => {
+  resetDemosNode({ payer, txHash: hashA, nonce: 7, blockNumber: 42 });
+  const log = createInMemorySettlementLog();
+  const putAttempt = vi.spyOn(log, "putAttempt");
+  await expect(payDemSettle(await sdkRail(), {}, { store: createIdempotencyStore(log) })(request("job-a")))
+    .resolves.toMatchObject({ ok: true, txHash: hashA });
+  expect(putAttempt).toHaveBeenCalledTimes(1);
+  expect(putAttempt.mock.invocationCallOrder[0]).toBeLessThan(demosNode.broadcast.mock.invocationCallOrder[0]!);
 });

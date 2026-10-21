@@ -645,15 +645,15 @@ recovery fails closed and never authorizes a broadcast.
 
 A recovery request that carries `priorAttempts` (as `runSession` sends for a
 session holding a transaction-bearing outcome) is a read-only audit of that
-retained transaction: it never calls the store's `once` or the rail, even when
-the rail log lost its record. It requires both `settlementStore.readOutcome` and
-`reconcile` and fails closed without either. A `SettlementLog` that keeps
-attempt records must implement `readOutcome`, which reads without a lease.
-Over an older log with neither, the `createIdempotencyStore` lookup reads
-through `claimIntent`, so it is not read-only: it returns a saved outcome,
-takes a short lease on a key it had to install and releases it at once
-(running nothing), refuses a held generation, and on an expired one takes a
-reconcile lease that it leaves to lapse and refuses. For an
+retained transaction: it never calls the rail, even when the rail log lost its
+record. It requires both `settlementStore.readOutcome` and `reconcile` and
+fails closed without either, except that a bridge without `reconcile` still
+returns the definitive result it bound to the key itself when the key's
+attempt record names that hash and the store saved that same result. A
+`SettlementLog` that keeps attempt records must implement `readOutcome`, which
+reads without a lease. The `createIdempotencyStore` lookup never claims,
+leases or binds a key; over an older log without `readOutcome` it refuses, so
+a retained hash on such a log is not audited. For an
 audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plus
 `txHash`, the retained hash in canonical form (64 lower-case hex digits, no
 `0x`). `getTxByHash` matches that stored form exactly and answers any other form
@@ -672,16 +672,25 @@ memory. A
 method when its `SettlementLog` implements the optional `putAttempt` and
 `readAttempt` pair (the in-memory log does). `createPayDemRail` signs the hash
 itself and records it through that fence before its one broadcast, and does
-not broadcast if the record is refused. `payDemSettle` records that hash again
-before the store persists or returns it; when that write is refused the call
-fails and the hash stays unbound. A `createPayDemClientRail` client's journal
+not broadcast if the record is refused, and `payDemSettle` does not write it
+again after the payment is final. A `createPayDemClientRail` client's journal
 entry is its own statement and can name another payment's transfer, so the
 client's fence carries no `recordAttempt`, and `payDemSettle` records its hash
 only after the SDK's own record read made it this payment's success (signed
 after the call began, its nonce above the account nonce read before it, and
 settled by no other call in this process). Any other hash it returns,
-including its own transfer the SDK has not read yet, is not recorded and stays
-unbound, so a restart reconciles that key by key and an audit of it refuses.
+including its own transfer the SDK has not read yet, is not recorded there.
+A resumed audit of a retained hash that no attempt record names finishes it
+only through the store's own `once`: while the key's generation is held it
+refuses; once that generation expires the store reconciles the key exactly as
+a restart without history would (the reconciler is asked for this key's
+payment, without the hash), and only an answer naming the retained hash is
+accepted. That generation then records the hash as the key's attempt and saves
+the outcome, so later audits and restarts bind it through the record. A key the
+store holds nothing for starts nothing (the submit refuses and the intent is
+released), an outcome saved without a record still never binds, and any other
+store's `once` or fence never finishes it. This path trusts the reconciler as
+the restart without history does (below).
 Two payments in flight at once that a client hands one transfer cannot be told
 apart by the record; the SDK settles and records at most one of them in a
 process.
