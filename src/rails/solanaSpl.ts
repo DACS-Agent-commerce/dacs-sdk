@@ -135,8 +135,8 @@ export interface SolanaSplExpiryEvidence {
 /**
  * Proof that a retained transaction landed and the chain refused it (its
  * status carries an error): no instruction took effect, and the signature can
- * never land again. This legacy assertion format contains no verifiable
- * status content, so it never authorizes closure or replacement.
+ * never land again. The adapter authenticates the error status from ledger
+ * history, under the same trust boundary as finalized expiry evidence.
  */
 export interface SolanaSplLandedFailureEvidence {
   signature: string;
@@ -204,29 +204,10 @@ export interface SolanaSplEffectFence {
 }
 
 /**
- * Legacy wallet-audit assertion after an unsuccessful preparation. The adapter
- * must prove that no transaction from that preparation was submitted or can
- * still land, including anything signed before an exception or invalid reply.
- * A rejected RPC response alone is never this proof. The hash binds all fields
- * below and the authenticated audit, but that audit is absent from this
- * format. The core never uses this assertion to release or close a key.
- */
-export interface SolanaSplNoSubmissionEvidence {
-  authorityHash: string;
-  attempt: number;
-  owner: string;
-  generation: number;
-  failure: "invalid-signature" | "rpc-failure" | "congestion" | "timeout";
-  authenticationHash: string;
-}
-
-/**
  * Wallet/RPC boundary. Implementations must inspect the exact retained signed
  * transaction and authenticate reconciliation against Solana ledger state. The
  * core checks the shape of chain observations, not their authenticity.
- * Assertion-only failure and wallet-audit formats cannot authorize closure
- * or reservation release. An
- * absent-expired result must derive absence and block height from one coherent
+ * An absent-expired result must derive absence and block height from one coherent
  * view, report that view's commitment level (the core acts only on
  * `finalized`), and its authentication hash must bind the cluster,
  * signature, last-valid bound, observed height and commitment level. A
@@ -235,11 +216,11 @@ export interface SolanaSplNoSubmissionEvidence {
  * error and commitment level. A settled-same or landed-failed result reports
  * the commitment level actually observed.
  *
- * `prepareSignedTransfer` must only sign. It must not submit, and must not
- * persist anything the network can see: the core reserves the attempt before
- * the call, and a reservation with no retained attempt stays unresolved
- * (`solana-spl-preparation-unresolved`). The legacy `proveNoSubmission`
- * format has no verifiable audit content and cannot resolve it.
+ * `prepareUnsignedTransfer` must only build a message: no signing or submission.
+ * The core retains its exact message, expiry bound, plan and metadata before
+ * `prepareSignedTransfer` is called. The signer must sign that retained message
+ * with the same Ed25519 keys, deterministically, and must not submit it. Every
+ * retry uses that same preparation, including after a timeout or lost lease.
  * It must sign a recent-blockhash transaction, never a
  * durable-nonce one: expiry evidence proves nothing about a nonce transaction,
  * which stays valid past its blockhash's last valid block height. The core
@@ -250,17 +231,18 @@ export interface SolanaSplAdapter {
     intent: Readonly<SolanaSplSettlementIntent>,
     fence: Readonly<SolanaSplEffectFence>,
   ): Promise<Readonly<SolanaSplPreflight>>;
+  /** Build only: no signing or submission. The core retains this before signing. */
+  prepareUnsignedTransfer(
+    plan: Readonly<SolanaSplTransferPlan>,
+    attempt: number,
+    fence: Readonly<SolanaSplEffectFence>,
+  ): Promise<Readonly<SolanaSplUnsignedTransfer>>;
   prepareSignedTransfer(
     plan: Readonly<SolanaSplTransferPlan>,
     attempt: number,
     fence: Readonly<SolanaSplEffectFence>,
+    preparation?: Readonly<SolanaSplPreparation>,
   ): Promise<Readonly<Omit<SolanaSplSignedAttempt, "attemptHash">>>;
-  /** Legacy audit assertion; the core does not use it to close or release a key. */
-  proveNoSubmission?(
-    plan: Readonly<SolanaSplTransferPlan>,
-    attempt: number,
-    fence: Readonly<SolanaSplEffectFence>,
-  ): Promise<Readonly<SolanaSplNoSubmissionEvidence> | null>;
   broadcastRetained(
     attempt: Readonly<SolanaSplSignedAttempt>,
     fence: Readonly<SolanaSplEffectFence>,
@@ -288,14 +270,19 @@ export interface SolanaSplSettlementResult {
   authenticationHash: string;
 }
 
-/**
- * A reservation the core wrote before it asked the wallet to sign attempt
- * `attempt`. While it stands with no retained attempt of that number, the
- * wallet may hold a transaction the core never saw, so nothing under the key
- * is retried, signed or closed. The legacy audit assertion cannot release it.
- */
+/** Exact message and blockhash lifetime, obtained together before signing. */
+export interface SolanaSplUnsignedTransfer {
+  unsignedMessageBase64: string;
+  lastValidBlockHeight: number;
+  transferInstructionIndex: number;
+  preparedAt: number;
+}
+
+/** Retained before signing; retrying it must produce the identical transaction. */
 export interface SolanaSplPreparation {
   attempt: number;
+  plan: Readonly<SolanaSplTransferPlan>;
+  transaction: Readonly<SolanaSplUnsignedTransfer>;
 }
 
 export interface SolanaSplLease {
@@ -312,7 +299,7 @@ export type SolanaSplStoreClaim =
       attempts: readonly Readonly<SolanaSplSignedAttempt>[];
       expiredSignatures: readonly string[];
       expiryEvidence?: readonly Readonly<SolanaSplExpiryEvidence>[];
-      /** Present while a reserved preparation has neither a retained attempt nor a release. */
+      /** Exact unsigned message retained until recordAttempt succeeds. */
       preparation?: Readonly<SolanaSplPreparation>;
     }
   | {
@@ -365,12 +352,12 @@ export interface SolanaSplSettlementStore {
     now: number;
   }): Promise<boolean>;
   /**
-   * Durably reserves preparation of attempt `attempt` before the wallet is
-   * asked to sign it, in one atomic write for the current lease generation.
-   * `attempt` must be the next attempt number. Repeating the same reservation
-   * is `existing`. `claim` then returns it as `preparation` until
-   * `recordAttempt` retains that attempt. The legacy `releasePreparation`
-   * evidence cannot establish absence; `recordFailure` is refused meanwhile.
+   * Atomically retains the next attempt's exact unsigned message, plan and
+   * metadata for the current lease generation before the wallet signs.
+   * Repeating identical data is `existing`; conflicting data is refused.
+   * Claims expose the complete preparation until recordAttempt replaces it
+   * atomically with the matching signed bytes. Failure closure is refused
+   * while a preparation stands.
    */
   recordPreparation(input: {
     settlementKey: string;
@@ -378,18 +365,7 @@ export interface SolanaSplSettlementStore {
     owner: string;
     generation: number;
     attempt: number;
-  }): Promise<SolanaSplStoreWrite>;
-  /**
-   * Legacy release API. The supplied evidence has no verifiable audit
-   * content; stores must refuse it without changing the reservation.
-   */
-  releasePreparation(input: {
-    settlementKey: string;
-    bindingHash: string;
-    owner: string;
-    generation: number;
-    attempt: number;
-    noSubmission: Readonly<SolanaSplNoSubmissionEvidence>;
+    preparation: Readonly<SolanaSplPreparation>;
   }): Promise<SolanaSplStoreWrite>;
   recordAttempt(input: {
     settlementKey: string;
@@ -408,7 +384,7 @@ export interface SolanaSplSettlementStore {
     commitmentLevel: "finalized";
     authenticationHash: string;
   }): Promise<SolanaSplStoreWrite>;
-  /** Atomically close only when every other attempt has finalized expiry. */
+  /** Close only when every other attempt has finalized expiry or refusal evidence. */
   recordSettlement(input: {
     settlementKey: string;
     bindingHash: string;
@@ -422,8 +398,8 @@ export interface SolanaSplSettlementStore {
   /**
    * Closes the key with a terminal failure, in one atomic write that succeeds
    * only for the current lease generation and only while every retained
-   * attempt has `finalized` expiry evidence and no preparation stands.
-   * Legacy assertion-only evidence cannot justify closing the key.
+   * attempt has `finalized` expiry or authenticated refusal evidence and no
+   * preparation stands. The adapter authenticates ledger evidence.
    * From then on `claim` returns the `failed` claim with exactly this failure,
    * and every other write for the key is
    * refused.
@@ -435,8 +411,7 @@ export interface SolanaSplSettlementStore {
     generation: number;
     failure: Readonly<{ errorClass: "permanent" | "counterparty"; reason: string }>;
     landedFailure?: Readonly<SolanaSplLandedFailureEvidence>;
-    /** Legacy assertion; cannot justify closing the key. */
-    noSubmission?: Readonly<SolanaSplNoSubmissionEvidence>;
+    landedFailures?: readonly Readonly<SolanaSplLandedFailureEvidence>[];
   }): Promise<SolanaSplStoreWrite>;
 }
 
@@ -452,13 +427,13 @@ export interface SolanaSplSettlementStore {
  * - `indeterminate`: the phase may or may not be paid. A transfer may have
  *   landed or may still land. It never authorizes a fresh payment; resolve it
  *   by resuming the same authority or out of band.
- * - `transient`: a preflight read failed before any preparation. This
+ * - `transient`: a preflight read or unsigned build failed before signing. This
  *   call left no transaction able to land, and every retained attempt had durable,
  *   `finalized` expiry evidence, so nothing under the key can land. The key
  *   stays open: retry the same authority. It never authorizes paying the
  *   phase another way.
  * - `failed`: nothing under this settlement key moved tokens or can land.
- *   Every retained attempt has durable `finalized` expiry evidence.
+ *   Every retained attempt has finalized expiry or chain-refusal evidence.
  *   The store closed the key before
  *   this was reported. Every later call with the same authority returns the
  *   same result without signing or broadcasting, so the phase may be paid
@@ -787,12 +762,11 @@ function validatePreflight(
       payerRentExemptMinimumLamports: value.payerRentExemptMinimumLamports,
     };
     // Every account and balance below is read under SPL Token. For a mint
-    // another program owns, the payee's account and the payer's balance there
-    // do not exist, so they would close the key against a payee or payer that
-    // did nothing wrong. The owner is read, not proved, so it never closes it.
+    // another program owns, refuse that unsupported rail permanently rather
+    // than attributing a missing SPL account to either participant.
     requireBase58Bytes(preflight.mintTokenProgram, "mintTokenProgram", 32);
     if (preflight.mintTokenProgram !== SPL_PROGRAM_ID) {
-      return { status: "indeterminate", reason: "solana-spl-mint-program-unsupported" };
+      return { status: "failed", errorClass: "permanent", reason: "solana-spl-mint-program-unsupported" };
     }
     requireBase58Bytes(preflight.payerTokenAccount, "payerTokenAccount", 32);
     requireBase58Bytes(preflight.payeeAta, "payeeAta", 32);
@@ -966,7 +940,7 @@ const FAILURES: ReadonlyMap<string, "permanent" | "counterparty"> = new Map([
   ["solana-spl-payee-ata-missing", "counterparty"],
   ["solana-spl-payee-ata-binding-mismatch", "counterparty"],
   ["solana-spl-transfer-failed-on-chain", "permanent"],
-  ["solana-spl-invalid-signature", "permanent"],
+  ["solana-spl-mint-program-unsupported", "permanent"],
 ]);
 /**
  * Checks a landed-failure proof for a retained attempt. Returns null for a
@@ -1078,6 +1052,91 @@ function ownElements(values: unknown, label: string): unknown[] {
   return elements;
 }
 
+/** Snapshot nested legacy metadata before canonicalization, without executing it. */
+function captureJson(value: unknown, ancestors = new Set<object>(), depth = 0): unknown {
+  if (value === null || value === undefined ||
+      ["string", "number", "boolean"].includes(typeof value)) return value;
+  if (!isDataObject(value) || ancestors.has(value) || depth >= 128) {
+    throw new DacsError("pay-solana-spl: metadata must be plain JSON");
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        throw new DacsError("pay-solana-spl: metadata must be plain JSON");
+      }
+      return ownElements(value, "metadata").map((entry) => captureJson(entry, ancestors, depth + 1));
+    }
+    const snapshot = plainData(value, "metadata", [], [], true);
+    return Object.fromEntries(Object.entries(snapshot)
+      .map(([key, entry]) => [key, captureJson(entry, ancestors, depth + 1)]));
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function capturePreparation(
+  value: unknown,
+  intent: Readonly<SolanaSplSettlementIntent>,
+): Readonly<SolanaSplPreparation> {
+  const row = plainData(value, "preparation", ["attempt", "plan", "transaction"]);
+  if (typeof row.attempt !== "number") {
+    throw new DacsError("pay-solana-spl: invalid preparation number");
+  }
+  positiveSafeInteger(row.attempt, "preparation attempt");
+  const plan = plainData(row.plan, "preparation plan", [
+    "intent", "payerTokenAccount", "payeeAta", "createPayeeAta",
+    "payerFundsAtaRentLamports", "instruction",
+  ]);
+  const storedIntent = plainData(plan.intent, "preparation intent", Object.keys(intent));
+  if (canonicalize(captureJson(storedIntent)) !== canonicalize(intent) || plan.instruction !== "TransferChecked" ||
+      typeof plan.createPayeeAta !== "boolean") {
+    throw new DacsError("pay-solana-spl: invalid preparation plan");
+  }
+  requireBase58Bytes(plan.payerTokenAccount, "payerTokenAccount", 32);
+  requireBase58Bytes(plan.payeeAta, "payeeAta", 32);
+  uint(plan.payerFundsAtaRentLamports, "payerFundsAtaRentLamports");
+  if (!isAssociatedTokenAccount(plan.payeeAta as string, intent.payee, intent.mint) ||
+      (plan.createPayeeAta && !intent.createPayeeAtaIfMissing)) {
+    throw new DacsError("pay-solana-spl: invalid preparation destination");
+  }
+  const transaction = plainData(row.transaction, "unsigned transfer", [
+    "unsignedMessageBase64", "lastValidBlockHeight", "transferInstructionIndex", "preparedAt",
+  ]);
+  const message = requireString(transaction.unsignedMessageBase64, "unsigned message");
+  const bytes = Buffer.from(message, "base64");
+  if (bytes.length === 0 || bytes.toString("base64") !== message ||
+      isDurableNonceTransaction(Buffer.concat([Buffer.from([1]), Buffer.alloc(64), bytes]))) {
+    throw new DacsError("pay-solana-spl: invalid unsigned message");
+  }
+  for (const key of ["lastValidBlockHeight", "transferInstructionIndex", "preparedAt"]) {
+    const field = transaction[key];
+    if (typeof field !== "number" || !Number.isSafeInteger(field) || field < 0) {
+      throw new DacsError("pay-solana-spl: invalid unsigned metadata");
+    }
+  }
+  return Object.freeze({
+    attempt: row.attempt,
+    plan: Object.freeze({ ...plan, intent }) as unknown as Readonly<SolanaSplTransferPlan>,
+    transaction: Object.freeze({ ...transaction }) as unknown as Readonly<SolanaSplUnsignedTransfer>,
+  });
+}
+
+function assertPreparedMessage(
+  attempt: Readonly<SolanaSplSignedAttempt>,
+  preparation: Readonly<SolanaSplPreparation>,
+): void {
+  const bytes = Buffer.from(attempt.signedTransactionBase64, "base64");
+  const [count, offset] = compactU16(bytes, 0);
+  const transaction = preparation.transaction;
+  if (attempt.attempt !== preparation.attempt ||
+      bytes.subarray(offset + count * 64).toString("base64") !== transaction.unsignedMessageBase64 ||
+      attempt.lastValidBlockHeight !== transaction.lastValidBlockHeight ||
+      attempt.transferInstructionIndex !== transaction.transferInstructionIndex || attempt.preparedAt !== transaction.preparedAt) {
+    throw new DacsError("pay-solana-spl: signed transfer differs from preparation");
+  }
+}
+
 function captureRetainedAttempts(
   values: unknown,
   intent: Readonly<SolanaSplSettlementIntent>,
@@ -1106,7 +1165,7 @@ function captureRetainedAttempts(
         throw new DacsError("pay-solana-spl: retained attempt must have exactly its keys");
       }
       const { attemptHash: stored, ...unsigned } = row;
-      if (stored !== sha256Hex(canonicalize(unsigned))) {
+      if (stored !== sha256Hex(canonicalize(captureJson(unsigned)))) {
         throw new DacsError("pay-solana-spl: retained attempt integrity mismatch");
       }
     } else if (captured.attemptHash !== row.attemptHash) {
@@ -1341,7 +1400,7 @@ type ClaimView =
       attempts: readonly Readonly<SolanaSplSignedAttempt>[];
       expiredSignatures: readonly string[];
       expiryEvidence: readonly Readonly<SolanaSplExpiryEvidence>[] | undefined;
-      preparation: number | undefined;
+      preparation: Readonly<SolanaSplPreparation> | undefined;
     }
   | { status: "settled"; settlement: Readonly<SolanaSplSettlementResult> };
 
@@ -1418,9 +1477,6 @@ function readClaim(
       const reason = failure.reason;
       const errorClass = typeof reason === "string" ? FAILURES.get(reason) : undefined;
       if (errorClass === undefined || failure.errorClass !== errorClass) return invalid;
-      if (reason === "solana-spl-transfer-failed-on-chain" || reason === "solana-spl-invalid-signature") {
-        return { status: "indeterminate", reason: "solana-spl-stored-failure-unverified" };
-      }
       return { status: "failed", errorClass, reason: reason as string };
     }
     const lease = plainData(claim.lease, "lease", LEASE_KEYS);
@@ -1432,15 +1488,8 @@ function readClaim(
       return invalid;
     }
     if (status === "waiting") return { status, reason: "solana-spl-settlement-held" };
-    let preparation: number | undefined;
-    if (claim.preparation !== undefined) {
-      const reserved = plainData(claim.preparation, "stored preparation", ["attempt"]);
-      if (typeof reserved.attempt !== "number" || !Number.isSafeInteger(reserved.attempt) ||
-          reserved.attempt <= 0) {
-        return invalid;
-      }
-      preparation = reserved.attempt;
-    }
+    const preparation = claim.preparation === undefined
+      ? undefined : capturePreparation(claim.preparation, intent);
     return {
       status,
       lease,
@@ -1464,6 +1513,7 @@ type ReconciledState =
   | { disposition: "pending" }
   | { disposition: "absent-valid" }
   | { disposition: "absent-expired"; evidence: FinalizedExpiryEvidence }
+  | { disposition: "landed-failed"; evidence: Readonly<SolanaSplLandedFailureEvidence> }
   | { disposition: "indeterminate"; reason: string };
 
 /**
@@ -1507,13 +1557,7 @@ function readReconciliation(
           commitmentLevel: result.commitmentLevel,
           authenticationHash: result.authenticationHash,
         }, attempt);
-        // A refusal below finalized is awaited, never acted on.
-        // A hash-shaped assertion carries no verifiable transaction status.
-        // Keep the retained wire live until reconciliation establishes its
-        // settlement or finalized expiry; never authorize another payment.
-        return evidence
-          ? { disposition: "indeterminate", reason: "solana-spl-landed-failure-unverified" }
-          : { disposition: "pending" };
+        return evidence ? { disposition, evidence } : { disposition: "pending" };
       } catch {
         return { disposition: "indeterminate", reason: "solana-spl-landed-failure-proof-invalid" };
       }
@@ -1560,7 +1604,7 @@ function readReconciliation(
  * Never rejects: every refusal, store or adapter failure, and out-of-contract
  * result is classified as a `SolanaSplProgress`. It reports `failed` only after
  * the store has proved that nothing earlier under this key can land, and a
- * landed transfer is never `failed`. A new transfer is signed only after
+ * successful landed transfer is never `failed`. A new transfer is signed only after
  * every retained attempt has authenticated, durably acknowledged `finalized`
  * expiry evidence; a retained attempt is otherwise only rebroadcast byte-identically.
  *
@@ -1609,6 +1653,7 @@ export async function advanceSolanaSplSettlement(
   let recordSettlement: SolanaSplSettlementStore["recordSettlement"];
   let recordFailure: SolanaSplSettlementStore["recordFailure"];
   let runPreflight: SolanaSplAdapter["preflight"];
+  let prepareUnsignedTransfer: SolanaSplAdapter["prepareUnsignedTransfer"];
   let prepareSignedTransfer: SolanaSplAdapter["prepareSignedTransfer"];
   let broadcastRetained: SolanaSplAdapter["broadcastRetained"];
   let reconcileTransfer: SolanaSplAdapter["reconcile"];
@@ -1618,12 +1663,12 @@ export async function advanceSolanaSplSettlement(
     claimSettlement = store.claim.bind(store);
     isCurrentSettlement = store.isCurrent.bind(store);
     recordPreparation = store.recordPreparation.bind(store);
-    store.releasePreparation.bind(store);
     recordAttempt = store.recordAttempt.bind(store);
     markAttemptExpired = store.markAttemptExpired.bind(store);
     recordSettlement = store.recordSettlement.bind(store);
     recordFailure = store.recordFailure.bind(store);
     runPreflight = adapter.preflight.bind(adapter);
+    prepareUnsignedTransfer = adapter.prepareUnsignedTransfer.bind(adapter);
     prepareSignedTransfer = adapter.prepareSignedTransfer.bind(adapter);
     broadcastRetained = adapter.broadcastRetained.bind(adapter);
     reconcileTransfer = adapter.reconcile.bind(adapter);
@@ -1676,7 +1721,7 @@ export async function advanceSolanaSplSettlement(
     }
     // A reservation can only be for the next attempt: a later one names a
     // preparation this record cannot account for.
-    if (claimed.preparation !== undefined && claimed.preparation > attempts.length + 1) {
+    if (claimed.preparation !== undefined && claimed.preparation.attempt !== attempts.length + 1) {
       throw new DacsError("pay-solana-spl: reserved preparation is out of sequence");
     }
   } catch {
@@ -1717,6 +1762,8 @@ export async function advanceSolanaSplSettlement(
   // can then sign under it.
   const close = async (
     failure: Readonly<Extract<SolanaSplProgress, { status: "failed" }>>,
+    landedFailure?: Readonly<SolanaSplLandedFailureEvidence>,
+    landedFailures?: readonly Readonly<SolanaSplLandedFailureEvidence>[],
   ): Promise<SolanaSplProgress> => {
     // Read once into the record and a fresh result: the caller owns what it
     // gets back, so an edit to it never reaches another call or record.
@@ -1728,6 +1775,8 @@ export async function advanceSolanaSplSettlement(
         owner: fence.owner,
         generation: fence.generation,
         failure: Object.freeze({ errorClass, reason }),
+        ...(landedFailure ? { landedFailure } : {}),
+        ...(landedFailures?.length ? { landedFailures } : {}),
       }));
       const status = closed.status;
       if (status === "recorded" || status === "existing") return { status: "failed", errorClass, reason };
@@ -1740,6 +1789,7 @@ export async function advanceSolanaSplSettlement(
   const finalize = async (
     attempt: Readonly<SolanaSplSignedAttempt>,
     result: ReconciledState,
+    landedFailures: readonly Readonly<SolanaSplLandedFailureEvidence>[] = [],
   ): Promise<SolanaSplProgress | null> => {
     // A retained signature landed in both settled dispositions: funds may have
     // moved, so neither is ever a failure a caller could pay again after.
@@ -1757,6 +1807,7 @@ export async function advanceSolanaSplSettlement(
           generation: fence.generation,
           signature: attempt.signature,
           settlement,
+          ...(landedFailures.length ? { landedFailures } : {}),
         }));
         const status = write.status;
         if (status === "recorded" || status === "existing") {
@@ -1766,6 +1817,9 @@ export async function advanceSolanaSplSettlement(
         // Falls through to the uncertain result.
       }
       return { status: "indeterminate", reason: "solana-spl-settlement-persistence-uncertain" };
+    }
+    if (result.disposition === "landed-failed") {
+      return close({ status: "failed", errorClass: "permanent", reason: "solana-spl-transfer-failed-on-chain" }, result.evidence);
     }
     if (result.disposition === "settled-different") {
       return { status: "indeterminate", reason: "solana-spl-settled-different" };
@@ -1814,14 +1868,17 @@ export async function advanceSolanaSplSettlement(
   // would hide a second payment if any successor has landed or can still land.
   const recoverLandedPredecessor = async (
     predecessor: Readonly<SolanaSplSignedAttempt>,
-    first: Extract<ReconciledState, { disposition: "settled-same" }>,
+    first: Extract<ReconciledState, { disposition: "settled-same" | "landed-failed" }>,
   ): Promise<SolanaSplProgress> => {
     const payments: { attempt: Readonly<SolanaSplSignedAttempt>; state: ReconciledState }[] = [];
+    const failures: Readonly<SolanaSplLandedFailureEvidence>[] = [];
     let unresolved: SolanaSplProgress | undefined;
     for (const attempt of attempts.slice(predecessor.attempt - 1)) {
       const state = attempt === predecessor ? first : await reconcile(attempt);
       if (state.disposition === "settled-same" && state.settlement) {
         payments.push({ attempt, state });
+      } else if (state.disposition === "landed-failed") {
+        failures.push(state.evidence);
       } else if (state.disposition === "absent-expired") {
         if (expiryEvidence.get(attempt.signature)?.commitmentLevel !== "finalized") {
           const failure = await persistExpiry(attempt, state.evidence);
@@ -1839,9 +1896,10 @@ export async function advanceSolanaSplSettlement(
     }
     if (unresolved) return unresolved;
     const payment = payments[0];
-    return payment
-      ? (await finalize(payment.attempt, payment.state))!
-      : { status: "indeterminate", reason: "solana-spl-predecessor-landed-failed" };
+    if (payment) return (await finalize(payment.attempt, payment.state, failures))!;
+    return close({
+      status: "failed", errorClass: "permanent", reason: "solana-spl-transfer-failed-on-chain",
+    }, undefined, failures);
   };
 
   // Confirmed expiry evidence an earlier version stored for a predecessor is
@@ -1860,7 +1918,7 @@ export async function advanceSolanaSplSettlement(
     if (state.disposition === "absent-valid") {
       return { status: "waiting", reason: "solana-spl-reconciliation-pending" };
     }
-    if (state.disposition === "settled-same") {
+    if (state.disposition === "settled-same" || state.disposition === "landed-failed") {
       return recoverLandedPredecessor(predecessor, state);
     }
     return await finalize(predecessor, state) ??
@@ -1904,84 +1962,63 @@ export async function advanceSolanaSplSettlement(
     if (persistenceFailure) return persistenceFailure;
   }
 
-  // A stale fence means another worker may be signing, so only a failed read
-  // under a current fence is `transient`. Nothing has been signed in this
-  // call, and nothing retained can land, so a retry of the same key is safe.
-  // A lost lease has its own code: it must never count against a retry budget.
-  let preflight: { value: Readonly<SolanaSplPreflight> } | null;
-  try {
-    await fence.assertCurrent();
-  } catch {
-    return { status: "indeterminate", reason: "solana-spl-preflight-fence-lost" };
-  }
-  try {
-    preflight = { value: await runPreflight(intent, fence) };
-  } catch {
-    preflight = null;
-  }
-  // A read that threw may have outlived the lease as well, so the fence is
-  // checked again before either answer is used.
-  try {
-    await fence.assertCurrent();
-  } catch {
-    return { status: "indeterminate", reason: "solana-spl-preflight-fence-lost" };
-  }
-  // A reserved preparation with no retained attempt means the wallet may hold,
-  // or may have submitted, a transaction this record never saw. Only the
-  // retained exact wire can resolve it; an assertion-only audit cannot, so no
-  // read below may turn into `transient`, a closure or a new signature.
   const attemptNumber = attempts.length + 1;
-  const unresolvedPreparation = claimed.preparation === attemptNumber;
-  const unresolved = { status: "indeterminate", reason: "solana-spl-preparation-unresolved" } as const;
-  if (!preflight) {
-    return unresolvedPreparation
-      ? unresolved
-      : { status: "transient", reason: "solana-spl-preflight-unavailable" };
-  }
-  const plan = validatePreflight(intent, preflight.value);
-  if ("status" in plan) {
-    if (unresolvedPreparation) return unresolved;
-    return plan.status === "failed" ? close(plan) : plan;
-  }
-
-  const preparationFailure = async (reason: string): Promise<SolanaSplProgress> => {
-    const uncertain = { status: "indeterminate", reason } as const;
-    // The audit interface supplies only bindings and an opaque hash. It has
-    // no authenticated audit content to verify, so neither a terminal failure
-    // nor a release can be justified by any value it returns (PC-4/PC-7).
-    return uncertain;
-  };
-  if (unresolvedPreparation) return preparationFailure(unresolved.reason);
-  // Reserve before the wallet is asked to sign, so a crash, a timeout or an
-  // adapter that submitted and then threw leaves a record behind.
-  try {
-    await fence.assertCurrent();
-    const reserved = storeWrite(await recordPreparation({
-      settlementKey: intent.settlementKey,
-      bindingHash: intent.bindingHash,
-      owner: fence.owner,
-      generation: fence.generation,
-      attempt: attemptNumber,
-    })).status;
-    if (reserved !== "recorded") {
+  let preparation = claimed.preparation;
+  if (!preparation) {
+    let preflight: Readonly<SolanaSplPreflight>;
+    try { await fence.assertCurrent(); }
+    catch { return { status: "indeterminate", reason: "solana-spl-preflight-fence-lost" }; }
+    try { preflight = await runPreflight(intent, fence); }
+    catch {
+      try { await fence.assertCurrent(); }
+      catch { return { status: "indeterminate", reason: "solana-spl-preflight-fence-lost" }; }
+      return { status: "transient", reason: "solana-spl-preflight-unavailable" };
+    }
+    try { await fence.assertCurrent(); }
+    catch { return { status: "indeterminate", reason: "solana-spl-preflight-fence-lost" }; }
+    const plan = validatePreflight(intent, preflight);
+    if ("status" in plan) return plan.status === "failed" ? close(plan) : plan;
+    let transaction: Readonly<SolanaSplUnsignedTransfer>;
+    try {
+      await fence.assertCurrent();
+      transaction = await prepareUnsignedTransfer(plan, attemptNumber, fence);
+      await fence.assertCurrent();
+      preparation = capturePreparation({ attempt: attemptNumber, plan, transaction }, intent);
+    } catch {
+      // This boundary only builds: no signature exists and no reservation was made.
+      try { await fence.assertCurrent(); }
+      catch { return { status: "indeterminate", reason: "solana-spl-preflight-fence-lost" }; }
+      return { status: "transient", reason: "solana-spl-unsigned-preparation-unavailable" };
+    }
+    try {
+      await fence.assertCurrent();
+      const reserved = storeWrite(await recordPreparation({
+        settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        owner: fence.owner, generation: fence.generation,
+        attempt: attemptNumber, preparation,
+      })).status;
+      if (reserved !== "recorded") {
+        return { status: "indeterminate", reason: "solana-spl-preparation-reservation-uncertain" };
+      }
+    } catch {
       return { status: "indeterminate", reason: "solana-spl-preparation-reservation-uncertain" };
     }
-  } catch {
-    return { status: "indeterminate", reason: "solana-spl-preparation-reservation-uncertain" };
   }
-  // The signer's errors may carry key or wallet detail; only fixed codes leave.
+  // Re-sign exactly the retained message with the same Ed25519 signers.
+  // Deterministic signing recovers the same transaction id after a lost reply.
   let prepared: Readonly<Omit<SolanaSplSignedAttempt, "attemptHash">>;
   try {
     await fence.assertCurrent();
-    prepared = await prepareSignedTransfer(plan, attemptNumber, fence);
+    prepared = await prepareSignedTransfer(preparation.plan, attemptNumber, fence, preparation);
   } catch {
-    return preparationFailure("solana-spl-preparation-unavailable");
+    return { status: "indeterminate", reason: "solana-spl-preparation-unavailable" };
   }
   let attempt: Readonly<SolanaSplSignedAttempt>;
   try {
     attempt = createAttempt(prepared, attemptNumber, intent);
+    assertPreparedMessage(attempt, preparation);
   } catch {
-    return preparationFailure("solana-spl-prepared-transaction-invalid");
+    return { status: "indeterminate", reason: "solana-spl-prepared-transaction-invalid" };
   }
   try {
     await fence.assertCurrent();
@@ -2002,6 +2039,20 @@ export async function advanceSolanaSplSettlement(
   }
   if (retained !== "recorded" && retained !== "existing") {
     return { status: "indeterminate", reason: "solana-spl-retained-attempt-persistence-uncertain" };
+  }
+  if (claimed.preparation) {
+    // A previous wallet call may already have returned or submitted these
+    // exact bytes. PC-7 requires checking the original signature before
+    // retrying its broadcast; an expired message may also be rejected by RPC.
+    const recovered = await reconcile(attempt);
+    const terminal = await finalize(attempt, recovered);
+    if (terminal) return terminal;
+    if (recovered.disposition === "absent-expired") {
+      const persistenceFailure = await persistExpiry(attempt, recovered.evidence);
+      return persistenceFailure ?? {
+        status: "indeterminate", reason: "solana-spl-new-attempt-expired-before-observation",
+      };
+    }
   }
   try {
     await fence.assertCurrent();
@@ -2025,10 +2076,11 @@ interface MemoryRecord {
   lease: SolanaSplLease;
   attempts: SolanaSplSignedAttempt[];
   expired: Map<string, Readonly<SolanaSplExpiryEvidence>>;
+  landedFailures?: readonly Readonly<SolanaSplLandedFailureEvidence>[];
   settlement?: Readonly<SolanaSplSettlementResult>;
   failure?: Readonly<{ errorClass: "permanent" | "counterparty"; reason: string }>;
-  /** The attempt number whose preparation is reserved and unresolved. */
-  preparation?: number;
+  /** Exact preparation retained before any wallet handoff. */
+  preparation?: Readonly<SolanaSplPreparation>;
 }
 
 /** Test/development store. Production callers must persist encrypted signed bytes. */
@@ -2064,7 +2116,7 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
             expiredSignatures: [...existing.expired.keys()],
             expiryEvidence: [...existing.expired.values()]
               .map((evidence) => Object.freeze({ ...evidence })),
-            ...(existing.preparation === undefined ? {} : { preparation: { attempt: existing.preparation } }),
+            ...(existing.preparation === undefined ? {} : { preparation: structuredClone(existing.preparation) }),
           };
         }
         existing.lease = {
@@ -2080,7 +2132,7 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
           expiredSignatures: [...existing.expired.keys()],
           expiryEvidence: [...existing.expired.values()]
             .map((evidence) => Object.freeze({ ...evidence })),
-          ...(existing.preparation === undefined ? {} : { preparation: { attempt: existing.preparation } }),
+          ...(existing.preparation === undefined ? {} : { preparation: structuredClone(existing.preparation) }),
         };
       }
       const record: MemoryRecord = {
@@ -2111,22 +2163,19 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
       if (input.attempt !== record.attempts.length + 1) {
         return { status: "conflict", reason: "solana-attempt-sequence-gap" };
       }
-      if (record.preparation === input.attempt) return { status: "existing" };
+      let preparation: Readonly<SolanaSplPreparation>;
+      try {
+        preparation = capturePreparation(input.preparation, record.intent);
+        if (preparation.attempt !== input.attempt) throw new Error("attempt mismatch");
+      } catch { return { status: "conflict", reason: "solana-preparation-invalid" }; }
+      if (record.preparation !== undefined && canonicalize(record.preparation) === canonicalize(preparation)) {
+        return { status: "existing" };
+      }
       if (record.preparation !== undefined) {
         return { status: "conflict", reason: "solana-preparation-conflict" };
       }
-      record.preparation = input.attempt;
+      record.preparation = preparation;
       return { status: "recorded" };
-    },
-    async releasePreparation(input) {
-      const record = records.get(input.settlementKey);
-      if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
-      if (record.failure || record.settlement) return closed;
-      if (record.preparation !== input.attempt) {
-        return { status: "conflict", reason: "solana-preparation-not-reserved" };
-      }
-      // This evidence format contains no audit the store can verify.
-      return { status: "conflict", reason: "solana-no-submission-unverified" };
     },
     async recordAttempt(input) {
       const record = records.get(input.settlementKey);
@@ -2145,8 +2194,12 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
       if (input.attempt.attempt !== record.attempts.length + 1) {
         return { status: "conflict", reason: "solana-attempt-sequence-gap" };
       }
+      if (record.preparation) {
+        try { assertPreparedMessage(input.attempt, record.preparation); }
+        catch { return { status: "conflict", reason: "solana-prepared-message-mismatch" }; }
+      }
       record.attempts.push(Object.freeze({ ...input.attempt }));
-      if (record.preparation === input.attempt.attempt) record.preparation = undefined;
+      if (record.preparation?.attempt === input.attempt.attempt) record.preparation = undefined;
       signatures.set(input.attempt.signature, input.settlementKey);
       return { status: "recorded" };
     },
@@ -2189,6 +2242,9 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
           ? { status: "existing" }
           : { status: "conflict", reason: "solana-settlement-conflict" };
       }
+      if (record.preparation !== undefined) {
+        return { status: "conflict", reason: "solana-settlement-preparation-unresolved" };
+      }
       const failures: Readonly<SolanaSplLandedFailureEvidence>[] = [];
       try {
         for (const proof of input.landedFailures ?? []) {
@@ -2208,7 +2264,7 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
           !failures.some((row) => row.signature === attempt.signature))) {
         return { status: "conflict", reason: "solana-settlement-other-attempt-live" };
       }
-      if (failures.length) return { status: "conflict", reason: "solana-landed-failure-unverified" };
+      record.landedFailures = Object.freeze(failures);
       record.settlement = Object.freeze({ ...input.settlement });
       return { status: "recorded" };
     },
@@ -2216,33 +2272,25 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
       const record = records.get(input.settlementKey);
       if (!current(record, input)) return { status: "stale", reason: "stale-lease" };
       if (record.settlement) return { status: "conflict", reason: "solana-settlement-already-settled" };
-      let landedFailure: Readonly<SolanaSplLandedFailureEvidence> | undefined;
-      if (input.landedFailure !== undefined) {
-        const attempt = record.attempts.find(
-          (retained) => retained.signature === input.landedFailure?.signature,
-        );
-        try {
-          landedFailure = attempt
-            ? captureLandedFailure(input.landedFailure, attempt) ?? undefined
-            : undefined;
-        } catch {
-          landedFailure = undefined;
+      const failures: Readonly<SolanaSplLandedFailureEvidence>[] = [];
+      try {
+        for (const proof of [...(input.landedFailure ? [input.landedFailure] : []), ...(input.landedFailures ?? [])]) {
+          const attempt = record.attempts.find((row) => row.signature === proof.signature);
+          const captured = attempt && captureLandedFailure(proof, attempt);
+          if (!captured || failures.some((row) => row.signature === captured.signature)) {
+            return { status: "conflict", reason: "solana-landed-failure-invalid" };
+          }
+          failures.push(captured);
         }
-        if (!landedFailure) {
-          return { status: "conflict", reason: "solana-landed-failure-invalid" };
-        }
-      }
-      if (landedFailure) return { status: "conflict", reason: "solana-landed-failure-unverified" };
-      if (input.noSubmission !== undefined) {
-        return { status: "conflict", reason: "solana-no-submission-unverified" };
-      }
+      } catch { return { status: "conflict", reason: "solana-landed-failure-invalid" }; }
       // A reserved preparation may hold a transaction the store never saw.
       if (record.preparation !== undefined) {
         return { status: "conflict", reason: "solana-failure-preparation-unresolved" };
       }
       // Only a key with no attempt that can still land may be closed. This
-      // store holds only finalized expiry evidence.
-      if (record.attempts.some((attempt) => !record.expired.has(attempt.signature))) {
+      // store holds only finalized expiry evidence and authenticated refusals.
+      if (record.attempts.some((attempt) => !record.expired.has(attempt.signature) &&
+          !failures.some((row) => row.signature === attempt.signature))) {
         return { status: "conflict", reason: "solana-failure-attempt-live" };
       }
       const failure = Object.freeze({
@@ -2254,6 +2302,7 @@ export function createInMemorySolanaSplSettlementStore(): SolanaSplSettlementSto
           ? { status: "existing" }
           : { status: "conflict", reason: "solana-failure-conflict" };
       }
+      record.landedFailures = Object.freeze(failures);
       record.failure = failure;
       record.preparation = undefined;
       return { status: "recorded" };

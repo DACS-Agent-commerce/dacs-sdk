@@ -25,8 +25,9 @@ The core:
 - reconciles the retained signature before rebroadcast or replacement;
 - permits a replacement signature only after authenticated, `finalized`
   blockhash-expiry evidence is durably recorded;
-- keeps assertion-only chain refusals and uncertain preparations
-  `indeterminate`, with no replacement or terminal failure;
+- retains the exact unsigned message before signing and recovers it after
+  wallet errors, lost leases or restarts by signing that same message again;
+- closes finalized on-chain refusals as `failed` / `permanent`;
 - reports a preflight RPC failure, before anything is signed, as
   `transient`, and keeps the key open for the retry;
 - checks the durable generation fence before and after each wallet/RPC call,
@@ -87,15 +88,14 @@ result.
   of band. A transfer that landed but does not match the intent
   (`solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`)
   is reported here, because funds may have moved.
-- `transient`: a preflight read failed before preparation. The call
+- `transient`: a preflight read or unsigned message build failed before signing. The call
   left no transaction able to land, and every retained attempt had durable
   `finalized` expiry evidence, so nothing under the key can land. The key stays open:
   retry the same authority. It never authorizes paying the phase another way.
 - `failed`: nothing under this settlement key moved tokens or can land. The
   store shows no retained attempt, or every retained attempt with complete,
-  durably acknowledged `finalized` expiry evidence. The store has closed
-  the key. Assertion-only chain refusals and preparation audits remain
-  `indeterminate`; they never authorize another payment route.
+  durably acknowledged `finalized` expiry or authenticated finalized refusal
+  evidence. The store has closed the key.
 
 `failed` is terminal, and the phase may be paid by another route. The core
 reports it only after the store has acknowledged `recordFailure`, one atomic
@@ -110,15 +110,15 @@ result is `indeterminate` (`solana-spl-failure-persistence-uncertain`), never
 
 | Status | Reason codes |
 |---|---|
-| `failed` / `permanent` | `solana-spl-insufficient-token-balance`, `solana-spl-insufficient-network-fee-balance`, `solana-spl-insufficient-ata-rent-and-fee-balance` |
+| `failed` / `permanent` | `solana-spl-insufficient-token-balance`, `solana-spl-insufficient-network-fee-balance`, `solana-spl-insufficient-ata-rent-and-fee-balance`, `solana-spl-transfer-failed-on-chain`, `solana-spl-mint-program-unsupported` |
 | `failed` / `counterparty` | `solana-spl-payee-ata-missing`, `solana-spl-payee-ata-binding-mismatch` |
-| `transient` | `solana-spl-preflight-unavailable` |
+| `transient` | `solana-spl-preflight-unavailable`, `solana-spl-unsigned-preparation-unavailable` |
 | `waiting` | `solana-spl-settlement-held`, `solana-spl-reconciliation-pending`, `solana-spl-broadcast-not-yet-visible` |
 | `indeterminate`, before the store is read | `solana-spl-authority-invalid`, `solana-spl-runtime-policy-invalid`, `solana-spl-dependencies-invalid`, `solana-spl-settlement-store-unavailable` |
-| `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-stored-failure-unverified`, `solana-spl-retained-state-corrupt` |
-| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable`, `solana-spl-landed-failure-unverified`, `solana-spl-other-attempt-unresolved` |
+| `indeterminate`, store claim | `solana-spl-settlement-store-claim-invalid`, `solana-spl-settlement-store-conflict`, `solana-spl-settlement-store-corrupt`, `solana-spl-settlement-store-intent-mismatch`, `solana-spl-settlement-store-intent-invalid`, `solana-spl-settlement-store-lease-invalid`, `solana-spl-stored-settlement-mismatch`, `solana-spl-retained-state-corrupt` |
+| `indeterminate`, reconciliation | `solana-spl-reconciliation-unavailable`, `solana-spl-reconciliation-invalid`, `solana-spl-reconciliation-indeterminate`, `solana-spl-absence-proof-invalid`, `solana-spl-expiry-proof-invalid`, `solana-spl-landed-failure-proof-invalid`, `solana-spl-expiry-persistence-uncertain`, `solana-spl-expiry-transition-raced`, `solana-spl-rebroadcast-unavailable`, `solana-spl-other-attempt-unresolved` |
 | `indeterminate`, a transfer landed | `solana-spl-settled-instruction-mismatch`, `solana-spl-settled-different`, `solana-spl-settlement-persistence-uncertain`, `solana-spl-multiple-settlements` |
-| `indeterminate`, new attempt | `solana-spl-preflight-fence-lost`, `solana-spl-preflight-invalid`, `solana-spl-mint-program-unsupported`, `solana-spl-payee-ata-not-associated`, `solana-spl-payer-rent-state-unknown`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-preparation-unresolved`, `solana-spl-preparation-reservation-uncertain`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
+| `indeterminate`, new attempt | `solana-spl-preflight-fence-lost`, `solana-spl-preflight-invalid`, `solana-spl-payee-ata-not-associated`, `solana-spl-payer-rent-state-unknown`, `solana-spl-failure-persistence-uncertain`, `solana-spl-preparation-unavailable`, `solana-spl-preparation-reservation-uncertain`, `solana-spl-prepared-transaction-invalid`, `solana-spl-retained-attempt-persistence-uncertain`, `solana-spl-broadcast-unavailable`, `solana-spl-new-attempt-expired-before-observation` |
 
 A store `conflict` (another binding already holds the same job, rail and
 phase) or `corrupt` claim is `indeterminate`, not `failed`: that record may
@@ -128,10 +128,9 @@ itself failed, and the lease was still current afterwards. A lease lost around
 that read, whether the read then returned or failed, is
 `solana-spl-preflight-fence-lost`, which is `indeterminate`, because another
 worker may then be signing. Each reason code has one status.
-`solana-spl-landed-failure-unverified` means the adapter reported a finalized
-refusal, but supplied only coordinates and an opaque hash. This is not a
-verifiable transaction error. The retained attempt stays open for settlement
-or finalized-expiry reconciliation. `solana-spl-other-attempt-unresolved` means another
+`solana-spl-transfer-failed-on-chain` means the adapter authenticated a
+transaction with a non-null error at `finalized`, and the store atomically
+closed the key. Below finalized the core waits. `solana-spl-other-attempt-unresolved` means another
 attempt may still land after either a payment or a refusal;
 `solana-spl-multiple-settlements` means at least two
 matching payments were observed. Both keep the key open for reconciliation
@@ -146,7 +145,7 @@ DACS-4 PC-4 classifies a payment phase as `ok: true`, or `ok: false` with an
 |---|---|
 | `settled` | `ok: true`, with `txRefs: [settlement.txRef]` and `settlementFinality`. Anchoring then follows PC-7. |
 | `failed` | `ok: false` with the result's `errorClass`: `permanent` or `counterparty`. The phase may be paid another way. |
-| `transient` | `ok: false` with `errorClass: "transient"` (PC-4: RPC failure). Retry the same authority; never pay the phase another way. |
+| `transient` | `ok: false` with `errorClass: "transient"` (PC-4: RPC failure or unsigned build failure). Retry the same authority; never pay the phase another way. |
 | `waiting` | Not a phase outcome. Keep the session non-terminal and resume the same authority. |
 | `indeterminate` | Not a phase outcome. Keep the session non-terminal: PC-7 reconciliation of the original binding, by resuming or out of band. |
 
@@ -158,18 +157,12 @@ continues it. If the budget runs out and the session ends `failed-perm`
 (DACS-5), nothing under the key has landed, but the key is still open: do not
 resume it after the session is terminal.
 
-PC-4 classifies an established invalid signature as permanent and an
-established RPC failure or congestion as transient. The legacy optional
-`adapter.proveNoSubmission` interface contains only bindings, a failure label
-and an opaque hash; it supplies no authenticated wallet audit to verify.
-The core does not call it. An unsuccessful preparation leaves its reservation
-standing and returns `indeterminate`, including when an adapter offers that
-method. It never closes the key or releases the reservation from such an
-assertion. The legacy `releasePreparation` API refuses these assertions as
-`solana-no-submission-unverified` without changing state. There is no SDK
-operator override for this state. A retained exact signed attempt can still
-be reconciled through the normal store contract; without it the key remains
-non-terminal and another payment route must not be authorized.
+PC-4 classifies a finalized chain refusal as permanent. The adapter must
+authenticate that refusal, just as it authenticates finalized expiry and
+successful transfers. A synchronous wallet or broadcast rejection is not
+ledger evidence and cannot close a key. A failed unsigned build is transient:
+no signing has begun. After signing begins, recovery reuses the retained
+unsigned message and never substitutes a new blockhash or transfer plan.
 
 After broadcast, `waiting` and `indeterminate` are reconciliation states,
 with no phase outcome yet. Keep the phase non-terminal and resume the same
@@ -214,8 +207,9 @@ and the store must then let the new `finalized` evidence for that signature
 replace the `confirmed` record. A predecessor is never rebroadcast: one not
 yet expired at `finalized` is `waiting`. When one lands at the intent's
 commitment, recovery reconciles every successor
-read-only before recording settlement. A `landed-failed` assertion is
-indeterminate and cannot clear a predecessor or successor.
+read-only before recording settlement or failure. Authenticated finalized
+refusals clear predecessors and successors only when every other attempt is
+also accounted for; a still-live successor keeps the key open.
 `expiredSignatures` remains in the store claim for source
 compatibility, but a hash-only legacy marker is never replacement authority: it
 causes the retained attempt to be reconciled again. A store must allow a later
@@ -225,37 +219,45 @@ record through `expiryEvidence`; a status-only legacy acknowledgement refuses
 replacement. Every predecessor of a retained attempt must also have complete
 expiry evidence. If historical state lacks that evidence, recovery returns
 `indeterminate` and requires store migration/reconciliation before continuing.
-`recordPreparation` must durably reserve the next attempt number, in one
-atomic write for the current lease generation, before the core asks the wallet
-to sign it; repeating the same reservation is `existing`, and any other number
-is a `conflict`. While the reservation stands with no retained attempt of that
-number, both acquired and waiting `claim` variants return it as
-`preparation: { attempt }`. `recordAttempt` for that number ends it atomically
-with retention of the exact signed wire. A fresh core call requires a
-`recorded` reservation acknowledgement; an unexpected `existing` result
-stays uncertain and never reaches the wallet.
-`releasePreparation` cannot release a reservation using the legacy
-assertion-only evidence. The store refuses `recordFailure` while any
-reservation stands. `recordFailure` closes the key only for the current lease
-generation and while every retained attempt has finalized expiry evidence;
-`landedFailure` and `noSubmission` assertions cannot justify closure.
-Once closed, `claim` returns `{ status: "failed", intent, failure }`,
-`isCurrent` is false, and every other write for the key is refused. `failure`
-is exactly `{ errorClass, reason }`, with a supported reason and its class.
-A saved `solana-spl-transfer-failed-on-chain` or `solana-spl-invalid-signature`
-failure from an older version returns `solana-spl-stored-failure-unverified`
-without signing or authorizing another payment. Other malformed failures are
-`solana-spl-settlement-store-claim-invalid`.
-`recordSettlement` refuses settlement while another retained attempt lacks
-durable finalized expiry evidence. Legacy `landedFailures` assertions cannot
-substitute for that evidence. Stores supporting historical confirmed expiry
-records must enforce the stronger close rule when upgrading.
+`recordPreparation` atomically retains `{ attempt, plan, transaction }` for
+the next attempt under the current generation. `transaction` contains the
+exact `unsignedMessageBase64`, `lastValidBlockHeight`,
+`transferInstructionIndex` and `preparedAt`. The blockhash in that message and
+its last-valid height must come from the same blockhash lookup. No wallet
+may be invoked until the store acknowledges this write as `recorded`.
+A repeated identical write is `existing`; conflicting data is refused.
+Both acquired and waiting claims return isolated copies of the complete
+preparation until `recordAttempt` atomically replaces it with signed bytes.
+The signed message and metadata must match the reservation exactly.
+
+On recovery the core skips preflight and message construction. It asks the
+wallet to deterministically sign the retained message with the same Ed25519
+keys and signature order, yielding the identical transaction id, even if an
+earlier signer is still running. It records that attempt before broadcasting
+and reconciles it normally. This also works when the original blockhash has
+expired: sign the old bytes to recover the signature, reconcile it, and only
+then obtain finalized expiry evidence before any replacement. The wallet
+must support signing retained messages, including expired ones, without
+refreshing their blockhash. A temporary wallet refusal leaves a recoverable
+reservation and returns `solana-spl-preparation-unavailable`.
+
+`recordFailure` refuses closure while a preparation stands or any retained
+attempt lacks finalized expiry or authenticated finalized refusal evidence.
+`landedFailure` carries a single refusal; `landedFailures` accounts for multiple
+refused historical attempts. Stores must validate each retained signature,
+slot, commitment and authentication hash, and retain the evidence atomically
+with the terminal outcome. Once closed, claims return the same supported
+`failure`, `isCurrent` is false, and writes cannot reopen the key.
+`recordSettlement` likewise requires every other attempt to have finalized
+expiry or refusal evidence and retains the supplied `landedFailures` with the
+settlement. A live, unobserved or successful conflicting transfer prevents
+closure. There is no preparation release or wallet-audit API.
 
 Every store object the core relies on must be plain data, and plain data has
 one meaning, enforced the same way for each of them. These objects are the
 claim and its `intent`, `lease` and `failure`, each retained attempt and
 expiry-evidence row, each write result and the `expiryEvidence` it
-acknowledges, and a stored settlement with its `txRef`, `paymentAmount` and
+acknowledges, the preparation, plan, transaction and their intent, and a stored settlement with its `txRef`, `paymentAmount` and
 `settlementFinality`. Each must meet three conditions:
 
 - it is not a proxy (checked with `util.types.isProxy`);
@@ -264,7 +266,9 @@ acknowledges, and a stored settlement with its `txRef`, `paymentAmount` and
 - its own keys are exactly the keys of its variant in the exported types.
   Optional keys may be absent. There are no symbol keys and no extra or
   missing keys. Each key is an own, enumerable data property, never an
-  accessor.
+  accessor. Historical attempt metadata is the one extra-key exception:
+  it is recursively captured as plain JSON before checking its whole-row hash.
+  Nested proxies and accessors are refused without executing them.
 
 A write result is `{ status, expiryEvidence? }` when it succeeds and
 `{ status, reason }` otherwise.
@@ -295,8 +299,8 @@ broadcast after it:
   `markAttemptExpired`, `recordSettlement` and `recordFailure` respectively,
   and `solana-spl-preparation-reservation-uncertain` for `recordPreparation`
   (nothing was asked of the wallet);
-- a `preparation` that is not `{ attempt }` with a positive safe integer:
-  `solana-spl-settlement-store-claim-invalid`; one beyond the next attempt:
+- a malformed `preparation`, plan or unsigned transaction:
+  `solana-spl-settlement-store-claim-invalid`; one outside the next attempt:
   `solana-spl-retained-state-corrupt`;
 - a stored settlement or any object nested in it:
   `solana-spl-stored-settlement-mismatch`.
@@ -383,31 +387,29 @@ the recent status cache and is never absence. When the node cannot serve the
 history, return `indeterminate`. For a transaction that landed with a non-null error status, the
 adapter returns `landed-failed` with the slot, the observed commitment and an
 `authenticationHash` that binds the cluster, signature, slot, error and
-commitment. Below `finalized` the core waits. At `finalized`, the assertion
-remains `indeterminate` (`solana-spl-landed-failure-unverified`), because the
-interface has no verifiable status/error content. The core never acts on
+commitment. Below `finalized` the core waits. At `finalized`, it closes the
+key as `failed` / `permanent` only once all retained attempts are resolved
+and the store acknowledges the closure. The core never acts on
 `broadcastRetained`'s answer, including `rejected`: a synchronous RPC answer
 is not ledger state. A malformed `landed-failed` is
 `solana-spl-landed-failure-proof-invalid`.
 
-When the plan's `createPayeeAta` is true, `prepareSignedTransfer` must create
+When the plan's `createPayeeAta` is true, `prepareUnsignedTransfer` must include creation of
 the account with the associated token account program's `CreateIdempotent`
 instruction (instruction 1), never `Create` (instruction 0). If the payee, or
 another payment, creates the account before the transaction executes,
 `Create` fails on chain instead of completing the transfer. `CreateIdempotent` leaves an existing account alone. The core
 does not decode this instruction, so this is the adapter's contract.
 
-`prepareSignedTransfer` must only sign: it must not submit, and must not
-persist anything the network can see. The core reserves the attempt with
-`recordPreparation` first, so a wallet that submits and then throws, or a
-process that dies inside the call, leaves a reservation behind. With no
-retained attempt to reconcile, that reservation is `indeterminate` with
-`solana-spl-preparation-unresolved` on every later call, whatever the
-preflight reads say: it is never `transient`, never closed and never signed
-again, because the transaction may still land. The legacy
-`proveNoSubmission` assertion cannot resolve it. The SDK supplies no release
-override: retain the exact signed attempt for normal reconciliation, or keep
-the phase non-terminal until independently authenticated recovery is available.
+`prepareUnsignedTransfer` builds without signing or submitting. The core
+captures and durably retains its reply with the plan before calling
+`prepareSignedTransfer(plan, attempt, fence, preparation)`. The signer must
+only sign `preparation.transaction.unsignedMessageBase64`, use its retained
+metadata, and never submit or publish the signed bytes. A lost response or
+process restart is recovered by signing this exact preparation again. No
+preflight is rerun while it stands. A signer that changes the message or its
+expiry bound is `solana-spl-prepared-transaction-invalid`; nothing is retained
+or broadcast, and a healthy signer can resume the original reservation.
 
 `prepareSignedTransfer` must sign a recent-blockhash transaction, never a
 durable-nonce one. A nonce transaction stays valid past its blockhash's last
@@ -461,9 +463,9 @@ neither the payee's account nor the payer's balance exists there. Read
 anyway, they would close the key as `failed` against a payee or payer that
 did nothing wrong. So any owner other than SPL Token
 (`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`), Token-2022 included, is
-`indeterminate` with `solana-spl-mint-program-unsupported`: nothing is signed
-and the key stays open. The owner is read, not proved, so it never closes the
-key. A missing or malformed `mintTokenProgram` is
+`failed` / `permanent` with `solana-spl-mint-program-unsupported`: nothing
+is signed and the store closes the key. The adapter authenticates this owner
+read under the same trust boundary as balance reads. A missing or malformed `mintTokenProgram` is
 `solana-spl-preflight-invalid`. A Token-2022 associated token account
 reported as `payeeAta` under an SPL Token owner is still
 `solana-spl-payee-ata-not-associated`.
@@ -536,8 +538,8 @@ compatibility check, and the core must change with it.
 
 ## Upgrading
 
-- **Stores** must implement `recordFailure`, `recordPreparation` and
-  `releasePreparation`, and the `failed` claim and `preparation` field. A
+- **Stores** must implement `recordFailure`, `recordPreparation`,
+  the `failed` claim and complete `preparation` field. A
   store without any of them is refused as `solana-spl-dependencies-invalid`
   before its claim is read, so nothing is signed.
 - **Keys that returned `failed` before this version are still open.**
@@ -548,7 +550,8 @@ compatibility check, and the core must change with it.
   resumes it.
 - **Records with extra attempt fields.** Earlier versions retained, and
   hashed, every field an adapter returned for a prepared attempt. Such a row
-  is read: the core checks the earlier whole-row hash using the same JCS
+  is read only after its metadata passes the recursive plain-data checks.
+  The core checks the earlier whole-row hash using the same JCS
   semantics (an object member whose value is `undefined` is omitted), keeps
   the nine `SolanaSplSignedAttempt` fields and drops the rest, so an attempt
   that was in flight at the upgrade is reconciled, rebroadcast and recorded
@@ -567,13 +570,15 @@ compatibility check, and the core must change with it.
   the key stays open. They must return the payee's associated token account
   as `payeeAta`, create a missing one only with `CreateIdempotent`, and
   report the commitment level they observed.
-  They should return `landed-failed` for a retained transaction whose status
-  carries an error; the assertion stays `indeterminate` because its format
-  does not carry verifiable status content.
-- **Assertion-only terminal evidence** cannot close or release a key.
-  Stores must refuse `landedFailure`, `landedFailures` and `noSubmission`
-  as authority for those transitions. Saved assertion-derived failures stay
-  indeterminate and do not permit a new signature or another payment route.
+  They must implement `prepareUnsignedTransfer` and sign the exact retained
+  preparation passed as the fourth argument of `prepareSignedTransfer`.
+  They should return `landed-failed` for an authenticated retained transaction
+  whose status carries an error; finalized refusals close permanently.
+- **New preparation and refusal APIs** are introduced together in this
+  release. No `proveNoSubmission`, `SolanaSplNoSubmissionEvidence` or
+  `releasePreparation` API is shipped. Historical signed attempts from main
+  still reconcile normally; incomplete reservations from development builds
+  are invalid and require recovering their exact transaction out of band.
 - **Expiry evidence is `finalized`.** `markAttemptExpired` now carries
   `commitmentLevel: "finalized"`, and adapters must report `absent-expired`
   at the level they observed: expiry seen at `confirmed` is `waiting` until
@@ -594,7 +599,7 @@ compatibility check, and the core must change with it.
   by hand before the phase is paid another way.
 - **Token-2022 mints** are no longer paid: a mint that SPL Token does not own
   is `solana-spl-mint-program-unsupported` before any balance or account
-  decides a result, so nothing is signed and the key stays open.
+  decides a result, so nothing is signed and the key closes permanently.
 - **Callers keyed on `reason`**: a lease lost around the preflight read is
   now `solana-spl-preflight-fence-lost` (`indeterminate`).
   `solana-spl-preflight-unavailable` is now only `transient`.

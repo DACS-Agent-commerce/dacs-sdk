@@ -113,6 +113,13 @@ function adapter(overrides: Partial<SolanaSplAdapter> = {}): SolanaSplAdapter {
       await fence.assertCurrent();
       return preflight();
     },
+    async prepareUnsignedTransfer(_plan, attempt, fence) {
+      await fence.assertCurrent();
+      const wire = Buffer.from(signedWire([SIGNATURE_1], `signed-wire-${attempt}`), "base64");
+      return { unsignedMessageBase64: wire.subarray(65).toString("base64"),
+        lastValidBlockHeight: 10_000 + attempt, transferInstructionIndex: 1,
+        preparedAt: 1_788_000_000_000 + attempt };
+    },
     async prepareSignedTransfer(plan, attempt, fence) {
       await fence.assertCurrent();
       const signature = signatureFor(attempt);
@@ -358,6 +365,9 @@ describe("a prepared or retained attempt is checked field by field", () => {
   test("TransferChecked as instruction 0, prepared and observed at time 0, settles", async () => {
     await expect(advanceSolanaSplSettlement(input({
       adapter: adapter({
+        async prepareUnsignedTransfer(plan, attempt, fence) {
+          return { ...(await adapter().prepareUnsignedTransfer(plan, attempt, fence)), transferInstructionIndex: 0, preparedAt: 0 };
+        },
         async prepareSignedTransfer(plan, attempt, fence) {
           return { ...(await adapter().prepareSignedTransfer(plan, attempt, fence)), transferInstructionIndex: 0, preparedAt: 0 };
         },
@@ -468,13 +478,16 @@ describe("durable-nonce and malformed messages", () => {
   const SECOND_SIGNER = Buffer.alloc(32, 9);
   const SECOND_SIGNATURE = Buffer.alloc(64);
 
-  async function prepareWith(wireMessage: Buffer, otherSignatures: readonly Buffer[] = []) {
+  async function prepareWith(wireMessage: Buffer, otherSignatures: readonly Buffer[] = [], retain = false) {
     const store = createInMemorySolanaSplSettlementStore();
     const recordAttempt = vi.spyOn(store, "recordAttempt");
     const broadcastRetained = vi.fn(adapter().broadcastRetained);
     const result = await advanceSolanaSplSettlement(input({
       store,
       adapter: adapter({
+        async prepareUnsignedTransfer(plan, attempt, fence) {
+          return { ...(await adapter().prepareUnsignedTransfer(plan, attempt, fence)), unsignedMessageBase64: retain ? wireMessage.toString("base64") : (await adapter().prepareUnsignedTransfer(plan, attempt, fence)).unsignedMessageBase64 };
+        },
         async prepareSignedTransfer(plan, attempt, fence) {
           const prepared = await adapter().prepareSignedTransfer(plan, attempt, fence);
           return {
@@ -524,7 +537,7 @@ describe("durable-nonce and malformed messages", () => {
       { program: 1, accounts: [0], data: padded([12]) },
     ]), []],
   ])("a transfer with %s is retained and settles", async (_name, wireMessage, others) => {
-    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, others);
+    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, others, true);
     expect(result).toMatchObject({ status: "settled" });
     expect(recordAttempt).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
@@ -562,7 +575,7 @@ describe("durable-nonce and malformed messages", () => {
       message([PAYER_KEY, NEARLY_SYSTEM], [{ program: 1, data: NONCE }])],
     ["a message with no instructions", message([PAYER_KEY], [], 0)],
   ])("%s is retained and settles", async (_name, wireMessage) => {
-    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage);
+    const { result, recordAttempt, broadcastRetained } = await prepareWith(wireMessage, [], true);
     expect(result).toMatchObject({ status: "settled" });
     expect(recordAttempt).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
@@ -581,13 +594,17 @@ describe("durable-nonce and malformed messages", () => {
       ]),
     ]).toString("base64");
   }
-  async function prepareWire(lengths: Lengths, data?: readonly number[]) {
+  async function prepareWire(lengths: Lengths, data?: readonly number[], retain = false) {
     const store = createInMemorySolanaSplSettlementStore();
     const recordAttempt = vi.spyOn(store, "recordAttempt");
     const broadcastRetained = vi.fn(adapter().broadcastRetained);
     const result = await advanceSolanaSplSettlement(input({
       store,
       adapter: adapter({
+        async prepareUnsignedTransfer(plan, attempt, fence) {
+          const unsigned = await adapter().prepareUnsignedTransfer(plan, attempt, fence);
+          return retain ? { ...unsigned, unsignedMessageBase64: Buffer.from(wireWith(SIGNATURE_1, lengths, data), "base64").subarray(65).toString("base64") } : unsigned;
+        },
         async prepareSignedTransfer(plan, attempt, fence) {
           const prepared = await adapter().prepareSignedTransfer(plan, attempt, fence);
           return { ...prepared, signedTransactionBase64: wireWith(prepared.signature, lengths, data) };
@@ -633,7 +650,7 @@ describe("durable-nonce and malformed messages", () => {
     ["an instruction data length of 65535, a third byte of 3", { data: [0xff, 0xff, 0x03] }, 65_535],
   ] as const)("a transfer with %s is retained and settles", async (_name, lengths, data) => {
     const bytes = typeof data === "number" ? [12, ...Array<number>(data - 1).fill(0)] : data;
-    const { result, recordAttempt, broadcastRetained } = await prepareWire(lengths, bytes);
+    const { result, recordAttempt, broadcastRetained } = await prepareWire(lengths, bytes, true);
     expect(result).toMatchObject({ status: "settled" });
     expect(recordAttempt).toHaveBeenCalledTimes(1);
     expect(broadcastRetained).toHaveBeenCalledTimes(1);
@@ -813,6 +830,10 @@ describe("real-length Base58 keys and signatures", () => {
   async function settlesWith(signature: string) {
     return advanceSolanaSplSettlement(input({
       adapter: adapter({
+        async prepareUnsignedTransfer(plan, attempt, fence) {
+          return { ...(await adapter().prepareUnsignedTransfer(plan, attempt, fence)),
+            unsignedMessageBase64: Buffer.from(signedWire([signature], "message"), "base64").subarray(65).toString("base64") };
+        },
         async prepareSignedTransfer(plan, attempt, fence) {
           return {
             ...(await adapter().prepareSignedTransfer(plan, attempt, fence)),
