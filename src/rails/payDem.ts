@@ -117,8 +117,8 @@ type SdkRecordReader = (expected: Readonly<{
 /**
  * The recovery record reader of each rail `createPayDemRail` built, keyed by
  * that rail's `settle`. Private like the sets above: a recovered pay-dem verdict is final only from one of these
- * reads, never from a reconciler's answer alone. It is also the one list of
- * rails that may make a fresh payment, so every payment can be read again.
+ * reads, never from a reconciler's answer alone. (Which rails may make a fresh
+ * payment is `sdkRecordReadingSettles`, below.)
  */
 const sdkRailRecordReaders = new WeakMap<object, SdkRecordReader>();
 
@@ -1580,9 +1580,9 @@ type ObservedExecutionOptions = Readonly<{
 
 /**
  * {@link observeDemosExecutionByHash}, also returning the fee of the executed
- * record it read. A fee it cannot parse binds none here; a recovery read of
- * that record is then indeterminate (`readDemosRecordByHash`), so it is never
- * reported as another fee.
+ * record it read. A record carrying a fee it cannot parse is indeterminate, as
+ * a recovery read of it is (`readDemosRecordByHash`), so a success is never
+ * saved that a restart could not re-read.
  */
 async function observeDemosRecordExecution(
   txHash: string,
@@ -1656,7 +1656,13 @@ async function observeDemosRecordExecution(
           identity.transaction.content as Record<string, unknown>,
           expected.transfer.postFork,
         );
-        return feeOs === undefined || feeOs === null
+        // A fee the SDK cannot parse is not "no fee": a recovery read of this
+        // record holds it (`readDemosRecordByHash`), so a success saved from it
+        // here could never be re-read.
+        if (feeOs === null) {
+          return { state: "indeterminate", reason: "transaction record fee is malformed" };
+        }
+        return feeOs === undefined
           ? { state: "executed" }
           : { state: "executed", feeOs: feeOs.toString() };
       } else {
@@ -2265,8 +2271,9 @@ function sdkRecoveryReader(
       return { state: "indeterminate", reason: "the payment's payer is not this rail's wallet" };
     }
     // Read the node's fork state afresh for every recovery: demosdk's
-    // `getNetworkInfo` keeps an instance's first reply for good, so a rail that
-    // read the fork inactive would hold every payment signed after it.
+    // demosdk 4.0.16's `getNetworkInfo` keeps an instance's first reply for good
+    // (later versions may refresh it), so a rail that read the fork inactive
+    // could hold every payment signed after it.
     const info = await boundedPromise(
       Promise.resolve().then(() => nodeCall("getNetworkInfo", {})),
       timeoutMs,
@@ -2730,6 +2737,31 @@ function retainedPayDemAttempt(
   return retained === undefined ? undefined : Object.freeze({ txHash: retained, succeeded });
 }
 
+/**
+ * The transaction the session's buyer-signed, anchored SettlementEvidence names
+ * for this job, when the audit request carries it, in canonical form. It is
+ * accepted only beside a retained history naming the same hash and network.
+ */
+function anchoredEvidenceTxHash(
+  req: SettleRequest,
+  network: string,
+  retained: string | undefined,
+): string | undefined {
+  const anchored = stableDataProperty(req, "anchoredEvidence", "pay-dem anchored evidence");
+  if (!anchored.found || anchored.value === undefined) return undefined;
+  const value = snapshotCanonicalJsonRead(anchored.value, "pay-dem anchored evidence");
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new DacsError("pay-dem anchored evidence is malformed");
+  }
+  const record = value as Record<string, unknown>;
+  const hash = canonicalDemosTxHash(record.txHash);
+  if (Object.keys(record).length !== 2 || hash === null || record.chainId !== network ||
+      retained === undefined || hash !== retained) {
+    throw new DacsError("pay-dem anchored evidence does not name the retained transaction; refusing reuse or rebroadcast");
+  }
+  return hash;
+}
+
 const NO_READABLE_ATTEMPT_RECORD =
   "pay-dem settlement store records no attempt this bridge can read back; refusing to start a new transfer whose hash a restart could not bind (nothing was signed or sent; pass a createIdempotencyStore store over a log with readOutcome, putAttempt and readAttempt, with its own once, readOutcome and readAttempt)";
 
@@ -2966,7 +2998,6 @@ export function payDemSettle(
   // so a payment it already made reconciles.
   const recordVerifiedRail = sdkRecordReadingSettles.has(railSettleTarget);
   const sdkRecordReader = sdkRailRecordReaders.get(railSettleTarget);
-  const freshSettleRail = sdkRecordReader !== undefined;
   const reconcileProperty = stableDataProperty(
     opts,
     "reconcile",
@@ -3099,6 +3130,7 @@ export function payDemSettle(
     }) satisfies Readonly<PayDemSettlementRecoveryContext>;
     const supplied = retainedPayDemAttempt(req, network);
     const suppliedTxHash = supplied?.txHash;
+    const anchoredTxHash = anchoredEvidenceTxHash(req, network, suppliedTxHash);
     const binding = Object.freeze({
       bindingVersion: "1",
       railId,
@@ -3285,7 +3317,13 @@ export function payDemSettle(
           existing !== null && existing.txHash === retainedTxHash &&
           existing.blockNumber === captured.blockNumber && sameSettledOutcome(existing, captured);
         // Another process may record this key's attempt while the chain read runs.
-        if (recordedBefore || outcomeNames(before) || outcomeNames(after) || await attemptNames()) {
+        // The buyer-signed evidence the session anchored for this job names the
+        // hash too. That binds it when the log has lost the key's attempt
+        // record, as the evidence was minted from this key's own result; the
+        // SDK's read of the node's record (payer, payee, amount, block, nonce)
+        // above has already held the hash to this exact payment.
+        if (recordedBefore || outcomeNames(before) || outcomeNames(after) ||
+            anchoredTxHash === retainedTxHash || await attemptNames()) {
           authenticatedResults.set(key, { context, result: captured, boundToKey: true });
           return publicPayDemResult(captured, expectedPayee);
         }

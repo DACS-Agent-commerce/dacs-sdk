@@ -387,6 +387,75 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
   });
 });
 
+// The session's buyer-signed, anchored SettlementEvidence names the paid hash
+// for its job. When the rail log has lost the key's attempt record, that binds
+// the hash, but only beside the SDK's own read of the node's record for it.
+describe("pay-dem binds a retained hash through the session's anchored evidence", () => {
+  const anchored = (txHash: string, chainId = "demos") => ({ txHash, chainId });
+  const audited = (job: string, over: Partial<SettleRequest> = {}): SettleRequest =>
+    ({ ...request(job, hashA, true), anchoredEvidence: anchored(hashA), ...over });
+
+  test("finishes an audit over an empty rail log without signing or sending", async () => {
+    const run = processes();
+    const reconcile = vi.fn(async () => executed(hashA));
+    const audit = await auditingProcess(run.store("B"), reconcile);
+    await expect(audit.settle(audited("job-a")))
+      .resolves.toMatchObject({ ok: true, txHash: hashA, blockNumber: 42 });
+    expect(audit.once).not.toHaveBeenCalled();
+    expect(audit.submit).not.toHaveBeenCalled();
+    await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
+    expect(sdkTransfers()).toBe(0);
+    expect(demosNode.broadcast).not.toHaveBeenCalled();
+  });
+
+  test("the same audit without the evidence stays unbound", async () => {
+    const audit = await auditingProcess(processes().store("B"), vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
+      /no SDK record binds the retained transaction to this payment/,
+    );
+  });
+
+  test.each([
+    ["another hash than the history", audited("job-a", { anchoredEvidence: anchored(hashB) })],
+    ["another network", audited("job-a", { anchoredEvidence: anchored(hashA, "other") })],
+    ["a malformed transaction", audited("job-a", { anchoredEvidence: anchored("xyz") })],
+    ["an extra member", audited("job-a", { anchoredEvidence: { ...anchored(hashA), ok: true } as never })],
+    ["no history at all", { ...request("job-a"), anchoredEvidence: anchored(hashA) }],
+  ] as const)("refuses evidence with %s", async (_label, req) => {
+    const audit = await auditingProcess(processes().store("B"), vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(req)).rejects.toThrow(/anchored evidence/);
+    expect(audit.submit).not.toHaveBeenCalled();
+  });
+
+  test("still refuses a hash the key's own attempt record contradicts", async () => {
+    const run = processes();
+    // The node signs hash B for this key's transfer and never reports inclusion.
+    resetDemosNode({ payer, txHash: hashB });
+    await payDemSettle(await heldRail(), {}, { store: run.store("A") })(request("job-a"));
+    demosNode.transfer.mockClear();
+    run.restart();
+    serveNodeRecord(hashA, { payer, payee, nonce: 7 });
+    const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(audited("job-a"))).rejects.toThrow(
+      /conflicts with this key's recorded attempt/,
+    );
+  });
+
+  test("still needs the node's record to match the payment", async () => {
+    // The node holds the hash for another payee: the SDK's own read refuses it.
+    serveNodeRecord(hashA, { payer, payee: "ef".repeat(32), nonce: 7 });
+    const audit = await auditingProcess(processes().store("B"), vi.fn(async () => executed(hashA)));
+    await expect(audit.settle(audited("job-a"))).rejects.toThrow(/could not establish the node record/);
+    expect(audit.submit).not.toHaveBeenCalled();
+  });
+
+  test("still holds a reconciler's answer for another block", async () => {
+    const audit = await auditingProcess(processes().store("B"),
+      vi.fn(async () => ({ ...executed(hashA), blockNumber: 43 })));
+    await expect(audit.settle(audited("job-a"))).rejects.toThrow(/contradicts the node record/);
+  });
+});
+
 // DACS-4 §9.5.1 PC-7 on a log that keeps no attempt records (one written
 // before they existed): a final payment it saved still completes after a
 // restart, and it never starts a payment a restart could not bind.

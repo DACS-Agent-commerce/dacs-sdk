@@ -1943,22 +1943,53 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         reconcile,
       }) });
       const run = runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1");
-      if (railLog === "durable rail log") {
-        await expect(run).resolves.toMatchObject({ outcome: "completed" });
-      } else {
-        // Without the SDK's own record the hash is unbound: held, never re-sent.
-        await expect(run).rejects.toThrow(
-          "no SDK record binds the retained transaction",
-        );
-        expect(await store.load("job-1")).toEqual(before);
-        expect([...kv]).toEqual(evidence);
-      }
+      // The evidence the buyer signed and anchored for this job names the hash,
+      // and the SDK reads the node's record for it (payer, payee, amount, block),
+      // so an empty rail log no longer strands the paid session.
+      await expect(run).resolves.toMatchObject({ outcome: "completed" });
       expect(reconcile).toHaveBeenCalledOnce();
       expect(demosNode.transfers).toBe(1);
       expect(demosNode.broadcasts).toBe(1);
       expect(resumed.settleCalls.n).toBe(0);
     },
   );
+
+  test.each<[string, Record<string, unknown>]>([
+    ["an empty payer", { dacsSdkSettlementPayer: "" }],
+    ["a payer that is not a string", { dacsSdkSettlementPayer: 7 }],
+    ["a fee that is not canonical decimal", { dacsSdkNetworkFeeOs: "05" }],
+    ["a fee without a payer", { dacsSdkSettlementPayer: undefined }],
+  ])("refuses saved native success evidence signed with %s, without calling the rail", async (_label, tamper) => {
+    const kv = new Map<string, Record<string, unknown>>();
+    kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+      supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+    const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
+    const success: SettleResult = { ok: true, txHash: "cd".repeat(32), chainId: "demos", payer: "ab".repeat(32),
+      payee: sellerDid, blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs: "5" };
+    const first = await makeDeps(undefined, { kv, settle: olderSdkAdapter(async () => success),
+      anchor: async (name, value) => {
+        const ref = `stor:${name}`;
+        kv.set(ref, value as Record<string, unknown>);
+        if (name === sessionAnchorName.evidence("job-1")) throw new Error("evidence ack lost");
+        return ref;
+      },
+    });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("evidence ack lost");
+    const { signature: _signature, ...unsigned } = kv.get(evidenceRef)!;
+    // JSON drops an `undefined` member, which removes the payer.
+    const forged = JSON.parse(JSON.stringify({ ...unsigned, ...tamper }));
+    kv.set(evidenceRef, await signComponentArtifact(forged, ARTIFACT_SEPARATORS.SettlementEvidence,
+      { algorithm: "ed25519", signer: buyerDid, sign }) as Record<string, unknown>);
+    const evidence = structuredClone([...kv]);
+    const audit = vi.fn(async (): Promise<SettleResult> => success);
+    const resumed = await makeDeps(createInMemorySessionStore(), { kv, resumeSettlement: olderSdkAdapter(audit) });
+    await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+      .rejects.toThrow("saved native success evidence has a malformed payer or fee");
+    expect(audit).not.toHaveBeenCalled();
+    expect(resumed.settleCalls.n).toBe(0);
+    expect([...kv]).toEqual(evidence);
+  });
 
   test.each(["payDemSettle", "constant callback", "lost rail log"])(
     "audits old native success evidence under a checkpoint written before payers were bound (%s)",
