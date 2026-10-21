@@ -307,13 +307,16 @@ below):
    the operation is `seller_effect_pending` (503: retry later). Once the
    effect's own write is durable, the handler records its outcome with
    `completeWireEffect(journal, effect, { status, text })`. The outcome is
-   kept once (a different one is `seller_effect_conflict`), and only the
-   latest attempt may record it (`seller_effect_superseded`).
+   kept once (a different one is `seller_effect_conflict`).
    `completeWireEffect(journal, effect, null)` ends an attempt that caused no
-   effect, so the next request recovers at once. An operation that reaches
-   16 attempts with no outcome is `seller_effect_unresolved` (500) and needs
-   an operator. An entry the journal did not write (not a file, too large, a
-   malformed outcome or attempt record, an outcome with no first attempt)
+   effect, so the next request recovers at once. Each attempt ends exactly
+   once, in one exclusive journal entry: by its own outcome (or `null`), or,
+   once its lease has run out, by the request that recovers it. Whichever is
+   published first stands, so an attempt ended that way records nothing
+   (`seller_effect_superseded`), and no attempt starts after an outcome. An
+   operation that reaches 16 attempts with no outcome is
+   `seller_effect_unresolved` (500) and needs an operator. An entry the journal did not write (not a file, too large, a
+   malformed outcome, attempt or end record, an outcome with no first attempt)
    fails closed (`seller_replay_guard_invalid`); an unreadable attempt is
    never taken as a lapsed lease. The journal refuses to open on Windows,
    where a directory cannot be synced. Read
@@ -480,7 +483,9 @@ the wire re-evaluates DACS-3 §8.5.2 checks 5 and 6 from the signed Listing,
 as the SDK's commitment gate does after finality (:659-661): a commitment
 whose receipt time precedes the Listing's `notBefore` or follows its
 `notAfter`, or whose Agreement `terms.deadline` is past `committedAt +
-deadlineSecAfterCommit`, is invalid (`continuation_commitment_invalid`). This
+deadlineSecAfterCommit`, is invalid (`continuation_commitment_invalid`). So
+is one whose receipt time follows that `terms.deadline` (the Agreement's
+settle-by time, which seller payment intake also requires). This
 holds on every seller route and at both buyer signers, so a record the gate
 anchored and then refused after finality, read back later, continues nothing.
 A proposal, commitment or context request is always a new purchase. A reader therefore returns an ended

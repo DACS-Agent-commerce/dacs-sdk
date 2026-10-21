@@ -20,10 +20,13 @@
 //   attempt n ended    -> attempt n+1 is published: "recover" (an earlier
 //                         attempt may have acted: reconcile first)
 //   outcome published  -> "completed" (re-sign the stored outcome; no effect)
-// An attempt ends when its lease runs out or completeWireEffect ends it with
-// no outcome. Only the latest attempt may publish the outcome, and only once.
-// Every request's nonce key is published too: the same signed request again
-// is peer_request_replayed (409).
+// Attempt n ends exactly once, by publishing its end entry: completeWireEffect
+// publishes it with the attempt's outcome (or null), and a request that finds
+// the lease run out publishes it as superseded. Whichever is published first
+// stands. Attempt n+1 is published only after an end with no outcome, and the
+// outcome only after the attempt's own end, so a superseded attempt never
+// records one and no attempt starts after it. Every request's nonce key is
+// published too: the same signed request again is peer_request_replayed (409).
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, unlinkSync, writeSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -178,6 +181,27 @@ function readOutcome(store: Store, operationId: string): WireEffectOutcome {
   return { status: (record!.outcome as JsonRecord).status as number, text: (record!.outcome as JsonRecord).text as string };
 }
 
+const sameOutcome = (a: WireEffectOutcome | null, b: WireEffectOutcome | null) => a === null || b === null ? a === b : a.status === b.status && a.text === b.text;
+
+/** Publish the operation's outcome from its attempt's end; one already there must be the same. */
+function publishOutcome(store: Store, operationId: string, attempt: number, outcome: WireEffectOutcome): void {
+  if (publish(store, outcomeName(operationId), canonicalize({ operationId, attempt, outcome }))) return;
+  if (!sameOutcome(readOutcome(store, operationId), outcome)) fail("seller_effect_conflict", 500);
+}
+
+type AttemptEnd = { superseded: boolean; outcome: WireEffectOutcome | null };
+const END = ["operationId", "attempt", "superseded", "outcome"];
+const endRecord = (operationId: string, attempt: number, end: AttemptEnd) => canonicalize({ operationId, attempt, ...end });
+
+/** The end entry this journal published for an attempt; anything else there is a corrupt store. */
+function readEnd(store: Store, operationId: string, attempt: number): AttemptEnd {
+  const record = readRecord(store, endedName(operationId, attempt), OUTCOME_FILE_BYTES);
+  if (!hasKeys(record, END) || record.operationId !== operationId || record.attempt !== attempt || typeof record.superseded !== "boolean" ||
+      !(record.outcome === null || isOutcome(record.outcome)) || (record.superseded && record.outcome !== null)) corrupt("STORE-END-INVALID");
+  const outcome = record!.outcome as JsonRecord | null;
+  return { superseded: record!.superseded as boolean, outcome: outcome === null ? null : { status: outcome.status as number, text: outcome.text as string } };
+}
+
 function now(store: Store): number {
   const at = store.clock();
   if (!isUint(at)) fail("seller_configuration_invalid", 500, "JOURNAL-CLOCK");
@@ -255,7 +279,14 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
   if (exists(store, outcomeName(operationId))) return completed();
   const latest = next - 1;
   const { leaseUntil } = readAttempt(store, operationId, latest);
-  if (!exists(store, endedName(operationId, latest)) && at < (leaseUntil as number)) fail("seller_effect_pending", 503);
+  if (!exists(store, endedName(operationId, latest))) {
+    if (at < (leaseUntil as number)) fail("seller_effect_pending", 503);
+    if (next >= MAX_EFFECT_ATTEMPTS) fail("seller_effect_unresolved", 500);
+    // Its lease ran out: end it as superseded, unless it ended itself first (the end read next decides).
+    publish(store, endedName(operationId, latest), endRecord(operationId, latest, { superseded: true, outcome: null }));
+  }
+  const { outcome } = readEnd(store, operationId, latest);
+  if (outcome !== null) { publishOutcome(store, operationId, latest, outcome); return completed(); }
   if (next >= MAX_EFFECT_ATTEMPTS) fail("seller_effect_unresolved", 500);
   if (!publish(store, attemptName(operationId, next), lease(next))) fail("seller_effect_pending", 503);
   return issue(store, { state: "recover", operationId, attempt: next, leaseUntil: at + store.leaseMs });
@@ -269,8 +300,9 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
  * accepted, another is `seller_effect_conflict` (500). `null` ends an attempt
  * that caused no effect and will cause none (for example, a payment not yet
  * visible), so the next request recovers at once instead of after the lease.
- * An attempt a later one superseded is `seller_effect_superseded` (500): its
- * successor reconciles. Call it only after the effect's own write is durable.
+ * An attempt whose lease ran out and that a later request ended first is
+ * `seller_effect_superseded` (500), and records nothing: its successor
+ * reconciles. Call it only after the effect's own write is durable.
  */
 export function completeWireEffect(journal: WireRequestJournal, effect: WireEffect, outcome: WireEffectOutcome | null): void {
   const store = journalStore(journal) as Store;
@@ -280,13 +312,11 @@ export function completeWireEffect(journal: WireRequestJournal, effect: WireEffe
   // Read once through own data properties; the text is kept byte for byte (no normalization).
   const owned = outcome === null ? null : ownedFields(outcome, ["status", "text"]) as unknown as WireEffectOutcome;
   if (owned !== null && !isOutcome(owned)) fail("wire_input_invalid", 500, "OUTCOME-INVALID");
-  if (exists(store, attemptName(operationId, attempt + 1))) fail("seller_effect_superseded", 500);
-  if (owned === null) {
-    if (exists(store, outcomeName(operationId))) fail("seller_effect_conflict", 500);
-    publish(store, endedName(operationId, attempt), "{}");
-    return;
+  // One exclusive step: this attempt's end, or the one a recovering request published first.
+  if (!publish(store, endedName(operationId, attempt), endRecord(operationId, attempt, { superseded: false, outcome: owned }))) {
+    const end = readEnd(store, operationId, attempt);
+    if (end.superseded) fail("seller_effect_superseded", 500);
+    if (!sameOutcome(end.outcome, owned)) fail("seller_effect_conflict", 500);
   }
-  if (publish(store, outcomeName(operationId), canonicalize({ operationId, attempt, outcome: owned }))) return;
-  const stored = readOutcome(store, operationId);
-  if (stored.status !== owned.status || stored.text !== owned.text) fail("seller_effect_conflict", 500);
+  if (owned !== null) publishOutcome(store, operationId, attempt, owned);
 }

@@ -184,7 +184,8 @@ function assertCommittedAgreement(value: unknown, record: JsonRecord): { generat
  * commitment the Standard's post-finality checks make invalid (DACS-3 §8.5.2,
  * checks 5 and 6 re-evaluated at `committedAt`, as the SDK gate does): a
  * receipt time before the Listing's `notBefore` or after its `notAfter`, or
- * an Agreement deadline past `committedAt + deadlineSecAfterCommit`.
+ * an Agreement deadline past `committedAt + deadlineSecAfterCommit`. A
+ * receipt time after the Agreement's own deadline is refused too.
  * `agreement` is the signed Agreement the record commits (CA-7,
  * assertCommittedAgreement): absent, malformed, another Agreement, or a party
  * signature that does not verify is `continuation_agreement_invalid`. The
@@ -234,9 +235,10 @@ export function commitmentReceiptTime(value: unknown, agreement: unknown, listin
   if (!isUint(generatedAt) || committedAt < generatedAt) invalid();
   if (!isUint(scope.now) || committedAt > scope.now + DACS_SELLER_HTTP_LIMITS.maxClockSkewMs) invalid();
   // DACS-3 §8.5.2 :659-661: checks 5 and 6 re-evaluated at the receipt time (the gate's validateAuthoritativeTime).
+  // The deadline is the Agreement's settle-by time: one committed after it is refused, as seller payment intake refuses it.
   const limit = committedAt + terms.deadlineMs;
   if (committedAt < terms.notBefore || (terms.notAfter !== undefined && terms.notAfter < committedAt) ||
-      !isUint(deadline) || !Number.isSafeInteger(limit) || deadline > limit) invalid();
+      !isUint(deadline) || !Number.isSafeInteger(limit) || deadline > limit || committedAt > deadline) invalid();
   const anchored = deepFreeze(cloneJson({ record, nativeAddress: c.nativeAddress, anchorTxRef: c.anchorTxRef, anchorReceipt: receipt })) as WireAnchoredCommitment;
   const verdict = (reader as CommitmentReceiptReader)(anchored);
   if (verdict === "valid") return committedAt;

@@ -310,13 +310,20 @@ describe("the seller checks the job's finalized commitment on every payment and 
     // Its deadline at the limit committedAt + deadlineSecAfterCommit, and one millisecond past it (check 5).
     const atLimit = world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 + 600_000 } });
     const pastLimit = world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 + 600_001 } });
+    // Committed at the Agreement's own deadline, and one millisecond after it.
+    const atDeadline = world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 1000 } });
+    const pastDeadline = world(ended, { generatedAt: notBefore, terms: { deadline: notBefore + 999 } });
+    // Its deadline is after notAfter, so only notAfter decides there.
+    const late = world(ended, { generatedAt: notBefore, terms: { deadline: notAfter + 1000 } });
     for (const path of CONTINUING) {
-      for (const [mode, check] of run(w, path, notAfter)) expect(check().effect, `${path} ${mode}: at notAfter`).toMatchObject({ state: "new" });
-      for (const [mode, check] of run(w, path, notAfter + 1)) expect(check, `${path} ${mode}: after notAfter`).toThrowError(invalid);
+      for (const [mode, check] of run(late, path, notAfter)) expect(check().effect, `${path} ${mode}: at notAfter`).toMatchObject({ state: "new" });
+      for (const [mode, check] of run(late, path, notAfter + 1)) expect(check, `${path} ${mode}: after notAfter`).toThrowError(invalid);
       for (const [mode, check] of run(w, path, notBefore)) expect(check().effect, `${path} ${mode}: at notBefore`).toMatchObject({ state: "new" });
       for (const [mode, check] of run(early, path, notBefore - 1)) expect(check, `${path} ${mode}: before notBefore`).toThrowError(invalid);
       for (const [mode, check] of run(atLimit, path, notBefore + 1000)) expect(check().effect, `${path} ${mode}: deadline at the limit`).toMatchObject({ state: "new" });
       for (const [mode, check] of run(pastLimit, path, notBefore + 1000)) expect(check, `${path} ${mode}: deadline past the limit`).toThrowError(invalid);
+      for (const [mode, check] of run(atDeadline, path, notBefore + 1000)) expect(check().effect, `${path} ${mode}: committed at the deadline`).toMatchObject({ state: "new" });
+      for (const [mode, check] of run(pastDeadline, path, notBefore + 1000)) expect(check, `${path} ${mode}: committed after the deadline`).toThrowError(invalid);
       // A deadline ten years out, as a seller-signed record could commit after the gate refused it.
       for (const [mode, check] of run(world(ended, { generatedAt: notBefore, terms: { deadline: NOW + 10 * 365 * 86_400_000 } }), path, notBefore + 1000)) {
         expect(check, `${path} ${mode}: deadline ten years out`).toThrowError(invalid);
@@ -500,6 +507,8 @@ describe("a TP-1 buyer continues a purchase whose commitment it received from th
       ["committed 1 ms after notAfter (check 6)", evidence(notAfter + 1), false],
       ["a deadline at committedAt + deadlineSecAfterCommit (check 5)", evidence(NOW + 1000, NOW + 1000 + 600_000), true],
       ["a deadline 1 ms past it (check 5)", evidence(NOW + 1000, NOW + 1000 + 600_001), false],
+      ["committed at the Agreement's deadline", evidence(NOW + 1000, NOW + 1000), true],
+      ["committed 1 ms after the Agreement's deadline", evidence(NOW + 1000, NOW + 999), false],
     ];
     for (const [name, e, continues] of cases) {
       if (continues) expect(prove(e), name).not.toThrow();

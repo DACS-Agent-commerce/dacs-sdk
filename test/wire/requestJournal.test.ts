@@ -1,6 +1,6 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
-import { journalFixture } from "./requestJournalFixture.js";
+import { journalDirectory, journalFixture } from "./requestJournalFixture.js";
 import { ed25519KeyPair, received, signedAgreement, tp1Listing, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { spawn } from "node:child_process";
 import { randomBytes, sign } from "node:crypto";
@@ -8,9 +8,22 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
+
+// Another worker's step, run once just before this process next links an operation entry (o-…) into the
+// journal: the gap between a check and the publish that acts on it. Unset, link() is the real one.
+const race = vi.hoisted(() => ({ beforeLink: undefined as (() => void) | undefined }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  const linkSync: typeof fs.linkSync = (existing, target) => {
+    const step = race.beforeLink;
+    if (step !== undefined && /\/o-[^/]*$/.test(String(target))) { race.beforeLink = undefined; step(); }
+    fs.linkSync(existing, target);
+  };
+  return { ...fs, default: { ...fs, linkSync }, linkSync };
+});
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { testJournals, openJournal } = journalFixture(fixtureWire);
@@ -218,6 +231,66 @@ describe("the durable journal across a restart and concurrent workers", () => {
     expect(verdicts.every((v) => v === "new" || v === "seller_effect_pending" || v.startsWith("completed:"))).toBe(true);
     expect([...effects()].sort()).toEqual(operations(x));
   }, 120_000);
+});
+
+describe("the durable journal ends each attempt once: by its outcome, or by the request that recovers it", () => {
+  afterEach(() => { race.beforeLink = undefined; });
+  const settle = <T>(f: () => T): { value?: T; error?: string } => {
+    try { return { value: f() }; } catch (error) { if (error instanceof wire.WireError) return { error: error.code }; throw error; }
+  };
+  /** Two workers on one directory and clock: the first holds payment's attempt 0, and its lease has just ended. */
+  function lapsed() {
+    const x = world();
+    let clock = NOW;
+    const directory = journalDirectory();
+    const worker = () => wire.openWireRequestJournal(directory, { leaseMs: 1000, clock: () => clock });
+    const a = worker(), b = worker();
+    const at = (journal: wire.WireRequestJournal) => wire.checkWireRequest(wire.openWireEnvelope(x.direct(x.request(P.payments, nonce())), "request", x.context),
+      { ...x.check(P.payments), requestJournal: journal }).effect!;
+    const first = at(a);
+    expect(first).toMatchObject({ state: "new", attempt: 0 });
+    clock = NOW + 1000;
+    return { directory, a, b, at, first };
+  }
+  const paid = { status: 200, text: '{"paid":"first"}' };
+
+  it("a recovery that runs before the lapsed attempt records its outcome supersedes it: that outcome is refused, and the recovery's own is kept", () => {
+    const { a, b, at, first } = lapsed();
+    let recovered: { value?: wire.WireEffect; error?: string } = {};
+    race.beforeLink = () => { recovered = settle(() => at(b)); };
+    const completed = settle(() => wire.completeWireEffect(a, first, paid));
+    expect(recovered).toEqual({ value: expect.objectContaining({ state: "recover", attempt: 1 }) });
+    expect(completed).toEqual({ error: "seller_effect_superseded" });
+    const reconciled = { status: 200, text: '{"paid":"reconciled"}' };
+    wire.completeWireEffect(b, recovered.value!, reconciled);
+    expect(at(a)).toMatchObject({ state: "completed", outcome: reconciled });
+  });
+
+  it("an outcome the lapsed attempt records before the recovery publishes anything stands: the recovery is answered with it and starts no attempt", () => {
+    const { a, b, at, first } = lapsed();
+    let completed: { value?: void; error?: string } = {};
+    race.beforeLink = () => { completed = settle(() => wire.completeWireEffect(a, first, paid)); };
+    const recovered = settle(() => at(b));
+    expect(completed).toEqual({ value: undefined });
+    expect(recovered).toEqual({ value: expect.objectContaining({ state: "completed", outcome: paid }) });
+    expect(at(b)).toMatchObject({ state: "completed", outcome: paid });
+  });
+
+  it("refuses an end entry the journal did not write as a corrupt store, never as an ended attempt", () => {
+    const { directory, a, b, at, first } = lapsed();
+    wire.completeWireEffect(a, first, null);
+    const file = join(directory, `o-${first.operationId}-0.end`);
+    const kept = JSON.parse(readFileSync(file, "utf8"));
+    expect(kept).toEqual({ operationId: first.operationId, attempt: 0, superseded: false, outcome: null });
+    const corrupt = expect.objectContaining({ code: "seller_replay_guard_invalid", status: 500, detail: "STORE-END-INVALID" });
+    for (const contents of ["{}", "not json", JSON.stringify({ ...kept, attempt: 1 }), JSON.stringify({ ...kept, superseded: true, outcome: paid }), JSON.stringify({ ...kept, outcome: { status: 200 } })]) {
+      writeFileSync(file, contents);
+      expect(() => at(b), contents).toThrowError(corrupt);
+      expect(() => wire.completeWireEffect(a, first, null), contents).toThrowError(corrupt);
+    }
+    writeFileSync(file, JSON.stringify(kept));
+    expect(at(b)).toMatchObject({ state: "recover", attempt: 1 });
+  });
 });
 
 describe("the durable journal keyed by operation across a reopen", () => {
