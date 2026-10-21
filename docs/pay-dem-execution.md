@@ -128,7 +128,11 @@ authenticate, so its own verdict never becomes final.
   a session holding a transaction-bearing outcome) is a read-only audit of
   that retained transaction. `payDemSettle` never claims a submit generation
   for it, even when the rail log lost its record, and requires both
-  `settlementStore.readOutcome` and `reconcile`. The reconciler then receives a
+  `settlementStore.readOutcome` and `reconcile`. Over a log without the
+  optional `readOutcome`, the `createIdempotencyStore` lookup reads through
+  `claimIntent`: it returns a saved outcome, releases at once an intent it had
+  to install, and refuses a held or expired generation without releasing it.
+  The reconciler then receives a
   `PayDemSettlementAuditContext` with `txHash`, the retained hash in canonical
   form (64 lower-case hex digits, no `0x`). It returns the node's record for
   that hash and, whenever it can load one, the prepared-transfer journal entry
@@ -142,12 +146,14 @@ authenticate, so its own verdict never becomes final.
   `SettlementLog` implements the optional `putAttempt`/`readAttempt` pair (the
   in-memory log does). The rail records the signed hash before its one
   broadcast and does not broadcast when the record is refused; `payDemSettle`
-  also records any hash a rail returns before the store persists or returns
+  records `createPayDemRail`'s hash again before the store persists or returns
   it, and a refused write fails the call and leaves the hash unbound. The only
   rails `payDemSettle` runs (those `createPayDemRail` and
   `createPayDemClientRail` return) record the exact hash they will return before
-  they broadcast: the bridge's write after the return cannot cover a crash in
-  between. The fence a
+  they broadcast. A client rail does so through the journal hook the SDK hands
+  its client, only for a transfer signed after the call began that this
+  process has not settled; any other hash it returns, such as another
+  payment's transfer relayed for this one, is never recorded. The fence a
   rail receives records the canonical form (64 lower-case hex digits, no `0x`)
   whichever form the rail passes, and rejects a value that is not a Demos
   transaction hash before the rail can broadcast it. The write is
@@ -156,11 +162,13 @@ authenticate, so its own verdict never becomes final.
   a restarted process audit the payment. A durable log needs the pair, so
   `payDemSettle` starts no new transfer through a `createIdempotencyStore`
   store over a log without it: the call fails before the rail runs, nothing is
-  signed or sent, and the intent is released. Such a log still serves the
-  payments it saved before attempt records existed. An audit counts the hash
-  that the store's own outcome for these exact terms names, once the
-  reconciliation agrees with it on block and result; a key with no saved
-  outcome stays fail closed. Before adding the pair to an existing log,
+  signed or sent, and the intent is released. Nor does it start one through
+  any other store, wrapper or fence: a new transfer runs only when the fence a
+  store hands its submit records through the same `createIdempotencyStore`
+  store whose own `readAttempt` it carries. A log without the pair still
+  serves the payments it holds. An audit counts the hash that an outcome the
+  log holds for these exact terms names, once the reconciliation agrees with
+  it on block and result; a key with no saved outcome stays fail closed. Before adding the pair to an existing log,
   backfill each outcome that names a transaction as its attempt record
   (`bindingHash` and `txHash` from that outcome), and a key still held with no
   outcome only from the rail's prepared-transfer journal entry whose
