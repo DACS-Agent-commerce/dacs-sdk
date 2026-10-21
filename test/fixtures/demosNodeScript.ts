@@ -37,13 +37,18 @@ export const demosNode = {
   networkInfoReads: [] as boolean[],
   /** `getTxByHash` replies by hash; a missing hash is not found (`null`). */
   records: new Map<string, unknown>(),
-  /** Replaces the `getTxByHash` reply for every hash when set. */
-  reply: undefined as ((hash: string) => unknown) | undefined,
+  /**
+   * Replaces the `getTxByHash` reply for every hash when set; `rpc` is the
+   * node the reading `Demos` instance connected to.
+   */
+  reply: undefined as ((hash: string, rpc: string | undefined) => unknown) | undefined,
   /** Awaited before each transfer is signed (a spy, or a gate). */
   onTransfer: undefined as (() => unknown) | undefined,
   transfers: 0,
   broadcasts: 0,
   reads: [] as string[],
+  /** The node each `getTxByHash` read went to, in order. */
+  readNodes: [] as (string | undefined)[],
   reset(): void {
     this.address = "ab".repeat(32);
     this.nextHash = "cd".repeat(32);
@@ -60,6 +65,7 @@ export const demosNode = {
     this.transfers = 0;
     this.broadcasts = 0;
     this.reads = [];
+    this.readNodes = [];
   },
 };
 
@@ -154,7 +160,10 @@ class MockDemos {
     }),
   };
 
-  async connect(): Promise<void> {}
+  private rpc: string | undefined;
+  async connect(rpc?: string): Promise<void> {
+    this.rpc = rpc;
+  }
   async connectWallet(): Promise<void> {}
   getAddress(): string {
     return demosNode.address;
@@ -204,7 +213,8 @@ class MockDemos {
   }
   async getTxByHash(hash: string): Promise<unknown> {
     demosNode.reads.push(hash);
-    if (demosNode.reply !== undefined) return demosNode.reply(hash);
+    demosNode.readNodes.push(this.rpc);
+    if (demosNode.reply !== undefined) return demosNode.reply(hash, this.rpc);
     return demosNode.records.get(hash) ?? null;
   }
   async waitForNonce(): Promise<void> {}

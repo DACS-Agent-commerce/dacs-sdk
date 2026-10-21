@@ -130,8 +130,9 @@ authenticate, so its own verdict never becomes final.
   amount and nonce bind the payment. Only a rail with such a read may make a
   fresh payment, so every payment the adapter made can be read again on a
   resume or a repeat. The block, nonce and fee come from that record; a claim it
-  contradicts is refused, and a missing, pending, timed-out or malformed
-  record leaves the payment unresolved with that reason. Over any other rail
+  contradicts is refused, including a `networkFeeOs` the record does not
+  carry (a reconciler may omit the fee), and a missing, pending, timed-out or
+  malformed record leaves the payment unresolved with that reason. Over any other rail
   there is no such read, so a recovered result is held as `ok: false` with
   the hash. A failure found by a lookup by key is never final: the hash may be
   another job's transfer of the same parties and amount. After a restart, a
@@ -269,7 +270,10 @@ own record read, and `undefined` for anything else, including a copy of that
 success. `createPayDemRecordReader` adds a reader only by connecting to a
 node; every verdict through it is still the SDK's own read of that node.
 `createPayDemClientRail` builds a rail only around a client that carries such
-a reader.
+a reader. It keeps the client's `address`, `recordReader` and `transfer` as
+they are when the rail is built, and both its payments and its recovery reads
+use those: a payment verified through one node, or made from one wallet, is
+never re-read through another, whatever the client object holds later.
 
 The settlement store records a bound permanent failure as the definitive
 outcome for that key only when it comes from `payDemSettle` over the rail

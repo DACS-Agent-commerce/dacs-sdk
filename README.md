@@ -801,11 +801,15 @@ when the SDK read the node's record for that hash itself: over the rail
 `createPayDemRail` built, the adapter reads the record through that rail's own
 connection, and over a `createPayDemClientRail` rail through the connection of
 the client's `createPayDemRecordReader` reader, for that client's wallet only.
-It takes the record's status, block, nonce, parties, amount and fee from it.
-These are the only rails the adapter lets make a fresh payment, so a session
-paid through either can be resumed or repeated. It reads the amount and fee in the denomination the record's signed payload
-carries (DEM numbers before the denomination fork, OS strings after it), so a
-payment saved before the fork still completes after it activates. The
+A client rail keeps the client's `address`, `recordReader` and `transfer` as
+they are when it is built, and pays through those too, so a later change to the
+client object never leaves a payment its own recovery cannot read. It takes the
+record's status, block, nonce, parties, amount and fee from it. These are the
+only rails the adapter lets make a fresh payment, so a session paid through
+either can be resumed or repeated. It reads the amount and fee in the
+denomination the record's signed payload carries (DEM numbers before the
+denomination fork, OS strings after it), so a payment saved before the fork
+still completes after it activates. The
 reconciler's answer only names the hash and can refuse, and one the
 record contradicts is refused. The fork state that bounds this read (no
 OS-signed record before the fork) is read from the node afresh for each

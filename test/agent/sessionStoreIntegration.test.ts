@@ -36,6 +36,7 @@ import {
   createPayDemClientRail,
   createPayDemRecordReader,
   payDemSettle,
+  type DemosNativeClient,
   type PayDemRail,
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
@@ -2238,28 +2239,43 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 
     // Sweep P1-A: a createPayDemClientRail rail had no recovery read, so a
     // session it paid completed once and then held on every re-run or resume.
-    test("completes, repeats and resumes a createPayDemClientRail session after a crash at the evidence anchor, paying once", async () => {
+    // Sweep N2: the rail pays and re-reads through the reader it was built
+    // with, even when its client takes another one before it pays; here only
+    // the rail's own node serves the record. Each case pays with its own
+    // hash: the SDK settles a reader-carrying client's hash once per process.
+    test.each([
+      ["", false, txHash],
+      [" when its client takes another reader after the rail is built", true, "ce".repeat(32)],
+    ])("completes, repeats and resumes a createPayDemClientRail session after a crash at the evidence anchor, paying once%s", async (_case, swapReader, txHash) => {
       const kv = await demKv();
       const log = createInMemorySettlementLog();
       let transfers = 0;
+      const RAIL_NODE = "https://node.test";
+      demosNode.reply = (hash, rpc) => rpc === RAIL_NODE ? demosNode.records.get(hash) ?? null : null;
+      const recordReader = (rpc: string) => createPayDemRecordReader({ rpc, inclusionTimeoutMs: 200,
+        inclusionPollIntervalMs: 1, statusRequestTimeoutMs: 50, transactionRecordTimeoutMs: 100 });
       // Each run is a new process: a new reader, client rail and bridge over
       // the durable rail log.
-      const adapter = async () => payDemSettle(createPayDemClientRail({
-        address: payer,
-        recordReader: await createPayDemRecordReader({ rpc: "https://node.test", inclusionTimeoutMs: 200,
-          inclusionPollIntervalMs: 1, statusRequestTimeoutMs: 50, transactionRecordTimeoutMs: 100 }),
-        transfer: async (args) => {
-          transfers += 1;
-          await args.journalPreparedTransfer?.({ txHash, nonce: 9, payer, payee: args.to,
-            amountOs: args.amountOs.toString(), network: "demos",
-            ...(args.recovery === undefined ? {} : { recovery: args.recovery }) });
-          // The client broadcasts; the node records the transfer it signed.
-          demosNode.records.set(txHash, nodeRecord({ txHash, payer, payee: args.to,
-            amountOs: args.amountOs.toString() }));
-          return { ok: true, state: "included", execution: "executed", hash: txHash, nonce: 9, blockNumber: 42 };
-        },
-      }), {}, { store: createIdempotencyStore(log), reconcile: async (context) =>
-        executedClaim("txHash" in context ? context.txHash : txHash) });
+      const adapter = async () => {
+        const client: DemosNativeClient = {
+          address: payer,
+          recordReader: await recordReader(RAIL_NODE),
+          transfer: async (args) => {
+            transfers += 1;
+            await args.journalPreparedTransfer?.({ txHash, nonce: 9, payer, payee: args.to,
+              amountOs: args.amountOs.toString(), network: "demos",
+              ...(args.recovery === undefined ? {} : { recovery: args.recovery }) });
+            // The client broadcasts; the node records the transfer it signed.
+            demosNode.records.set(txHash, nodeRecord({ txHash, payer, payee: args.to,
+              amountOs: args.amountOs.toString() }));
+            return { ok: true, state: "included", execution: "executed", hash: txHash, nonce: 9, blockNumber: 42 };
+          },
+        };
+        const rail = createPayDemClientRail(client);
+        if (swapReader) client.recordReader = await recordReader("https://node-b.test");
+        return payDemSettle(rail, {}, { store: createIdempotencyStore(log), reconcile: async (context) =>
+          executedClaim("txHash" in context ? context.txHash : txHash) });
+      };
       const evidence = `stor:${sessionAnchorName.evidence("job-1")}`;
       const crashAtEvidence: SessionDeps["anchor"] = async (name, value) => {
         if (`stor:${name}` === evidence) throw new Error("process killed at the evidence anchor");
@@ -2292,6 +2308,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       expect(transfers).toBe(1);
       expect(demosNode.transfers).toBe(0);
       expect(demosNode.broadcasts).toBe(0);
+      expect(demosNode.readNodes.length).toBeGreaterThan(0);
+      expect(new Set(demosNode.readNodes)).toEqual(new Set([RAIL_NODE]));
     });
 
     // A process killed after the SDK rail recorded the failed

@@ -2633,21 +2633,29 @@ export async function createPayDemRecordReader(
  * `createPayDemRail` returns, this is the only rail {@link payDemSettle}
  * calls, because these are the only rails whose success the SDK can make
  * final. A client without such a reader is refused here, before any transfer.
+ * The rail keeps the client's `address`, `recordReader` and `transfer` as they
+ * are now: a later change to the client object reaches neither its payments
+ * nor its recovery reads.
  */
 export function createPayDemClientRail(
   client: DemosNativeClient,
   config: Readonly<{ network?: string }> = {},
 ): PayDemRail {
   const address = requiredStableString(client, "address", "pay-dem client rail payer");
-  stableMethodTarget(client, "transfer", "pay-dem client rail transfer");
+  const transfer = stableMethod<DemosNativeClient["transfer"]>(
+    client,
+    "transfer",
+    "pay-dem client rail transfer",
+  );
   const readerProperty = stableDataProperty(
     client,
     "recordReader",
     "pay-dem record reader",
   );
-  const reading = !readerProperty.found || readerProperty.value === undefined
+  const recordReader = readerProperty.value as PayDemRecordReader | undefined;
+  const reading = !readerProperty.found || recordReader === undefined
     ? undefined
-    : sdkRecordReaders.get(readerProperty.value as object);
+    : sdkRecordReaders.get(recordReader);
   if (reading === undefined) {
     throw new DacsError(
       "pay-dem client rail needs a reader createPayDemRecordReader built; refusing",
@@ -2658,8 +2666,12 @@ export function createPayDemClientRail(
     "network",
     "pay-dem client rail network",
   ) ?? "demos";
+  // One snapshot serves both halves. A payment verified through a reader, or
+  // made from a wallet, other than the ones recovery reads with would complete
+  // once and then hold on every repeat or resume.
+  const bound: DemosNativeClient = Object.freeze({ address, recordReader, transfer });
   const settle: PayDemRail["settle"] = (params, effectFence) =>
-    payDemSettleCore(params, client, network, effectFence);
+    payDemSettleCore(params, bound, network, effectFence);
   // Recovery reads a hash this rail paid through the reader's own node
   // connection, for this client's wallet only, as createPayDemRail's does.
   sdkRailRecordReaders.set(settle, reading.recoveryReader(address));

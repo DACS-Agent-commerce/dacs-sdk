@@ -123,6 +123,10 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(doc).toContain("Only a rail with such a read may make a fresh payment");
     expect(readme).toContain("over a `createPayDemClientRail` rail through the connection of the client's `createPayDemRecordReader` reader, for that client's wallet only");
     expect(readme).toContain("so a session paid through either can be resumed or repeated");
+    // A client rail pays and re-reads through one snapshot of its client (sweep N2).
+    expect(readme).toContain("A client rail keeps the client's `address`, `recordReader` and `transfer` as they are when it is built, and pays through those too");
+    expect(doc).toContain("It keeps the client's `address`, `recordReader` and `transfer` as they are when the rail is built, and both its payments and its recovery reads use those");
+    expect(doc).toContain("including a `networkFeeOs` the record does not carry");
     expect(doc).toContain("A failure found by a lookup by key is never final");
     expect(doc).not.toMatch(/wire one that reads the node you trust/);
     // No custom settle or recovery is called for native DEM, so no run can

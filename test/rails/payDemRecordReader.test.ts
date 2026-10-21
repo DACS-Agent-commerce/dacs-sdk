@@ -76,8 +76,8 @@ const FAST = {
   transactionRecordTimeoutMs: 30,
 };
 
-async function reader(): Promise<PayDemRecordReader> {
-  return createPayDemRecordReader({ rpc: "https://node.test", ...FAST });
+async function reader(rpc = "https://node.test"): Promise<PayDemRecordReader> {
+  return createPayDemRecordReader({ rpc, ...FAST });
 }
 
 /** The prepared transfer a client journals before its one broadcast. */
@@ -743,6 +743,102 @@ describe("payDemSettle accepts a custom rail's SDK record-verified success (#338
       .rejects.toThrow(/payer is not this rail's wallet/);
     expect(sdk.getTxByHash).not.toHaveBeenCalled();
     expect(transfer).not.toHaveBeenCalled();
+  });
+
+  // Sweep N2: a client rail's recovery reads through the reader and wallet the
+  // rail was built with. Its payments must go through those same ones, or a
+  // success verified on one node is re-read on another that cannot find it.
+  describe("pays only through the client the rail was built with", () => {
+    const NODE_A = "https://node-a.test";
+    const NODE_B = "https://node-b.test";
+    /** The node each record read went to. */
+    let recordReads: string[];
+    /** Serve the record from `serving` only; any other node does not know it. */
+    const nodes = (serving: string) => {
+      recordReads = [];
+      sdk.connect.mockImplementation(function (this: { rpc?: string }, rpc: string) {
+        this.rpc = rpc;
+        return Promise.resolve(true);
+      });
+      sdk.getTxByHash.mockImplementation(async function (this: { rpc?: string }) {
+        recordReads.push(this.rpc ?? "");
+        return this.rpc === serving ? record() : null;
+      });
+    };
+    const audit = () => ({
+      ...request("job-a"),
+      priorAttempts: [{ txHash: TX_HASH, chainId: "demos", ok: true }],
+    });
+
+    it("verifies, repeats and re-reads a payment through the rail's reader after the client takes another", async () => {
+      nodes(NODE_A);
+      const { client, transfer } = customClient(await reader(NODE_A));
+      const rail = createPayDemClientRail(client);
+      client.recordReader = await reader(NODE_B);
+      const log = createInMemorySettlementLog();
+      const bridge = () => payDemSettle(rail, {}, {
+        store: createIdempotencyStore(log), reconcile: async () => reconciled(),
+      });
+      const settle = bridge();
+
+      await expect(settle(request("job-a"))).resolves.toMatchObject({
+        ok: true, txHash: TX_HASH, blockNumber: BLOCK, finality: { model: "bft-final" },
+      });
+      await expect(settle(audit())).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      // A restarted bridge over the durable log re-reads the cached outcome.
+      await expect(bridge()(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      expect(recordReads.length).toBeGreaterThan(0);
+      expect(new Set(recordReads)).toEqual(new Set([NODE_A]));
+      expect(transfer).toHaveBeenCalledTimes(1);
+    });
+
+    // The reviewer's case: the node the client switched to confirms the
+    // transfer, the rail's own node does not know it. Completing on the
+    // switched reader would leave a success no recovery of this rail can read.
+    it("never completes a payment on a reader the client took after the rail was built", async () => {
+      nodes(NODE_B);
+      const { client, transfer } = customClient(await reader(NODE_A));
+      const rail = createPayDemClientRail(client);
+      client.recordReader = await reader(NODE_B);
+      const log = createInMemorySettlementLog();
+      const settle = payDemSettle(rail, {}, {
+        store: createIdempotencyStore(log), reconcile: async () => reconciled(),
+      });
+
+      const fresh = await settle(request("job-a"));
+      expect(fresh).toMatchObject({ ok: false, txHash: TX_HASH });
+      expect(fresh).not.toHaveProperty("finality");
+      await expect(log.readOutcome!(settlementKey("pay-dem", "job-a", 0))).resolves.toBeNull();
+      await expect(settle(audit())).rejects.toThrow(/could not establish the node record.*not found/);
+      expect(new Set(recordReads)).toEqual(new Set([NODE_A]));
+      expect(transfer).toHaveBeenCalledTimes(1);
+    });
+
+    it("pays from the wallet the rail was built with after the client names another", async () => {
+      const { client, transfer } = customClient(await reader());
+      const rail = createPayDemClientRail(client);
+      client.address = `0x${"ef".repeat(32)}`;
+
+      await expect(payDemSettle(rail)(request("job-a"))).resolves.toMatchObject({
+        ok: true, txHash: TX_HASH, payer: PAYER_HEX,
+      });
+      expect(sdk.nodeCall).toHaveBeenCalledWith("getAddressNonce", { address: WALLET });
+      expect(sdk.nodeCall).not.toHaveBeenCalledWith("getAddressNonce", { address: `0x${"ef".repeat(32)}` });
+      expect(transfer).toHaveBeenCalledTimes(1);
+    });
+
+    it("calls the transfer the rail was built with after the client replaces it", async () => {
+      const { client, transfer } = customClient(await reader());
+      const rail = createPayDemClientRail(client);
+      const replaced = vi.fn(async () => {
+        throw new Error("the replaced transfer must not run");
+      });
+      client.transfer = replaced;
+
+      await expect(payDemSettle(rail)(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      expect(transfer).toHaveBeenCalledTimes(1);
+      expect(replaced).not.toHaveBeenCalled();
+    });
   });
 
   // The client's journal call is the last step before its broadcast: the
