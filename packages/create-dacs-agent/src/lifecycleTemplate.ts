@@ -480,17 +480,49 @@ export async function inspectGeneratedBackupV1(input: Readonly<{
   return manifest;
 }
 
+interface SdkVersionV1 {
+  core: readonly [number, number, number];
+  prerelease: readonly string[];
+}
+
+const SDK_VERSION_IDENTIFIER = "[0-9A-Za-z-]+";
+const SDK_VERSION = new RegExp(
+  "^(0|[1-9][0-9]*)\\\\.(0|[1-9][0-9]*)\\\\.(0|[1-9][0-9]*)" +
+  "(?:-(" + SDK_VERSION_IDENTIFIER + "(?:\\\\." + SDK_VERSION_IDENTIFIER + ")*))?" +
+  "(?:\\\\+" + SDK_VERSION_IDENTIFIER + "(?:\\\\." + SDK_VERSION_IDENTIFIER + ")*)?$",
+);
+
+function parseSdkVersionV1(value: unknown): SdkVersionV1 | null {
+  if (typeof value !== "string") return null;
+  const match = SDK_VERSION.exec(value);
+  if (match === null) return null;
+  const core = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  if (!core.every((part) => Number.isSafeInteger(part))) return null;
+  const prerelease = match[4] === undefined ? [] : match[4].split(".");
+  if (prerelease.some((part) => part.length > 1 && part[0] === "0" &&
+      part.split("").every((char) => char >= "0" && char <= "9"))) return null;
+  return { core, prerelease };
+}
+
 export function assertGeneratedBackupRestorableV1(
   manifest: Readonly<BackupManifestV1>,
 ): void {
-  if (manifest.release.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
+  // SQLite binds actor data to the exact creating SDK version, including build
+  // metadata. Restore uses that same binding; cross-release migration is not
+  // supported. Reinstall the retained project and lockfile before rollback.
+  const created = parseSdkVersionV1(manifest.release.sdkVersion);
+  const running = parseSdkVersionV1(VERSION);
+  if (created === null || running === null || manifest.release.sdkVersion !== VERSION ||
+      manifest.release.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
       manifest.release.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION ||
       manifest.release.sqliteSchemaVersion > DACS_NODE_SQLITE_SCHEMA_VERSION ||
       (manifest.release.sqliteSchemaVersion !== DACS_NODE_SQLITE_SCHEMA_VERSION &&
         !DACS_NODE_SUPPORTED_SQLITE_MIGRATION_SOURCES.some(
           (version) => version === manifest.release.sqliteSchemaVersion,
         ))) {
-    throw new Error("restore-backup-release-incompatible");
+    throw new Error("restore-backup-release-incompatible: backup created by SDK " +
+      (created === null ? "(unparseable version)" : manifest.release.sdkVersion) +
+      ", running SDK " + VERSION);
   }
 }
 

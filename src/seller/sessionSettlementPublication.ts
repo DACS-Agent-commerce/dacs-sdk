@@ -19,7 +19,9 @@ import {
   encodeAddressSegment,
   sha256Hex,
 } from "../canonical/index.js";
+import { isCanonicalJobId } from "../artifacts/validators.js";
 import { signedBytes } from "../crypto/index.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   type FinalizedSessionSettlement,
   type SessionSettlementDisposition,
@@ -193,7 +195,11 @@ export interface SellerSessionSettlementPublicationDeps {
     evidence: Readonly<SettlementEvidence>;
     expectedWriter: Readonly<SellerSessionSettlementAnchorWriter>;
   }>): Promise<SellerSessionSettlementAnchorResult>;
-  /** Authenticate the binding-native finalized receipt. */
+  /**
+   * Authenticate the binding-native finalized receipt. The core has already
+   * required any reference signer to be the evidence signer; this callback
+   * cannot admit another issuer.
+   */
   verifyAnchorReceipt(input: Readonly<{
     effectId: string;
     expectedWriter: string;
@@ -689,7 +695,7 @@ function deriveNativeProofRef(
 
 function validAuthorization(value: unknown): value is SellerPaymentAuthorization {
   if (!isRecord(value) || !isRecord(value.evidenceInput) ||
-      !isNonEmpty(value.settlementId) || !isNonEmpty(value.jobId) ||
+      !isNonEmpty(value.settlementId) || !isCanonicalJobId(value.jobId) ||
       !isUint(value.phaseIndex) || typeof value.evidenceHash !== "string") return false;
   return isValidSellerReceiptClaim({
     settlementId: value.settlementId,
@@ -1146,7 +1152,10 @@ export async function publishSellerSessionSettlement(
   if (evidenceRef.anchor.kind !== "storage-program" ||
       evidenceRef.anchor.locator !== logicalAddress ||
       evidenceRef.contentHash !== evidenceHash ||
-      (evidenceRef.signer !== undefined && evidenceRef.signer !== deps.signer.signer) ||
+      // DACS-2 §7.5.2(3): the anchor writer supplies this reference, so a
+      // signer it names must have the evidence signer's CF-3 identity.
+      (evidenceRef.signer !== undefined &&
+        !sameCanonicalClaimIdentity(evidenceRef.signer, evidence.signature.signer)) ||
       anchorReceipt.logicalAddress !== logicalAddress ||
       anchorReceipt.contentHash !== evidenceHash ||
       anchorReceipt.writer !== deps.anchorWriter.primaryClaim ||

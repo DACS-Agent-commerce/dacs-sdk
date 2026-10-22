@@ -16,16 +16,23 @@ import {
   FIXED_PRICE_X402_COMMERCE_PROFILE,
   FIXED_PRICE_X402_REGISTRY_INDEX_REF,
   FIXED_PRICE_X402_STANDARD_REVISION,
+  createPaymentEvidenceAnchorCompletion,
   fixedPriceX402OrderBindingHash,
   fixedPriceX402OrderLocalBindingHash,
+  paymentEvidenceAnchorCompletionHash,
   type FixedPriceX402OrderInput,
   type FixedPriceX402ProtocolBinding,
   type FixedPriceX402TrackOperationInput,
+  type PaymentEvidenceAnchorCompletion,
+  type PaymentEvidenceAnchorRequest,
 } from "@kynesyslabs/dacs/commerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
-import { createDacsFixedPriceX402SellerPaymentEvidenceV1 } from
+import {
+  createDacsFixedPricePayDemSellerPaymentEvidenceV1,
+  createDacsFixedPriceX402SellerPaymentEvidenceV1,
+} from
   "../src/fixedPriceX402SellerPaymentEvidence.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import { retainDacsFixedPricePurchaseDemosBudgetGrantV1 } from
@@ -406,6 +413,122 @@ describe("live payment-evidence runtime", () => {
       outcome: "success",
     });
   });
+
+  it.each((["default", "x402", "pay-dem"] as const).flatMap((verifier) =>
+    [SELLER, undefined, `${SELLER}?role=publisher`].map((referenceSigner) => ({
+      verifier,
+      referenceSigner,
+    })),
+  ))(
+    "$verifier seller verifier rejects forged issuers and accepts a valid completion (signer: $referenceSigner)",
+    async ({ verifier, referenceSigner }) => {
+      const database = await open("seller");
+      const artifact = evidence();
+      const evidenceHash = contentHash(artifact as unknown as Record<string, unknown>);
+      const logicalAddress = `dacs4:payment:${JOB_ID}:x402%3Aruntime:0`;
+      const verifyDemosAnchorReceipt = vi.fn(async () => true);
+      const readAnchor = vi.fn(async () => artifact);
+      const sendMessage = vi.fn(async () => acknowledgement("accepted"));
+      const context = {
+        role: "seller",
+        authority: SELLER,
+        peerAuthority: BUYER,
+        database,
+        demos: { adapter: { verifyDemosAnchorReceipt, readAnchor } },
+        sendMessage,
+      } as unknown as DacsLiveRoleOperationContextV1;
+      const composed = verifier === "x402"
+        ? createDacsFixedPriceX402SellerPaymentEvidenceV1({
+            context,
+            settlement: { observer: {} } as never,
+          }).paymentEvidence
+        : verifier === "pay-dem"
+          ? createDacsFixedPricePayDemSellerPaymentEvidenceV1({
+              context,
+              observeDemosTransfer: vi.fn(),
+            }).paymentEvidence
+          : {};
+      const runtime = createDacsSellerPaymentEvidenceRuntimeV1({
+        context,
+        workerId: "seller-issuer-test",
+        ...composed,
+      });
+      const sellerOperation = operation(order("seller"));
+      const input = {
+        effectId: `seller-settlement:${JOB_ID}`,
+        logicalAddress,
+        evidenceHash,
+        evidence: artifact,
+        expectedWriter: { role: "buyer" as const, primaryClaim: BUYER },
+      };
+      await expect(runtime.anchorEvidence(sellerOperation, input)).resolves.toMatchObject({
+        disposition: "indeterminate",
+      });
+      await expect(runtime.flushOutboundRequests(sellerOperation)).resolves.toEqual({
+        status: "acknowledged",
+      });
+      const request = (sendMessage.mock.calls[0] as unknown as [{
+        payload: PaymentEvidenceAnchorRequest;
+      }])[0].payload;
+      const anchored = anchor(logicalAddress, evidenceHash);
+      // Recompute the completion hash, so rejection cannot come from a stale
+      // message hash or missing buyer transport authentication.
+      for (const signer of [
+        `did:demos:agent:${"9".repeat(64)}`,
+        `did:demos:agent:${"9".repeat(64)}?role=publisher`,
+        BUYER,
+      ]) {
+        // The core builder refuses this signer, so forge the wire message.
+        expect(() => createPaymentEvidenceAnchorCompletion({
+          request,
+          ...anchored,
+          evidenceRef: { ...anchored.evidenceRef, signer },
+        })).toThrow(/does not bind the request/);
+        const forged = structuredClone(createPaymentEvidenceAnchorCompletion({
+          request, ...anchored,
+        })) as { -readonly [K in keyof PaymentEvidenceAnchorCompletion]:
+          PaymentEvidenceAnchorCompletion[K] };
+        forged.evidenceRef = { ...forged.evidenceRef, signer };
+        forged.completionHash = paymentEvidenceAnchorCompletionHash(forged);
+        forged.messageId =
+          `dacs-sdk:x402:payment-evidence-anchor-completion:${forged.completionHash}`;
+        await expect(runtime.handleMessage(
+          authenticated("payment-evidence-completion", forged, BUYER, SELLER),
+          { role: "seller" } as DacsLiveRoleInboundOperationContextV1,
+        )).resolves.toEqual({
+          disposition: "rejected",
+          reasonCode: "payment-evidence-completion-invalid",
+        });
+        await expect(runtime.anchorEvidence(sellerOperation, input)).resolves.toMatchObject({
+          disposition: "indeterminate",
+        });
+      }
+      expect(verifyDemosAnchorReceipt).not.toHaveBeenCalled();
+      expect(readAnchor).not.toHaveBeenCalled();
+
+      const genuineAnchor = {
+        ...anchored,
+        evidenceRef: {
+          anchor: anchored.evidenceRef.anchor,
+          contentHash: anchored.evidenceRef.contentHash,
+          ...(referenceSigner === undefined ? {} : { signer: referenceSigner }),
+        },
+      };
+      const genuine = createPaymentEvidenceAnchorCompletion({ request, ...genuineAnchor });
+      await expect(runtime.handleMessage(
+        authenticated("payment-evidence-completion", genuine, BUYER, SELLER),
+        { role: "seller" } as DacsLiveRoleInboundOperationContextV1,
+      )).resolves.toEqual({ disposition: "accepted" });
+      const retained = await runtime.anchorEvidence(sellerOperation, input);
+      expect(retained).toMatchObject({
+        disposition: "anchored",
+      });
+      if (retained.disposition === "anchored") {
+        expect(retained.evidenceRef).toEqual(genuineAnchor.evidenceRef);
+      }
+      expect(verifyDemosAnchorReceipt).toHaveBeenCalled();
+    },
+  );
 
   it("fences seller publication composition and maps invalid input to operator action", async () => {
     const sellerDatabase = await open("seller");

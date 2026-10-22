@@ -75,6 +75,7 @@ export {
   type AuthoritativeBundleSelection,
 } from "./bundleConsistency.js";
 export {
+  inspectHistoricalSettlementEvidence,
   validateSettlementEvidenceStructure,
   verifySettlementEvidence,
   type EvidenceDecision,
@@ -514,6 +515,11 @@ export {
   isCanonicalSettlementIdentity,
   isCanonicalSolanaSignature,
   resolveSettlementEventIdentity,
+  resolveSettlementEventIdentities,
+  type SettlementEventIdentityRecord,
+  type SettlementCollisionAuthority,
+  type AuthenticateSettlementCollision,
+  type SettlementEventIdentitySetResolution,
   type AuthenticatedSettlementLedgerEvent,
   type VerifiedX402ReceiptBinding,
   type SettlementEventIdentityContext,

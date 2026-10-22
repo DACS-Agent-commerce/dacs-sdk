@@ -11,12 +11,14 @@ import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonConfig,
   snapshotCanonicalJsonRead,
+  snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { AttestationRef, ChainTxRef } from "../artifacts/types.js";
 import { isComponentSignature } from "../artifacts/signatures.js";
 import {
+  isCanonicalJobId,
   isAttestationRef,
   isChainTxRef,
   isSettlementEvidence,
@@ -126,7 +128,8 @@ export interface EvidenceContext {
   /**
    * The phase-handler result envelope, when the caller has it. `ok`/`errorClass`
    * MUST be coherent: `ok: true` carries no `errorClass`; `ok: false` MUST carry
-   * one (a fault the reader can classify). Skipped when absent.
+   * one PC-4 class (a fault the reader can classify), and `settlement-atomicity`
+   * only for a cross-chain payment phase. Skipped when absent.
    */
   result?: {
     ok?: boolean;
@@ -205,6 +208,27 @@ const PHASE_RAIL_TYPE: Record<string, string> = {
   "pay-x402": "x402",
   "pay-dem": "demos-native",
 };
+
+/**
+ * PC-4 failure classifications and phase-owned PC-6 finality models. Every
+ * phase may report the general classes; PC-4 limits `settlement-atomicity`
+ * to the cross-chain payment phases.
+ */
+const PHASE_ERROR_CLASSES = new Set([
+  "permanent", "transient", "counterparty", "substrate", "settlement-atomicity",
+]);
+const CROSS_CHAIN_PAYMENT_PHASES = new Set([
+  "pay-cross-chain-htlc", "pay-cross-chain-liquidity-tank",
+]);
+const PHASE_FINALITY_MODEL = new Map([
+  ["pay-evm-erc20", "block-depth"],
+  ["pay-solana-spl", "commitment-level"],
+  ["pay-cross-chain-htlc", "htlc-reveal"],
+  ["pay-cross-chain-liquidity-tank", "liquidity-tank"],
+  ["pay-ap2", "provider-receipt"],
+  ["pay-x402", "block-depth"],
+  ["pay-dem", "bft-final"],
+]);
 
 const RAIL_SPEC_KINDS: Readonly<
   Record<string, Readonly<{ asset: string; network: string }>>
@@ -318,6 +342,7 @@ async function evaluateSettlementEvidence(
   ctx: EvidenceContext,
   deps: EvidenceDeps,
   requireAuthenticatedContext: boolean,
+  historicalReplay = false,
 ): Promise<EvidenceVerification> {
   const reasons: string[] = [];
   let sawError = false;
@@ -364,10 +389,24 @@ async function evaluateSettlementEvidence(
     };
   }
 
+  if (historicalReplay && (!resolvePublicKey || !verify)) {
+    return { decision: "error", reasons: ["historical signature inspection requires cryptographic dependencies"] };
+  }
+
   let recordSnapshot: unknown;
+  let legacyJobId = false;
   let contextSnapshot: EvidenceContext;
   try {
-    recordSnapshot = snapshotCanonicalJsonRead(record, "settlement evidence");
+    const wireSnapshot = snapshotWireJsonRead(record, "settlement evidence");
+    // CORE JID-1/JID-3 prohibit repairing the original spelling. Own data
+    // without NFC first so, for example, U+212A cannot be admitted as ASCII K.
+    if (!historicalReplay && isObj(wireSnapshot) &&
+        !isCanonicalJobId(wireSnapshot["jobId"])) {
+      return { decision: "error", reasons: ["current evidence jobId MUST be a canonical uppercase ULID"] };
+    }
+    legacyJobId = historicalReplay && isObj(wireSnapshot) &&
+      !isCanonicalJobId(wireSnapshot["jobId"]);
+    recordSnapshot = snapshotCanonicalJsonRead(wireSnapshot, "settlement evidence");
     contextSnapshot = snapshotCanonicalJsonConfig(
       ctx,
       "settlement evidence context",
@@ -379,7 +418,9 @@ async function evaluateSettlementEvidence(
     };
   }
   record = recordSnapshot;
-  ctx = contextSnapshot;
+  // CORE §B.1: legacy replay evaluates only the signed object and its hash
+  // reference. Current agreement, phase and authority context has no meaning here.
+  ctx = legacyJobId ? { attestationRef: contextSnapshot.attestationRef } : contextSnapshot;
 
   const assetSpec = ctx.rail?.assetSpec;
   const networkSpec = ctx.rail?.networkSpec;
@@ -479,7 +520,7 @@ async function evaluateSettlementEvidence(
         reasons.push("authenticated payment evidence context requires the exact PC-2 address tuple");
       }
     }
-    if (isDelivery && (!isStr(ctx.expectedAnchorLocator) ||
+    if (isDelivery && outcome === "success" && (!isStr(ctx.expectedAnchorLocator) ||
         ctx.expectedAnchorLocator.length === 0)) {
       sawError = true;
       reasons.push("authenticated delivery evidence context requires the expected deliverable locator");
@@ -496,349 +537,369 @@ async function evaluateSettlementEvidence(
     fail("evidence does not match an exact DACS-4 §9.7 SettlementEvidence variant");
   }
 
-  // A failure-outcome record MUST carry a reason.
-  if (outcome === "failure" && (!isStr(ev["reason"]) || ev["reason"] === "")) {
-    fail("failure-outcome evidence MUST carry a `reason`");
-  }
+  if (!legacyJobId) {
+    // A failure-outcome record MUST carry a reason.
+    if (outcome === "failure" && (!isStr(ev["reason"]) || ev["reason"] === "")) {
+      fail("failure-outcome evidence MUST carry a `reason`");
+    }
 
-  // Phase-result envelope coherence (ok ⇔ no errorClass).
-  if (ctx.result && ctx.result.ok !== undefined) {
-    const hasErrorClass = isStr(ctx.result.errorClass) && ctx.result.errorClass !== "";
-    if (ctx.result.ok === true && hasErrorClass) {
-      fail("phase result is ok:true but carries an errorClass");
+    // Phase-result envelope coherence (ok ⇔ no errorClass).
+    if (ctx.result && ctx.result.ok !== undefined) {
+      const hasErrorClass = isStr(ctx.result.errorClass) && ctx.result.errorClass !== "";
+      if (ctx.result.ok === true && ctx.result.errorClass !== undefined) {
+        fail("phase result is ok:true but carries an errorClass");
+      }
+      if (ctx.result.ok === false && hasErrorClass &&
+          !PHASE_ERROR_CLASSES.has(ctx.result.errorClass!)) {
+        fail("phase result errorClass MUST be a registered PC-4 error class");
+      } else if (ctx.result.ok === false && ctx.result.errorClass === "settlement-atomicity" &&
+          !CROSS_CHAIN_PAYMENT_PHASES.has(phase as string)) {
+        fail("phase result errorClass settlement-atomicity is cross-chain only (PC-4)");
+      }
+      if (ctx.result.ok === false && !hasErrorClass) {
+        fail("phase result is ok:false but carries no errorClass to classify the fault");
+      }
+      if (ctx.result.ok === true && outcome !== "success") {
+        fail("phase result is ok:true but SettlementEvidence does not report success");
+      }
+      if (ctx.result.ok === false && outcome !== "failure") {
+        fail("phase result is ok:false but SettlementEvidence does not report failure");
+      }
     }
-    if (ctx.result.ok === false && !hasErrorClass) {
-      fail("phase result is ok:false but carries no errorClass to classify the fault");
-    }
-    if (ctx.result.ok === true && outcome !== "success") {
-      fail("phase result is ok:true but SettlementEvidence does not report success");
-    }
-    if (ctx.result.ok === false && outcome !== "failure") {
-      fail("phase result is ok:false but SettlementEvidence does not report failure");
-    }
-  }
 
-  const amount = isObj(ev["paymentAmount"]) ? (ev["paymentAmount"] as Record<string, unknown>) : null;
-  const fee = isObj(ev["paymentFee"]) ? (ev["paymentFee"] as Record<string, unknown>) : null;
-  const txRefs = Array.isArray(ev["paymentTxRefs"]) ? (ev["paymentTxRefs"] as unknown[]) : null;
-  const finality = isObj(ev["settlementFinality"]) ? (ev["settlementFinality"] as Record<string, unknown>) : null;
+    const amount = isObj(ev["paymentAmount"]) ? (ev["paymentAmount"] as Record<string, unknown>) : null;
+    const fee = isObj(ev["paymentFee"]) ? (ev["paymentFee"] as Record<string, unknown>) : null;
+    const txRefs = Array.isArray(ev["paymentTxRefs"]) ? (ev["paymentTxRefs"] as unknown[]) : null;
+    const finality = isObj(ev["settlementFinality"]) ? (ev["settlementFinality"] as Record<string, unknown>) : null;
 
-  // ── Payment-evidence rules (§9.7, PC-5/PC-6) ────────────────────────────
-  if (isPayment && outcome === "success") {
-    if (!txRefs || txRefs.length === 0) fail("success payment evidence MUST carry paymentTxRefs");
-    if (!amount) fail("success payment evidence MUST carry paymentAmount (AMEND-3 basis)");
-    if (!finality) fail("success payment evidence MUST carry settlementFinality (PC-6)");
-  }
-  if (txRefs && txRefs.some((ref) => !isChainTxRef(ref))) {
-    fail("paymentTxRefs MUST contain exact DACS-4 §9.3 ChainTxRef variants");
-  }
-  if (
-    isPayment && ctx.result?.txRefs !== undefined &&
-    Array.isArray(ctx.result.txRefs) &&
-    ctx.result.txRefs.every((ref) => isChainTxRef(ref)) &&
-    canonicalize(ctx.result.txRefs) !== canonicalize(txRefs ?? [])
-  ) {
-    fail(
-      "signed evidence.paymentTxRefs do not equal the authenticated phase-handler result txRefs",
-    );
-  }
-  if (txRefs) {
-    for (const ref of txRefs) {
-      if (!isObj(ref)) continue;
-      const kind = ref["kind"];
-      if (kind === "evm-event") {
-        if (phase !== "pay-evm-erc20") {
-          fail('evm-event is valid only for pay-evm-erc20 evidence');
-        }
-        if (outcome === "success" && finality?.["model"] !== "block-depth") {
-          fail('evm-event success evidence MUST use block-depth finality');
-        }
-      } else if (kind === "solana-instruction") {
-        if (phase !== "pay-solana-spl") {
-          fail('solana-instruction is valid only for pay-solana-spl evidence');
-        }
-        if (outcome === "success" &&
-            finality?.["model"] !== "commitment-level") {
-          fail('solana-instruction success evidence MUST use commitment-level finality');
-        }
-      } else if (kind === "x402-event") {
-        if (phase !== "pay-x402") {
-          fail('x402-event is valid only for pay-x402 evidence');
-        }
-        if (outcome === "success" && finality?.["model"] !== "block-depth") {
-          fail('x402-event success evidence MUST use block-depth finality');
-        }
-      }
+    // ── Payment-evidence rules (§9.7, PC-5/PC-6) ────────────────────────────
+    if (isPayment && outcome === "success") {
+      if (!txRefs || txRefs.length === 0) fail("success payment evidence MUST carry paymentTxRefs");
+      if (!amount) fail("success payment evidence MUST carry paymentAmount (AMEND-3 basis)");
+      if (!finality) fail("success payment evidence MUST carry settlementFinality (PC-6)");
     }
-  }
-  if (amount) {
-    if (!isCanonicalDecimal(amount["amount"])) fail("paymentAmount.amount MUST be a canonical CD-1 decimal");
-    else if (!decimalIsPositive(amount["amount"] as string)) fail("paymentAmount.amount MUST be strictly > 0");
-    if (!isStr(amount["currency"]) || amount["currency"] === "") fail("paymentAmount.currency MUST be set");
-  }
-  if (fee) {
-    if (!isCanonicalDecimal(fee["amount"])) fail("paymentFee.amount MUST be a canonical CD-1 decimal (non-negative)");
-  }
-
-  // ── settlementFinality closed-set + per-model params (PC-6, §9.7) ───────
-  // A present finality record must name a model from the closed set and carry
-  // the model's parameter shape; presence alone is insufficient.
-  if (finality) {
-    const model = finality["model"];
-    if (!isStr(model) || !FINALITY_MODELS.has(model)) {
-      fail(`settlementFinality.model "${String(model)}" is not a recognised §9.7 finality model (PC-6)`);
-    } else {
-      // block-depth echoes the blocks waited; commitment-level echoes the Solana
-      // commitment. Both are OPTIONAL in §9.7 (self-describing echoes of
-      // rail.parameters) — validate only when present, never require.
-      if (model === "block-depth" && finality["finalityBlocks"] !== undefined) {
-        const fb = finality["finalityBlocks"];
-        if (!isNum(fb) || fb < 0 || !Number.isInteger(fb)) {
-          fail("settlementFinality.finalityBlocks MUST be a non-negative integer");
-        }
-      }
-      if (model === "commitment-level" && finality["finalityCommitmentLevel"] !== undefined) {
-        if (!isStr(finality["finalityCommitmentLevel"]) || !SOLANA_COMMITMENTS.has(finality["finalityCommitmentLevel"])) {
-          fail(`settlementFinality.finalityCommitmentLevel MUST be one of processed|confirmed|finalized`);
-        }
-      }
-      // The depth/commitment params belong ONLY to their own model. bft-final in
-      // particular is finality-by-inclusion (§9.5.9) — there is no block-depth or
-      // commitment to wait on — and provider-receipt/htlc-reveal/liquidity-tank
-      // likewise carry neither. A stray param signals a mis-modelled record.
-      if (model !== "block-depth" && finality["finalityBlocks"] !== undefined) {
-        fail(`settlementFinality.finalityBlocks is only valid for model "block-depth", not "${model}"`);
-      }
-      if (model !== "commitment-level" && finality["finalityCommitmentLevel"] !== undefined) {
-        fail(`settlementFinality.finalityCommitmentLevel is only valid for model "commitment-level", not "${model}"`);
-      }
-    }
-    // §9.7: finalityObservedAt is REQUIRED on a finality record.
-    if (!isNum(finality["finalityObservedAt"])) {
-      fail("settlementFinality.finalityObservedAt MUST be a unix-ms number");
-    }
-  }
-
-  // ── Delivery-evidence rules (§9.7) ──────────────────────────────────────
-  if (isDelivery) {
-    // Delivery phases MUST omit settlementFinality (finality is payment-only).
-    if (finality) fail("delivery evidence MUST NOT carry settlementFinality");
-    if (!isStr(ev["deliverableContentHash"])) {
-      fail("delivery evidence MUST carry deliverableContentHash");
-    } else if (!is64Hex(ev["deliverableContentHash"])) {
-      fail("deliverableContentHash MUST be a 64-char sha256 hex");
-    }
-    const anchor = isObj(ev["deliverableAnchor"]) ? (ev["deliverableAnchor"] as Record<string, unknown>) : null;
-    if (!anchor || !isStr(anchor["kind"]) || !isStr(anchor["locator"])) {
-      fail("delivery evidence MUST carry a deliverableAnchor {kind, locator}");
-    } else {
-      if (phase === "deliver-storage-program" && anchor["kind"] !== "storage-program") {
-        // A storage-program delivery anchored under a non-storage kind (e.g. an
-        // entitlement) is incoherent with its phase.
-        fail(`deliver-storage-program anchor kind MUST be "storage-program", got "${String(anchor["kind"])}"`);
-      }
-      if (ctx.expectedAnchorLocator && anchor["locator"] !== ctx.expectedAnchorLocator) {
-        fail(
-          `deliverableAnchor.locator "${String(anchor["locator"])}" is not the expected SR-2 address "${ctx.expectedAnchorLocator}"`,
-        );
-      }
-    }
-    // Note: an extra payment-shaped field on a delivery record is tolerated (not a fail).
-  }
-
-  // ── Agreement / rail coherence (context-gated) ──────────────────────────
-  if (amount && isStr(amount["currency"])) {
-    const cur = amount["currency"];
-    if (ctx.rail?.asset && ctx.rail.asset !== cur) {
-      fail(`paymentAmount.currency "${cur}" does not resolve to rail asset "${ctx.rail.asset}" (PC-5)`);
-    }
-    if (ctx.agreement?.currency && ctx.agreement.currency !== cur) {
-      fail(`paymentAmount.currency "${cur}" does not match agreement currency "${ctx.agreement.currency}"`);
+    if (txRefs && txRefs.some((ref) => !isChainTxRef(ref))) {
+      fail("paymentTxRefs MUST contain exact DACS-4 §9.3 ChainTxRef variants");
     }
     if (
-      ctx.agreement?.currency === cur &&
-      isCanonicalDecimal(amount["amount"]) &&
-      isCanonicalDecimal(ctx.agreement?.amount) &&
-      cmpDecimal(amount["amount"] as string, ctx.agreement!.amount!) < 0
+      isPayment && ctx.result?.txRefs !== undefined &&
+      Array.isArray(ctx.result.txRefs) &&
+      ctx.result.txRefs.every((ref) => isChainTxRef(ref)) &&
+      canonicalize(ctx.result.txRefs) !== canonicalize(txRefs ?? [])
     ) {
-      fail("settled amount is less than the agreed price (underpayment)");
-    }
-  }
-  if (isPayment && ctx.rail?.railType && PHASE_RAIL_TYPE[phase as string] !== ctx.rail.railType) {
-    fail(
-      `phase "${String(phase)}" is incoherent with rail type "${ctx.rail.railType}" (expected ${PHASE_RAIL_TYPE[phase as string]})`,
-    );
-  }
-  // Rail-internal coherence: the handler the rail names must map to its railType.
-  if (ctx.rail?.railType && ctx.rail.handler && PHASE_RAIL_TYPE[ctx.rail.handler] !== ctx.rail.railType) {
-    fail(
-      `rail handler "${ctx.rail.handler}" is incoherent with rail type "${ctx.rail.railType}"`,
-    );
-  }
-  const expectedSpecKinds = ctx.rail?.railType
-    ? RAIL_SPEC_KINDS[ctx.rail.railType]
-    : undefined;
-  if (
-    expectedSpecKinds && assetSpec && isObj(assetSpec) &&
-    isStr(assetSpec.kind) && assetSpec.kind !== expectedSpecKinds.asset
-  ) {
-    fail(
-      `rail type "${ctx.rail!.railType}" requires asset kind ` +
-        `"${expectedSpecKinds.asset}", got "${assetSpec.kind}" (RD-5)`,
-    );
-  }
-  if (
-    expectedSpecKinds && networkSpec && isObj(networkSpec) &&
-    isStr(networkSpec.kind) && networkSpec.kind !== expectedSpecKinds.network
-  ) {
-    fail(
-      `rail type "${ctx.rail!.railType}" requires network kind ` +
-        `"${expectedSpecKinds.network}", got "${networkSpec.kind}" (RD-5)`,
-    );
-  }
-  if (
-    assetSpec && networkSpec && isObj(assetSpec) && isObj(networkSpec) &&
-    (assetSpec.kind === "erc20" || assetSpec.kind === "native-evm") &&
-    networkSpec.kind === "evm" &&
-    isPositiveSafeInteger(assetSpec.chainId) &&
-    isPositiveSafeInteger(networkSpec.chainId) &&
-    assetSpec.chainId !== networkSpec.chainId
-  ) {
-    fail(
-      `rail asset chainId ${assetSpec.chainId} does not match network chainId ` +
-        `${networkSpec.chainId} (RD-5)`,
-    );
-  }
-  if (
-    assetSpec && networkSpec && isObj(assetSpec) && isObj(networkSpec) &&
-    (assetSpec.kind === "spl" || assetSpec.kind === "native-solana") &&
-    networkSpec.kind === "solana" && isStr(assetSpec.cluster) &&
-    isStr(networkSpec.cluster) && assetSpec.cluster !== networkSpec.cluster
-  ) {
-    fail(
-      `rail asset cluster "${assetSpec.cluster}" does not match network cluster ` +
-        `"${networkSpec.cluster}" (RD-5)`,
-    );
-  }
-  if (ctx.rail?.network && networkSpec && isObj(networkSpec)) {
-    const pinned = parsePinnedEvidenceNetwork(ctx.rail.network);
-    if (
-      pinned?.kind === "evm" && networkSpec.kind === "evm" &&
-      isPositiveSafeInteger(networkSpec.chainId) &&
-      pinned.chainId !== networkSpec.chainId
-    ) {
-      fail("canonical rail network contradicts networkSpec.chainId");
-    } else if (
-      pinned?.kind === "solana" && networkSpec.kind === "solana" &&
-      isStr(networkSpec.cluster) && pinned.cluster !== networkSpec.cluster
-    ) {
-      fail("canonical rail network contradicts networkSpec.cluster");
-    } else if (pinned?.kind === "demos" && networkSpec.kind !== "demos") {
-      fail("canonical Demos rail network contradicts networkSpec.kind");
-    }
-  }
-  // This layer validates the signed ChainTxRef and its pinned-rail tuple. The
-  // independently authenticated ledger-event selection, complete PC-2 address
-  // binding and SB-2 cross-session uniqueness check live in
-  // resolveSettlementEventIdentity: shape-valid legacy refs are intentionally
-  // still readable here, but they cannot mint an event identity by themselves.
-  if (txRefs && ctx.rail) {
-    const allowedKinds: Record<string, ReadonlySet<string>> = {
-      "evm-erc20": new Set(["evm", "evm-event"]),
-      "solana-spl": new Set(["solana", "solana-instruction"]),
-      "cross-chain-htlc": new Set([
-        "htlc-lock",
-        "htlc-reveal",
-        "htlc-claim",
-        "htlc-refund",
-      ]),
-      "cross-chain-liquidity-tank": new Set(["liquidity-tank"]),
-      ap2: new Set(["ap2"]),
-      x402: new Set(["x402", "x402-event"]),
-      "demos-native": new Set(["demos"]),
-    };
-    const pinnedNetwork = ctx.rail.network === undefined
-      ? undefined
-      : parsePinnedEvidenceNetwork(ctx.rail.network);
-    if (ctx.rail.network !== undefined && !pinnedNetwork) {
       fail(
-        `rail network "${ctx.rail.network}" is not a canonical pinned ` +
-          `eip155, solana, or demos network`,
+        "signed evidence.paymentTxRefs do not equal the authenticated phase-handler result txRefs",
       );
     }
-    for (const t of txRefs) {
-      if (!isObj(t)) continue;
-      const allowed = ctx.rail.railType ? allowedKinds[ctx.rail.railType] : undefined;
-      if (allowed && (!isStr(t["kind"]) || !allowed.has(t["kind"]))) {
-        fail(
-          `paymentTxRef.kind "${String(t["kind"])}" is incoherent with rail type "${ctx.rail.railType}"`,
-        );
-      }
-      if (
-        pinnedNetwork &&
-        (t["kind"] === "evm" || t["kind"] === "evm-event")
-      ) {
-        if (
-          pinnedNetwork.kind !== "evm" ||
-          t["chainId"] !== pinnedNetwork.chainId
-        ) {
-          fail(
-            `paymentTxRef EVM chainId "${String(t["chainId"])}" does not ` +
-              `match pinned rail network "${ctx.rail.network}"`,
-          );
+    if (txRefs) {
+      for (const ref of txRefs) {
+        if (!isObj(ref)) continue;
+        const kind = ref["kind"];
+        if (kind === "evm-event") {
+          if (phase !== "pay-evm-erc20") {
+            fail('evm-event is valid only for pay-evm-erc20 evidence');
+          }
+          if (outcome === "success" && finality?.["model"] !== "block-depth") {
+            fail('evm-event success evidence MUST use block-depth finality');
+          }
+        } else if (kind === "solana-instruction") {
+          if (phase !== "pay-solana-spl") {
+            fail('solana-instruction is valid only for pay-solana-spl evidence');
+          }
+          if (outcome === "success" &&
+              finality?.["model"] !== "commitment-level") {
+            fail('solana-instruction success evidence MUST use commitment-level finality');
+          }
+        } else if (kind === "x402-event") {
+          if (phase !== "pay-x402") {
+            fail('x402-event is valid only for pay-x402 evidence');
+          }
+          if (outcome === "success" && finality?.["model"] !== "block-depth") {
+            fail('x402-event success evidence MUST use block-depth finality');
+          }
         }
-      } else if (
-        pinnedNetwork &&
-        (t["kind"] === "solana" || t["kind"] === "solana-instruction")
-      ) {
-        if (
-          pinnedNetwork.kind !== "solana" ||
-          t["cluster"] !== pinnedNetwork.cluster
-        ) {
-          fail(
-            `paymentTxRef Solana cluster "${String(t["cluster"])}" does not ` +
-              `match pinned rail network "${ctx.rail.network}"`,
-          );
-        }
-      } else if (pinnedNetwork && t["kind"] === "demos") {
-        if (pinnedNetwork.kind !== "demos") {
-          fail(
-            `paymentTxRef Demos network does not match pinned rail network ` +
-              `"${ctx.rail.network}"`,
-          );
-        }
-      } else if (
-        pinnedNetwork &&
-        (t["kind"] === "x402" || t["kind"] === "x402-event") &&
-        t["chainId"] !== undefined &&
-        (pinnedNetwork.kind !== "evm" ||
-          t["chainId"] !== pinnedNetwork.chainId)
-      ) {
-        fail(
-          `paymentTxRef x402 chainId "${String(t["chainId"])}" does not ` +
-            `match pinned rail network "${ctx.rail.network}"`,
-        );
       }
     }
-  }
+    if (amount) {
+      if (!isCanonicalDecimal(amount["amount"])) fail("paymentAmount.amount MUST be a canonical CD-1 decimal");
+      else if (!decimalIsPositive(amount["amount"] as string)) fail("paymentAmount.amount MUST be strictly > 0");
+      if (!isStr(amount["currency"]) || amount["currency"] === "") fail("paymentAmount.currency MUST be set");
+    }
+    if (fee) {
+      if (!isCanonicalDecimal(fee["amount"])) fail("paymentFee.amount MUST be a canonical CD-1 decimal (non-negative)");
+    }
 
-  // ── HTLC route params (HTLC-7), only for a cross-chain-htlc phase ────────
-  if (phase === "pay-cross-chain-htlc" && ctx.rail) {
-    if (!isNum(ctx.rail.sourceFinalitySec)) fail("HTLC route MUST pin rail.sourceFinalitySec (HTLC-7)");
-    if (!isNum(ctx.rail.safetyWindowSec)) fail("HTLC route MUST pin rail.safetyWindowSec (HTLC-7)");
+    // ── settlementFinality closed-set + per-model params (PC-6, §9.7) ───────
+    // A present finality record must name a model from the closed set and carry
+    // the model's parameter shape; presence alone is insufficient.
+    if (finality) {
+      const model = finality["model"];
+      if (!isStr(model) || !FINALITY_MODELS.has(model)) {
+        fail(`settlementFinality.model "${String(model)}" is not a recognised §9.7 finality model (PC-6)`);
+      } else {
+        const expectedModel = isStr(phase) ? PHASE_FINALITY_MODEL.get(phase) : undefined;
+        // §9.7 retains pre-v0.6 x402 provider finality for explicit replay only.
+        const historicalX402 = historicalReplay && phase === "pay-x402" &&
+          model === "provider-receipt";
+        if (expectedModel && model !== expectedModel && !historicalX402) {
+          fail(`phase "${String(phase)}" is incoherent with finality model "${model}"`);
+        }
+        // block-depth echoes the blocks waited; commitment-level echoes the Solana
+        // commitment. Both are OPTIONAL in §9.7 (self-describing echoes of
+        // rail.parameters) — validate only when present, never require.
+        if (model === "block-depth" && finality["finalityBlocks"] !== undefined) {
+          const fb = finality["finalityBlocks"];
+          if (!isNum(fb) || fb < 0 || !Number.isInteger(fb)) {
+            fail("settlementFinality.finalityBlocks MUST be a non-negative integer");
+          }
+        }
+        if (model === "commitment-level" && finality["finalityCommitmentLevel"] !== undefined) {
+          if (!isStr(finality["finalityCommitmentLevel"]) || !SOLANA_COMMITMENTS.has(finality["finalityCommitmentLevel"])) {
+            fail(`settlementFinality.finalityCommitmentLevel MUST be one of processed|confirmed|finalized`);
+          }
+        }
+        // The depth/commitment params belong ONLY to their own model. bft-final in
+        // particular is finality-by-inclusion (§9.5.9) — there is no block-depth or
+        // commitment to wait on — and provider-receipt/htlc-reveal/liquidity-tank
+        // likewise carry neither. A stray param signals a mis-modelled record.
+        if (model !== "block-depth" && finality["finalityBlocks"] !== undefined) {
+          fail(`settlementFinality.finalityBlocks is only valid for model "block-depth", not "${model}"`);
+        }
+        if (model !== "commitment-level" && finality["finalityCommitmentLevel"] !== undefined) {
+          fail(`settlementFinality.finalityCommitmentLevel is only valid for model "commitment-level", not "${model}"`);
+        }
+      }
+      // §9.7: finalityObservedAt is REQUIRED on a finality record.
+      if (!isNum(finality["finalityObservedAt"])) {
+        fail("settlementFinality.finalityObservedAt MUST be a unix-ms number");
+      }
+    }
+
+    // ── Delivery-evidence rules (§9.7) ──────────────────────────────────────
+    if (isDelivery) {
+      // Delivery phases MUST omit settlementFinality (finality is payment-only).
+      if (finality) fail("delivery evidence MUST NOT carry settlementFinality");
+      if (outcome === "success" && ev["deliverableContentHash"] === undefined) {
+        fail("delivery evidence MUST carry deliverableContentHash");
+      } else if (ev["deliverableContentHash"] !== undefined &&
+          (!isStr(ev["deliverableContentHash"]) || !is64Hex(ev["deliverableContentHash"]))) {
+        fail("deliverableContentHash MUST be a 64-char sha256 hex");
+      }
+      const anchor = isObj(ev["deliverableAnchor"]) ? (ev["deliverableAnchor"] as Record<string, unknown>) : null;
+      if ((outcome === "success" || ev["deliverableAnchor"] !== undefined) &&
+          (!anchor || !isStr(anchor["kind"]) || !isStr(anchor["locator"]))) {
+        fail("delivery evidence MUST carry a deliverableAnchor {kind, locator}");
+      } else if (anchor) {
+        if (phase === "deliver-storage-program" && anchor["kind"] !== "storage-program") {
+          // A storage-program delivery anchored under a non-storage kind (e.g. an
+          // entitlement) is incoherent with its phase.
+          fail(`deliver-storage-program anchor kind MUST be "storage-program", got "${String(anchor["kind"])}"`);
+        }
+        if (ctx.expectedAnchorLocator && anchor["locator"] !== ctx.expectedAnchorLocator) {
+          fail(
+            `deliverableAnchor.locator "${String(anchor["locator"])}" is not the expected SR-2 address "${ctx.expectedAnchorLocator}"`,
+          );
+        }
+      }
+      // Note: an extra payment-shaped field on a delivery record is tolerated (not a fail).
+    }
+
+    // ── Agreement / rail coherence (context-gated) ──────────────────────────
+    if (amount && isStr(amount["currency"])) {
+      const cur = amount["currency"];
+      if (ctx.rail?.asset && ctx.rail.asset !== cur) {
+        fail(`paymentAmount.currency "${cur}" does not resolve to rail asset "${ctx.rail.asset}" (PC-5)`);
+      }
+      if (ctx.agreement?.currency && ctx.agreement.currency !== cur) {
+        fail(`paymentAmount.currency "${cur}" does not match agreement currency "${ctx.agreement.currency}"`);
+      }
+      if (
+        ctx.agreement?.currency === cur &&
+        isCanonicalDecimal(amount["amount"]) &&
+        isCanonicalDecimal(ctx.agreement?.amount) &&
+        cmpDecimal(amount["amount"] as string, ctx.agreement!.amount!) < 0
+      ) {
+        fail("settled amount is less than the agreed price (underpayment)");
+      }
+    }
+    if (isPayment && ctx.rail?.railType && PHASE_RAIL_TYPE[phase as string] !== ctx.rail.railType) {
+      fail(
+        `phase "${String(phase)}" is incoherent with rail type "${ctx.rail.railType}" (expected ${PHASE_RAIL_TYPE[phase as string]})`,
+      );
+    }
+    // Rail-internal coherence: the handler the rail names must map to its railType.
+    if (ctx.rail?.railType && ctx.rail.handler && PHASE_RAIL_TYPE[ctx.rail.handler] !== ctx.rail.railType) {
+      fail(
+        `rail handler "${ctx.rail.handler}" is incoherent with rail type "${ctx.rail.railType}"`,
+      );
+    }
+    const expectedSpecKinds = ctx.rail?.railType
+      ? RAIL_SPEC_KINDS[ctx.rail.railType]
+      : undefined;
     if (
-      ctx.htlcExpiry &&
-      isNum(ctx.rail.sourceFinalitySec) &&
-      isNum(ctx.rail.safetyWindowSec) &&
-      !(ctx.htlcExpiry.source > ctx.htlcExpiry.dest + ctx.rail.sourceFinalitySec + ctx.rail.safetyWindowSec)
+      expectedSpecKinds && assetSpec && isObj(assetSpec) &&
+      isStr(assetSpec.kind) && assetSpec.kind !== expectedSpecKinds.asset
     ) {
-      fail("HTLC timelock margin insufficient: expiry_source ≤ expiry_dest + source_finality + safety (HTLC-7)");
+      fail(
+        `rail type "${ctx.rail!.railType}" requires asset kind ` +
+          `"${expectedSpecKinds.asset}", got "${assetSpec.kind}" (RD-5)`,
+      );
+    }
+    if (
+      expectedSpecKinds && networkSpec && isObj(networkSpec) &&
+      isStr(networkSpec.kind) && networkSpec.kind !== expectedSpecKinds.network
+    ) {
+      fail(
+        `rail type "${ctx.rail!.railType}" requires network kind ` +
+          `"${expectedSpecKinds.network}", got "${networkSpec.kind}" (RD-5)`,
+      );
+    }
+    if (
+      assetSpec && networkSpec && isObj(assetSpec) && isObj(networkSpec) &&
+      (assetSpec.kind === "erc20" || assetSpec.kind === "native-evm") &&
+      networkSpec.kind === "evm" &&
+      isPositiveSafeInteger(assetSpec.chainId) &&
+      isPositiveSafeInteger(networkSpec.chainId) &&
+      assetSpec.chainId !== networkSpec.chainId
+    ) {
+      fail(
+        `rail asset chainId ${assetSpec.chainId} does not match network chainId ` +
+          `${networkSpec.chainId} (RD-5)`,
+      );
+    }
+    if (
+      assetSpec && networkSpec && isObj(assetSpec) && isObj(networkSpec) &&
+      (assetSpec.kind === "spl" || assetSpec.kind === "native-solana") &&
+      networkSpec.kind === "solana" && isStr(assetSpec.cluster) &&
+      isStr(networkSpec.cluster) && assetSpec.cluster !== networkSpec.cluster
+    ) {
+      fail(
+        `rail asset cluster "${assetSpec.cluster}" does not match network cluster ` +
+          `"${networkSpec.cluster}" (RD-5)`,
+      );
+    }
+    if (ctx.rail?.network && networkSpec && isObj(networkSpec)) {
+      const pinned = parsePinnedEvidenceNetwork(ctx.rail.network);
+      if (
+        pinned?.kind === "evm" && networkSpec.kind === "evm" &&
+        isPositiveSafeInteger(networkSpec.chainId) &&
+        pinned.chainId !== networkSpec.chainId
+      ) {
+        fail("canonical rail network contradicts networkSpec.chainId");
+      } else if (
+        pinned?.kind === "solana" && networkSpec.kind === "solana" &&
+        isStr(networkSpec.cluster) && pinned.cluster !== networkSpec.cluster
+      ) {
+        fail("canonical rail network contradicts networkSpec.cluster");
+      } else if (pinned?.kind === "demos" && networkSpec.kind !== "demos") {
+        fail("canonical Demos rail network contradicts networkSpec.kind");
+      }
+    }
+    // This layer validates the signed ChainTxRef and its pinned-rail tuple. The
+    // independently authenticated ledger-event selection, complete PC-2 address
+    // binding and SB-2 cross-session uniqueness check live in
+    // resolveSettlementEventIdentity: shape-valid legacy refs are intentionally
+    // still readable here, but they cannot mint an event identity by themselves.
+    if (txRefs && ctx.rail) {
+      const allowedKinds: Record<string, ReadonlySet<string>> = {
+        "evm-erc20": new Set(["evm", "evm-event"]),
+        "solana-spl": new Set(["solana", "solana-instruction"]),
+        "cross-chain-htlc": new Set([
+          "htlc-lock",
+          "htlc-reveal",
+          "htlc-claim",
+          "htlc-refund",
+        ]),
+        "cross-chain-liquidity-tank": new Set(["liquidity-tank"]),
+        ap2: new Set(["ap2"]),
+        x402: new Set(["x402", "x402-event"]),
+        "demos-native": new Set(["demos"]),
+      };
+      const pinnedNetwork = ctx.rail.network === undefined
+        ? undefined
+        : parsePinnedEvidenceNetwork(ctx.rail.network);
+      if (ctx.rail.network !== undefined && !pinnedNetwork) {
+        fail(
+          `rail network "${ctx.rail.network}" is not a canonical pinned ` +
+            `eip155, solana, or demos network`,
+        );
+      }
+      for (const t of txRefs) {
+        if (!isObj(t)) continue;
+        const allowed = ctx.rail.railType ? allowedKinds[ctx.rail.railType] : undefined;
+        if (allowed && (!isStr(t["kind"]) || !allowed.has(t["kind"]))) {
+          fail(
+            `paymentTxRef.kind "${String(t["kind"])}" is incoherent with rail type "${ctx.rail.railType}"`,
+          );
+        }
+        if (
+          pinnedNetwork &&
+          (t["kind"] === "evm" || t["kind"] === "evm-event")
+        ) {
+          if (
+            pinnedNetwork.kind !== "evm" ||
+            t["chainId"] !== pinnedNetwork.chainId
+          ) {
+            fail(
+              `paymentTxRef EVM chainId "${String(t["chainId"])}" does not ` +
+                `match pinned rail network "${ctx.rail.network}"`,
+            );
+          }
+        } else if (
+          pinnedNetwork &&
+          (t["kind"] === "solana" || t["kind"] === "solana-instruction")
+        ) {
+          if (
+            pinnedNetwork.kind !== "solana" ||
+            t["cluster"] !== pinnedNetwork.cluster
+          ) {
+            fail(
+              `paymentTxRef Solana cluster "${String(t["cluster"])}" does not ` +
+                `match pinned rail network "${ctx.rail.network}"`,
+            );
+          }
+        } else if (pinnedNetwork && t["kind"] === "demos") {
+          if (pinnedNetwork.kind !== "demos") {
+            fail(
+              `paymentTxRef Demos network does not match pinned rail network ` +
+                `"${ctx.rail.network}"`,
+            );
+          }
+        } else if (
+          pinnedNetwork &&
+          (t["kind"] === "x402" || t["kind"] === "x402-event") &&
+          t["chainId"] !== undefined &&
+          (pinnedNetwork.kind !== "evm" ||
+            t["chainId"] !== pinnedNetwork.chainId)
+        ) {
+          fail(
+            `paymentTxRef x402 chainId "${String(t["chainId"])}" does not ` +
+              `match pinned rail network "${ctx.rail.network}"`,
+          );
+        }
+      }
+    }
+
+    // ── HTLC route params (HTLC-7), only for a cross-chain-htlc phase ────────
+    if (phase === "pay-cross-chain-htlc" && ctx.rail) {
+      if (!isNum(ctx.rail.sourceFinalitySec)) fail("HTLC route MUST pin rail.sourceFinalitySec (HTLC-7)");
+      if (!isNum(ctx.rail.safetyWindowSec)) fail("HTLC route MUST pin rail.safetyWindowSec (HTLC-7)");
+      if (
+        ctx.htlcExpiry &&
+        isNum(ctx.rail.sourceFinalitySec) &&
+        isNum(ctx.rail.safetyWindowSec) &&
+        !(ctx.htlcExpiry.source > ctx.htlcExpiry.dest + ctx.rail.sourceFinalitySec + ctx.rail.safetyWindowSec)
+      ) {
+        fail("HTLC timelock margin insufficient: expiry_source ≤ expiry_dest + source_finality + safety (HTLC-7)");
+      }
     }
   }
 
   // ── Attestation ref (§7.5.2 content addressing) ─────────────────────────
   const scopeHash = contentHash(ev);
+  // Use the original wire spelling: CF-1 can normalize a legacy ID to ASCII.
   if (
+    !legacyJobId &&
     ctx.paymentAddress && isObj(ctx.paymentAddress) &&
     isStr(ctx.paymentAddress.railId) && ctx.paymentAddress.railId.length > 0 &&
     isSafeUint(ctx.paymentAddress.phaseIndex) &&
@@ -903,6 +964,12 @@ async function evaluateSettlementEvidence(
     );
   } else {
     const signer = sig.signer;
+    // DACS-2 §7.5.2(3): the attestation is this signed evidence, so a named
+    // reference signer that did not sign it is a mismatch.
+    if (ctx.attestationRef?.signer !== undefined &&
+        !sameCanonicalClaimIdentity(signer, ctx.attestationRef.signer)) {
+      fail("attestationRef.signer does not match the evidence signer");
+    }
     if (!isCanonicalClaimReference(signer)) {
       fail("evidence signer MUST be a canonical ClaimReference");
     }
@@ -972,6 +1039,8 @@ async function evaluateSettlementEvidence(
     }
   }
 
+  if (legacyJobId) reasons.push("legacy replay checks structure, content hash and signature only; no current DACS semantic conformance is reported");
+
   // ── Worst-wins verdict (error > indeterminate > fail > pass) ─────────────
   if (sawError) return { decision: "error", reasons };
   if (sawIndeterminate) return { decision: "indeterminate", reasons };
@@ -1018,4 +1087,26 @@ export async function verifySettlementEvidence(
     (deps ?? {}) as EvidenceDeps,
     true,
   );
+}
+
+/**
+ * Inspect historical signed evidence without granting current settlement
+ * authority. Legacy job IDs are admitted only here. Even a verified signature
+ * yields `valid`, never the trust-bearing `pass` decision.
+ */
+export async function inspectHistoricalSettlementEvidence(
+  record: unknown,
+  ctx: EvidenceContext,
+  deps: AuthenticatedEvidenceDeps,
+): Promise<EvidenceStructureValidation> {
+  const result = await evaluateSettlementEvidence(
+    record, (ctx ?? {}) as EvidenceContext,
+    (deps ?? {}) as EvidenceDeps, false, true,
+  );
+  return {
+    decision: result.decision === "pass" ? "valid"
+      : result.decision === "fail" ? "invalid"
+      : result.decision === "indeterminate" ? "incomplete" : "error",
+    reasons: result.reasons,
+  };
 }

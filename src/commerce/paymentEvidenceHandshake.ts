@@ -399,6 +399,10 @@ export interface BuyerPaymentEvidenceHandshakeOptions {
     }>,
     fence: Readonly<PaymentEvidenceAnchorFence>,
   ): Promise<PaymentEvidenceAnchorReconciliation> | PaymentEvidenceAnchorReconciliation;
+  /**
+   * Authenticate the finalized receipt. The core has already required any
+   * reference signer to be the evidence signer; this cannot admit another issuer.
+   */
   verifyAnchorReceipt(input: Readonly<{
     request: Readonly<PaymentEvidenceAnchorRequest>;
     completion: Readonly<PaymentEvidenceAnchorCompletion>;
@@ -418,6 +422,10 @@ export interface SellerPaymentEvidenceHandshakeOptions {
     completion: Readonly<PaymentEvidenceAnchorCompletion>,
     transportContext: unknown,
   ): Promise<PaymentEvidenceTransportAuthentication> | PaymentEvidenceTransportAuthentication;
+  /**
+   * Authenticate the finalized receipt. The core has already required any
+   * reference signer to be the evidence signer; this cannot admit another issuer.
+   */
   verifyAnchorReceipt(input: Readonly<{
     request: Readonly<PaymentEvidenceAnchorRequest>;
     completion: Readonly<PaymentEvidenceAnchorCompletion>;
@@ -885,10 +893,12 @@ function completionMatchesRequest(
     completion.evidenceRef.anchor.kind === "storage-program" &&
     completion.evidenceRef.anchor.locator === request.logicalAddress &&
     completion.evidenceRef.contentHash === request.evidenceHash &&
+    // DACS-2 §7.5.2(3): the buyer supplies this reference, so a signer it
+    // names must have the seller evidence signer's CF-3 identity.
     (completion.evidenceRef.signer === undefined ||
       sameCanonicalClaimIdentity(
         completion.evidenceRef.signer,
-        request.protocol.orchestrator,
+        request.evidence.signature.signer,
       )) &&
     completion.anchorReceipt.logicalAddress === request.logicalAddress &&
     completion.anchorReceipt.contentHash === request.evidenceHash &&
