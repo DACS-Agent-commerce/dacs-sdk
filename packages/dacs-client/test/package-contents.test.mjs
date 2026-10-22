@@ -63,8 +63,8 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
     '@kynesyslabs/dacs-client': 'file:' + join(directory, client.filename) };
   const manifest = { name: 'TEST-packed-buyer', private: true, type: 'module', dependencies };
   writeFileSync(join(app, 'package.json'), JSON.stringify(manifest));
-  // Reuse the repository's exact registry resolutions. npm ci caches the
-  // tarballs, so this acceptance test needs no registry metadata or network.
+  // Reuse the repository's exact registry resolutions and cached tarballs,
+  // falling back to the registry when this npm cache has not been populated.
   const lock = JSON.parse(readFileSync(join(sdkDir, 'package-lock.json')));
   lock.name = manifest.name;
   lock.packages[''] = manifest;
@@ -77,7 +77,7 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       dependencies: pkg.dependencies, peerDependencies: pkg.peerDependencies, peerDependenciesMeta: pkg.peerDependenciesMeta, engines: pkg.engines };
   }
   writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
-  run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
+  run('npm', ['ci', '--prefer-offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
   // This consumer has no source-tree imports or test database helper.
   writeFileSync(join(app, 'consumer.mjs'), `
     import assert from 'node:assert/strict';

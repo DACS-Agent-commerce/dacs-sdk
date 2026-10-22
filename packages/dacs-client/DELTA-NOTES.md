@@ -243,3 +243,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - Public diagnostics honor the resolved buyer capability, read only the recorded hash, and report a non-authorizing payer/payee/amount match. The closed-access exception remains available for an already reported hash.
 - Public purchase and protocol guidance describes held actions and historical state. Expired portal reads do not persist transitions. Optional inclusion timestamps are validated before use; reader failures preserve their cause.
 - The enabled deadline watch is explicit host bookkeeping; passing an unwired automatic-watch option is refused. Retained signing-key projections and purchase admission are unchanged.
+
+## D11 SQLite recovery and diagnostic consistency
+
+- SQLite recovery closes and retires a connection when rollback cannot complete. File-backed transaction tests cover automatic rollback, prepared statements, fresh-handle retry and persistence after reopen alongside recoverable nested failures.
+- Public portal and status reads share a read-only expiry projection. Diagnostic tuple matching accounts for the reader's source disposition, and retained reader errors use bounded text conversion.
+- Packed-consumer installation prefers cached locked tarballs and can download missing tarballs. The README describes connection recovery, diagnostic results and validation prerequisites.

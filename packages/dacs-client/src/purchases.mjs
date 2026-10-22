@@ -232,10 +232,18 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   function expireIfNeeded(operation) {
-    if ((operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now()) {
+    if (approvalElapsed(operation)) {
       return ops.transition(operation.id, operation.status, 'expired', { data: { reason: 'approval window elapsed' } });
     }
     return operation;
+  }
+
+  function approvalElapsed(operation) {
+    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now();
+  }
+
+  function projectExpiry(operation) {
+    return approvalElapsed(operation) ? { ...operation, status: 'expired' } : operation;
   }
 
   function selectWallet(accountId, requested) {
@@ -380,8 +388,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // persisting the transition (mutating paths persist it).
   function status(accountId, operationId) {
     const found = ownedPurchase(accountId, operationId);
-    const elapsed = (found.status === 'awaiting_approval' || found.status === 'agreement_pending') && Date.parse(found.expiresAt) <= now();
-    const operation = elapsed ? { ...found, status: 'expired' } : found;
+    const operation = projectExpiry(found);
     const coords = coordinates.get(operation.id);
     const approval = approvalFor.get(operation.id);
     return {
@@ -401,7 +408,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     const found = ops.getByHandoff(operationId, token);
     if (!found || found.kind !== 'purchase' || found.id !== operationId) throw new OperationError('not_found', 'unknown or invalid approval link');
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
-    return diagnosticOnly ? found : expireIfNeeded(found);
+    return diagnosticOnly ? projectExpiry(found) : expireIfNeeded(found);
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
@@ -886,6 +893,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     }
     return { operation, verification: { outcome: 'readback_only', authority: 'unqualified_host',
       observation, termsMatch: observation?.status === 'included'
+        && (!Object.hasOwn(observation, 'sourceDisposition') || observation.sourceDisposition === 'included')
         ? same(observation.payer, operation.terms.buyer.wallet) && same(observation.payee, operation.terms.seller.payee) && observation.amountOs === operation.terms.price.amountOs
         : null, ...OBSERVATION_LIMITS } };
   }
@@ -939,7 +947,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     try {
       observation = await (usesNativeAgreementPayment(operation) && chain.observePurchaseTransfer ? chain.observePurchaseTransfer(hash) : chain.observeTransfer(hash));
     } catch (error) {
-      observation = { status: 'unavailable', reason: error.message };
+      observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240) };
     }
     observation = checkedTransferObservation(observation, hash);
     let body = null, bodyError = null;

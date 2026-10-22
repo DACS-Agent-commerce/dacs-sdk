@@ -36,7 +36,10 @@ function database(t) {
   const path = join(dir, 'state.sqlite');
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE records (id TEXT PRIMARY KEY)');
-  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  t.after(() => {
+    try { db.close(); } catch (error) { assert.equal(error.code, 'ERR_INVALID_STATE'); }
+    rmSync(dir, { recursive: true, force: true });
+  });
   return { db, path };
 }
 test('concrete adapter commits nested writes and rolls back the original thrown error', t => {
@@ -67,6 +70,49 @@ for (const kind of ['throw', 'resolved-promise', 'rejected-promise']) {
     });
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(db.prepare('SELECT id FROM records ORDER BY id').all().map(row => row.id), ['TEST-after', 'TEST-outer']);
+  });
+}
+for (const kind of ['conflict', 'trigger']) {
+  test(`nested automatic rollback (${kind}) closes the connection before a catching outer body can write`, t => {
+    const { db, path } = database(t), store = createSqlitePurchaseStore();
+    db.exec("INSERT INTO records VALUES ('TEST-existing')");
+    if (kind === 'trigger') db.exec(`CREATE TRIGGER abort_insert BEFORE INSERT ON records
+      WHEN NEW.id = 'TEST-abort' BEGIN SELECT RAISE(ROLLBACK, 'TEST-trigger-rollback'); END`);
+    const insert = db.prepare('INSERT INTO records VALUES (?)');
+    const caught = fn => { try { fn(); } catch (error) { return error; } };
+    let innerError, directError, execError, nestedError, called = false, finished = false;
+    const outerError = caught(() => store.transaction(db, () => {
+      insert.run('TEST-outer');
+      innerError = caught(() => store.transaction(db, () => {
+        insert.run('TEST-inner');
+        if (kind === 'conflict') db.exec("INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')");
+        else insert.run('TEST-abort');
+      }));
+      directError = caught(() => insert.run('TEST-autocommit'));
+      execError = caught(() => db.exec("INSERT INTO records VALUES ('TEST-autocommit-exec')"));
+      nestedError = caught(() => store.transaction(db, () => { called = true; }));
+      // Catching all inner errors still cannot turn the outer call into success.
+      finished = true;
+      return 'TEST-caught';
+    }));
+    assert.equal(finished, true);
+    assert.ok(outerError);
+    assert.match(innerError.message, kind === 'conflict' ? /UNIQUE constraint/ : /TEST-trigger-rollback/);
+    assert.throws(() => db.prepare('SELECT 1'), /closed|not open/i, 'recovery failure closes the connection before returning the inner error');
+    assert.match(directError?.message ?? '', /closed|not open|finalized/i);
+    assert.match(execError?.message ?? '', /closed|not open/i);
+    assert.equal(nestedError?.code, 'client_not_wired');
+    assert.equal(called, false);
+    const reopened = new DatabaseSync(path);
+    try {
+      assert.deepEqual(reopened.prepare('SELECT id FROM records').all().map(row => row.id), ['TEST-existing']);
+      store.transaction(reopened, () => reopened.prepare('INSERT INTO records VALUES (?)').run('TEST-retry'));
+      assert.equal(reopened.prepare('SELECT count(*) n FROM records').get().n, 2);
+    } finally { reopened.close(); }
+    db.open();
+    called = false;
+    assert.throws(() => store.transaction(db, () => { called = true; }), { code: 'client_not_wired' });
+    assert.equal(called, false, 'the failed handle stays fenced even if the host reopens it');
   });
 }
 for (const rejected of [false, true]) {

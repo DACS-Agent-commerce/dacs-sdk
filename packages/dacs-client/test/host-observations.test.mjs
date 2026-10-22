@@ -214,8 +214,9 @@ for (const status of ['awaiting_approval', 'agreement_pending']) {
     const before = w.ops.get(w.op.accountId, w.op.id), history = w.ops.history(w.op.id), coords = w.coordinates.get(w.op.id);
     const token = w.ops.handoffTokenFor(w.op.id);
     const portal = w.purchases.portalOperation(w.op.id, token);
-    assert.deepEqual(portal, before);
+    assert.deepEqual(portal, { ...before, status: 'expired' });
     const read = w.purchases.status(w.op.accountId, w.op.id);
+    assert.deepEqual(portal, read.operation);
     assert.equal(read.operation.status, 'expired');
     assert.equal(read.approvalUrl, null);
     assert.match(read.next, /historical.*held/);
@@ -226,6 +227,33 @@ for (const status of ['awaiting_approval', 'agreement_pending']) {
     assert.deepEqual(w.ops.history(w.op.id), history);
     assert.deepEqual(w.coordinates.get(w.op.id), coords);
     assert.throws(() => w.purchases.portalOperation(w.op.id, 'TEST-wrong-token'), { code: 'not_found' });
+  });
+}
+
+for (const status of ['awaiting_approval', 'agreement_pending', 'approved', 'settled_verified']) {
+  test(`public portal/status preserve ${status} outside an elapsed approval window`, t => {
+    const w = world(t, INCLUDED, { publicApi: true });
+    const expiresAt = new Date(['approved', 'settled_verified'].includes(status) ? 0 : Date.now() + 3600000).toISOString();
+    w.db.prepare('UPDATE operations SET status=?, expires_at=? WHERE id=?').run(status, expiresAt, w.op.id);
+    const before = w.ops.get(w.op.accountId, w.op.id);
+    assert.deepEqual(w.purchases.portalOperation(w.op.id, w.ops.handoffTokenFor(w.op.id)), before);
+    assert.deepEqual(w.purchases.status(w.op.accountId, w.op.id).operation, before);
+  });
+}
+
+for (const sourceDisposition of [undefined, 'included', 'failed', 'pending', 'not-found', null]) {
+  test(`public native diagnostic terms match respects source disposition ${String(sourceDisposition)}`, async t => {
+    const w = world(t, INCLUDED, { publicApi: true, native: true });
+    const observation = { ...INCLUDED, ...(sourceDisposition === undefined ? {} : { sourceDisposition }) };
+    w.chain.observePurchaseTransfer = async () => observation;
+    w.chain.observeTransfer = async () => { throw new Error('TEST-wrong-reader'); };
+    const before = w.coordinates.get(w.op.id), history = w.ops.history(w.op.id);
+    const result = await w.verify();
+    assert.deepEqual(result.verification.observation, observation);
+    assert.equal(result.verification.termsMatch, sourceDisposition === undefined || sourceDisposition === 'included' ? true : null);
+    assert.deepEqual(w.coordinates.get(w.op.id), before);
+    assert.deepEqual(w.ops.history(w.op.id), history);
+    assert.equal(w.consumed(), 0);
   });
 }
 
@@ -268,6 +296,23 @@ for (const failure of [null, undefined, 'TEST-reader-failed']) {
       assert.equal(result.verification.termsMatch ?? null, null);
     });
   }
+}
+
+for (const failure of [null, undefined, 'TEST-reader-failed', new Error('TEST-long-'.repeat(100))]) {
+  test(`ordinary retained readback converts and bounds reader rejection ${String(failure).slice(0, 40)}`, async t => {
+    const w = world(t, INCLUDED);
+    const reader = w.chain.observeTransfer;
+    w.chain.observeTransfer = async () => { throw failure; };
+    const result = await w.verify();
+    assert.equal(result.verification.outcome, 'chain_unavailable');
+    assert.equal(result.verification.observation.status, 'unavailable');
+    assert.equal(result.verification.observation.reason, String(failure?.message ?? failure).slice(0, 240));
+    assert.equal(result.operation.status, 'broadcast_reported');
+    assert.equal(w.coordinates.get(w.op.id).reportedTxHash, HASH);
+    assert.equal(w.consumed(), 0);
+    w.chain.observeTransfer = reader;
+    assert.equal((await w.verify()).verification.outcome, 'verified');
+  });
 }
 
 test('inclusion time accepts epoch milliseconds and old malformed saved times render safely', async t => {

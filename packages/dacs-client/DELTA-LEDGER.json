@@ -1703,6 +1703,37 @@
           "after": "c0d259390c30873269d2a1c9b306b8867dcc63b0"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 preserve atomic rollback and consistent diagnostics",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f49c239f15c4a6af56b56a179fba840424b82c2d",
+          "after": "3f3422c49edbf1af5bc5249909032c49a6518c8e"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "fb2572f9cc687f812d0c29b3264b913f96d7fbaf",
+          "after": "3a70798e2e4bca6c1d8b9a9eb17756a9fae740d8"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "f36b23ae79db9a58b48efae0ad65acc6ce72eff9",
+          "after": "222356f64ecbf3d674e34685e4602f4f75f5653d"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "2fc3afd8f75c10c33f256e2f32abdf6b62985a6a",
+          "after": "e78ebdddeac6e94164a7e0a8e8d7109387c030f1"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "ab6e15a77a2fa3863da7a45fd7c057137bc9ed37",
+          "after": "9212823cdcedd1af814e8e6c06f164c69a84a938"
+        }
+      ]
     }
   ]
 }
