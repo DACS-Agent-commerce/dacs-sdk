@@ -40,6 +40,13 @@ failures are not failed cryptographic signatures.
 Canonicalization, schema checks, signed-scope selection, and signature and
 protocol verification remain subsequent operations.
 
+The held `packages/dacs-client` snapshot preserves these diagnostics for both
+Directory and storage Listing reads. Its HTTP wrapper retains the admission
+error's `code`, `stage`, and `cause`, and the Listing verifier propagates that
+error before subsequent reader and profile checks. JSON admission alone grants
+no purchase eligibility; the SDK profile gate still applies.
+The client package remains private with empty exports.
+
 Negative zero (for example `-0.0`) is an admitted CORE §B.2 number that
 serialises as `0`. The following APIs treat an admitted `-0` exactly like `0`,
 and their owned snapshots hold `0`: `contentHash`, `stripSignature`,
