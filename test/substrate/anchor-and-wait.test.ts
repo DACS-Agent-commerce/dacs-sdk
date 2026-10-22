@@ -1256,6 +1256,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     // an RPC envelope a client might keep.
     for (const payload of ["error", "Error in nodeCall: ", null, [], ...[undefined, null, "error", [], 0, false].map(response => ({ result: 200, response })),
       { result: 404, response: "block not found" },
+      { result: 404, response: null, extra: { reason: "not_found", checkedThroughBlock: 18172 } },
       { result: 400, response: "error", require_reply: false, extra: "db error" }]) {
       raw.getTxByHash.mockResolvedValueOnce(payload);
       await unanswered();
@@ -1301,6 +1302,104 @@ describe("DemosAdapter.anchorAndWait", () => {
     raw.storagePrograms.read.mockResolvedValueOnce({ success: true, storageAddress: receipt.nativeAddress,
       owner: wallet, programName: name, data: { value: 3 } });
     await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+  });
+
+  it.each([
+    "block membership", "block timestamp", "block hash", "block height", "block proof",
+    "native address", "native owner", "native program", "native data", "native metadata", "native provenance",
+    "transaction hash", "transaction height", "transaction content",
+  ] as const)("rejects an answered %s contradiction despite another unanswered read", async (variant) => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const name = "receipt-independent-record";
+    const value = { value: 1 };
+    const address = await adapter.anchorAddress(name);
+    vi.mocked(adapter.resolveAnchorByName)
+      .mockResolvedValueOnce({ status: "absent" }).mockResolvedValue({ status: "present", address });
+    const native = { success: true, storageAddress: address, owner: wallet, programName: name, data: value };
+    raw.storagePrograms.read.mockResolvedValue(native);
+    const anchored = await adapter.anchorWriteOnce(name, value, { timeoutMs: 1000, pollMs: 1 });
+    const receipt = demosWriteEvidenceToAnchorReceipt({ logicalAddress: name,
+      contentHash: contentHash(value), writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+      evidence: anchored.demosEvidence! });
+    const transaction = await raw.getTxByHash(receipt.transactionRef.value);
+    const block = await raw.getBlockByNumber(Number(receipt.blockRef!.height));
+    const changed = {
+      "block membership": { ...block, content: { ...block.content, ordered_transactions: [] } },
+      "block timestamp": { ...block, content: { ...block.content, timestamp: block.content.timestamp + 1 } },
+      "block hash": { ...block, hash: "another-block" },
+      "block height": { ...block, number: block.number + 1 },
+      "block proof": { ...block, validation_data: { signatures: ["another-validator-proof"] } },
+      "native address": { ...native, storageAddress: "another-address" },
+      "native owner": { ...native, owner: "another-owner" },
+      "native program": { ...native, programName: "another-program" },
+      "native data": { ...native, data: { value: 2 } },
+      "native metadata": { ...native, metadata: { changed: true } },
+      "native provenance": { ...native, createdByTx: "another-transaction", interactionTxs: ["another-transaction"] },
+      "transaction hash": { ...transaction, hash: "another-transaction" },
+      "transaction height": { ...transaction, blockNumber: transaction.blockNumber + 1 },
+      "transaction content": { ...transaction, content: { ...transaction.content, from: "another-writer" } },
+    }[variant]!;
+    // Exercise demosdk's stripped null reply, a retained node2 envelope and
+    // a thrown timeout: none may hide an independently answered contradiction.
+    for (const unavailable of [null,
+      { result: 404, response: null, extra: { reason: "not_found", checkedThroughBlock: block.number } },
+      new Error("receipt read timed out")]) {
+      const missing = variant.startsWith("transaction") ? raw.getBlockByNumber : raw.getTxByHash;
+      if (unavailable instanceof Error) missing.mockRejectedValueOnce(unavailable);
+      else missing.mockResolvedValueOnce(unavailable);
+      const answered = variant.startsWith("block") ? raw.getBlockByNumber
+        : variant.startsWith("native") ? raw.storagePrograms.read : raw.getTxByHash;
+      answered.mockResolvedValueOnce(changed);
+      await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(false);
+    }
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+  });
+
+  it("preserves matching partial observations and accepts equivalent consensus timestamps", async () => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const name = "receipt-allowed-observations";
+    const readBlock = raw.getBlockByNumber.getMockImplementation()!;
+    raw.getBlockByNumber.mockImplementation(async (height: number) => {
+      const block = await readBlock(height);
+      return { ...block, content: { ...block.content, timestamp: 1_700_000_000 } };
+    });
+    const value = { value: 1 };
+    const address = await adapter.anchorAddress(name);
+    vi.mocked(adapter.resolveAnchorByName)
+      .mockResolvedValueOnce({ status: "absent" }).mockResolvedValue({ status: "present", address });
+    raw.storagePrograms.read.mockResolvedValue({ success: true, storageAddress: address,
+      owner: wallet.toUpperCase(), programName: name, data: value });
+    const anchored = await adapter.anchorWriteOnce(name, value, { timeoutMs: 1000, pollMs: 1 });
+    const receipt = demosWriteEvidenceToAnchorReceipt({ logicalAddress: name,
+      contentHash: contentHash(value), writer: `did:demos:agent:${wallet.replace(/^0x/, "")}`,
+      evidence: anchored.demosEvidence! });
+    const block = await raw.getBlockByNumber(Number(receipt.blockRef!.height));
+    for (const content of [block.content, {}, { timestamp: block.content.timestamp },
+      { ordered_transactions: block.content.ordered_transactions }]) {
+      raw.getTxByHash.mockResolvedValueOnce(null);
+      raw.getBlockByNumber.mockResolvedValueOnce({ ...block, content });
+      await expect(adapter.verifyDemosAnchorReceipt(receipt)).rejects.toBeInstanceOf(IndeterminateSubstrateError);
+    }
+    // A lagging node can identify the same record before it has finality.
+    // Its pending status is not a mismatch in the immutable receipt bindings.
+    raw.getTxByHash.mockResolvedValueOnce(null);
+    raw.getBlockByNumber.mockResolvedValueOnce({ ...block, status: "pending", validation_data: undefined });
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).rejects.toBeInstanceOf(IndeterminateSubstrateError);
+    const transaction = await raw.getTxByHash(receipt.transactionRef.value);
+    raw.getTxByHash.mockResolvedValueOnce({ ...transaction, status: "pending", blockNumber: null });
+    raw.getBlockByNumber.mockResolvedValueOnce(null);
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).rejects.toBeInstanceOf(IndeterminateSubstrateError);
+    raw.getTxByHash.mockResolvedValueOnce({ result: 200, response: transaction });
+    raw.getBlockByNumber.mockResolvedValueOnce({ result: 200, response: {
+      ...block, content: { ...block.content, timestamp: receipt.blockRef!.timestamp },
+    } });
+    await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
+    // Older nodes omit provenance. Others retain this transaction in the
+    // interaction history even when the primary provenance points elsewhere.
+    raw.storagePrograms.read.mockResolvedValueOnce({ success: true, storageAddress: address,
+      owner: wallet, programName: name, data: value, metadata: null,
+      createdByTx: "earlier-transaction", interactionTxs: [receipt.transactionRef.value] });
     await expect(adapter.verifyDemosAnchorReceipt(receipt)).resolves.toBe(true);
   });
 

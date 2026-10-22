@@ -10,7 +10,9 @@ and payment-evidence handshake stores plus durable authenticated HTTP inbox and
 outbox records. It also provides the bounded HTTP listener and durable client
 that operate those stores, authority-separated live role services, and strict
 role-local secret loading. Generated deployment remains a separate stacked
-implementation unit.
+implementation unit. Built-in live completion supports empty Vet requirements
+only. Non-empty passing requirements require a provenance-backed completion
+audit implementation beyond the built-in live profile.
 
 ```ts
 import {
@@ -45,12 +47,21 @@ authority returns (`DACS_STANDARD_PROFILE_STATUS` is `"unreleased-candidate"`).
 The four live factories refuse to build without an admission authority, and
 every live action they build is admitted first. BundleBinding resolution, Demos
 publication and `verifyFixedPricePayDemAuditCompletion` require admission too.
-So the native DEM and x402 live paths take no effect at this pin. The exported
+The admitted factories and generated commerce graphs therefore take no live
+effect at this pin. The lower-level exported `createDacs{Buyer,Seller}LiveCommerceAssemblyV1`
+and `createDacs{Buyer,Seller}PayDemLiveCommerceAssemblyV1` do not perform profile
+admission themselves; direct callers must admit the session before invoking
+their agreement or payment operations. The exported
 `verifyCompletedTwoSidedSession` and `verifyFixedPriceX402AuditCompletion` gates
 admit only when their caller supplies `authenticateSessionProfile`. A caller that
 leaves it out gets no profile admission from them, and an unreleased profile does
 not stop them returning `audit-complete`. A host that calls them directly must
 pass its own admission.
+
+The BundleBinding well-known index uses `sha256-` followed by SHA-256 of the
+RFC 8785 canonical JSON index document for `indexHash`. The pinned Standard
+does not define that computation; deployments must agree on this SDK convention
+until the Standard specifies an interoperable index digest.
 
 `createDacsSessionProfileGatedCommerceGraphV1` builds a live graph only when
 `dacsLiveSessionProfileAvailabilityV1` reports admission is possible. Otherwise
@@ -63,7 +74,12 @@ re-reads the operator's statement in `DACS_SESSION_PROFILE_ADMISSION_FILE`
 to the configured buyer and seller authorities. Docker projects mount
 `DACS_SESSION_PROFILE_ADMISSION_DIRECTORY` read-only and read its `admission.json`
 at `/run/dacs/session-profile/admission.json`. Local projects use the file path
-directly. Missing or unreadable files remain retryable at action time.
+directly. Missing or unreadable files remain retryable at action time. After
+the profile is released, if the file is unavailable when the gated graph starts,
+restore it and restart the service to build the live graph. The file statement attests both configured
+participants locally; it does not independently discover a remote deployment's
+Standard pin. Cross-organisation operators must authenticate that pin through
+their own admission authority.
 When the release is cut, the
 pin and that status move to it together. Orders and
 databases bound to the historical
@@ -71,6 +87,11 @@ databases bound to the historical
 there is no automatic migration or relabelling of signed evidence. Retain the
 original database and use its matching SDK release to recover historical work.
 Start current-profile work in a new database.
+
+Coordinator tracks now retain `pausedSince` while using SQLite schema version 8.
+An older SDK may reject those track records as corrupt; rollback with an existing
+database is unsupported. Retain a matching SDK and read-only database snapshot
+for recovery instead of opening the current database with an older SDK.
 
 The SQLite database is permanently bound to one mode/profile, actor role,
 authority, SDK version, and Standard revision. The SDK and Standard revisions

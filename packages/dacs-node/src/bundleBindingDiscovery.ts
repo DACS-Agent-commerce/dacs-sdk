@@ -40,7 +40,9 @@ function bindingsOf(document: unknown): readonly unknown[] {
 /**
  * DACS-1 §6.3.5: the optional `dacs.bundleBindings` block of a party's
  * `/.well-known/agent.json`, pointing to `{ "bindings": BundleBinding[] }`
- * whose canonical form must match `indexHash`. A card without the block
+ * whose canonical form must match `indexHash`. This SDK uses sha256 of the
+ * RFC 8785 canonical index document with a `sha256-` prefix; the pinned Standard
+ * leaves that digest computation unspecified. A card without the block
  * answers with no bindings.
  */
 export function createWellKnownBundleBindingSurfaceV1(options: Readonly<{
