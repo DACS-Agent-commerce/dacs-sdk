@@ -10,29 +10,35 @@ const ROOT = {
     'demDeliveryContextUsage', 'isDemDeliveryContextAuthority', 'createDemosSr2WalletBridge', 'isDevnetAgreementTransport',
     'isDevnetNativeTransport', 'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence'],
-  classes: ['NotConfiguredError', 'OutboundError'],
+  classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
+    'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
   values: ['PURCHASE_STATUS_HELP', 'DEM_DECIMAL', 'OS_INTEGER', 'vetNotPerformedRef', 'AGREEMENT_CONTEXT_SOURCE', 'DEM_DELIVERY_CONTEXT_SOURCE',
     'SR2_WALLET_KIND', 'DEVNET_AGREEMENT_KIND', 'DEVNET_AGREEMENT_PROFILE', 'DEVNET_NATIVE_BINDING_PATH', 'DEVNET_NATIVE_RPC_PATH', 'SDK_PROVENANCE'],
 };
 const modules = {
   "purchases.mjs": "createPurchaseService purchaseNext PURCHASE_STATUS_HELP networkIdentityLabel",
-  "dacs/protocol-purchases.mjs": "createProtocolPurchases protocolView usesAgreementContext usesNativeDemDelivery",
+  "dacs/protocol-purchases.mjs": "createProtocolPurchases protocolView usesAgreementContext usesNativeDemDelivery StaleProtocolCheck",
   "dacs/delivery-deadline-watch.mjs": "createDeliveryDeadlineWatch",
   "dacs/wallet-transactions.mjs": "createCoordinateStore",
   "dacs/directory.mjs": "createDirectoryClient",
   "dacs/verification.mjs": "createListingVerifier NotConfiguredError",
   "dacs/chain.mjs": "createDemosChainReader DEM_DECIMAL OS_INTEGER",
   "dacs/purchase-protocol.mjs": "deliveryEvidenceAddress vetNotPerformedRef",
-  "dacs/seller-http.mjs": "sellerFailureCause",
+  "dacs/seller-http.mjs": "sellerFailureCause SellerRefusedError SellerUnavailableError SellerTlsUnusableError",
   "dacs/native-payment-evidence-consumer.mjs": "usesNativePaymentEvidence",
   "dacs/agreement-context-consumer.mjs": "AGREEMENT_CONTEXT_SOURCE isOperatorContextAuthority",
   "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority",
-  "dacs/demos-sr2-wallet-bridge.mjs": "createDemosSr2WalletBridge SR2_WALLET_KIND",
+  "dacs/demos-sr2-wallet-bridge.mjs": "createDemosSr2WalletBridge SR2_WALLET_KIND DemosSr2BridgeError",
   "wallet/devnet-native-transport.mjs": "isDevnetAgreementTransport isDevnetNativeTransport rpcAuthRefusal transferRefusal DEVNET_AGREEMENT_KIND DEVNET_AGREEMENT_PROFILE DEVNET_NATIVE_BINDING_PATH DEVNET_NATIVE_RPC_PATH",
   "dacs/seller-session-lifecycle.mjs": "sellerSessionTransitionState",
   "util/purchase-readback-cache.mjs": "createPurchaseReadbackCache",
   "util/http.mjs": "OutboundError",
   "dacs/listing.mjs": "canonicalize contentHash normalizeDemAmount SDK_PROVENANCE logicalListingAddress verifyComponent",
+  "dacs/demos-sr2-adapter.mjs": "DemosSr2Error",
+  "dacs/network-binding.mjs": "NetworkBindingError",
+  "dacs/buyer-chain-readback.mjs": "BuyerChainReadbackUnsupported",
+  "client-errors.mjs": "OperationError NotWiredError",
+  "signatures.mjs": "WalletFormatError",
   "buyer-funding.mjs": "fundingHelpSentence"
 };
 
@@ -63,25 +69,36 @@ for (const subpath of ['src/purchases.mjs', 'src/config.mjs', 'util/http', 'brow
   });
 }
 
-test('publishable manifest uses the release version and exact public boundary', async () => {
+test('candidate manifest uses release metadata and the exact public boundary', async () => {
   const client = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs-client'))));
   const core = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs'))));
   assert.notEqual(client.private, true);
   assert.equal(client.type, 'module');
   assert.equal(client.version, core.version);
-  assert.deepEqual(client.dependencies, { '@kynesyslabs/dacs': core.version });
+  assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
+  assert.equal(client.dependencies, undefined);
   assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs' });
-  assert.deepEqual(client.files, ['src', 'README.md', 'LICENSE']);
-  assert.equal(client.publishConfig.access, 'public');
+  assert.equal(client.publishConfig, undefined, 'release-set admission is pending');
+  assert.deepEqual(client.repository, { type: 'git', url: core.repository.url, directory: 'packages/dacs-client' });
+  assert.equal(client.bugs.url, core.bugs.url);
+  assert.match(client.homepage, /packages\/dacs-client#readme$/);
 });
 
 test('root import never loads SQLite', () => {
-  const script = `import { registerHooks } from 'node:module';
-    registerHooks({ resolve(specifier, context, next) {
-      if (specifier === 'node:sqlite') throw new Error('unexpected SQLite import');
-      return next(specifier, context);
-    }});
+  const loader = `export async function resolve(specifier, context, next) {
+    if (specifier === 'node:sqlite') throw new Error('unexpected SQLite import');
+    return next(specifier, context);
+  }`;
+  const script = `import { register } from 'node:module';
+    register('data:text/javascript,' + encodeURIComponent(${JSON.stringify(loader)}), import.meta.url);
     await import('@kynesyslabs/dacs-client');`;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', cwd: process.cwd() });
   assert.equal(child.status, 0, child.stdout + child.stderr);
+});
+
+test('public refusals retain the exported error identity', async () => {
+  const client = await import('@kynesyslabs/dacs-client');
+  assert.throws(() => client.createProtocolPurchases({}), error => error instanceof client.NotWiredError && error instanceof client.OperationError);
+  const buyer = client.createProtocolPurchases({ store: { transaction: (_db, fn) => fn(), isUniqueViolation: () => false } });
+  assert.throws(() => buyer.prepareTerms({}), error => error instanceof client.OperationError && error.code === 'profile_not_admitted');
 });

@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "ec61cd9d6e253e0d38c22efb2086a45723918637"
+        "blob": "fef1db183e3e907627ba2febc8021379d7fd739e"
       },
       "DELTA-LEDGER.json": {
-        "blob": "b9a0158a8acaef730809aee0137f11e38d04564e"
+        "blob": "9d27d0b7a4dbabcd92d1325726bac7f38e322666"
       },
       "DELTA-MAP.md": {
-        "blob": "ecb874d0cb290bd8a7c091f75ba869c80548dbb4"
+        "blob": "45bbbea10d2e43708ce94681abe03f6dceb17ee8"
       },
       "DELTA-NOTES.md": {
-        "blob": "ec1b245f9007375bef1737e6897c09df725f6b48"
+        "blob": "111563b00f9a8e65eb918659b058c951010ec5c3"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "26df90ed713a5722ff65d47ed373bab866649b65"
+        "blob": "767d9c27266d6c9b332462d252b702b8f01fc71a"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1030,11 +1030,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "22b10c8ee9a1be19e448384ee0a813bc23b2af77"
+        "blob": "0141bbe0fc2f7a388ca179ff552477858bd2a6fc"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "679daf3a6582e2de695e67ad206441c4b5b33cdf"
+        "blob": "709695a029779e5b31c381998ec7b660cd873473"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1130,7 +1130,7 @@
         "blob": "c91e7f4769c14fa8b8306ef38647c65230cce881"
       },
       "src/dacs/listing.mjs": {
-        "blob": "1241256345f2f48584566926616d89ec43e7e831"
+        "blob": "40f44cef846981dd2d87bd4654e8192b8e784ac6"
       },
       "src/dacs/native-agreement-payment-consumer.mjs": {
         "blob": "9a0967034f9bad78b2c03836343926dce0a537f6"
@@ -1145,7 +1145,7 @@
         "blob": "a97ba79759d398277adb6a316c74112aa8d2a240"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "d4d98b62c5e3ac90ed8f4a9a265e2956802ae8e5"
+        "blob": "3ec5ce19ae5042e26e22efe57de0f3551cfd4029"
       },
       "src/dacs/purchase-protocol.mjs": {
         "blob": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b"
@@ -1205,13 +1205,13 @@
         "blob": "339752ef02b10b9f2740e833f9b6a1be239ed2b8"
       },
       "src/index.mjs": {
-        "blob": "538928ef8a691684d87066133fea0286c05d90f4"
+        "blob": "b6ee076fbf6c024a1cb488b8e59cd02ad87c55da"
       },
       "src/public/portal-intent/intent.mjs": {
         "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
       },
       "src/public/portal/embedded-wallet/sdk-provider.mjs": {
-        "blob": "b7183e63a75b68cda34c2b30a4d532963794b13f"
+        "blob": "637c92e141d460b6a6b6e35fd65ed5e94767fd18"
       },
       "src/public/portal/seller-session-delegation.mjs": {
         "blob": "ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42"
@@ -1220,13 +1220,13 @@
         "blob": "e57dba177ef9a6ae96f696d2f6b1aa4fc9ceabec"
       },
       "src/purchases.mjs": {
-        "blob": "541b61d7a3ffff50ee61161d33257ab135bd40b2"
+        "blob": "ab7661e952a984eb711fd041497949e5f5239d0b"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
       },
       "src/seams/purchase-store-not-wired.mjs": {
-        "blob": "8614e7c371643a855c65589d9ab3788c94a1702c"
+        "blob": "9af6dee1556c940482e4dff7100d07a6fdacb8bf"
       },
       "src/seams/seller-integration-not-wired.mjs": {
         "blob": "33272ef99fd990d05b4badfcc30e0c955ff13c3f"
@@ -1256,10 +1256,13 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "941c53a69f951f1dc2a6336c0b7df1c025606a5d"
+        "blob": "ecab598d2695975c776aaddd6038e71db5432f6f"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
+      },
+      "src/wallet/payload-helpers.mjs": {
+        "blob": "89d097c2d72b9e6a9404be2a3319cb5792f3679b"
       },
       "test/buyer-chain-indeterminate.test.mjs": {
         "blob": "5e2e079c0c7bcb73c0711d0c825f54e6dc72dd6d"
@@ -1268,10 +1271,10 @@
         "blob": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
       },
       "test/d11-purchase-actions.test.mjs": {
-        "blob": "01d1783b61bcb6d5328436e574322006cf6b9f34"
+        "blob": "475c49173398676ca8097cba29a5f51226c8c6d3"
       },
       "test/d11-seam-parameters.test.mjs": {
-        "blob": "ea5b81bd70eb7336933c9a098a0ae48e5cc642f3"
+        "blob": "a190884d5fdc2b7b302a5b01b00e0eb7573da4d3"
       },
       "test/delivery-access-model.test.mjs": {
         "blob": "478a2e3976a84f76d8d5afc0cc480e7674c8d32d"
@@ -1588,11 +1591,14 @@
       "test/native-stage-help.test.mjs": {
         "blob": "fd8943b54a6e03026a28eafeaa992de1d66d2fdc"
       },
+      "test/package-contents.test.mjs": {
+        "blob": "66f72d26900a14d77ba2f82336ea0cdd7d61997d"
+      },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
       },
       "test/public-api.test.mjs": {
-        "blob": "bf5273e1ee3a55e417b891a04110f27c23cc6650"
+        "blob": "81d21ca67b218c48f96968961363b54ebd985e35"
       },
       "test/purchase-executed-only.test.mjs": {
         "blob": "4ec34580242522b7dd18b98233d911029ae4e143"
@@ -1613,7 +1619,7 @@
         "blob": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
       },
       "test/sweep-contracts.test.mjs": {
-        "blob": "2ff0ad8abdbb060c2651be671a9f3bd254e1c1b9"
+        "blob": "24364d91175a246788e23c7a468f36e211ec2121"
       }
     },
     "plannedRepins": {

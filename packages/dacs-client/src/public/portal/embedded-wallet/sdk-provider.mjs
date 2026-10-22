@@ -102,12 +102,8 @@ const HELD_MESSAGE = 'Testnet writes are held for the required independent secur
 const EVIDENCE_LABEL = 'SIMULATED loopback fixture (not Demos testnet; no real funds)';
 const SENDING_NOTE = 'Signed in this page, validated by the node, then broadcast exactly once. Never retried automatically; the server confirms the result from its own chain readback.';
 
-export class EmbeddedWalletError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
-}
+import { EmbeddedWalletError, nativePayloadDigest, storageConfirmationShapeMatches } from '../../../wallet/payload-helpers.mjs';
+export { EmbeddedWalletError, nativePayloadDigest, storageConfirmationShapeMatches };
 
 function ok(data) {
   return { success: true, data, error: null };
@@ -420,27 +416,7 @@ function anchorJson(value, depth = 0, ancestors = new Set()) {
   return result;
 }
 
-// The identity of one prepared native transfer, shared with the operator's
-// source (devnet-native-transport.mjs): the SHA-256 of the canonical JSON of
-// every field Demos.sign keeps as prepared (type, from, to, amount, data,
-// nonce, timestamp; it fills the fee, balance edits, hash and signature), so
-// the signed transaction carries the same digest as its payload.
-export async function nativePayloadDigest(content) {
-  const address = (v) => (typeof v === 'string' ? `0x${v.toLowerCase().replace(/^0x/, '')}` : null);
-  return sha256HexOfText(anchorJson({ type: content?.type ?? null, from: address(content?.from), to: address(content?.to), amount: content?.amount ?? null,
-    data: content?.data ?? null, nonce: content?.nonce ?? null, timestamp: content?.timestamp ?? null }));
-}
-
 const hasKeys = (value, keys) => isPlainObject(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
-
-// Shared by the original wallet approval and server-side identical recovery.
-export function storageConfirmationShapeMatches(data) {
-  return hasKeys(data?.transaction, ['content', 'signature', 'hash', 'status', 'blockNumber'])
-    && Object.keys(data).every((k) => ['valid', 'reference_block', 'message', 'gas_operation', 'transaction', 'custom_charges'].includes(k))
-    && data.custom_charges == null
-    && (data.gas_operation == null || (hasKeys(data.gas_operation, ['fees'])
-      && hasKeys(data.gas_operation.fees, ['network_fee', 'rpc_fee', 'additional_fee'])));
-}
 
 const ANCHOR_FIELDS = ['kind', 'profile', 'network', 'owner', 'artifactKind', 'jobId', 'logicalAddress', 'contentHash', 'envelopeHash', 'transaction'];
 const ANCHOR_CONTENT_FIELDS = ['type', 'from', 'to', 'amount', 'data', 'nonce', 'timestamp', 'transaction_fee', 'network', 'chainIdentity'];

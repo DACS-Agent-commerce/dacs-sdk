@@ -260,14 +260,15 @@ export class StaleProtocolCheck extends OperationError {
 // that need one refuse with buyer_access_closed).
 export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null }) {
   const { transaction } = purchaseStore(store);
+  if (dacsProtocol?.buyerAccess !== undefined) throw new TypeError('buyerAccess moved to the top-level createProtocolPurchases option');
   if (buyerAccess !== null && (typeof buyerAccess?.assertWallet !== 'function' || Object.prototype.toString.call(buyerAccess.assertWallet) === '[object AsyncFunction]')) throw new NotWiredError('buyer-access-not-wired');
   const commitOnSignature = commitOnSignatureConfig(dacsProtocol?.commitOnSignature);
   const assertBuyerAccess = (wallet, operation = null) => {
     if(!buyerAccess && (dacsProtocol?.nativeSellerCommitment || operation?.terms?.protocol?.sellerCommitment === DEVNET_NATIVE_COMMITMENT_MARKER))
       throw new OperationError('buyer_access_closed','operator buyerAccess capability is missing; nothing was signed or sent',{buyerAccessMissing:true});
     const checked = buyerAccess?.assertWallet(wallet);
-    if (checked && typeof checked.then === 'function') {
-      Promise.resolve(checked).catch(() => {});
+    if (checked !== undefined) {
+      if (checked && typeof checked.then === 'function') Promise.resolve(checked).catch(() => {});
       throw new NotWiredError('buyer-access-not-wired');
     }
   };

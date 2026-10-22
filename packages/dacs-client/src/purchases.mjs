@@ -27,7 +27,8 @@
 // finalized commitment is read back, re-read it before approval and before
 // handoff, and continue after settled_verified with the seller's payment
 // claim, DACS-4 evidence, delivery and DACS-5 copies (operation.state.protocol).
-// Legacy purchases (no terms.protocol) are unchanged.
+// All approval and payment handoffs, including legacy purchases without
+// terms.protocol, remain held by the package's purchase-action admission.
 import { createHash } from 'node:crypto';
 import { contentHash, canonicalize } from './dacs/listing.mjs';
 import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
@@ -42,6 +43,7 @@ import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymen
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
 import { PURCHASE_LIMITS } from './purchase-limits.mjs';
 import { buyerFundingError } from './buyer-funding.mjs';
+import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
 
 export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1';
 export const PURCHASE_RAIL = 'demos-native:DEM';
@@ -411,6 +413,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function issueApprovalChallenge({ operationId, token, address }) {
+    assertPurchaseActionsAdmitted();
     let operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     if (operation.status !== 'awaiting_approval') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
@@ -455,6 +458,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function approve({ operationId, token, challengeId, signature }) {
+    assertPurchaseActionsAdmitted();
     const operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     if (operation.status !== 'awaiting_approval') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
@@ -473,11 +477,13 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // same payload only while the nonce fence proves nothing was consumed and
   // the configured RPC is still the bound network.
   async function prepareHandoff({ operationId, token }) {
+    assertPurchaseActionsAdmitted();
     const operation = portalOperation(operationId, token);
     if (usesNativeAgreementPayment(operation)) return protocol.withNativePaymentLane(operation, () => prepareHandoffCore({ operationId, token }));
     return prepareHandoffCore({ operationId, token });
   }
   async function prepareHandoffCore({ operationId, token }) {
+    assertPurchaseActionsAdmitted();
     let operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     const t = operation.terms;

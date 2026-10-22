@@ -120,3 +120,54 @@ test('deadline observation uses the injected transaction and refuses a stale rep
   assert.equal(writes, 1);
   assert.equal(current.state.protocol.deliveryDeadline.overdue.disposition, 'indeterminate');
 });
+
+for (const transaction of [async () => {}, function* () {}, async function* () {}]) {
+  test(`non-synchronous transaction refuses all factories: ${transaction.constructor.name}`, () => {
+    const bad = { transaction, isUniqueViolation: () => false };
+    assert.throws(() => purchaseStore(bad), notWired('purchase-store-not-wired'));
+    assert.throws(() => createPurchaseService({ db: untouched, store: bad, purposes }), notWired('purchase-store-not-wired'));
+    assert.throws(() => createProtocolPurchases({ db: untouched, store: bad }), notWired('purchase-store-not-wired'));
+    assert.throws(() => createDeliveryDeadlineWatch({ db: untouched, store: bad }), notWired('purchase-store-not-wired'));
+  });
+}
+
+for (const rejected of [false, true]) {
+  test(`a disguised async transaction refuses synchronously and drains rejection=${rejected}`, async () => {
+    const seam = purchaseStore({ transaction: () => rejected ? Promise.reject(new Error('TEST-store-refusal')) : Promise.resolve('TEST'),
+      isUniqueViolation: () => false });
+    assert.throws(() => seam.transaction(null, () => 'TEST'), notWired('purchase-store-not-wired'));
+    await new Promise(resolve => setImmediate(resolve));
+  });
+}
+
+for (const topLevel of [undefined, { assertWallet() {} }]) {
+  test('the old buyer-access location refuses even if a top-level capability is supplied', () => {
+    assert.throws(() => createProtocolPurchases({ db: untouched, ops: untouched, coordinates: untouched, store,
+      buyerAccess: topLevel, dacsProtocol: { buyerAccess: { assertWallet() { throw new Error('TEST-closed'); } } } }),
+      error => error instanceof TypeError && /buyerAccess.*top.level/.test(error.message));
+  });
+}
+
+for (const assertWallet of [() => false, () => true, function* () { throw new Error('TEST-closed'); }, async function* () { throw new Error('TEST-closed'); }]) {
+  test(`non-assertion buyer capability cannot admit a wallet: ${assertWallet.constructor.name}`, () => {
+    const buyer = createProtocolPurchases({ db: {}, ops: {}, coordinates: {}, store, buyerAccess: { assertWallet } });
+    assert.throws(() => buyer.assertBuyerAccess('TEST-wallet'), notWired('buyer-access-not-wired'));
+  });
+}
+
+test('package wallet helpers preserve the provider digest and confirmation contract', async () => {
+  const helpers = await import('../src/wallet/payload-helpers.mjs');
+  const content = { type: 'native', from: 'A'.repeat(64), to: '0x' + 'b'.repeat(64), amount: 1,
+    data: ['native', { args: [] }], nonce: 7, timestamp: 1 };
+  const signed = { ...content, from: '0x' + 'a'.repeat(64), transaction_fee: {}, gcr_edits: [], from_ed25519_address: 'TEST' };
+  const digest = '69d081b66d283d0725b719066932eda8a47a3e0d0eedbec4dd8ab659e0fd6e33';
+  assert.equal(await wallet.nativePayloadDigest(content), digest);
+  assert.equal(await helpers.nativePayloadDigest(signed), digest);
+  assert.equal(await helpers.nativePayloadDigest(content), digest);
+  assert.notEqual(await helpers.nativePayloadDigest({ ...content, nonce: 8 }), digest);
+  for (const confirmation of [null, {}, { transaction: {} },
+    { transaction: { content: {}, signature: {}, hash: 'TEST', status: 'confirmed', blockNumber: 1 } },
+    { transaction: { content: {}, signature: {}, hash: 'TEST', status: 'confirmed', blockNumber: 1 }, custom_charges: [] }]) {
+    assert.equal(helpers.storageConfirmationShapeMatches(confirmation), wallet.storageConfirmationShapeMatches(confirmation));
+  }
+});

@@ -1305,6 +1305,77 @@
           "after": "2ff0ad8abdbb060c2651be671a9f3bd254e1c1b9"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 close legacy actions and tighten buyer package contracts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/listing.mjs",
+          "before": "1241256345f2f48584566926616d89ec43e7e831",
+          "after": "40f44cef846981dd2d87bd4654e8192b8e784ac6"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "d4d98b62c5e3ac90ed8f4a9a265e2956802ae8e5",
+          "after": "3ec5ce19ae5042e26e22efe57de0f3551cfd4029"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "538928ef8a691684d87066133fea0286c05d90f4",
+          "after": "b6ee076fbf6c024a1cb488b8e59cd02ad87c55da"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "b7183e63a75b68cda34c2b30a4d532963794b13f",
+          "after": "637c92e141d460b6a6b6e35fd65ed5e94767fd18"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "541b61d7a3ffff50ee61161d33257ab135bd40b2",
+          "after": "ab7661e952a984eb711fd041497949e5f5239d0b"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "8614e7c371643a855c65589d9ab3788c94a1702c",
+          "after": "9af6dee1556c940482e4dff7100d07a6fdacb8bf"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "941c53a69f951f1dc2a6336c0b7df1c025606a5d",
+          "after": "ecab598d2695975c776aaddd6038e71db5432f6f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": null,
+          "after": "89d097c2d72b9e6a9404be2a3319cb5792f3679b"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": "01d1783b61bcb6d5328436e574322006cf6b9f34",
+          "after": "475c49173398676ca8097cba29a5f51226c8c6d3"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "ea5b81bd70eb7336933c9a098a0ae48e5cc642f3",
+          "after": "a190884d5fdc2b7b302a5b01b00e0eb7573da4d3"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": null,
+          "after": "66f72d26900a14d77ba2f82336ea0cdd7d61997d"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "bf5273e1ee3a55e417b891a04110f27c23cc6650",
+          "after": "81d21ca67b218c48f96968961363b54ebd985e35"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "2ff0ad8abdbb060c2651be671a9f3bd254e1c1b9",
+          "after": "24364d91175a246788e23c7a468f36e211ec2121"
+        }
+      ]
     }
   ]
 }

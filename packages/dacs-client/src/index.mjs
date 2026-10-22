@@ -16,5 +16,13 @@ export { isDevnetAgreementTransport, isDevnetNativeTransport, rpcAuthRefusal, tr
 export { sellerSessionTransitionState } from './dacs/seller-session-lifecycle.mjs';
 export { createPurchaseReadbackCache } from './util/purchase-readback-cache.mjs';
 export { OutboundError } from './util/http.mjs';
+export { OperationError, NotWiredError } from './client-errors.mjs';
+export { StaleProtocolCheck } from './dacs/protocol-purchases.mjs';
+export { SellerRefusedError, SellerUnavailableError, SellerTlsUnusableError } from './dacs/seller-http.mjs';
+export { DemosSr2BridgeError } from './dacs/demos-sr2-wallet-bridge.mjs';
+export { DemosSr2Error } from './dacs/demos-sr2-adapter.mjs';
+export { NetworkBindingError } from './dacs/network-binding.mjs';
+export { BuyerChainReadbackUnsupported } from './dacs/buyer-chain-readback.mjs';
+export { WalletFormatError } from './signatures.mjs';
 export { canonicalize, contentHash, normalizeDemAmount, SDK_PROVENANCE, logicalListingAddress, verifyComponent } from './dacs/listing.mjs';
 export { fundingHelpSentence } from './buyer-funding.mjs';

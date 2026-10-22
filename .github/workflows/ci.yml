@@ -90,6 +90,15 @@ jobs:
           (cd "$smoke_root/app" && node --input-type=module -e "if (!import.meta.resolve('@kynesyslabs/demosdk/websdk')) process.exit(1)")
           "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.live.json"
 
+      - name: Package smoke (buyer root, including Node 20.19.0)
+        run: |
+          client_smoke="$RUNNER_TEMP/dacs-client-smoke"
+          mkdir -p "$client_smoke/app"
+          npm pack --ignore-scripts --pack-destination "$client_smoke"
+          npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_smoke"
+          npm install --prefix "$client_smoke/app" --no-audit --ignore-scripts --omit=optional "$client_smoke"/*.tgz
+          (cd "$client_smoke/app" && node --input-type=module -e "const c = await import('@kynesyslabs/dacs-client'); if (typeof c.createPurchaseService !== 'function' || typeof c.NotWiredError !== 'function') process.exit(1)")
+
       - name: Package smoke (Node host kit boundary)
         run: |
           mkdir -p host-package-smoke/app

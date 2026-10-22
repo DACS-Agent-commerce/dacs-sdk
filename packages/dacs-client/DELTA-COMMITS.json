@@ -651,5 +651,34 @@
       "packages/dacs-client/test/readback-review-decisions.test.mjs",
       "packages/dacs-client/test/sweep-contracts.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 close legacy actions and tighten buyer package contracts",
+    "files": [
+      ".github/workflows/ci.yml",
+      "package-lock.json",
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/listing.mjs",
+      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "packages/dacs-client/src/wallet/payload-helpers.mjs",
+      "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+      "packages/dacs-client/test/package-contents.test.mjs",
+      "packages/dacs-client/test/public-api.test.mjs",
+      "packages/dacs-client/test/sweep-contracts.test.mjs"
+    ]
   }
 ]

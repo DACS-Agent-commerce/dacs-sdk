@@ -1,9 +1,8 @@
 // Host-supplied store and approval challenges exercise the actual service.
-// No signature or transfer is produced; wallet answers are TEST-only strings.
+// Public actions must refuse before approvals or native payloads can be produced.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPurchaseService } from '../src/purchases.mjs';
-import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
+import { createPurchaseService, createCoordinateStore } from '@kynesyslabs/dacs-client';
 import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 
@@ -41,39 +40,36 @@ function world(t) {
     },
   };
   const chain = { network: 'testnet', pinnedIdentity: chainIdentity,
-    networkIdentity: async () => ({ identity: chainIdentity, mode: 'public-chain-read' }), getAddressNonce: async () => 6 };
-  const verifier = { verify: async () => ({ transactable: true, contentHash: chainIdentity, price: terms.price, payee, evidence: { chainMode: 'TEST' } }) };
+    networkIdentity: async () => { calls.push(['network']); return { identity: chainIdentity, mode: 'public-chain-read' }; },
+    getAddressNonce: async () => { calls.push(['nonce']); return 6; } };
+  const verifier = { verify: async () => { calls.push(['listing']); return { transactable: true, contentHash: chainIdentity, price: terms.price, payee, evidence: { chainMode: 'TEST' } }; } };
   const service = createPurchaseService({ db, ops, coordinates, store, purposes, challenges, chain, verifier, config: { demAmountEncoding: 'os-string' } });
   return { db, ops, coordinates, store, calls, service, args: { operationId: operation.id, token: handoffToken }, wallet };
 }
 
-test('host approval purpose is issued and consumed, and coordinates persist before wallet handoff', async t => {
-  const w = world(t);
-  const challenge = await w.service.issueApprovalChallenge({ ...w.args, address: w.wallet });
-  const handoff = await w.service.approve({ ...w.args, challengeId: challenge.id, signature: 'TEST-approval-answer' });
-  assert.deepEqual(w.calls, [['issue', 'TEST-host-approval-purpose'], ['consume', 'TEST-host-approval-purpose']]);
-  assert.equal(handoff.operation.status, 'payment_handoff');
-  assert.deepEqual(handoff.payload, w.coordinates.get(w.args.operationId).payload);
-  assert.equal(handoff.payload.signature, null);
-  assert.equal(w.store.transactions, 2);
-  await assert.rejects(w.service.approve({ ...w.args, challengeId: challenge.id, signature: 'TEST-approval-answer' }), { code: 'invalid_state' });
-  assert.equal(w.db.prepare('SELECT count(*) n FROM approvals').get().n, 1);
-  assert.equal(w.db.prepare('SELECT count(*) n FROM write_coordinates').get().n, 1);
-  assert.equal(w.calls.length, 2);
-});
-
-test('failed approval rolls back challenge consumption and approval, preserving the original error', async t => {
-  const w = world(t), cause = new Error('TEST-state-refused');
-  const challenge = await w.service.issueApprovalChallenge({ ...w.args, address: w.wallet });
-  const original = w.ops.transition;
-  w.ops.transition = () => { throw cause; };
-  await assert.rejects(w.service.approve({ ...w.args, challengeId: challenge.id, signature: 'TEST-approval-answer' }), error => error === cause);
-  assert.equal(w.db.prepare('SELECT consumed_at FROM challenges').get().consumed_at, null);
-  assert.equal(w.db.prepare('SELECT count(*) n FROM approvals').get().n, 0);
-  assert.equal(w.db.prepare('SELECT count(*) n FROM write_coordinates').get().n, 0);
-  w.ops.transition = original;
-  assert.equal((await w.service.approve({ ...w.args, challengeId: challenge.id, signature: 'TEST-approval-answer' })).operation.status, 'payment_handoff');
-});
+for (const status of ['awaiting_approval', 'approved', 'payment_handoff']) {
+  for (const withProtocol of [false, true]) {
+    test(`public purchase actions are held for ${status}, protocol=${withProtocol}`, async t => {
+      const w = world(t);
+      // Simulate a persisted operation from an older host, including a saved
+      // handoff. A caller-provided protocol object cannot lift admission.
+      w.db.prepare('UPDATE operations SET status=? WHERE id=?').run(status, w.args.operationId);
+      if (withProtocol) {
+        const op = w.ops.get('TEST-buyer', w.args.operationId);
+        w.db.prepare('UPDATE operations SET terms=? WHERE id=?').run(JSON.stringify({ ...op.terms, protocol: {} }), op.id);
+      }
+      for (const method of ['issueApprovalChallenge', 'approve', 'prepareHandoff']) {
+        await assert.rejects(w.service[method]({ ...w.args, address: w.wallet,
+          challengeId: 'TEST-challenge', signature: 'TEST-approval-answer' }), { code: 'profile_not_admitted' });
+      }
+      assert.deepEqual(w.calls, [], 'no challenge, chain or listing request');
+      assert.equal(w.store.transactions, 0, 'no approval or handoff transaction');
+      assert.equal(w.db.prepare('SELECT count(*) n FROM approvals').get().n, 0);
+      assert.equal(w.db.prepare('SELECT count(*) n FROM write_coordinates').get().n, 0);
+      assert.equal(w.ops.get('TEST-buyer', w.args.operationId).status, status);
+    });
+  }
+}
 
 test('nested serializing store calls join the outer transaction and roll back together', t => {
   const w = world(t), cause = new Error('TEST-rollback');
