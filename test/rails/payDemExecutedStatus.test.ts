@@ -226,12 +226,14 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
       recovery,
     });
 
+    // The record's own fee, as the SDK read it, beside the confirmed debit.
     expect(payDemRecordVerifiedTransfer(result)).toEqual({
       payer: WALLET.slice(2),
       payee: PAYEE_HEX,
       amountOs: AMOUNT_OS,
       network: "demos",
       settlementKey: recovery.settlementKey,
+      recordNetworkFeeOs: "1000000000",
     });
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.finality)).toBe(true);

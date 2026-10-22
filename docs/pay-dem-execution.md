@@ -345,7 +345,10 @@ amount, network and settlement key, and its hash is the one this invocation
 journaled. Any other success,
 including an injected rail's `execution: "executed"`, a copy of the SDK
 rail's result, or the SDK rail's result for another transfer or settlement
-key, leaves the payment indeterminate with the wallet reservation retained. A
+key, leaves the payment indeterminate with the wallet reservation retained. So
+does a success whose executed record, as the SDK read it, carries no fee or a
+fee other than the confirmed debit the wallet would be charged
+(`recordNetworkFeeOs` in those terms). A
 rail that relays the SDK's own result object unchanged, such as the default
 runtime rail, keeps it. That default rail also reports success only after the
 SDK's Demos adapter reconciles the wallet journal to `canonical-confirmed`.
@@ -356,7 +359,11 @@ calls `readPayDemTransferRecord` through the connection `createPayDemRail` opene
 The runtime wrapper retains that connection for recovery. The read binds the
 exact hash, native-send payload, payer, payee, amount and network; the track also
 requires the prepared signed nonce, the proposed inclusion block and the
-checkpoint's confirmed debit. A pending, missing or unavailable record stays
+checkpoint's confirmed debit as the proposed fee, and the record's own fee must
+be that same fee. A record whose fee differs needs an operator
+(`pay-dem-chain-observation-conflict`), and so does one without a fee
+(`pay-dem-network-fee-accounting-missing`); neither debits the wallet or
+publishes a notice. A pending, missing or unavailable record stays
 indeterminate, a failed or conflicting record cannot complete, and a custom
 rail without this SDK reader stays held. Every recovery retry repeats the read
 before wallet reconciliation or notice publication, including a retry after

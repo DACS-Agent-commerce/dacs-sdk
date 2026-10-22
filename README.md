@@ -600,7 +600,10 @@ using the runtime wrapper. A callback alone cannot finalize recovery: a pending,
 missing or unavailable record stays held; a failed or conflicting record cannot
 complete. The read binds the hash, parties, amount and network, and the track
 checks the signed nonce, inclusion block and checkpoint's confirmed debit before
-wallet accounting or notice publication. A rail without an SDK-owned record
+wallet accounting or notice publication. The record's own fee must equal that
+debit: a record whose fee differs, or that carries none, needs an operator and
+neither debits the wallet nor publishes a notice. A fresh payment applies the
+same fee rule before it settles the wallet. A rail without an SDK-owned record
 reader stays held. Recovery never signs or broadcasts.
 
 The funded boundary test is disabled by default. It requires two independent

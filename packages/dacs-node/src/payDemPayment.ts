@@ -184,9 +184,11 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * alone is not execution: a node reports it for a transaction whose record
    * `failed` (#338). Every completed settlement must attest
    * `execution: "executed"` with the record's signed `nonce` after checking a
-   * bound confirmed record. The track independently re-reads that record
-   * through the SDK rail's connection, binds its nonce and block, and removes
-   * both fields before storing the settlement or publishing its notice.
+   * bound confirmed record, and the prepared checkpoint's confirmed fee as
+   * `networkFeeOs`. The track independently re-reads that record through the
+   * SDK rail's connection, binds its nonce, block and fee (a record without a
+   * fee needs an operator), and removes `execution` and `nonce` before
+   * storing the settlement or publishing its notice.
    * A rail without an SDK reader cannot finalize recovery. Missing or other execution
    * evidence stays indeterminate without changing wallet accounting or
    * publishing a notice. An executed settlement without a prepared checkpoint,
@@ -956,13 +958,17 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           // #338: success needs the executed record the SDK rail read itself,
           // for this payment's exact transfer and the hash journaled above. A
           // rail's own `execution: "executed"` is its statement and stays held.
+          // The wallet is debited the confirmed fee only when that record
+          // carries the same fee, as a restart's re-read below requires.
           const verified = payDemRecordVerifiedTransfer(raw);
           if (verified === undefined || !plainObject(raw) ||
               raw.execution !== "executed" || raw.txHash !== preparedTxHash ||
               verified.payer !== payment.payer || verified.payee !== payment.payee ||
               verified.amountOs !== payment.amountOs ||
               verified.network !== payment.network ||
-              verified.settlementKey !== payment.settlementKey) {
+              verified.settlementKey !== payment.settlementKey ||
+              verified.recordNetworkFeeOs === undefined ||
+              verified.recordNetworkFeeOs !== raw.networkFeeOs) {
             throw new DacsPayDemBuyerPaymentError("pay-dem-chain-execution-unconfirmed");
           }
           const { execution: _execution, ...settlementData } = raw;
@@ -1015,13 +1021,23 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             return Object.freeze({ status: "indeterminate" as const,
               reasonCode: "pay-dem-chain-execution-unconfirmed" });
           }
+          // The proposed fee is the checkpoint's confirmed debit, and the
+          // executed record's own fee must be that same fee: one the record
+          // contradicts or omits is never accounted to the wallet.
+          const proposed = captured.result.settlement;
           if (record.state !== "executed" || record.nonce !== prepared!.nonce ||
-              record.blockNumber !== captured.result.settlement.blockNumber ||
+              record.blockNumber !== proposed.blockNumber ||
               prepared!.confirmedTotalDebitOs === undefined ||
               BigInt(prepared!.confirmedTotalDebitOs) - BigInt(payment.amountOs) !==
-                BigInt(captured.result.settlement.networkFeeOs!)) {
+                BigInt(proposed.networkFeeOs!) ||
+              (record.networkFeeOs !== undefined &&
+                record.networkFeeOs !== proposed.networkFeeOs)) {
             return Object.freeze({ status: "operator-action" as const,
               reasonCode: "pay-dem-chain-observation-conflict" });
+          }
+          if (record.networkFeeOs === undefined) {
+            return Object.freeze({ status: "operator-action" as const,
+              reasonCode: "pay-dem-network-fee-accounting-missing" });
           }
           try {
             await walletSpendAuthority.reconcile(

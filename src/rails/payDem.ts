@@ -81,6 +81,13 @@ export interface PayDemRecordVerifiedTransfer {
   readonly network: string;
   /** The recovery context's settlement key, when the settle carried one. */
   readonly settlementKey?: string;
+  /**
+   * The fee of the executed record the SDK read (its `transaction_fee`, in
+   * OS), when the record carries one. The result's own `networkFeeOs` is the
+   * confirmation's debit, which the record need not repeat; a host that
+   * accounts that debit compares the two.
+   */
+  readonly recordNetworkFeeOs?: string;
 }
 
 /**
@@ -1003,6 +1010,7 @@ export async function payDemSettleCore(
       amountOs: amountOs.toString(),
       network: chainId,
       ...(recovery === undefined ? {} : { settlementKey: recovery.settlementKey }),
+      ...(recordFee?.feeOs === undefined ? {} : { recordNetworkFeeOs: recordFee.feeOs }),
     }));
   }
   return executed;

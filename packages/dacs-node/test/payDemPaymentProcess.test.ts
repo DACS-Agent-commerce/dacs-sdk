@@ -232,11 +232,15 @@ describe("native DEM process recovery", () => {
       authority: BUYER,
     });
     databases.push(database);
+    // The record carries the 1 DEM fee the crash fixture's node confirmed.
     recoveryRecordRead.mockResolvedValue({
       hash: TX_HASH, status: "confirmed", blockNumber: 43,
       content: { type: "native", from: PAYER, to: PAYEE, nonce: "9",
         amount: AUTHORITY.amountOs,
         data: ["native", { nativeOperation: "send", args: [PAYEE, AUTHORITY.amountOs] }],
+        transaction_fee: {
+          network_fee: "400000000", rpc_fee: "500000000", additional_fee: "100000000",
+        },
       },
     });
     const rail = await createPayDemRail({
