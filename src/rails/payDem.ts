@@ -3366,7 +3366,11 @@ export function payDemSettle(
         // hash itself: the record wins over anything held in memory.
         const recordedBefore = await attemptNames() ||
           (priorAuthenticated?.boundToKey === true && priorAuthenticated.result.txHash === retainedTxHash);
-        const recovered = await reconcile(Object.freeze({ ...context, txHash: retainedTxHash }));
+        // Keep one stable observation across the awaited store and node reads.
+        const recovered = snapshotCanonicalJsonRead(
+          await reconcile(Object.freeze({ ...context, txHash: retainedTxHash })),
+          "pay-dem reconciliation result",
+        );
         if (recovered === null) {
           throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
         }
@@ -3380,10 +3384,12 @@ export function payDemSettle(
           capturePayDemReconciliation(recovered, context, retainedTxHash, [priorAuthenticated?.result, before, after]),
           true,
         );
+        // Also recheck completions that raced the SDK's own node read.
+        const afterRecord = await readOutcome();
         // A held result reports no outcome, so it contradicts none.
         for (const existing of isHeldPayDemResult(captured)
           ? []
-          : [priorAuthenticated?.result, before, after]) {
+          : [priorAuthenticated?.result, before, after, afterRecord]) {
           if (existing === undefined || existing === null || existing.txHash.length === 0) continue;
           if (existing.blockNumber !== undefined && existing.blockNumber !== captured.blockNumber) {
             throw new DacsError("pay-dem retained transaction block conflicts with the rail outcome");
@@ -3402,7 +3408,12 @@ export function payDemSettle(
           }
           captured = preserved;
         }
-        if (!isHeldPayDemResult(captured)) assertPayDemSuccessKept(historySucceeded, captured);
+        if (!isHeldPayDemResult(captured)) {
+          assertPayDemSuccessKept(historySucceeded, captured);
+          // The SDK read can supply a fee the reconciler omitted. Check that
+          // authenticated fee against the supplied journal's debit as well.
+          capturePayDemReconciliation(recovered, context, retainedTxHash, [captured]);
+        }
         // On a log that keeps no attempt records, its own outcome for these
         // exact terms names the hash when the reconciliation agrees on the
         // block and outcome. A log that keeps attempts never counts an outcome.
@@ -3410,7 +3421,7 @@ export function payDemSettle(
           existing !== null && existing.txHash === retainedTxHash &&
           existing.blockNumber === captured.blockNumber && sameSettledOutcome(existing, captured);
         // Another process may record this key's attempt while the chain read runs.
-        if (recordedBefore || outcomeNames(before) || outcomeNames(after) || await attemptNames()) {
+        if (recordedBefore || outcomeNames(before) || outcomeNames(after) || outcomeNames(afterRecord) || await attemptNames()) {
           authenticatedResults.set(key, { context, result: captured, boundToKey: true });
           return publicPayDemResult(captured, expectedPayee);
         }

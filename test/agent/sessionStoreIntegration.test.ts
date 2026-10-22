@@ -1544,8 +1544,8 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       block: /contradicts the node record the SDK read/,
       "node failed": /contradicts the node record the SDK read/,
       "block omitted": /success lacks canonical tx identity, block evidence/,
-      fee: conflict,
-      "fee omitted": conflict,
+      fee: /fee conflicts with the authenticated network fee/,
+      "fee omitted": /contradicts the node record the SDK read/,
       "finality omitted": /success lacks canonical tx identity, block evidence, or bft-final finality/,
       "saved block deleted": conflict,
       "saved kind deleted": conflict,
@@ -1727,7 +1727,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
       .rejects.toThrow(viaRailLog ? "settlement pay-dem:job-1:0 outcome binding conflicts with requested terms"
         : via === "constant callback" ? "resumeSettlement is not the payDemSettle adapter, so it is not called"
-          : "saved native success evidence contradicts chain execution");
+          : "fee conflicts with the authenticated network fee");
     expect(reads).toBe(unread ? 0 : 1);
     expect(resumed.settleCalls.n).toBe(0);
     expect([...kv]).toEqual(evidence);
@@ -1863,7 +1863,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const refee = await makeDeps(store, { kv, resumeSettlement: await demAudit({ networkFeeOs: "6" }, counted,
         { networkFeeOs: "5" }) });
       await expect(runSessionCore(refee.listingRef, demTerms, refee.deps, "job-1"))
-        .rejects.toThrow("saved native success evidence contradicts chain execution");
+        .rejects.toThrow("fee conflicts with the authenticated network fee");
       expect(await store.load("job-1")).toEqual(migrated);
     }
     const again = await makeDeps(store, { kv, resumeSettlement: await demAudit({ networkFeeOs: "5" }, counted) });
@@ -3324,7 +3324,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         transaction_fee: { network_fee: "6", rpc_fee: "0", additional_fee: "0" } } });
       const refeed = await makeDeps(store, { kv, resumeSettlement: await audit() });
       await expect(runSessionCore(refeed.listingRef, demTerms, refeed.deps, "job-1"))
-        .rejects.toThrow(echoesFee ? /contradicts the node record the SDK read/ : /conflicts with the saved success/);
+        .rejects.toThrow(/contradicts the node record the SDK read/);
       expect(await store.load("job-1")).toEqual(saved);
       expect(kv.has(`stor:${sessionAnchorName.evidence("job-1")}`)).toBe(false);
       // The fee is the SDK's own read of the record, whether or not the
