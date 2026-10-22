@@ -553,6 +553,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       },
       deps,
     );
+    if (result.outcome === "settlement-pending") throw new Error("expected terminal session");
     return { sub, listingRef, result };
   }
 

@@ -59,7 +59,8 @@ test("fresh native sessions require a SessionStore before signing, and accept a 
   assert.equal(demosNode.broadcasts, 1);
 });
 
-test("a final payment returns pending publication and completes after restart using an archive", async () => {
+test.each([null, "error", { result: 500, response: new Error("ECONNRESET") }])(
+"a final payment completes after restart using an archive when primary returns %s", async (primary) => {
   const store = createInMemorySessionStore();
   const f = await fixture(store);
   const healthyAnchor = f.deps.anchor;
@@ -79,7 +80,7 @@ test("a final payment returns pending publication and completes after restart us
   assert.equal(loaded.record.phase, "settled");
   assert.ok(loaded.record.checkpoints.some((cp) => cp.key === "settle:0" && cp.stage === "outcome" && cp.data?.ok));
   const record = structuredClone(demosNode.records.get(demosNode.nextHash));
-  demosNode.reply = (_hash, rpc) => rpc === "https://archive.test" ? record : null;
+  demosNode.reply = (_hash, rpc) => rpc === "https://archive.test" ? record : primary;
   const restarted = { ...f.deps, anchor: healthyAnchor, settle: await f.adapter(true) };
   assert.equal((await runSessionCore("stor:listing", terms, restarted, "sweep-session")).outcome, "completed");
   assert.equal(demosNode.transfers, 1);
@@ -95,7 +96,7 @@ test("closing an expired unsigned intent lets the original session finish failed
     bindingVersion: "1", railId: "pay-dem", jobId: "sweep-session", phaseIndex: 0, phase: "pay-dem",
     amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer: demosNode.address,
     payee, network: "demos", finality: { model: "bft-final" },
-  });
+  }, { originalLogRetained: true, reconcile: async () => null });
   const resumed = { ...f.deps, settle: await f.adapter() };
   assert.equal((await runSessionCore("stor:listing", terms, resumed, "sweep-session")).outcome, "failed");
   assert.equal(demosNode.transfers, 1); // only the pre-signing call that threw

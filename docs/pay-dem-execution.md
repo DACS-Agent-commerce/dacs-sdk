@@ -210,8 +210,7 @@ below).
   after it activates. An OS-signed record on a node that reports the fork
   inactive is indeterminate. The SDK reads that fork state from the node for
   each recovery (`nodeCall("getNetworkInfo")`), not from demosdk's
-  `getNetworkInfo`, which in 4.0.16 keeps a `Demos` instance's first reply
-  (later versions may refresh it), so a rail
+  `getNetworkInfo`, which in 4.0.18 caches fork information, so a rail
   that saw the fork inactive still reads a payment signed after it activated.
   A reconciler may omit the fee, and one that
   reports another fee is refused. `runSession` re-asserts a saved fee, so a
@@ -410,24 +409,35 @@ any of them different, is indeterminate.
 
 ## Closing an unattempted native intent
 
-An operator may call `store.abandonUnattempted(key, originalBinding)` on the
-`createIdempotencyStore` opened over the intact original rail log. This is an
-explicit decision to end an unpaid phase, never an authorization to replace a
-payment. The method acquires an expired generation, fencing the old worker,
-and checks that no attempt was recorded before writing an immutable empty-hash
-unpaid outcome. `payDemSettle` returns that outcome on the next recovery-only
-resume, so the session can end failed without any transfer. The key and complete
-`SettlementBinding` must be the original values.
+An operator may close an unpaid phase with:
 
-Live intents, completed payments, changed bindings and recorded transactions
-are refused. If the crash preceded the rail intent itself, the operator must
-explicitly confirm that this is the intact original log with
-`store.abandonUnattempted(key, originalBinding, { originalLogRetained: true })`.
-The store then installs a fenced unpaid outcome before an old worker can start.
-Never use this confirmation on a replaced, lost or restored-incompletely log:
-it is a trusted local operator assertion, not information from a counterparty.
-Without it a missing intent stays unresolved. This operation closes the original
-job as unpaid and never authorizes another broadcast.
+```ts
+await store.abandonUnattempted(key, originalBinding, {
+  originalLogRetained: true,
+  // Resolve this exact key and binding using an independent, complete
+  // prepared-transfer journal or authoritative reconciliation service.
+  // Return null only when it proves no transfer was prepared or submitted;
+  // return a found payment, and throw on unavailable or incomplete history.
+  reconcile: (key, binding) => reconcileOriginalPayment(key, binding),
+});
+```
+
+The store must be opened over the intact original rail log. The confirmation
+and independent absence check are required on every call, including expired
+intents and crashes before an intent was written. The key and complete
+`SettlementBinding` must be the original values. Never confirm a replaced,
+lost or incompletely restored log. A trusted backup may recover a known hash,
+but local absence in a lagging backup cannot prove a payment was never made.
+The reconciler must consult evidence independent of that log; a missing or
+pruned node record alone is not proof of absence.
+
+The method fences the old worker, refuses live, completed, changed-binding or
+tx-bearing intents, and writes an immutable empty-hash unpaid outcome only
+when the independent check returns null. A found payment, unavailable journal
+or failed reconciliation leaves the outcome unresolved under its recovery lease.
+`payDemSettle` returns an established unpaid outcome on the next recovery-only
+resume so the original session can end failed. This operation never submits or
+authorizes a replacement payment.
 A malformed record fee also stays indeterminate; an archive must provide a
 well-formed record rather than treating an unparseable fee as zero.
 

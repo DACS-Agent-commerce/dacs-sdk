@@ -364,11 +364,16 @@ if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only"
   throw new Error("unexpected legacy session result");
 }
 
-// anyone — verify the bundle's structure, signatures, referenced artifacts,
-// and (through the configured callbacks above) every normative vet closure and
-// SettlementEvidence record
-const verdict = await buyer.verifyBundle(session.bundleRef);
-const rep = await buyer.getReputation(primaryClaim, bundleRefs);
+if (session.outcome === "settlement-pending") {
+  // Retain the job and resume it to finish evidence publication.
+  console.log(`Payment ${session.payment.txHash} is final; resume job ${session.jobId}`);
+} else {
+  // anyone — verify the bundle's structure, signatures, referenced artifacts,
+  // and (through the configured callbacks above) every normative vet closure and
+  // SettlementEvidence record
+  const verdict = await buyer.verifyBundle(session.bundleRef);
+  const rep = await buyer.getReputation(primaryClaim, bundleRefs);
+}
 ```
 
 The public RatingRecord producers own the two permitted DACS-5 directions and
@@ -770,7 +775,7 @@ configured discriminator. The compatibility defaults remain process-local and
 must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
-starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
+starts a second SDK broadcast. In demosdk 4.0.18, however, the underlying Axios
 requests used by broadcast, status, transaction-record and nonce reads have no
 cancellation or request timeout. An open transport socket may therefore keep a Node process
 alive after the rail has returned an unresolved result. Terminating that process
@@ -849,6 +854,12 @@ success, a bound failed record included, is refused the same way: the session
 neither completes nor records the payment as failed, and the saved success
 stays in place until a later resume re-reads it (DACS-4 §9.5.1 PC-7).
 
+When a retained `SessionStore` has saved a successful payment but evidence
+publication is unavailable, `runSession` returns `outcome: "settlement-pending"`
+with `payment.ok: true` and `pendingEvidenceAddress`. Resume that same job to
+publish its evidence and bundle; the saved payment is never submitted again.
+`settlementRef` and `bundleRef` are available only on terminal results.
+
 A recovered native success, and any native permanent failure, is final only
 when the SDK read the node's record for that hash itself: over the rail
 `createPayDemRail` built, the adapter reads the record through that rail's own
@@ -883,8 +894,8 @@ still completes after it activates. The
 reconciler's answer only names the hash and can refuse, and one the
 record contradicts is refused. The fork state that bounds this read (no
 OS-signed record before the fork) is read from the node afresh for each
-recovery, not from demosdk's `getNetworkInfo`, which in 4.0.16 keeps a
-connection's first reply (later versions may refresh it). Over any other rail the adapter returns no recovered verdict at
+recovery, not from demosdk's `getNetworkInfo`, which in 4.0.18 caches fork
+information. Over any other rail the adapter returns no recovered verdict at
 all, only the hash: the session binds it and saves it as an unresolved
 attempt, so a later resume through the adapter over that rail
 audits that hash instead of paying again, and never ends the session as failed
@@ -1292,9 +1303,3 @@ bootstrap are documented in
 ## License
 
 MIT — matching the DACS standard.
-
-When a retained `SessionStore` has saved a successful payment but evidence
-publication is unavailable, `runSession` returns `outcome: "settlement-pending"`
-with `payment.ok: true` and `pendingEvidenceAddress`. Resume that same job to
-publish its evidence and bundle; the saved payment is never submitted again.
-`settlementRef` and `bundleRef` are available only on terminal results.

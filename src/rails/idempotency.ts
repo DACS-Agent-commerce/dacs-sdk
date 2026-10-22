@@ -237,14 +237,18 @@ export interface SettlementIdempotencyStore {
   /**
    * Operator action: close an expired native intent as unpaid only after
    * fencing its old worker and proving its original log has no attempt.
-   * Requires the intact original log. A missing intent additionally requires
-   * the operator's explicit originalLogRetained confirmation. Refuses live,
+   * Requires explicit confirmation of the intact original log and an
+   * independent reconciler returning null for this key and binding (not a
+   * lookup in the potentially restored log). Refuses live,
    * completed or tx-bearing intents. Never submits or grants a replacement.
    */
   abandonUnattempted?(
     key: string,
     binding: Readonly<SettlementBinding>,
-    options?: Readonly<{ originalLogRetained: true }>,
+    options: Readonly<{
+      originalLogRetained: true;
+      reconcile: (key: string, binding: Readonly<SettlementBinding>) => Promise<SettleResult | null>;
+    }>,
   ): Promise<SettleResult>;
   /**
    * Read and validate a recorded outcome under these exact terms, without
@@ -1073,8 +1077,16 @@ function buildIdempotencyStore(
     readOutcome,
     async abandonUnattempted(key, binding, options) {
       const captured = frozenClone(binding, "unattempted settlement binding");
-      const originalLogRetained = options !== undefined &&
-        frozenClone(options, "unattempted original-log confirmation").originalLogRetained === true;
+      if (options === null || typeof options !== "object" || nodeTypes.isProxy(options)) {
+        throw new DacsError("abandon requires originalLogRetained confirmation and independent absence reconciliation");
+      }
+      const descriptors = Object.getOwnPropertyDescriptors(options);
+      const originalLogRetained = descriptors.originalLogRetained?.value === true;
+      const rawReconcile = descriptors.reconcile?.value;
+      if (!originalLogRetained || typeof rawReconcile !== "function" || nodeTypes.isProxy(rawReconcile)) {
+        throw new DacsError("abandon requires originalLogRetained confirmation and independent absence reconciliation");
+      }
+      const reconcile = Function.prototype.bind.call(rawReconcile, options) as typeof options.reconcile;
       const bindingHash = settlementBindingHash(captured);
       if (captured.phase !== "pay-dem" || captured.agreementAsset !== "DEM" ||
           captured.settlementAsset !== "DEM" || captured.finality.model !== "bft-final" ||
@@ -1092,13 +1104,14 @@ function buildIdempotencyStore(
           claim.lease.owner !== policy.owner) {
         throw new DacsError("cannot abandon a live, completed or conflicting settlement intent");
       }
-      if (claim.lease.stage !== "reconcile" && !originalLogRetained) {
-        await durable.releaseIntent({ key, bindingHash, lease: claim.lease, now: now() });
-        throw new DacsError("cannot abandon without an expired intent in the original log");
-      }
       const attempt = await readAttempt(key);
       if (attempt !== null) {
         throw new DacsError("cannot abandon a recorded transaction; reconcile it without resubmitting");
+      }
+      // A lagging backup can have an intent but omit its later attempt. Local
+      // absence alone cannot establish that this payment was never submitted.
+      if (await reconcile(key, captured) !== null) {
+        throw new DacsError("cannot abandon without independent proof that the payment is absent");
       }
       const result = captureBoundResult({
         ok: false, txHash: "", chainId: captured.network, payer: captured.payer, payee: captured.payee,

@@ -984,6 +984,8 @@ export interface PayDemRailConfig {
    * with the same wallet, transfer, status, block and fee checks. No wallet is
    * connected to the archive and it is never used to sign or broadcast.
    * The operator authenticates this endpoint just like the primary RPC.
+   * It connects lazily only if the primary has no bound terminal record;
+   * archive downtime cannot stop fresh settlement or a definitive primary read.
    * Configure the settlement reconciler to use the archive too: its refusal
    * or proof of absence still stops recovery before this record read.
    */
@@ -2276,8 +2278,8 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   // Recovery reads the record of a hash the SDK holds through this same
   // connection, so payDemSettle's recovered verdicts are the SDK's read too.
   const primaryReader = sdkRecoveryReader(address, nodeCall, getTxByHash, statusRequestTimeoutMs);
-  let archiveReader: SdkRecordReader | undefined;
-  if (recoveryRpc !== undefined) {
+  let archiveReader: Promise<SdkRecordReader> | undefined;
+  const connectArchive = async (rpc: string): Promise<SdkRecordReader> => {
     const archive = new Demos();
     const archiveConnect = stableMethod<(url: string) => Promise<unknown>>(
       archive, "connect", "pay-dem archive Demos.connect",
@@ -2288,18 +2290,30 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     const archiveGet = stableMethod<(hash: string) => Promise<unknown>>(
       archive, "getTxByHash", "pay-dem archive Demos.getTxByHash",
     );
-    await archiveConnect(recoveryRpc);
-    archiveReader = sdkRecoveryReader(address, archiveCall, archiveGet, statusRequestTimeoutMs);
-  }
+    await archiveConnect(rpc);
+    return sdkRecoveryReader(address, archiveCall, archiveGet, statusRequestTimeoutMs);
+  };
   sdkRailRecordReaders.set(settle, async (expected) => {
     const primary = await primaryReader(expected);
     // A terminal primary result remains authoritative; an archive cannot
     // override a failed record or a mismatch with the retained success.
-    const unavailable = primary.state === "indeterminate" &&
-      /^(?:transaction record (?:read timed out|read failed|was not found or lookup failed)|denomination fork state (?:read timed out|read failed|is unavailable))$/.test(primary.reason);
-    return unavailable && archiveReader !== undefined
-      ? archiveReader(expected)
-      : primary;
+    if (primary.state !== "indeterminate" || recoveryRpc === undefined) return primary;
+    // No bound terminal record was established. Read the archive under the
+    // same checks, including for demosdk's not-found and transport envelopes.
+    // Connecting is lazy: archive downtime must not stop a fresh payment or
+    // a recovery the primary can already resolve.
+    archiveReader ??= connectArchive(recoveryRpc);
+    const connected = await boundedPromise(archiveReader, statusRequestTimeoutMs);
+    if (connected.status !== "fulfilled") {
+      archiveReader = undefined; // allow a later recovery to reconnect
+      return {
+        state: "indeterminate",
+        reason: connected.status === "timeout"
+          ? "archive connection timed out" : "archive connection failed",
+        ...(connected.status === "rejected" ? { cause: connected.reason } : {}),
+      };
+    }
+    return connected.value(expected);
   });
   return {
     address: client.address,
