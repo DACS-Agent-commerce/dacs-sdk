@@ -575,43 +575,43 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
     return true;
   }
 
-  async function reclaimLockIfSafe(path: string): Promise<void> {
+  async function reclaimLockIfSafe(path: string): Promise<boolean> {
     let candidate;
     try {
       candidate = await lockMetadata(path);
     } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw cause;
     }
-    if (Date.now() - candidate.mtimeMs <= captured.lockStaleMs) return;
+    if (Date.now() - candidate.mtimeMs <= captured.lockStaleMs) return false;
     const candidateOwner = await readLockOwner(path);
     if (candidateOwner === null) {
       throw new DacsError("RFQ filesystem lock owner is malformed");
     }
-    if (processAlive(candidateOwner.pid)) return;
+    if (processAlive(candidateOwner.pid)) return false;
 
     const gateOwner = { pid: process.pid, token: randomUUID() };
-    if (!(await acquireReclaimGate(gateOwner))) return;
+    if (!(await acquireReclaimGate(gateOwner))) return false;
     try {
       let observed;
       try {
         observed = await lockMetadata(path);
       } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
         throw cause;
       }
-      if (Date.now() - observed.mtimeMs <= captured.lockStaleMs) return;
+      if (Date.now() - observed.mtimeMs <= captured.lockStaleMs) return false;
       const observedOwner = await readLockOwner(path);
       if (observedOwner === null) {
         throw new DacsError("RFQ filesystem lock owner is malformed");
       }
-      if (processAlive(observedOwner.pid)) return;
+      if (processAlive(observedOwner.pid)) return false;
 
       const quarantine = `${path}.${randomUUID()}.stale`;
       try {
         await rename(path, quarantine);
       } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
         throw cause;
       }
       const moved = await lockMetadata(quarantine);
@@ -628,6 +628,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       }
       await unlinkIfExists(quarantine);
       await syncDirectory(locksDir);
+      return true;
     } finally {
       await releaseReclaimGate(gateOwner);
     }
@@ -647,7 +648,9 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
         break;
       } catch (cause) {
         if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
-        await reclaimLockIfSafe(path);
+        // Recovery may itself exhaust the wait budget. Try the freed lock
+        // before timing out; another owner can still win exclusive creation.
+        if (await reclaimLockIfSafe(path)) continue;
         if (Date.now() >= deadline) {
           throw new DacsError("RFQ filesystem record lock timed out");
         }
