@@ -17,13 +17,15 @@
     },
     {
       "name": "@kynesyslabs/dacs-node", "directory": "packages/dacs-node",
-      "preparationBlockers": ["non-registry dependency in devDependencies: file:../.."],
+      "preparationBlockers": ["non-registry dependency in devDependencies: file:../.. (@kynesyslabs/dacs)"],
       "requiredExports": [".", "./transport", "./sqlite", "./demos-loader", "./vectors/dacs-http-envelope-v1.json"],
       "allow": ["package.json", "README.md", "LICENSE", "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map", "vectors/dacs-http-envelope-v1.json"]
     },
     {
       "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
       "preparationBlockers": ["private package is not releasable"],
+      "preparationManifestSha256": "a064e455dde8948516a2d09830559a1bc96096b19f8e78ce11f56980435277d6",
+      "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid", "missing public export .", "release versions differ: 0.0.0 vs 0.1.0-alpha.0"],
       "preparationFileListSha256": "eab1bbc42fd417315f554d5351520c7ff027112e470d385ac72e7e27d403348c",
       "requiredExports": ["."],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]

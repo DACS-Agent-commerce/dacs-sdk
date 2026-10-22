@@ -40,25 +40,50 @@ function exportMap(value) {
   return value ?? {};
 }
 
+function dependencyTargets(value, path = "") {
+  return typeof value === "string" ? [[path, value]] : value && typeof value === "object" ?
+    Object.entries(value).flatMap(([key, child]) => dependencyTargets(child, path ? `${path}/${key}` : key)) : [];
+}
+
+function collectProblems(checks) {
+  const errors = [];
+  for (const check of checks) try { check(); } catch (error) { errors.push(...error.message.split("\n")); }
+  return errors;
+}
+
+function manifestSnapshot(p) {
+  const json = JSON.stringify(p, (_, value) => value && typeof value === "object" && !Array.isArray(value) ?
+    Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value);
+  return createHash("sha256").update(json).digest("hex");
+}
+
 function validateDependencies(p) {
   const errors = [];
-  for (const section of sections) for (let value of targets(p[section])) {
+  for (const section of sections) for (let [path, value] of dependencyTargets(p[section])) {
     if (section === "overrides" && value.startsWith("$")) {
       const name = value.slice(1);
       value = p.dependencies?.[name] ?? p.devDependencies?.[name] ?? p.optionalDependencies?.[name];
     }
-    if (!registrySpec(value)) errors.push(`non-registry dependency in ${section}: ${value}`);
+    if (!registrySpec(value)) errors.push(`non-registry dependency in ${section}: ${value} (${path})`);
   }
   if (errors.length) fail(errors.join("\n"));
 }
 
 function validateInternalPins(p, version) {
+  const errors = [];
   for (const section of ["dependencies", "peerDependencies", "optionalDependencies"]) {
-    for (const name of packages.map(d => d.name)) if (p[section]?.[name] && p[section][name] !== version) fail(`internal dependency must use exact release version: ${name}`);
+    for (const name of packages.map(d => d.name)) if (p[section]?.[name] && p[section][name] !== version) errors.push(`internal dependency must use exact release version: ${name}`);
   }
+  if (errors.length) fail(errors.join("\n"));
 }
 
 export function validateArtifactSet(artifacts, planned = false) {
+  if (planned) {
+    if (artifacts.length !== packages.length || packages.some(definition =>
+      artifacts.filter(a => a.manifest.name === definition.name && a.releasable).length !== 1))
+      fail("strict release requires all five publicly releasable package identities");
+    for (const { manifest } of artifacts) validateManifest(manifest, packages.find(p => p.name === manifest.name));
+  }
   const version = planned ? plannedVersion : artifacts[0]?.manifest.version;
   for (const { manifest: p } of artifacts) {
     if (p.version !== version) fail(`release versions differ: ${p.version} vs ${version}`);
@@ -67,13 +92,22 @@ export function validateArtifactSet(artifacts, planned = false) {
   }
 }
 
+function manifestProblems(p, definition) {
+  return collectProblems([
+    () => validateDependencies(p),
+    () => { if (p.private === true) fail("private package is not releasable"); },
+    () => validateReleaseIdentity(p, definition.name),
+    () => {
+      const version = typeof p.version === "string" && semver.parse(p.version);
+      if (!version || version.version + (version.build.length ? `+${version.build.join(".")}` : "") !== p.version) fail("invalid package version");
+    },
+    ...definition.requiredExports.map(key => () => { if (!exportMap(p.exports)[key]) fail(`missing public export ${key}`); }),
+  ]);
+}
+
 export function validateManifest(p, definition) {
-  validateDependencies(p);
-  if (p.private === true) fail("private package is not releasable");
-  validateReleaseIdentity(p, definition.name);
-  const version = typeof p.version === "string" && semver.parse(p.version);
-  if (!version || version.version + (version.build.length ? `+${version.build.join(".")}` : "") !== p.version) fail("invalid package version");
-  for (const key of definition.requiredExports) if (!exportMap(p.exports)[key]) fail(`missing public export ${key}`);
+  const errors = manifestProblems(p, definition);
+  if (errors.length) fail(errors.join("\n"));
 }
 
 function pattern(glob) {
@@ -188,15 +222,21 @@ export async function prepare(root, scratch, log = console.log, execute = run) {
       for (const section of sections) for (const [name, spec] of Object.entries(source[section] ?? {})) {
         if (packages.some(d => d.name === name)) log(`  ${section}: ${source.name} -> ${name} (${spec})`);
       }
-      try {
-        validateManifest(source, definition);
-        version ??= source.version;
-        if (source.version !== version) fail(`release versions differ: ${source.version} vs ${version}`);
-        validateInternalPins(source, version);
-      } catch (error) {
-        notReady.push(`${definition.name}: ${error.message}`);
-        if (!definition.preparationBlockers?.includes(error.message)) errors.push(`${definition.name}: ${error.message}`);
-      }
+      version ??= source.version;
+      const recordProblems = (manifest, problems) => {
+        const snapshot = manifestSnapshot(manifest) === definition.preparationManifestSha256;
+        for (const message of new Set(problems)) {
+          const reason = `${definition.name}: ${message}`;
+          if (!notReady.includes(reason)) notReady.push(reason);
+          if (!definition.preparationBlockers?.includes(message) &&
+              !(snapshot && definition.preparationSnapshotBlockers?.includes(message)) && !errors.includes(reason)) errors.push(reason);
+        }
+      };
+      const sourceProblems = [...manifestProblems(source, definition), ...collectProblems([
+        () => { if (source.version !== version) fail(`release versions differ: ${source.version} vs ${version}`); },
+        () => validateInternalPins(source, version),
+      ])];
+      recordProblems(source, sourceProblems);
       if (source.scripts?.build) {
         if (source.scripts.clean) execute("npm", ["run", "clean"], dir);
         log(execute("npm", ["run", "build"], dir));
@@ -216,15 +256,16 @@ export async function prepare(root, scratch, log = console.log, execute = run) {
       if (JSON.stringify([...files].sort()) !== JSON.stringify(pack[0].files.map(f => f.path).sort())) fail("archive members disagree with npm pack file list");
       const extracted = await mkdtemp(join(scratch, "extract-")); execute("tar", ["-xzf", tarball, "-C", extracted], root);
       const manifest = JSON.parse(await readFile(join(extracted, "package", "package.json"), "utf8"));
-      if (manifest.version !== source.version) fail(`packed version changed: ${source.version} -> ${manifest.version}`);
-      validateInternalPins(manifest, source.version);
-      let releasable = true;
-      try { validateManifest(manifest, definition); }
-      catch (error) {
-        releasable = false;
-        if (!definition.preparationBlockers?.includes(error.message)) throw error;
-      }
+      const packedProblems = [...manifestProblems(manifest, definition), ...collectProblems([
+        () => { if (manifest.version !== source.version) fail(`packed version changed: ${source.version} -> ${manifest.version}`); },
+        () => { if (manifest.version !== version) fail(`release versions differ: ${manifest.version} vs ${version}`); },
+        () => validateInternalPins(manifest, version),
+      ])];
+      recordProblems(manifest, packedProblems);
       validateFiles(filePolicy, manifest, files);
+      const releasable = sourceProblems.length === 0 && packedProblems.length === 0;
+      // Unexpectedly invalid archives are not supplied to dry-runs or consumers.
+      if (errors.some(error => error.startsWith(`${definition.name}:`))) continue;
       artifacts.push({ definition, manifest, tarball, files, releasable });
       log(`  packed ${pack[0].filename}: ${files.length} allowed files`);
     } catch (error) { errors.push(`${definition.name}: ${error.message}`); }
@@ -374,6 +415,8 @@ export async function release(mode, options = {}) {
       result.notReady.push(`${a.manifest.name}: planned release version ${plannedVersion}, got ${a.manifest.version}`);
     for (const reason of result.notReady) log(`not ready: ${reason}`);
     try { if (mode === "dry-run") await dryRun(result.artifacts, log); else await consume(result.artifacts.filter(a => a.releasable), scratch, log, { outputDirectory }); }
+    catch (error) { result.errors.push(error.message); }
+    if (mode === "check") try { validateArtifactSet(result.artifacts, true); }
     catch (error) { result.errors.push(error.message); }
     // Preparation reports source readiness; broken builds/artifacts/dry-runs always fail.
     const blockers = [...result.errors, ...(mode === "check" ? result.notReady : [])];

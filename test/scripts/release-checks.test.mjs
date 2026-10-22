@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
   packages, plannedVersion, validateManifest, validateFiles, publicEntries,
-  validateLock, checkInstalled, prepare, consume, dryRun, expectedNode20Rejection, release, checkGenerator,
+  validateLock, checkInstalled, prepare, consume, dryRun, expectedNode20Rejection, release, checkGenerator, validateArtifactSet,
 } from "../../scripts/release-checks.mjs";
 
 const core = packages[0];
@@ -467,6 +467,9 @@ test("strict release requires the planned version and admits a coherent complete
   const statuses = await Promise.all(runs.map(async run => JSON.parse(await readFile(join(receipts, run, "result.json")))));
   assert.deepEqual(statuses.map(s => s.status).sort(), ["blocked", "passed"]);
   assert.ok(statuses.find(s => s.status === "passed").artifacts.every(a => a.version === plannedVersion));
+  const passedRun = runs[statuses.findIndex(s => s.status === "passed")];
+  const receipt = JSON.parse(await readFile(join(receipts, passedRun, "without-native/receipt.json")));
+  assert.deepEqual(receipt.artifacts.map(a => a.name), packages.map(p => p.name), "success must consume all five artifacts");
 }));
 
 test("not-ready manifests still build, pack and enforce the file policy", { timeout: 120_000 }, () => fixture(async root => {
@@ -546,6 +549,11 @@ test("the held private snapshot's preparation inventory cannot admit a new packe
   const baseline = await prepare(root, join(root, "baseline"), () => {});
   assert.deepEqual(baseline.errors, []);
   assert.equal(baseline.artifacts.length, 5);
+  const heldManifest = await readFile(join(dir, "package.json"));
+  await changeManifest(root, packages[2], { license: "UNLICENSED" });
+  const damaged = await prepare(root, join(root, "damaged-manifest"), () => {});
+  assert.ok(damaged.errors.some(e => e.includes("identity or publish policy")), "only the exact held manifest gets baseline exceptions");
+  await writeFile(join(dir, "package.json"), heldManifest);
   await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
   const changed = await prepare(root, join(root, "changed"), () => {});
   assert.ok(changed.errors.some(e => e.includes("outside allow-list")));
@@ -555,4 +563,74 @@ test("the held private snapshot's preparation inventory cannot admit a new packe
 
 test("generator admission preserves the cause when a required packed dependency is missing", async () => {
   await assert.rejects(checkGenerator("/unused", [{ manifest: manifest(packages[4]) }], () => {}), /missing packed generator dependency: @kynesyslabs\/dacs/);
+});
+
+
+test("a build-time private blocker cannot approve a four-package consumer", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root, plannedVersion);
+  const path = join(root, packages[2].directory, "build.mjs");
+  await writeFile(path, (await readFile(path, "utf8")) +
+    "const p=JSON.parse(fs.readFileSync('package.json'));p.private=true;fs.writeFileSync('package.json',JSON.stringify(p));");
+  const logs = [], outputDirectory = join(root, "results");
+  await assert.rejects(release("check", { root, outputDirectory, log: line => logs.push(line) }), /private package/);
+  assert.ok(!logs.some(line => line.includes("Release checks passed")));
+  const [run] = await readdir(outputDirectory);
+  const result = JSON.parse(await readFile(join(outputDirectory, run, "result.json")));
+  assert.equal(result.status, "blocked");
+  assert.ok(result.notReady.some(e => e.includes("private package")));
+  assert.ok(result.errors.some(e => e.includes("all five")));
+  const receipt = JSON.parse(await readFile(join(outputDirectory, run, "without-native/receipt.json")));
+  assert.deepEqual(receipt.artifacts.map(a => a.name), packages.filter(p => p !== packages[2]).map(p => p.name));
+}));
+
+test("known blockers do not mask independent source or packed manifest defects", { timeout: 240_000 }, () => fixture(async root => {
+  for (const packed of [false, true]) {
+    for (const [damage, expected] of [
+      [{ license: "UNLICENSED" }, /identity or publish policy/],
+      [{ version: "9.9.9" }, /release versions differ|packed version changed/],
+      [{ version: "not-semver" }, /invalid package version/],
+      [{ exports: {} }, /missing public export/],
+      [{ peerDependencies: { [core.name]: "^0.1.0-alpha.0" } }, /internal dependency must use exact release version/],
+    ]) {
+      await sourceTree(root);
+      for (const [definition, blocker] of [
+        [packages[1], { devDependencies: { [core.name]: "file:../.." } }],
+        [packages[2], { private: true }],
+      ]) {
+        await changeManifest(root, definition, blocker);
+        if (packed) {
+          const path = join(root, definition.directory, "build.mjs");
+          await writeFile(path, (await readFile(path, "utf8")) +
+            `const p=JSON.parse(fs.readFileSync('package.json'));Object.assign(p,${JSON.stringify(damage)});fs.writeFileSync('package.json',JSON.stringify(p));`);
+        } else await changeManifest(root, definition, damage);
+      }
+      const result = await prepare(root, await mkdtemp(join(root, "manifest-case-")), () => {});
+      for (const definition of [packages[1], packages[2]]) {
+        assert.ok(result.errors.some(e => e.includes(definition.name) && expected.test(e)),
+          `${packed ? "packed" : "source"} ${definition.name}: ${JSON.stringify(damage)}: ${result.errors.join("\n")}`);
+        assert.ok(!result.artifacts.some(a => a.manifest.name === definition.name && a.releasable));
+      }
+    }
+  }
+}));
+
+test("a known development link cannot excuse a different dependency with the same spec", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await changeManifest(root, packages[1], { devDependencies: { other: "file:../.." } });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.ok(result.errors.some(e => e.includes("non-registry") && e.includes("other")));
+}));
+
+
+test("strict artifact inventory admits exactly the five public identities", () => {
+  const artifacts = packages.map(definition => ({ manifest: { ...manifest(definition), version: plannedVersion }, releasable: true }));
+  assert.doesNotThrow(() => validateArtifactSet(artifacts, true));
+  for (const damaged of [
+    artifacts.slice(1),
+    [...artifacts.slice(0, -1), artifacts[0]],
+    [...artifacts.slice(0, -1), { ...artifacts[4], manifest: { ...artifacts[4].manifest, name: "other" } }],
+    artifacts.map((a, i) => i === 2 ? { ...a, releasable: false } : a),
+  ]) assert.throws(() => validateArtifactSet(damaged, true), /all five/);
+  assert.throws(() => validateArtifactSet(artifacts.map((a, i) => i === 2 ?
+    { ...a, manifest: { ...a.manifest, private: true } } : a), true), /private package/);
 });
