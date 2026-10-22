@@ -182,6 +182,10 @@ not live profile evidence. The connected Demos `createAgent` and
 `createUnsafeManualAgent` factories and live host service, role runtime and purchase
 queue remain unavailable even with a simulation label. Simulations use injected
 local dependencies. Successful reader/session results identify this mode.
+The retained x402 paid HTTP and disclosure recovery factories require either
+an injected `fetchImpl` with `transportPolicy.mode: "insecure-test"` or complete
+injected `publicHttpsDependencies` (`resolveHost` and `request`). Missing transport
+dependencies are refused at construction, before DNS or paid HTTP access.
 A future live release needs both a coordinated release pin and verifier- or
 orchestrator-owned, authenticated evidence binding the exact session and every
 expected participant identity to that exact pin and complete tuple. The current
