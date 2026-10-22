@@ -304,6 +304,18 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     expect(payload).not.toHaveBeenCalled();
   });
 
+  test("M17: inherited canonical jobId refuses before transport, finality or payment callbacks", async () => {
+    const client = fakeClient([]);
+    const fetchImpl = vi.fn(fakeFetch());
+    const deps = coreDeps(client, fetchImpl);
+    const finality = vi.spyOn(deps, "assertFinalityContext");
+    const transfer = vi.spyOn(deps, "authenticateTransfer");
+    const payload = vi.spyOn(client, "createPaymentPayload");
+    const inherited = Object.assign(Object.create({ jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV" }), params, { phaseIndex: 0 });
+    await expect(x402SettleCore(inherited, deps)).rejects.toThrow("x402 jobId must be own data");
+    for (const call of [fetchImpl, finality, transfer, payload]) expect(call).not.toHaveBeenCalled();
+  });
+
   test.each([-1, -0, "0", null, undefined, Number.NaN, Number.MAX_SAFE_INTEGER + 1])("direct core refuses a supplied malformed phaseIndex %s before callbacks", async (phaseIndex) => {
     const client = fakeClient([]);
     const fetchImpl = vi.fn(fakeFetch());

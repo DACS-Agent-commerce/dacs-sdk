@@ -1,8 +1,11 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
@@ -14,6 +17,12 @@ import {
 import { createFsAp2BindingStore } from "../../src/rails/ap2SettlementFs.js";
 import { writeMainFormatAp2Record } from "../fixtures/ap2LegacyRecord.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...original, readFile: vi.fn(original.readFile) };
+});
+
+const execute = promisify(execFile);
 const dirs: string[] = [];
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -555,3 +564,287 @@ describe("filesystem AP2 store opened over the previous release's records", () =
     expect(await claim(reopened, TX2, OTHER_JOB)).toEqual(UNBOUND);
   });
 });
+
+// Independent malformed fields preserve a valid binding hash, filename and all
+// unrelated fields; otherwise the original hash mismatch masks the rule tested.
+describe("AP2 filesystem record and phase regression probes", () => {
+  const UNBOUND = { status: "corrupt", reason: "ap2-store-has-unbound-records" };
+  const MALFORMED_PHASE = { status: "corrupt", reason: "ap2-phase-binding-malformed" };
+  const recordPath = (dir: string) => join(dir, "records", `${sha256Hex(TX)}.json`);
+  const phasePath = (dir: string, idem = intent().idempotencyKey) => join(dir, "phases", `${sha256Hex(idem)}.json`);
+  const claim = (store: Ap2BindingStore, requested = intent(), now = 100) => store.claim({
+    intent: requested, owner: "probe", now, leaseDurationMs: 10, noReferenceReplayWindowMs: 1000,
+  });
+  const rehash = (value: Record<string, unknown>) => {
+    const { bindingHash: _old, ...unsigned } = value;
+    value.bindingHash = sha256Hex(canonicalize(unsigned));
+  };
+  const seed = async () => {
+    const dir = await directory();
+    const store = await createFsAp2BindingStore({ dir });
+    expect((await claim(store)).status).toBe("acquired");
+    return { dir, store };
+  };
+  const readJson = async (path: string) => JSON.parse(await readFile(path, "utf8"));
+  const padJson = (value: unknown, bytes: number) => {
+    const json = JSON.stringify(value);
+    return json + " ".repeat(bytes - Buffer.byteLength(json));
+  };
+
+  test.each(["noncanonical job", "operation hash", "intent version", "idempotency key", "legacy operation", "legacy deadline"])(
+    "M12: self-consistently rehashed %s cannot account for a current or pseudo-legacy record", async (kind) => {
+      const { dir } = await seed();
+      const path = recordPath(dir);
+      const record = await readJson(path);
+      if (kind === "noncanonical job") {
+        record.intent.jobId = JOB.toLowerCase();
+        record.intent.idempotencyKey = sha256Hex(`dacs-ap2-idem:v1:${record.intent.jobId}:2`);
+      }
+      if (kind === "operation hash") record.intent.operationHash = "f".repeat(64);
+      if (kind === "intent version") record.intent.intentVersion = "3";
+      if (kind === "idempotency key") record.intent.idempotencyKey = "f".repeat(64);
+      if (kind.startsWith("legacy")) {
+        record.intent.intentVersion = "1";
+        delete record.replayDeadline;
+        if (kind === "legacy deadline") {
+          delete record.intent.operationJson;
+          delete record.intent.operationHash;
+          record.replayDeadline = 1100;
+        }
+      }
+      rehash(record.intent);
+      await writeFile(path, JSON.stringify(record));
+      await rm(join(dir, "phases"), { recursive: true });
+      const reopened = await createFsAp2BindingStore({ dir });
+      expect(await claim(reopened, intent(OTHER_JOB, TX2))).toEqual(UNBOUND);
+      expect(await readdir(join(dir, "phases"))).toEqual([]);
+      expect(await readdir(join(dir, "records"))).toEqual([`${sha256Hex(TX)}.json`]);
+      expect((await claim(reopened)).status).toBe("corrupt");
+    },
+  );
+
+  test.each([100.5, Number.MAX_SAFE_INTEGER + 1, 99, 100])("M13: retained deadline %s refuses with the exact malformed-record decision", async (deadline) => {
+    const { dir } = await seed();
+    const record = await readJson(recordPath(dir));
+    record.replayDeadline = deadline;
+    await writeFile(recordPath(dir), JSON.stringify(record));
+    const reopened = await createFsAp2BindingStore({ dir });
+    expect(await claim(reopened)).toEqual({ status: "corrupt", reason: Math.abs(deadline) <= Number.MAX_SAFE_INTEGER ? "stored AP2 binding record is malformed" : "stored AP2 binding record is not stable wire JSON" });
+    // Its existing phase still accounts for this corrupt record.
+    expect((await claim(reopened, intent(OTHER_JOB, TX2))).status).toBe("acquired");
+  });
+
+  test("M13: deadline strictly after creation survives reopening", async () => {
+    const { dir } = await seed();
+    const record = await readJson(recordPath(dir));
+    record.replayDeadline = 101;
+    await writeFile(recordPath(dir), JSON.stringify(record));
+    expect(await claim(await createFsAp2BindingStore({ dir }))).toMatchObject({ status: "waiting", createdAt: 100, replayDeadline: 101 });
+  });
+
+  test.each(["version", "key", "extra field", "duplicate ID", "numeric ID", "empty ID", "invalid JSON"])(
+    "M14/F9: phase with only invalid %s refuses without rewriting bytes", async (kind) => {
+      const { dir, store } = await seed();
+      const path = phasePath(dir);
+      const phase = await readJson(path);
+      if (kind === "version") phase.phaseVersion = 2;
+      if (kind === "key") phase.idempotencyKey = "f".repeat(64);
+      if (kind === "extra field") phase.extra = true;
+      if (kind === "duplicate ID") phase.transactionIds.push(TX);
+      if (kind === "numeric ID") phase.transactionIds.push(3);
+      if (kind === "empty ID") phase.transactionIds.push("");
+      const bytes = kind === "invalid JSON" ? '{"phaseVersion":' : JSON.stringify(phase);
+      await writeFile(path, bytes);
+      expect(await claim(store)).toEqual(MALFORMED_PHASE);
+      expect(await claim(await createFsAp2BindingStore({ dir }))).toEqual(MALFORMED_PHASE);
+      expect(await readFile(path, "utf8")).toBe(bytes);
+      expect(await readdir(join(dir, "records"))).toHaveLength(1);
+    },
+  );
+
+  test.each(["symlink", "directory", "fifo"])("M14: a phase %s is refused without reading or replacing it", async (kind) => {
+    const { dir, store } = await seed();
+    const path = phasePath(dir);
+    const bytes = await readFile(path);
+    await rm(path);
+    if (kind === "symlink") {
+      const target = join(dir, "phase-target");
+      await writeFile(target, bytes);
+      await symlink(target, path);
+    } else if (kind === "directory") await mkdir(path);
+    else await execute("mkfifo", [path]);
+    expect(await claim(store)).toEqual(MALFORMED_PHASE);
+    await writeFile(recordPath(dir), "not-json");
+    vi.mocked(readFile).mockClear();
+    const reopened = await createFsAp2BindingStore({ dir });
+    // Startup accounting must reject the path type before trying to read it.
+    expect(vi.mocked(readFile).mock.calls.filter(([name]) => name === path)).toEqual([]);
+    expect(await claim(reopened)).toEqual(MALFORMED_PHASE);
+    expect((await lstat(path)).isSymbolicLink()).toBe(kind === "symlink");
+  });
+
+  test.each(["symlink", "directory", "fifo", "oversized JSON"])("M15: a correctly named record containing %s remains unbound", async (kind) => {
+    const { dir } = await seed();
+    const path = recordPath(dir);
+    const record = await readJson(path);
+    await rm(join(dir, "phases"), { recursive: true });
+    await rm(path);
+    if (kind === "symlink") {
+      const target = join(dir, "record-target");
+      await writeFile(target, JSON.stringify(record));
+      await symlink(target, path);
+    } else if (kind === "directory") await mkdir(path);
+    else if (kind === "fifo") await execute("mkfifo", [path]);
+    else await writeFile(path, padJson(record, 1048577));
+    vi.mocked(readFile).mockClear();
+    const reopened = await createFsAp2BindingStore({ dir });
+    expect(vi.mocked(readFile).mock.calls.filter(([name]) => name === path)).toEqual([]);
+    expect(await claim(reopened, intent(OTHER_JOB, TX2))).toEqual(UNBOUND);
+    expect(await readdir(join(dir, "phases"))).toEqual([]);
+    expect((await lstat(path)).isSymbolicLink()).toBe(kind === "symlink");
+  });
+
+  test.each([16384, 16385])("M14/M15/F8: valid padded phase JSON at %i bytes pins the read and accounting limits", async (bytes) => {
+    const { dir, store } = await seed();
+    const path = phasePath(dir);
+    const phase = await readJson(path);
+    await writeFile(path, padJson(phase, bytes));
+    expect((await stat(path)).size).toBe(bytes);
+    expect(await claim(store)).toMatchObject(bytes === 16384 ? { status: "waiting" } : MALFORMED_PHASE);
+    await writeFile(recordPath(dir), "not-json");
+    vi.mocked(readFile).mockClear();
+    const reopened = await createFsAp2BindingStore({ dir });
+    const phaseReads = vi.mocked(readFile).mock.calls.filter(([name]) => name === path);
+    expect(phaseReads).toHaveLength(bytes === 16384 ? 2 : 0);
+    expect(await claim(reopened, intent(OTHER_JOB, TX2))).toMatchObject(bytes === 16384 ? { status: "acquired" } : UNBOUND);
+    expect(await readFile(path, "utf8")).toBe(padJson(phase, bytes));
+  });
+
+  test.each([1048576, 1048577])("M15/F8: valid padded record JSON at %i bytes pins the accounting limit", async (bytes) => {
+    const { dir } = await seed();
+    const path = recordPath(dir);
+    await writeFile(path, padJson(await readJson(path), bytes));
+    await rm(join(dir, "phases"), { recursive: true });
+    const reopened = await createFsAp2BindingStore({ dir });
+    expect(await claim(reopened, intent(OTHER_JOB, TX2))).toMatchObject(bytes === 1048576 ? { status: "acquired" } : UNBOUND);
+    expect(await readdir(join(dir, "records"))).toHaveLength(bytes === 1048576 ? 2 : 1);
+    expect((await stat(path)).size).toBe(bytes);
+  });
+
+  test("M16: same open instance restores a removed phase with exactly its retained transaction", async () => {
+    const { dir, store } = await seed();
+    await rm(phasePath(dir));
+    expect(await claim(store, intent(), 111)).toMatchObject({ status: "acquired", lease: { generation: 2 } });
+    expect(await readJson(phasePath(dir))).toEqual({ phaseVersion: 1, idempotencyKey: intent().idempotencyKey, transactionIds: [TX] });
+    expect(await claim(store, intent(JOB, TX2), 112)).toEqual(PHASE_TAKEN);
+    expect(await readdir(join(dir, "records"))).toHaveLength(1);
+  });
+
+  test.each(["temporary", "prefix", "suffix"])("F7: valid crash/extra-name %s entries do not affect startup accounting", async (kind) => {
+    const { dir } = await seed();
+    const record = await readJson(recordPath(dir));
+    const phase = await readJson(phasePath(dir));
+    await rm(recordPath(dir));
+    await rm(phasePath(dir));
+    const decorate = (name: string) => kind === "temporary" ? `${name}.crash.tmp` : kind === "prefix" ? `extra-${name}` : `${name}.extra`;
+    await writeFile(join(dir, "records", decorate(`${sha256Hex(TX)}.json`)), JSON.stringify(record));
+    await writeFile(join(dir, "phases", decorate(`${sha256Hex(phase.idempotencyKey)}.json`)), JSON.stringify(phase));
+    expect((await claim(await createFsAp2BindingStore({ dir }), intent(JOB, TX2))).status).toBe("acquired");
+  });
+
+  test.each(["temporary", "prefix", "suffix"])("F7: a phase %s name cannot account for an undecodable canonical record", async (kind) => {
+    const { dir } = await seed();
+    const canonicalPath = phasePath(dir);
+    const phase = await readJson(canonicalPath);
+    const name = `${sha256Hex(phase.idempotencyKey)}.json`;
+    const decorated = kind === "temporary" ? `${name}.crash.tmp` : kind === "prefix" ? `extra-${name}` : `${name}.extra`;
+    const path = join(dir, "phases", decorated);
+    await writeFile(path, JSON.stringify(phase));
+    await rm(canonicalPath);
+    await writeFile(recordPath(dir), "not-json");
+    vi.mocked(readFile).mockClear();
+    const reopened = await createFsAp2BindingStore({ dir });
+    expect(vi.mocked(readFile).mock.calls.filter(([read]) => read === path)).toEqual([]);
+    expect(await claim(reopened, intent(OTHER_JOB, TX2))).toEqual(UNBOUND);
+  });
+
+  test.each([64, 65])("F8: %i distinct phase transactions pins undecodable-record accounting", async (count) => {
+    const { dir } = await seed();
+    const ids = [TX, ...Array.from({ length: count - 1 }, (_, n) => `accounted-${n}`)];
+    const phase = { phaseVersion: 1, idempotencyKey: intent().idempotencyKey, transactionIds: ids };
+    await writeFile(phasePath(dir), JSON.stringify(phase));
+    await writeFile(recordPath(dir), "not-json");
+    const reopened = await createFsAp2BindingStore({ dir });
+    expect(await claim(reopened, intent(OTHER_JOB, TX2))).toMatchObject(count === 64 ? { status: "acquired" } : UNBOUND);
+    expect(await claim(reopened)).toEqual(count === 64 ? { status: "corrupt", reason: "ap2-phase-binding-conflict" } : MALFORMED_PHASE);
+  });
+
+  test("F9: simultaneous upgrade scans append one duplicate-free phase entry", async () => {
+    const dir = await directory();
+    await writeMainFormatAp2Record(dir, { transactionId: TX, jobId: JOB, phaseIndex: 2 });
+    // Pause both scans after their first absent read and before either holds
+    // the phase lock. This forces the second scan to recheck under that lock.
+    const lock = join(dir, "locks", `${sha256Hex(`ap2-phase:${intent().idempotencyKey}`)}.lock`);
+    await mkdir(lock, { recursive: true });
+    await writeFile(join(lock, "owner"), JSON.stringify({ token: "upgrade-probe", pid: process.pid }));
+    const opening = Promise.all([createFsAp2BindingStore({ dir }), createFsAp2BindingStore({ dir })]);
+    const deadline = Date.now() + 2000;
+    try {
+      while ((await readdir(join(dir, "locks"))).filter((name) => name.endsWith(".candidate")).length < 2) {
+        if (Date.now() >= deadline) throw new Error("upgrade scans did not both reach the held phase lock");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    } finally { await rm(lock, { recursive: true }); }
+    const stores = await opening;
+    expect(await readJson(phasePath(dir))).toEqual({ phaseVersion: 1, idempotencyKey: intent().idempotencyKey, transactionIds: [TX] });
+    for (const store of stores) expect(await claim(store, intent(JOB, TX2))).toEqual(PHASE_TAKEN);
+  });
+
+  test.each([{ jobId: "job-1" }, { phaseIndex: -1 }, { phaseIndex: 0.5 }, { idempotencyKey: "f".repeat(64) }])(
+    "F4/F10: direct malformed scope %j yields structured refusal and writes no binding", async (change) => {
+      for (const store of [createInMemoryAp2BindingStore(), await createFsAp2BindingStore({ dir: await directory() })]) {
+        expect(await claim(store, { ...intent(), ...change })).toEqual({ status: "corrupt", reason: "ap2-binding-claim-input-invalid" });
+        expect((await claim(store)).status).toBe("acquired");
+      }
+    },
+  );
+
+  test.each([0, -1, 0.5, Number.MAX_SAFE_INTEGER])("F10: direct filesystem replay window %s refuses and writes nothing", async (window) => {
+    const dir = await directory();
+    const store = await createFsAp2BindingStore({ dir });
+    expect(await store.claim({ intent: intent(), owner: "probe", now: 100, leaseDurationMs: 10, noReferenceReplayWindowMs: window }))
+      .toEqual({ status: "corrupt", reason: "ap2-binding-claim-input-invalid" });
+    expect(await readdir(join(dir, "records"))).toEqual([]);
+    expect(await readdir(join(dir, "phases"))).toEqual([]);
+  });
+
+  test.each(["version", "operation hash"])("F4: memory store refuses reuse of an invalid retained %s", async (kind) => {
+    const store = createInMemoryAp2BindingStore();
+    // The memory test store permits seeding raw intents; exercise its separate
+    // retained-record defense without changing bindingHash or requested bytes.
+    const retained = { ...intent(), ...(kind === "version" ? { intentVersion: "1" } : { operationHash: "f".repeat(64) }) } as never;
+    await claim(store, retained);
+    expect(await claim(store, retained, 111)).toEqual({ status: "conflict", reason: "ap2-retained-operation-conflict" });
+  });
+
+  test.each([undefined, 1000])("F4: waiting memory claims preserve optional replay deadline (%s)", async (window) => {
+    const store = createInMemoryAp2BindingStore();
+    const args = { intent: intent(), owner: "first", now: 100, leaseDurationMs: 10,
+      ...(window === undefined ? {} : { noReferenceReplayWindowMs: window }) };
+    expect((await store.claim(args)).status).toBe("acquired");
+    const waiting = await store.claim({ ...args, owner: "second", now: 101 });
+    expect(waiting).toMatchObject({ status: "waiting", createdAt: 100, lease: { owner: "first", generation: 1 } });
+    if (window === undefined) expect(waiting).not.toHaveProperty("replayDeadline");
+    else expect(waiting).toHaveProperty("replayDeadline", 1100);
+  });
+});
+
+
+test("F9: many durable phases close every handle in a child limited to 64 descriptors", async () => {
+  const dir = await directory();
+  const loader = fileURLToPath(new URL("../fixtures/settlementProcessLoader.mjs", import.meta.url));
+  const worker = fileURLToPath(new URL("../fixtures/ap2PhaseDescriptorWorker.ts", import.meta.url));
+  const { stdout } = await execute("bash", ["-c", 'ulimit -n 64; exec "$@"', "ap2-descriptor-probe",
+    process.execPath, "--loader", loader, worker, dir], { timeout: 20000 });
+  expect(JSON.parse(stdout)).toEqual({ phases: 96, allHandlesClosed: true });
+}, 25000);

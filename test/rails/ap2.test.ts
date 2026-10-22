@@ -1,6 +1,8 @@
 import { ap2ProfileScope, AP2_TEST_RECORD, AP2_TEST_PROFILE, AP2_TEST_PEER } from "../fixtures/ap2Profile.js";
 import { writeMainFormatAp2Record } from "../fixtures/ap2LegacyRecord.js";
 import { AP2_IMPLEMENTED_MODULE_VERSIONS, authenticateAp2ProfileAdmission } from "../../src/rails/ap2Admission.js";
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
+import { createStripeAp2Integration } from "../../src/rails/ap2Stripe.js";
 import { createFsAp2BindingStore } from "../../src/rails/ap2SettlementFs.js";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
@@ -755,4 +757,187 @@ test.each([
   expect(submit).not.toHaveBeenCalled();
   expect(status).not.toHaveBeenCalled();
   expect(await readdir(join(dir, "records"))).toHaveLength(1);
+});
+
+// Keep each malformed case otherwise valid, so a different refusal cannot mask it.
+describe("AP2 admission and retained-operation regression probes", () => {
+  const chain = {
+    ...PROFILE_SCOPE, checkoutMandatePresent: true, checkoutMandateVerified: true,
+    paymentMandatePresent: true, paymentMandateVerified: true,
+    checkoutJws: CHECKOUT_JWS, paymentTransactionId: TRANSACTION_ID,
+    algorithm: "ES256", signatureGeneration: "non-deterministic" as const,
+  };
+  const authority = (authenticateParticipants = vi.fn(async () => [AP2_TEST_RECORD])) => ({
+    jobId: JOB_ID, peerIdentity: AP2_TEST_PEER, expectedProfile: AP2_TEST_PROFILE, authenticateParticipants,
+  });
+
+  test("M1: rejects authority, scope and resolver proxies without executing traps", async () => {
+    const trap = vi.fn(() => { throw new Error("proxy trap executed"); });
+    const handler = { get: trap, getOwnPropertyDescriptor: trap, ownKeys: trap, apply: trap };
+    const auth = authority();
+    await expect(authenticateAp2ProfileAdmission(new Proxy(auth, handler))).rejects.toThrow(/closed stable data/);
+    await expect(authenticateAp2ProfileAdmission({ ...auth,
+      authenticateParticipants: new Proxy(auth.authenticateParticipants, handler),
+    })).rejects.toThrow(/handshake resolver/);
+    const scope = new Proxy(chain, handler);
+    expect(admitAp2MandateChain(scope)).toMatchObject({ decision: "error", reserveAp2Binding: false, submitProviderPayment: false });
+    expect(await advanceAp2Settlement(new Proxy(input(), handler))).toEqual({ status: "failed", reason: "ap2-profile-admission-refused" });
+    expect(trap).not.toHaveBeenCalled();
+    expect(auth.authenticateParticipants).not.toHaveBeenCalled();
+  });
+
+  test("M2/F1/F6: genuine phase-zero admission submits with epoch-zero creation and exact key", async () => {
+    expect(PROFILE_SCOPE.profileAdmission.kind).toBe("ap2-profile-admission");
+    expect(admitAp2MandateChain({ ...chain, phaseIndex: 0 })).toEqual({
+      decision: "pass", derivedTransactionId: TRANSACTION_ID, reserveAp2Binding: true, submitProviderPayment: true,
+    });
+    const submit = vi.fn(async () => ({ disposition: "indeterminate" as const, reason: "response-lost" }));
+    const store = createInMemoryAp2BindingStore();
+    const claim = vi.spyOn(store, "claim");
+    expect(await advanceAp2Settlement(input({ phaseIndex: 0, now: () => 0, store, provider: provider({ submit }) })))
+      .toEqual({ status: "indeterminate", reason: "response-lost" });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit.mock.calls[0]).toBeDefined();
+    expect(claim.mock.calls[0]![0].intent.idempotencyKey).toBe(sha256Hex(`dacs-ap2-idem:v1:${JOB_ID}:0`));
+    expect(await claim.mock.results[0]!.value).toMatchObject({ status: "acquired", createdAt: 0, replayDeadline: 86400000 });
+    expect(admitAp2MandateChain({ ...chain, phaseIndex: -0 })).toMatchObject({ decision: "error", submitProviderPayment: false });
+  });
+
+  test.each([undefined, { ...PROFILE_SCOPE.profileAdmission }])("M3: a complete chain needs the original capability (%j)", (profileAdmission) => {
+    expect(admitAp2MandateChain({ ...chain, profileAdmission } as never)).toEqual({
+      decision: "fail", reason: "ap2-profile-admission-refused", reserveAp2Binding: false, submitProviderPayment: false,
+    });
+  });
+
+  test.each([{ jobId: OTHER_JOB_ID }, { peerIdentity: "did:demos:other-peer" }])("M3: authentic capability cannot change scope %j", async (scope) => {
+    const args = input(scope);
+    const calls = [vi.spyOn(args.verifier, "verifyCheckoutMandate"), vi.spyOn(args.verifier, "verifyPaymentMandate"),
+      vi.spyOn(args.store, "claim"), vi.spyOn(args.provider, "submit"), vi.spyOn(args.provider, "readAttestedStatus")];
+    expect(await advanceAp2Settlement(args)).toEqual({ status: "failed", reason: "ap2-profile-admission-refused" });
+    for (const call of calls) expect(call).not.toHaveBeenCalled();
+  });
+
+  test.each([null, [], "parameters", 1, false])("M6: provider parameters %j refuse before either verifier", async (parameters) => {
+    const args = input();
+    args.provider.operation = { ...args.provider.operation, parameters } as never;
+    const calls = [vi.spyOn(args.verifier, "verifyCheckoutMandate"), vi.spyOn(args.verifier, "verifyPaymentMandate"),
+      vi.spyOn(args.store, "claim"), vi.spyOn(args.provider, "submit"), vi.spyOn(args.provider, "readAttestedStatus")];
+    expect(await advanceAp2Settlement(args)).toEqual({ status: "indeterminate", reason: "ap2-mandate-verification-unavailable" });
+    for (const call of calls) expect(call).not.toHaveBeenCalled();
+  });
+
+  test.each(["payeeId", "currencyMinorUnits"])("M6/F6: Stripe retains the complete descriptor and refuses a changed %s", async (field) => {
+    const fetchImpl = vi.fn(async () => { throw new Error("response-lost"); });
+    const proxyFetch = vi.fn();
+    const createCredential = ["rk", "test", "CreateCredential123"].join("_");
+    const options = { createCredential, statusCredential: ["rk", "test", "StatusCredential456"].join("_"),
+      payeeId: "merchant-1", currencyMinorUnits: 2, substrate: { proxyFetch }, fetchImpl };
+    const first = createStripeAp2Integration(options).provider;
+    expect(first.operation).toEqual({ destination: "https://api.stripe.com/v1/payment_intents",
+      idempotencyNamespace: sha256Hex(createCredential),
+      parameters: { adapterVersion: "stripe-ap2-v1", payeeId: "merchant-1", currencyMinorUnits: 2 } });
+    const args = input({ provider: first });
+    expect((await advanceAp2Settlement(args)).status).toBe("indeterminate");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const changed = createStripeAp2Integration({ ...options, [field]: field === "payeeId" ? "other" : 3 }).provider;
+    expect(await advanceAp2Settlement({ ...args, provider: changed, now: () => 1101 }))
+      .toEqual({ status: "failed", reason: "ap2-retained-operation-conflict" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(proxyFetch).not.toHaveBeenCalled();
+  });
+
+  test("M7: both verifiers see deeply frozen artifacts and cannot change retained/submitted bytes", async () => {
+    const args = input();
+    for (const name of ["verifyCheckoutMandate", "verifyPaymentMandate"] as const) {
+      const original = args.verifier[name];
+      args.verifier[name] = vi.fn(async (artifact: Readonly<object>) => {
+        const nested = (artifact as { nested: { retained: boolean } }).nested;
+        expect(Object.isFrozen(artifact)).toBe(true);
+        expect(Object.isFrozen(nested)).toBe(true);
+        expect(() => { nested.retained = false; }).toThrow(TypeError);
+        return original(artifact);
+      }) as never;
+    }
+    const submit = vi.spyOn(args.provider, "submit");
+    const claim = vi.spyOn(args.store, "claim");
+    expect((await advanceAp2Settlement(args)).status).toBe("settled");
+    expect(submit.mock.calls[0]![0]).toMatchObject({ checkoutMandate: args.checkoutMandate, paymentMandate: args.paymentMandate });
+    const retained = JSON.parse(claim.mock.calls[0]![0].intent.operationJson);
+    expect(retained.checkoutMandate.nested.retained).toBe(true);
+    expect(retained.paymentMandate.nested.retained).toBe(true);
+    for (const name of ["verifyCheckoutMandate", "verifyPaymentMandate"] as const) expect(args.verifier[name]).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(["amount", "payee", "agreementHash", "operationJson"])("M8: refuses store-only alteration of %s", async (field) => {
+    const args = input({ checkoutMandate: { label: "caf\u00e9" } });
+    const original = args.store.claim.bind(args.store);
+    args.store.claim = async (request) => {
+      const result = await original(request);
+      if (!("intent" in result)) throw new Error("expected an intent-bearing claim");
+      const altered = { ...result.intent };
+      if (field === "operationJson") {
+        altered.operationJson = altered.operationJson.replace("caf\u00e9", "cafe\u0301");
+        expect(altered.operationJson).not.toBe(result.intent.operationJson);
+        expect(canonicalize(altered)).toBe(canonicalize(result.intent));
+      } else Object.assign(altered, { [field]: field === "agreementHash" ? "c".repeat(64) : "20" });
+      return { ...result, intent: altered };
+    };
+    const submit = vi.spyOn(args.provider, "submit");
+    const status = vi.spyOn(args.provider, "readAttestedStatus");
+    expect(await advanceAp2Settlement(args)).toEqual({ status: "failed", reason: "ap2-binding-store-intent-mismatch" });
+    expect(submit).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+  });
+
+  test.each([{ createdAt: -1, replayDeadline: 86400000 - 1 }, { createdAt: 0.5, replayDeadline: 86400000 }, { replayDeadline: 1000 + 86400000 + 1 }])("M9: malformed custom-store time %j prevents dispatch", async (change) => {
+    const args = input();
+    const original = args.store.claim.bind(args.store);
+    args.store.claim = async (request) => ({ ...await original(request), ...change });
+    // The original store retains a current lease; only returned timestamps differ.
+    const submit = vi.spyOn(args.provider, "submit");
+    const status = vi.spyOn(args.provider, "readAttestedStatus");
+    expect(await advanceAp2Settlement(args)).toEqual({ status: "indeterminate", reason: "ap2-provider-replay-window-expired" });
+    expect(submit).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+  });
+
+  test.each(["non-hex pin", "short pin", "extra policy field", "extra tuple field"])("M10: matched invalid local/peer %s refuses before resolution", async (kind) => {
+    const expectedProfile = structuredClone(AP2_TEST_PROFILE);
+    if (kind === "non-hex pin") expectedProfile.releasePin = "g".repeat(40);
+    if (kind === "short pin") expectedProfile.releasePin = "a".repeat(39);
+    if (kind === "extra policy field") Object.assign(expectedProfile, { extra: true });
+    if (kind === "extra tuple field") Object.assign(expectedProfile.moduleVersions, { extra: "0.1" });
+    const authenticateParticipants = vi.fn(async () => [{ ...AP2_TEST_RECORD, ...expectedProfile }]);
+    await expect(authenticateAp2ProfileAdmission({ ...authority(authenticateParticipants), expectedProfile })).rejects.toThrow(/invalid local profile policy/);
+    expect(authenticateParticipants).not.toHaveBeenCalled();
+  });
+
+  test.each([3, ""])("M11: malformed identity %j in an unrelated authenticated record refuses whole admission", async (identity) => {
+    const authenticateParticipants = vi.fn(async () => [AP2_TEST_RECORD, { ...AP2_TEST_RECORD, identity }] as never);
+    await expect(authenticateAp2ProfileAdmission(authority(authenticateParticipants))).rejects.toThrow(/participant profile admission refused/);
+    expect(authenticateParticipants).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([3, ""])("F5: invalid local peer %j never invokes the resolver", async (peerIdentity) => {
+    const auth = authority();
+    await expect(authenticateAp2ProfileAdmission({ ...auth, peerIdentity } as never)).rejects.toThrow(/invalid local profile policy/);
+    expect(auth.authenticateParticipants).not.toHaveBeenCalled();
+  });
+
+  test("F2: transaction reuse in another phase is replay; same-phase changed operation is conflict", async () => {
+    const args = input();
+    expect((await advanceAp2Settlement(args)).status).toBe("settled");
+    expect(await advanceAp2Settlement({ ...args, phaseIndex: 4 })).toEqual({ status: "failed", reason: "ap2-transaction-id-replay" });
+    expect(await advanceAp2Settlement({ ...args, checkoutMandate: { changed: true } })).toEqual({ status: "failed", reason: "ap2-retained-operation-conflict" });
+  });
+
+  test("F3: a stale fence before first dispatch has a normalized reason and no provider calls", async () => {
+    const args = input();
+    args.store.isCurrent = vi.fn(async () => false);
+    const submit = vi.spyOn(args.provider, "submit");
+    const status = vi.spyOn(args.provider, "readAttestedStatus");
+    expect(await advanceAp2Settlement(args)).toEqual({ status: "indeterminate", reason: "ap2-effect-fence-stale" });
+    expect(submit).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+  });
 });
