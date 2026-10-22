@@ -19,9 +19,6 @@ import {
   isOutcomeOnlyLogLookup,
   isStoreAttemptRecorder,
   isStoreLookupPair,
-  isStoreOnceFor,
-  isStoreReconcileFence,
-  isUnreadableOutcomeLookup,
   settlementBindingHash,
   settlementKey,
   type SettlementBinding,
@@ -388,10 +385,9 @@ export interface PayDemSettlementAuditContext extends PayDemSettlementRecoveryCo
    * it, or a result this bridge submitted or already bound. A returned entry
    * must also name this exact hash and recovery tuple, but it is the reconciler's
    * object, so it never stands in for that record. An injected store's records
-   * cannot substitute either. Compatibility paths for logs without attempt records can also
-   * use that log's saved outcome, or finish through the store's own expired
-   * generation. The latter asks the reconciler again with the plain recovery
-   * context (without `txHash`); its answer must name this same retained hash.
+   * cannot substitute either. A log without attempt records can also use
+   * that log's saved outcome. An audit never claims a generation or records
+   * a new payment binding from reconciliation.
    * Recovery of pre-upgrade state is outside the current SDK's support scope.
    * Throw when a loaded entry conflicts with the record, and never return
    * `null` for the retained hash: absence never authorizes a new transfer.
@@ -2828,11 +2824,8 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * outcome agree, and a fresh SDK record read confirms it. It counts the
  * retained hash when the key's attempt record in a `createIdempotencyStore`
  * store, or a result this bridge
- * submitted and that record accepted, names that hash. When no attempt record
- * names any hash for the key, it finishes the hash only through that store's
- * own `once`: a held generation refuses, and an expired one is reconciled under
- * that key's generation, accepting only an answer that names the retained
- * hash, which that generation records and saves. `createPayDemRail`
+ * submitted and that record accepted, names that hash. Otherwise it refuses
+ * without acquiring a generation or writing a record. `createPayDemRail`
  * writes the record through the fence's `recordAttempt` before its
  * broadcast. It always reads the record, which
  * refuses another hash whatever this bridge holds. A new transfer runs only
@@ -2845,11 +2838,8 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * starts no new transfer (nothing is signed or sent, and the intent is
  * released). On a log without the pair, an outcome the log holds for the
  * exact terms names the hash once the reconciliation agrees on block and
- * outcome; on such a log without `readOutcome` the store's lookup refuses,
- * so the audit finishes through the store's `once` (an expired generation
- * under the exact terms, or the outcome that very store holds, never a
- * wrapper's `once` beside its lookup). Any other rail-log outcome or an
- * injected store's records never do, and
+ * outcome; without `readOutcome` the audit refuses. Any other rail-log
+ * outcome or an injected store's records never do, and
  * neither does a prepared-transfer journal entry the reconciliation returns:
  * that entry is checked against this exact payment tuple and can refuse the
  * audit, but never counts the hash on its own. Once
@@ -2926,21 +2916,6 @@ export function payDemSettle(
   // its log without a claim, so a restart can finish what the transfer did.
   const storeLookupsPaired = readOutcomeProperty.found &&
     isStoreLookupPair(storeReadAttempt, readOutcomeProperty.value);
-  // A `createIdempotencyStore` store over a log with no `readOutcome` (one
-  // written before it existed): its lookup refuses, so a retained hash is
-  // finished through its `once` alone.
-  const outcomeUnreadable = readOutcomeProperty.found &&
-    isUnreadableOutcomeLookup(readOutcomeProperty.value);
-  // Whether the `once` is the method of the very store whose lookup is
-  // `readOutcome`: a wrapper can put its own `once` (or another store's) next
-  // to a store's lookup, and only the pair answers for that store's log.
-  const storeOnceIsLookups = readOutcomeProperty.found &&
-    isStoreOnceFor(stableMethodTarget(store, "once", "pay-dem settlement store once"), readOutcomeProperty.value);
-  // The store's own outcome lookup, which checks its key and terms itself.
-  const storeOutcomeLookup = readOutcomeProperty.found &&
-    isBindingCheckedOutcomeLookup(readOutcomeProperty.value)
-    ? readOutcomeProperty.value
-    : undefined;
   const configuredRecipient = optionalStableString(
     cfg,
     "recipient",
@@ -3020,7 +2995,7 @@ export function payDemSettle(
   // before reuse. This prevents a `(railId, jobId, phaseIndex)` collision from
   // inheriting a result for different committed terms. `boundToKey` is true
   // only for a hash this bridge submitted and the key's attempt record accepted
-  // (or that its fence has no record for), or that the record names: a
+  // or that the record names: a
   // reconciler's answer, with or without a journal entry, may be another job's
   // transfer of the same parties and amount. The record, when the store keeps
   // one, always overrides this cache.
@@ -3170,7 +3145,6 @@ export function payDemSettle(
     const readRecovered = async (
       claimed: SettleResult,
       failureFinal: boolean,
-      unboundReason?: string,
     ): Promise<SettleResult> => {
       if (sdkRecordReader === undefined) return heldPayDemResult(claimed);
       const read = await sdkRecordReader(Object.freeze({
@@ -3181,7 +3155,6 @@ export function payDemSettle(
       }));
       if (read.state === "indeterminate") {
         throw new DacsError(
-          (unboundReason === undefined ? "" : `${unboundReason}; `) +
           `pay-dem recovery could not establish the node record for ${claimed.txHash}: ${read.reason}; ` +
             "the payment stays unresolved and is never resubmitted",
           read.cause === undefined ? undefined : { cause: read.cause },
@@ -3281,16 +3254,11 @@ export function payDemSettle(
           }
           throw new DacsError("pay-dem retained transaction requires read-only reconciliation; refusing reuse or rebroadcast");
         }
-        // Over a log that cannot answer, no outcome is read before or after the
-        // reconciliation; the store's `once` checks the one it holds below.
-        const unreadableOutcome = async (): Promise<SettleResult | null> => null;
-        const readOutcomeIfAny = outcomeUnreadable ? unreadableOutcome : readOutcome;
-        const before = await readOutcomeIfAny();
+        const before = await readOutcome();
         // The durable record is always checked, even when this bridge bound the
         // hash itself: the record wins over anything held in memory.
         const recordedBefore = await attemptNames() ||
           (priorAuthenticated?.boundToKey === true && priorAuthenticated.result.txHash === retainedTxHash);
-        const unbound = "pay-dem: no SDK record binds the retained transaction to this payment (no attempt record of this key in a createIdempotencyStore store names it; an injected store's records never count); refusing reuse or rebroadcast";
         const recovered = await reconcile(Object.freeze({ ...context, txHash: retainedTxHash }));
         if (recovered === null) {
           throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
@@ -3300,14 +3268,10 @@ export function payDemSettle(
         const captured = await readRecovered(
           capturePayDemReconciliation(recovered, context, retainedTxHash),
           true,
-          // An older log cannot expose its saved outcome yet. If this hash
-          // also has no readable node record, preserve the binding refusal
-          // along with the reason that prevented further authentication.
-          outcomeUnreadable && !recordedBefore ? unbound : undefined,
         );
         // A different store/bridge can finish while the chain read is pending.
         // Recheck without a lease or outcome write before returning any verdict.
-        const after = await readOutcomeIfAny();
+        const after = await readOutcome();
         // A held result reports no outcome, so it contradicts none.
         for (const existing of isHeldPayDemResult(captured)
           ? []
@@ -3335,76 +3299,12 @@ export function payDemSettle(
           authenticatedResults.set(key, { context, result: captured, boundToKey: true });
           return publicPayDemResult(captured, expectedPayee);
         }
-        // No attempt record names any hash for this key: a log can predate
-        // them, or a payment have been in flight across an upgrade.
-        // This compatibility path finishes only through the key's own
-        // `createIdempotencyStore` store's `once`, which reconciles a generation it
-        // acquired after it expired under these exact terms, and the
-        // reconciler is asked for this key's payment, not for the retained
-        // hash, so its answer must name that hash on its own. That generation
-        // then records the hash as the key's attempt and saves the outcome. A
-        // held generation refuses, a key the store holds nothing for starts
-        // nothing (submit refuses and the intent is released), and an outcome
-        // saved without a record still never binds. Any other store's `once`
-        // or fence never finishes it.
-        if (storeOutcomeLookup === undefined) throw new DacsError(unbound);
-        let reconciledUnderLease = false;
-        const finishedRaw = await storeOnce(
-          key,
-          binding,
-          async () => Object.freeze({
-            disposition: "not-invoked" as const,
-            result: Object.freeze({
-              ok: false, txHash: "", payer: payerAddress, payee: payeeAddress, chainId: network,
-            }),
-          }),
-          async (reconcileKey, fence) => {
-            const fenceKey = fence === undefined
-              ? undefined
-              : stableDataProperty(fence, "settlementKey", "pay-dem effect fence settlementKey");
-            const fenceTerms = fence === undefined
-              ? undefined
-              : stableDataProperty(fence, "bindingHash", "pay-dem effect fence bindingHash");
-            if (reconcileKey !== key || fence === undefined || !isStoreReconcileFence(fence, storeOutcomeLookup) ||
-                fenceKey?.found !== true || fenceKey.value !== key ||
-                fenceTerms?.found !== true || fenceTerms.value !== settlementBindingHash(binding)) {
-              throw new DacsError(
-                "pay-dem retained transaction is finished only through the settlement store's own expired generation; refusing reuse or rebroadcast",
-              );
-            }
-            const found = await reconcile(context);
-            if (found === null) {
-              throw new DacsError("pay-dem retained transaction contradicts reconciliation proof of absence; refusing reuse or rebroadcast");
-            }
-            const confirmed = capturePayDemReconciliation(found, context);
-            if (confirmed.txHash !== retainedTxHash) {
-              throw new DacsError("pay-dem reconciliation of this key does not name the retained transaction; refusing reuse or rebroadcast");
-            }
-            if (confirmed.blockNumber !== captured.blockNumber || !sameSettledOutcome(confirmed, captured)) {
-              throw new DacsError("pay-dem retained transaction reconciliation changed between reads; refusing reuse or rebroadcast");
-            }
-            // Through this generation's own fence, so a restart reads it back.
-            await canonicalAttemptFence(fence)?.recordAttempt?.(retainedTxHash);
-            reconciledUnderLease = true;
-            return confirmed;
-          },
+        // Auditing cannot establish this key's payment identity. In particular,
+        // never claim an intent or promote a reconciler's answer to an attempt
+        // record: a crash could leave an unpaid key looking like a submission.
+        throw new DacsError(
+          "pay-dem: no SDK record binds the retained transaction to this payment (no attempt record of this key in a createIdempotencyStore store names it; an injected store's records never count); refusing reuse or rebroadcast",
         );
-        // Over a log whose outcomes cannot be read back, the outcome the store
-        // itself holds for these exact terms names the hash, as on a log that
-        // keeps no attempt records, once the checks below agree with the
-        // reconciliation of the hash. Only when this `once` is that store's
-        // own: a wrapper's `once` (or another store's) returns what its
-        // author likes, under any key.
-        const heldNamesHash = outcomeUnreadable && storeOnceIsLookups &&
-          canonicalDemosTxHash((finishedRaw as { txHash?: unknown } | null)?.txHash) === retainedTxHash;
-        if (!reconciledUnderLease && !heldNamesHash) throw new DacsError(unbound);
-        const finished = capturePayDemResult(finishedRaw, context, "pay-dem retained settlement finished by the store");
-        assertHash(finished);
-        if (finished.blockNumber !== captured.blockNumber || !sameSettledOutcome(finished, captured)) {
-          throw new DacsError("pay-dem retained transaction conflicts with the store's saved outcome; refusing reuse or rebroadcast");
-        }
-        authenticatedResults.set(key, { context, result: finished, boundToKey: await attemptNames() });
-        return publicPayDemResult(finished, expectedPayee);
       }
       let refusedWithoutAttemptRecords = false;
       const submit = async (

@@ -52,7 +52,7 @@ async function expired() {
 }
 
 test.each(["plain fence", "foreign store fence", "wrong callback key"] as const)(
-  "retained completion independently refuses a %s", async (mode) => {
+  "an unbound audit never reaches a wrapper offering a %s", async (mode) => {
     const selected = await expired();
     const donor = await expired();
     const store: SettlementIdempotencyStore = {
@@ -67,7 +67,7 @@ test.each(["plain fence", "foreign store fence", "wrong callback key"] as const)
     };
     const reconcile = vi.fn(async (_context: Readonly<PayDemSettlementRecoveryContext>) => executed());
     await expect(payDemSettle(await sdkRail(), {}, { store, reconcile })(request()))
-      .rejects.toThrow(/only through the settlement store's own expired generation/);
+      .rejects.toThrow(/no SDK record binds/);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ txHash: hash }));
     for (const fixture of [selected, donor]) {
@@ -81,35 +81,27 @@ test.each(["plain fence", "foreign store fence", "wrong callback key"] as const)
   },
 );
 
-test.each(["block", "terminal outcome", "failure proof", "agree"] as const)(
-  "retained completion compares hash and key reads before writing: %s", async (mode) => {
+test.each(["success", "failure proof"] as const)(
+  "an unbound audit never promotes a stable reconciler match to an attempt record: %s", async (mode) => {
     const fixture = await expired();
+    // The SDK's node read agrees with the claim, so only the binding decides.
     if (mode === "failure proof") serveNodeRecord(hash, { payer, payee, nonce: 7, status: "failed" });
-    const first = mode === "failure proof" ? failed() : executed();
-    const second = mode === "block" ? { ...executed(), blockNumber: 43 }
-      : mode === "terminal outcome" ? failed()
-      : mode === "failure proof" ? failed(8) : executed();
-    const reconcile = vi.fn(async (context: Readonly<PayDemSettlementRecoveryContext & { txHash?: string }>) =>
-      context.txHash === undefined ? second : first);
-    const result = payDemSettle(await sdkRail(), {}, { store: fixture.inner, reconcile })(request());
-    if (mode === "agree") {
-      await expect(result).resolves.toMatchObject({ ok: true, txHash: hash });
-      expect(fixture.putAttempt).toHaveBeenCalledTimes(1);
-      expect(fixture.putOutcome).toHaveBeenCalledTimes(1);
-    } else {
-      await expect(result).rejects.toThrow(/changed between reads/);
-      expect(fixture.putAttempt).not.toHaveBeenCalled();
-      expect(fixture.putOutcome).not.toHaveBeenCalled();
-      await expect(fixture.log.readAttempt!(key)).resolves.toBeNull();
-      await expect(fixture.log.readOutcome!(key)).resolves.toBeNull();
-    }
-    expect(reconcile).toHaveBeenCalledTimes(2);
+    const reconcile = vi.fn(async (_context: Readonly<PayDemSettlementRecoveryContext>) =>
+      mode === "failure proof" ? failed() : executed());
+    await expect(payDemSettle(await sdkRail(), {}, { store: fixture.inner, reconcile })(request()))
+      .rejects.toThrow(/no SDK record binds/);
+    expect(fixture.putAttempt).not.toHaveBeenCalled();
+    expect(fixture.putOutcome).not.toHaveBeenCalled();
+    await expect(fixture.log.readAttempt!(key)).resolves.toBeNull();
+    await expect(fixture.log.readOutcome!(key)).resolves.toBeNull();
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(demosNode.getTxByHash).toHaveBeenCalledWith(hash);
     expect(demosNode.broadcast).not.toHaveBeenCalled();
   },
 );
 
 test.each(["hash", "block", "terminal outcome"] as const)(
-  "retained completion refuses a wrapper replacing the saved %s", async (mode) => {
+  "an unbound audit never reaches a wrapper replacing the saved %s", async (mode) => {
     const fixture = await expired();
     const store: SettlementIdempotencyStore = {
       ...fixture.inner,
@@ -122,11 +114,10 @@ test.each(["hash", "block", "terminal outcome"] as const)(
       },
     };
     const reconcile = vi.fn(async () => executed());
-    await expect(payDemSettle(await sdkRail(), {}, { store, reconcile })(request())).rejects.toThrow(/conflicts/);
-    // The genuine generation saved its consistent result; only the wrapper's
-    // replacement is refused, and no rail operation is invoked.
-    expect(fixture.putAttempt).toHaveBeenCalledTimes(1);
-    expect(fixture.putOutcome).toHaveBeenCalledTimes(1);
+    await expect(payDemSettle(await sdkRail(), {}, { store, reconcile })(request())).rejects.toThrow(/no SDK record binds/);
+    // No generation is acquired and no reconciler match is saved.
+    expect(fixture.putAttempt).not.toHaveBeenCalled();
+    expect(fixture.putOutcome).not.toHaveBeenCalled();
     expect(demosNode.transfer).not.toHaveBeenCalled();
     expect(demosNode.broadcast).not.toHaveBeenCalled();
   },

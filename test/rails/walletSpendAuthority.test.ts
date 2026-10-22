@@ -747,6 +747,7 @@ describe("wallet-wide spend authority (#291)", () => {
       owner: "settlement-worker",
       generation: 7,
     });
+    expect(combined.recordAttempt).toBeUndefined();
     expect(() => combineWalletSpendEffectFenceV1({
       settlementKey: "other:job:0",
       bindingHash: HASH_A,
@@ -754,6 +755,25 @@ describe("wallet-wide spend authority (#291)", () => {
       generation: 8,
       async assertCurrent() {},
     }, claim.permit)).toThrow(/does not bind/);
+  });
+
+  test("preserves the settlement attempt recorder and its receiver when combining fences", async () => {
+    const wallet = authority({});
+    const claim = await wallet.reserve(reservation("one"));
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    const recorded: string[] = [];
+    const settlement = {
+      settlementKey: "rail:job:0", bindingHash: HASH_C, owner: "settlement-worker", generation: 7,
+      async assertCurrent() {},
+      async recordAttempt(txHash: string) {
+        expect(this).toBe(settlement);
+        recorded.push(txHash);
+      },
+    };
+    const combined = combineWalletSpendEffectFenceV1(settlement, claim.permit);
+    settlement.recordAttempt = async () => { throw new Error("method replaced after capture"); };
+    await combined.recordAttempt!(HASH_A);
+    expect(recorded).toEqual([HASH_A]);
   });
 
   test("rejects accessor/proxy authority inputs before invoking them", async () => {

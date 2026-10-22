@@ -43,11 +43,8 @@ describe("pay-dem execution docs match the code (#338)", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     const readme = read("README.md").replace(/\s+/g, " ");
     for (const text of [doc, readme]) {
-      // #370 sweep: only the SDK's own signing writes a record; a payment
-      // that predates records is finished through the store's own generation.
       expect(text).toContain("`createPayDemRail` signs the hash itself");
-      expect(text).toContain("leaves a retained hash no record names");
-      expect(text).not.toContain("is not recorded and stays unbound");
+      expect(text).toContain("An unbound audit refuses without changing the log");
       expect(text).not.toContain("record the exact hash they will return before they broadcast");
       expect(text).not.toContain("through the journal hook the SDK hands");
       // A log that can start a transfer reads outcomes without a claim, and
@@ -57,7 +54,7 @@ describe("pay-dem execution docs match the code (#338)", () => {
       expect(text).not.toContain("so it is not read-only");
       expect(text).not.toContain("records that hash again");
       expect(text).toContain("does not write it again after the payment is final");
-      expect(text).not.toContain("never claims a submit generation");
+      expect(text).toContain("never claims a submit generation");
     }
     for (const text of [doc, readme]) {
       expect(text).not.toContain("keeps working for fresh settlement");
@@ -68,19 +65,11 @@ describe("pay-dem execution docs match the code (#338)", () => {
     for (const text of [doc, readme]) {
       expect(text).toContain("records the canonical form (64 lower-case hex digits, no `0x`) whichever form the rail passes");
     }
-    // #370 sweep: the audit writes through the store's generation in one place,
-    // the gate is per key, and the upgrade is stated.
     for (const text of [doc, readme]) {
-      expect(text).not.toContain("is a read-only audit");
       expect(text).toContain("that never submits");
-      expect(text).not.toContain("acquires submit authority");
-      expect(text).toContain("returned by that same");
-      expect(text).toContain("own `once` (not a wrapper's, nor another");
-      expect(text).toContain("It reads only, except to finish a retained hash that no record names");
-      expect(text).toContain("This is the one place an audit changes the log");
-      expect(text).toContain("It never submits.");
+      expect(text).toContain("or writes an intent, attempt record or outcome");
+      expect(text).not.toContain("This is the one place an audit changes the log");
       expect(text).toContain("that store's own fence for this key and these terms");
-      expect(text).toContain("finishes a retained hash only through the store's expired generation");
       expect(text).toContain("Upgrading: this is a breaking change for stores and logs that paid before.");
       expect(text).toContain("`createIdempotencyStore` also throws for a log that provides only one of the attempt pair");
       expect(text).toContain("it writes only when the SDK rail returned a hash its own pre-broadcast write did not report");
@@ -94,6 +83,18 @@ describe("pay-dem execution docs match the code (#338)", () => {
       expect(text).not.toContain("saved before attempt records existed");
       expect(text).not.toContain("also records any hash a rail returns");
       expect(text).not.toContain("must therefore implement the optional `readOutcome` method");
+    }
+  });
+
+  it("requires a different finalized transaction at the journaled nonce before clearing a key", () => {
+    for (const path of ["README.md", "docs/pay-dem-execution.md"]) {
+      const text = read(path).replace(/\s+/g, " ");
+      expect(text).toContain("did not land and can no longer land");
+      expect(text).toContain("finalized transaction at the payer's journaled nonce");
+      expect(text).toContain("on a node that serves that block, with a hash different from the recorded hash");
+      expect(text).toContain("A moved nonce alone is insufficient: it also matches the recorded transaction having landed.");
+      expect(text).toContain("If the hashes match, recover that payment's outcome and retain the key.");
+      expect(text).toContain("Missing records or a lagging node leave the key held");
     }
   });
 

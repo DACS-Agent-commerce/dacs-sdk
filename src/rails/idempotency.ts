@@ -143,10 +143,8 @@ export interface SettlementLog {
    * Read an immutable outcome without acquiring a lease or changing a generation.
    * Required on a log that keeps attempts. Optional on one that does not;
    * without it the store's `readOutcome` refuses before touching the log, and
-   * `payDemSettle` finishes a retained pay-dem hash on such a log only through
-   * the store's expired generation or an outcome returned by that same
-   * store's own `once` for the exact terms. Recovery of pre-upgrade state is
-   * outside the current SDK's support scope.
+   * `payDemSettle` refuses retained recovery on such a log. Recovery of
+   * pre-upgrade state is outside the current SDK's support scope.
    */
   readOutcome?(key: string): Promise<Readonly<SettlementOutcomeRecord> | null>;
   /** Atomically install a fresh intent, acquire an expired intent, or load its outcome. */
@@ -199,7 +197,8 @@ export interface SettlementLog {
    * Optional, but a log provides both attempt methods or neither, and a log
    * with them also provides `readOutcome`. pay-dem starts no new transfer
    * through a log without them, because a restart could not bind its hash;
-   * such a log still serves audits and restarts of the outcomes it holds.
+   * such a log can still serve audits of the outcomes it holds when it
+   * provides `readOutcome`; restarts without history require attempt records.
    */
   putAttempt?(input: Readonly<{
     key: string;
@@ -793,6 +792,9 @@ function settlementLogMethod<K extends keyof SettlementLog>(
     }
     const descriptor = Object.getOwnPropertyDescriptor(cursor, name);
     if (descriptor !== undefined) {
+      if (optional && "value" in descriptor && descriptor.value === undefined) {
+        return undefined as SettlementLog[K];
+      }
       if (!("value" in descriptor) || typeof descriptor.value !== "function" ||
           nodeTypes.isProxy(descriptor.value)) {
         throw new DacsError(`settlement log ${String(name)} must be stable callable data`);
@@ -919,20 +921,6 @@ export function isBindingCheckedOutcomeLookup(value: unknown): boolean {
 // the `putAttempt`/`readAttempt` pair.
 const outcomeOnlyLogLookups = new WeakSet<object>();
 
-// The `readOutcome` closures `createIdempotencyStore` built over a log that
-// has no `readOutcome` of its own, which refuse every lookup.
-const unreadableOutcomeLookups = new WeakSet<object>();
-
-/**
- * Internal (not re-exported): true only for a `readOutcome` that
- * `createIdempotencyStore` built over a log without `readOutcome` (one written
- * before it existed), so the lookup can only refuse and a caller finishes a
- * retained payment through the store's `once` instead.
- */
-export function isUnreadableOutcomeLookup(value: unknown): boolean {
-  return typeof value === "function" && unreadableOutcomeLookups.has(value);
-}
-
 /**
  * Internal (not re-exported): true only for a `readOutcome` that
  * `createIdempotencyStore` built over a log that keeps no attempt records. A
@@ -984,44 +972,12 @@ export function isStoreLookupPair(readAttempt: unknown, readOutcome: unknown): b
     storeOutcomeLookups.get(readAttempt) === readOutcome;
 }
 
-// Each effect fence a `createIdempotencyStore` store's `once` built, mapped to
-// that same store's `readOutcome`.
-const storeFences = new WeakMap<object, object>();
-
-/**
- * Internal (not re-exported): true only when `fence` is one the `once` of the
- * `createIdempotencyStore` store whose lookup is `readOutcome` built. That
- * `once` calls `reconcile` only for an expired generation it acquired under the
- * exact terms, and persists what it returns through that generation.
- */
-export function isStoreReconcileFence(fence: unknown, readOutcome: unknown): boolean {
-  return fence !== null && typeof fence === "object" && typeof readOutcome === "function" &&
-    storeFences.get(fence) === readOutcome;
-}
-
-// Each `once` a `createIdempotencyStore` store built, mapped to that same
-// store's `readOutcome`.
-const storeOnces = new WeakMap<object, object>();
-
-/**
- * Internal (not re-exported): true only when `once` is the method of the
- * `createIdempotencyStore` store whose lookup is `readOutcome`. A lookup that
- * is the SDK's says nothing about the `once` a wrapper puts next to it: only
- * this pair proves the settlement `once` returns, a held outcome included,
- * came from the log that lookup stands for, under the key it was asked for.
- */
-export function isStoreOnceFor(once: unknown, readOutcome: unknown): boolean {
-  return typeof once === "function" && typeof readOutcome === "function" &&
-    storeOnces.get(once) === readOutcome;
-}
-
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),
   options: Readonly<SettlementIdempotencyStoreOptions> = {},
 ): SettlementIdempotencyStore {
   const store = buildIdempotencyStore(log, options);
-  storeOnces.set(store.once, store.readOutcome!);
   bindingCheckedOutcomeLookups.add(store.readOutcome!);
   if (store.readAttempt !== undefined) {
     bindingCheckedOutcomeLookups.add(store.readAttempt);
@@ -1073,8 +1029,7 @@ function buildIdempotencyStore(
 
   // The lookup never claims, leases or binds a key. A log without
   // `readOutcome` (one written before it existed) refuses it before touching
-  // the log; `isUnreadableOutcomeLookup` tells a caller, which finishes a
-  // retained payment through `once` instead.
+  // the log.
   const readOutcome: NonNullable<SettlementIdempotencyStore["readOutcome"]> = async (key, binding) => {
     const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
     const bindingHash = settlementBindingHash(capturedBinding);
@@ -1100,8 +1055,6 @@ function buildIdempotencyStore(
     return captureBoundResult(outcome.result as SettleResult, capturedBinding,
       "settlement read-only outcome") as SettleResult;
   };
-
-  if (durable.readOutcome === undefined) unreadableOutcomeLookups.add(readOutcome);
 
   return {
     ...attemptLookup,
@@ -1209,7 +1162,6 @@ function buildIdempotencyStore(
             },
             ...(recordAttempt === undefined ? {} : { recordAttempt }),
           });
-          storeFences.set(built, readOutcome);
           return built;
         };
 
