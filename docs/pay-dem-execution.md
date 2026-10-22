@@ -24,7 +24,7 @@ transfer, broadcasts it once, and then:
 | --- | --- |
 | `confirmed`, bound | `ok: true`, `execution: "executed"`, `bft-final` finality and a `demos` txRef at the inclusion block |
 | `failed`, bound | `ok: false`, `errorClass: "permanent"` and a `demos-failed-record` failure proof |
-| `confirmed` or `failed`, but nonce, block or body does not bind | indeterminate at once |
+| `confirmed` or `failed`, but nonce, block or body does not bind, or a present fee is malformed | indeterminate at once |
 | missing, `pending`, any other status (`included`, `finalized`, `Confirmed`, ...), malformed, another hash, a rejected read | read again until the budget ends, then indeterminate |
 | a read still pending at its bound, `statusRequestTimeoutMs` or the end of `transactionRecordTimeoutMs`, whichever comes first | indeterminate at once (`transaction record read timed out`); reads never stack |
 
@@ -248,6 +248,15 @@ below).
   recognised by identity; a wrapper or a `.bind()` copy is a different
   function. When `resumeSettlement` is omitted, the registered native DEM
   `settle` adapter serves as the recovery implementation.
+  Native recovery requests carry `recoveryOnly: true`, even when a crash left
+  only the session intent. The adapter uses the rail log's original attempt
+  record and never submits on these requests. Without that record, it refuses
+  recovery without claiming a new rail intent or broadcasting.
+  Before claiming or paying, a fresh native session requires a
+  caller-supplied settlement store and reconciler on its recovery adapter,
+  plus a caller-supplied store on its paying adapter. A supplied
+  `resumeSettlement` must itself be the SDK adapter; a callback, wrapper or
+  bound copy is refused before the initial payment.
   Any other implementation is refused before it is called, so it
   makes no payment and reports no outcome: nothing could re-read a native
   success it reported after a restart. The adapter over a rail
@@ -276,7 +285,13 @@ below).
 For native DEM sessions, retain a durable rail `SettlementLog` with its immutable
 attempt records alongside the `SessionStore`, and reopen it with a reconciler
 after a process restart. The default in-memory rail log supports retries only
-while its process survives. A `SessionStore` alone cannot recover a payment
+while its process survives in direct rail calls; a native session refuses that
+default configuration before payment. The SDK checks that a store was supplied
+and supports the required operations; callers must ensure its log is durable.
+Every native resume, including a completed-session replay, requires the node
+to still serve the transaction record. A pruned record, node reset or outage
+keeps replay unresolved without changing the saved payment or submitting again.
+A `SessionStore` alone cannot recover a payment
 whose rail records were discarded. Restore the original rail log and attempt
 records from a trusted backup before retrying such a session; clearing a paid
 key or forcing a completed outcome cannot reconstruct those records safely.

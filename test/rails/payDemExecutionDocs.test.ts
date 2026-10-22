@@ -17,6 +17,15 @@ const fixture = JSON.parse(read("test/fixtures/demos-node2-records.json")) as {
 };
 
 describe("pay-dem execution docs match the code (#338)", () => {
+  it("states native session preflight and completed-replay dependencies", () => {
+    for (const path of ["README.md", "docs/pay-dem-execution.md"]) {
+      const text = read(path).replace(/\s+/g, " ");
+      expect(text).toContain("caller-supplied settlement store and reconciler");
+      expect(text).toContain("recoveryOnly: true");
+      expect(text).toContain("Every native resume, including a completed-session replay, requires the node to still serve the transaction record.");
+    }
+  });
+
   it("cites the node commit node2 reported in the recorded envelopes", () => {
     const commit = /stabilisation@([0-9a-f]{40})/.exec(fixture.source.reportedCommit)?.[1];
     expect(commit).toBeDefined();

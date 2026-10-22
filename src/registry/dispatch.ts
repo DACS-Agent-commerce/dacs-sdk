@@ -57,9 +57,9 @@ export interface RailDispatchOptions {
   /**
    * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
    * restart recovery should supply all three of `settlementStore`,
-   * `reconcile`, and `journalPreparedTransfer`; omitting them preserves the
-   * low-level process-local compatibility behavior (a resumed call gets the
-   * bridge's own bound result back) but is not restart-safe.
+   * `reconcile`, and `journalPreparedTransfer`. Native runSession preflight
+   * requires a caller-supplied store and reconciler before payment. Direct
+   * rail calls may still use the default process-local store.
    * A new transfer, and auditing a retained hash after a restart, need
    * `settlementStore` to be a `createIdempotencyStore` store over a
    * `SettlementLog` with `readOutcome` and the `putAttempt`/`readAttempt` pair

@@ -155,6 +155,52 @@ describe("same-adapter cached outcomes require a fresh node record", () => {
   });
 });
 
+describe("fresh and recovered failed records use the same fee validation", () => {
+  test.each([
+    { label: "null", fee: null, malformed: true },
+    { label: "empty object", fee: {}, malformed: true },
+    { label: "array", fee: [], malformed: true },
+    { label: "absent", fee: undefined, malformed: false },
+    { label: "zero", fee: { network_fee: 0, rpc_fee: 0, additional_fee: 0 }, malformed: false },
+    { label: "decimal strings", fee: { network_fee: "5", rpc_fee: "0", additional_fee: "0" }, malformed: false },
+  ])("fee $label", async ({ fee, malformed }) => {
+    demosNode.recordStatus = "failed";
+    demosNode.reply = (hash) => {
+      const record = structuredClone(demosNode.records.get(hash)) as Record<string, unknown>;
+      const content = { ...(record.content as Record<string, unknown>) };
+      if (fee === undefined) delete content.transaction_fee;
+      else content.transaction_fee = fee;
+      return { ...record, content };
+    };
+    const log = createInMemorySettlementLog();
+    const store = createIdempotencyStore(log);
+    const reconcile: PayDemSettlementReconcile = async () => failed();
+    const settle = payDemSettle(rail, {}, { store, reconcile });
+    const { priorAttempts: _history, ...fresh } = request();
+    const outcome = await settle(fresh);
+    expect(outcome.ok).toBe(false);
+    if (malformed) {
+      expect(outcome.errorClass).toBeUndefined();
+      expect(outcome.failureProof).toBeUndefined();
+      expect(await log.readOutcome!("pay-dem:retained-native:0")).toBeNull();
+    } else {
+      expect(outcome.errorClass).toBe("permanent");
+      expect(outcome.failureProof).toBeDefined();
+    }
+    // Repeat in process and reopen the same log with a fresh bridge. Both
+    // reads see the identical fee served during the initial payment.
+    for (const audit of [settle, payDemSettle(await sdkPayDemRail(), {}, {
+      store: createIdempotencyStore(log), reconcile,
+    })]) {
+      const result = audit({ ...request([prior(false)]), recoveryOnly: true });
+      if (malformed) await expect(result).rejects.toThrow(/fee is malformed/);
+      else await expect(result).resolves.toMatchObject({ ok: false, errorClass: "permanent" });
+    }
+    expect(demosNode.transfers).toBe(1);
+    expect(demosNode.broadcasts).toBe(1);
+  });
+});
+
 // A reconciler's `execution: "executed"` is its claim. The verdict of every
 // recovery path is the SDK rail's own read of the node's record for the hash.
 describe("a recovered pay-dem verdict is the SDK rail's own read of the node record", () => {

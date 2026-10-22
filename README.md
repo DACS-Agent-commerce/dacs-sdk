@@ -799,6 +799,10 @@ including a re-run of a completed session, calls `resumeSettlement` once as a
 read-only audit of the retained transaction hash, except in the cases below
 that are held without a rail call. When `resumeSettlement` is omitted, the
 registered native DEM `settle` adapter serves as the recovery implementation.
+Native recovery requests carry `recoveryOnly: true`, including intent-only
+checkpoints with no saved transaction. The adapter reads the original attempt
+from the rail log and never submits on these requests. If that record is
+missing, recovery remains unresolved without making another payment.
 Only the SDK's `payDemSettle` adapter
 (directly, from `settleFromRail`, or passed through `Agent.runSession`) is
 called for it, as for every native settlement (see below). With the
@@ -848,8 +852,18 @@ when the SDK read the node's record for that hash itself: over the rail
 `createPayDemRail` built, the adapter reads the record through that rail's own
 connection, for that rail's wallet only. It takes the
 record's status, block, nonce, parties, amount and fee from it. This is the
-only rail the adapter lets make a fresh payment, so a session paid through it
-can be resumed or repeated. A fresh success reports that same record
+only rail the adapter lets make a fresh payment. A native session requires a
+caller-supplied settlement store and reconciler on its recovery adapter, plus
+a caller-supplied store on its paying adapter, before claiming or paying, so a
+session paid through it can be resumed or repeated
+with those dependencies restored. Use a durable rail log implementing
+`readOutcome`, `putAttempt` and `readAttempt`; the SDK cannot determine whether
+a caller-supplied log persists across process restarts. The adapter's default
+in-memory log remains available for direct, process-local rail calls.
+Every native resume, including a completed-session replay, requires the node
+to still serve the transaction record. Pruning, a node reset or an unavailable
+record leaves that replay unresolved; it never reverses the saved payment or
+causes another submission. A fresh success reports that same record
 fee as `networkFeeOs`, which the session saves and signs: the rail's own
 `networkFeeOs` (the confirmation's fee) bounds
 `maxTotalDebitOs` and stays on the rail's result, but the record need not carry

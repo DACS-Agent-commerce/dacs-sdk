@@ -130,6 +130,18 @@ const sdkRailRecordReaders = new WeakMap<object, SdkRecordReader>();
  * the SDK's own record read, and over any other rail it returns neither.
  */
 const payDemSettleAdapters = new WeakSet<object>();
+const sessionRecoveryConfigurations = new WeakMap<object, boolean>();
+
+/**
+ * @internal Whether a native session has explicitly configured its restart
+ * dependencies. The paying adapter needs the store; a separate recovery
+ * adapter may provide the reconciler instead.
+ */
+export function isPayDemSessionRecoverable(value: unknown, requireReconciler = true): boolean {
+  return typeof value === "function" && (requireReconciler
+    ? sessionRecoveryConfigurations.get(value) === true
+    : sessionRecoveryConfigurations.has(value));
+}
 
 /**
  * @internal Whether `value` is a function `payDemSettle` returned. Read-only:
@@ -1587,9 +1599,9 @@ type ObservedExecutionOptions = Readonly<{
 
 /**
  * {@link observeDemosExecutionByHash}, also returning the fee of the executed
- * record it read. A record carrying a fee it cannot parse is indeterminate, as
- * a recovery read of it is (`readDemosRecordByHash`), so a success is never
- * saved that a restart could not re-read.
+ * record it read. A terminal record carrying a fee it cannot parse is
+ * indeterminate, as a recovery read of it is (`readDemosRecordByHash`), so no
+ * definitive outcome is saved that a restart could not re-read.
  */
 async function observeDemosRecordExecution(
   txHash: string,
@@ -1658,17 +1670,17 @@ async function observeDemosRecordExecution(
             reason: "transaction record does not match the prepared transfer",
           };
         }
-        if (record.status === DEMOS_FAILED_RECORD_STATUS) return { state: "failed" };
         const feeOs = recordTransactionFeeOs(
           identity.transaction.content as Record<string, unknown>,
           expected.transfer.postFork,
         );
         // A fee the SDK cannot parse is not "no fee": a recovery read of this
-        // record holds it (`readDemosRecordByHash`), so a success saved from it
+        // record holds it (`readDemosRecordByHash`), so a verdict saved from it
         // here could never be re-read.
         if (feeOs === null) {
           return { state: "indeterminate", reason: "transaction record fee is malformed" };
         }
+        if (record.status === DEMOS_FAILED_RECORD_STATUS) return { state: "failed" };
         return feeOs === undefined
           ? { state: "executed" }
           : { state: "executed", feeOs: feeOs.toString() };
@@ -3107,6 +3119,12 @@ export function payDemSettle(
       amountOs,
     }) satisfies Readonly<PayDemSettlementRecoveryContext>;
     const supplied = retainedPayDemAttempt(req, network);
+    const recoveryProperty = stableDataProperty(req, "recoveryOnly", "pay-dem recovery mode");
+    if (recoveryProperty.found && recoveryProperty.value !== undefined &&
+        typeof recoveryProperty.value !== "boolean") {
+      throw new DacsError("pay-dem recoveryOnly must be a boolean");
+    }
+    const recoveryOnly = recoveryProperty.value === true;
     const suppliedTxHash = supplied?.txHash;
     const binding = Object.freeze({
       bindingVersion: "1",
@@ -3195,7 +3213,13 @@ export function payDemSettle(
             (suppliedTxHash !== undefined && suppliedTxHash !== retainedAudit.txHash))) {
         throw new DacsError("pay-dem retained audit belongs to different payment terms or transaction; refusing reuse or rebroadcast");
       }
-      const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash;
+      const retainedTxHash = suppliedTxHash ?? retainedAudit?.txHash ??
+        (recoveryOnly ? (await recordedAttempt() ?? undefined) : undefined);
+      if (recoveryOnly && retainedTxHash === undefined) {
+        throw new DacsError(
+          "pay-dem recovery has no recorded attempt for this payment; refusing a new transfer (never resubmitted)",
+        );
+      }
       if (retainedTxHash !== undefined) {
         // A success the session recorded for this key stays recorded.
         const historySucceeded = supplied?.succeeded === true || retainedAudit?.succeeded === true;
@@ -3539,5 +3563,8 @@ export function payDemSettle(
     }
   };
   payDemSettleAdapters.add(adapter);
+  if (storeProperty.found && storeProperty.value !== undefined && recordVerifiedRail && storeLookupsPaired) {
+    sessionRecoveryConfigurations.set(adapter, reconcile !== undefined);
+  }
   return adapter;
 }
