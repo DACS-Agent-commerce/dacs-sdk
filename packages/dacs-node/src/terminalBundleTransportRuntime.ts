@@ -1323,7 +1323,14 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
   };
 
   const retainedLocalInput = (input: Readonly<PrepareVetTerminalBundleInput>) => {
-    const retained = evidenceAt("local-evidence", input.jobId)?.terminalInput;
+    const materialValue = context.database.loadEffectInput("session", transportId(role, "material", input.jobId));
+    const material = materialValue === undefined ? undefined : captureBinding(materialValue);
+    if (material !== undefined && material.kind !== "material") {
+      throw new DacsVetTerminalBundleTransportError("vet-terminal-binding-corrupt");
+    }
+    const complete = material === undefined ? undefined : captureProposal(material.payload).terminalInput;
+    const evidence = evidenceAt("local-evidence", input.jobId)?.terminalInput;
+    const retained = evidence ?? complete;
     if (retained === undefined) return input;
     const scope = (value: Readonly<PrepareVetTerminalBundleInput>) => {
       const { anchorReceipt: _receipt, ...production } = value.production;
@@ -1331,10 +1338,17 @@ export function createDacsVetTerminalBundleTransportRuntimeV1(
       return { ...rest, production };
     };
     if (!canonicalEqual(scope(retained), scope(input))) {
-      throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+      if (evidence !== undefined) throw new DacsVetTerminalBundleTransportError(LOCAL_VET_CONFLICT);
+      // A different complete plan follows the existing durable conflict path.
+      return input;
     }
-    return frozenJsonSnapshot({ ...input, production: retained.production }, "vet-terminal-retained-input") as
-      Readonly<PrepareVetTerminalBundleInput>;
+    if (complete !== undefined && input.complementaryProduction !== undefined &&
+        !sameProduction(complete.complementaryProduction, input.complementaryProduction)) return input;
+    return frozenJsonSnapshot({ ...input, production: retained.production,
+      ...(complete?.complementaryProduction === undefined ? {} : {
+        complementaryProduction: complete.complementaryProduction,
+      }),
+    }, "vet-terminal-retained-input") as Readonly<PrepareVetTerminalBundleInput>;
   };
 
   const assertRetainedEvidence = (input: Readonly<PrepareVetTerminalBundleInput>,

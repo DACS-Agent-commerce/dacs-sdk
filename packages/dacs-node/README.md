@@ -219,8 +219,8 @@ A terminal proposal carries the exact
 finalized `VetProduction` as well as the derived co-signed plan; each role
 independently authenticates the production, reconstructs the authority and
 requires byte-equivalent canonical output before retaining or signing it.
-`pass` creates no terminal authority, and a verifier outage remains retryable
-and produces no blame. Every authenticated non-pass decision ends the Vet phase
+`pass` creates no terminal authority. Unavailable production authentication
+remains retryable and produces no blame. Every authenticated non-pass decision ends the Vet phase
 at `vet-failed` (DACS-2 VPC-4, VP-R4): `fail` is the evaluated party's
 `counterparty` fault. An authenticated `indeterminate` or `error` defaults to
 permanent verifier fault under VPC-4. Independently authenticated `cause` evidence

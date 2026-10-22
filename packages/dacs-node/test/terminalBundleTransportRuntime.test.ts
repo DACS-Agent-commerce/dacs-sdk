@@ -3630,6 +3630,23 @@ describe("retained terminal evidence and admission", () => {
     }));
   });
 
+  it.each(["x402", "pay-dem"] as const)("%s reuses complete retained material after both receipt observations advance", async (rail) => {
+    const actor = memoryRoleDatabase("buyer", undefined, rail);
+    const input = terminalInput("fail", rail === "x402" ? "pay-x402" : "pay-dem");
+    const first = await actor.runtime.registerLocalTerminal(input);
+    const fresh = structuredClone(input);
+    fresh.production.anchorReceipt.observedAt += 1;
+    fresh.complementaryProduction!.anchorReceipt.observedAt += 2;
+    const authenticateProduction = vi.fn(() => ({ status: "valid" as const }));
+    const recovered = createDacsVetTerminalBundleTransportRuntimeV1({ context: actor.context,
+      expectedRegistryVersions: REGISTRY_VERSIONS, authenticateProduction });
+    await expect(recovered.registerLocalTerminal(fresh)).resolves.toEqual(first);
+    for (const production of [input.production, input.complementaryProduction]) {
+      expect(authenticateProduction).toHaveBeenCalledWith(expect.objectContaining({ production }));
+    }
+    expect(actor.signComponent).not.toHaveBeenCalled();
+  });
+
   it("retains evidence and retries a failed send", async () => {
     const actor = memoryRoleDatabase("buyer");
     vi.mocked(actor.context.sendMessage).mockRejectedValueOnce(new Error("network unavailable"));
