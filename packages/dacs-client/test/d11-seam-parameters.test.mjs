@@ -136,10 +136,12 @@ for (const transaction of [async () => {}, function* () {}, async function* () {
 }
 
 for (const rejected of [false, true]) {
-  test(`a disguised async transaction refuses synchronously and drains rejection=${rejected}`, async () => {
-    assert.throws(() => purchaseStore({ transaction: () => rejected ? Promise.reject(new Error('TEST-store-refusal')) : Promise.resolve('TEST'),
+  test(`an unqualified promise-returning transaction is refused without invocation, rejectsWhenCalled=${rejected}`, async () => {
+    let calls = 0;
+    assert.throws(() => purchaseStore({ transaction: () => { calls++; return rejected ? Promise.reject(new Error('TEST-store-refusal')) : Promise.resolve('TEST'); },
       isUniqueViolation: () => false }), notWired('purchase-store-not-wired'));
     await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 0);
   });
 }
 

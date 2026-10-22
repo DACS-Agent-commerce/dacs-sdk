@@ -1447,6 +1447,37 @@
           "after": "3ba7301a4ed8d3b7808ad92e3e439a6e6a15b1fb"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 pin settlement and delivery crash recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "4275b38d62ca99910a4fdbcc6e7ad605986eebaa",
+          "after": "8d0873f8f7b1bf55b7a5738486a7725bf02d6fc5"
+        },
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": null,
+          "after": "4c810a59adb79865750e3987be1cd631f8b9539d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-worker.mjs",
+          "before": null,
+          "after": "f5046a9c1c0dcdfa242322419c460213b33c5a80"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-world.mjs",
+          "before": null,
+          "after": "3d2ab6dcc52dba7f2ae9cd57ebbdfee466052ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "880e4ff8689135615f7c0271066eed24afd454e5",
+          "after": "d8e3c8b6d55ec8bd22662944d38d46ea5aa9b06f"
+        }
+      ]
     }
   ]
 }

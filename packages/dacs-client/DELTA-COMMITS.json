@@ -709,5 +709,24 @@
       "packages/dacs-client/test/store-atomicity.test.mjs",
       "packages/dacs-client/test/sweep-contracts.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 pin settlement and delivery crash recovery",
+    "files": [
+      ".github/workflows/ci.yml",
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+      "packages/dacs-client/test/domain-store-crash.test.mjs",
+      "packages/dacs-client/test/helpers/domain-store-crash-worker.mjs",
+      "packages/dacs-client/test/helpers/domain-store-crash-world.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs"
+    ]
   }
 ]

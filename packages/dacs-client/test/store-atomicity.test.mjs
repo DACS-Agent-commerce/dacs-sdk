@@ -23,6 +23,14 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 
+test('a compatible-looking non-DatabaseSync handle is refused before database or callback access', () => {
+  let calls = 0;
+  const db = { prepare() { calls++; }, exec() { calls++; } };
+  assert.throws(() => createSqlitePurchaseStore().transaction(db, () => { calls++; }),
+    { code: 'client_not_wired', seam: 'purchase-store-not-wired' });
+  assert.equal(calls, 0);
+});
+
 function database(t) {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-store-'));
   const path = join(dir, 'state.sqlite');

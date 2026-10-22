@@ -199,7 +199,7 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - Root exports include the client, seller-client, wallet-format, bridge and readback error classes so host guards retain defining identity.
 - Pure wallet payload helpers and their existing error identity are isolated from the provider. The tarball contains exactly the two entry-point import closures, README, license and manifest; an npm dry-run test rejects surplus source and internal records. The provider retains its helper re-exports; helper algorithms are unchanged.
 - Repository metadata is supplied and core is an exact-version peer, consistent with the host package. The private client remains outside the three-package release set pending an owner decision and matching artifact/lifecycle/SBOM integration; supported installation uses paired local tarballs or the workspace.
-- Packed root imports run in CI on Node 20.19.0 and Node 22; both entry points are checked at the declared client engine floors, 22.13.0 and 23.4.0. Portal route constants are documented as experimental and provenance describes registry installs accurately. Both entry points support JavaScript consumers only. TypeScript, browser and full agreement-capability transport integrations are outside this candidate. A fixed digest vector covers prepared/signed payload identity at the pure-helper boundary.
+- Packed root imports run in CI on Node 22, with an additional Node 20.19.0 import-only probe outside client engines; both entry points are checked at the declared client engine floors, 22.13.0 and 23.4.0. Portal route constants are documented as experimental and provenance describes registry installs accurately. Both entry points support JavaScript consumers only. TypeScript, browser and full agreement-capability transport integrations are outside this candidate. A fixed digest vector covers prepared/signed payload identity at the pure-helper boundary.
 - Regression tests were added before implementation. Previous host-approval success tests are replaced by public admission-refusal checks; nested transaction rollback, readback, pointer races and executed-only settlement regressions remain.
 
 
@@ -209,6 +209,13 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - Preparation and the agreement/native/completion entry points refuse before state access or current protocol resolution. The public Listing verifier follows the same CORE §11.1.2(3) admission boundary. Existing operation readback remains available.
 - The public JavaScript candidate excludes the unqualified node-reader factory, held bridge constructor and private transport-brand predicates. The private publication guard remains set. Paired local artifacts are the supported distribution path; both public entry points require Node ^22.13.0 or >=23.4.0.
 - Settlement classifier tests cover exact true/false, thenable/non-boolean results and original thrown causes. Public imports trap both SQLite import and require, and a demosdk 4.0.16 post-fork serializer vector pins the prepared amount-encoding precondition.
+
+
+## D11 domain recovery validation
+
+- File-backed SQLite tests kill a worker with SIGKILL immediately before and after the actual outer settlement and delivery-overdue COMMIT. Reopening checks the complete payment pointer/status/nonce-consumption decision and replacement supersession, or the overdue state/event pair. A retry and a second restart preserve exactly one committed decision. The worker intercepts the connection COMMIT only; domain entry points and the package transaction implementation run unchanged.
+- A compatible-looking handle from another SQLite library is refused before any transaction callback. The README states that DatabaseSync validation occurs at the first transaction. The unqualified transaction test explicitly checks zero invocations.
+- The surrounding SDK's Node 20 root-import probe is labelled outside client engines; both public entry points require Node ^22.13.0 or >=23.4.0.
 
 ## Commit register
 
@@ -501,6 +508,12 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 498f20be5b423d6328ffb0031d71d4e3d8233c43 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | 880e4ff8689135615f7c0271066eed24afd454e5 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | 3ba7301a4ed8d3b7808ad92e3e439a6e6a15b1fb |
+| D11 | delta(client): D11 pin settlement and delivery crash recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 8d0873f8f7b1bf55b7a5738486a7725bf02d6fc5 |
+| | `packages/dacs-client/test/domain-store-crash.test.mjs:1` | 4c810a59adb79865750e3987be1cd631f8b9539d |
+| | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` | f5046a9c1c0dcdfa242322419c460213b33c5a80 |
+| | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs:1` | 3d2ab6dcc52dba7f2ae9cd57ebbdfee466052ee0 |
+| | `packages/dacs-client/test/store-atomicity.test.mjs:1` | d8e3c8b6d55ec8bd22662944d38d46ea5aa9b06f |
 
 ## Complete commit and file inventory
 
@@ -1105,6 +1118,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 require concrete SQLite state and clarify the JavaScript candidate | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
 | delta(client): D11 require concrete SQLite state and clarify the JavaScript candidate | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 | delta(client): D11 require concrete SQLite state and clarify the JavaScript candidate | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `.github/workflows/ci.yml:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/README.md:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/test/domain-store-crash.test.mjs:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs:1` |
+| delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 
 ## Original moved files
 
