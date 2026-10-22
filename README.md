@@ -868,7 +868,9 @@ recoveryRpc })` to use an operator-authenticated archival RPC when the primary
 record is unavailable. The archive supplies its own fork state and record; the
 SDK applies the same transfer, execution, block and fee checks. It never
 connects a wallet to the archive or uses it to sign or broadcast. A terminal
-primary verdict cannot be overridden by the archive. Pruning, a node reset or an unavailable
+primary verdict cannot be overridden by the archive. Configure the settlement
+reconciler to resolve the original retained hash against the same archive; its
+refusal or proof of absence still stops recovery before the SDK record read. Pruning, a node reset or an unavailable
 record leaves that replay unresolved; it never reverses the saved payment or
 causes another submission. A fresh success reports that same record
 fee as `networkFeeOs`, which the session saves and signs: the rail's own

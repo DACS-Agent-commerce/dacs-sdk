@@ -296,7 +296,9 @@ recoveryRpc })` to use an operator-authenticated archival RPC when the primary
 record is unavailable. The archive supplies its own fork state and record; the
 SDK applies the same transfer, execution, block and fee checks. It never
 connects a wallet to the archive or uses it to sign or broadcast. A terminal
-primary verdict cannot be overridden by the archive. A pruned record, node reset or outage
+primary verdict cannot be overridden by the archive. Configure the settlement
+reconciler to resolve the original retained hash against the same archive; its
+refusal or proof of absence still stops recovery before the SDK record read. A pruned record, node reset or outage
 keeps replay unresolved without changing the saved payment or submitting again.
 A `SessionStore` alone cannot recover a payment
 whose rail records were discarded. Restore the original rail log and attempt

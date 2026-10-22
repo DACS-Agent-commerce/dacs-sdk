@@ -984,6 +984,8 @@ export interface PayDemRailConfig {
    * with the same wallet, transfer, status, block and fee checks. No wallet is
    * connected to the archive and it is never used to sign or broadcast.
    * The operator authenticates this endpoint just like the primary RPC.
+   * Configure the settlement reconciler to use the archive too: its refusal
+   * or proof of absence still stops recovery before this record read.
    */
   recoveryRpc?: string;
   /** Buyer wallet secret — mnemonic or private key — used to sign the transfer. */
