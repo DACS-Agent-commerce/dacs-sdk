@@ -379,11 +379,12 @@ DACS-4 §9.5.9 treats Demos inclusion as BFT-final, and the rail stamps
 `bft-final` at the inclusion block of the confirmed record. It does not watch
 for reorganisation afterwards.
 
-The pinned Standard (`d45c0a29`) says to return success when the transaction
-reaches the terminal `included` state. The rail is stricter: it also requires
-the bound `confirmed` record, because the status index reports `included` for
-failed records. No Standard conformance vector covers an included but failed
-transaction yet.
+The pinned Standard (DACS-4 §9.5.9 step 5 at `d45c0a29`) returns success when
+the transaction reaches the terminal `included` state. The SDK is deliberately
+stricter: the rail, seller intake, seller payment evidence, buyer audit and
+buyer and wallet recovery all require the bound `confirmed` (executed) record
+as well, because the status index reports `included` for failed records. No
+Standard conformance vector covers an included but failed transaction yet.
 
 ## Node semantics
 
