@@ -20,6 +20,7 @@ import {
   type PayDemSettlementReconcile,
 } from "../../src/rails/payDem.js";
 import { demosNode, nodeRecord, sdkPayDemRail } from "../fixtures/demosNodeScript.js";
+import { readPayDemTransferRecord as publicReadPayDemTransferRecord } from "../../src/rails/index.js";
 
 vi.mock("@kynesyslabs/demosdk/websdk", async () =>
   (await import("../fixtures/demosNodeScript.js")).demosWebsdkMock);
@@ -575,6 +576,10 @@ describe("a payment signed before the denomination fork is read in DEM after it 
 // re-read. It reports the record the SDK rail's own connection read; neither
 // that answer nor a success assembled from it is a record-verified verdict.
 describe("the exported record read reports a record and vouches for no verdict", () => {
+  test("the public rails entry point exports the SDK record reader", () => {
+    expect(publicReadPayDemTransferRecord).toBe(readPayDemTransferRecord);
+  });
+
   const retained = { txHash, payer, payee, amountOs: "1000000000", network: "demos" };
   const vouches = (value: unknown) => [
     payDemRecordVerifiedTransfer(value),

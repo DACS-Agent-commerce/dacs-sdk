@@ -340,6 +340,7 @@ function recoveryEvidenceDatabase(
   withPreparedCheckpoint: boolean,
   nonce = 7,
   confirmedTotalDebitOs = payment.maxTotalDebitOs,
+  declaredNetworkFeeOs?: unknown,
 ): DacsNodeSqliteDatabase {
   const effectId = recoveryEffectId(payment);
   const checkpoint = {
@@ -353,6 +354,7 @@ function recoveryEvidenceDatabase(
       network: payment.network,
       maxTotalDebitOs: payment.maxTotalDebitOs,
       confirmedTotalDebitOs,
+      ...(declaredNetworkFeeOs === undefined ? {} : { declaredNetworkFeeOs }),
       recovery: {
         railId: payment.railId,
         jobId: payment.jobId,
@@ -1844,6 +1846,50 @@ describe("native DEM buyer payment track", () => {
     },
   );
 
+  it("holds a prepared transfer missing only its confirmed debit before any wallet effect", async () => {
+    const sdkRail = await sdkPayDemRail();
+    const rail = markDacsSdkPreparedPayDemRailV1<PayDemRail>({
+      address: PAYER,
+      async settle(input, effectFence) {
+        return sdkRail.settle({
+          ...input,
+          journalPreparedTransfer: async (prepared) => {
+            expect(prepared.declaredNetworkFeeOs).toBe("1000000000");
+            expect(prepared.confirmedTotalDebitOs).toBe(AUTHORITY.maxTotalDebitOs);
+            const { confirmedTotalDebitOs: _confirmed, ...withoutConfirmed } = prepared;
+            await input.journalPreparedTransfer!(withoutConfirmed);
+          },
+        }, effectFence);
+      },
+    });
+    const events: string[] = [];
+    const wallet = observeWalletEffectBegin(createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER, chainId: "demos", asset: "DEM",
+    }), events);
+    const checkpoints = new Map<string, unknown>();
+    const first = retainedEffectDatabase("fresh", checkpoints);
+    const publishNotice = vi.fn();
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: wallet, database: first.database,
+      workerId: "buyer-missing-confirmed-debit", rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
+      publishNotice,
+    });
+
+    await expect(payment(first.operation)).resolves.toEqual({
+      status: "operator-action", reasonCode: "pay-dem-prepared-fee-conflict",
+    });
+    expect(first.writes).toEqual(["operator-action:pay-dem-prepared-fee-conflict"]);
+    expect(checkpoints.size).toBe(0);
+    expect(events).toEqual([]);
+    expect(demosSdk.broadcast).not.toHaveBeenCalled();
+    expect(demosSdk.getTxByHash).not.toHaveBeenCalled();
+    expect(publishNotice).not.toHaveBeenCalled();
+    expect(await wallet.inspect()).toMatchObject({ activeEffects: 0,
+      assets: [{ cumulativeSettledDebit: "0", reservedWorstCaseDebit: "0" }] });
+  });
+
   // The crash point between settling the wallet and queueing the notice: the
   // SDK verified the payment, the wallet settled, then the notice failed. The
   // restart reconciles and queues the notice without a second transfer.
@@ -2559,6 +2605,58 @@ describe("native DEM buyer payment track", () => {
   });
 
   it.each([
+    ["numeric", 1000000000, "1000000000", false],
+    ["leading zero", "01000000000", "1000000000", false],
+    ["negative", "-1000000000", "1000000000", false],
+    ["trailing text", "1000000000 OS", "1000000000", false],
+    ["canonical decimal", "1000000000", "1000000000", true],
+    ["canonical zero", "0", "0", true],
+  ] as const)("binds wallet recovery to a %s checkpoint declaration", async (
+    _label, declaredNetworkFeeOs, recordFeeOs, accepted,
+  ) => {
+    const payment = recoveryPayment();
+    const reservation = recoveryReservation(payment);
+    const totalDebitOs = (BigInt(payment.amountOs) + BigInt(recordFeeOs)).toString();
+    const chain = await sdkExecutedObservation({
+      nonce: 7, txHash: TX_HASH, payer: PAYER, payee: PAYEE,
+      amountOs: payment.amountOs, blockNumber: 42, includedAt: 1_780_000_000_000,
+    }, recordFeeOs === "0" ? { network_fee: 0, rpc_fee: 0, additional_fee: 0 } : RECORD_FEE);
+    // Return the original SDK observation: every execution and fee prerequisite
+    // is valid, so only the checkpoint declaration can refuse authentication.
+    const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+      database: recoveryEvidenceDatabase(payment, true, 7, totalDebitOs, declaredNetworkFeeOs),
+      observeDemosTransfer: async () => chain,
+    });
+    const wallet = recoveryWalletAuthority(authenticateRecovery, { value: 1_000 });
+    const claim = await wallet.reserve(reservation);
+    if (claim.status !== "reserved") throw new Error("expected wallet permit");
+    await claim.permit.beginEffect();
+    const before = await wallet.inspect();
+    expect(before).toMatchObject({ activeEffects: 1,
+      assets: [{ cumulativeSettledDebit: "0", reservedWorstCaseDebit: payment.maxTotalDebitOs }] });
+    const exact = {
+      disposition: "settled" as const, evidenceHash: TX_HASH,
+      debits: [
+        { asset: "DEM", purpose: "service" as const, amount: payment.amountOs },
+        { asset: "DEM", purpose: "network-fee" as const, amount: recordFeeOs },
+      ],
+    };
+
+    await expect(authenticateRecovery(reservation, exact)).resolves.toBe(accepted);
+    if (accepted) {
+      await expect(claim.permit.settle(exact)).resolves.toBeUndefined();
+      expect(await wallet.inspect()).toMatchObject({ activeEffects: 0,
+        assets: [{ cumulativeSettledDebit: totalDebitOs, reservedWorstCaseDebit: "0" }] });
+    } else {
+      await expect(claim.permit.settle(exact)).rejects.toThrow(/authentication failed/);
+      expect(await wallet.inspect()).toEqual(before);
+      await expect(wallet.reserve(reservation)).resolves.toMatchObject({
+        status: "held", stage: "effect-pending",
+      });
+    }
+  });
+
+  it.each([
     ["matching numeric fee", { network_fee: 400000000, rpc_fee: 500000000, additional_fee: 100000000 }, "1000000000", true],
     ["matching string fee", { network_fee: "400000000", rpc_fee: "500000000", additional_fee: "100000000" }, "1000000000", true],
     ["explicit zero fee", { network_fee: 0, rpc_fee: 0, additional_fee: 0 }, "0", true],
@@ -2679,7 +2777,7 @@ describe("native DEM buyer payment track", () => {
         nonce: 7, txHash: TX_HASH, payer: PAYER, payee: PAYEE,
         amountOs: payment.amountOs, blockNumber: 42, includedAt: 1_780_000_000_000,
         ...conflict,
-      }),
+      }, RECORD_FEE),
     });
     await expect(authenticateRecovery(recoveryReservation(payment), {
       disposition: "settled", evidenceHash: TX_HASH,
