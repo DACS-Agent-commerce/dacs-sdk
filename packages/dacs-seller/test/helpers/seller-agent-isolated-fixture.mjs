@@ -11,13 +11,14 @@ import * as local from './local-anchor-fixture.mjs';
 import * as lifecycleProtocol from './lifecycle-protocol-fixture.mjs';
 import {fixtureListing} from '../fixtures/listings.mjs';
 import {key,bundleFor,T,JOBS} from './bilateral-vet-fixture.mjs';
-const {createSellerDurableState}=await import('../../src/dacs/seller-durable-state.mjs');
+const durableState=await import('../../src/dacs/seller-durable-state.mjs');
+const {createSellerDurableState}=durableState;
 // The package's own claim and signature module; only absent host capabilities are stubbed.
 const claims=await import('../../src/dacs/demos-claims.mjs');
 const forbidden=()=>{throw new Error('external effect reached before lifecycle admission')};
 export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false}={}){
  const seller=key(),buyer=key(),dir=mkdtempSync(join(tmpdir(),'seller-agent-gates-'));
- const listing=lifecycle?fixtureListing({claim:seller.claim,signBytes:seller.sign},{now:T}):{pin:{listingId:'agent-gates',version:1,contentHash:'b'.repeat(64)},seller:{identity:bundleFor(seller)},pipeline:[],terms:{},offering:{title:'fixture'}};
+ const listing=lifecycle?fixtureListing({claim:seller.claim,signBytes:seller.sign},{now:T}):{pin:{listingId:'agent-gates',version:1,contentHash:'b'.repeat(64)},seller:{identity:bundleFor(seller)},pipeline:[],terms:{},offering:{title:'fixture',deliverable:{accessModel:'public'}}};
  const pin=lifecycle?lifecycleProtocol.listingPin(listing):listing.pin;
  const anchors=lifecycle?local.localAnchor({now:()=>T+1000}):{read:forbidden,write:forbidden},agreements=new Map();
  const controls={observation:null};
@@ -59,7 +60,8 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
   './delivery-evidence.mjs':{isNativeDeliveryEvidence:forbidden},
   './listing.mjs':{validateListing:async()=>({disposition:'verified'}),verifyComponent,DEM_RAIL:{railId:'demos-native:DEM',railVersion:1}},
   './fixture-anchors.mjs':lifecycle?local:Object.fromEntries(['fixtureRef','signAnchorWrite','verifyFixtureRecord','verifyFixtureReceipt','fixtureTxRef','canonicalSignature'].map(n=>[n,forbidden])),
-  './seller-durable-state.mjs':{createSellerDurableState:async()=>store},
+  // Preserve the real exports (including capacity defaults); replace only the store factory.
+  './seller-durable-state.mjs':{...durableState,createSellerDurableState:async()=>store},
   './native-payment-evidence-consumer.mjs':{NATIVE_PAYMENT_EVIDENCE:'native-fixture',nativePaymentEvidenceConfig:()=>null,checkNativePaymentEvidence:forbidden},
   './payment-evidence-wallet-journal.mjs':{isPaymentEvidenceWalletJournalPair:()=>false,paymentEvidenceWalletJournalOf:()=>null},
   './dem-delivery-context-consumer.mjs':{demDeliveryContextConfig:()=>null,resolveDemDeliverySellerContext:forbidden},

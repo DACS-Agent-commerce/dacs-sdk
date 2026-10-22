@@ -136,7 +136,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/seller-agent-isolated-fixture.mjs",
       "originalSha256": null,
-      "sha256": "9716e889bb89ae57d52eea2b40770dd33e4e3e4c7d48616b62441780e80a96b6",
+      "sha256": "b2bad52c0d81e15235b36ca32069b6c8080d4b8bfe0be67da901b668c6f3a9c7",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
