@@ -1478,6 +1478,37 @@
           "after": "d8e3c8b6d55ec8bd22662944d38d46ea5aa9b06f"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 validate retained readback runtimes and native crash recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/domain-store-crash.test.mjs",
+          "before": "4c810a59adb79865750e3987be1cd631f8b9539d",
+          "after": "3ccf8dc128d961d553aa8c09bc3caf64d8e24f4b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-worker.mjs",
+          "before": "f5046a9c1c0dcdfa242322419c460213b33c5a80",
+          "after": "c60ed75f79df45ad8039b660bf28f0a5b2bb8bb9"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/domain-store-crash-world.mjs",
+          "before": "3d2ab6dcc52dba7f2ae9cd57ebbdfee466052ee0",
+          "after": "a91f8018335cd08180669ba04b8312608b046d8a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/readback-review-loader.mjs",
+          "before": null,
+          "after": "0fd55490fb08991a2c021ccc4e48679f0a2b00b6"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "cd4d6c9e6e2ca652a2d4a342b21862c83863abb2",
+          "after": "9ae65eb7f89d25542189d0e7e9242cdf63afe8b0"
+        }
+      ]
     }
   ]
 }

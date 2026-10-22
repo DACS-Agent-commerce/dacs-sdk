@@ -1,7 +1,7 @@
 // Isolate the retained readers and coordinator from transport and handshake.
 // Fakes provide data at those boundaries; all decisions and durable writes are real.
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
+import { register } from 'node:module';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,22 +11,8 @@ import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 const store={transaction,isUniqueViolation},buyerAccess={assertWallet(){}};
 const state=globalThis[Symbol.for('d15.review.readers')]={};
-const moduleAt=name=>new URL('../src/'+name,import.meta.url).href;
-const fake=source=>({url:'data:text/javascript,'+encodeURIComponent(source),shortCircuit:true});
-registerHooks({resolve(specifier,context,next){
- // Exercise retained-state reducers behind the unconditional production action
- // hold. The separate sweep-contracts tests pin that real hold and zero effects.
- if(specifier.endsWith('/action-admission.mjs'))return fake('export const assertPurchaseActionsAdmitted=()=>{};');
-  if(specifier.endsWith('/demos-sr2-adapter.mjs') && !context.parentURL?.endsWith('readback-review-decisions.test.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/demos-sr2-adapter.mjs')+'?actual')}; export const createDemosSr2Adapter=()=>globalThis[Symbol.for('d15.review.readers')].adapter;`);
-  if(specifier.endsWith('/seller-http.mjs') && context.parentURL===moduleAt('dacs/protocol-purchases.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/seller-http.mjs')+'?actual')}; export const createSellerAgentClient=()=>globalThis[Symbol.for('d15.review.readers')].seller;`);
-  if(specifier.endsWith('/purchase-protocol.mjs') && context.parentURL===moduleAt('dacs/protocol-purchases.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/purchase-protocol.mjs')+'?actual')}; export const exchangeAgreement=async()=>globalThis[Symbol.for('d15.review.readers')].anchored;`);
-  if(specifier.endsWith('/dacs/chain.mjs') && context.parentURL===moduleAt('wallet/devnet-native-transport.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/chain.mjs')+'?actual')}; export const createDemosChainReader=()=>({observeTransfer:async hash=>globalThis[Symbol.for('d15.review.readers')].observeTransfer(hash)});`);
-  if(specifier==='@kynesyslabs/dacs' && context.parentURL===moduleAt('dacs/native-payment-evidence-consumer.mjs')){
-    const real=next(specifier,context);
-    return fake(`export * from ${JSON.stringify(real.url)}; export const verifySettlementEvidence=async()=>({decision:'pass'});`);
-  }
-  return next(specifier,context);
-}});
+// Loader modules run in a separate thread; returned fakes execute in this test's realm.
+register(new URL('./helpers/readback-review-loader.mjs', import.meta.url), import.meta.url);
 const { DemosSr2Error, demosSr2Contradiction }=await import('../src/dacs/demos-sr2-adapter.mjs?actual');
 const { createBuyerChainReadback }=await import('../src/dacs/buyer-chain-readback.mjs');
 const { createSellerSr2AgreementAnchor }=await import('../src/dacs/seller-sr2-agreement-consumer.mjs');

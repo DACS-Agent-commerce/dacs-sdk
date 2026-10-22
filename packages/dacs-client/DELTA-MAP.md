@@ -217,6 +217,12 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - A compatible-looking handle from another SQLite library is refused before any transaction callback. The README states that DatabaseSync validation occurs at the first transaction. The unqualified transaction test explicitly checks zero invocations.
 - The surrounding SDK's Node 20 root-import probe is labelled outside client engines; both public entry points require Node ^22.13.0 or >=23.4.0.
 
+
+## D11 retained readback runtime and recovery validation
+
+- The retained-readback test uses `module.register` with an isolated test loader at Node 22.13.0 and 23.4.0. The minimum-runtime CI job runs those decisions together with public API, atomicity and domain crash tests using explicit TAP output.
+- Native agreement-payment crash vectors kill before and after settlement, native supersession/nonce-resolution markers and both pending-event commits. Reopen preserves each committed decision; repeated source failures preserve the original reason without duplicate events, and a later successful retry completes both markers once. Production source and admission rules are unchanged.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -240,7 +246,7 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | 7a0ffedc3ef6ec1e9ebd4edcdc99cd5653aab30e |
 | D16 | delta(client): D16 pin reviewed controls and preserve held readback tests | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:24`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:51`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:258`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:265`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:269`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:342`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:492`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:559`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:670`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:694`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1114`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1157`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1311`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1317` | 479bd5b726f9e0752ca1618212e174330b800af0 |
-| | `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:17`, `packages/dacs-client/test/readback-review-decisions.test.mjs:105` | a3260b7e24020f9a6a3b6e8ba637d59d17ebae06 |
+| | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91` | a3260b7e24020f9a6a3b6e8ba637d59d17ebae06 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | b8e24392ce178fa7414fb3f244f0606b7c82c9b6 |
 | D16 | delta(client): D16 preserve the configured RPC byte budget | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:19`, `packages/dacs-client/src/util/http.mjs:20`, `packages/dacs-client/src/util/http.mjs:22`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:42`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:80` | 68daec2ca954a288273d8b206a32e2711810bce1 |
@@ -478,7 +484,7 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 4ec34580242522b7dd18b98233d911029ae4e143 |
 | | `packages/dacs-client/test/purchase-integrity.test.mjs:1`, `packages/dacs-client/test/purchase-integrity.test.mjs:6`, `packages/dacs-client/test/purchase-integrity.test.mjs:8`, `packages/dacs-client/test/purchase-integrity.test.mjs:10`, `packages/dacs-client/test/purchase-integrity.test.mjs:24` | 174d67c16132706497904b28250c6135e97d1497 |
 | | `packages/dacs-client/test/purchase-review-races.test.mjs:5`, `packages/dacs-client/test/purchase-review-races.test.mjs:7`, `packages/dacs-client/test/purchase-review-races.test.mjs:9`, `packages/dacs-client/test/purchase-review-races.test.mjs:27` | 0f6b4617a40d7d1a888b9f065abc794d9b00b5b4 |
-| | `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:17`, `packages/dacs-client/test/readback-review-decisions.test.mjs:105` | cd4d6c9e6e2ca652a2d4a342b21862c83863abb2 |
+| | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91` | cd4d6c9e6e2ca652a2d4a342b21862c83863abb2 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | 2ff0ad8abdbb060c2651be671a9f3bd254e1c1b9 |
 | D11 | delta(client): D11 close legacy actions and tighten buyer package contracts | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` | 40f44cef846981dd2d87bd4654e8192b8e784ac6 |
@@ -514,6 +520,12 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` | f5046a9c1c0dcdfa242322419c460213b33c5a80 |
 | | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs:1` | 3d2ab6dcc52dba7f2ae9cd57ebbdfee466052ee0 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs:1` | d8e3c8b6d55ec8bd22662944d38d46ea5aa9b06f |
+| D11 | delta(client): D11 validate retained readback runtimes and native crash recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/domain-store-crash.test.mjs:1` | 3ccf8dc128d961d553aa8c09bc3caf64d8e24f4b |
+| | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` | c60ed75f79df45ad8039b660bf28f0a5b2bb8bb9 |
+| | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs:1` | a91f8018335cd08180669ba04b8312608b046d8a |
+| | `packages/dacs-client/test/helpers/readback-review-loader.mjs:1` | 0fd55490fb08991a2c021ccc4e48679f0a2b00b6 |
+| | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91` | 9ae65eb7f89d25542189d0e7e9242cdf63afe8b0 |
 
 ## Complete commit and file inventory
 
@@ -558,7 +570,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
 | df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:24`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:51`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:258`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:265`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:269`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:342`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:492`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:559`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:670`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:694`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1114`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1157`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1311`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1317` |
-| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:17`, `packages/dacs-client/test/readback-review-decisions.test.mjs:105` |
+| df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91` |
 | df2b90318c71967f25620a6c9aafcce55b31e461 | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
 | 22ae458392f24ba925a4f70d491ea1d4305c8e4b | `.github/workflows/ci.yml:1` |
 | 02efcbe06bd4ba3a6217c67ca5d59124c6209480 | `packages/dacs-client/DELTA-COMMITS.json:1` |
@@ -1070,7 +1082,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 inject host seams and publish the buyer API | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
 | delta(client): D11 inject host seams and publish the buyer API | `packages/dacs-client/test/purchase-integrity.test.mjs:1`, `packages/dacs-client/test/purchase-integrity.test.mjs:6`, `packages/dacs-client/test/purchase-integrity.test.mjs:8`, `packages/dacs-client/test/purchase-integrity.test.mjs:10`, `packages/dacs-client/test/purchase-integrity.test.mjs:24` |
 | delta(client): D11 inject host seams and publish the buyer API | `packages/dacs-client/test/purchase-review-races.test.mjs:5`, `packages/dacs-client/test/purchase-review-races.test.mjs:7`, `packages/dacs-client/test/purchase-review-races.test.mjs:9`, `packages/dacs-client/test/purchase-review-races.test.mjs:27` |
-| delta(client): D11 inject host seams and publish the buyer API | `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:17`, `packages/dacs-client/test/readback-review-decisions.test.mjs:105` |
+| delta(client): D11 inject host seams and publish the buyer API | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91` |
 | delta(client): D11 inject host seams and publish the buyer API | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
 | delta(client): D11 close legacy actions and tighten buyer package contracts | `.github/workflows/ci.yml:1` |
 | delta(client): D11 close legacy actions and tighten buyer package contracts | `package-lock.json:1` |
@@ -1131,6 +1143,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` |
 | delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs:1` |
 | delta(client): D11 pin settlement and delivery crash recovery | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `.github/workflows/ci.yml:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/README.md:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/test/domain-store-crash.test.mjs:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/test/helpers/readback-review-loader.mjs:1` |
+| delta(client): D11 validate retained readback runtimes and native crash recovery | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91` |
 
 ## Original moved files
 

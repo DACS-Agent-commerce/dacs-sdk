@@ -215,3 +215,9 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - File-backed SQLite tests kill a worker with SIGKILL immediately before and after the actual outer settlement and delivery-overdue COMMIT. Reopening checks the complete payment pointer/status/nonce-consumption decision and replacement supersession, or the overdue state/event pair. A retry and a second restart preserve exactly one committed decision. The worker intercepts the connection COMMIT only; domain entry points and the package transaction implementation run unchanged.
 - A compatible-looking handle from another SQLite library is refused before any transaction callback. The README states that DatabaseSync validation occurs at the first transaction. The unqualified transaction test explicitly checks zero invocations.
 - The surrounding SDK's Node 20 root-import probe is labelled outside client engines; both public entry points require Node ^22.13.0 or >=23.4.0.
+
+
+## D11 retained readback runtime and recovery validation
+
+- The retained-readback test uses `module.register` with an isolated test loader at Node 22.13.0 and 23.4.0. The minimum-runtime CI job runs those decisions together with public API, atomicity and domain crash tests using explicit TAP output.
+- Native agreement-payment crash vectors kill before and after settlement, native supersession/nonce-resolution markers and both pending-event commits. Reopen preserves each committed decision; repeated source failures preserve the original reason without duplicate events, and a later successful retry completes both markers once. Production source and admission rules are unchanged.
