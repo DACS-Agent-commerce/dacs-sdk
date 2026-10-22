@@ -124,12 +124,15 @@ function prepared(
   return Object.freeze({ ...unsigned, effectHash: sha256Hex(canonicalize(unsigned)) });
 }
 
-function sourceFinality(sourceLock: Readonly<HtlcPreparedAction>): HtlcSourceFinalityCheckpoint {
+function sourceFinality(
+  sourceLock: Readonly<HtlcPreparedAction>,
+  sourceExpiry = SOURCE_EXPIRY,
+): HtlcSourceFinalityCheckpoint {
   return {
     sourceLockEffectHash: sourceLock.effectHash,
     sourceLockTxRef: sourceLock.txRef as Extract<HtlcTxRef, { kind: "htlc-lock" }>,
     includedAt: NOW,
-    sourceExpiry: SOURCE_EXPIRY,
+    sourceExpiry,
     finalityObservedAt: NOW + 500,
     authenticationHash: AUTH_HASH,
   };
@@ -230,6 +233,18 @@ async function retainedPrepared(s: Leased): Promise<readonly Readonly<HtlcPrepar
   });
   if (claimed.status !== "waiting") throw new ContractViolation(`read during a live lease returned ${claimed.status}`);
   return claimed.prepared;
+}
+
+/** Records the source lock, its finality and the causally bound destination lock. */
+async function recordLockRows(s: Leased, sourceExpiry = SOURCE_EXPIRY): Promise<void> {
+  const lock = prepared(s.intent, "source-lock", "lock-s");
+  const checkpoint = sourceFinality(lock, sourceExpiry);
+  expectStatus(await s.store.recordPrepared({ ...writer(s), prepared: lock }), ["recorded"], "source lock");
+  expectStatus(await s.store.recordSourceFinality({ ...writer(s), checkpoint }), ["recorded"], "source finality");
+  expectStatus(await s.store.recordPrepared({
+    ...writer(s),
+    prepared: prepared(s.intent, "destination-lock", "lock-d", crossChainHtlcSourceFinalityCheckpointHash(checkpoint)),
+  }), ["recorded"], "destination lock");
 }
 
 /**
@@ -438,6 +453,7 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
   }],
   ["reveal: the reveal checkpoint is write-once, and a source refund is refused after it", async (make) => {
     const a = await acquire(await make());
+    await recordLockRows(a);
     const reveal = prepared(a.intent, "destination-claim", "reveal-1");
     expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: reveal }), ["recorded"], "reveal row");
     const checkpoint = revealCheckpoint(reveal);
@@ -477,6 +493,7 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
   }],
   ["source-claim CAS: only the named prior is replaced, by a fresh row, within the window and the limit", async (make) => {
     const a = await acquire(await make());
+    await recordLockRows(a);
     const attempt = (n: number) => prepared(a.intent, "source-claim", `claim-${n}`);
     const cas = (prior: Readonly<HtlcPreparedAction>, replacement: Readonly<HtlcPreparedAction>, now = NOW) =>
       a.store.replacePreparedSourceClaim({
@@ -485,10 +502,10 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
         failedObservation: { state: "failed", txRef: prior.txRef, authenticationHash: AUTH_HASH },
         replacement,
       });
-    expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: attempt(1) }), ["recorded"], "first claim");
-    expectStatus(await cas(attempt(1), attempt(2)), REFUSED, "replacement before the reveal checkpoint");
     const reveal = prepared(a.intent, "destination-claim", "reveal-1");
     expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: reveal }), ["recorded"], "reveal row");
+    expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: attempt(1) }), ["recorded"], "first claim");
+    expectStatus(await cas(attempt(1), attempt(2)), REFUSED, "replacement before the reveal checkpoint");
     expectStatus(await a.store.recordRevealFinal({ ...writer(a), checkpoint: revealCheckpoint(reveal) }), ["recorded"], "reveal");
     expectStatus(await cas(attempt(9), attempt(2)), REFUSED, "replacement naming another prior");
     const naming = (effect: Readonly<HtlcPreparedAction>, ref: Readonly<HtlcPreparedAction>) =>
@@ -522,13 +539,14 @@ const CASES: ReadonlyArray<readonly [string, Case]> = [
   }],
   ["source-claim CAS: no replacement at or after the source expiry", async (make) => {
     const a = await acquire(await make());
-    const first = prepared(a.intent, "source-claim", "claim-1");
-    expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: first }), ["recorded"], "first claim");
+    const expiry = Math.floor((NOW + LEASE_MS / 2) / 1_000);
+    await recordLockRows(a, expiry);
     const reveal = prepared(a.intent, "destination-claim", "reveal-1");
     expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: reveal }), ["recorded"], "reveal row");
-    const expiry = Math.floor((NOW + LEASE_MS / 2) / 1_000);
     expectStatus(await a.store.recordRevealFinal({ ...writer(a), checkpoint: revealCheckpoint(reveal, expiry) }),
       ["recorded"], "reveal");
+    const first = prepared(a.intent, "source-claim", "claim-1");
+    expectStatus(await a.store.recordPrepared({ ...writer(a), prepared: first }), ["recorded"], "first claim");
     expectStatus(await a.store.replacePreparedSourceClaim({
       ...writer(a), now: expiry * 1_000, priorEffectHash: first.effectHash,
       priorTxRef: first.txRef as Extract<HtlcTxRef, { kind: "htlc-claim" }>,

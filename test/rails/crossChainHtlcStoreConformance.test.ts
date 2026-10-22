@@ -5,6 +5,7 @@ import {
   type CrossChainHtlcStore,
   type HtlcStoreClaim,
   type HtlcStoreWrite,
+  type HtlcSourceFinalityCheckpoint,
 } from "../../src/rails/crossChainHtlc.js";
 import { sha256Hex } from "../../src/canonical/index.js";
 import { checkCrossChainHtlcStore } from "../../src/rails/crossChainHtlcStoreConformance.js";
@@ -64,6 +65,30 @@ function durable(restarted: (inner: CrossChainHtlcStore) => CrossChainHtlcStore 
 const RESTART_CASE = /^restart: /;
 
 describe("checkCrossChainHtlcStore", () => {
+  test("accepts a store requiring every reveal checkpoint to match retained source finality", async () => {
+    const makeStore = broken((inner) => {
+      const checkpoints = new Map<string, Readonly<HtlcSourceFinalityCheckpoint>>();
+      return {
+        async recordSourceFinality(input) {
+          const result = await inner.recordSourceFinality(input);
+          if (result.status === "recorded" || result.status === "existing") {
+            checkpoints.set(input.settlementKey, input.checkpoint);
+          }
+          return result;
+        },
+        async recordRevealFinal(input) {
+          if (!await inner.isCurrent({ ...input, now: 0 })) return inner.recordRevealFinal(input);
+          const source = checkpoints.get(input.settlementKey);
+          if (!source || source.sourceExpiry !== input.checkpoint.sourceExpiry) {
+            return { status: "conflict", reason: "source-reveal-expiry-mismatch" };
+          }
+          return inner.recordRevealFinal(input);
+        },
+      };
+    });
+    expect(await failingCases(makeStore)).toEqual([]);
+  });
+
   // The volatile store loses every row on a restart, so a host CI that checks
   // every case `ok` must not pass it.
   test("fails the restart case, and only it, for a store checked without a reopen hook", async () => {

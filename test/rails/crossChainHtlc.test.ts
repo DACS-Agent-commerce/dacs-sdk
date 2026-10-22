@@ -8509,6 +8509,149 @@ async function sweepLocked(options: HarnessOptions = {}, reveal = false) {
   return { h, run };
 }
 
+describe("restart recovery boundaries", () => {
+  const toSourceClaimPending = async (run: ReturnType<typeof runner>) => {
+    await advanceCrossChainHtlc(run.shared);
+    for (let step = 0; step < 3; step += 1) await advanceCrossChainHtlc(run.nextOwner());
+  };
+
+  test.each(["omitted", "matching", "different"] as const)(
+    "recovers and refunds when an adapter's effectHash is %s",
+    async (suppliedHash) => {
+      const h = harness({ sourceExpiry: 1_700, destinationExpiry: 1_200 });
+      const prepare = h.prepareAction.getMockImplementation()!;
+      h.prepareAction.mockImplementation(async (request, fence) => {
+        const body = await prepare(request, fence);
+        if (suppliedHash === "omitted") return body;
+        // A full HtlcPreparedAction is a valid structural return type for the adapter.
+        const action: HtlcPreparedAction = {
+          ...body,
+          effectHash: suppliedHash === "matching" ? sha256Hex(canonicalize(body)) : "0".repeat(64),
+        };
+        return action;
+      });
+      const run = runner({ adapter: h.adapter, authorizeDestinationClaim: false });
+      await advanceCrossChainHtlc(run.shared);
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "waiting" });
+      run.setClock(1_700_000);
+      h.setObservedAt(1_700_000);
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "refund-pending" });
+      await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({ status: "refunded" });
+      expect(h.prepareAction.mock.calls.map(([request]) => request.action))
+        .toEqual(["source-lock", "destination-lock", "source-refund", "destination-refund"]);
+      for (const [action] of h.broadcastRetained.mock.calls) {
+        const { effectHash, ...body } = action;
+        expect(effectHash).toBe(sha256Hex(canonicalize(body)));
+      }
+    },
+  );
+
+  test.each(["pending", "unreported"] as const)(
+    "ends ST-8 on an authenticated refunded lock while its claim is %s",
+    async (claimState) => {
+      const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+      const run = runner({ adapter: h.adapter });
+      await toSourceClaimPending(run);
+      h.actions["source-lock"] = { ...h.actions["source-lock"], lockState: "refunded" } as HtlcObservedAction;
+      if (claimState === "unreported") delete h.actions["source-claim"];
+      h.prepareAction.mockClear();
+      h.broadcastRetained.mockClear();
+      for (const now of [1_500_000, 1_600_000, 3_600_000]) {
+        run.setClock(now);
+        h.setObservedAt(now);
+        await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual({
+          status: "failed", errorClass: "settlement-atomicity", reason: "dest-revealed-source-unclaimed-expired",
+        });
+      }
+      expect(h.prepareAction).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["open", undefined] as const)("keeps a pending claim resumable when the lock disposition is %s", async (lockState) => {
+    const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "pending" } });
+    const run = runner({ adapter: h.adapter });
+    await toSourceClaimPending(run);
+    h.actions["source-lock"] = { ...h.actions["source-lock"], lockState } as HtlcObservedAction;
+    run.setClock(1_500_000);
+    h.setObservedAt(1_500_000);
+    await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toMatchObject({
+      status: "operator-alert", reason: "htlc-source-claim-missed-after-reveal", sourceClaimPending: true,
+    });
+  });
+
+  test.each([1_499_999, 1_500_000, 1_500_001])(
+    "records checkpoint recovery immediately when a rebroadcast claim reaches finality at %i",
+    async (finalityReachedAt) => {
+      const h = harness({ sourceExpiry: 1_500, destinationExpiry: 1_100, mode: { "source-claim": "throw-once" } });
+      const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+      const recordSettlement = vi.fn(base.recordSettlement.bind(base));
+      const run = runner({ adapter: h.adapter, store: { ...base, recordSettlement } });
+      await advanceCrossChainHtlc(run.shared);
+      for (let step = 0; step < 3; step += 1) await advanceCrossChainHtlc(run.nextOwner());
+      delete h.actions["destination-claim"];
+      const broadcast = h.broadcastRetained.getMockImplementation()!;
+      h.setMode("source-claim", "final");
+      h.broadcastRetained.mockImplementation(async (action, fence) => {
+        h.setObservedAt(finalityReachedAt);
+        await broadcast(action, fence);
+      });
+      const result = await advanceCrossChainHtlc(run.nextOwner());
+      if (finalityReachedAt > 1_500_000) {
+        expect(result).toMatchObject({ status: "failed", errorClass: "settlement-atomicity",
+          reason: "dest-revealed-source-unclaimed-expired", sourceClaimFinalityReachedAt: finalityReachedAt });
+        expect(recordSettlement).not.toHaveBeenCalled();
+      } else {
+        expect(result).toMatchObject({ status: "settled", settlement: {
+          txRefs: [refFor("source-lock"), refFor("destination-lock"), refFor("destination-claim"), refFor("source-claim")],
+          settlementFinality: { sourceExpiry: 1_500, finalityReachedAt },
+        } });
+        expect(recordSettlement).toHaveBeenCalledTimes(1);
+        h.prepareAction.mockClear();
+        h.broadcastRetained.mockClear();
+        await expect(advanceCrossChainHtlc(run.nextOwner())).resolves.toEqual(result);
+        expect(h.prepareAction).not.toHaveBeenCalled();
+        expect(h.broadcastRetained).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  test.each([1_100, 5_000, 10_000])("reconciles retained source/reveal expiry %i before observation or effects", async (sourceExpiry) => {
+    const h = harness({ mode: { "source-claim": "throw-once" } });
+    const base = createInMemoryCrossChainHtlcStore({ acknowledgeVolatile: true });
+    const run = runner({ adapter: h.adapter, store: {
+      ...base,
+      async claim(input) {
+        const claimed = await base.claim(input);
+        return claimed.status === "acquired" && claimed.revealCheckpoint
+          ? { ...claimed, revealCheckpoint: { ...claimed.revealCheckpoint, sourceExpiry } }
+          : claimed;
+      },
+    } });
+    await advanceCrossChainHtlc(run.shared);
+    for (let step = 0; step < 3; step += 1) await advanceCrossChainHtlc(run.nextOwner());
+    delete h.actions["destination-claim"];
+    run.setClock(sourceExpiry === 10_000 ? 5_100_000 : 1_200_000);
+    h.setObservedAt(sourceExpiry === 10_000 ? 5_100_000 : 1_200_000);
+    h.observe.mockClear();
+    h.observeSourceLeg.mockClear();
+    h.prepareAction.mockClear();
+    h.broadcastRetained.mockClear();
+    const result = await advanceCrossChainHtlc(run.nextOwner());
+    if (sourceExpiry === 5_000) {
+      expect(result).toMatchObject({ status: "settle-asymmetric", recoveryDeadline: 5_000_000 });
+      expect(h.observe).toHaveBeenCalled();
+      expect(h.broadcastRetained).toHaveBeenCalledTimes(1);
+    } else {
+      expect(result).toEqual({ status: "failed", errorClass: "permanent", reason: "htlc-reveal-checkpoint-conflict" });
+      expect(h.observe).not.toHaveBeenCalled();
+      expect(h.observeSourceLeg).not.toHaveBeenCalled();
+      expect(h.prepareAction).not.toHaveBeenCalled();
+      expect(h.broadcastRetained).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe("refund and retained-attempt boundary progress", () => {
   test.each(["source-leg", "whole-session", "regressed-source", "unlanded-reveal"] as const)("passes exact expiry context to %s refund preparations", async (path) => {
     const { h, run } = await sweepLocked({ sourceExpiry: 1_700, destinationExpiry: 1_200, mode: { "destination-claim": "pending" } }, path === "unlanded-reveal");

@@ -1179,7 +1179,7 @@ function revealedPreimageMatches(value: unknown, expected: Uint8Array): boolean 
 }
 
 function validatePrepared(
-  value: Readonly<Omit<HtlcPreparedAction, "effectHash">>,
+  value: Readonly<Omit<HtlcPreparedAction, "effectHash"> & { effectHash?: unknown }>,
   intent: Readonly<CrossChainHtlcIntent>,
   action: HtlcAction,
   sourceFinalityCheckpoint?: Readonly<HtlcSourceFinalityCheckpoint>,
@@ -1207,7 +1207,9 @@ function validatePrepared(
     throw new DacsError("pay-cross-chain-htlc: signed payload must be canonical base64");
   }
   requireUInt(value.preparedAt, "preparedAt");
-  const unsigned = { ...value, txRef: Object.freeze({ ...value.txRef }) };
+  // Structurally typed adapters may supply a hash, but the core owns it.
+  const { effectHash: _suppliedHash, ...body } = value;
+  const unsigned = { ...body, txRef: Object.freeze({ ...value.txRef }) };
   return Object.freeze({ ...unsigned, effectHash: sha256Hex(canonicalize(unsigned)) });
 }
 
@@ -2030,6 +2032,10 @@ export async function advanceCrossChainHtlc(
       reason: error instanceof Error ? error.message : "htlc-reveal-checkpoint-corrupt",
     };
   }
+  if (retainedCheckpoint && sourceFinalityCheckpoint &&
+      retainedCheckpoint.sourceExpiry !== sourceFinalityCheckpoint.sourceExpiry) {
+    return { status: "failed", errorClass: "permanent", reason: "htlc-reveal-checkpoint-conflict" };
+  }
   let lockObservationInvalid = false;
   const observe = async (): Promise<Readonly<HtlcLedgerSnapshot> | null> => {
     try {
@@ -2213,7 +2219,8 @@ export async function advanceCrossChainHtlc(
   // authenticated unclaimed past the expiry makes the interim record stand
   // and the session terminal. A lock spent by another claim final within the
   // window is that claim's resolution (ST-8(a)), even while a claim the core
-  // sent is pending: that claim can no longer spend the lock. One final only
+  // sent is pending: that claim can no longer spend the lock. A refunded lock
+  // likewise rules out any pending claim and establishes expiry. One final only
   // after the window is the expiry, as for a claim the core sent, and keeps
   // the claim. An unreported disposition stays resumable.
   const sourceClaimMissed = (
@@ -2225,7 +2232,7 @@ export async function advanceCrossChainHtlc(
       unlandedActiveClaim("source-claim", latest) !== undefined;
     const lock = latest.actions["source-lock"];
     const lockState = lock?.state === "final" ? lock.lockState : undefined;
-    if (ownClaimDead && (lockState === "open" || lockState === "refunded")) {
+    if (lockState === "refunded" || (ownClaimDead && lockState === "open")) {
       return { status: "failed", errorClass: "settlement-atomicity", reason: "dest-revealed-source-unclaimed-expired" };
     }
     const txRefs = collectRefs(latest, prepared, [], ["destination-lock"], known);
@@ -3056,7 +3063,7 @@ export async function advanceCrossChainHtlc(
       } catch (error) {
         return { status: "failed", errorClass: "permanent", reason: String(error) };
       }
-      if (sourceClaim && sourceLock && destinationLockRef && destinationClaim) {
+      if (sourceClaim && sourceLock && destinationLockRef) {
         const claimDeadline = secondsToMilliseconds(checkpoint.sourceExpiry, "source recovery expiry");
         if (sourceClaim.finalityReachedAt > claimDeadline) {
           return lateSourceClaimExpired(
@@ -3066,7 +3073,7 @@ export async function advanceCrossChainHtlc(
           );
         }
         const settlement = Object.freeze({
-          txRefs: Object.freeze([sourceLock.txRef, destinationLockRef, destinationClaim.txRef, sourceClaim.txRef]),
+          txRefs: Object.freeze([sourceLock.txRef, destinationLockRef, checkpoint.revealTxRef, sourceClaim.txRef]),
           paymentAmount: Object.freeze({ amount: intent.amount, currency: intent.currency }),
           settlementFinality: Object.freeze({
             model: "htlc-reveal" as const,

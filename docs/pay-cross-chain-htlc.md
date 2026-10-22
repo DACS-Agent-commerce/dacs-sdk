@@ -94,9 +94,11 @@ final, the preimage is public and the source refund path is forbidden. If the
 payee's source claim is not yet final, the result is `settle-asymmetric`, not a
 refund or terminal ordinary failure. If the source expiry passes without that
 claim, the session follows ST-8's expiry once the source lock is known to be
-unclaimed: no claim the core sent can land (it holds none, or the adapter
-authenticates the active one `failed`, or `absent` naming it), and the
-adapter authenticates the source lock's `lockState` as `open` or `refunded`.
+unclaimed: the adapter authenticates the source lock's `lockState` as
+`refunded`, or it authenticates the lock `open` and no claim the core sent can
+land (it holds none, or the adapter authenticates the active one `failed`, or
+`absent` naming it). A refunded lock cannot be spent by a pending or unreported
+claim, so it establishes expiry independently of that transaction's state.
 The result is then the terminal `failed` with `errorClass`
 `settlement-atomicity` and reason `dest-revealed-source-unclaimed-expired`.
 The same terminal expiry follows a lock `claimed` by a claim that reached
@@ -159,6 +161,8 @@ source-expiry cutoff; settlements, `settle-asymmetric` progress and
 checkpoint-path operator alerts name the retained destination-lock reference
 and the checkpointed reveal, which is the attempt that landed even when it is
 an earlier one than the active attempt or is no longer reported.
+If a retained source claim becomes final during rebroadcast, that same call
+persists and returns settlement using the checkpointed reveal reference.
 Neither leg is ever refunded on this path, and a source claim that
 misses the source expiry takes the usual ST-8 expiry path above.
 
@@ -481,7 +485,9 @@ only when:
     destination lock is prepared, `htlc-source-finality-checkpoint-conflict`
     (before that it is the paged, resumable `indeterminate`
     `htlc-source-observers-disagree`);
-  - a reveal checkpoint for another transaction, or a final reveal that is
+  - a reveal checkpoint whose source expiry differs from the retained
+    source-finality checkpoint (checked before any observation or effect),
+    a reveal checkpoint for another transaction, or a final reveal that is
     another attempt than the checkpointed one, `htlc-reveal-checkpoint-conflict`;
   - a final reveal of another preimage, `htlc-revealed-preimage-mismatch`, or
     of a malformed one, `htlc-revealed-preimage-invalid`;
@@ -499,8 +505,8 @@ only when:
   the source claim is final but reached finality after the source expiry; or
   the adapter authenticates the source lock `claimed` by a claim the core did
   not send that reached finality after it; or the source expiry has passed,
-  no claim the core sent can land, and the adapter authenticates the source
-  lock's `lockState` as `open` or `refunded`. In the first two cases the
+  the adapter authenticates the source lock's `lockState` as `refunded`, or as
+  `open` when no claim the core sent can land. In the first two cases the
   lock was spent: the result carries `sourceClaimTxRef`,
   `sourceClaimFinalityReachedAt` and `recoveryDeadline`, the payee holds the
   source funds, and the host must not pay the payee again or treat them as
@@ -1170,6 +1176,8 @@ the core cannot check them itself.
   broadcasts, submits, enqueues, publishes or otherwise discloses the signed
   payload or the preimage, also after the core abandoned the call or
   discarded its result; only `broadcastRetained` releases retained bytes.
+  The core computes `effectHash` over the returned action without an
+  `effectHash` field; an adapter-supplied hash is ignored.
   The core decides the payer's source refund on durable state alone: a reveal
   or claim it never recorded must never have left the adapter, or a leaked
   reveal could claim the destination for the payer, who would then also be
