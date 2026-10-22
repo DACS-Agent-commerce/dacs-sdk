@@ -11,9 +11,9 @@ import type {
 /**
  * Execution attestations {@link observePayDemTransferCore} built itself, each
  * frozen, after reading a `confirmed` transaction record bound to the hash,
- * block, parties and amount. Private to this module: nothing exported from any
- * shipped file adds to it, and a copy or a caller-built object with the same
- * fields is not in it.
+ * block, parties and amount. Only observePayDemTransferCore adds entries, using
+ * the client supplied to it. A copy or a caller-built object with the same
+ * fields is not in it. Client authenticity remains the host's responsibility.
  */
 const sdkExecutedObservations = new WeakMap<object, string | undefined>();
 
@@ -26,7 +26,9 @@ const sdkExecutedObservations = new WeakMap<object, string | undefined>();
  * statement, however well shaped, and so is a copy of a genuine one. Every
  * consumer that delivers, issues payment evidence or accounts a payment
  * requires this; any other `included` observation is held. Read-only: the
- * answer depends only on the object's identity.
+ * answer depends only on the object's identity. This proves that the SDK parser
+ * checked the supplied responses, not that an injected client told the truth.
+ * Use an authenticated node client; the default observer uses its configured RPC.
  */
 export function isDemosExecutedTransferObservation(
   observation: Readonly<DemosTransferObservation>,
@@ -36,10 +38,12 @@ export function isDemosExecutedTransferObservation(
 }
 
 /**
- * The executed record's total network fee in OS, captured by the SDK observer
+ * The executed record's declared `transaction_fee` sum in OS, captured by the SDK observer
  * and bound to the original immutable observation. Copies and caller-built
  * observations carry no evidence. A missing or malformed record fee returns
  * `undefined`, never zero; execution alone cannot authenticate wallet fees.
+ * This declaration can differ from the applied balance debit when the node's
+ * gasFeeSeparation fork is inactive.
  */
 export function demosExecutedTransferNetworkFeeOs(
   observation: Readonly<DemosTransferObservation>,

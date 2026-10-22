@@ -557,7 +557,7 @@ reports `included` for every stored transaction, including one whose record
 `failed`. Execution needs the transaction record's literal `confirmed` label
 and a valid signed nonce; only then does the observer return
 `execution: "executed"` with that `nonce`. An `included` or `finalized` record
-label (the pinned node writes only `confirmed`, `failed` and `pending`
+label (the cited node source writes only `confirmed`, `failed` and `pending`
 records) yields an inclusion-only observation (no `execution`). The seller
 intake, seller payment evidence, buyer payment recovery, wallet accounting and
 buyer audit all apply one rule, `isDemosExecutedTransferObservation`: only the
@@ -607,11 +607,17 @@ using the runtime wrapper. A callback alone cannot finalize recovery: a pending,
 missing or unavailable record stays held; a failed or conflicting record cannot
 complete. The read binds the hash, parties, amount and network, and the track
 checks the signed nonce, inclusion block and checkpoint's confirmed debit before
-wallet accounting or notice publication. The record's own fee must equal that
-debit: a record whose fee differs, or that carries none, needs an operator and
-neither debits the wallet nor publishes a notice. A fresh payment applies the
-same fee rule before it settles the wallet. A rail without an SDK-owned record
-reader stays held. Recovery never signs or broadcasts.
+wallet accounting or notice publication. The record's declared `transaction_fee`
+must equal the confirmation's fee used for accounting: a record whose fee
+differs, or that carries none, needs an operator and neither debits the wallet
+nor publishes a notice. A fresh payment applies the
+same fee rule before it settles the wallet. The prepared-transfer journal
+checks `declaredNetworkFeeOs` against the confirmed fee before broadcast;
+a missing or mismatched declaration gives `pay-dem-prepared-fee-conflict`.
+The declaration is not an actual balance-debit proof: with `gasFeeSeparation` inactive, applied balance edits can
+charge a different fee. `demosExecutedTransferNetworkFeeOs` returns this declared
+fee only for the original SDK observation; copies return `undefined`.
+A rail without an SDK-owned record reader stays held. Recovery never signs or broadcasts.
 
 The funded boundary test is disabled by default. It requires two independent
 Demos wallets and DIDs, an explicit `PAY_DEM_AMOUNT_OS` (capped at 1 DEM), an

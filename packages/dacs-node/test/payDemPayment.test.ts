@@ -800,6 +800,7 @@ describe("native DEM buyer payment track", () => {
     network: "demos",
     maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
     confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+    declaredNetworkFeeOs: "1000000000",
     recovery,
   });
   it.each([
@@ -998,6 +999,8 @@ describe("native DEM buyer payment track", () => {
           amountOs: AUTHORITY.amountOs,
           network: "demos",
           maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          declaredNetworkFeeOs: "1000000000",
           recovery: input.recovery!,
         });
         await input.assertCurrentBeforeBroadcast!();
@@ -1166,6 +1169,7 @@ describe("native DEM buyer payment track", () => {
             network: "demos",
             maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
             confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+            declaredNetworkFeeOs: "1000000000",
             recovery: input.recovery!,
           });
           await input.assertCurrentBeforeBroadcast!();
@@ -1272,6 +1276,7 @@ describe("native DEM buyer payment track", () => {
           network: "demos",
           maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
           confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          declaredNetworkFeeOs: "1000000000",
           recovery: input.recovery!,
         });
         await input.assertCurrentBeforeBroadcast!();
@@ -1386,6 +1391,7 @@ describe("native DEM buyer payment track", () => {
           network: "demos",
           maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
           confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          declaredNetworkFeeOs: "1000000000",
           recovery: input.recovery!,
         });
         await input.assertCurrentBeforeBroadcast!();
@@ -1790,6 +1796,54 @@ describe("native DEM buyer payment track", () => {
     expect(restarted.writes).toEqual(["reconciliation:indeterminate"]);
   });
 
+  it.each(["different", "missing", "matching"] as const)(
+    "checks %s declared and confirmed fees before the funded broadcast",
+    async (feeCase) => {
+      const originalConfirm = demosSdk.confirm.getMockImplementation()!;
+      demosSdk.confirm.mockImplementation(async (...args) => {
+        const validity = await originalConfirm(...args);
+        validity.response.data.gas_operation = { fees: {
+          network_fee: feeCase === "different" ? "300000000" : "400000000",
+          rpc_fee: "500000000", additional_fee: "100000000",
+        } };
+        if (feeCase === "missing") {
+          delete validity.response.data.transaction.content.transaction_fee;
+        }
+        return validity;
+      });
+      const rail = await sdkPayDemRail();
+      const wallet = createAccountingTestWalletSpendAuthorityV1({
+        wallet: PAYER, chainId: "demos", asset: "DEM",
+      });
+      const checkpoints = new Map<string, unknown>();
+      const first = retainedEffectDatabase("fresh", checkpoints);
+      const publishNotice = vi.fn();
+      const payment = createDacsPayDemBuyerPaymentTrackV1({
+        walletSpendAuthority: wallet, database: first.database,
+        workerId: "buyer-fee-preflight", rail,
+        resolveAuthority: () => AUTHORITY,
+        reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
+        publishNotice,
+      });
+      const outcome = await payment(first.operation);
+      if (feeCase === "matching") {
+        expect(outcome).toMatchObject({ status: "final", outcome: "success" });
+        expect(demosSdk.broadcast).toHaveBeenCalledOnce();
+        expect(publishNotice).toHaveBeenCalledOnce();
+        expect(checkpoints.size).toBe(1);
+      } else {
+        expect(outcome).toEqual({
+          status: "operator-action", reasonCode: "pay-dem-prepared-fee-conflict",
+        });
+        expect(demosSdk.broadcast).not.toHaveBeenCalled();
+        expect(demosSdk.getTxByHash).not.toHaveBeenCalled();
+        expect(publishNotice).not.toHaveBeenCalled();
+        expect(checkpoints.size).toBe(0);
+        expect((await wallet.inspect()).assets[0]?.cumulativeSettledDebit).toBe("0");
+      }
+    },
+  );
+
   // The crash point between settling the wallet and queueing the notice: the
   // SDK verified the payment, the wallet settled, then the notice failed. The
   // restart reconciles and queues the notice without a second transfer.
@@ -1811,7 +1865,9 @@ describe("native DEM buyer payment track", () => {
       },
     }));
     const rail = await sdkPayDemRailSigning(txHash, 9);
-    const authority = createPermissiveTestWalletSpendAuthorityV1();
+    const authority = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER, chainId: "demos", asset: "DEM",
+    });
     const permitSettles: string[] = [];
     const walletSpendAuthority: WalletSpendAuthorityV1 = {
       ...authority,
@@ -1852,6 +1908,10 @@ describe("native DEM buyer payment track", () => {
     expect(demosSdk.broadcast).toHaveBeenCalledOnce();
     expect(permitSettles).toEqual([txHash]);
     expect(failingNotice).toHaveBeenCalledOnce();
+    const settled = await authority.inspect();
+    expect(settled.assets[0]?.cumulativeSettledDebit).toBe(
+      (BigInt(AUTHORITY.amountOs) + 1_000_000_000n).toString(),
+    );
     expect(first.writes).toEqual([
       "checkpoint:pay-dem-prepared-transfer",
       "ambiguous:pay-dem-settlement-ambiguous",
@@ -1879,7 +1939,7 @@ describe("native DEM buyer payment track", () => {
     );
     const publishNotice = vi.fn();
     const resumedPayment = createDacsPayDemBuyerPaymentTrackV1({
-      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      walletSpendAuthority,
       database: restarted.database,
       workerId: "buyer-dem-after-notice-failure",
       rail,
@@ -1899,6 +1959,8 @@ describe("native DEM buyer payment track", () => {
       prepared: expect.objectContaining({ txHash, nonce: 9 }),
     }));
     expect(publishNotice).toHaveBeenCalledOnce();
+    expect((await authority.inspect()).assets[0]?.cumulativeSettledDebit)
+      .toBe(settled.assets[0]?.cumulativeSettledDebit);
     expect(vi.mocked(publishNotice).mock.calls[0]?.[0].notice.settlement)
       .toMatchObject({ txHash, blockNumber: 42 });
     expect(restarted.writes).toEqual(["reconciliation:performed"]);
@@ -2135,6 +2197,7 @@ describe("native DEM buyer payment track", () => {
           network: "demos",
           maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
           confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          declaredNetworkFeeOs: "1000000000",
           recovery: input.recovery!,
         });
         await input.assertCurrentBeforeBroadcast!();
@@ -2251,7 +2314,10 @@ describe("native DEM buyer payment track", () => {
             await input.journalPreparedTransfer!({
               txHash: TX_HASH, nonce: 9, payer: PAYER, payee: PAYEE,
               amountOs: AUTHORITY.amountOs, network: "demos",
-              maxTotalDebitOs: AUTHORITY.maxTotalDebitOs, recovery: input.recovery!,
+              maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+              confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+              declaredNetworkFeeOs: "1000000000",
+              recovery: input.recovery!,
             });
           }
           throw new Error("process lost before the transfer result");

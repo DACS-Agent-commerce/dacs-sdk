@@ -217,7 +217,7 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
 export interface DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1 {
   /** Integrity-checked generated buyer effect/checkpoint store. */
   database: DacsNodeSqliteDatabase;
-  /** SDK observer binding the prepared hash, nonce and executed record's fee. */
+  /** SDK observer binding the prepared hash, nonce and executed record's declared fee. */
   observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
 }
 
@@ -437,8 +437,8 @@ function generatedBuyerPaymentEffectId(
 
 /**
  * Authenticate generated native-DEM wallet recovery against both finalized
- * chain facts, including the executed record's fee, and the pre-broadcast
- * checkpoint's exact confirmed fee debit.
+ * chain facts, including the executed record's declared fee, and the pre-broadcast
+ * checkpoint's exact confirmed accounting fee.
  * Missing checkpoints never authenticate absence because actor-local backups
  * can roll back independently of the wallet authority and the Demos chain.
  */
@@ -549,7 +549,8 @@ function capturePrepared(
   if (!plainObject(value) || !exactKeys(value, [
     "txHash", "nonce", "payer", "payee", "amountOs", "network",
     "maxTotalDebitOs", "recovery",
-  ], ["denomination", "confirmedTotalDebitOs"]) || typeof value.txHash !== "string" ||
+  ], ["denomination", "confirmedTotalDebitOs", "declaredNetworkFeeOs"]) ||
+      typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) ||
       !Number.isSafeInteger(value.nonce) || (value.nonce as number) < 0 ||
       value.payer !== payment.payer || value.payee !== payment.payee ||
@@ -558,6 +559,9 @@ function capturePrepared(
         value.denomination !== "dem") ||
       value.network !== payment.network ||
       value.maxTotalDebitOs !== payment.maxTotalDebitOs ||
+      (value.declaredNetworkFeeOs !== undefined &&
+        (typeof value.declaredNetworkFeeOs !== "string" ||
+          !/^(?:0|[1-9][0-9]*)$/.test(value.declaredNetworkFeeOs))) ||
       (value.confirmedTotalDebitOs !== undefined &&
         (typeof value.confirmedTotalDebitOs !== "string" ||
           !INTEGER_RE.test(value.confirmedTotalDebitOs) ||
@@ -895,6 +899,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           }
         }
         let settlement: Readonly<SettleResult>;
+        let feePreflightFailed = false;
         try {
           let preparedCheckpointed = false;
           let preparedTxHash: string | undefined;
@@ -943,6 +948,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             recovery: recoveryContext(payment),
             journalPreparedTransfer: async (rawPrepared) => {
               const captured = capturePrepared(rawPrepared, payment);
+              if (captured.declaredNetworkFeeOs === undefined ||
+                  captured.confirmedTotalDebitOs === undefined ||
+                  BigInt(payment.amountOs) + BigInt(captured.declaredNetworkFeeOs) !==
+                    BigInt(captured.confirmedTotalDebitOs)) {
+                feePreflightFailed = true;
+                throw new DacsPayDemBuyerPaymentError("pay-dem-prepared-fee-conflict");
+              }
               await fence.checkpoint(PREPARED_CHECKPOINT, captured);
               preparedTxHash = captured.txHash;
               preparedCheckpointed = true;
@@ -983,6 +995,11 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           });
         } catch {
           if (claimFailure !== undefined) return claimFailure;
+          if (feePreflightFailed) return Object.freeze({
+            effectControlVersion: "1" as const,
+            status: "operator-action" as const,
+            reasonCode: "pay-dem-prepared-fee-conflict",
+          });
           return control("pay-dem-settlement-ambiguous");
         }
         return result(settlement);
@@ -1025,7 +1042,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               reasonCode: "pay-dem-chain-execution-unconfirmed" });
           }
           // The proposed fee is the checkpoint's confirmed debit, and the
-          // executed record's own fee must be that same fee: one the record
+          // executed record's declared fee must be that same fee: one the record
           // contradicts or omits is never accounted to the wallet.
           const proposed = captured.result.settlement;
           if (record.state !== "executed" || record.nonce !== prepared!.nonce ||

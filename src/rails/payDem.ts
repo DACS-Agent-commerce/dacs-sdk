@@ -83,10 +83,10 @@ export interface PayDemRecordVerifiedTransfer {
   /** The recovery context's settlement key, when the settle carried one. */
   readonly settlementKey?: string;
   /**
-   * The fee of the executed record the SDK read (its `transaction_fee`, in
-   * OS), when the record carries one. The result's own `networkFeeOs` is the
-   * confirmation's debit, which the record need not repeat; a host that
-   * accounts that debit compares the two.
+   * The declared `transaction_fee` sum in OS of the executed record the SDK
+   * read, when present. The result's `networkFeeOs` is the confirmation's
+   * quoted fee; a host compares the two before accounting. Neither field
+   * independently establishes the applied balance debit.
    */
   readonly recordNetworkFeeOs?: string;
 }
@@ -990,7 +990,7 @@ export async function payDemSettleCore(
     // Debit accounting from the node's confirmation, checked above against
     // the amount and the debit ceiling. The record's fee must also be readable
     // before success, so a saved payment can be authenticated again.
-    // `payDemSettle` reports the executed record's fee instead
+    // `payDemSettle` reports the executed record's declared fee instead
     // (`sdkRecordFees`), the one a restart reads back.
     ...(totalDebitOs === undefined
       ? {}
@@ -1085,7 +1085,9 @@ export interface PayDemPreparedTransfer {
   denomination?: "os" | "dem";
   network: string;
   maxTotalDebitOs?: string;
-  /** Confirmed transfer amount plus network fee, retained before broadcast. */
+  /** Declared transaction_fee sum in OS, retained from the confirmed body. */
+  declaredNetworkFeeOs?: string;
+  /** Confirmed transfer amount plus quoted fee, retained before broadcast. */
   confirmedTotalDebitOs?: string;
   /** Exact PC-7 session/phase identity when invoked through payDemSettle. */
   recovery?: Readonly<PayDemSettlementRecoveryContext>;
@@ -2090,6 +2092,13 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       const txHash = signedHash;
       const canonicalPayer = normalizedDemosAccount(address)!;
       const canonicalPayee = normalizedDemosAccount(to)!;
+      // The transaction record retains this declaration even when a separate
+      // gas_operation quote differs. Funded hosts can check compatibility in
+      // their journal hook before the irreversible broadcast.
+      const declaredFeeOs = confirmedTransactionFeeOs(
+        (confirmedTransaction.content as Record<string, unknown>).transaction_fee,
+        postFork,
+      );
       const prepared = Object.freeze({
         txHash,
         nonce: signedNonce,
@@ -2101,6 +2110,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         ...(effectiveMaxTotalDebitOs === undefined
           ? {}
           : { maxTotalDebitOs: effectiveMaxTotalDebitOs.toString() }),
+        ...(declaredFeeOs === null
+          ? {}
+          : { declaredNetworkFeeOs: declaredFeeOs.toString() }),
         ...(confirmedDebitOs === null
           ? {}
           : { confirmedTotalDebitOs: confirmedDebitOs.toString() }),
@@ -2515,6 +2527,7 @@ const PAY_DEM_PREPARED_TRANSFER_KEYS = new Set([
   "network",
   "maxTotalDebitOs",
   "confirmedTotalDebitOs",
+  "declaredNetworkFeeOs",
   "recovery",
 ]);
 
@@ -2567,6 +2580,9 @@ function assertPreparedTransferBinds(
     prepared.network !== context.network ||
     (prepared.denomination !== undefined && prepared.denomination !== "os" &&
       prepared.denomination !== "dem") ||
+    (prepared.declaredNetworkFeeOs !== undefined &&
+      (typeof prepared.declaredNetworkFeeOs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(prepared.declaredNetworkFeeOs))) ||
     !debitBound(prepared.maxTotalDebitOs) ||
     !debitBound(prepared.confirmedTotalDebitOs) ||
     (prepared.maxTotalDebitOs !== undefined && prepared.confirmedTotalDebitOs !== undefined &&

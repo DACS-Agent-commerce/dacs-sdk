@@ -347,7 +347,7 @@ including an injected rail's `execution: "executed"`, a copy of the SDK
 rail's result, or the SDK rail's result for another transfer or settlement
 key, leaves the payment indeterminate with the wallet reservation retained. So
 does a success whose executed record, as the SDK read it, carries no fee or a
-fee other than the confirmed debit the wallet would be charged
+declared `transaction_fee` other than the confirmed fee used for wallet accounting
 (`recordNetworkFeeOs` in those terms). A
 rail that relays the SDK's own result object unchanged, such as the default
 runtime rail, keeps it. That default rail also reports success only after the
@@ -359,8 +359,8 @@ calls `readPayDemTransferRecord` through the connection `createPayDemRail` opene
 The runtime wrapper retains that connection for recovery. The read binds the
 exact hash, native-send payload, payer, payee, amount and network; the track also
 requires the prepared signed nonce, the proposed inclusion block and the
-checkpoint's confirmed debit as the proposed fee, and the record's own fee must
-be that same fee. A record whose fee differs needs an operator
+checkpoint's confirmed fee as the proposed fee, and the record's declared
+`transaction_fee` must be that same fee. A record whose fee differs needs an operator
 (`pay-dem-chain-observation-conflict`), and so does one without a fee
 (`pay-dem-network-fee-accounting-missing`); neither debits the wallet or
 publishes a notice. A pending, missing or unavailable record stays
@@ -368,6 +368,28 @@ indeterminate, a failed or conflicting record cannot complete, and a custom
 rail without this SDK reader stays held. Every recovery retry repeats the read
 before wallet reconciliation or notice publication, including a retry after
 notice queueing failed. It never signs or broadcasts.
+
+Before a funded broadcast, the prepared-transfer journal requires
+`declaredNetworkFeeOs` (the confirmed body's `transaction_fee` sum) to equal
+`confirmedTotalDebitOs` minus `amountOs`.
+A missing or mismatched declaration gives `pay-dem-prepared-fee-conflict` and
+operator action before a checkpoint or broadcast. Core sessions without this
+funded accounting contract can still use a different gas-operation quote.
+
+The fee fields above are declarations, not independently established balance
+debits. `demosExecutedTransferNetworkFeeOs` (root and `/seller`) returns the
+record's declared `transaction_fee` sum in OS only for the original frozen SDK
+observation; missing/malformed fees and copies return `undefined`. With the
+node's `gasFeeSeparation` fork inactive, applied balance edits can charge a
+different fee: the historical confirmed fixture declares 2 DEM but removes
+1 DEM for gas. Wallet accounting still uses the confirmed declaration. It does
+not derive actual debits from balance edits or authenticate the fork's apply
+rules.
+
+Object identity establishes that `observePayDemTransferCore` parsed and bound
+the supplied node responses. An injected `PayDemObservationClient` must provide
+authenticated responses; identity does not independently prove their origin.
+The default observer uses the configured RPC as its trust root.
 
 This unreleased V1 reconciliation contract requires the execution/nonce fields
 and an SDK-owned record read. Integrators must use `createPayDemRail` or the
