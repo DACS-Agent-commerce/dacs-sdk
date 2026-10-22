@@ -309,6 +309,7 @@ export {
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
   demosWriteEvidenceBindsReceiptContent,
+  demosTransactionContentMatches,
   demosWriteEvidenceToAnchorReceipt,
   type DemosAnchorReceiptProof,
   type DemosPortableAnchorReceiptInput,
@@ -1887,3 +1888,4 @@ export {
 } from "./artifacts/index.js";
 
 export { AP2_IMPLEMENTED_MODULE_VERSIONS, authenticateAp2ProfileAdmission, type Ap2CorrectiveProfile, type Ap2ParticipantProfile, type Ap2ProfileAdmission } from "./rails/ap2Admission.js";
+export { jid1AttestationAddress, jid1PaymentEvidenceAddress, jid1RatingAddress, jid1BundleAddress } from "./canonical/jid1Addressing.js";
