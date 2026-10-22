@@ -198,6 +198,7 @@ describe("payDemSettleCore refuses a custom client that signs and broadcasts its
   });
 
   it("offers no record reader or client rail a custom client could carry", async () => {
+    // Cold transforms of the public root can exceed Vitest's five-second default.
     const surfaces = await Promise.all([
       import("../../src/rails/payDem.js"),
       import("../../src/rails/index.js"),
@@ -207,5 +208,5 @@ describe("payDemSettleCore refuses a custom client that signs and broadcasts its
       expect(Object.keys(surface)).not.toContain("createPayDemRecordReader");
       expect(Object.keys(surface)).not.toContain("createPayDemClientRail");
     }
-  });
+  }, 30_000);
 });

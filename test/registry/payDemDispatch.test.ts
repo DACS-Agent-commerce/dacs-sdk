@@ -1008,6 +1008,26 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(executor).toHaveBeenCalledTimes(1);
   });
 
+  test("keeps configured session recovery when dispatch captures the store", async () => {
+    demosNode.reset();
+    mocks.createPayDemRail.mockImplementation(() => actualPayDem.createPayDemRail({
+      rpc: "https://node.test", secret: "test-wallet",
+    }));
+    mocks.payDemSettle.mockImplementation(actualPayDem.payDemSettle);
+    const descriptor = await authenticatedDefinition();
+    const store = createIdempotencyStore();
+    for (const configured of [true, false]) {
+      const dispatched = await settleFromRail(descriptor, {
+        demosRpc: "https://demos.example", demosSecret: "test-secret",
+        payment: { phaseIndex: 4 },
+        ...(configured ? { payDem: { settlementStore: store, reconcile: async () => null } } : {}),
+      });
+      expect(actualPayDem.isPayDemSettleAdapter(dispatched)).toBe(true);
+      expect(actualPayDem.isPayDemSessionRecoverable(dispatched)).toBe(configured);
+    }
+    expect(demosNode.broadcasts).toBe(0);
+  });
+
   test("settles under the same rail, phase and phase index the pay-dem adapter checked", async () => {
     // payDemSettle calls only the SDK's own rail. Its prepared-transfer journal
     // is the last call before broadcast: it sees what reached the rail and

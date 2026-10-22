@@ -572,7 +572,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           deliveryPhase: "deliver-attested-payload",
           deliveryFormat: "application/json",
         },
-        settle: payDemSettle(rail, { network: "demos:testnet" }),
+        settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(), reconcile: async () => null }),
       }),
     ).rejects.toThrow(/remains indeterminate; refusing terminal failure evidence/);
     expect(demosNode.transfers).toBe(1);
@@ -629,7 +629,12 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     };
     // The buyer's durable rail log: the restarted process reopens the same log.
     const railLog = createInMemorySettlementLog();
-    const settle = payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(railLog) });
+    const settle = payDemSettle(rail, { network: "demos:testnet" }, {
+      store: createIdempotencyStore(railLog),
+      reconcile: async () => ({ ok: true, execution: "executed", txHash, chainId: "demos:testnet",
+        payer: buyerHex, payee: sellerHex, amountOs: "1000000000", blockNumber: 42,
+        txRefKind: "demos", finality: { model: "bft-final" } }),
+    });
     const first = await agent.runSession(ref, {
       terms,
       settle,

@@ -301,9 +301,9 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
     const settle = payDemSettle(await sdkRail(), {}, { store: run.store("A"), reconcile: reconcile as PayDemSettlementReconcile });
     await expect(settle(request("job-a"))).rejects.toThrow("lost response");
     await expect(run.log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
-    // The key's generation is still held, so nothing can finish it yet.
+    // No SDK record binds this hash, regardless of the held generation.
     await expect(settle(request("job-a", hashB, true))).rejects.toThrow(
-      /unresolved or in-flight current generation/,
+      /no SDK record binds/,
     );
     expect(reconcile).toHaveBeenCalledTimes(1);
     await expect(run.log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
@@ -329,7 +329,7 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
     await expect(log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
 
     await expect(settle(request("job-a", hashA, true))).rejects.toThrow(
-      /contradicts reconciliation proof of absence/,
+      /no SDK record binds/,
     );
     await expect(log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
     await expect(log.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
@@ -338,11 +338,10 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
   });
 });
 
-// The store saves whatever a key-only restart reconciliation found, so that
-// outcome is the reconciler's answer, not this key's own submit, and it never
-// lets a later audit count the hash.
+// A key-only restart answer cannot authenticate its own job binding. Refuse
+// before persistence, and keep a later retained audit from counting the hash.
 describe("pay-dem never binds a hash through an outcome a key-only reconciliation wrote", () => {
-  test("an audit of job B refuses job A's hash that B's restart reconciliation saved", async () => {
+  test("job B refuses job A's hash before B's restart reconciliation saves it", async () => {
     const run = processes();
     // Job B's first process claimed the intent and died before signing anything.
     dieBeforeSigning();
@@ -353,15 +352,14 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
     run.restart();
     // A careless reconciler finds job A's transfer of the same parties and amount.
     const restart = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
-    await expect(restart.settle(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
-    await expect(run.log.readOutcome!("pay-dem:job-b:0")).resolves.toMatchObject({ result: { txHash: hashA } });
+    await expect(restart.settle(request("job-b"))).rejects.toThrow(/no SDK record binds.*this payment/);
+    await expect(run.log.readOutcome!("pay-dem:job-b:0")).resolves.toBeNull();
 
     run.restart();
     const audit = await auditingProcess(run.store("C"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(request("job-b", hashA, true))).rejects.toThrow(
-      /no SDK record binds the retained transaction to this payment/,
-    );
-    // The store's `once` returned the saved outcome; nothing ran or was recorded.
+    await expect(audit.settle(request("job-b"))).rejects.toThrow(/no SDK record binds.*this payment/);
+    await expect(run.log.readOutcome!("pay-dem:job-b:0")).resolves.toBeNull();
+    // Another restart still cannot persist the unbound reconciliation.
     await expect(run.log.readAttempt!("pay-dem:job-b:0")).resolves.toBeNull();
     expect(audit.submit).not.toHaveBeenCalled();
   });
@@ -513,7 +511,7 @@ describe("pay-dem over a log without attempt records", () => {
     await expect(audit.settle(request("job-a", hashA, true))).rejects.toThrow(
       /no SDK record binds the retained transaction to this payment/,
     );
-    // The store's `once` held nothing to finish: its submit refused and no rail ran.
+    // No record binds the hash, so the audit never calls once or the rail.
     expect(audit.submit).not.toHaveBeenCalled();
   });
 
@@ -729,49 +727,27 @@ function claimOnlyLog(memory: SettlementLog = createInMemorySettlementLog()): Se
   return rest;
 }
 
-// A log without the optional `readOutcome` (written before it existed): the
-// store's lookup refuses before touching the log, so an audit there reads no
-// outcome. A retained hash is finished only through the store's own `once`
-// (sweep F2, #370): a key the log holds nothing for starts nothing, and an
-// expired generation is reconciled under the exact terms.
+// A log without read-only lookup cannot serve retained audits. Refusal must
+// leave even an absent or expired intent unchanged.
 describe("pay-dem over a log without a read-only outcome lookup", () => {
-  test("an audit of a key the log holds nothing for starts nothing and releases its claim", async () => {
+  test.each([false, true])("refuses without claiming or writing (expired intent=%s)", async (expired) => {
     const memory = createInMemorySettlementLog();
+    if (expired) {
+      await memory.claimIntent({ key: "pay-dem:job-a:0", bindingHash: settlementBindingHash(bindingFor("job-a")),
+        owner: "A", now: 1_000, leaseDurationMs: 1_000 });
+    }
     const claimIntent = vi.spyOn(memory, "claimIntent");
+    const putOutcome = vi.spyOn(memory, "putOutcome");
     const run = processes(claimOnlyLog(memory));
     run.restart();
     const audit = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
     await expect(audit.settle(request("job-a", hashA, true)))
-      .rejects.toThrow(/no SDK record binds the retained transaction to this payment/);
-    expect(claimIntent).toHaveBeenCalledTimes(1);
+      .rejects.toThrow(/read-only outcome lookup/);
+    expect(claimIntent).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
+    expect(audit.once).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
     await expect(memory.readOutcome!("pay-dem:job-a:0")).resolves.toBeNull();
-    // The intent it claimed was released, not left held: the same terms are free.
-    await expect(memory.claimIntent({
-      key: "pay-dem:job-a:0", bindingHash: settlementBindingHash(bindingFor("job-a")),
-      owner: "probe", now: 70_000, leaseDurationMs: 1_000,
-    })).resolves.toMatchObject({ status: "acquired", lease: { stage: "fresh" } });
-  });
-
-  test("an expired attempt the log never resolved is finished through the store's reconciliation", async () => {
-    const memory = createInMemorySettlementLog();
-    const run = processes(claimOnlyLog(memory));
-    const bindingHash = settlementBindingHash(bindingFor("job-a"));
-    // A pre-upgrade process claimed the key, may have broadcast, then died.
-    await memory.claimIntent({ key: "pay-dem:job-a:0", bindingHash, owner: "A", now: 1_000, leaseDurationMs: 1_000 });
-
-    // Held, the generation refuses.
-    const reconcile = vi.fn(async () => executed(hashA));
-    await expect((await auditingProcess(run.store("B"), reconcile)).settle(request("job-a", hashA, true)))
-      .rejects.toThrow(/unresolved or in-flight current generation/);
-
-    run.restart();
-    const audit = await auditingProcess(run.store("B"), reconcile);
-    await expect(audit.settle(request("job-a", hashA, true)))
-      .resolves.toMatchObject({ ok: true, txHash: hashA });
-    expect(sdkTransfers()).toBe(0);
-    await expect(memory.readOutcome!("pay-dem:job-a:0"))
-      .resolves.toMatchObject({ bindingHash, result: { ok: true, txHash: hashA } });
   });
 });
 

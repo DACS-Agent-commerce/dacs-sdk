@@ -18,7 +18,7 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
-import { DEM_DECIMALS, isPayDemSettleAdapter } from "../rails/payDem.js";
+import { DEM_DECIMALS, isPayDemSettleAdapter, isPayDemSessionRecoverable } from "../rails/payDem.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
   isComponentSignature,
@@ -151,6 +151,8 @@ export interface SettleRequest {
    * settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
+  /** Native recovery must never submit, even when no transaction was saved. */
+  recoveryOnly?: boolean;
 }
 
 export interface SettlementRecoveryAttempt {
@@ -279,7 +281,10 @@ export interface SessionDeps {
    *
    * For a native DEM price this must be the SDK's `payDemSettle` adapter,
    * passed as is (see `resumeSettlement`); any other function is refused
-   * before it is called, so no payment is made.
+   * before it is called, so no payment is made. Each native adapter must
+   * configure a caller-supplied settlement store, and the recovery adapter
+   * must configure a reconciler before a fresh payment; retain their durable
+   * rail log across restarts.
    */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -311,6 +316,8 @@ export interface SessionDeps {
    * `resumeSettlement`. For native DEM that implementation is the SDK's
    * `payDemSettle` adapter itself, passed as is. When this option is omitted,
    * the registered native DEM `settle` adapter also serves as recovery.
+   * Native recovery requests carry `recoveryOnly: true`, even when no attempt
+   * reached the session checkpoint; the adapter never submits on these calls.
    * The session recognises the adapter by
    * identity and calls no other `settle` or `resumeSettlement` for native DEM
    * (a wrapper around the adapter included), so no payment is made and the
@@ -4348,6 +4355,22 @@ export async function runSessionCore(
     );
   };
 
+  const assertNativeConfiguration = (): void => {
+    assertNativeAdapter("settle", deps.settle, "fresh native settlement");
+    if (!isNativeSettlement(expectedSettlementBinding)) return;
+    if (deps.resumeSettlement !== undefined) {
+      assertNativeAdapter("resumeSettlement", deps.resumeSettlement, "fresh native settlement");
+    }
+    if (!isPayDemSessionRecoverable(deps.settle, false) ||
+        !isPayDemSessionRecoverable(deps.resumeSettlement ?? deps.settle)) {
+      throw new CounterpartyError(
+        "fresh native settlement requires a caller-supplied settlement store and reconciler " +
+          "for recovery, plus a caller-supplied store for payment; " +
+          "retain the durable rail log across restarts (no payment is made)",
+      );
+    }
+  };
+
   /**
    * A native DEM permanent failure the adapter recovered is final only for a
    * hash the session already held. For any other hash keep only the
@@ -4411,6 +4434,7 @@ export async function runSessionCore(
     }
     const recoveryRequest: SettleRequest = {
       ...settleRequest,
+      ...(isNativeSettlement(expectedSettlementBinding) ? { recoveryOnly: true } : {}),
       ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
     };
     const recovered = snapshotSettleResult(
@@ -4606,7 +4630,7 @@ export async function runSessionCore(
         // Refuse a `settle` that is not called before claiming the phase: a
         // claim would hold an intent for a payment that was never attempted.
         // A held intent goes on to `resumeSettlement` below instead.
-        if (!claimed) assertNativeAdapter("settle", deps.settle, "fresh native settlement");
+        if (!claimed) assertNativeConfiguration();
         // CLAIM the settlement phase via the intent checkpoint's atomic CAS, AND
         // write-ahead the intent, BEFORE the irreversible payment. A lost claim
         // means a concurrent worker already advanced this phase — abort rather than
@@ -4621,7 +4645,7 @@ export async function runSessionCore(
           // would be an unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
         } else {
-          assertNativeAdapter("settle", deps.settle, "fresh native settlement");
+          assertNativeConfiguration();
           const pay = snapshotSettleResult(
             await deps.settle(
               deepFreezeJson(
