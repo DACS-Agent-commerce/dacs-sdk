@@ -81,7 +81,7 @@ export async function verifyBundleCopy(
 ): Promise<CopyValidity> {
   let unsigned: Partial<Record<string, unknown>>;
   try {
-    unsigned = stripSignature(bundle);
+    unsigned = stripSignature(bundle, "signatures");
   } catch {
     return { valid: false, reason: "bundle is not canonical JSON data" };
   }
@@ -133,7 +133,7 @@ export async function verifyBundleCopy(
     : isFaultBundle(unsigned)
       ? ARTIFACT_SEPARATORS.FaultAttestationBundle
       : ARTIFACT_SEPARATORS.AttestationBundle;
-  const message = signedBytes(separator, contentHash(scope));
+  const message = signedBytes(separator, contentHash(scope, "signatures"));
 
   const entries = Array.isArray(bundle["signatures"]) ? bundle["signatures"] : [];
   if (entries.length === 0) return { valid: false, reason: "copy carries no signatures" };

@@ -48,6 +48,13 @@ import {
   type DacsHttpIdentityResolverV1,
 } from "../src/transport/envelope.js";
 
+// These lifecycle fixtures use local adapters/loopback transport. Model a released
+// profile only inside this test module; production refusal is pinned separately.
+vi.mock("../../../src/profile.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../src/profile.js")>(),
+  requireAdmissibleProfile: vi.fn(),
+}));
+
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER_SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const SELLER_SEED = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
@@ -249,6 +256,7 @@ describe("authority-separated live role services", () => {
     overrides: Partial<DacsLiveRoleServiceOptionsV1> = {},
   ): DacsLiveRoleServiceOptionsV1 {
     return {
+      executionMode: "simulation",
       config: config(role),
       database,
       workerId: `${role}-worker`,

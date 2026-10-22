@@ -1,9 +1,20 @@
+import { admitFixtureListing, validateFixtureListingArtifact as validateListingArtifact } from "../fixtures/receivedListing.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
+import { readListingByLogicalAddress } from "../../src/agent/listingDiscovery.js";
+import { createInMemoryBindingIndex } from "../../src/discovery/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
-import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
+import { admitRawJson, canonicalize, contentHash, listingAddress, sha256Hex } from "../../src/canonical/index.js";
+
+import {
+  ed25519Sign,
+  ed25519Verify,
+  privateKeyFromSeed,
+  publicKeyFromSeed,
+  signedBytes,
+} from "../../src/crypto/index.js";
 import { identityBundleHash } from "../../src/identity/index.js";
 import {
   canonicalSellerSettlementId,
@@ -68,10 +79,10 @@ type Context = {
   deps: SellerPaymentIntakeDeps;
 };
 
-function listingAtCommitResolution(
+async function listingAtCommitResolution(
   listing: Listing,
   admittedAt = 900,
-): SellerListingAtCommitResolution {
+): Promise<SellerListingAtCommitResolution> {
   const listingRef = {
     listingId: listing.listingId,
     version: listing.listingVersion,
@@ -83,15 +94,7 @@ function listingAtCommitResolution(
   if (!dpaSelected) {
     return {
       rawListing: listing as unknown as Record<string, unknown>,
-      validation: {
-        disposition: "verified",
-        step: 9,
-        reason: "verified",
-        listing,
-        listingContentHash: listingRef.contentHash,
-        revocation: "absent",
-        railResolution: { disposition: "verified", reason: "verified" },
-      },
+      validation: await admitFixtureListing(listing),
     };
   }
   const deliverable = listing.offering.deliverable;
@@ -104,23 +107,7 @@ function listingAtCommitResolution(
   const deliverableSpecHash = sha256Hex(canonicalize(deliverable));
   return {
     rawListing: listing as unknown as Record<string, unknown>,
-    validation: {
-      disposition: "verified",
-      step: 9,
-      reason: "verified",
-      listing,
-      listingContentHash: listingRef.contentHash,
-      revocation: "absent",
-      railResolution: { disposition: "verified", reason: "verified" },
-      payloadVerificationCapability: {
-        operation: "verify",
-        disposition: "supported",
-        reason: "supported",
-        verificationMethodKind: deliverable.verificationMethod.kind,
-        verificationMethodHash,
-        deliverableSpecHash,
-      },
-    },
+    validation: await admitFixtureListing(listing),
     payloadVerificationProducerAdmission: {
       operation: "produce",
       disposition: "supported",
@@ -275,7 +262,7 @@ function makeContext(
       },
     ],
   };
-  const agreementHash = contentHash(agreement);
+  const agreementHash = contentHash(agreement, "signatures");
   const committed: Extract<CommittedAgreementResolution, { disposition: "verified" }> = {
     disposition: "verified",
     agreement,
@@ -368,6 +355,7 @@ function makeContext(
     x402Observation,
   });
   ctx.deps = {
+    executionMode: "simulation",
     resolveCommittedAgreement: async () => ctx.committed,
     resolveListingAtCommit: async () => listingAtCommitResolution(ctx.listing),
     resolveRail: async ({ railRegistryVersion }) => ({
@@ -395,7 +383,7 @@ function makeContext(
 }
 
 function refreshCommitment(ctx: Context): void {
-  const agreementHash = contentHash(ctx.agreement);
+  const agreementHash = contentHash(ctx.agreement, "signatures");
   ctx.committed.agreementHash = agreementHash;
   ctx.committed.commitment.agreementHash = agreementHash;
 }
@@ -827,6 +815,163 @@ describe("verifySellerPaymentIntake", () => {
     expect(isValidSellerReceiptClaim(aliasedClaim)).toBe(false);
   });
 
+  it.each(["pay-dem", "pay-x402"] as const)("accepts admitted negative-zero Listing parameters at %s intake", async (kind) => {
+    const ctx = makeContext(kind);
+    const rail = ctx.listing.acceptedRails![0]!;
+    rail.parameters = { ...rail.parameters, floor: 0 };
+    const terms = ctx.agreement.terms as { rail: { parameters?: Record<string, unknown> } };
+    terms.rail.parameters = { ...terms.rail.parameters, floor: 0 };
+    Object.assign(ctx.listing, { futureOptionalMetadata: { floor: 0, label: "retained" } });
+    const seed = Uint8Array.from(Buffer.alloc(32, 48));
+    ctx.listing.signature.value = Buffer.from(ed25519Sign(
+      signedBytes("dacs-listing:v1:", contentHash(ctx.listing as unknown as Record<string, unknown>)),
+      privateKeyFromSeed(seed),
+    )).toString("base64url");
+    const text = JSON.stringify(ctx.listing).replaceAll('"floor":0', '"floor":-0.0');
+    expect(text).toContain('"floor":-0.0');
+    const raw = admitRawJson(Buffer.from(text, "utf8")) as Record<string, unknown>;
+    expect(Object.is((raw.acceptedRails as PaymentRailRef[])[0]!.parameters!.floor, -0)).toBe(true);
+    const validation = await validateListingArtifact(raw, {
+      nowMs: () => 900,
+      verifyListingSignature: ({ signedBytes, signature }) => ed25519Verify(
+        signedBytes,
+        Buffer.from(signature.value, "base64url"),
+        publicKeyFromSeed(seed),
+      ),
+      verifyIdentityPresentation: () => true,
+      verifySellerControl: () => true,
+      resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
+      revocation: {
+        surfaces: [{ kind: "well-known", status: "active", integrity: "verified" }],
+        readMarker: async () => null,
+        verifyMarkerSignature: () => true,
+      },
+      loadRailResolution: () => ({
+        trustPhase: "PA-1",
+        trustPolicyAcceptsPA1: true,
+        registry: { state: "not-used", entries: [], definitions: [] },
+        inCodeDefinitions: [{
+          railId: ctx.rail.railId,
+          railVersion: ctx.rail.railVersion,
+          phaseHandler: kind,
+          governanceAnchoring: "in-code",
+          signatureValid: true,
+        }],
+      }),
+    });
+    expect(validation).toMatchObject({ disposition: "verified", step: 9 });
+    expect(Object.is(validation.listing?.acceptedRails![0]!.parameters!.floor, 0)).toBe(true);
+    const resolution = { ...await listingAtCommitResolution(ctx.listing), rawListing: raw, validation };
+    ctx.deps.resolveListingAtCommit = async () => resolution;
+    const listingRef = {
+      listingId: ctx.listing.listingId,
+      version: ctx.listing.listingVersion,
+      contentHash: contentHash(raw),
+    };
+    ctx.agreement.listingRef = listingRef;
+    ctx.committed.commitment.listingRef = listingRef;
+    refreshCommitment(ctx);
+
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "verified",
+      fulfilment: "claim",
+      listingRef,
+    });
+    expect(Object.is((raw.acceptedRails as PaymentRailRef[])[0]!.parameters!.floor, -0)).toBe(true);
+
+    // Normalization must not erase unknown signed members when binding the result.
+    (raw.futureOptionalMetadata as { floor: number }).floor = 1;
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected",
+      reason: "listing-at-commit-admission-mismatch",
+      fulfilment: "none",
+    });
+  });
+
+  it.each(["pay-dem", "pay-x402"] as const)("retains public Listing reader admission at %s intake", async (kind) => {
+    const ctx = makeContext(kind);
+    // Logical Listing discovery uses a Demos publisher for either payment rail.
+    if (kind === "pay-x402") {
+      ctx.sellerBundle = identity(SELLER_DEMOS);
+      ctx.listing.seller.identity = ctx.sellerBundle;
+      ctx.listing.signature.signer = SELLER_DEMOS;
+      const seller = (ctx.agreement.parties as Array<{ role: string; primaryClaim: string; bundleHash: string }>).find((party) => party.role === "seller")!;
+      seller.primaryClaim = SELLER_DEMOS;
+      seller.bundleHash = identityBundleHash(ctx.sellerBundle);
+      (ctx.agreement.signatures as Array<{ party: string }>).find((signature) => signature.party === SELLER)!.party = SELLER_DEMOS;
+    }
+    repinListing(ctx);
+    const historical = await listingAtCommitResolution(ctx.listing);
+    const logicalAddress = listingAddress(SELLER_DEMOS, ctx.listing.listingId, ctx.listing.listingVersion);
+    const read = await readListingByLogicalAddress(logicalAddress, {
+      executionMode: "simulation",
+      index: createInMemoryBindingIndex([{
+        logicalAddress, nativeAddress: "stor-listing", owner: "bb".repeat(32), version: ctx.listing.listingVersion,
+        contentHash: contentHash(ctx.listing as unknown as Record<string, unknown>),
+      }]),
+      readAnchor: async () => Buffer.from(JSON.stringify(ctx.listing)),
+      verify: () => true,
+      listingValidationDeps: {
+        executionMode: "simulation",
+        nowMs: () => 900,
+        verifyListingSignature: () => true,
+        verifyIdentityPresentation: () => true,
+        verifySellerControl: () => true,
+        resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
+        revocation: { surfaces: [{ kind: "well-known", status: "active", integrity: "verified" }],
+          readMarker: async () => null, verifyMarkerSignature: () => true },
+        loadRailResolution: () => ({
+          trustPhase: "PA-1", trustPolicyAcceptsPA1: true,
+          registry: { state: "not-used", entries: [], definitions: [] },
+          inCodeDefinitions: [{ railId: ctx.rail.railId, railVersion: 1,
+            phaseHandler: kind, governanceAnchoring: "in-code", signatureValid: true }],
+        }),
+      },
+    });
+    expect(read).toMatchObject({ status: "verified", compatibility: "normative" });
+    if (read.status !== "verified" || read.compatibility !== "normative") throw new Error("expected normative Listing");
+    const resolution = { ...historical, rawListing: read.listing as unknown as Record<string, unknown>, validation: read.validation };
+    ctx.deps.resolveListingAtCommit = async () => resolution;
+    let claims = 0;
+    const claim = ctx.deps.receiptStore.claim.bind(ctx.deps.receiptStore);
+    ctx.deps.receiptStore.claim = async (...args) => { claims++; return claim(...args); };
+
+    // Copies and mutations retain no authority, even when sourced from a real read.
+    resolution.validation = structuredClone(read.validation);
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "listing-at-commit-admission-mismatch", fulfilment: "none",
+    });
+    resolution.validation = read.validation;
+    const reason = read.validation.reason;
+    read.validation.reason = "caller-replaced";
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "listing-at-commit-admission-mismatch", fulfilment: "none",
+    });
+    read.validation.reason = reason;
+    expect(claims).toBe(0);
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({ disposition: "verified", fulfilment: "claim" });
+    expect(claims).toBe(1);
+  });
+
+  it.each(["missing bytes", "re-rendered bytes", "copied reader result", "mutated reader result"])(
+    "refuses historical admission with %s before claiming a payment", async (kind) => {
+      const ctx = makeContext("pay-dem");
+      const resolution = await listingAtCommitResolution(ctx.listing);
+      if (kind === "mutated reader result") resolution.validation.reason = "caller-replaced";
+      else resolution.validation = structuredClone(resolution.validation);
+      if (kind === "missing bytes") delete resolution.validation.receivedJsonBase64;
+      if (kind === "re-rendered bytes") {
+        resolution.validation.receivedJsonBase64 = Buffer.from(JSON.stringify(ctx.listing)).toString("base64");
+      }
+      ctx.deps.resolveListingAtCommit = async () => resolution;
+      let claims = 0;
+      ctx.deps.receiptStore.claim = async () => { claims++; throw new Error("must not claim"); };
+      await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+        disposition: "rejected", reason: "listing-at-commit-admission-mismatch", fulfilment: "none",
+      });
+      expect(claims).toBe(0);
+    });
+
   it("verifies pay-DEM in OS, emits exact normative evidence, and claims once", async () => {
     const store = createInMemorySellerReceiptStore();
     const first = makeContext("pay-dem", store);
@@ -1108,7 +1253,7 @@ describe("verifySellerPaymentIntake", () => {
       consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     ctx.deps.resolveListingAtCommit = async () => {
-      const resolution = listingAtCommitResolution(ctx.listing);
+      const resolution = await listingAtCommitResolution(ctx.listing);
       mutate(resolution);
       return resolution;
     };
@@ -1122,7 +1267,7 @@ describe("verifySellerPaymentIntake", () => {
 
   it("requires the raw Listing, reader result and producer admission from one checkpoint", async () => {
     const ctx = makeContext("pay-dem");
-    const resolution = listingAtCommitResolution(ctx.listing);
+    const resolution = await listingAtCommitResolution(ctx.listing);
     ctx.deps.resolveListingAtCommit = async () =>
       resolution.validation as never;
     let claims = 0;
@@ -1174,9 +1319,9 @@ describe("verifySellerPaymentIntake", () => {
     };
     repinListing(unexpected);
     unexpected.deps.resolveListingAtCommit = async () => ({
-      ...listingAtCommitResolution(unexpected.listing),
+      ...await listingAtCommitResolution(unexpected.listing),
       payloadVerificationProducerAdmission:
-        listingAtCommitResolution(makeContext("pay-dem").listing)
+        (await listingAtCommitResolution(makeContext("pay-dem").listing))
           .payloadVerificationProducerAdmission!,
     });
     await expect(verifySellerPaymentIntake(unexpected.input, unexpected.deps))
@@ -1370,7 +1515,7 @@ describe("verifySellerPaymentIntake", () => {
       consumePermit: (permitId, handoff) => backing.consumePermit(permitId, handoff),
     };
     ctx.deps.resolveListingAtCommit = async () => new Proxy(
-      listingAtCommitResolution(ctx.listing),
+      await listingAtCommitResolution(ctx.listing),
       {},
     );
 

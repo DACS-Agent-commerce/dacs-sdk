@@ -1,3 +1,5 @@
+import { getListingReaderProvenance, isVerifiedListingAdmission } from "../../../src/agent/listingValidation.js";
+import { admitFixtureListing } from "../../../test/fixtures/receivedListing.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,7 +132,7 @@ function protocol() {
 
 function listing(): Listing {
   const signature = Buffer.alloc(64, 3).toString("base64url");
-  return {
+  const value: Listing = {
     dacsVersion: "1",
     listingVersion: 1,
     listingId: "fixed-price-profile-test",
@@ -180,6 +182,14 @@ function listing(): Listing {
     validity: { notBefore: NOW - 10_000, notAfter: NOW + 1_000_000 },
     signature: { algorithm: "ed25519", signer: SELLER, value: signature },
   };
+  if (value.seller.identity.presentation.kind !== "per-claim") throw new Error("identity");
+  value.seller.identity.presentation.signatures[0]!.signature = sign(null,
+    Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(value.seller.identity)}`),
+    privateKeyFromSeed(SELLER_SEED)).toString("base64url");
+  value.signature.value = sign(null,
+    Buffer.from(`dacs-listing:v1:${contentHash(value as unknown as Record<string, unknown>)}`),
+    privateKeyFromSeed(SELLER_SEED)).toString("base64url");
+  return value;
 }
 
 function application(exactListing = listing()) {
@@ -305,6 +315,7 @@ async function fixture() {
     logicalAddress: app.listingLogicalAddress,
     listingContentHash: app.listingContentHash,
     listing: app.listing,
+    validation: await admitFixtureListing(app.listing),
     rail,
     facts: {},
   };
@@ -377,6 +388,7 @@ async function fixture() {
   } as never;
   let clock = NOW;
   const policy = createDacsFixedPriceX402SellerSessionPolicyV1({
+    executionMode: "simulation",
     context,
     rail: admission.rail as never,
     sellerPublicEndpoint: "https://seller.example",
@@ -784,7 +796,7 @@ describe("fixed-price x402 generated profile policy", () => {
         value: Buffer.alloc(64, 2).toString("base64url"),
       }],
     };
-    const agreementHash = contentHash(artifact as unknown as Record<string, unknown>);
+    const agreementHash = contentHash(artifact as unknown as Record<string, unknown>, "signatures");
     const envelopeHash = sha256Hex(canonicalize(artifact));
     const logicalAddress = fixedPriceAgreementLogicalAddress(JOB_ID);
     value.loseNextResponse();
@@ -867,7 +879,7 @@ describe("fixed-price x402 generated profile policy", () => {
       [buyerContribution, sellerContribution],
       agreementPolicy.verifyContribution,
     );
-    const agreementHash = contentHash(agreement as unknown as Record<string, unknown>);
+    const agreementHash = contentHash(agreement as unknown as Record<string, unknown>, "signatures");
     const logicalAddress = fixedPriceAgreementLogicalAddress(JOB_ID);
     await expect(agreementPolicy.anchor.anchorAgreement({
       logicalAddress,
@@ -1306,6 +1318,7 @@ describe("fixed-price x402 generated profile policy", () => {
     expect(factsPut.status).toBe("created");
 
     const sellerAuthority = createDacsFixedPriceX402SellerAuthorityV1({
+      executionMode: "simulation",
       context: value.context,
       rail: value.rail as never,
       tokenDomain: { name: "USD Coin", version: "2" },
@@ -1366,7 +1379,7 @@ describe("fixed-price x402 generated profile policy", () => {
     } as never)).resolves.toMatchObject({ disposition: "rejected" });
     await expect(sellerAuthority.resolveCommittedAgreement(JOB_ID)).resolves.toMatchObject({
       disposition: "verified",
-      agreementHash: contentHash(committed.agreement as unknown as Record<string, unknown>),
+      agreementHash: contentHash(committed.agreement as unknown as Record<string, unknown>, "signatures"),
       railRegistryVersion: 1,
     });
     await expect(sellerAuthority.resolveListingAtCommit(
@@ -1374,6 +1387,13 @@ describe("fixed-price x402 generated profile policy", () => {
     )).resolves.toMatchObject({
       validation: { disposition: "verified", step: 9 },
     });
+    // Both byte binding and reader identity must survive host resolution.
+    const actualAdmission = await sellerAuthority.resolveListingAtCommit(candidateDraft.listingRef);
+    expect({
+      binder: isVerifiedListingAdmission(actualAdmission.rawListing, actualAdmission.validation),
+      readerProvenance: getListingReaderProvenance(actualAdmission.validation) !== null,
+      receivedBytes: typeof actualAdmission.validation.receivedJsonBase64 === "string",
+    }).toEqual({ binder: true, readerProvenance: true, receivedBytes: true });
     await expect(sellerAuthority.resolveFulfilmentAgreement(
       `dacs3:agreement:${JOB_ID}`,
     )).resolves.toMatchObject({

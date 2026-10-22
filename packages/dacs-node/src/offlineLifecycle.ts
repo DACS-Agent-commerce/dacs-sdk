@@ -565,6 +565,7 @@ function listingValidationDeps(
   context: Readonly<OfflineSimulationContext>,
 ): ListingValidationDeps {
   return {
+    executionMode: "simulation",
     nowMs: () => context.nowMs,
     verifyListingSignature: ({ signedBytes: bytes, signature }) =>
       signature.signer === seller.claim &&
@@ -641,14 +642,18 @@ async function publishAndDiscoverListing(
 
   const discovered = await discoverListings(
     [published.ref],
-    async (ref) => store.read(ref),
+    async (ref) => {
+      const value = await store.read(ref);
+      return value ? Buffer.from(JSON.stringify(value)) : null;
+    },
     {
       verify: (bytes, signature, publicKey) =>
         ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
       resolvePublicKey: (claim) =>
         claim === seller.claim ? Uint8Array.from(seller.rawPublicKey) : null,
-      validateListing: (raw) =>
-        validateListingArtifact(raw, listingValidationDeps(seller, context)),
+      executionMode: "simulation",
+      validateListing: (raw, bytes) =>
+        validateListingArtifact(bytes ?? raw, listingValidationDeps(seller, context)),
       nowMs: () => context.nowMs,
     },
   );
@@ -980,7 +985,7 @@ async function negotiateAndCommit(
     "dacs-3-agreement",
     "PayeeBoundAgreementDocument",
     asRecord(agreement),
-    { signer: buyer.claim },
+    { signer: buyer.claim, hash: contentHash(asRecord(agreement), "signatures") },
   );
 
   let retained: AnchoredFinalityCommitment | undefined;
@@ -1133,7 +1138,7 @@ function signSimulationProviderFixture(
     availability: "mocked",
     provider: "self-signed-fixture-not-sr3",
     jobId: context.jobId,
-    agreementHash: contentHash(asRecord(agreement)),
+    agreementHash: contentHash(asRecord(agreement), "signatures"),
     mandateId: `simulation-mandate:${context.jobId}`,
     status: "simulated-captured",
     amount: "1",

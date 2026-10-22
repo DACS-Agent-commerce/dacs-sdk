@@ -37,6 +37,7 @@ const DEMOS_AGENT_IDENTIFIER_RE = /^demos:agent:([0-9a-f]{64})$/;
 
 export type DacsPayDemSellerPaymentIntakeDepsV1 = Pick<
   SellerPaymentIntakeDeps,
+  | "executionMode"
   | "resolveCommittedAgreement"
   | "resolveListingAtCommit"
   | "resolveRail"
@@ -174,6 +175,7 @@ function nativeIntakeDeps(
   deps: Readonly<DacsPayDemSellerPaymentIntakeDepsV1>,
 ): SellerPaymentIntakeDeps {
   return Object.freeze({
+    executionMode: deps.executionMode,
     resolveCommittedAgreement: deps.resolveCommittedAgreement,
     resolveListingAtCommit: deps.resolveListingAtCommit,
     resolveRail: deps.resolveRail,

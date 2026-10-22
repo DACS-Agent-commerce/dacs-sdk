@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import type {
@@ -288,6 +289,7 @@ function dacsNonce(jobId: string, phaseIndex: number): `0x${string}` {
 export async function createDacsX402BuyerEvmChallengeClient(
   config: Readonly<DacsX402BuyerEvmChallengeClientConfig>,
 ): Promise<Readonly<DacsX402BuyerEvmChallengeClient>> {
+  requireAdmissibleProfile({});
   const captured = captureChallengeClientConfig(config);
   const evmPrivateKey = captured.evmPrivateKey;
   const authority = captured.authority;

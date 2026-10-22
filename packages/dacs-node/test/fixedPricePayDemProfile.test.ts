@@ -1,3 +1,4 @@
+import { admitFixtureListing } from "../../../test/fixtures/receivedListing.js";
 import { describe, expect, it, vi } from "vitest";
 
 const dependencies = vi.hoisted(() => ({
@@ -149,6 +150,7 @@ describe("fixed-price pay-dem seller session policy", () => {
       logicalAddress: value.logicalAddress,
       listingContentHash: value.listingContentHash,
       listing: value.listing,
+      validation: await admitFixtureListing(value.listing),
       rail: {},
       protocol: value.protocol,
       facts: {},
@@ -163,6 +165,7 @@ describe("fixed-price pay-dem seller session policy", () => {
       demos: { adapter: {} },
     };
     const policy = createDacsFixedPricePayDemSellerSessionPolicyV1({
+    executionMode: "simulation",
       context: context as never,
       rail: {} as never,
       sellerPublicEndpoint: "https://seller.example/buy",
@@ -184,16 +187,22 @@ describe("fixed-price pay-dem seller session policy", () => {
       listingRef: LISTING_REF,
       sellerPayee: SELLER_KEY,
     }));
-    expect(loadDacsFixedPricePayDemSellerAdmissionV1(
+    const retainedAdmission = loadDacsFixedPricePayDemSellerAdmissionV1(
       context as never,
       ({ ...result.order, role: "seller",
         localBindingHash: fixedPricePayDemOrderLocalBindingHash(result.order) } as never),
-    ).application).toEqual(value.application);
+    );
+    expect(retainedAdmission.application).toEqual(value.application);
+    expect(retainedAdmission.listingAdmission).toEqual({
+      receivedJsonBase64: admission.validation.receivedJsonBase64,
+      revocation: "absent",
+    });
   });
 
   it("rejects an x402-shaped order before resolving any Listing", async () => {
     const value = await fixture();
     const policy = createDacsFixedPricePayDemSellerSessionPolicyV1({
+    executionMode: "simulation",
       context: {
         role: "seller", authority: SELLER, peerAuthority: BUYER,
         database: { readTime: () => 1_000 }, demos: { adapter: {} },

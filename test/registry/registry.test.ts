@@ -932,10 +932,22 @@ describe("registry resolution (T12/T13)", () => {
     });
   });
 
+  test("retains a signed signatures extension through rail registry resolution", async () => {
+    const extension = [{ note: "authenticated optional data" }];
+    const entry = await signedRail({ ...x402Definition(), signatures: extension } as UnsignedRailDefinition);
+    const resolved = await resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", depsFor({ entries: [entry] }),
+    );
+    expect((resolved as unknown as { signatures: unknown }).signatures).toEqual(extension);
+    const changed = { ...entry, signatures: [{ note: "tampered" }] };
+    await expect(resolveRail(
+      RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", depsFor({ entries: [changed] }),
+    )).rejects.toThrow(/signature/);
+  });
+
   test("rejects validly signed malformed normative rail fields", async () => {
     const base = x402Definition();
     const malformed: object[] = [
-      { ...base, unexpected: true },
       { ...base, railVersion: 0 },
       { ...base, railVersion: 1.5 },
       { ...base, railId: " x402:default" },
@@ -1841,4 +1853,11 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
       /valid but not implemented/,
     );
   });
+});
+
+// Exercise the dormant dispatch wiring with mocked wallet dependencies. The
+// real unreleased-profile boundary is pinned in rails/profileAdmission.test.ts.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });

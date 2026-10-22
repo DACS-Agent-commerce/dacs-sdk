@@ -1,3 +1,4 @@
+import { captureExecutionMode, requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import { types as nodeTypes } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
@@ -617,7 +618,7 @@ interface FixedPriceCoordinatorOptions<
   Outcome extends string,
   ErrorClass extends string,
   OperationResult,
-> {
+> extends ProfileExecutionPolicy {
   role: FixedPriceX402CoordinatorRole;
   store: FixedPriceCoordinatorStore<
     Protocol,
@@ -2755,7 +2756,7 @@ function captureOptions<
   if (!plainRecord(value) || !exactKeys(
     value,
     ["role", "store", "workerId", "operations"],
-    ["leaseDurationMs"],
+    ["leaseDurationMs", "executionMode"],
   ) || (value.role !== "buyer" && value.role !== "seller") ||
       !nonEmpty(value.workerId) || !storeObject(value.store) ||
       !plainRecord(value.operations)) {
@@ -3138,6 +3139,10 @@ function createFixedPriceCommerceCoordinator<
     Authority
   >
 > {
+  const executionMode = captureExecutionMode(options);
+  const guardProfile = () => {
+    if (policy.label !== "fixed-price offline") requireAdmissibleProfile({ executionMode });
+  };
   const captured = captureOptions(options, policy);
   type WorkReport = FixedPriceCoordinatorWorkReport<
     Outcome,
@@ -3176,6 +3181,7 @@ function createFixedPriceCommerceCoordinator<
   const run = async (
     input: Readonly<{ cursor?: string; limit?: number; signal?: AbortSignal }> = {},
   ): Promise<FixedPriceX402Page<WorkReport>> => {
+    guardProfile();
     if (!plainRecord(input) || !exactKeys(input, [], ["cursor", "limit", "signal"]) ||
         (input.signal !== undefined && !(input.signal instanceof AbortSignal))) {
       throw new DacsError("coordinator run options are malformed");
@@ -3426,6 +3432,7 @@ function createFixedPriceCommerceCoordinator<
   > = {
     role: captured.role,
     async startOrder(input) {
+      guardProfile();
       const order = captureOrder(input, captured.role, policy);
       const bindingHash = policy.bindingHash(captureIdentity(order, policy));
       const localBindingHash = fixedPriceCoordinatorOrderLocalBindingHash(order, policy);

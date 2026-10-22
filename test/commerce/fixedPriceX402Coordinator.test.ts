@@ -118,6 +118,7 @@ describe("fixed-price x402 coordinator", () => {
   it("runs only buyer-owned tracks and keeps local audit completion operational", async () => {
     const calls: string[] = [];
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 1_000 }),
       workerId: "buyer-worker-1",
       operations: {
@@ -148,6 +149,7 @@ describe("fixed-price x402 coordinator", () => {
 
   it("rejects cross-role operations at construction", () => {
     expect(() => createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore(),
       workerId: "buyer-worker",
       operations: {
@@ -159,6 +161,7 @@ describe("fixed-price x402 coordinator", () => {
       },
     })).toThrow(/not role-owned/);
     expect(() => createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore(),
       workerId: "seller-worker",
       operations: {
@@ -174,6 +177,7 @@ describe("fixed-price x402 coordinator", () => {
   it("never derives normative audit completion from opaque operation references", async () => {
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 5_000 });
     const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: {
@@ -185,6 +189,7 @@ describe("fixed-price x402 coordinator", () => {
       },
     });
     const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "seller-worker",
       operations: {
@@ -223,6 +228,7 @@ describe("fixed-price x402 coordinator", () => {
     const delivery = vi.fn();
     const calls: string[] = [];
     const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 8_000 }),
       workerId: "seller-worker",
       operations: {
@@ -275,6 +281,7 @@ describe("fixed-price x402 coordinator", () => {
 
   it("rejects a terminal audit whose failure class contradicts its originating phase", async () => {
     const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 8_500 }),
       workerId: "seller-worker",
       operations: {
@@ -317,6 +324,7 @@ describe("fixed-price x402 coordinator", () => {
 
     for (const failure of impossible) {
       const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
         store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 8_750 }),
         workerId: `seller-worker-${failure.faultedParty}`,
         operations: {
@@ -345,6 +353,7 @@ describe("fixed-price x402 coordinator", () => {
   it("does not project success over a one-sided terminal audit", async () => {
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 9_000 });
     const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: {
@@ -367,6 +376,7 @@ describe("fixed-price x402 coordinator", () => {
       },
     });
     const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "seller-worker",
       operations: {
@@ -394,6 +404,7 @@ describe("fixed-price x402 coordinator", () => {
   it("does not project commercial success over a phase failure awaiting audit", async () => {
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 9_250 });
     const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: {
@@ -408,6 +419,7 @@ describe("fixed-price x402 coordinator", () => {
       },
     });
     const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "seller-worker",
       operations: {
@@ -439,11 +451,13 @@ describe("fixed-price x402 coordinator", () => {
     ) => {
       const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 9_375 });
       const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
         store,
         workerId: "buyer-worker",
         operations: { agreement: buyerAgreement },
       });
       const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
         store,
         workerId: "seller-worker",
         operations: { agreement: sellerAgreement },
@@ -487,6 +501,7 @@ describe("fixed-price x402 coordinator", () => {
       errorClass: "counterparty" | "substrate",
     ) => (role === "buyer" ? createFixedPriceX402BuyerCoordinator :
       createFixedPriceX402SellerCoordinator)({
+      executionMode: "simulation",
       store,
       workerId: `${role}-worker`,
       operations: {
@@ -530,6 +545,7 @@ describe("fixed-price x402 coordinator", () => {
   it("rejects structurally valid-looking states that violate the dependency DAG", async () => {
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 10_000 });
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: {},
@@ -558,11 +574,13 @@ describe("fixed-price x402 coordinator", () => {
       return { status: "final", outcome: "success", reference: fence.role };
     };
     const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: { agreement: operation },
     });
     const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "seller-worker",
       operations: { agreement: operation },
@@ -578,6 +596,7 @@ describe("fixed-price x402 coordinator", () => {
   it("binds private sdkJobs with a separate role-local integrity hash", async () => {
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 10_500 });
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: {},
@@ -598,6 +617,7 @@ describe("fixed-price x402 coordinator", () => {
 
   it("rejects an abort after rail-final payment instead of relabelling value transfer", async () => {
     const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 10_750 }),
       workerId: "seller-worker",
       operations: {
@@ -626,6 +646,7 @@ describe("fixed-price x402 coordinator", () => {
 
   it("uses CORE B.1 CF-2 bytes and CF-3 identity for order parties", async () => {
     const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore(),
       workerId: "buyer-worker",
       operations: {},
@@ -653,11 +674,13 @@ describe("fixed-price x402 coordinator", () => {
 
     const pairStore = createInMemoryFixedPriceX402CoordinatorStore();
     const buyerSide = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: pairStore,
       workerId: "buyer-worker",
       operations: {},
     });
     const sellerSide = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store: pairStore,
       workerId: "seller-worker",
       operations: {},
@@ -672,6 +695,7 @@ describe("fixed-price x402 coordinator", () => {
     let now = 3_000;
     const effects = vi.fn();
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => now }),
       workerId: "buyer-worker",
       leaseDurationMs: 10,
@@ -705,6 +729,7 @@ describe("fixed-price x402 coordinator", () => {
       reference: "agreement:must-not-run",
     }));
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: {
         ...delegate,
         isCurrent: async (input) => {
@@ -737,6 +762,7 @@ describe("fixed-price x402 coordinator", () => {
       });
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => now });
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: { agreement },
@@ -765,6 +791,7 @@ describe("fixed-price x402 coordinator", () => {
     const controller = new AbortController();
     let observedSignal: AbortSignal | undefined;
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 25_000 }),
       workerId: "buyer-worker",
       operations: {
@@ -793,6 +820,7 @@ describe("fixed-price x402 coordinator", () => {
     );
     expect(Object.getPrototypeOf(store)).not.toBe(Object.prototype);
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: { agreement: finalOperation("agreement", []) },
@@ -807,6 +835,7 @@ describe("fixed-price x402 coordinator", () => {
 
   it("paginates runnable orders rather than rescanning historical records", async () => {
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 30_000 }),
       workerId: "buyer-worker",
       operations: { agreement: async ({ fence }) => ({
@@ -840,6 +869,7 @@ describe("fixed-price x402 coordinator", () => {
 
   it("does not advance a cursor past an order that still has runnable work", async () => {
     const coordinator = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store: createInMemoryFixedPriceX402CoordinatorStore({ now: () => 35_000 }),
       workerId: "buyer-worker",
       operations: {
@@ -880,11 +910,13 @@ describe("fixed-price x402 coordinator", () => {
   it("fails closed when the shared protocol pin changes between actors", async () => {
     const store = createInMemoryFixedPriceX402CoordinatorStore({ now: () => 40_000 });
     const buyer = createFixedPriceX402BuyerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "buyer-worker",
       operations: {},
     });
     const seller = createFixedPriceX402SellerCoordinator({
+      executionMode: "simulation",
       store,
       workerId: "seller-worker",
       operations: {},

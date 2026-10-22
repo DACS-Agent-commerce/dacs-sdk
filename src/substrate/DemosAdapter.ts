@@ -3899,6 +3899,11 @@ export class DemosAdapter implements SubstrateAdapter {
     return journalResolution ?? this.resolveAnchorByIndex(name, expectedOwner);
   }
 
+  // Response shape as defined by kynesyslabs/node@ac8f45f0
+  // src/features/storageprogram/routes.ts (getStorageProgramHandler):
+  // `{success:true, data, ...}`, or HTTP 404 `{success:false, errorCode:
+  // "NOT_FOUND"}`. That route serves `data` from a jsonb column through
+  // JSON.stringify. The deployed node revision is not pinned here.
   async readAnchor(address: string): Promise<Record<string, unknown> | null> {
     try {
       const res = (await this.#demos.storagePrograms.read(address)) as {

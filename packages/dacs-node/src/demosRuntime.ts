@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile } from "@kynesyslabs/dacs";
 import { lstat, mkdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
@@ -360,6 +361,7 @@ function walletCoordinatedPayDemRail(input: Readonly<{
 export async function createDacsDemosActorRuntimeV1(
   rawOptions: Readonly<DacsDemosActorRuntimeOptionsV1>,
 ): Promise<Readonly<DacsDemosActorRuntimeV1>> {
+  requireAdmissibleProfile({});
   if (!plainObject(rawOptions) ||
       (rawOptions.role !== "buyer" && rawOptions.role !== "seller") ||
       !exactPrimaryAuthority(rawOptions.authority) ||

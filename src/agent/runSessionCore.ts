@@ -1,4 +1,6 @@
 import { types as nodeTypes } from "node:util";
+import { admitRawJson, copyRawJsonBytes } from "../canonical/rawJson.js";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import {
   canonicalize,
@@ -10,6 +12,7 @@ import {
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
+  snapshotCanonicalJsonReceived,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
@@ -48,6 +51,7 @@ import type {
 import { attestationBundleHash } from "./twoSidedBundle.js";
 import {
   isVerifiedListingAdmission,
+  snapshotListingValidationResult,
   type ListingValidationResult,
 } from "./listingValidation.js";
 import {
@@ -195,7 +199,7 @@ export type AnchorLookup =
   | { status: "absent" }
   | { status: "indeterminate"; reason: string };
 
-export interface SessionDeps {
+export interface SessionDeps extends ProfileExecutionPolicy {
   /** The buyer agent's id / primary claim. */
   buyerId: string;
   /**
@@ -217,7 +221,11 @@ export interface SessionDeps {
     buyerId: string;
     jobId: string;
   }) => Promise<boolean> | boolean;
-  /** Read the (signed) listing at a ref. */
+  /**
+   * Read the (signed) listing at a ref. Return plain, writable JSON data: the
+   * session start owns it with the strict received snapshot, which refuses
+   * frozen or read-only objects as "listing not found or invalid".
+   */
   readListing: (ref: string) => Promise<unknown>;
   /**
    * Optional caller-held LR-1 tuple selected before entering the session. The
@@ -332,7 +340,8 @@ export interface SessionDeps {
   /**
    * Verify the anchored listing before any external effect is taken from it
    * (#41). Receives the raw stored artifact (signature intact) and the seller
-   * claim it advertises; must return true only if the signature verifies AND
+   * claim it advertises, plus an owned copy of the original bytes when present;
+   * must return true only if the signature verifies AND
    * binds to that seller.
    *
    * This is enforced INDEPENDENTLY of discovery: a session may be handed a ref
@@ -346,6 +355,7 @@ export interface SessionDeps {
   verifyListing?: (
     raw: Record<string, unknown>,
     sellerClaim: string,
+    receivedBytes?: Uint8Array,
   ) => Promise<boolean> | boolean;
   /**
    * Authenticate the exact buyer-owned legacy Agreement recovered while
@@ -389,6 +399,7 @@ export interface SessionDeps {
    */
   validateListing?: (
     raw: Record<string, unknown>,
+    receivedBytes?: Uint8Array,
   ) => Promise<ListingValidationResult> | ListingValidationResult;
   /**
    * OPTIONAL durable session store (#55). When wired, the store is the
@@ -414,6 +425,7 @@ export interface SessionResult {
    * commercial-performance, or DACS-5 audit completion.
    */
   profile: "legacy-mvp-settlement-only";
+  executionMode: "simulation";
   /** Always false: this producer has no fulfilment or delivery-evidence phase. */
   commerceComplete: false;
   outcome: "completed" | "failed";
@@ -2749,6 +2761,7 @@ export async function runSessionCore(
   inputDeps: SessionDeps,
   resumeJobId?: string,
 ): Promise<SessionResult> {
+  requireAdmissibleProfile(inputDeps);
   // Capture every caller-controlled callback/scalar without invoking accessors.
   // A mutable dependency bag must not be able to switch an authenticator,
   // signer, rail, or durable store while another boundary is being inspected.
@@ -2769,13 +2782,25 @@ export async function runSessionCore(
     allowColon: true,
   });
 
-  const stored = await deps.readListing(listingRef);
+  let stored = await deps.readListing(listingRef);
+  let receivedListingBytes: Uint8Array | undefined;
+  if (nodeTypes.isUint8Array(stored)) {
+    receivedListingBytes = copyRawJsonBytes(stored);
+    stored = admitRawJson(receivedListingBytes);
+  }
   if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
   }
+  if (!receivedListingBytes && !nodeTypes.isProxy(stored) &&
+      Object.prototype.hasOwnProperty.call(stored, "dacsVersion")) {
+    throw new SubstrateError(
+      "normative Listing received JSON bytes are required before hashing or session admission; " +
+      "the parsed transport has no CF-5 provenance",
+    );
+  }
   let storedRecord: Record<string, unknown>;
   try {
-    storedRecord = snapshotCanonicalJson(
+    storedRecord = snapshotCanonicalJsonReceived(
       stored as Record<string, unknown>,
       `listing at ${listingRef}`,
     );
@@ -2866,11 +2891,11 @@ export async function runSessionCore(
     }
     let validation: ListingValidationResult;
     try {
-      const rawValidation = snapshotCanonicalJsonRead(
+      const rawValidation = snapshotListingValidationResult(
         await deps.validateListing(
           snapshotCanonicalJson(storedRecord, "Listing validator input"),
+          receivedListingBytes && copyRawJsonBytes(receivedListingBytes),
         ),
-        "Listing validation result",
       );
       if (
         rawValidation === null ||
@@ -3004,6 +3029,7 @@ export async function runSessionCore(
             snapshotCanonicalJson(storedRecord, "Listing verifier input"),
           ),
           listingView.sellerClaim,
+          receivedListingBytes && copyRawJsonBytes(receivedListingBytes),
         )) === true;
     } catch {
       verified = false; // a throwing verifier is not a pass
@@ -3154,9 +3180,6 @@ export async function runSessionCore(
     value: Record<string, unknown>,
     expectedSigner: string,
   ): Match => {
-    if (Object.prototype.hasOwnProperty.call(value, "signatures")) {
-      return { ok: false, reason: "ambiguous singular/plural signature fields" };
-    }
     if (isComponentSignature(value.signature)) {
       return value.signature.signer === expectedSigner
         ? { ok: true }
@@ -3649,7 +3672,7 @@ export async function runSessionCore(
     }
     if (resumedBundle.status === "present") {
       const match = matchSessionBundle(
-        stripSignature(resumedBundle.value) as Record<string, unknown>,
+        stripSignature(resumedBundle.value, "signatures") as Record<string, unknown>,
       );
       if (!match.ok) {
         throw new CounterpartyError(
@@ -4709,6 +4732,7 @@ export async function runSessionCore(
 
   return {
     profile: "legacy-mvp-settlement-only",
+    executionMode: "simulation",
     commerceComplete: false,
     outcome,
     jobId,

@@ -191,7 +191,7 @@ function receipt(
     finalityProfile: "demos-bft-confirmed-native-read",
     logicalAddress,
     nativeAddress,
-    contentHash: contentHash(artifact),
+    contentHash: contentHash(artifact, logicalAddress === fixedPriceAgreementLogicalAddress(JOB_ID) ? "signatures" : "signature"),
     transactionRef: { kind: "demos-storage-program", value: `tx:${nativeAddress}` },
     writer,
     state: "finalized",
@@ -344,7 +344,7 @@ async function fixture() {
       ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)) },
   );
   const agreementRecord = agreement as unknown as Record<string, unknown>;
-  const agreementHash = contentHash(agreementRecord);
+  const agreementHash = contentHash(agreementRecord, "signatures");
   const agreementLogicalAddress = fixedPriceAgreementLogicalAddress(JOB_ID);
   const commitment = signComponent({
     finalityCommitmentVersion: "1" as const,
@@ -543,7 +543,7 @@ async function payDemFixture() {
     { party: SELLER, algorithm: "ed25519", sign: (bytes) =>
       ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)) },
   );
-  const agreementHash = contentHash(agreement as unknown as Record<string, unknown>);
+  const agreementHash = contentHash(agreement as unknown as Record<string, unknown>, "signatures");
   const commitment = signComponent({
     finalityCommitmentVersion: "1" as const,
     jobId: JOB_ID,

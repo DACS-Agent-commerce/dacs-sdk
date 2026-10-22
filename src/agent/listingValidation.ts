@@ -1,4 +1,6 @@
+import { copyRawJsonBytes } from "../canonical/rawJson.js";
 import { types as nodeTypes } from "node:util";
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 
 import type {
   ComponentSignature,
@@ -20,6 +22,8 @@ import {
   isRevocationMarker,
 } from "../artifacts/validators.js";
 import {
+  admitRawJson,
+  RawJsonAdmissionError,
   canonicalize,
   contentHash,
   encodeAddressSegment,
@@ -33,6 +37,7 @@ import {
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
+  snapshotCanonicalJsonReceived,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
@@ -162,6 +167,9 @@ export interface ListingValidationResult {
   /** Normative reader step that determined the result. */
   step: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
   reason: string;
+  /** Exact CF-5-admitted JSON, retained by the trusted reader as canonical Base64. */
+  receivedJsonBase64?: string;
+  executionMode?: "simulation";
   listing?: Listing;
   listingContentHash?: string;
   revocation?: RevocationCheck;
@@ -175,9 +183,53 @@ export interface ListingValidationResult {
 
 export type VerifiedListingAdmission = ListingValidationResult & {
   disposition: "verified";
+  executionMode: "simulation";
   listing: Listing;
   listingContentHash: string;
+  receivedJsonBase64: string;
 };
+
+// Runtime provenance is deliberately non-serializable. Historical resolvers must
+// re-admit original bytes through the ordered reader after restoring a checkpoint.
+const readerAdmissions = new WeakMap<object, ListingValidationResult>();
+
+/** Capture the exact owned reader result without invoking caller-owned views. */
+export function getListingReaderProvenance(result: unknown): ListingValidationResult | null {
+  if (result === null || typeof result !== "object" || nodeTypes.isProxy(result)) return null;
+  const retained = readerAdmissions.get(result);
+  return retained ? structuredClone(retained) : null;
+}
+
+/** Own internal result fields without charging its wrapper to artifact depth. */
+export function snapshotListingValidationResult(value: unknown): ListingValidationResult {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || nodeTypes.isProxy(value)) {
+    throw new TypeError("malformed Listing validation result");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const shallowDescriptors = Object.fromEntries(Reflect.ownKeys(descriptors).map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    return [key, "value" in descriptor ? { ...descriptor, value: null } : descriptor];
+  }));
+  // Check the wrapper before reading values; actual artifacts keep their budget.
+  snapshotCanonicalJsonRead(Object.create(Object.getPrototypeOf(value), shallowDescriptors), "Listing validation result");
+  return Object.fromEntries(Object.entries(descriptors).map(([key, descriptor]) => [
+    key, snapshotCanonicalJsonRead(descriptor.value, "Listing validation result field"),
+  ])) as unknown as ListingValidationResult;
+}
+
+/** Compare each field separately so a maximum-depth Listing stays in profile. */
+export function sameListingReaderResult(left: ListingValidationResult, right: ListingValidationResult): boolean {
+  try {
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    return leftKeys.length === rightKeys.length && leftKeys.every((key, index) =>
+      key === rightKeys[index] &&
+      canonicalize(snapshotCanonicalJsonRead(left[key as keyof ListingValidationResult], "Listing reader field")) ===
+      canonicalize(snapshotCanonicalJsonRead(right[key as keyof ListingValidationResult], "Listing reader field")));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Bind an ordered reader result to the exact current Listing admitted by a
@@ -191,18 +243,27 @@ export function isVerifiedListingAdmission(
 ): result is VerifiedListingAdmission {
   if (
     result.disposition !== "verified" ||
+    result.executionMode !== "simulation" ||
     result.step !== 9 ||
     !result.listing ||
     !result.listingContentHash ||
-    !isListing(raw) ||
     !isListing(result.listing)
   ) {
     return false;
   }
   try {
+    if (typeof result.receivedJsonBase64 !== "string") return false;
+    const receivedBytes = Buffer.from(result.receivedJsonBase64, "base64");
+    if (receivedBytes.toString("base64") !== result.receivedJsonBase64) return false;
+    const received = admitRawJson(receivedBytes);
+    // Apply the same received-number policy as the ordered reader before its
+    // shape check, retaining every signed extension in the owned comparison.
+    const capturedRaw = snapshotCanonicalJsonRead(raw, "admitted Listing");
     if (
-      canonicalize(result.listing) !== canonicalize(raw) ||
-      contentHash(raw) !== result.listingContentHash ||
+      !isListing(capturedRaw) ||
+      canonicalize(received) !== canonicalize(capturedRaw) ||
+      canonicalize(result.listing) !== canonicalize(capturedRaw) ||
+      contentHash(capturedRaw) !== result.listingContentHash ||
       contentHash(result.listing as unknown as Record<string, unknown>) !==
         result.listingContentHash
     ) {
@@ -428,7 +489,7 @@ export async function checkListingRevocation(
 ): Promise<RevocationCheckResult> {
   try {
     deps = captureRevocationDeps(deps);
-    listing = snapshotCanonicalJson(listing, "revocation Listing");
+    listing = snapshotCanonicalJsonReceived(listing, "revocation Listing");
     if (!isListingEnvelope(listing)) {
       return { disposition: "indeterminate", reason: "malformed-revocation-listing" };
     }
@@ -904,7 +965,10 @@ export function resolveListingRails(
 ): ListingRailResolutionResult {
   let captured: unknown;
   try {
-    captured = snapshotCanonicalJson(input, "Listing rail resolution input");
+    captured = snapshotCanonicalJsonReceived(
+      input,
+      "Listing rail resolution input",
+    );
   } catch {
     return railResult("indeterminate", "malformed-rail-authority");
   }
@@ -954,7 +1018,7 @@ export async function resolveListingPayloadVerificationCapability(
   }
   let listingSnapshot: Listing | ListingDraft;
   try {
-    listingSnapshot = snapshotCanonicalJson(
+    listingSnapshot = snapshotCanonicalJsonReceived(
       listing,
       "payload verification capability Listing",
     );
@@ -1080,7 +1144,7 @@ export async function resolveListingPayloadVerificationCapability(
   };
 }
 
-export interface ListingValidationDeps {
+export interface ListingValidationDeps extends ProfileExecutionPolicy {
   nowMs: () => number;
   verifyListingSignature: SignatureVerifier;
   revocation: Omit<ListingRevocationDeps, "nowMs">;
@@ -1180,20 +1244,37 @@ const identityPresentationBytes = (bundle: IdentityBundle): Uint8Array => {
 };
 
 /**
- * Execute the ordered DACS-1 §6.3.4 reader algorithm. LRR `indeterminate` is
+ * Admit exact received UTF-8 JSON before the ordered DACS-1 §6.3.4 reader.
+ * Parsed objects cannot establish CF-5 provenance and are refused. LRR `indeterminate` is
  * retained through step 9 so a signer-control failure still terminates as
  * `rejected`, exactly as the Standard requires.
  */
 export async function validateListingArtifact(
-  raw: Record<string, unknown>,
+  raw: Record<string, unknown> | Uint8Array,
   inputDeps: ListingValidationDeps,
 ): Promise<ListingValidationResult> {
+  requireAdmissibleProfile(inputDeps);
   // Fix every dependency identity before inspecting caller-owned artifact data.
   const deps = captureListingValidationDeps(inputDeps);
   let capturedRaw: Record<string, unknown>;
+  let receivedJsonBase64: string;
   try {
-    capturedRaw = snapshotCanonicalJson(raw, "Listing validation artifact");
-  } catch {
+    if (!nodeTypes.isUint8Array(raw)) {
+      return { disposition: "indeterminate", step: 1, reason: "received-json-bytes-required" };
+    }
+    // Admit the supplied view before decoding it, schema checks or hashing.
+    // Retain our own copy before any verifier or resolver can run.
+    const bytes = copyRawJsonBytes(raw);
+    const received = admitRawJson(bytes);
+    receivedJsonBase64 = Buffer.from(bytes).toString("base64");
+    capturedRaw = snapshotCanonicalJsonReceived(
+      received as Record<string, unknown>,
+      "Listing validation artifact",
+    );
+  } catch (error) {
+    if (error instanceof RawJsonAdmissionError) {
+      return { disposition: "rejected", step: 1, reason: `${error.stage}:${error.code}` };
+    }
     return { disposition: "rejected", step: 1, reason: "schema-invalid" };
   }
   if (!isListingEnvelope(capturedRaw)) {
@@ -1473,16 +1554,20 @@ export async function validateListingArtifact(
       ...payloadCapabilityField,
     };
   }
-  return {
+  const result: ListingValidationResult = {
     disposition: "verified",
     step: 9,
     reason: "verified",
+    receivedJsonBase64,
+    executionMode: "simulation",
     listing,
     listingContentHash,
     revocation: "absent",
     railResolution,
     ...payloadCapabilityField,
   };
+  readerAdmissions.set(result, structuredClone(result));
+  return result;
 }
 
 export type ListingReachability = "reachable" | "unreachable" | "indeterminate";
@@ -1709,7 +1794,7 @@ export async function assessListingReachability(
   }
   let listing: Listing;
   try {
-    listing = snapshotCanonicalJson(inputListing, "reachability Listing");
+    listing = snapshotCanonicalJsonReceived(inputListing, "reachability Listing");
   } catch {
     return { status: "indeterminate", checkedAt: 0, reason: "listing-malformed" };
   }

@@ -1,4 +1,7 @@
+import { copyRawJsonBytes } from "../canonical/rawJson.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
+import { types as nodeTypes } from "node:util";
+import { captureExecutionMode, requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import type {
   LegacyMvpListing,
   Listing,
@@ -6,10 +9,12 @@ import type {
 } from "../artifacts/types.js";
 import { readListingArtifact } from "../artifacts/validators.js";
 import {
+  admitRawJson,
   contentHash,
   decodeAddressSegment,
   listingAddress,
 } from "../canonical/index.js";
+import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
 import type {
   AnchorBinding,
@@ -229,12 +234,12 @@ export type ListingReadResult =
   | AuthenticatedListing
   | ListingReadFailure;
 
-export interface ListingDiscoveryDeps {
+export interface ListingDiscoveryDeps extends ProfileExecutionPolicy {
   index: BindingIndex;
   readAnchor: (
     nativeAddress: string,
     anchorKind?: string,
-  ) => Promise<Record<string, unknown> | null>;
+  ) => Promise<Record<string, unknown> | Uint8Array | null>;
   verify: Verifier;
   /** Required for normative reads; the SDK executes the ordered algorithm. */
   listingValidationDeps?: ListingValidationDeps;
@@ -249,6 +254,7 @@ function captureListingValidationDeps(
 ): ListingValidationDeps {
   const revocationSurfaces = structuredClone(deps.revocation.surfaces);
   return Object.freeze({
+    executionMode: captureExecutionMode(deps),
     nowMs: deps.nowMs.bind(deps),
     verifyListingSignature: deps.verifyListingSignature.bind(deps),
     revocation: Object.freeze({
@@ -310,6 +316,7 @@ export async function readListingByLogicalAddress(
   deps: ListingDiscoveryDeps,
   expectedNativeAddress?: string,
 ): Promise<ListingReadResult> {
+  requireAdmissibleProfile(deps);
   if (typeof (logicalAddress as unknown) !== "string") {
     return {
       status: "invalid-address",
@@ -511,7 +518,12 @@ export async function readListingByLogicalAddress(
   }
 
   let record: Record<string, unknown>;
+  let receivedBytes: Uint8Array | undefined;
   try {
+    if (nodeTypes.isUint8Array(readValue)) {
+      receivedBytes = copyRawJsonBytes(readValue);
+      readValue = admitRawJson(receivedBytes);
+    }
     const snapshot: unknown = structuredClone(readValue);
     if (!isRecord(snapshot)) throw new Error("record is not a JSON object");
     record = snapshot;
@@ -526,7 +538,15 @@ export async function readListingByLogicalAddress(
   }
 
   let actualContentHash: string;
+  if (!receivedBytes && Object.prototype.hasOwnProperty.call(record, "dacsVersion")) {
+    return rejected(logicalAddress, "shape", "invalid-record",
+      "normative Listing received JSON bytes are required before hashing (CF-5)",
+      binding.nativeAddress);
+  }
   try {
+    // Shape checks and hashing must see the same owned received JSON, including
+    // negative-zero normalization and all unknown signed members.
+    record = snapshotCanonicalJsonRead(record, "anchored Listing");
     actualContentHash = contentHash(record);
   } catch (error) {
     return rejected(
@@ -631,11 +651,11 @@ export async function readListingByLogicalAddress(
     }
     let validation: ListingValidationResult;
     try {
-      validation = structuredClone(
-        await validateListingArtifact(
-          structuredClone(record),
-          capturedValidationDeps,
-        ),
+      // The ordered reader owns its snapshot and retains provenance against
+      // this exact result. Keep that identity through the public discovery API.
+      validation = await validateListingArtifact(
+        receivedBytes ?? structuredClone(record),
+        capturedValidationDeps,
       );
     } catch {
       return {
@@ -806,6 +826,7 @@ export async function enumerateListingsForSeller(
   deps: ListingDiscoveryDeps,
   options: EnumerateListingsOptions = {},
 ): Promise<ListingEnumerationResult> {
+  requireAdmissibleProfile(deps);
   if (typeof (sellerId as unknown) !== "string") {
     return {
       status: "invalid-seller",

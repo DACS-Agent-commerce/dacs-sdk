@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
 import {
@@ -50,7 +51,9 @@ export async function evmErc20SettleCore(
   params: EvmErc20SettleParams,
   client: EvmTransferClient,
   effectFence?: Readonly<SettlementEffectFence>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<SettleResult> {
+  requireAdmissibleProfile(policy);
   const network = params.network;
   const tokenAddress = params.tokenAddress;
   const recipientEvm = params.recipientEvm;
@@ -165,6 +168,7 @@ export interface EvmErc20Rail {
 export async function createEvmErc20Rail(
   config: EvmErc20RailConfig,
 ): Promise<EvmErc20Rail> {
+  requireAdmissibleProfile({});
   const evmPrivateKey = config.evmPrivateKey;
   const requestedRpcUrl = config.rpcUrl;
   const network = config.network;
@@ -242,6 +246,9 @@ export async function createEvmErc20Rail(
 
 /**
  * Bridge an EvmErc20Rail to the runSession `settle` seam. SAFE BY DEFAULT (#43):
+ * The unreleased profile permits only explicit `executionMode: "simulation"`
+ * options with locally injected rails; connected wallet rails are refused.
+ *
  * the transfer is submitted AT MOST ONCE per `(railId, jobId, phaseIndex)` through
  * an idempotency store — a concurrent retry or a resume after a settle→anchor
  * crash reconciles the prior submission instead of sending another transfer. The
@@ -255,8 +262,9 @@ export async function createEvmErc20Rail(
 export function evmErc20Settle(
   rail: EvmErc20Rail,
   cfg: { tokenAddress: string; network: string; recipientEvm: string },
-  opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
+  opts: ProfileExecutionPolicy & { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
+  requireAdmissibleProfile(opts);
   const store = opts.store ?? createIdempotencyStore();
   const tokenAddress = cfg.tokenAddress;
   const network = cfg.network;

@@ -240,7 +240,7 @@ describe("advanceAp2Settlement", () => {
     const readAttestedStatus = vi.fn(provider().readAttestedStatus);
     const result = await advanceAp2Settlement(input({
       provider: provider({ submit, readAttestedStatus }),
-    }));
+    }), { executionMode: "simulation" });
 
     expect(result).toMatchObject({
       status: "settled",
@@ -276,16 +276,16 @@ describe("advanceAp2Settlement", () => {
       now: () => clock,
     });
 
-    await expect(advanceAp2Settlement(shared)).resolves.toEqual({
+    await expect(advanceAp2Settlement(shared, { executionMode: "simulation" })).resolves.toEqual({
       status: "indeterminate",
       reason: "response-lost",
     });
-    await expect(advanceAp2Settlement(shared)).resolves.toEqual({
+    await expect(advanceAp2Settlement(shared, { executionMode: "simulation" })).resolves.toEqual({
       status: "waiting",
       reason: "ap2-binding-held",
     });
     clock += 101;
-    await expect(advanceAp2Settlement(shared)).resolves.toMatchObject({ status: "settled" });
+    await expect(advanceAp2Settlement(shared, { executionMode: "simulation" })).resolves.toMatchObject({ status: "settled" });
     expect(submit).toHaveBeenCalledTimes(2);
     expect(new Set(keys)).toEqual(new Set([deriveAp2IdempotencyKey(JOB_ID, 3)]));
   });
@@ -304,12 +304,12 @@ describe("advanceAp2Settlement", () => {
       provider: provider({ submit, readAttestedStatus }),
       now: () => clock,
     });
-    await expect(advanceAp2Settlement(shared)).resolves.toEqual({
+    await expect(advanceAp2Settlement(shared, { executionMode: "simulation" })).resolves.toEqual({
       status: "indeterminate",
       reason: "sr3-unavailable",
     });
     clock += 101;
-    await expect(advanceAp2Settlement({ ...shared, owner: "worker-restarted" }))
+    await expect(advanceAp2Settlement({ ...shared, owner: "worker-restarted" }, { executionMode: "simulation" }))
       .resolves.toMatchObject({ status: "settled" });
     expect(submit).toHaveBeenCalledTimes(1);
     expect(readAttestedStatus).toHaveBeenCalledTimes(2);
@@ -324,9 +324,9 @@ describe("advanceAp2Settlement", () => {
       return { disposition: "accepted" as const, providerRef: "provider-1" };
     });
     const shared = input({ provider: provider({ submit }) });
-    const first = advanceAp2Settlement(shared);
+    const first = advanceAp2Settlement(shared, { executionMode: "simulation" });
     await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
-    await expect(advanceAp2Settlement({ ...shared, owner: "worker-b" })).resolves.toEqual({
+    await expect(advanceAp2Settlement({ ...shared, owner: "worker-b" }, { executionMode: "simulation" })).resolves.toEqual({
       status: "waiting",
       reason: "ap2-binding-held",
     });
@@ -338,14 +338,14 @@ describe("advanceAp2Settlement", () => {
   test("cross-job reuse of one transaction_id fails before a second provider call", async () => {
     const submit = vi.fn(provider().submit);
     const store = createInMemoryAp2BindingStore();
-    await expect(advanceAp2Settlement(input({ store, provider: provider({ submit }) })))
+    await expect(advanceAp2Settlement(input({ store, provider: provider({ submit }) }), { executionMode: "simulation" }))
       .resolves.toMatchObject({ status: "settled" });
     await expect(advanceAp2Settlement(input({
       jobId: OTHER_JOB_ID,
       agreementHash: "c".repeat(64),
       store,
       provider: provider({ submit }),
-    }))).resolves.toEqual({
+    }), { executionMode: "simulation" })).resolves.toEqual({
       status: "failed",
       reason: "ap2-transaction-id-replay",
     });
@@ -367,7 +367,7 @@ describe("advanceAp2Settlement", () => {
     for (const status of statuses) {
       await expect(advanceAp2Settlement(input({
         provider: provider({ readAttestedStatus: async () => status }),
-      }))).resolves.toEqual({ status: "failed", reason: "ap2-attested-status-mismatch" });
+      }), { executionMode: "simulation" })).resolves.toEqual({ status: "failed", reason: "ap2-attested-status-mismatch" });
     }
   });
 
@@ -386,7 +386,7 @@ describe("advanceAp2Settlement", () => {
           providerIdempotencyKeys: true,
         },
       }),
-    }))).resolves.toEqual({
+    }), { executionMode: "simulation" })).resolves.toEqual({
       status: "failed",
       reason: "ap2-provider-registration-ineligible",
     });
@@ -398,7 +398,7 @@ describe("advanceAp2Settlement", () => {
           return { disposition: "rejected", reason: "bad-signature" };
         },
       },
-    }))).resolves.toEqual({
+    }), { executionMode: "simulation" })).resolves.toEqual({
       status: "failed",
       reason: "ap2-mandate-verification-rejected",
     });
@@ -414,7 +414,7 @@ describe("advanceAp2Settlement", () => {
         leaseDurationMs,
         provider: provider({ submit }),
         store: { ...createInMemoryAp2BindingStore(), claim },
-      }))).resolves.toMatchObject({ status: "failed" });
+      }), { executionMode: "simulation" })).resolves.toMatchObject({ status: "failed" });
       expect(claim).not.toHaveBeenCalled();
       expect(submit).not.toHaveBeenCalled();
     },
@@ -433,7 +433,7 @@ describe("advanceAp2Settlement", () => {
     await expect(advanceAp2Settlement(input({
       provider: mutableProvider,
       verifier: mutableVerifier,
-    }))).resolves.toMatchObject({ status: "settled" });
+    }), { executionMode: "simulation" })).resolves.toMatchObject({ status: "settled" });
     expect(originalSubmit).toHaveBeenCalledTimes(1);
     expect(swappedSubmit).not.toHaveBeenCalled();
   });
@@ -448,7 +448,7 @@ describe("advanceAp2Settlement", () => {
     await expect(advanceAp2Settlement(input({
       now: () => clock,
       provider: provider({ submit, readAttestedStatus }),
-    }))).resolves.toEqual({
+    }), { executionMode: "simulation" })).resolves.toEqual({
       status: "indeterminate",
       reason: "ap2-effect-fence-stale",
     });

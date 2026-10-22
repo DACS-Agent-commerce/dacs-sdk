@@ -61,7 +61,7 @@ function deferred<T>() {
 describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   test("happy path: transfers OS base units and reports a bft-final demos txRef", async () => {
     const client = fakeClient();
-    const res = await payDemSettleCore(params(), client);
+    const res = await payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" });
     expect(res.ok).toBe(true);
     expect(res.txHash).toBe(TX_HASH);
     expect(res.payer).toBe(PAYER);
@@ -89,7 +89,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
           fenceChecks += 1;
           throw new Error("stale effect generation");
         },
-      },
+      }, undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/stale effect generation/);
     expect(fenceChecks).toBe(1);
     expect(client.sent).toBeUndefined();
@@ -97,13 +97,13 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
 
   test("amount is parsed as an integer OS bigint (no floats)", async () => {
     const client = fakeClient();
-    await payDemSettleCore(params({ amount: "1000000000" }), client);
+    await payDemSettleCore(params({ amount: "1000000000" }), client, undefined, undefined, { executionMode: "simulation" });
     expect(client.sent!.amountOs).toBe(1_000_000_000n);
   });
 
   test("passes the exact per-payment total-debit ceiling to the native client", async () => {
     const client = fakeClient();
-    await payDemSettleCore(params({ maxTotalDebitOs: "2000000000" }), client);
+    await payDemSettleCore(params({ maxTotalDebitOs: "2000000000" }), client, undefined, undefined, { executionMode: "simulation" });
     expect(client.sent).toMatchObject({
       amountOs: 1_500_000_000n,
       maxTotalDebitOs: 2_000_000_000n,
@@ -114,23 +114,23 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     const client = fakeClient();
     await expect(payDemSettleCore(
       params({ maxTotalDebitOs: "1499999999" }),
-      client,
+      client, undefined, undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/cannot be less than the amount/);
     await expect(payDemSettleCore(
       params({ maxTotalDebitOs: "1.5" }),
-      client,
+      client, undefined, undefined, { executionMode: "simulation" },
     )).rejects.toThrow(/positive integer OS text/);
     expect(client.sent).toBeUndefined();
   });
 
   test("rejects a non-integer / invalid base-unit amount", async () => {
-    await expect(payDemSettleCore(params({ amount: "1.5" }), fakeClient())).rejects.toThrow(
+    await expect(payDemSettleCore(params({ amount: "1.5" }), fakeClient(), undefined, undefined, { executionMode: "simulation" })).rejects.toThrow(
       /invalid OS base-unit amount/,
     );
   });
 
   test("rejects a non-positive amount", async () => {
-    await expect(payDemSettleCore(params({ amount: "0" }), fakeClient())).rejects.toThrow(
+    await expect(payDemSettleCore(params({ amount: "0" }), fakeClient(), undefined, undefined, { executionMode: "simulation" })).rejects.toThrow(
       /amount must be > 0/,
     );
   });
@@ -139,7 +139,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     const client = fakeClient({
       result: { ok: false, state: "failed", hash: OTHER_TX_HASH, message: "rejected" },
     });
-    const res = await payDemSettleCore(params(), client);
+    const res = await payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe(OTHER_TX_HASH);
     expect(res.finality).toBeUndefined();
@@ -149,7 +149,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     const client = fakeClient({
       result: { ok: true, state: "included", hash: "not-a-hash", blockNumber: 1 },
     });
-    await expect(payDemSettleCore(params(), client)).rejects.toThrow(
+    await expect(payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" })).rejects.toThrow(
       /hash must be a 32-byte hex value/,
     );
   });
@@ -163,7 +163,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
         ...(hash === undefined ? {} : { hash }),
       } as DemosTransferResult;
       await expect(
-        payDemSettleCore(params(), fakeClient({ result })),
+        payDemSettleCore(params(), fakeClient({ result }), undefined, undefined, { executionMode: "simulation" }),
       ).rejects.toThrow(/hash must be a 32-byte hex value/);
     },
   );
@@ -177,7 +177,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
         blockNumber: 1,
       },
     });
-    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
+    await expect(payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" })).resolves.toMatchObject({
       ok: true,
       txHash: TX_HASH,
     });
@@ -187,7 +187,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     // ok:true + a hash but NO terminal inclusion state: the node accepted the tx
     // for submission, it hasn't been observed to land. Must not mint bft-final.
     const client = fakeClient({ result: { ok: true, hash: TX_HASH, blockNumber: 9 } });
-    const res = await payDemSettleCore(params(), client);
+    const res = await payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" });
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
     expect(res.blockNumber).toBeUndefined();
@@ -195,14 +195,14 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
 
   test("terminal inclusion state but NO block height → ok:false (finality witness missing)", async () => {
     const client = fakeClient({ result: { ok: true, state: "included", hash: TX_HASH } });
-    const res = await payDemSettleCore(params(), client);
+    const res = await payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" });
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
   });
 
   test("a poll that timed out (nonterminal) → ok:false, no evidence", async () => {
     const client = fakeClient({ result: { ok: false, state: "timeout", hash: TX_HASH } });
-    const res = await payDemSettleCore(params(), client);
+    const res = await payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" });
     expect(res.ok).toBe(false);
     expect(res.finality).toBeUndefined();
   });
@@ -212,7 +212,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     const client = fakeClient({
       result: { ok: true, state: "included", hash: TX_HASH, blockNumber: 7 },
     });
-    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
+    await expect(payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" })).resolves.toMatchObject({
       ok: true,
       finality: { model: "bft-final" },
       blockNumber: 7,
@@ -225,7 +225,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       const client = fakeClient({
         result: { ok: true, state, hash: TX_HASH, blockNumber: 7 },
       });
-      const res = await payDemSettleCore(params(), client);
+      const res = await payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" });
       expect(res.ok).toBe(false);
       expect(res.finality).toBeUndefined();
       expect(res.blockNumber).toBeUndefined();
@@ -238,7 +238,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       const client = fakeClient({
         result: { ok: true, state: "confirmed", hash: TX_HASH, blockNumber: 7 },
       });
-      const res = await payDemSettleCore(params(), client);
+      const res = await payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" });
       expect(res.ok).toBe(false);
       expect(res.finality).toBeUndefined();
     } finally {
@@ -255,7 +255,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       transfer: originalTransfer,
     };
     const input = params();
-    const settlement = payDemSettleCore(input, client);
+    const settlement = payDemSettleCore(input, client, undefined, undefined, { executionMode: "simulation" });
 
     input.recipient = "substituted-payee";
     input.network = "substituted-network";
@@ -305,7 +305,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       value: poison,
     });
 
-    await expect(payDemSettleCore(params(), client)).resolves.toMatchObject({
+    await expect(payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" })).resolves.toMatchObject({
       ok: true,
       txHash: TX_HASH,
     });
@@ -323,7 +323,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       amount: "1",
       network: "demos",
     } as unknown as Parameters<typeof payDemSettleCore>[0];
-    await expect(payDemSettleCore(accessorParams, fakeClient())).rejects.toThrow(
+    await expect(payDemSettleCore(accessorParams, fakeClient(), undefined, undefined, { executionMode: "simulation" })).rejects.toThrow(
       /must be stable data/,
     );
     expect(reads).toBe(0);
@@ -334,7 +334,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
         return Reflect.get(target, property, receiver);
       },
     });
-    await expect(payDemSettleCore(params(), proxiedClient)).rejects.toThrow(
+    await expect(payDemSettleCore(params(), proxiedClient, undefined, undefined, { executionMode: "simulation" })).rejects.toThrow(
       /must be stable data/,
     );
     expect(reads).toBe(0);
@@ -356,7 +356,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
         } as DemosTransferResult;
       },
     };
-    await expect(payDemSettleCore(params(), client)).rejects.toThrow(
+    await expect(payDemSettleCore(params(), client, undefined, undefined, { executionMode: "simulation" })).rejects.toThrow(
       /must be stable data/,
     );
     expect(reads).toBe(0);
@@ -373,8 +373,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     client: ReturnType<typeof fakeClient>,
     cfg: { recipient?: string; network?: string } = { recipient: PAYEE_CLAIM, network: "demos" },
   ) => {
-    const rail: PayDemRail = { address: PAYER, settle: (p) => payDemSettleCore(p, client) };
-    return payDemSettle(rail, cfg);
+    const rail: PayDemRail = { address: PAYER, settle: (p) => payDemSettleCore(p, client, undefined, undefined, { executionMode: "simulation" }) };
+    return payDemSettle(rail, cfg, { executionMode: "simulation" });
   };
   const req = (over: Record<string, unknown> = {}) => ({
     rail: "pay-dem",
@@ -440,10 +440,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       address: PAYER,
       settle: async (params) => {
         transfers += 1;
-        return payDemSettleCore(params, client);
+        return payDemSettleCore(params, client, undefined, undefined, { executionMode: "simulation" });
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { executionMode: "simulation" });
     const first = await settle(req());
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.finality)).toBe(true);
@@ -464,10 +464,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       address: PAYER,
       settle: async (params) => {
         transfers += 1;
-        return payDemSettleCore(params, client);
+        return payDemSettleCore(params, client, undefined, undefined, { executionMode: "simulation" });
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { executionMode: "simulation" });
 
     await expect(settle(req())).resolves.toMatchObject({
       ok: false,
@@ -484,11 +484,11 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       address: PAYER,
       settle: async (params) => {
         transfers += 1;
-        return payDemSettleCore(params, client);
+        return payDemSettleCore(params, client, undefined, undefined, { executionMode: "simulation" });
       },
     };
     const store = createIdempotencyStore(createInMemorySettlementLog());
-    await payDemSettle(rail, { network: "demos" }, { store })(req());
+    await payDemSettle(rail, { network: "demos" }, { executionMode: "simulation", store })(req());
     const reconcile = vi.fn(async (context) => ({
       ok: true,
       txHash: TX_HASH,
@@ -501,6 +501,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       amountOs: context.amountOs,
     }));
     const resumed = await payDemSettle(rail, { network: "demos" }, {
+      executionMode: "simulation",
       store,
       reconcile,
     })(req());
@@ -563,6 +564,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       now: () => now,
     });
     await expect(payDemSettle(firstRail, { network: "demos" }, {
+      executionMode: "simulation",
       store: firstStore,
     })(request)).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
 
@@ -590,6 +592,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       now: () => now,
     });
     const recovered = await payDemSettle(restartedRail, { network: "demos" }, {
+      executionMode: "simulation",
       store: restartedStore,
       reconcile,
     })(request);
@@ -648,6 +651,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     }));
 
     await expect(payDemSettle(rail, { network: "demos" }, {
+      executionMode: "simulation",
       store: createIdempotencyStore(log),
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
     })(request)).rejects.toThrow(/definitive finalized result/);
@@ -696,6 +700,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     }));
 
     await expect(payDemSettle(rail, { network: "demos" }, {
+      executionMode: "simulation",
       store: createIdempotencyStore(log),
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
     })(request)).rejects.toThrow(pattern);
@@ -740,6 +745,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     }));
 
     await expect(payDemSettle(rail, { network: "demos" }, {
+      executionMode: "simulation",
       store: createIdempotencyStore(log),
       reconcile,
     })(req({
@@ -770,6 +776,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     } as unknown as PayDemRail;
 
     await expect(payDemSettle(rail, { network: "demos" }, {
+      executionMode: "simulation",
       store: createIdempotencyStore(backing),
     })(req({
       rail: "demos-native:DEM",
@@ -804,6 +811,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     });
 
     await expect(payDemSettle(rail, { network: "demos" }, {
+      executionMode: "simulation",
       store,
       reconcile: reconcile as unknown as PayDemSettlementReconcile,
     })(req({
@@ -842,6 +850,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     };
 
     await expect(payDemSettle(rail, { network: "demos" }, {
+      executionMode: "simulation",
       store: new ClassStore(),
     })(req({ jobId: "job-class-store" }))).resolves.toMatchObject({
       ok: true,
@@ -858,7 +867,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       network: "demos",
       railId: "demos-native:DEM",
       phaseIndex: 6,
-    });
+    }, { executionMode: "simulation" });
 
     await expect(settle(req({
       rail: "demos-native:DEM",
@@ -877,7 +886,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       settle: vi.fn(),
     };
 
-    await expect(payDemSettle(rail)(req({ amount: "0" })))
+    await expect(payDemSettle(rail, {}, { executionMode: "simulation" })(req({ amount: "0" })))
       .rejects.toThrow(/amount must be > 0/);
     expect(rail.settle).not.toHaveBeenCalled();
   });
@@ -889,10 +898,10 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       address: PAYER,
       settle: async (input) => {
         captured = input;
-        return payDemSettleCore(input, client);
+        return payDemSettleCore(input, client, undefined, undefined, { executionMode: "simulation" });
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { executionMode: "simulation" });
 
     await settle(req({ rail: "demos-native:DEM", jobId: "job-7", phaseIndex: 2 }));
 
@@ -922,7 +931,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         payee: RECIPIENT,
         amountOs: "1500000000",
       },
-    }), client)).rejects.toThrow(/settlementKey does not match/);
+    }), client, undefined, undefined, { executionMode: "simulation" })).rejects.toThrow(/settlementKey does not match/);
     expect(client.sent).toBeUndefined();
   });
 

@@ -654,7 +654,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
     expect(isAgreementDocument(signed)).toBe(true);
     const bytes = signedBytes(
       ARTIFACT_SEPARATORS.AgreementDocument,
-      contentHash(signed as unknown as Record<string, unknown>),
+      contentHash(signed as unknown as Record<string, unknown>, "signatures"),
     );
     for (const [signature, seed] of [
       [signed.signatures[0]!, BUYER_SEED],
@@ -706,7 +706,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       sellerSigner,
     );
     expect(sellerCalls).toBe(1);
-    expect(contentHash(signed as unknown as Record<string, unknown>)).toBe(
+    expect(contentHash(signed as unknown as Record<string, unknown>, "signatures")).toBe(
       contentHash(expectedDraft as unknown as Record<string, unknown>),
     );
     expect(signed.jobId).toBe(expectedDraft.jobId);
@@ -1009,7 +1009,6 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       nestedCursor = next;
     }
     for (const additionalTerms of [
-      { negativeZero: -0 },
       { nonFinite: Number.POSITIVE_INFINITY },
       { unsafeNumber: Number.MAX_SAFE_INTEGER + 1 },
       { loneSurrogate: "\ud800" },
@@ -1031,6 +1030,16 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
         }),
       ).toBe(false);
     }
+    // Structural readers admit CF-5 negative zero; local signing stays strict.
+    const receivedTerms = { ...signed.terms, additionalTerms: { negativeZero: -0 } };
+    expect(isAgreementDocument({ ...signed, terms: receivedTerms })).toBe(true);
+    let negativeZeroSigns = 0;
+    const signer = (party: string) => ({ party, algorithm: "ed25519" as const,
+      sign: () => { negativeZeroSigns++; return new Uint8Array(64); } });
+    const negativeDraft = deriveFixedPriceAgreement(input());
+    negativeDraft.terms.additionalTerms = { negativeZero: -0 };
+    await expect(signFixedPriceAgreement(negativeDraft, signer(BUYER), signer(SELLER))).rejects.toThrow(/stable canonical JSON/);
+    expect(negativeZeroSigns).toBe(0);
     expect(accessorCalls).toBe(0);
     expect(proxyCalls).toBe(0);
     const frozenTerms = Object.freeze({
@@ -1043,7 +1052,7 @@ describe("normative fixed-price agreement core (DACS-3 §8.4.1/§8.5)", () => {
       }),
     ).toBe(true);
     expect(() =>
-      contentHash(signed as unknown as Record<string, unknown>)
+      contentHash(signed as unknown as Record<string, unknown>, "signatures")
     ).not.toThrow();
 
     let invoked = 0;

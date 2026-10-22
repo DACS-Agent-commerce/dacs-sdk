@@ -1,3 +1,4 @@
+import { getListingReaderProvenance } from "../../../src/agent/listingValidation.js";
 import { generateKeyPairSync, sign } from "node:crypto";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -96,6 +97,7 @@ function fixture() {
     keys,
     draft,
     options: {
+      executionMode: "simulation" as const,
       draft,
       sellerAuthority: authority,
       sellerPublicKey: publicKey,
@@ -140,6 +142,7 @@ function payDemFixture() {
     ...value,
     draft,
     options: {
+      executionMode: "simulation" as const,
       draft,
       sellerAuthority: value.options.sellerAuthority,
       sellerPublicKey: value.options.sellerPublicKey,
@@ -199,12 +202,14 @@ async function publishedPayDemFixture() {
   };
   return {
     ...value,
+    listing,
     listingRef,
     listingContentHash,
     logicalAddress,
     options: {
       ...value.options,
       listingRef,
+      readAnchorBytes: async (locator: string) => locator === listingRef ? Buffer.from(JSON.stringify(listing)) : null,
       readAnchor: vi.fn(async (locator: string) => locator === listingRef
         ? listing as unknown as Record<string, unknown> : null),
       authenticateAnchor: vi.fn(async (input: { logicalAddress: string }) =>
@@ -289,21 +294,26 @@ describe("pay-dem Listing candidate doctor", () => {
 
   it("resolves the signed Listing through its authenticated discovery entry", async () => {
     const value = await publishedPayDemFixture();
-    await expect(resolveDacsPayDemExistingListingV1(value.options as never)).resolves
-      .toMatchObject({
-        status: "verified",
-        admission: {
-          listingRef: value.listingRef,
-          logicalAddress: value.logicalAddress,
-          listingContentHash: value.listingContentHash,
-          facts: {
-            network: "demos",
-            asset: "DEM",
-            amount: "0.5",
-            payee: value.options.sellerPayee,
-          },
+    const bytes = Buffer.from(JSON.stringify(value.listing, null, 2));
+    value.options.readAnchorBytes = async () => bytes;
+    const result = await resolveDacsPayDemExistingListingV1(value.options as never);
+    expect(result).toMatchObject({
+      status: "verified",
+      admission: {
+        listingRef: value.listingRef,
+        logicalAddress: value.logicalAddress,
+        listingContentHash: value.listingContentHash,
+        facts: {
+          network: "demos",
+          asset: "DEM",
+          amount: "0.5",
+          payee: value.options.sellerPayee,
         },
-      });
+      },
+    });
+    if (result.status !== "verified") throw new Error("fixture was not admitted");
+    expect(result.admission.validation?.receivedJsonBase64).toBe(bytes.toString("base64"));
+    expect(getListingReaderProvenance(result.admission.validation)).not.toBeNull();
     await expect(inspectDacsPayDemExistingListingV1(value.options as never)).resolves
       .toMatchObject({ status: "pass", facts: { railId: "demos-native:DEM" } });
   });
@@ -361,6 +371,7 @@ describe("existing x402 Listing doctor", () => {
       ...value.options,
       listingRef,
       now: 1_000,
+      readAnchorBytes: async (locator: string) => locator === listingRef ? Buffer.from(JSON.stringify(listing)) : null,
       readAnchor: vi.fn(async (locator: string) => locator === listingRef
         ? listing as unknown as Record<string, unknown> : null),
       authenticateAnchor: vi.fn(async (input: { logicalAddress: string }) =>
@@ -372,6 +383,8 @@ describe("existing x402 Listing doctor", () => {
 
   it("admits an exact receipt-authenticated Listing through its integrity-bound active index", async () => {
     const value = await publishedFixture();
+    const bytes = Buffer.from(JSON.stringify(value.listing, null, 2));
+    value.options.readAnchorBytes = async () => bytes;
     const result = await resolveDacsX402ExistingListingV1(value.options as never);
     expect(result).toMatchObject({
       status: "verified",
@@ -390,6 +403,8 @@ describe("existing x402 Listing doctor", () => {
     await expect(inspectDacsX402ExistingListingV1(value.options as never)).resolves
       .toMatchObject({ status: "pass", facts: { listingRef: value.listingRef } });
     if (result.status !== "verified") throw new Error("fixture was not admitted");
+    expect(result.admission.validation?.receivedJsonBase64).toBe(bytes.toString("base64"));
+    expect(getListingReaderProvenance(result.admission.validation)).not.toBeNull();
     expect(inspectDacsX402PurchaseCostV1({
       admission: result.admission,
       maximumServiceAmount: "0.75",

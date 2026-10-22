@@ -48,12 +48,17 @@ function hasIntrinsicConstructor(
  * graphs. Reject every JavaScript view that JSON/JCS would omit or alias before
  * taking an owned clone: accessors, proxies, sparse arrays, exotic prototypes,
  * symbols, `undefined`, negative zero, cycles, and unsupported scalar values.
+ *
+ * Negative zero is a local authoring alias only. CORE §B.2 admits it as a JSON
+ * number that serialises as `0`, so received data may opt in: the canonical
+ * snapshot below re-parses `0`, and the owned value never retains `-0`.
  */
 function isDataOnlyJson(
   value: unknown,
-  ancestors = new Set<object>(),
-  omitUndefinedObjectProperties = false,
-  allowReadOnlyDescriptors = false,
+  ancestors: Set<object>,
+  omitUndefinedObjectProperties: boolean,
+  allowReadOnlyDescriptors: boolean,
+  allowNegativeZero: boolean,
 ): boolean {
   if (value === null || typeof value === "boolean") {
     return true;
@@ -62,7 +67,7 @@ function isDataOnlyJson(
   if (typeof value === "number") {
     return (
       Number.isFinite(value) &&
-      !Object.is(value, -0) &&
+      (allowNegativeZero || !Object.is(value, -0)) &&
       Math.abs(value) <= Number.MAX_SAFE_INTEGER
     );
   }
@@ -117,6 +122,7 @@ function isDataOnlyJson(
             ancestors,
             omitUndefinedObjectProperties,
             allowReadOnlyDescriptors,
+            allowNegativeZero,
           )
         ) {
           return false;
@@ -147,6 +153,7 @@ function isDataOnlyJson(
               ancestors,
               omitUndefinedObjectProperties,
               allowReadOnlyDescriptors,
+              allowNegativeZero,
             ))
       ) {
         return false;
@@ -200,7 +207,19 @@ function cloneValidatedJson(
 
 /** Own one stable canonical JSON value without retaining caller references. */
 export function snapshotCanonicalJson<T>(value: T, label: string): T {
-  return snapshotCanonicalJsonInternal(value, label, false);
+  return snapshotCanonicalJsonInternal(value, label, false, false, false);
+}
+
+/**
+ * Own one received protocol artifact handed directly to a verifier or reader.
+ * This is {@link snapshotCanonicalJson} with one difference: CORE §B.2 admits
+ * negative zero as a JSON number that serialises as `0`, so a CF-5-admitted
+ * `-0.0` is owned as `0` instead of being refused as an authoring alias. The
+ * strict descriptor checks are kept: unlike {@link snapshotCanonicalJsonRead},
+ * it refuses read-only views such as those returned by storage/callback reads.
+ */
+export function snapshotCanonicalJsonReceived<T>(value: T, label: string): T {
+  return snapshotCanonicalJsonInternal(value, label, false, false, true);
 }
 
 /**
@@ -212,7 +231,7 @@ export function snapshotCanonicalJson<T>(value: T, label: string): T {
  * hidden properties, and exotic prototypes remain forbidden.
  */
 export function snapshotCanonicalJsonConfig<T>(value: T, label: string): T {
-  return snapshotCanonicalJsonInternal(value, label, true, true);
+  return snapshotCanonicalJsonInternal(value, label, true, true, false);
 }
 
 /**
@@ -222,12 +241,19 @@ export function snapshotCanonicalJsonConfig<T>(value: T, label: string): T {
  * at this boundary. Accessors, proxies, exotic prototypes, hidden properties,
  * unsupported scalars, cycles, sparse arrays, and `undefined` remain rejected.
  *
- * Keep authoring/signing inputs on {@link snapshotCanonicalJson}: accepting a
- * read-only view here is deliberately limited to values already returned from
- * an asynchronous read boundary.
+ * Received data may also carry negative zero, e.g. CF-5-admitted `-0.0`. CORE
+ * §B.2 serialises it as `0`, so the owned snapshot holds `0` and hashes,
+ * signed scopes and verifiers agree with the admitted bytes instead of failing.
+ *
+ * This is also the hashing boundary: `stripSignature`, `contentHash` and so
+ * `signArtifact` own every input here, so they normalise an in-memory `-0`.
+ * The authoring refusal of read-only views and `-0` applies only to
+ * {@link snapshotCanonicalJson} / `snapshotCanonicalJsonObject` callers such as
+ * `signComponentArtifact`, `buildComponentSignature` and
+ * `prepareChannelMessageSigningInput`.
  */
 export function snapshotCanonicalJsonRead<T>(value: T, label: string): T {
-  return snapshotCanonicalJsonInternal(value, label, false, true);
+  return snapshotCanonicalJsonInternal(value, label, false, true, true);
 }
 
 /**
@@ -241,14 +267,17 @@ export function snapshotCanonicalJsonRead<T>(value: T, label: string): T {
  * still reject accessors, proxies, exotic prototypes, sparse arrays, symbols,
  * unsupported scalars, cycles, hidden properties, and `undefined`; only the
  * subsequent JCS normalisation is omitted.
+ *
+ * Negative zero stays refused here: without re-parsing canonical bytes the
+ * owned clone would retain `-0` rather than the `0` it serialises as.
  */
 export function snapshotWireJsonRead<T>(value: T, label: string): T {
   try {
-    if (!isDataOnlyJson(value, new Set(), false, true)) {
+    if (!isDataOnlyJson(value, new Set(), false, true, false)) {
       throw new TypeError("not data-only JSON");
     }
     const snapshot = cloneValidatedJson(value, false) as T;
-    if (!isDataOnlyJson(snapshot)) {
+    if (!isDataOnlyJson(snapshot, new Set(), false, false, false)) {
       throw new TypeError("wire snapshot changed data shape");
     }
     if (JSON.stringify(snapshot) !== JSON.stringify(value)) {
@@ -264,7 +293,8 @@ function snapshotCanonicalJsonInternal<T>(
   value: T,
   label: string,
   omitUndefinedObjectProperties: boolean,
-  allowReadOnlyDescriptors = false,
+  allowReadOnlyDescriptors: boolean,
+  allowNegativeZero: boolean,
 ): T {
   try {
     if (
@@ -273,6 +303,7 @@ function snapshotCanonicalJsonInternal<T>(
         new Set(),
         omitUndefinedObjectProperties,
         allowReadOnlyDescriptors,
+        allowNegativeZero,
       )
     ) {
       throw new TypeError("not data-only JSON");
@@ -285,7 +316,10 @@ function snapshotCanonicalJsonInternal<T>(
     // CF-1 string-value normalization therefore happens exactly once at this
     // boundary; canonical member names are deliberately preserved.
     const snapshot = JSON.parse(canonical) as T;
-    if (!isDataOnlyJson(snapshot) || canonicalize(snapshot) !== canonical) {
+    if (
+      !isDataOnlyJson(snapshot, new Set(), false, false, false) ||
+      canonicalize(snapshot) !== canonical
+    ) {
       throw new TypeError("snapshot changed canonical bytes");
     }
     return snapshot;

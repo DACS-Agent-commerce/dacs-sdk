@@ -513,7 +513,7 @@ describe.skipIf(!RUN)("local-chain DACS lifecycle with two-sided bundles", () =>
                 publicClient.getTransactionReceipt({ hash: hash as `0x${string}` }),
               getBlock: ({ blockNumber }) => publicClient.getBlock({ blockNumber }),
             }),
-          },
+          }, undefined, { executionMode: "simulation" },
         );
         expect(settlement.ok).toBe(true);
         expect(settlement.txHash).toMatch(/^0x[0-9a-f]{64}$/);

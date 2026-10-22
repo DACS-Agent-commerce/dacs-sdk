@@ -1,4 +1,5 @@
 import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
+import { RawJsonAdmissionError } from '@kynesyslabs/dacs';
 // Independent listing verification: directory hint -> chain readback -> SDK reader.
 // A listing is transactable only when every check passes; each check is
 // reported explicitly so the model (and user) can see exactly what held.
@@ -57,6 +58,9 @@ export function createListingVerifier({ directory, chain, now = () => Date.now()
       if(reused)await observeBinding?.();
       readback ??= await chain.readStorageProgram(summary.anchor.locator);
     } catch (error) {
+      // CF-5 rejection is an invalid artifact, not a transport outage. Preserve
+      // its code and stage before the SDK's later live-profile gate can run.
+      if (error instanceof RawJsonAdmissionError || error?.cause instanceof RawJsonAdmissionError) throw error;
       readback = { status: 'unavailable', reason: error.message };
     }
     const sellerAddress = addressForClaim(seller);

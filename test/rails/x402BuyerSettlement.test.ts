@@ -488,7 +488,7 @@ describe("advanceX402BuyerSettlement", () => {
         return { disposition: "response", disclosure: disclosure() };
       }),
       now: () => 1_000,
-    });
+    }, { executionMode: "simulation" });
     expect(submits).toBe(1);
     expect(result.status).toBe("captured");
     expect(await store.load(intent.settlementKey)).toMatchObject({
@@ -513,7 +513,7 @@ describe("advanceX402BuyerSettlement", () => {
         return { disposition: "response", disclosure: disclosure() };
       }),
       now: () => 1_000,
-    });
+    }, { executionMode: "simulation" });
     expect(result).toEqual({ status: "indeterminate", reason: "ledger-unavailable" });
     expect(await store.load(intent.settlementKey)).toMatchObject({
       status: "held",
@@ -546,7 +546,7 @@ describe("advanceX402BuyerSettlement", () => {
         return { disposition: "response", disclosure: disclosure() };
       }),
       now: () => 1_000,
-    });
+    }, { executionMode: "simulation" });
     expect(result.status).toBe("captured");
     expect(submits).toBe(1);
     expect(await baseStore.load(intent.settlementKey)).toMatchObject({ status: "captured" });
@@ -571,7 +571,7 @@ describe("advanceX402BuyerSettlement", () => {
       }),
       now: () => now,
       leaseDurationMs: 10,
-    });
+    }, { executionMode: "simulation" });
     expect(result).toEqual({
       status: "indeterminate",
       reason: "authorization-reconciliation-unavailable",
@@ -602,7 +602,7 @@ describe("advanceX402BuyerSettlement", () => {
         return { disposition: "response", disclosure: disclosure() };
       }),
       now: () => 1_000,
-    });
+    }, { executionMode: "simulation" });
     expect(result).toEqual({
       status: "indeterminate",
       reason: "intent-authorization-binding-mismatch",
@@ -638,7 +638,7 @@ describe("advanceX402BuyerSettlement", () => {
       }),
       now: () => now,
       leaseDurationMs: 10,
-    });
+    }, { executionMode: "simulation" });
     expect(first.status).toBe("indeterminate");
 
     now = 1_011;
@@ -667,7 +667,7 @@ describe("advanceX402BuyerSettlement", () => {
       }),
       now: () => now,
       leaseDurationMs: 10,
-    });
+    }, { executionMode: "simulation" });
     expect(second).toEqual({
       status: "indeterminate",
       reason: "settlement-outcome-write-indeterminate",
@@ -689,7 +689,7 @@ describe("advanceX402BuyerSettlement", () => {
       }),
       now: () => now,
       leaseDurationMs: 10,
-    });
+    }, { executionMode: "simulation" });
     expect(third.status).toBe("captured");
     expect(submits).toBe(1);
   });
@@ -717,7 +717,7 @@ describe("advanceX402BuyerSettlement", () => {
         disclosure: disclosure(),
       })),
       now: () => 1_000,
-    });
+    }, { executionMode: "simulation" });
     expect(result.status).toBe("captured");
     expect(await baseStore.load(intent.settlementKey)).toMatchObject({ status: "captured" });
   });
@@ -741,7 +741,7 @@ describe("advanceX402BuyerSettlement", () => {
       }),
       now: () => now,
       leaseDurationMs: 100,
-    });
+    }, { executionMode: "simulation" });
     expect(first.status).toBe("indeterminate");
     now = 1_101;
     const generations: number[] = [];
@@ -774,7 +774,7 @@ describe("advanceX402BuyerSettlement", () => {
       }),
       now: () => now,
       leaseDurationMs: 100,
-    });
+    }, { executionMode: "simulation" });
     expect(second.status).toBe("captured");
     expect(submits).toBe(2);
     expect(generations).toEqual([2, 3, 3]);
@@ -799,7 +799,7 @@ describe("advanceX402BuyerSettlement", () => {
         }),
         now: () => now,
         leaseDurationMs: 10,
-      });
+      }, { executionMode: "simulation" });
       now = 1_011;
       const result = await advanceX402BuyerSettlement({
         intent,
@@ -816,7 +816,7 @@ describe("advanceX402BuyerSettlement", () => {
         }),
         now: () => now,
         leaseDurationMs: 10,
-      });
+      }, { executionMode: "simulation" });
       expect(result).toMatchObject({
         status: "failed",
         outcome: { failure: disposition },
@@ -844,7 +844,7 @@ describe("advanceX402BuyerSettlement", () => {
       }),
       now: () => now,
       leaseDurationMs: 10,
-    });
+    }, { executionMode: "simulation" });
     now = 1_011;
     const result = await advanceX402BuyerSettlement({
       intent,
@@ -870,7 +870,7 @@ describe("advanceX402BuyerSettlement", () => {
       }),
       now: () => now,
       leaseDurationMs: 10,
-    });
+    }, { executionMode: "simulation" });
     expect(result.status).toBe("indeterminate");
     expect(submits).toBe(1);
   });
@@ -919,7 +919,7 @@ describe("advanceX402BuyerSettlement", () => {
           disclosure: disclosure(),
         })),
         now: () => 1_000,
-      });
+      }, { executionMode: "simulation" });
       expect(result).toEqual({
         status: "indeterminate",
         reason: "settled-same-capture-invalid",
@@ -945,7 +945,7 @@ describe("advanceX402BuyerSettlement", () => {
         return { disposition: "indeterminate", reason: "unexpected" };
       }),
       now: () => 1_001,
-    })).rejects.toThrow(/binding hash/);
+    }, { executionMode: "simulation" })).rejects.toThrow(/binding hash/);
     expect(submits).toBe(0);
     expect((await store.load(intent.settlementKey) as { intent: X402BuyerSettlementIntent }).intent)
       .toEqual(intent);
@@ -1106,7 +1106,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
       }),
       now: () => now,
       leaseDurationMs: 100,
-    });
+    }, { executionMode: "simulation" });
     expect(first.status).toBe("indeterminate");
 
     now = 1_101;
@@ -1125,7 +1125,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
       }),
       now: () => now,
       leaseDurationMs: 100,
-    });
+    }, { executionMode: "simulation" });
     expect(recovered.status).toBe("captured");
     expect(submits).toBe(1);
     expect(await restarted.load(intent.settlementKey)).toMatchObject({ status: "captured" });
@@ -1165,7 +1165,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
       }),
       now: () => now,
       leaseDurationMs: 100,
-    });
+    }, { executionMode: "simulation" });
     expect(first).toEqual({ status: "indeterminate", reason: "settlement-not-finalized" });
     await expect(firstStore.load(intent.settlementKey)).resolves.toMatchObject({
       status: "held",
@@ -1203,7 +1203,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
       }),
       now: () => now,
       leaseDurationMs: 100,
-    });
+    }, { executionMode: "simulation" });
     expect(recovered.status).toBe("captured");
     expect(submits).toBe(1);
   });
@@ -1229,7 +1229,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
       }),
       now: () => now,
       leaseDurationMs: 100,
-    });
+    }, { executionMode: "simulation" });
     expect(first.status).toBe("indeterminate");
 
     now = 1_101;
@@ -1249,7 +1249,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
       }),
       now: () => now,
       leaseDurationMs: 100,
-    });
+    }, { executionMode: "simulation" });
     expect(recovered).toMatchObject({
       status: "failed",
       outcome: {
@@ -1289,7 +1289,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
       transport: paidTransport,
       now: () => 1_000,
       leaseDurationMs: 1_000,
-    });
+    }, { executionMode: "simulation" });
     await started;
     const right = await advanceX402BuyerSettlement({
       intent,
@@ -1299,7 +1299,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
       transport: paidTransport,
       now: () => 1_000,
       leaseDurationMs: 1_000,
-    });
+    }, { executionMode: "simulation" });
     expect(right.status).toBe("waiting");
     releaseResolve();
     expect((await left).status).toBe("captured");
@@ -1378,7 +1378,7 @@ describe("filesystem x402 buyer settlement recovery", () => {
           transport: paidTransport,
           now: () => 1_000,
           leaseDurationMs: 10_000,
-        })));
+        }, { executionMode: "simulation" })));
 
       expect(submits).toBe(1);
       expect(results.filter((result) => result.status === "waiting")).toHaveLength(7);

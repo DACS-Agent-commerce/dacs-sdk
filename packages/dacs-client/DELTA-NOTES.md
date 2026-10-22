@@ -3,6 +3,14 @@
 Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. Package exports remain empty.
 Commit subjects below are exact, unique Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. PROVENANCE.json remains the immutable original copy inventory.
 
+## D16 — Preserve admission failures at the corrective profile boundary
+
+- `src/dacs/verification.mjs`: propagate a chain read's CF-5 admission error with its original code and stage. Treating rejected JSON as a transport outage let the SDK's later profile refusal hide `DUPLICATE-MEMBER`; canonicalization still runs only after raw admission.
+- `test/ingress-admission.test.mjs`: require `DUPLICATE-MEMBER` at the profile stage for duplicate signed Listing members from both Directory and storage ingress. Neither path can return a verified or transactable result.
+- `test/sweep-contracts.test.mjs`: require the specific `UnsupportedCapabilityError` for the unreleased JID-1 profile for all five caller-supplied rail availability labels. This refusal precedes the ordered reader's disposition and returns no purchase eligibility. The independent `purchaseSupport(...).supported === false` and disabled DEM rail assertions remain.
+
+The private package's reciprocal freeze pins and delta records are updated together. Purchase and release authority remain held.
+
 ## D10 — Strip unused modes
 
 Plan row: “The engine's fixture and simulated-devnet profiles exist only for the in-process demo. Delete them instead of moving them.”

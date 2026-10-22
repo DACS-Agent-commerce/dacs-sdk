@@ -383,7 +383,9 @@ function verifyEd25519ArtifactSignature(
   try {
     return signature.algorithm === "ed25519" && signer === expectedSigner &&
       ed25519Verify(
-        signedBytes(separator, contentHash(artifact)),
+        signedBytes(separator, contentHash(artifact,
+          separator === ARTIFACT_SEPARATORS.AgreementDocument ||
+          separator === ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument ? "signatures" : "signature")),
         Uint8Array.from(Buffer.from(signature.value, "base64url")),
         publicKeyFromRaw(rawKey),
       );
@@ -4436,7 +4438,7 @@ async function publishAndVerifySellerSettlement(input: {
         ),
       ]);
       if (!agreementReadback || !agreementReceiptValid ||
-          contentHash(agreementReadback) !== input.agreement.agreementHash ||
+          contentHash(agreementReadback, "signatures") !== input.agreement.agreementHash ||
           canonicalize(agreementReadback) !== canonicalize(input.agreement.agreement)) {
         return { disposition: "fail", reason: "settlement-agreement-binding-invalid" };
       }

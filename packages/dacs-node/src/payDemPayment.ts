@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import { types as nodeTypes } from "node:util";
 
 import {
@@ -158,7 +159,7 @@ export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | { status: "operator-action"; reasonCode: string }
 >;
 
-export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
+export interface DacsPayDemBuyerPaymentTrackOptionsV1 extends ProfileExecutionPolicy {
   database: DacsNodeSqliteDatabase;
   workerId: string;
   rail: Readonly<PayDemRail>;
@@ -753,6 +754,7 @@ function captureChainReconciliation(
 export function createDacsPayDemBuyerPaymentTrackV1(
   options: Readonly<DacsPayDemBuyerPaymentTrackOptionsV1>,
 ): FixedPricePayDemTrackOperation {
+  requireAdmissibleProfile(options);
   if (!plainObject(options) || !text(options.workerId) ||
       !plainObject(options.rail) || typeof options.rail.settle !== "function" ||
       canonicalAddress(options.rail.address) === null ||

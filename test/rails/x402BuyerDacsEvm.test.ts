@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import {
   decodePaymentSignatureHeader,
@@ -127,7 +128,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
         client,
         fetchImpl: transport.fetchImpl,
         transportPolicy: { mode: "insecure-test" },
-      },
+      }, { executionMode: "simulation" },
     );
 
     expect(result.disposition).toBe("prepared");
@@ -188,7 +189,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
         client,
         fetchImpl: challengeFetch(challenge([wireRequirements])).fetchImpl,
         transportPolicy: { mode: "insecure-test" },
-      },
+      }, { executionMode: "simulation" },
     );
     expect(result.disposition).toBe("prepared");
     if (result.disposition === "prepared") {
@@ -260,7 +261,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
         client: stockChallengeClient,
         fetchImpl: challengeFetch(paymentRequired).fetchImpl,
         transportPolicy: { mode: "insecure-test" },
-      },
+      }, { executionMode: "simulation" },
     );
     expect(result).toEqual({
       disposition: "rejected",
@@ -300,7 +301,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
           client,
           fetchImpl: challengeFetch(paymentRequired).fetchImpl,
           transportPolicy: { mode: "insecure-test" },
-        },
+        }, { executionMode: "simulation" },
       );
       expect(result, label).toEqual({
         disposition: "rejected",
@@ -335,7 +336,7 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
         client,
         fetchImpl: challengeFetch(paymentRequired).fetchImpl,
         transportPolicy: { mode: "insecure-test" },
-      },
+      }, { executionMode: "simulation" },
     );
     expect(result.disposition).toBe("prepared");
     if (result.disposition === "prepared") {
@@ -400,4 +401,11 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
       .rejects.toThrow(/plain data record/);
     expect(proxyTraps).toBe(0);
   });
+});
+
+// Exercise connected adapter internals with local fixtures. The independent
+// profileAdmission suite pins refusal at the real public boundary.
+vi.mock("../../src/profile.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/profile.js")>();
+  return { ...actual, requireAdmissibleProfile: vi.fn() };
 });

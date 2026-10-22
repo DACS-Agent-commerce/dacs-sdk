@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "../profile.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
@@ -315,7 +316,9 @@ export async function x402SettleCore(
   params: X402SettleParams,
   deps: X402SettleCoreDeps,
   effectFence?: Readonly<X402PaidEffectFence>,
+  policy: ProfileExecutionPolicy = {},
 ): Promise<SettleResult> {
+  requireAdmissibleProfile(policy);
   // Snapshot caller-owned policy and transport scalars before the first
   // callback. A callback may retain the original params object; it must not be
   // able to change the amount, endpoint, token or confirmation depth after the
@@ -671,6 +674,7 @@ export async function verifyDacsX402AuthorizationNonce(
  * SDK core stays importable without the rail's chain deps installed.
  */
 export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> {
+  requireAdmissibleProfile({});
   const evmPrivateKey = config.evmPrivateKey;
   const configuredFetchImpl = config.fetchImpl;
   const configuredTransportPolicy = snapshotX402OutboundTransportPolicyV1(
@@ -879,6 +883,9 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
 }
 
 /**
+ * The unreleased profile permits only explicit `executionMode: "simulation"`
+ * options with locally injected rails; connected wallet rails are refused.
+ *
  * Bridge an X402Rail to the runSession `settle` seam. The paywall coordinates
  * (url / network / recipientEvm / token) are static for the rail — resolved
  * from the listing + the steward rail descriptor — while runSession supplies the
@@ -899,8 +906,9 @@ export function x402Settle(
     asset: string;
     phaseIndex?: number;
   },
-  opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
+  opts: ProfileExecutionPolicy & { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
 ): (req: SettleRequest) => Promise<SettleResult> {
+  requireAdmissibleProfile(opts);
   const store = opts.store ?? createIdempotencyStore();
   const paywallUrl = paywall.url;
   const network = paywall.network;

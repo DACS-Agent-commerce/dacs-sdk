@@ -777,7 +777,7 @@ export function durableRfqLifecycleRecordViolation<TSignature = unknown>(
         if (
           record.agreement.contributions.length !== 2 ||
           !isAgreementArtifact(record.agreement.finalized) ||
-          contentHash(record.agreement.finalized as unknown as DataRecord) !==
+          contentHash(record.agreement.finalized as unknown as DataRecord, "signatures") !==
             record.agreement.plan.agreementHash ||
           canonicalize(record.agreement.finalized.signatures) !==
             canonicalize(signatures)

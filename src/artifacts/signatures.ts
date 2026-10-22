@@ -231,8 +231,7 @@ function snapshotReadArtifact<T extends object>(artifact: T): T {
 function assertUnsignedComponentArtifact(artifact: object): void {
   const record = asRecord(artifact);
   if (
-    Object.prototype.hasOwnProperty.call(record, "signature") ||
-    Object.prototype.hasOwnProperty.call(record, "signatures")
+    Object.prototype.hasOwnProperty.call(record, "signature")
   ) {
     throw new DacsError(
       "component-signature signing requires an unsigned artifact with no signature field",
@@ -403,11 +402,8 @@ export async function signComponentArtifact<T extends object>(
 
 /**
  * Verify one standalone ComponentSignature. The signed scope is reconstructed
- * from the complete artifact as received, omitting only signature field(s), so
- * unknown artifact fields remain hash-bound as required by SIG-5. As a
- * deliberate SDK fail-closed rule, an object carrying both singular `signature`
- * and plural `signatures` fields is rejected as ambiguous and must use its
- * artifact-specific multi-signature verifier instead.
+ * from the complete artifact as received, omitting only the singular signature field, so
+ * unknown artifact fields remain hash-bound as required by SIG-5.
  */
 export async function verifyComponentSignature<TKey>(
   artifact: Record<string, unknown>,
@@ -437,10 +433,6 @@ export async function verifyComponentSignature<TKey>(
   if (!Object.prototype.hasOwnProperty.call(artifactSnapshot, "signature")) {
     return { status: "missing" };
   }
-  if (Object.prototype.hasOwnProperty.call(artifactSnapshot, "signatures")) {
-    return { status: "malformed", reason: "ambiguous-signature-fields" };
-  }
-
   const rawSignature = artifactSnapshot.signature;
   const malformedReason = signatureShapeReason(rawSignature);
   if (malformedReason) {
@@ -543,7 +535,7 @@ export async function verifyComponentSignature<TKey>(
 
   let payload: Uint8Array;
   try {
-    // contentHash omits the signature field(s) but preserves every unknown
+    // contentHash omits the singular signature field but preserves every unknown
     // artifact field, which is the SIG-5 signed scope required here.
     payload = signedBytes(separator, contentHash(artifactSnapshot));
   } catch {

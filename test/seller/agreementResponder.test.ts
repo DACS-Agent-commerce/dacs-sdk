@@ -349,7 +349,7 @@ describe("durable seller fixed-price agreement proposal responder", () => {
       [h.request.buyerContribution, first.result.sellerContribution],
       h.durability.verifyContribution,
     );
-    expect(contentHash(agreement as unknown as Record<string, unknown>)).toBe(
+    expect(contentHash(agreement as unknown as Record<string, unknown>, "signatures")).toBe(
       h.request.plan.agreementHash,
     );
     expect(agreement.signatures.map((value) => value.party)).toEqual([BUYER, SELLER]);

@@ -96,7 +96,7 @@ async function preparedIntent() {
       client: client(),
       transportPolicy: { mode: "insecure-test" },
       fetchImpl: async () => new Response(JSON.stringify(challenge), { status: 402 }),
-    },
+    }, { executionMode: "simulation" },
   );
   if (result.disposition !== "prepared") throw new Error(result.reason);
   return result.intent;
@@ -123,7 +123,7 @@ describe("prepareX402BuyerSettlement", () => {
             accepts: [requirements({ amount: "999" }), requirements()],
           }), { status: 402 });
         },
-      },
+      }, { executionMode: "simulation" },
     );
 
     expect(result.disposition).toBe("prepared");
@@ -162,7 +162,7 @@ describe("prepareX402BuyerSettlement", () => {
           client: client(counters),
           transportPolicy: { mode: "insecure-test" },
           fetchImpl: async () => new Response(JSON.stringify(challenge), { status: 402 }),
-        },
+        }, { executionMode: "simulation" },
       );
       expect(result).toEqual({
         disposition: "rejected",
@@ -179,7 +179,7 @@ describe("prepareX402BuyerSettlement", () => {
         client: client(),
         transportPolicy: { mode: "insecure-test" },
         fetchImpl: async () => { throw new Error("lost"); },
-      },
+      }, { executionMode: "simulation" },
     )).resolves.toEqual({
       disposition: "indeterminate",
       reason: "x402-challenge-unavailable",
@@ -189,7 +189,7 @@ describe("prepareX402BuyerSettlement", () => {
         authority: authority(),
         challengeHeaders: { "PAYMENT-SIGNATURE": "caller-bearer" },
       },
-      { client: client() },
+      { client: client() }, { executionMode: "simulation" },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-challenge-headers-invalid",
@@ -200,7 +200,7 @@ describe("prepareX402BuyerSettlement", () => {
     const fetchImpl = vi.fn(async () => new Response("must not run"));
     await expect(prepareX402BuyerSettlement(
       { authority: authority() },
-      { client: client(), fetchImpl: fetchImpl as typeof fetch },
+      { client: client(), fetchImpl: fetchImpl as typeof fetch }, { executionMode: "simulation" },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-challenge-dependencies-invalid",
@@ -219,7 +219,7 @@ describe("prepareX402BuyerSettlement", () => {
           resolveHost: async () => ["8.8.8.8", "127.0.0.1"],
           request,
         },
-      },
+      }, { executionMode: "simulation" },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-challenge-resource-unsafe",
@@ -241,14 +241,14 @@ describe("prepareX402BuyerSettlement", () => {
     });
     await expect(prepareX402BuyerSettlement(
       { authority: malformed as never },
-      { client: client(counters) },
+      { client: client(counters) }, { executionMode: "simulation" },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-settlement-authority-invalid",
     });
     await expect(prepareX402BuyerSettlement(
       { authority: new Proxy(authority(), {}) },
-      { client: client(counters) },
+      { client: client(counters) }, { executionMode: "simulation" },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-settlement-authority-invalid",
@@ -272,7 +272,7 @@ describe("prepareX402BuyerSettlement", () => {
         client: original,
         transportPolicy: { mode: "insecure-test" },
         fetchImpl: async () => responseGate,
-      },
+      }, { executionMode: "simulation" },
     );
     original.getPaymentRequiredResponse = substituted;
     original.createPaymentPayload = substituted as never;
@@ -303,7 +303,7 @@ describe("prepareX402BuyerSettlement", () => {
         client: accessorClient as unknown as X402BuyerChallengeClient,
         transportPolicy: { mode: "insecure-test" },
         fetchImpl: fetchImpl as typeof fetch,
-      },
+      }, { executionMode: "simulation" },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-challenge-dependencies-invalid",
@@ -334,7 +334,7 @@ describe("prepareX402BuyerSettlement", () => {
           resource: { url: RESOURCE },
           accepts: [requirements()],
         }), { status: 402 }),
-      },
+      }, { executionMode: "simulation" },
     )).resolves.toEqual({
       disposition: "rejected",
       reason: "x402-payment-signature-invalid",
@@ -366,7 +366,7 @@ describe("createX402BuyerPaidRequestTransport", () => {
           headers: { "PAYMENT-RESPONSE": "retained-settlement-header" },
         });
       },
-    });
+    }, { executionMode: "simulation" });
     baseHeaders.set("accept", "application/mutated+json");
     const fence: X402BuyerEffectFence = {
       owner: "buyer-worker",
@@ -403,14 +403,14 @@ describe("createX402BuyerPaidRequestTransport", () => {
     const noHeader = createX402BuyerPaidRequestTransport({
       transportPolicy: { mode: "insecure-test" },
       fetchImpl: async () => new Response(null, { status: 200 }),
-    });
+    }, { executionMode: "simulation" });
     await expect(noHeader.submitRetained(intent, fence)).resolves.toEqual({
       disposition: "response",
     });
     const lost = createX402BuyerPaidRequestTransport({
       transportPolicy: { mode: "insecure-test" },
       fetchImpl: async () => { throw new Error("response lost"); },
-    });
+    }, { executionMode: "simulation" });
     await expect(lost.submitRetained(intent, fence)).resolves.toEqual({
       disposition: "indeterminate",
       reason: "x402-paid-request-response-indeterminate",
@@ -436,7 +436,7 @@ describe("createX402BuyerPaidRequestTransport", () => {
           });
         },
       },
-    });
+    }, { executionMode: "simulation" });
     const fence: X402BuyerEffectFence = {
       owner: "buyer-worker",
       generation: 4,
@@ -462,7 +462,7 @@ describe("createX402BuyerPaidRequestTransport", () => {
         resolveHost: async () => ["169.254.169.254"],
         request,
       },
-    });
+    }, { executionMode: "simulation" });
     await expect(transport.submitRetained(intent, {
       owner: "buyer-worker",
       generation: 1,
@@ -481,13 +481,13 @@ describe("createX402BuyerPaidRequestTransport", () => {
   test("rejects caller-supplied payment headers at construction", () => {
     expect(() => createX402BuyerPaidRequestTransport({
       headers: { "X-PAYMENT": "legacy-bearer" },
-    })).toThrow(/stable Accept header/);
+    }, { executionMode: "simulation" })).toThrow(/stable Accept header/);
   });
 
   test("requires explicit insecure-test authority for a paid fetch override", () => {
     expect(() => createX402BuyerPaidRequestTransport({
       fetchImpl: async () => new Response(null, { status: 200 }),
-    })).toThrow(/explicit insecure-test mode/);
+    }, { executionMode: "simulation" })).toThrow(/explicit insecure-test mode/);
   });
 
   test("captures the exact durable intent and fence before DNS can yield", async () => {
@@ -524,7 +524,7 @@ describe("createX402BuyerPaidRequestTransport", () => {
         },
         request,
       },
-    });
+    }, { executionMode: "simulation" });
     const fence: X402BuyerEffectFence = {
       owner: "buyer-worker",
       generation: 4,
@@ -563,7 +563,7 @@ describe("createX402BuyerPaidRequestTransport", () => {
         resolveHost,
         request: async () => new Response(null, { status: 200 }),
       },
-    });
+    }, { executionMode: "simulation" });
     const safeFence: X402BuyerEffectFence = {
       owner: "buyer-worker",
       generation: 1,
@@ -628,7 +628,7 @@ describe("createX402BuyerRetainedDisclosureRecovery", () => {
           headers: { "PAYMENT-RESPONSE": "recovered-settlement-header" },
         });
       },
-    });
+    }, { executionMode: "simulation" });
 
     await expect(recover({
       intent,
@@ -657,7 +657,7 @@ describe("createX402BuyerRetainedDisclosureRecovery", () => {
     const headerless = createX402BuyerRetainedDisclosureRecovery({
       transportPolicy: { mode: "insecure-test" },
       fetchImpl: async () => new Response(null, { status: 200 }),
-    });
+    }, { executionMode: "simulation" });
     await expect(headerless({
       intent,
       transactionHash: `0x${"ab".repeat(32)}`,
@@ -666,7 +666,7 @@ describe("createX402BuyerRetainedDisclosureRecovery", () => {
     const lost = createX402BuyerRetainedDisclosureRecovery({
       transportPolicy: { mode: "insecure-test" },
       fetchImpl: async () => { throw new Error("response lost"); },
-    });
+    }, { executionMode: "simulation" });
     await expect(lost({
       intent,
       transactionHash: `0x${"ab".repeat(32)}`,

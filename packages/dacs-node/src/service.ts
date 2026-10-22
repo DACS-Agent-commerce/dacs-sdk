@@ -1,3 +1,4 @@
+import { requireAdmissibleProfile, type ProfileExecutionPolicy } from "@kynesyslabs/dacs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
@@ -169,7 +170,7 @@ export type DacsLiveRolePublicRequestHandlerV1 = (
   response: ServerResponse,
 ) => Promise<boolean> | boolean;
 
-export interface DacsLiveRoleServiceOptionsV1 {
+export interface DacsLiveRoleServiceOptionsV1 extends ProfileExecutionPolicy {
   config: unknown;
   database: DacsNodeSqliteDatabase;
   workerId: string;
@@ -357,6 +358,7 @@ function captureServiceOptions(
     "signTransportEnvelope",
     "handleMessage",
   ], [
+    "executionMode",
     "createOperations",
     "createPayDemOperations",
     "handleApplicationRequest",
@@ -584,6 +586,8 @@ export function createDacsLiveRoleServiceV1(
   rawOptions: Readonly<DacsLiveRoleServiceOptionsV1>,
 ): Readonly<DacsLiveRoleServiceV1> {
   const options = captureServiceOptions(rawOptions);
+  // These resources own live transport/storage authority; labels cannot release it.
+  requireAdmissibleProfile({});
   const config = validateDacsAgentConfig(options.config);
   if (config.mode !== "live-demos" || config.profile !== DACS_NODE_LIVE_PROFILE ||
       (config.role !== "buyer" && config.role !== "seller")) {
@@ -974,12 +978,14 @@ export function createDacsLiveRoleServiceV1(
     ? undefined
     : role === "buyer"
       ? createFixedPriceX402BuyerCoordinator({
+          executionMode: options.executionMode,
           store: x402CoordinatorStore!,
           workerId,
           operations: x402Operations,
           leaseDurationMs: coordinatorLeaseDurationMs,
         })
       : createFixedPriceX402SellerCoordinator({
+          executionMode: options.executionMode,
           store: x402CoordinatorStore!,
           workerId,
           operations: x402Operations,
@@ -989,12 +995,14 @@ export function createDacsLiveRoleServiceV1(
     ? undefined
     : role === "buyer"
       ? createFixedPricePayDemBuyerCoordinator({
+          executionMode: options.executionMode,
           store: payDemCoordinatorStore!,
           workerId,
           operations: payDemOperations,
           leaseDurationMs: coordinatorLeaseDurationMs,
         })
       : createFixedPricePayDemSellerCoordinator({
+          executionMode: options.executionMode,
           store: payDemCoordinatorStore!,
           workerId,
           operations: payDemOperations,

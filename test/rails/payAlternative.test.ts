@@ -155,7 +155,9 @@ function verifySignature(
     return false;
   }
   try {
-    const base = stripSignature(artifact);
+    const base = stripSignature(artifact,
+      domain === "dacs-payee-bound-agreement:v1:" || domain === "dacs-evidence-bound-fault-bundle:v1:"
+        ? "signatures" : "signature");
     const scope = Object.fromEntries(
       Object.entries(base).filter(([key]) => !omit.includes(key)),
     );
@@ -462,7 +464,7 @@ async function evaluate(
       },
       () => {
         effects.walletAuthorizations += 1;
-      },
+      }, { executionMode: "simulation" },
     );
     return { verdict: "pass" };
   }
@@ -817,7 +819,7 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
         committedAt: now,
         alternativePayment: { projection: signedProjection, replacement },
       }).agreementHash,
-    ).toBe(contentHash(signed as unknown as Record<string, unknown>));
+    ).toBe(contentHash(signed as unknown as Record<string, unknown>, "signatures"));
   });
 
   test("forged projection/replacement objects cannot reach a wallet", async () => {
@@ -835,7 +837,7 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
         },
         () => {
           calls += 1;
-        },
+        }, { executionMode: "simulation" },
       ),
     ).rejects.toThrow(/authenticated APR projection/);
     expect(calls).toBe(0);
@@ -858,7 +860,7 @@ describe("DACS-4 APR-1..APR-8 alternative payment projection", () => {
         { projection: second.projection, replacement: first.replacement },
         () => {
           calls += 1;
-        },
+        }, { executionMode: "simulation" },
       ),
     ).rejects.toThrow(/authenticated APR projection/);
     expect(calls).toBe(0);

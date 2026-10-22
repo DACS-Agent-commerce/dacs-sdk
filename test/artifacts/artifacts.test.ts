@@ -186,7 +186,7 @@ describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
     const valid = JSON.parse(readFileSync(EV_FIXTURE, "utf8")).evidence;
     expect(isSettlementEvidence(valid)).toBe(true);
     expect(isSettlementEvidence({ ...valid, signature: "deadbeef" })).toBe(false);
-    expect(isSettlementEvidence({ ...valid, signatures: [] })).toBe(false);
+    expect(isSettlementEvidence({ ...valid, signatures: [] })).toBe(true);
     expect(
       isSettlementEvidence({
         ...valid,

@@ -1024,7 +1024,7 @@ function agreementBinding(
   }
   return {
     agreementHash: contentHash(
-      agreement as unknown as Record<string, unknown>,
+      agreement as unknown as Record<string, unknown>, "signatures",
     ),
     pin: authenticated.pin,
     parties: [
@@ -1182,7 +1182,7 @@ function validateAgreementBindingForPattern(
   }
   return {
     agreementHash: contentHash(
-      agreement as unknown as Record<string, unknown>,
+      agreement as unknown as Record<string, unknown>, "signatures",
     ),
     pin,
     parties: [buyer.primaryClaim, seller.primaryClaim],
@@ -1304,7 +1304,7 @@ async function verifyAgreementSignatures(
       : "dacs-payee-bound-agreement:v1:";
   const bytes = signedBytes(
     separator,
-    contentHash(agreement as unknown as Record<string, unknown>),
+    contentHash(agreement as unknown as Record<string, unknown>, "signatures"),
   );
   // The captured Agreement has exactly two required signatures. Iterate this
   // owned fixed-length snapshot so a verifier cannot remove the second check.
