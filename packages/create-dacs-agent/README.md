@@ -65,11 +65,12 @@ npm run dacs:uninstall -- --backup ../backups/final-YYYYMMDD
 
 Backup manifests are HMAC-authenticated by a separate operator key, contain
 independent buyer/seller trees, and are rehashed before restore. Restore checks
-that the backup was created by this or an earlier SDK release (so the supported
-upgrade procedure can restore a backup taken before it) and checks Standard,
-configuration and SQLite migration compatibility. It refuses a backup from a
-newer or unparseable SDK version and names both versions in the error; for
-rollback, reinstall the retained project and its exact lockfile with `npm ci`
+that the backup was created by the exact running SDK release, including build
+metadata, and checks Standard, configuration and SQLite migration compatibility.
+Actor databases bind to the creating SDK version; cross-release actor-data
+migration is unsupported. Restore refuses other or unparseable SDK versions and
+names both versions in the error. For rollback, reinstall the retained project
+and its exact lockfile with `npm ci`
 first. Restore requires its
 own ephemeral confirmation, creates a safety backup, and rolls both role trees
 back on a partial replacement. Uninstall is deliberately a non-destructive

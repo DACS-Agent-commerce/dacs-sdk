@@ -213,3 +213,19 @@ describe("payD402Settle bridge destination binding", () => {
     expect(calls).toBe(0);
   });
 });
+
+
+test("D402 session bridge refuses before paying even when preview terms match", () => {
+  let calls = 0;
+  const rail: PayD402Rail = {
+    address: PAYER,
+    settle: async () => { calls += 1; throw new Error("must not pay"); },
+  };
+  const settle = payD402Settle(rail, { url: URL, recipient: RECIPIENT });
+  expect(() => settle({
+    rail: "pay-d402", phase: "pay-d402", amount: "1", asset: "DEM",
+    payee: "did:demos:seller", expectedPayee: RECIPIENT,
+    jobId: "01JZ0000000000000000000360",
+  })).toThrow(/inclusion\/finality observer/);
+  expect(calls).toBe(0);
+});

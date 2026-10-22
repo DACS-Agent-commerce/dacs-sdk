@@ -1,4 +1,5 @@
 import { types as nodeTypes } from "node:util";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 
 import {
   canonicalize,
@@ -70,7 +71,7 @@ import {
   isSettlementEvidence as isCurrentSettlementEvidence,
   readListingArtifact,
 } from "../artifacts/validators.js";
-import { identityBundleHash } from "../identity/index.js";
+import { identityBundleHash } from "../identity/bundle.js";
 import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
 
 type SessionSettlementEvidence =
@@ -164,7 +165,8 @@ export interface SettleResult {
    * evidence. Required for successful non-AP2 payments: PC-6 requires the
    * finality actually applied, so no other rail can default to an AP2 receipt.
    * E.g. §9.5.9 pay-dem → `{ model: "bft-final" }`. AP2 may omit for its
-   * provider-receipt model.
+   * provider-receipt model. Legacy listings select this exemption by rail ID;
+   * an AP2 rail with an ID other than `pay-ap2` must report finality explicitly.
    */
   finality?: SettlementFinalityParameters;
   /** Block/ledger height the settlement landed at, when the rail reports it (§9.5.9 `demos`). */
@@ -1919,7 +1921,7 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
       "deps.authenticateVetFinality",
       true,
     ),
-    newJobId: () => protocolString(newJobId(), "new jobId"),
+    newJobId: () => requireCanonicalJobId(newJobId(), "new jobId"),
     now: () => {
       const value = protocolString(now(), "session ISO timestamp", {
         allowColon: true,
@@ -2764,6 +2766,7 @@ async function recordSessionOutcome(
   }
 }
 
+/** Host must establish CORE §11.1.2(3) authenticated participant/profile admission before calling. */
 export async function runSessionCore(
   listingRef: string,
   inputTerms: SessionTerms,
@@ -2776,7 +2779,7 @@ export async function runSessionCore(
   const deps = captureSessionDeps(inputDeps);
   listingRef = protocolString(listingRef, "listingRef", { allowColon: true });
   if (resumeJobId !== undefined) {
-    resumeJobId = protocolString(resumeJobId, "resume jobId");
+    resumeJobId = requireCanonicalJobId(resumeJobId, "resume jobId");
   }
   const terms = snapshotCanonicalJson(inputTerms, "session terms");
   const runtime = deps;
@@ -2790,6 +2793,9 @@ export async function runSessionCore(
     allowColon: true,
   });
 
+  // CORE JID-3: admit the exact generated/resumed ID before any resolver,
+  // signature, or protocol callback can observe this session.
+  const jobId = resumeJobId ?? deps.newJobId();
   const stored = await deps.readListing(listingRef);
   if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {
     throw new Error(`listing not found or invalid at ${listingRef}`);
@@ -3081,10 +3087,6 @@ export async function runSessionCore(
     );
   }
 
-  // A caller-supplied jobId requests recovery; otherwise this is a fresh
-  // admission. Invalid Listings and unsupported pipelines fail before minting
-  // a new id; an expired recovery uses the caller's exact prior id below.
-  const jobId = resumeJobId ?? deps.newJobId();
   const buyerBundleHash = identityBundleHash(deps.buyerIdentityBundle);
   let buyerIdentityAuthenticated: unknown;
   try {

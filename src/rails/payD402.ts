@@ -1,5 +1,5 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
-import { CounterpartyError, DacsError } from "../errors.js";
+import { CounterpartyError, DacsError, UnsupportedCapabilityError } from "../errors.js";
 
 /**
  * pay-d402 settlement rail — the D402 HTTP-402 protocol on Demos (SR-4).
@@ -9,8 +9,8 @@ import { CounterpartyError, DacsError } from "../errors.js";
  * (recipient + amount in native units + a resource id). Unlike x402 — where the
  * facilitator settles on-chain and hands back a tx via a response header — the
  * D402 buyer signs and broadcasts a gasless `d402_payment` transaction itself,
- * so `settle()` returns the settlement tx hash directly (that hash IS the
- * payment proof).
+ * so `settle()` returns a submission tx hash directly. An independently
+ * authenticated included-status observation is still required for finality.
  *
  * Per DACS §4.1 the buyer MUST abort before paying if the 402's advertised
  * terms don't match the negotiated agreement (termsMatchD402) — otherwise
@@ -276,29 +276,24 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
 }
 
 /**
- * Bridge a PayD402Rail to the runSession `settle` seam: the rail carries the
- * static D402 paywall coordinates (resolved from the listing) while runSession
- * supplies the per-session amount.
+ * Session bridge is unavailable until D402 has an authenticated inclusion and
+ * reconciliation observer. Preview callers may use the standalone rail API;
+ * a session must refuse before paying instead of retaining an unfinishable tx.
  */
 export function payD402Settle(
   rail: PayD402Rail,
   paywall: { url: string; recipient: string; network?: string },
 ): (req: SettleRequest) => Promise<SettleResult> {
-  const paywallUrl = paywall.url;
   const recipient = paywall.recipient;
-  const network = paywall.network ?? "demos";
   return (req) => {
-    const { amount, expectedPayee } = req;
+    const { expectedPayee } = req;
     if (expectedPayee !== recipient) {
       throw new DacsError(
         `pay-d402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipient}`,
       );
     }
-    return rail.settle({
-      paywallUrl,
-      recipient,
-      amount,
-      network,
-    });
+    throw new UnsupportedCapabilityError(
+      "pay-d402 session settlement requires an authenticated inclusion/finality observer and reconciliation",
+    );
   };
 }

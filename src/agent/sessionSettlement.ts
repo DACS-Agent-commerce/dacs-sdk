@@ -883,6 +883,12 @@ export async function verifyFinalizedSessionSettlement(
     return rejected("error", "settlement verification provider is incomplete or unsafe");
   }
 
+  // CORE JID-3/JID-4: a malformed operand is error, before comparison or any
+  // authentication callback. Different well-formed IDs remain a mismatch.
+  if (!isCanonicalJobId(settlement.evidence.jobId)) {
+    return rejected("error", "settlement evidence jobId is malformed (CORE JID-1)");
+  }
+
   let contextDisposition: SessionSettlementDisposition | null;
   try {
     contextDisposition = captureDisposition(await provider.authenticateContext(context));

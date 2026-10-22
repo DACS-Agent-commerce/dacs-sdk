@@ -320,8 +320,9 @@ describe("create-dacs-agent", () => {
     expect(generatedDoctor).toContain("inspectDacsDemosNodeCompatibilityV1(infos[1]).reasonCode");
     expect(generatedDoctor).not.toContain("blocked(compatibility.reasonCode)");
     const generatedReadme = await readFile(join(target, "README.md"), "utf8");
-    expect(generatedReadme).toContain("Restore admits a backup created by");
-    expect(generatedReadme).toContain("this or an earlier SDK release");
+    expect(generatedReadme).not.toContain("this or an earlier SDK release");
+    expect(generatedReadme).toContain("Restore requires the exact creating");
+    expect(generatedReadme).toContain("Cross-release actor-data migration is unsupported.");
     expect(generatedReadme).toContain("exact lockfile");
     const generatedConfig = await readFile(join(target, "dacs.config.ts"), "utf8");
     expect(generatedConfig).toContain("write confirmation must not be persisted in .env");

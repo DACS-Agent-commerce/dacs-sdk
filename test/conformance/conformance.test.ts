@@ -65,7 +65,7 @@ import {
   verifySettlementEvidence,
   type AuthenticatedEvidenceContext,
 } from "../../src/agent/verifySettlementEvidence.js";
-import { resolveSettlementEventIdentity } from "../../src/agent/settlementIdentity.js";
+import { resolveSettlementEventIdentities } from "../../src/agent/settlementIdentity.js";
 import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantics.js";
 import { compositeVerificationAddress } from "../../src/agent/index.js";
 import {
@@ -1656,9 +1656,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect(semantic.reasons).toEqual([]);
       expect(semantic.decision).toBe(want === "pass" ? "valid" : "invalid");
 
-      const identity = await resolveSettlementEventIdentity(
-        evidence,
-        {
+      const identitySet = await resolveSettlementEventIdentities([{ evidence, context: {
           anchorAddress: currentVector.anchorAddress,
           phaseIndex: currentVector.phaseIndex,
           railId: currentVector.verificationContext.railId,
@@ -1669,9 +1667,8 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
           x402Receipt: currentVector.verificationContext.x402Receipt,
           ledgerEvents: currentVector.ledgerEvents,
           priorClaims: currentVector.priorClaims,
-        },
-        deps,
-      );
+        } }], deps);
+      const identity = identitySet.records[0]!;
       expect(identity.decision).toBe(want);
       expect(identity).toMatchObject({
         settlementId: currentVector.expectedSettlementTxId,

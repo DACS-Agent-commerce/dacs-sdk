@@ -342,6 +342,18 @@ function provider(
 }
 
 describe("verifyFinalizedSessionSettlement", () => {
+  it.each(["job-legacy", "01jz0000000000000000000360", "01JZ0000000000000000000360\n"])(
+    "reports malformed evidence jobId %j as error before context authentication", async (jobId) => {
+      const { settlement, proof } = fixture();
+      const authenticateContext = vi.fn(() => ({ disposition: "pass" as const }));
+      const result = await verifyFinalizedSessionSettlement(context(), {
+        ...settlement, evidence: { ...settlement.evidence, jobId },
+      }, provider(proof, { authenticateContext }));
+      expect(result).toMatchObject({ disposition: "error" });
+      expect(authenticateContext).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["2", "", 1, null])("rejects unsupported contextVersion %j before authentication", async (contextVersion) => {
     const { settlement, proof } = fixture();
     const authenticateContext = vi.fn(() => ({ disposition: "pass" as const }));

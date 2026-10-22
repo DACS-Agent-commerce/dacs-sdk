@@ -13,11 +13,21 @@ import {
   rawPublicKey,
   ed25519Verify,
   publicKeyFromRaw,
-  resolveSettlementEventIdentity,
+  resolveSettlementEventIdentities,
+  resolveSettlementEventIdentity as inspectPointIdentity,
+  type SettlementEventIdentityDeps,
   sha256Hex,
   type AuthenticatedSettlementLedgerEvent,
   type SettlementEventIdentityContext,
 } from "../../src/index.js";
+
+// Complete-set SB-2 admission supersedes the frozen v0.6 first-claim decision.
+const resolveSettlementEventIdentity = async (
+  evidence: unknown, context: SettlementEventIdentityContext, deps: SettlementEventIdentityDeps,
+) => {
+  try { return (await resolveSettlementEventIdentities([{ evidence, context }], deps)).records[0]!; }
+  catch { return inspectPointIdentity(evidence, context, deps); }
+};
 
 const VECTOR_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -108,7 +118,7 @@ describe.skipIf(!haveVector)(
           deps,
         );
         expect(result.decision, `${vector.name}: ${JSON.stringify(result)}`)
-          .toBe(vector.expected);
+          .toBe(vector.name === "same-event-second-job-rejected" ? "indeterminate" : vector.expected);
         if (vector.expected === "pass") {
           expect(result, vector.name).toMatchObject({
             settlementId: vector.expectedSettlementTxId,

@@ -8,6 +8,19 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 > package commands in this repository build and verify release candidates; use a
 > source checkout until the first release is published.
 
+Current-profile host admission: CORE §11.1.2(3) requires verifier- or
+orchestrator-owned authenticated context binding the exact session and every
+participant identity to one exact Standard profile pin and complete module
+tuple, before producing, signing, resolving, comparing or acting on artifacts.
+Hosts integrating the core orchestration APIs must supply that admission gate
+outside caller-controlled artifacts and phase inputs. Missing, duplicate,
+unauthenticated, mismatched or differently pinned participants must refuse the
+session before calling these APIs. A profile object, successful artifact
+signature or version string alone supplies no admission authority.
+The pinned `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20` Standard's PROFILE.md
+still labels JID-1 an unreleased corrective candidate: these primitives do not
+establish released live-profile conformance or implement participant admission.
+
 ## What this is
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.

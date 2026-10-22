@@ -38,3 +38,17 @@ canonical settlement identity, pinned rail/profile, job ID and phase index to
 one tuple. Timestamps, evidence hashes and publication order cannot select a
 winner. A later collision requires recomputing the group and removing any
 provisional count. This point verifier supplies no global uniqueness authority.
+
+`resolveSettlementEventIdentity` now reports `indeterminate` for an otherwise
+valid point projection: an arrival-order `priorClaims` index cannot authorize
+its first claimant. Use `resolveSettlementEventIdentities` with the complete
+presented evidence set and count only its deduplicated `countable` list. Re-run
+it over the expanded set when evidence arrives later; replace prior counts with
+the new list. Distinct event indices in a batched transaction remain distinct.
+Collisions select nobody unless the trusted `authenticateCollision` capability
+verifies finalized settlement-side authority for the exact settlement ID,
+RailDefinition hash, registered binding profile, job ID and phase index supplied
+by authenticated agreement context. A job-only Permit2 or AP2 proof cannot
+supply phase authority. Absent, incomplete or conflicting authority leaves the
+whole group indeterminate. The callback must verify the proof; returning caller
+fields or trusting an outer evidence signature violates its contract.

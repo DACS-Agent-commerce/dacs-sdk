@@ -506,8 +506,8 @@ with source-reviewed demosdk `4.0.16` at published source revision
 [`d3620ae24f657ae7442e63e7adaefef7094b22e2`](https://github.com/kynesyslabs/sdks/tree/d3620ae24f657ae7442e63e7adaefef7094b22e2).
 `contractVersion` names this response contract and `sdkVersion` records the
 reviewed SDK source; neither authenticates the installed SDK. Generated projects
-pin demosdk exactly. Other consumers must pin the reviewed SDK themselves when
-they need that exact source contract; the optional peer range allows later SDKs.
+pin demosdk exactly. The core package's optional demosdk peer requires exactly
+`4.0.16` as well; later versions require a reviewed contract update.
 `inspectDacsDemosNodeCompatibilityV1()` reports `demos-node-compatible` only for
 this exact node revision and version, the `demos-node-software` identity, and
 `dirty: false`; otherwise it reports `demos-node-build-unidentified`,
@@ -518,10 +518,13 @@ this metadata about itself and nothing authenticates it. In testnet policy the g
 asks both nodes through the uncached `raw.nodeCall("getNetworkInfo", {})`,
 because demosdk's `getNetworkInfo()` keeps its first success for the client's
 lifetime and would hide a later outage. With the testnet policy, the check fails when the RPC is
-unreachable, including explicit node error replies and demosdk's
-`{ result, response }` transport-failure envelope (`demos-rpc-unavailable`), or
-when the reply lacks the boolean `forks.osDenomination.activated` status
-(`demos-rpc-response-malformed`). Missing `raw.nodeCall` reports
+unreachable or demosdk preserves an error/transport-failure envelope
+(`demos-rpc-unavailable`). Successful HTTP node calls are unwrapped to their
+response body, discarding the node's result code: a string node error such as
+`No address specified` is therefore `demos-rpc-response-malformed`, as is any
+reply lacking the boolean `forks.osDenomination.activated` status. Both
+classifications block readiness; the unwrapped body cannot distinguish an
+explicit node error from another malformed response. Missing `raw.nodeCall` reports
 `demos-adapter-raw-reader-missing`. The endpoint URL is not a
 compatibility pin. Independently verified transaction and block evidence, not
 build metadata, establish settlement.
@@ -553,6 +556,7 @@ The pinned response contract is:
 | --- | --- |
 | `getNetworkInfo` | SDK-unwrapped object with boolean `forks.osDenomination.activated` and exact `nodeVersion` build identity; the doctor reads it uncached on every run, and the denomination fork value is evaluated separately. |
 | `getAddressNonce` | SDK-unwrapped nonnegative safe integer or canonical decimal integer string. No partial parsing, fallback zero, or RPC error envelope is accepted. This is the retained nonce; the SDK reserves the next nonce separately. |
+| Transaction nonce admission | The pinned node's active `nonceEnforcement` fork (`src/forks/forkConfig.ts`) requires exactly `account.nonce + 1 + pending_mempool_count`; a merely larger nonce is insufficient. Wallet writes must be serialized and pending writes reconciled. |
 | `getTransactionStatus` | `included` plus a block number is inclusion. `unknown` is not evidence of payment. Transport errors remain unavailable. |
 | `getTxByHash` | Native send payload contains canonical OS amount and matching payer/payee. A numeric outer amount may be a projection; `confirmed` in the transaction body alone does not prove payment. |
 | `getBlockByNumber` | A confirmed block must contain the selected transaction. Block timestamps are seconds and are converted to milliseconds. Native inclusion uses `bft-final`, without waiting for depth. |

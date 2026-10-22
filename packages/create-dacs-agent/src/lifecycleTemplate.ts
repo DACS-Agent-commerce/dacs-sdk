@@ -504,44 +504,15 @@ function parseSdkVersionV1(value: unknown): SdkVersionV1 | null {
   return { core, prerelease };
 }
 
-// SemVer 2.0.0 precedence, build metadata ignored.
-function compareSdkVersionsV1(left: SdkVersionV1, right: SdkVersionV1): number {
-  for (let index = 0; index < 3; index += 1) {
-    if (left.core[index] !== right.core[index]) {
-      return left.core[index]! < right.core[index]! ? -1 : 1;
-    }
-  }
-  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
-    return left.prerelease.length === right.prerelease.length ? 0
-      : left.prerelease.length === 0 ? 1 : -1;
-  }
-  const shared = Math.min(left.prerelease.length, right.prerelease.length);
-  for (let index = 0; index < shared; index += 1) {
-    const a = left.prerelease[index]!;
-    const b = right.prerelease[index]!;
-    if (a === b) continue;
-    const aNumeric = a.split("").every((char) => char >= "0" && char <= "9");
-    const bNumeric = b.split("").every((char) => char >= "0" && char <= "9");
-    if (aNumeric && bNumeric) return a.length !== b.length
-      ? (a.length < b.length ? -1 : 1) : (a < b ? -1 : 1);
-    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
-    return a < b ? -1 : 1;
-  }
-  return left.prerelease.length === right.prerelease.length ? 0
-    : left.prerelease.length < right.prerelease.length ? -1 : 1;
-}
-
 export function assertGeneratedBackupRestorableV1(
   manifest: Readonly<BackupManifestV1>,
 ): void {
-  // The generated upgrade procedure restores a backup from the previous
-  // release into the new project, so older SDK versions are admitted and newer
-  // or unparseable ones refused. Data compatibility is gated by the release's
-  // declared metadata: Standard revision, configuration schema, and SQLite
-  // schema plus supported migration sources.
+  // SQLite binds actor data to the exact creating SDK version, including build
+  // metadata. Restore uses that same binding; cross-release migration is not
+  // supported. Reinstall the retained project and lockfile before rollback.
   const created = parseSdkVersionV1(manifest.release.sdkVersion);
   const running = parseSdkVersionV1(VERSION);
-  if (created === null || running === null || compareSdkVersionsV1(created, running) > 0 ||
+  if (created === null || running === null || manifest.release.sdkVersion !== VERSION ||
       manifest.release.standardRevision !== FIXED_PRICE_X402_STANDARD_REVISION ||
       manifest.release.configSchemaVersion !== DACS_NODE_CONFIG_SCHEMA_VERSION ||
       manifest.release.sqliteSchemaVersion > DACS_NODE_SQLITE_SCHEMA_VERSION ||

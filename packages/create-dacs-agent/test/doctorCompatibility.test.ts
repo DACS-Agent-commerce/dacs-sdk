@@ -148,7 +148,8 @@ describe("generated doctor RPC compatibility probe", () => {
     });
 
     // demosdk's raw nodeCall resolves a { result, response } envelope when the
-    // transport fails; any other reply without fork status is malformed.
+    // transport fails. Node result codes are discarded, so even an explicit
+    // string node error is classified as a malformed response.
     it.each([
       [null, "demos-rpc-unavailable"],
       [{ error: "STATE_NOT_READY", message: "booting" }, "demos-rpc-unavailable"],
@@ -156,6 +157,8 @@ describe("generated doctor RPC compatibility probe", () => {
       [undefined, "demos-rpc-unavailable"],
       [{ result: 500, response: {}, require_reply: false, extra: null }, "demos-rpc-unavailable"],
       ["unavailable", "demos-rpc-response-malformed"],
+      ["No address specified", "demos-rpc-response-malformed"],
+      ["Error in nodeCall: STATE_NOT_READY", "demos-rpc-response-malformed"],
       [500, "demos-rpc-response-malformed"],
       [[], "demos-rpc-response-malformed"],
       [{ nodeVersion: clean.nodeVersion }, "demos-rpc-response-malformed"],

@@ -1298,8 +1298,9 @@ function baseProbes(
           (runtime) => runtime.adapter.raw.nodeCall?.("getNetworkInfo", {}),
         ));
       } catch { return fail("demos-rpc-unavailable"); }
-      // No raw reader, or demosdk's { result, response } transport-failure
-      // envelope, means the RPC was not reached.
+      // demosdk preserves transport-failure envelopes, but unwraps node replies
+      // to their response body, losing the node's result code. A string error
+      // body therefore reaches the malformed-response branch below.
       if (infos.some((info) => info === null || info === undefined ||
           (typeof info === "object" && !Array.isArray(info) && !("forks" in info) &&
             (typeof (info as { result?: unknown }).result === "number" ||
@@ -2965,7 +2966,8 @@ export async function checkGeneratedUpgradeV1(
         "Run dacs:backup to preserve one authenticated two-role snapshot and its printed ID.",
         "Record the exact generated project, package lock and three installed package versions.",
         "Regenerate the replacement project from one exact reviewed three-package release set.",
-        "Use dacs:restore with the authenticated backup ID while both services remain stopped.",
+        "Cross-release actor-data migration is unsupported; keep retained data on its creating SDK release.",
+        "Use dacs:restore only with the exact creating SDK version and authenticated backup ID while both services remain stopped.",
         "For rollback, reinstall the recorded generated project and exact package lock before restore.",
         "Refuse rollback when that runtime does not support the restored store schema.",
         "Run pre-start doctor before restarting either role service.",
@@ -4226,11 +4228,8 @@ test("authenticated lifecycle backup restores both roles and rejects tampering",
     paths,
   });
   assert.equal(backup.backupId, "11111111-1111-4111-8111-111111111111");
-  assert.doesNotThrow(() => assertGeneratedBackupRestorableV1({
-    ...backup,
-    release: { ...backup.release, sdkVersion: "0.0.0" },
-  }));
-  for (const sdkVersion of ["999.0.0", "invalid", ""]) {
+  assert.doesNotThrow(() => assertGeneratedBackupRestorableV1(backup));
+  for (const sdkVersion of ["0.0.0", "999.0.0", "invalid", ""]) {
     assert.throws(() => assertGeneratedBackupRestorableV1({
       ...backup,
       release: { ...backup.release, sdkVersion },
@@ -4983,12 +4982,11 @@ Backup stops both services and writes separate buyer/seller data trees plus a
 keyed manifest into a new directory. Restore is plan-only unless
 \`DACS_RESTORE_CONFIRM=1\` is supplied for that invocation; it authenticates and
 rehashes every file, creates a separate safety backup, then replaces both actor
-directories with rollback on partial failure. Restore admits a backup created by
-this or an earlier SDK release, so a backup taken before the supported upgrade
-procedure restores into the regenerated project. It refuses a backup from a newer
-or unparseable SDK version, or with a different Standard revision, configuration
-schema or unsupported SQLite schema; the error names both SDK versions. For
-rollback, reinstall the retained project and exact lockfile with \`npm ci\`
+directories with rollback on partial failure. Restore requires the exact creating
+SDK release, including build metadata: actor databases bind to that version.
+Cross-release actor-data migration is unsupported. It also refuses a different
+Standard revision, configuration schema or unsupported SQLite schema; the error
+names both SDK versions. For rollback, reinstall the retained project and exact lockfile with \`npm ci\`
 first. Example:
 
 \`\`\`bash
