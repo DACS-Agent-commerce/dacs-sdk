@@ -1711,7 +1711,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   const artifactRepository = bindingPublisher === undefined || bindingIndex === null
     ? null
     : createBoundArtifactRepository({
-          adapter: anchoring,
+        contentHashOf: contentHash,
+        adapter: anchoring,
         index: bindingIndex,
         publisher: bindingPublisher,
       });

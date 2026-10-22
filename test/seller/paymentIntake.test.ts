@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
+import { readListingByLogicalAddress } from "../../src/agent/listingDiscovery.js";
+import { createInMemoryBindingIndex } from "../../src/discovery/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
-import { admitRawJson, canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";
+import { admitRawJson, canonicalize, contentHash, listingAddress, sha256Hex } from "../../src/canonical/index.js";
 
 import {
   ed25519Sign,
@@ -884,6 +886,71 @@ describe("verifySellerPaymentIntake", () => {
       reason: "listing-at-commit-admission-mismatch",
       fulfilment: "none",
     });
+  });
+
+  it.each(["pay-dem", "pay-x402"] as const)("retains public Listing reader admission at %s intake", async (kind) => {
+    const ctx = makeContext(kind);
+    // Logical Listing discovery uses a Demos publisher for either payment rail.
+    if (kind === "pay-x402") {
+      ctx.sellerBundle = identity(SELLER_DEMOS);
+      ctx.listing.seller.identity = ctx.sellerBundle;
+      ctx.listing.signature.signer = SELLER_DEMOS;
+      const seller = (ctx.agreement.parties as Array<{ role: string; primaryClaim: string; bundleHash: string }>).find((party) => party.role === "seller")!;
+      seller.primaryClaim = SELLER_DEMOS;
+      seller.bundleHash = identityBundleHash(ctx.sellerBundle);
+      (ctx.agreement.signatures as Array<{ party: string }>).find((signature) => signature.party === SELLER)!.party = SELLER_DEMOS;
+    }
+    repinListing(ctx);
+    const historical = await listingAtCommitResolution(ctx.listing);
+    const logicalAddress = listingAddress(SELLER_DEMOS, ctx.listing.listingId, ctx.listing.listingVersion);
+    const read = await readListingByLogicalAddress(logicalAddress, {
+      executionMode: "simulation",
+      index: createInMemoryBindingIndex([{
+        logicalAddress, nativeAddress: "stor-listing", owner: "bb".repeat(32), version: ctx.listing.listingVersion,
+        contentHash: contentHash(ctx.listing as unknown as Record<string, unknown>),
+      }]),
+      readAnchor: async () => Buffer.from(JSON.stringify(ctx.listing)),
+      verify: () => true,
+      listingValidationDeps: {
+        executionMode: "simulation",
+        nowMs: () => 900,
+        verifyListingSignature: () => true,
+        verifyIdentityPresentation: () => true,
+        verifySellerControl: () => true,
+        resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
+        revocation: { surfaces: [{ kind: "well-known", status: "active", integrity: "verified" }],
+          readMarker: async () => null, verifyMarkerSignature: () => true },
+        loadRailResolution: () => ({
+          trustPhase: "PA-1", trustPolicyAcceptsPA1: true,
+          registry: { state: "not-used", entries: [], definitions: [] },
+          inCodeDefinitions: [{ railId: ctx.rail.railId, railVersion: 1,
+            phaseHandler: kind, governanceAnchoring: "in-code", signatureValid: true }],
+        }),
+      },
+    });
+    expect(read).toMatchObject({ status: "verified", compatibility: "normative" });
+    if (read.status !== "verified" || read.compatibility !== "normative") throw new Error("expected normative Listing");
+    const resolution = { ...historical, rawListing: read.listing as unknown as Record<string, unknown>, validation: read.validation };
+    ctx.deps.resolveListingAtCommit = async () => resolution;
+    let claims = 0;
+    const claim = ctx.deps.receiptStore.claim.bind(ctx.deps.receiptStore);
+    ctx.deps.receiptStore.claim = async (...args) => { claims++; return claim(...args); };
+
+    // Copies and mutations retain no authority, even when sourced from a real read.
+    resolution.validation = structuredClone(read.validation);
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "listing-at-commit-admission-mismatch", fulfilment: "none",
+    });
+    resolution.validation = read.validation;
+    const reason = read.validation.reason;
+    read.validation.reason = "caller-replaced";
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({
+      disposition: "rejected", reason: "listing-at-commit-admission-mismatch", fulfilment: "none",
+    });
+    read.validation.reason = reason;
+    expect(claims).toBe(0);
+    await expect(verifySellerPaymentIntake(ctx.input, ctx.deps)).resolves.toMatchObject({ disposition: "verified", fulfilment: "claim" });
+    expect(claims).toBe(1);
   });
 
   it.each(["missing bytes", "re-rendered bytes", "copied reader result", "mutated reader result"])(

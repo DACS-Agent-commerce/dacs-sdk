@@ -1,6 +1,5 @@
 import {
   canonicalize,
-  contentHash,
   logicalToStorageProgramName,
   sha256Hex,
 } from "../canonical/index.js";
@@ -20,79 +19,6 @@ import {
   type VerifiedReadDeps,
 } from "./verifiedRead.js";
 import { normalizedBindingOwner } from "./owner.js";
-import {
-  isAttestationBundle,
-  isEvidenceBoundFaultAttestationBundle,
-  isFaultAttestationBundle,
-  isIdentityBundle,
-  isListing,
-} from "../artifacts/validators.js";
-import { attestationBundleHash } from "../agent/twoSidedBundle.js";
-import { identityBundleHash } from "../identity/bundle.js";
-
-const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
-
-/** The envelope members all four DACS-3 §8.5.1 Agreement versions carry. */
-function hasAgreementEnvelope(artifact: Record<string, unknown>): boolean {
-  return (
-    typeof artifact.jobId === "string" && artifact.jobId.length > 0 &&
-    isPlainRecord(artifact.listingRef) &&
-    Array.isArray(artifact.parties) &&
-    isPlainRecord(artifact.terms) &&
-    typeof artifact.derivedFromPattern === "string" &&
-    typeof artifact.generatedAt === "number" && Number.isSafeInteger(artifact.generatedAt) && artifact.generatedAt >= 0 &&
-    Array.isArray(artifact.signatures)
-  );
-}
-
-/** Select the artifact contract, never the mere presence of a signature field. */
-function artifactContentHash(artifact: Record<string, unknown>): string {
-  // A record that passes a complete artifact validator keeps that artifact's
-  // contract. CORE SIG-5 makes every unknown member, including an
-  // Agreement-named one, ordinary signed data of that artifact.
-  if (isListing(artifact)) return contentHash(artifact);
-  if (
-    isAttestationBundle(artifact) ||
-    isFaultAttestationBundle(artifact) ||
-    isEvidenceBoundFaultAttestationBundle(artifact)
-  ) {
-    return attestationBundleHash(artifact);
-  }
-  if (isIdentityBundle(artifact)) return identityBundleHash(artifact);
-  // DACS-3 §8.5.1 defines the same omission set for all four Agreement
-  // versions, including the identity-bound types not yet executable by this
-  // SDK. Select their hash contract from the exact, exclusive discriminator
-  // on a complete Agreement envelope; full artifact/signature/authorization
-  // validation remains the reader's job.
-  const agreementVersions = [
-    "agreementVersion",
-    "payeeBoundAgreementVersion",
-    "identityBoundAgreementVersion",
-    "identityBoundPayeeAgreementVersion",
-  ].filter((key) => Object.prototype.hasOwnProperty.call(artifact, key));
-  if (agreementVersions.length > 0 && hasAgreementEnvelope(artifact)) {
-    if (agreementVersions.length !== 1 || artifact[agreementVersions[0]!] !== "1") {
-      throw new Error("Agreement requires exactly one supported version discriminator");
-    }
-    // Hash the original record: opposite-named signature extensions and all
-    // other additive fields remain authenticated.
-    return contentHash(artifact, "signatures");
-  }
-  // ChannelTranscript has no public SDK validator yet. Check its complete
-  // envelope contract here; signature authentication remains the reader's job.
-  if (
-    artifact.transcriptVersion === "1" &&
-    typeof artifact.channelId === "string" && artifact.channelId.length > 0 &&
-    Array.isArray(artifact.members) && artifact.members.every((member) => typeof member === "string") &&
-    Array.isArray(artifact.messages) &&
-    typeof artifact.generatedAt === "number" && Number.isSafeInteger(artifact.generatedAt) && artifact.generatedAt >= 0 &&
-    Array.isArray(artifact.signatures)
-  ) {
-    return contentHash(artifact, "signatures");
-  }
-  return contentHash(artifact);
-}
 
 /** Minimal substrate seam needed for binding-aware immutable artifacts. */
 export interface BoundArtifactAdapter {
@@ -114,6 +40,15 @@ export interface BoundArtifactRepositoryDeps {
    * acknowledgement is checked against `index` before write returns success.
    */
   publisher: BindingPublisher;
+  /**
+   * Trusted artifact contract, shared by publication and reads. Select this in
+   * application context, never by inspecting additive fields on a record.
+   * For Listings/ratings use contentHash; for Agreements/ChannelTranscripts
+   * use (record) => contentHash(record, "signatures"); for identity/terminal
+   * bundles use identityBundleHash/attestationBundleHash respectively.
+   * Schema, version and signer authorization remain the reader verifier's job.
+   */
+  contentHashOf: VerifiedReadDeps["contentHashOf"];
 }
 
 export interface BoundArtifactWriteOptions {
@@ -305,6 +240,11 @@ async function writeResult(
 export function createBoundArtifactRepository(
   deps: BoundArtifactRepositoryDeps,
 ): BoundArtifactRepository {
+  // Pin the caller-selected contract before any asynchronous adapter work.
+  const contentHashOf = deps.contentHashOf;
+  if (typeof contentHashOf !== "function") {
+    throw new TypeError("repository requires an explicit artifact contentHashOf contract");
+  }
   return {
     async write(logicalAddress, artifact, options) {
       const canonicalLogicalAddress = logicalAddress.trim().normalize("NFC");
@@ -343,7 +283,7 @@ export function createBoundArtifactRepository(
           cause: error,
         });
       }
-      const pinnedContentHash = artifactContentHash(pinnedArtifact);
+      const pinnedContentHash = contentHashOf(pinnedArtifact);
       const envelopeHash = sha256Hex(canonicalize(pinnedArtifact));
       const anchor = await deps.adapter.anchorWriteOnce(
         storageName,
@@ -386,7 +326,7 @@ export function createBoundArtifactRepository(
     async read(logicalAddress, expectedOwner, verifySignature) {
       return resolveAndRead(deps.index, logicalAddress, expectedOwner, {
         read: (nativeAddress) => deps.adapter.readAnchor(nativeAddress),
-        contentHashOf: artifactContentHash,
+        contentHashOf,
         ...(verifySignature === undefined ? {} : { verifySignature }),
       });
     },

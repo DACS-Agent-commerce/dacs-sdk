@@ -651,11 +651,11 @@ export async function readListingByLogicalAddress(
     }
     let validation: ListingValidationResult;
     try {
-      validation = structuredClone(
-        await validateListingArtifact(
-          receivedBytes ?? structuredClone(record),
-          capturedValidationDeps,
-        ),
+      // The ordered reader owns its snapshot and retains provenance against
+      // this exact result. Keep that identity through the public discovery API.
+      validation = await validateListingArtifact(
+        receivedBytes ?? structuredClone(record),
+        capturedValidationDeps,
       );
     } catch {
       return {

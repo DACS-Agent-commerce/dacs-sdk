@@ -1,3 +1,5 @@
+import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
+import { identityBundleHash } from "../../src/identity/bundle.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 
@@ -22,6 +24,10 @@ import {
   type BindingPublisher,
   type BoundArtifactAdapter,
 } from "../../src/discovery/index.js";
+
+const identityHash = (record: Record<string, unknown>) => identityBundleHash(record as unknown as Parameters<typeof identityBundleHash>[0]);
+const terminalHash = (record: Record<string, unknown>) => attestationBundleHash(record as unknown as Parameters<typeof attestationBundleHash>[0]);
+const agreementHash = (record: Record<string, unknown>) => contentHash(record, "signatures");
 
 const SELLER = "0xseller";
 const LOGICAL = "dacs1:0xseller:market-data:v1";
@@ -112,6 +118,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: agreementHash,
       adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
     });
     const written = await repository.write(`dacs3:${agreement.jobId}:agreement`, agreement);
@@ -134,6 +141,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       contentHash: hash,
     }]);
     const repository = createBoundArtifactRepository({
+      contentHashOf: agreementHash,
       adapter: fakeAdapter("0xreader", backend), index: bindings, publisher: bindings,
     });
     const verify = vi.fn(() => true);
@@ -144,33 +152,20 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     expect(backend.writes).toBe(0);
   });
 
-  test.each([
-    { agreementVersion: "1", identityBoundAgreementVersion: "1" },
-    { identityBoundAgreementVersion: "1", identityBoundPayeeAgreementVersion: "1" },
-    { payeeBoundAgreementVersion: "1", identityBoundPayeeAgreementVersion: "1" },
-    { identityBoundAgreementVersion: "2" },
-    { identityBoundPayeeAgreementVersion: 1 },
-  ])("refuses unsupported or competing Agreement discriminators: %j", async (versions) => {
-    const { agreementVersion: _version, ...scope } = upstreamAgreement();
-    const artifact = { ...scope, ...versions };
+  test("fails before anchoring or verifying when the selected hash contract fails", async () => {
     const backend = createBackend();
-    backend.records.set("stor-existing", artifact);
+    backend.records.set("stor-existing", RECORD);
     const bindings = createInMemoryBindingStore([{
-      logicalAddress: LOGICAL, nativeAddress: "stor-existing", owner: SELLER,
-      contentHash: independentHash(artifact, ["signatures"]),
+      logicalAddress: LOGICAL, nativeAddress: "stor-existing", owner: SELLER, contentHash: "00".repeat(32),
     }]);
     const repository = createBoundArtifactRepository({
+      contentHashOf: () => { throw new Error("invalid artifact for selected contract"); },
       adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
     });
-    await expect(repository.write(LOGICAL, artifact)).rejects.toThrow(
-      "exactly one supported version discriminator",
-    );
+    await expect(repository.write(LOGICAL, RECORD)).rejects.toThrow("invalid artifact for selected contract");
     expect(backend.writes).toBe(0);
     const verify = vi.fn(() => true);
-    expect(await repository.read(LOGICAL, SELLER, verify)).toMatchObject({
-      status: "unverifiable",
-      reason: expect.stringContaining("exactly one supported version discriminator"),
-    });
+    expect(await repository.read(LOGICAL, SELLER, verify)).toMatchObject({ status: "unverifiable" });
     expect(verify).not.toHaveBeenCalled();
   });
 
@@ -219,6 +214,9 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: omitted.includes("presentation") ? identityHash
+        : omitted.includes("anchoredByRole") ? terminalHash
+        : omitted.includes("signatures") ? agreementHash : contentHash,
       adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
     });
     const expectedHash = independentHash(artifact, omitted);
@@ -281,6 +279,8 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: omitted.includes("presentation") ? identityHash
+        : omitted.includes("anchoredByRole") ? terminalHash : contentHash,
       adapter: fakeAdapter(SELLER, backend), index: bindings, publisher: bindings,
     });
     const written = await repository.write(LOGICAL, artifact);
@@ -303,6 +303,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const writer = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: bindings,
@@ -330,6 +331,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     // A separate repository instance has no nonce or storage-name input. It only
     // receives the logical address, expected signer, and published index.
     const reader = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter("0xreader", backend),
       index: bindings,
       publisher: bindings,
@@ -350,6 +352,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const first = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: bindings,
@@ -357,6 +360,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     expect((await first.write(LOGICAL, RECORD)).status).toBe("published");
 
     const reconnected = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: bindings,
@@ -389,6 +393,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       },
     };
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter,
       index: bindings,
       publisher: bindings,
@@ -414,6 +419,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: bindings,
@@ -434,6 +440,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
 
     const conflicting = createBackend();
     const conflictRepository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, conflicting),
       index: createInMemoryBindingStore(),
       publisher: createInMemoryBindingStore(),
@@ -450,6 +457,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: bindings,
@@ -480,6 +488,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       },
     };
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher,
@@ -513,6 +522,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       },
     };
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: visible,
       publisher,
@@ -540,6 +550,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const key = "ab".repeat(32);
     const visible = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(`0x${key}`, backend),
       index: visible,
       publisher: {
@@ -566,6 +577,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       contentHash: "stale",
     };
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: createInMemoryBindingIndex([stale]),
       publisher: {
@@ -594,6 +606,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       },
     ]);
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: bindings,
@@ -612,6 +625,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: {
@@ -635,6 +649,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: bindings,
@@ -657,6 +672,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       },
     ]);
     const staleRepository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter("0xreader", backend),
       index: stale,
       publisher: stale,
@@ -674,6 +690,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
       },
     ]);
     const invalidSignature = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter("0xreader", backend),
       index: valid,
       publisher: valid,
@@ -683,6 +700,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     ).toBe("signature-invalid");
 
     const transient = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter("0xreader", backend),
       index: {
         resolve: async () => {
@@ -698,6 +716,7 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     const backend = createBackend();
     const bindings = createInMemoryBindingStore();
     const repository = createBoundArtifactRepository({
+      contentHashOf: contentHash,
       adapter: fakeAdapter(SELLER, backend),
       index: bindings,
       publisher: bindings,

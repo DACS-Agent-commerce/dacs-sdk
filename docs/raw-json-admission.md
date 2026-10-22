@@ -84,20 +84,32 @@ single-signature artifacts. They refuse the IdentityBundle presentation and
 three terminal bundle domains: use `identityBundleHash` or `attestationBundleHash`
 and the corresponding artifact-specific signing and verification paths.
 
-`createBoundArtifactRepository` uses the same artifact contract on publication
-and binding reads: all four Agreement types (including both identity-bound
-variants) and ChannelTranscripts omit `signatures`, terminal
-bundles use `attestationBundleHash`, and IdentityBundles use `identityBundleHash`.
-A record that passes the complete Listing, terminal-bundle or IdentityBundle
-validator keeps that contract even when it carries an Agreement-named extension.
-The Agreement contract applies only to a complete Agreement envelope with
-exactly one supported version discriminator; artifact and signer authorization
-still require the reader's verifier. Hash support alone does not enable
-execution of identity-bound phases.
-Other records retain the singular-signature default. Opposite-named extensions
-remain in the content hash. Anchor metadata also retains a full-envelope hash,
-including all signature and per-copy fields. These hashes bind the stored
-record; readers still need the artifact's signature verifier to authenticate it.
+`createBoundArtifactRepository` requires a trusted `contentHashOf` dependency,
+used for both publication and binding reads. Select it from the expected
+artifact contract in application context, independently of the record's fields:
+
+```ts
+const repository = createBoundArtifactRepository({
+  adapter, index, publisher,
+  contentHashOf: (record) => contentHash(record, "signatures"), // Agreement
+});
+```
+
+Use `contentHash` for singular-signature artifacts such as Listings and ratings,
+`(record) => contentHash(record, "signatures")` for all four Agreement types and
+ChannelTranscripts, `attestationBundleHash` for terminal bundles, and
+`identityBundleHash` for IdentityBundles. Configure separate repositories for
+different contracts, or supply a resolver bound to trusted application context.
+A record may satisfy several additive schemas; its fields never select or
+change the repository's contract. Existing repository callers must supply this
+dependency explicitly. Schema/version validation and signer authorization still
+require the reader's artifact-specific verifier. Hash support alone does not
+enable execution of identity-bound phases.
+
+Opposite-named extensions remain in the content hash. Anchor metadata also
+retains a full-envelope hash, including all signature and per-copy fields.
+These hashes bind the stored record; readers still need the artifact's signature
+verifier to authenticate it.
 
 Verified Listing admission results carry `executionMode: "simulation"`. Public
 Listing result binding requires that literal marker as well as the admitted
@@ -166,3 +178,8 @@ A future live release needs both a coordinated release pin and verifier- or
 orchestrator-owned, authenticated evidence binding the exact session and every
 expected participant identity to that exact pin and complete tuple. The current
 SDK has no switch that admits such a live release.
+
+`readListingByLogicalAddress` retains the SDK-owned validation result. Pass its
+`validation` directly to historical seller intake; cloning or serializing that
+result loses runtime provenance. Restored checkpoints must re-admit the original
+received bytes through the ordered reader.
