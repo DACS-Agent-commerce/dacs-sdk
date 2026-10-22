@@ -162,7 +162,14 @@ export function approvalBinding(operation) {
   };
 }
 
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes }) {
+// Installed hosts have no qualified settlement authority in this candidate.
+// CORE §11.1.2(3)-(4): diagnostic readback cannot authorize protocol effects.
+export function createPublicPurchaseService(options) {
+  return createPurchaseService(options, true);
+}
+
+// Retained source integration; not exported by the package entry point.
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes }, diagnosticOnly = false) {
   const { transaction, isUniqueViolation } = purchaseStore(store);
   const PURPOSES = walletPurposes(purposes);
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
@@ -372,7 +379,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     const found = ops.getByHandoff(operationId, token);
     if (!found || found.kind !== 'purchase') throw new OperationError('not_found', 'unknown or invalid approval link');
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
-    return expireIfNeeded(found);
+    return diagnosticOnly ? found : expireIfNeeded(found);
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
@@ -594,6 +601,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return { record: await protocol.readNativePaymentLane(operation, key) };
   }
   async function reportWalletResult({ operationId, token, txHash, walletError, walletErrorCode }) {
+    if (diagnosticOnly) assertPurchaseActionsAdmitted();
     let operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     if (walletError) {
@@ -822,9 +830,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // until its fields have the documented types. Discard malformed data before
   // persisting it (in particular, bigint cannot be serialized as JSON).
   function checkedTransferObservation(value, hash) {
-    const invalid = reason => ({ status: 'invalid', reason });
+    const invalid = reason => ({ status: 'malformed', reason });
     if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('chain observation must be an object');
-    if (!['included', 'pending', 'not-found', 'failed', 'unavailable'].includes(value.status)) return invalid('chain observation status is unsupported');
+    if (!['included', 'pending', 'not-found', 'failed', 'invalid', 'unavailable'].includes(value.status)) return invalid('chain observation status is unsupported');
+    if (value.reason !== undefined && typeof value.reason !== 'string') return invalid('chain observation reason must be text');
     if (value.status === 'included') {
       if (typeof value.amountOs !== 'string' || !OS_INTEGER.test(value.amountOs)) return invalid('included amountOs must be canonical decimal OS text');
       if (!readableAddress(value.payer) || !readableAddress(value.payee)) return invalid('included payer and payee must be readable Demos addresses');
@@ -837,7 +846,25 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return value;
   }
 
+  async function diagnosticReadback(operation, rawHash) {
+    const hash = rawHash ? canonicalHash(rawHash) : coordinates.get(operation.id)?.reportedTxHash;
+    let observation = null;
+    if (hash) {
+      try {
+        await assertBoundDomain(operation);
+        const value = await (usesNativeAgreementPayment(operation) && chain.observePurchaseTransfer
+          ? chain.observePurchaseTransfer(hash) : chain.observeTransfer(hash));
+        observation = checkedTransferObservation(value, hash);
+      } catch (error) {
+        observation = { status: 'unavailable', reason: String(error.message).slice(0, 240) };
+      }
+    }
+    return { operation, verification: { outcome: 'readback_only', authority: 'unqualified_host',
+      observation, ...OBSERVATION_LIMITS } };
+  }
+
   async function verifySettlement(operation) {
+    if (diagnosticOnly) return diagnosticReadback(operation);
     // Unverified readback cannot undo a nonce-proven cancellation.
     const moveUnverified = (toStatus, data) => operation.status === 'cancelled' ? ops.get(operation.accountId, operation.id) : move(operation, toStatus, data);
     // An unverified re-read replaces the stored observation but keeps the
@@ -889,7 +916,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     }
     observation = checkedTransferObservation(observation, hash);
     let body = null, bodyError = null;
-    if (!['invalid', 'unavailable', 'pending', 'not-found'].includes(observation.status)) {
+    if (!['malformed', 'unavailable', 'pending', 'not-found'].includes(observation.status)) {
       try { body = await chain.getTransaction(hash); } catch (error) { bodyError = error; }
     }
     const decided = transaction(db, () => {
@@ -912,7 +939,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       };
       operation = current;
       const result = { txHash: hash, observedAt: new Date(now()).toISOString(), chainMode: chain.evidenceMode, observer: typeof chain.observer === 'string' && chain.observer.trim() ? chain.observer : 'host-supplied chain reader (observer not declared)', ...scope, observation, slotConsumed: false };
-      if (observation.status === 'invalid') {
+      if (observation.status === 'malformed') {
         recordUnverified(result);
         return { operation, verification: { outcome: 'invalid_observation', ...result } };
       }
@@ -1084,6 +1111,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   async function verifyDeal({ accountId, operationId, txHash, attachOnly = false }) {
     const found = ops.get(accountId, operationId);
     if (!found || found.kind !== 'purchase') throw new OperationError('not_found', 'purchase not found for this account');
+    if (diagnosticOnly) return diagnosticReadback(found, txHash);
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);}
     catch(error){
       if(error.details?.buyerAccessMissing)throw error;
@@ -1094,7 +1122,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       if(usesNativeAgreementPayment(found))throw error;
       let observation;
       try{await assertBoundDomain(found);observation=await protocol?.observeReportedPayment?.(coords.reportedTxHash)??await chain.observeTransfer(coords.reportedTxHash);}
-      catch(readError){observation={status:'indeterminate',reason:String(readError.message).slice(0,240)};}
+      catch(readError){observation={status:'unavailable',reason:String(readError.message).slice(0,240)};}
+      observation=checkedTransferObservation(observation,coords.reportedTxHash);
       return {operation:found,verification:{outcome:'readback_only',observation,...OBSERVATION_LIMITS}};
     }
     const operation = expireIfNeeded(found);
@@ -1192,6 +1221,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function protocolRecheck({ operationId, token }) {
+    if (diagnosticOnly) assertPurchaseActionsAdmitted();
     const found=ops.getByHandoff(operationId,token);
     if(!found||found.kind!=='purchase')throw new OperationError('not_found','unknown or invalid approval link');
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet,found);}
@@ -1238,6 +1268,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // consumed. The model may call this: cancelling never moves funds, and a
   // late landing of the old payload is still recorded by verify_deal.
   async function cancel({ accountId, operationId }) {
+    if (diagnosticOnly) assertPurchaseActionsAdmitted();
     const found = ops.get(accountId, operationId);
     if (!found || found.kind !== 'purchase') throw new OperationError('not_found', 'purchase not found for this account');
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);

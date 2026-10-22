@@ -103,6 +103,32 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
           nonceFence: 0, expectedNonce: 1, target: 'TEST-seller', amountOs: '1', payload: {} });
         assert.equal(coordinates.reportHash(id, 'a'.repeat(64)), true);
       }
+      // A fully matching host projection is diagnostic in the installed API.
+      const hash = 'a'.repeat(64), identity = 'f'.repeat(64), wallet = '0x' + 'b'.repeat(64), payee = '0x' + 'c'.repeat(64);
+      const saved = { id: 'first', accountId: 'buyer', kind: 'purchase', status: 'broadcast_reported',
+        terms: { buyer: { wallet }, seller: { payee }, price: { amountOs: '1' },
+          domain: { network: 'testnet', rail: 'demos-native:DEM', mode: 'public-chain-read', chainIdentity: identity } } };
+      const forbidden = () => { throw new Error('host observations cannot authorize a write'); };
+      const chain = { network: 'testnet', pinnedIdentity: identity,
+        networkIdentity: async () => ({ identity, mode: 'public-chain-read' }),
+        observeTransfer: async () => ({ status: 'included', txHash: hash, payer: wallet, payee, amountOs: '1', blockNumber: 10 }),
+        getTransaction: async () => ({ hash, status: 'confirmed', blockNumber: 10, content: { from: wallet, nonce: 1 } }) };
+      const ops = { get: (account, id) => account === 'buyer' && id === 'first' ? saved : null,
+        transition: forbidden, record: forbidden };
+      const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store,
+        diagnosticOnly: false, settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } }, false);
+      const snapshot = coordinates.get('first');
+      const result = await service.verifyDeal({ accountId: 'buyer', operationId: 'first', txHash: hash });
+      assert.equal(result.verification.outcome, 'readback_only');
+      assert.equal(result.verification.authority, 'unqualified_host');
+      assert.equal(result.verification.observation.status, 'included');
+      assert.deepEqual(coordinates.get('first'), snapshot);
+      assert.equal(db.prepare('SELECT status FROM operations WHERE id=?').get('first').status, 'broadcast_reported');
+      assert.equal(db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n, 0);
+      await assert.rejects(service.verifyDeal({ accountId: 'someone-else', operationId: 'first' }), { code: 'not_found' });
+      for (const method of ['cancel', 'reportWalletResult', 'protocolRecheck']) {
+        await assert.rejects(service[method]({ accountId: 'buyer', operationId: 'first' }), { code: 'profile_not_admitted' });
+      }
       const approval = db.prepare('INSERT INTO approvals VALUES (?,?,?,?,?,?,?)');
       approval.run('a','first','first','TEST','TEST','TEST','TEST');
       assert.throws(() => approval.run('b','first','second','TEST','TEST','TEST','TEST'), store.isUniqueViolation);

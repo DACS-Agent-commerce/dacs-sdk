@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPurchaseService, createCoordinateStore, createProtocolPurchases, createSqlitePurchaseStore } from '@kynesyslabs/dacs-client';
+import { createPurchaseService as createPublicPurchaseService, createCoordinateStore, createProtocolPurchases, createSqlitePurchaseStore } from '@kynesyslabs/dacs-client';
+import { createPayDemSellerObserver } from '@kynesyslabs/dacs/seller';
+import { createPurchaseService } from '../src/purchases.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 
 const HASH = '1'.repeat(64), CHAIN = 'f'.repeat(64), WALLET = '0x' + 'a'.repeat(64), PAYEE = '0x' + '7'.repeat(64);
 const INCLUDED = { status: 'included', txHash: HASH, payer: WALLET, payee: PAYEE, amountOs: '2500000000', blockNumber: 10 };
-function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, signingAddress = WALLET } = {}) {
+function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, signingAddress = WALLET, publicApi = false } = {}) {
   const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
   t.after(() => db.close());
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8) }), coordinates = createCoordinateStore({ db });
@@ -28,8 +30,8 @@ function world(t, observation, { native = false, observer = 'TEST-host-reader', 
   coordinates.reportHash(op.id, HASH);
   const protocol = native || buyerRefusal ? createProtocolPurchases({ db, ops, coordinates, store,
     buyerAccess: buyerRefusal ? { assertWallet() { throw buyerRefusal; } } : null }) : null;
-  const purchases = createPurchaseService({ db, ops, coordinates, config: {}, chain, protocol, store, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
-  return { coordinates, op, ops, fixReader() { observation = { ...INCLUDED }; },
+  const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
+  return { coordinates, op, ops, purchases, fixReader() { observation = { ...INCLUDED }; },
     consumed: () => db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n,
     verify: () => purchases.verifyDeal({ accountId: op.accountId, operationId: op.id }) };
 }
@@ -45,6 +47,7 @@ for (const [label, observation] of [
   ['different hash', { ...INCLUDED, txHash: '2'.repeat(64) }],
   ['bigint extension', { ...INCLUDED, extra: 1n }],
   ['null result', null],
+  ['non-string reason', { status: 'failed', reason: 7 }],
 ]) {
   test(`malformed host observation (${label}) stays retryable and a corrected reader settles`, async t => {
     const w = world(t, observation), first = await w.verify();
@@ -107,3 +110,82 @@ for (const closed of [false, true]) {
     assert.equal(w.ops.get(w.op.accountId, w.op.id).status, 'broadcast_reported');
   });
 }
+
+
+test('public host readers remain diagnostic and cannot settle or consume a nonce', async t => {
+  const w = world(t, INCLUDED, { publicApi: true });
+  const before = w.coordinates.get(w.op.id), history = w.ops.history(w.op.id);
+  const result = await w.verify();
+  assert.equal(result.verification.outcome, 'readback_only');
+  assert.equal(result.verification.authority, 'unqualified_host');
+  assert.deepEqual(result.verification.observation, INCLUDED);
+  assert.equal(w.ops.get(w.op.accountId, w.op.id).status, 'broadcast_reported');
+  assert.deepEqual(w.coordinates.get(w.op.id), before);
+  assert.deepEqual(w.ops.history(w.op.id), history);
+  assert.equal(w.consumed(), 0);
+  for (const method of ['cancel', 'reportWalletResult', 'protocolRecheck']) {
+    await assert.rejects(w.purchases[method]({ accountId: w.op.accountId, operationId: w.op.id }), { code: 'profile_not_admitted' });
+  }
+});
+
+test('public diagnostic reads validate malformed observations without saving them', async t => {
+  const w = world(t, { ...INCLUDED, amountOs: 1n }, { publicApi: true });
+  const before = w.coordinates.get(w.op.id);
+  const first = await w.verify();
+  assert.equal(first.verification.outcome, 'readback_only');
+  assert.equal(first.verification.observation.status, 'malformed');
+  assert.doesNotThrow(() => JSON.stringify(first));
+  w.fixReader();
+  assert.deepEqual((await w.verify()).verification.observation, INCLUDED);
+  assert.deepEqual(w.coordinates.get(w.op.id), before);
+});
+
+
+for (const failure of ['non-native transaction', 'inconsistent amount']) {
+  test(`core invalid observation (${failure}) preserves reason and consumed nonce`, async t => {
+    const tx = { hash: HASH, status: 'confirmed', blockNumber: 10, content: {
+      from: WALLET, from_ed25519_address: WALLET, nonce: 7, to: PAYEE, type: 'native', amount: '2500000000',
+      data: ['native', { nativeOperation: 'send', args: [PAYEE, '2500000000'] }] } };
+    if (failure === 'non-native transaction') tx.content.type = 'storage';
+    else tx.content.data[1].args[1] = '1';
+    const replies = { getTransactionStatus: { state: 'included', blockNumber: 10 }, getTxByHash: tx,
+      getBlockByNumber: { number: 10, status: 'confirmed', content: { timestamp: 1786694557, ordered_transactions: [HASH] } } };
+    const observer = createPayDemSellerObserver({ rpc: 'https://rpc.invalid', fetchImpl: async (_url, init) => {
+      const { message } = JSON.parse(init.body).params[0];
+      return new Response(JSON.stringify({ result: 200, response: replies[message] }));
+    } });
+    const observation = await observer.observeDemosTransfer(HASH);
+    assert.equal(observation.status, 'invalid');
+    assert.match(observation.reason, failure === 'non-native transaction' ? /not a native/ : /amount/);
+    const w = world(t, observation), result = await w.verify();
+    assert.equal(result.verification.outcome, 'invalid_observation');
+    assert.deepEqual(result.verification.observation, observation);
+    assert.equal(result.operation.status, 'payment_uncertain');
+    assert.equal(result.verification.slotConsumed, true);
+    assert.equal(w.consumed(), 1);
+    assert.equal(w.coordinates.get(w.op.id).observation.observation.reason, observation.reason);
+    w.fixReader();
+    assert.equal((await w.verify()).verification.outcome, 'verified');
+    assert.equal(w.consumed(), 1);
+  });
+}
+
+test('wallet-access-closed readback refuses non-JSON observation fields', async t => {
+  const cause = Object.assign(new Error('TEST-closed'), { code: 'buyer_access_closed' });
+  const w = world(t, { ...INCLUDED, amountOs: 1n }, { buyerRefusal: cause });
+  const result = await w.verify();
+  assert.equal(result.verification.outcome, 'readback_only');
+  assert.equal(result.verification.observation.status, 'malformed');
+  assert.doesNotThrow(() => JSON.stringify(result));
+  assert.equal(w.consumed(), 0);
+});
+
+test('public diagnostics re-read saved settlements and never report saved success as fresh verification', async t => {
+  const w = world(t, { status: 'pending' }, { publicApi: true });
+  w.coordinates.recordObservation(w.op.id, { ...INCLUDED, txHash: HASH }, true);
+  w.ops.transition(w.op.id, 'broadcast_reported', 'settled_verified');
+  const before = w.coordinates.get(w.op.id), result = await w.verify();
+  assert.equal(result.verification.outcome, 'readback_only');
+  assert.deepEqual(result.verification.observation, { status: 'pending' });
+  assert.deepEqual(w.coordinates.get(w.op.id), before);
+});

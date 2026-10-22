@@ -193,7 +193,7 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 
 ## D11 review fixes: action admission, host contracts and package contents
 
-- Public purchase approval challenges, approvals and handoffs now call the same unconditional action-admission hold as protocol purchases. Legacy operations, including previously approved operations and handoff reissues, cannot reach native payload construction, challenge calls or coordinate writes. Payment verification, signing and settlement rules are unchanged.
+- Public purchase approval challenges, approvals and handoffs now call the same unconditional action-admission hold as protocol purchases. Legacy operations, including previously approved operations and handoff reissues, cannot reach native payload construction, challenge calls or coordinate writes. Readback now validates host observation shapes, preserves core invalid results and attributes observations to their injected reader. The public factory returns diagnostic readback only; the retained source settlement integration remains private.
 - The old nested buyer-access option throws a migration error. A successful synchronous buyer assertion must return exactly undefined; predicates, generators and promises cannot grant authority. Store construction requires the package-owned concrete SQLite transaction. Its synchronous callback result is validated before commit; errors and thenables roll back. Classifiers must return exact synchronous booleans.
 - Root exports include the client, seller-client, wallet-format, bridge and readback error classes so host guards retain defining identity.
 - Pure wallet payload helpers and their existing error identity are isolated from the provider. The tarball contains exactly the two entry-point import closures, README, license and manifest; an npm dry-run test rejects surplus source and internal records. The provider retains its helper re-exports; helper algorithms are unchanged.
@@ -229,3 +229,10 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - Host transfer observations have a documented JSON contract. Malformed data stays retryable without a terminal terms mismatch, and the recorded observer identifies the injected reader. Alternate signing-key projections remain supported.
 - Native source reconciliation reports unavailable when the host has no native capability. Wallet-access readback codes and the separate deadline-watch invocation are documented.
 - Wallet journal lock callbacks preserve every rejection value, including falsy values, and release their lane before propagating it. The statically served wallet provider retains its local payload helpers, with equivalence and independent-loading tests.
+
+
+## D11 diagnostic host boundary
+
+- The public purchase factory reports fresh host observations without persisting payment decisions or driving protocol effects. Retained source settlement and crash recovery use the private factory. Public cancellation, wallet-result reporting and protocol recheck remain under admission.
+- Core `invalid` transfer observations retain their reason and canonical-body nonce reconciliation in the retained integration. Malformed host shapes use a distinct diagnostic status, including wallet-access-closed readback.
+- The host operations contract specifies owner-scoped reads, atomic status compare-and-swap, append-only events and seller-session state transitions. Directory summaries remain discovery hints.

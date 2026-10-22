@@ -866,6 +866,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // purchase readback cache on, its Agreement hit re-reads the current program
   // state only, reusing this purchase's authenticated transaction/block proof.
   async function recheckCommitment(operation, { reuseVerified = false } = {}) {
+    assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertAgreementPaymentHeld(operation);
     if (!available) throw unavailable();

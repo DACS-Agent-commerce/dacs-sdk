@@ -51,7 +51,7 @@ for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
     if (ROOT.functions.includes(name) || ROOT.classes.includes(name)) assert.equal(typeof client[name], 'function');
     const module = Object.keys(modules).find(path => modules[path].split(' ').includes(name));
     const original = await import(new URL(module, import.meta.resolve('@kynesyslabs/dacs-client')));
-    assert.equal(client[name], original[name], 'export retains its defining identity');
+    assert.equal(client[name], original[name === 'createPurchaseService' ? 'createPublicPurchaseService' : name], 'export retains its defining identity');
   });
 }
 

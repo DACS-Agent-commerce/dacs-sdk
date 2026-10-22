@@ -792,5 +792,26 @@
       "packages/dacs-client/scripts/check-provenance.test.mjs",
       "packages/dacs-client/scripts/delta-provenance.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 constrain public readback to diagnostics and align observer contracts",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs",
+      "packages/dacs-client/test/package-contents.test.mjs",
+      "packages/dacs-client/test/public-api.test.mjs",
+      "packages/dacs-client/test/sweep-contracts.test.mjs"
+    ]
   }
 ]

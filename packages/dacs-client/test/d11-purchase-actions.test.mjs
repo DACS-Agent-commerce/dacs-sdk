@@ -73,7 +73,7 @@ for (const status of ['awaiting_approval', 'approved', 'payment_handoff']) {
   }
 }
 
-test('nested serializing store calls join the outer transaction and roll back together', t => {
+test('nested serializing store calls use savepoints and roll back with the outer transaction', t => {
   const w = world(t), cause = new Error('TEST-rollback');
   assert.throws(() => w.store.transaction(w.db, () => {
     w.db.prepare('INSERT INTO meta (key,value) VALUES (?,?)').run('TEST-outer', 'TEST');

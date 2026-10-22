@@ -1605,6 +1605,52 @@
           "after": "53fd1aab9efc53af9becb925e0933ee7601dde1f"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 constrain public readback to diagnostics and align observer contracts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "11fd455e258f22b31e4f60eccc44f23c24884f8f",
+          "after": "755d14a97ab96202d6c3c642758b5511573521e6"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "cdec5513e47a6619d24945508fc3068b0947c4ec",
+          "after": "3a2f791deae7661e27d0545c7bb54a3cf694d494"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "dc64b40d31bc23abd0adc66bf0523dee2194947a",
+          "after": "6b7b8ac62e0f6381b9262b9f567f43812a578e0c"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+          "before": "9af505a6cee4fe8a7858cdf209a7b7ca7e3ff523",
+          "after": "34fa04bf901c2bd3439d85bb251fa159a97d4e8a"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "848cc809e8ad906075024ef9ac1509df59fc6a1b",
+          "after": "0ece7589c9028ac6d578fdda441cf2a49464dcc8"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "a37f2735b669091c6a1d69b2f25a1f5e20e862ed",
+          "after": "4d6a27d69f6d53dbd1f64f85c0f223826ff48e33"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "cb81fa7eaac038e26f34e910d1ac99c5259eb65f",
+          "after": "0bb22ecb3c4906984740d7507195b1436857ece7"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "53fd1aab9efc53af9becb925e0933ee7601dde1f",
+          "after": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
+        }
+      ]
     }
   ]
 }

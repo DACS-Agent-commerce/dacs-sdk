@@ -52,6 +52,7 @@ for(const authority of [undefined,{}, {standardRevision:'old'}, {standardRevisio
  await assert.rejects(buyer.planRequest({}),refused);
  await assert.rejects(buyer.submitAgreement({}),refused);
  await assert.rejects(buyer.recheck({}),refused);
+ await assert.rejects(buyer.recheckCommitment({}),refused);
  assert.throws(()=>planAgreement({}),refused);assert.throws(()=>planAgreementFromInput({}),refused);
  await assert.rejects(exchangeAgreement({seller:{propose:effect},anchorAdapter:{write:effect}}),refused);
  await assert.rejects(createSellerAgent({signer:{sign:effect},profileAuthority:authority}),refused);
