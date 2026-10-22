@@ -99,6 +99,45 @@ test("explicitly undefined optional recorder behaves like an omitted recorder", 
   expect(demosNode.transfer).toHaveBeenCalledTimes(1);
 });
 
+test("a direct rail remains usable without optional attempt recording, without restart guarantees", async () => {
+  const { putAttempt: _put, readAttempt: _read, ...log } = createInMemorySettlementLog();
+  const store = createIdempotencyStore(log);
+  const terms = {
+    bindingVersion: "1" as const, railId: "pay-dem", jobId: "job-a", phaseIndex: 0, phase: "pay-dem",
+    amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer, payee,
+    network: "demos", finality: { model: "bft-final" },
+  };
+  const rail = await sdkRail();
+  await expect(store.once(key, terms, async (fence) => {
+    const { execution: _execution, ...result } = await rail.settle({ recipient: payee, amount: terms.amount }, fence);
+    return { ...result, payer, payee };
+  })).resolves.toMatchObject({ ok: true, txHash: hash });
+  expect(demosNode.broadcast).toHaveBeenCalledTimes(1);
+});
+
+test("explicitly undefined readOutcome refuses an audit before claiming", async () => {
+  const once = vi.fn();
+  const settle = payDemSettle(await sdkRail(), {}, { store: { once, readOutcome: undefined } });
+  await expect(settle(request(history()))).rejects.toThrow(/read-only outcome lookup/);
+  expect(once).not.toHaveBeenCalled();
+  expect(demosNode.transfer).not.toHaveBeenCalled();
+});
+
+test("a store cannot ask the reconciler about another settlement key", async () => {
+  const inner = createIdempotencyStore();
+  const reconcile = vi.fn();
+  const settle = payDemSettle(await sdkRail(), {}, { reconcile, store: {
+    readOutcome: inner.readOutcome, readAttempt: inner.readAttempt,
+    once: async (_key, _terms, _submit, recover) => {
+      await recover!("pay-dem:other-job:0");
+      throw new Error("unexpected reconciliation completion");
+    },
+  } });
+  await expect(settle(request())).rejects.toThrow(/different settlement key/);
+  expect(reconcile).not.toHaveBeenCalled();
+  expect(demosNode.transfer).not.toHaveBeenCalled();
+});
+
 test("explicitly undefined priorAttempts behaves like omitted history", async () => {
   const settle = payDemSettle(await sdkRail());
   await expect(settle(request({ priorAttempts: undefined }))).resolves.toMatchObject({ ok: true, txHash: hash });

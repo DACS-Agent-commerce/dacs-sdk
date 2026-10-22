@@ -654,8 +654,15 @@ audit, `reconcile` receives a `PayDemSettlementAuditContext`: the same tuple plu
 `0x`). `getTxByHash` matches that stored form exactly and answers any other form
 as not found; `getTransactionStatus` lower-cases hex but rejects a `0x` prefix,
 so a reader that mixes them can see `included` with no record. The reconciler
-returns the node's record for that hash and, whenever it can load one, the
+returns a normalized reconciliation result derived from the node's record
+for that hash (`PayDemReconciledSettlement` or `PayDemReconciledFailure`),
+and, whenever it can load one, the
 original prepared-transfer journal entry for that hash as `preparedTransfer`.
+The raw node record's `content` and `status` are not this SDK result shape;
+see the [normalization example](docs/pay-dem-execution.md#normalizing-a-reconciliation-result).
+Recovery preserves a known network fee when the reader omits it and refuses
+a different fee for the same finalized payment. A supplied journal's confirmed
+total debit must equal the successful result's OS amount plus reported fee.
 
 The SDK counts the retained hash for this payment only through its own record
 that this key signed it, and refuses the audit otherwise. That record is the
@@ -734,7 +741,8 @@ payee for this one, even when the reconciler returns an entry naming this job.
 The reconciler throws when the entry it loads conflicts with the node's record,
 and never returns `null` for the retained hash.
 
-A process that dies after the record and before its broadcast leaves a recorded
+A failure after the record and before its broadcast, including a process crash
+or a fence refusal, leaves a recorded
 hash that nothing sent. The SDK never signs or sends again for that key: when
 the reconciler finds nothing for the recorded hash, the restart is refused and
 the key stays held. The operator clears it in the durable log only after
@@ -750,6 +758,15 @@ A moved nonce alone is insufficient: it also matches the recorded
 transaction having landed. If the hashes match, recover that payment's
 outcome and retain the key. Missing records or a lagging node leave the key
 held; they do not authorize a replacement payment.
+
+After proving those conditions, clearing a key means removing its whole durable
+record (lease, attempt and outcome), as an operator action outside the
+`SettlementLog` contract. Removing only the lease leaves the immutable attempt
+in place and cannot enable a replacement. If session history still names the
+abandoned hash, clearing the rail log alone also cannot enable a replacement:
+abandon that job and use a new `jobId`, or explicitly clear its retained session
+settlement outcome together with the whole rail-log record under the same
+operator procedure.
 
 A restart without history (the lease expired and the session holds no hash)
 reconciles in the store. When the key has an attempt record, the reconciler

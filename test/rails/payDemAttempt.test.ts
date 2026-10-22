@@ -300,11 +300,11 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
     expect(sdkTransfers()).toBe(1);
   });
 
-  test("a stale record write leaves the returned hash unbound for an audit through the same bridge", async () => {
+  test("an expired generation is refused before recording and leaves its signed hash unbound for an audit", async () => {
     let now = 1_000;
     const log = createInMemorySettlementLog();
     const store = createIdempotencyStore(log, { owner: "A", leaseDurationMs: 1_000, now: () => now });
-    // The node signs after the rail's generation expired, so the record is refused.
+    // The node signs after the rail's generation expired, so no record is written.
     const sign = demosNode.transfer.getMockImplementation()!;
     demosNode.transfer.mockImplementation(async (...args: unknown[]) => {
       now += 60_000;
@@ -315,7 +315,7 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
     const reconcile = vi.fn(async (context: Readonly<PayDemSettlementAuditContext>) =>
       context.txHash === undefined ? null : executed(hashA));
     const settle = payDemSettle(await sdkRail(), {}, { store, reconcile: reconcile as PayDemSettlementReconcile });
-    await expect(settle(request("job-a"))).rejects.toThrow(/attempt was produced by a stale generation/);
+    await expect(settle(request("job-a"))).rejects.toThrow(/effect fence is stale/);
     await expect(log.readAttempt!("pay-dem:job-a:0")).resolves.toBeNull();
 
     await expect(settle(request("job-a", hashA, true))).rejects.toThrow(

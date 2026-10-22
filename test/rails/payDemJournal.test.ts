@@ -215,9 +215,24 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     ["no optional fields", { denomination: undefined }],
   ])("accepts the entry a rail journals with %s", async (_case, over) => {
     const preparedTransfer = JSON.parse(JSON.stringify(entry(over))) as PayDemPreparedTransfer;
-    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({ ...executed(hashA), preparedTransfer }));
+    const networkFeeOs = preparedTransfer.confirmedTotalDebitOs === undefined ? undefined
+      : (BigInt(preparedTransfer.confirmedTotalDebitOs) - 1000000000n).toString();
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({ ...executed(hashA), preparedTransfer,
+      ...(networkFeeOs === undefined ? {} : { networkFeeOs }),
+    }));
     const f = await auditor(reconcile, await settledJobA());
     await expect(f.settle(request("job-a", 0, hashA))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    expect(f.once).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
+  });
+
+  test.each(["0", "1001", undefined])("refuses fee %s inconsistent with the journal's confirmed debit", async (networkFeeOs) => {
+    const reconcile = vi.fn<PayDemSettlementReconcile>(async () => ({
+      ...executed(hashA), preparedTransfer: entry({ confirmedTotalDebitOs: "1000001000" }) as PayDemPreparedTransfer,
+      ...(networkFeeOs === undefined ? {} : { networkFeeOs }),
+    }));
+    const f = await auditor(reconcile, await settledJobA());
+    await expect(f.settle(request("job-a", 0, hashA))).rejects.toThrow(/fee.*confirmed.*debit/);
     expect(f.once).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
   });

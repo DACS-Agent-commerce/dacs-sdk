@@ -108,6 +108,16 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(source).not.toContain("audit finishes only through that store's");
   });
 
+  it("describes normalized reconciliation and clearing the complete abandoned record", () => {
+    for (const path of ["README.md", "docs/pay-dem-execution.md"]) {
+      const text = read(path).replace(/\s+/g, " ");
+      expect(text).toContain("normalized reconciliation");
+      expect(text).toContain("lease, attempt and outcome");
+      expect(text).toContain("operator action outside the `SettlementLog` contract");
+    }
+    expect(read("docs/pay-dem-execution.md")).toContain('execution: "executed"');
+  });
+
   it("says a failure proof from outside createPayDemRail never becomes the recorded outcome", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
     expect(doc).toContain(
