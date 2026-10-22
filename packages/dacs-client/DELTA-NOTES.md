@@ -221,3 +221,11 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 
 - The retained-readback test uses `module.register` with an isolated test loader at Node 22.13.0 and 23.4.0. The minimum-runtime CI job runs those decisions together with public API, atomicity and domain crash tests using explicit TAP output.
 - Native agreement-payment crash vectors kill before and after settlement, native supersession/nonce-resolution markers and both pending-event commits. Reopen preserves each committed decision; repeated source failures preserve the original reason without duplicate events, and a later successful retry completes both markers once. Production source and admission rules are unchanged.
+
+## D11 buyer state and readback contracts
+
+- Export the required buyer-state DDL, use it in the offline state harness, and construct all buyer factories from paired packed artifacts. The consumer checks shared unverified hash pointers, unique verified hashes, and one approval per operation/challenge.
+- Nested SQLite transactions use savepoints. A caught inner error or refused promise rolls back its own writes; successful nested work remains part of the outer commit.
+- Host transfer observations have a documented JSON contract. Malformed data stays retryable without a terminal terms mismatch, and the recorded observer identifies the injected reader. Alternate signing-key projections remain supported.
+- Native source reconciliation reports unavailable when the host has no native capability. Wallet-access readback codes and the separate deadline-watch invocation are documented.
+- Wallet journal lock callbacks preserve every rejection value, including falsy values, and release their lane before propagating it. The statically served wallet provider retains its local payload helpers, with equivalence and independent-loading tests.

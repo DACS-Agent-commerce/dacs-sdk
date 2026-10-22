@@ -217,9 +217,9 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     // release leaves the lane held (fail closed) and is reported to the caller.
     try {
       const removed = tx('BEGIN IMMEDIATE', () => db.prepare('DELETE FROM locks WHERE key = ? AND token = ?').run(key, token).changes);
-      if (removed !== 1) fail('journal-fenced', 'the wallet lane lock was removed while held; results must be reconciled by readback', outcome.error ? { cause: outcome.error } : undefined);
+      if (removed !== 1) fail('journal-fenced', 'the wallet lane lock was removed while held; results must be reconciled by readback', Object.hasOwn(outcome, 'error') ? { cause: outcome.error } : undefined);
     } finally { active -= 1; }
-    if (outcome.error) throw outcome.error;
+    if (Object.hasOwn(outcome, 'error')) throw outcome.error;
     return outcome.value;
   }
 

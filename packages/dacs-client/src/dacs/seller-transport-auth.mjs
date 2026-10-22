@@ -179,7 +179,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000 }) {
   } catch (error) { if (error.code !== 'EEXIST') throw error; }
   const file = lstatSync(path);
   if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o077) !== 0 || file.uid !== process.getuid?.()) throw new Error('transport store file must be private and regular');
-  // Only server journal construction needs SQLite; buyer imports also run on Node 20.
+  // Only server journal construction needs SQLite; the root import does not load it.
   const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 1000');

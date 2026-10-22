@@ -1,4 +1,4 @@
-// Public buyer API. SQLite is available only through the durable-journal subpath.
+// Public buyer API. The root loads SQLite lazily when a transaction runs.
 export { createPurchaseService, purchaseNext, PURCHASE_STATUS_HELP, networkIdentityLabel } from './purchases.mjs';
 export { createProtocolPurchases, protocolView, usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
 export { createDeliveryDeadlineWatch } from './dacs/delivery-deadline-watch.mjs';
@@ -27,3 +27,4 @@ export { WalletFormatError } from './signatures.mjs';
 export { canonicalize, contentHash, normalizeDemAmount, SDK_PROVENANCE, logicalListingAddress, verifyComponent } from './dacs/listing.mjs';
 export { fundingHelpSentence } from './buyer-funding.mjs';
 export { createSqlitePurchaseStore } from './seams/purchase-store-not-wired.mjs';
+export { PURCHASE_STATE_SCHEMA } from './purchase-state-schema.mjs';

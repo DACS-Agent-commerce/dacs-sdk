@@ -1509,6 +1509,102 @@
           "after": "9ae65eb7f89d25542189d0e7e9242cdf63afe8b0"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 complete buyer state and readback contracts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/chain.mjs",
+          "before": "ba97147f77c17de62b3a769c61f830a793f1a449",
+          "after": "597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "3ec5ce19ae5042e26e22efe57de0f3551cfd4029",
+          "after": "11fd455e258f22b31e4f60eccc44f23c24884f8f"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "1e18fb0c5c16b8b2d131912f0f82ed1027b48274",
+          "after": "68a8a8946386f010d7a157a25e184bfb52370108"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "2da2dd379d8373233fc27cf5a16596dbcfef5766",
+          "after": "cdec5513e47a6619d24945508fc3068b0947c4ec"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "637c92e141d460b6a6b6e35fd65ed5e94767fd18",
+          "after": "4322f3da825c1c9597adac402e0fdb6a79878103"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": null,
+          "after": "251b9d4c6f691d7f355c5818406cd6175f0a42d6"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "4ad468a36eaa8d89fedbf93481fc4efe4bd37310",
+          "after": "dc64b40d31bc23abd0adc66bf0523dee2194947a"
+        },
+        {
+          "path": "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+          "before": "a285fa77b2f41fff3a4e5fd4033429df9fb3d696",
+          "after": "fb2572f9cc687f812d0c29b3264b913f96d7fbaf"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "8917eac7303f718f2fb1ec4dad47235c0364c4cb",
+          "after": "0dfea61273c7142ebe5517515ba1fbd7bb28454e"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "8d0873f8f7b1bf55b7a5738486a7725bf02d6fc5",
+          "after": "1dee137ce9cec397a23f7fecbd8e0f90a1b90713"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal.test.mjs",
+          "before": null,
+          "after": "104a6ae7dcfd20ca84c7cfa98b7783843935c030"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+          "before": "b152062ad8810d03bfe013de4eae86e4b157e942",
+          "after": "f1e6076cb72330b0bfed0ede94455e39d360272d"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": null,
+          "after": "848cc809e8ad906075024ef9ac1509df59fc6a1b"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "66f72d26900a14d77ba2f82336ea0cdd7d61997d",
+          "after": "a37f2735b669091c6a1d69b2f25a1f5e20e862ed"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "32c6607d4d19ec0baf82f2371c958709e4289fc6",
+          "after": "cb81fa7eaac038e26f34e910d1ac99c5259eb65f"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-executed-only.test.mjs",
+          "before": "498f20be5b423d6328ffb0031d71d4e3d8233c43",
+          "after": "36cf0c10d71208afda5d52f6aef02adc0121da62"
+        },
+        {
+          "path": "packages/dacs-client/test/store-atomicity.test.mjs",
+          "before": "d8e3c8b6d55ec8bd22662944d38d46ea5aa9b06f",
+          "after": "ab6e15a77a2fa3863da7a45fd7c057137bc9ed37"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "3ba7301a4ed8d3b7808ad92e3e439a6e6a15b1fb",
+          "after": "53fd1aab9efc53af9becb925e0933ee7601dde1f"
+        }
+      ]
     }
   ]
 }

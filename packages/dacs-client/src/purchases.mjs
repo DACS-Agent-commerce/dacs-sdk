@@ -37,7 +37,7 @@ import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
 import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
 import { OutboundError } from './util/http.mjs';
-import { nodeProjectedNonce } from './dacs/chain.mjs';
+import { nodeProjectedNonce, OS_INTEGER } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
 import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView } from './dacs/protocol-purchases.mjs';
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
@@ -711,10 +711,17 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (!coordinates.recordObservation(...args)) throw new OperationError('stale_readback', 'the retained purchase pointer changed; observation was not saved');
   }
 
+  const nativeResolutionAvailable = () => protocol?.nativePaymentReadbackAvailable !== false && typeof protocol?.nativePaymentSuperseded === 'function';
+  const nativeResolutionHelp = nextStep => nativeResolutionAvailable() ? { nextStep } : {
+    nativeReadback: 'unavailable',
+    nextStep: 'Native source reconciliation is unavailable in this host. Reconcile the retained journal in the original qualified host.',
+  };
+
   async function resolveNativeSupersession(operation) {
     if (!usesNativeAgreementPayment(operation) || operation.status !== 'superseded') return true;
     const coords = coordinates.get(operation.id);
     if (coords?.observation?.nativeLaneResolved === true) return true;
+    if (!nativeResolutionAvailable()) return false;
     const owner = ops.get(operation.accountId, coords?.observation?.supersededBy);
     const settled = owner && coordinates.get(owner.id);
     try {
@@ -764,6 +771,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   async function resolveNativeNonceConsumption(operation) {
     const coords = coordinates.get(operation.id);
     if (coords?.observation?.nativeNonceResolved === true) return true;
+    if (!nativeResolutionAvailable()) return false;
     try {
       if (!['settled_verified', 'payment_mismatch'].includes(operation.status) || coords?.observation?.slotConsumed !== true || coords.observation.txHash !== coords.reportedTxHash) {
         throw new OperationError('invalid_state', 'native nonce reconciliation lacks this purchase\'s confirmed slot');
@@ -798,7 +806,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   async function withNativeNonceResolution(result) {
     if (!usesNativeAgreementPayment(result.operation)) return result;
     const resolved = await resolveNativeNonceConsumption(result.operation);
-    return { ...result, verification: { ...result.verification, nativeNonceResolved: resolved, ...(!resolved ? { nextStep: 'Retry verify_deal on this purchase to finish releasing other retained native source intents at its nonce.' } : {}) } };
+    return { ...result, verification: { ...result.verification, nativeNonceResolved: resolved, ...(!resolved ? nativeResolutionHelp('Retry verify_deal on this purchase to finish releasing other retained native source intents at its nonce.') : {}) } };
   }
 
   async function finishNativeSupersessions(operation) {
@@ -808,6 +816,25 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       const other = ops.get(operation.accountId, pending.operationId);
       if (other) await resolveNativeSupersession(other);
     }
+  }
+
+  // The host reader's result is an observation, not a terms contradiction
+  // until its fields have the documented types. Discard malformed data before
+  // persisting it (in particular, bigint cannot be serialized as JSON).
+  function checkedTransferObservation(value, hash) {
+    const invalid = reason => ({ status: 'invalid', reason });
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('chain observation must be an object');
+    if (!['included', 'pending', 'not-found', 'failed', 'unavailable'].includes(value.status)) return invalid('chain observation status is unsupported');
+    if (value.status === 'included') {
+      if (typeof value.amountOs !== 'string' || !OS_INTEGER.test(value.amountOs)) return invalid('included amountOs must be canonical decimal OS text');
+      if (!readableAddress(value.payer) || !readableAddress(value.payee)) return invalid('included payer and payee must be readable Demos addresses');
+      if (!Number.isSafeInteger(value.blockNumber) || value.blockNumber < 0) return invalid('included blockNumber must be a nonnegative safe integer');
+      try {
+        if (typeof value.txHash !== 'string' || canonicalHash(value.txHash) !== hash) return invalid('included txHash differs from the requested hash');
+      } catch { return invalid('included txHash must be a transaction hash'); }
+    }
+    try { JSON.stringify(value); } catch { return invalid('chain observation must be JSON serializable'); }
+    return value;
   }
 
   async function verifySettlement(operation) {
@@ -837,7 +864,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (operation.status === 'superseded' && coords?.observation?.supersededBy) {
       const native = usesNativeAgreementPayment(operation);
       const resolved = native ? await resolveNativeSupersession(operation) : true;
-      return { operation, verification: { outcome: 'superseded', ...coords.observation, ...(native ? { nativeLaneResolved: resolved, ...(!resolved ? { nextStep: 'Retry verify_deal on this purchase to finish releasing its retained native source lane.' } : {}) } : {}) } };
+      return { operation, verification: { outcome: 'superseded', ...coords.observation, ...(native ? { nativeLaneResolved: resolved, ...(!resolved ? nativeResolutionHelp('Retry verify_deal on this purchase to finish releasing its retained native source lane.') : {}) } : {}) } };
     }
     if (!coords?.reportedTxHash) return { operation, verification: { outcome: operation.status === 'payment_uncertain' ? 'hash_required' : 'no_transaction_reported' } };
     const hash = coords.reportedTxHash;
@@ -860,8 +887,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     } catch (error) {
       observation = { status: 'unavailable', reason: error.message };
     }
+    observation = checkedTransferObservation(observation, hash);
     let body = null, bodyError = null;
-    if (!['unavailable', 'pending', 'not-found'].includes(observation.status)) {
+    if (!['invalid', 'unavailable', 'pending', 'not-found'].includes(observation.status)) {
       try { body = await chain.getTransaction(hash); } catch (error) { bodyError = error; }
     }
     const decided = transaction(db, () => {
@@ -883,7 +911,11 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
           ...(retained.verifiedAt ? { verifiedAt: retained.verifiedAt } : {}) },
       };
       operation = current;
-      const result = { txHash: hash, observedAt: new Date(now()).toISOString(), chainMode: chain.evidenceMode, observer: '@kynesyslabs/dacs observePayDemTransferCore (single-node consistent view; not a validator-quorum proof)', ...scope, observation, slotConsumed: false };
+      const result = { txHash: hash, observedAt: new Date(now()).toISOString(), chainMode: chain.evidenceMode, observer: typeof chain.observer === 'string' && chain.observer.trim() ? chain.observer : 'host-supplied chain reader (observer not declared)', ...scope, observation, slotConsumed: false };
+      if (observation.status === 'invalid') {
+        recordUnverified(result);
+        return { operation, verification: { outcome: 'invalid_observation', ...result } };
+      }
       if (observation.status === 'unavailable') {
         recordUnverified(result);
         return { operation, verification: { outcome: 'chain_unavailable', ...result } };
@@ -1041,7 +1073,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (decided.verification.outcome === 'superseded' && usesNativeAgreementPayment(decided.operation)) {
       const resolved = await resolveNativeSupersession(decided.operation);
       return { ...decided, verification: { ...decided.verification, nativeLaneResolved: resolved,
-        ...(!resolved ? { nextStep: 'Retry verify_deal on this purchase to finish releasing its retained native source lane.' } : {}) } };
+        ...(!resolved ? nativeResolutionHelp('Retry verify_deal on this purchase to finish releasing its retained native source lane.') : {}) } };
     }
     return decided.operation.status === 'payment_mismatch' ? withNativeNonceResolution(decided) : decided;
   }

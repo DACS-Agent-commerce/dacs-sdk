@@ -50,6 +50,7 @@
     "src/devnet-demo/storage-write-recovery.mjs",
     "src/index.mjs",
     "src/purchase-limits.mjs",
+    "src/purchase-state-schema.mjs",
     "src/purchases.mjs",
     "src/seams/purchase-store-not-wired.mjs",
     "src/seams/seller-integration-not-wired.mjs",

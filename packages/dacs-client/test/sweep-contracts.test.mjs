@@ -10,8 +10,8 @@ import {createBuyerChainReadback} from '../src/dacs/buyer-chain-readback.mjs';
 import {createDevnetAgreementTransport} from '../src/wallet/devnet-native-transport.mjs';
 import {createProtocolPurchases} from '../src/dacs/protocol-purchases.mjs';
 import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
-// The held buyer API is inspected with a store that refuses every write and no
-// operator capability; no authority, wallet or native check is mocked.
+// The held buyer API uses the concrete store with an invalid database handle
+// and no operator capability; no authority, wallet or native check is mocked.
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 const noWrites=createSqlitePurchaseStore();
 const jobId='01ARZ3NDEKTSV4RRFFQ69G5FAV',seller='did:demos:agent:'+'a'.repeat(64);

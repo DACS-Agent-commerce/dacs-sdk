@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const packageDir = fileURLToPath(new URL('..', import.meta.url));
+const sdkDir = resolve(packageDir, '../..');
 function entryPointClosure() {
   const files = new Set();
   function visit(path) {
@@ -44,4 +45,71 @@ test('npm pack ships only the two entry points and their reviewed import closure
     assert.doesNotMatch(path, /(?:^|\/)(?:public|portal|portal-intent|config|seller-agent|seller-durable-state|switch-files|FIX-REPORT|\.fix-tmp|\.rr-tmp|\.stack)(?:[/.]|$)/, path);
   }
   assert.deepEqual(files, [...entryPointClosure(), 'package.json', 'README.md', 'LICENSE'].sort());
+});
+
+test('paired packed artifacts supply the schema needed by every buyer factory', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'dacs-client-consumer-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const run = (command, args, cwd) => {
+    const result = spawnSync(command, args, { cwd, encoding: 'utf8', maxBuffer: 4 << 20 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return result.stdout;
+  };
+  const core = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], sdkDir))[0];
+  const client = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], packageDir))[0];
+  const app = join(directory, 'app');
+  mkdirSync(app);
+  const dependencies = { '@kynesyslabs/dacs': 'file:' + join(directory, core.filename),
+    '@kynesyslabs/dacs-client': 'file:' + join(directory, client.filename) };
+  const manifest = { name: 'TEST-packed-buyer', private: true, type: 'module', dependencies };
+  writeFileSync(join(app, 'package.json'), JSON.stringify(manifest));
+  // Reuse the repository's exact registry resolutions. npm ci caches the
+  // tarballs, so this acceptance test needs no registry metadata or network.
+  const lock = JSON.parse(readFileSync(join(sdkDir, 'package-lock.json')));
+  lock.name = manifest.name;
+  lock.packages[''] = manifest;
+  for (const path of Object.keys(lock.packages)) {
+    if (path && (!path.startsWith('node_modules/') || lock.packages[path].link)) delete lock.packages[path];
+  }
+  for (const [name, packed, source] of [['@kynesyslabs/dacs', core, sdkDir], ['@kynesyslabs/dacs-client', client, packageDir]]) {
+    const pkg = JSON.parse(readFileSync(join(source, 'package.json')));
+    lock.packages['node_modules/' + name] = { version: pkg.version, resolved: dependencies[name], integrity: packed.integrity,
+      dependencies: pkg.dependencies, peerDependencies: pkg.peerDependencies, peerDependenciesMeta: pkg.peerDependenciesMeta, engines: pkg.engines };
+  }
+  writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
+  run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
+  // This consumer has no source-tree imports or test database helper.
+  writeFileSync(join(app, 'consumer.mjs'), `
+    import assert from 'node:assert/strict';
+    import { DatabaseSync } from 'node:sqlite';
+    import { PURCHASE_STATE_SCHEMA, createSqlitePurchaseStore, createCoordinateStore,
+      createPurchaseService, createProtocolPurchases, createDeliveryDeadlineWatch } from '@kynesyslabs/dacs-client';
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('PRAGMA foreign_keys=ON');
+      db.exec(PURCHASE_STATE_SCHEMA);
+      const store = createSqlitePurchaseStore(), coordinates = createCoordinateStore({ db });
+      assert.equal(typeof createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {},
+        challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' } }).verifyDeal, 'function');
+      assert.equal(createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store }).actionsAdmitted, false);
+      assert.equal(typeof createDeliveryDeadlineWatch({ db, coordinates, ops: {}, store, enabled: true }).observe, 'function');
+      db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('buyer','TEST','buyer','TEST');
+      const operation = db.prepare('INSERT INTO operations (id,account_id,kind,idempotency_key,request_hash,status,terms,terms_hash,handoff_token_hash,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+      const challenge = db.prepare('INSERT INTO challenges (id,nonce,purpose,binding,message,issued_at,expires_at) VALUES (?,?,?,?,?,?,?)');
+      for (const id of ['first','second']) {
+        operation.run(id,'buyer','purchase',id,'TEST','broadcast_reported','{}','TEST',id,'TEST','TEST','TEST');
+        challenge.run(id,id,'purchase-approval','{}','TEST','TEST','TEST');
+        coordinates.save({ operationId: id, kind: 'dem-transfer', network: 'testnet', from: 'TEST-buyer',
+          nonceFence: 0, expectedNonce: 1, target: 'TEST-seller', amountOs: '1', payload: {} });
+        assert.equal(coordinates.reportHash(id, 'a'.repeat(64)), true);
+      }
+      const approval = db.prepare('INSERT INTO approvals VALUES (?,?,?,?,?,?,?)');
+      approval.run('a','first','first','TEST','TEST','TEST','TEST');
+      assert.throws(() => approval.run('b','first','second','TEST','TEST','TEST','TEST'), store.isUniqueViolation);
+      assert.throws(() => approval.run('c','second','first','TEST','TEST','TEST','TEST'), store.isUniqueViolation);
+      coordinates.recordObservation('first', { txHash: 'a'.repeat(64) }, true);
+      assert.throws(() => coordinates.recordObservation('second', { txHash: 'a'.repeat(64) }, true), store.isUniqueViolation);
+    } finally { db.close(); }
+  `);
+  run(process.execPath, ['consumer.mjs'], app);
 });

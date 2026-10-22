@@ -3,6 +3,7 @@
 // construction, before any read, write or wallet request.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createPurchaseService } from '../src/purchases.mjs';
 import { createProtocolPurchases } from '../src/dacs/protocol-purchases.mjs';
 import { createDeliveryDeadlineWatch } from '../src/dacs/delivery-deadline-watch.mjs';
@@ -175,6 +176,15 @@ test('package wallet helpers preserve the provider digest and confirmation contr
     { transaction: { content: {}, signature: {}, hash: 'TEST', status: 'confirmed', blockNumber: 1 }, custom_charges: [] }]) {
     assert.equal(helpers.storageConfirmationShapeMatches(confirmation), wallet.storageConfirmationShapeMatches(confirmation));
   }
+});
+
+test('the statically served wallet provider loads without files outside the public tree', async () => {
+  const source = readFileSync(new URL('../src/public/portal/embedded-wallet/sdk-provider.mjs', import.meta.url));
+  const served = await import('data:text/javascript;base64,' + source.toString('base64'));
+  const content = { type: 'native', from: 'A'.repeat(64), to: '0x' + 'b'.repeat(64), amount: 1,
+    data: ['native', { args: [] }], nonce: 7, timestamp: 1 };
+  assert.equal(await served.nativePayloadDigest(content), await wallet.nativePayloadDigest(content));
+  assert.equal(served.storageConfirmationShapeMatches({ transaction: { content: {}, signature: {}, hash: 'TEST', status: 'confirmed', blockNumber: 1 } }), true);
 });
 
 

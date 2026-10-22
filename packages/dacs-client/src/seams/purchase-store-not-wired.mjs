@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { NotWiredError } from '../client-errors.mjs';
 
 const require = createRequire(import.meta.url);
-const active = new WeakSet();
+const active = new WeakMap();
 const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
 function synchronousResult(result) {
   if (result && typeof result.then === 'function') {
@@ -17,9 +17,24 @@ function synchronousResult(result) {
 function sqliteTransaction(db, fn) {
   const { DatabaseSync } = require('node:sqlite');
   if (!(db instanceof DatabaseSync) || typeof fn !== 'function' || nonSynchronous(fn)) throw new NotWiredError('purchase-store-not-wired');
-  if (active.has(db)) return synchronousResult(fn());
+  if (active.has(db)) {
+    const depth = active.get(db) + 1;
+    const savepoint = `dacs_purchase_${depth}`;
+    db.exec(`SAVEPOINT ${savepoint}`);
+    active.set(db, depth);
+    try {
+      const result = synchronousResult(fn());
+      db.exec(`RELEASE ${savepoint}`);
+      return result;
+    } catch (error) {
+      try { db.exec(`ROLLBACK TO ${savepoint}`); db.exec(`RELEASE ${savepoint}`); } catch { /* Preserve the original failure. */ }
+      throw error;
+    } finally {
+      active.set(db, depth - 1);
+    }
+  }
   db.exec('BEGIN IMMEDIATE');
-  active.add(db);
+  active.set(db, 0);
   try {
     const result = synchronousResult(fn());
     db.exec('COMMIT');

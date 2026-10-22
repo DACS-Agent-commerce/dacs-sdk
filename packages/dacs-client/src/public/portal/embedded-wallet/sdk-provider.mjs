@@ -102,8 +102,28 @@ const HELD_MESSAGE = 'Testnet writes are held for the required independent secur
 const EVIDENCE_LABEL = 'SIMULATED loopback fixture (not Demos testnet; no real funds)';
 const SENDING_NOTE = 'Signed in this page, validated by the node, then broadcast exactly once. Never retried automatically; the server confirms the result from its own chain readback.';
 
-import { EmbeddedWalletError, nativePayloadDigest, storageConfirmationShapeMatches } from '../../../wallet/payload-helpers.mjs';
-export { EmbeddedWalletError, nativePayloadDigest, storageConfirmationShapeMatches };
+// Keep this statically served provider self-contained. Equivalence with the
+// package helpers is pinned by d11-seam-parameters.test.mjs.
+export class EmbeddedWalletError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export async function nativePayloadDigest(content) {
+  const address = (v) => (typeof v === 'string' ? `0x${v.toLowerCase().replace(/^0x/, '')}` : null);
+  return sha256HexOfText(anchorJson({ type: content?.type ?? null, from: address(content?.from), to: address(content?.to), amount: content?.amount ?? null,
+    data: content?.data ?? null, nonce: content?.nonce ?? null, timestamp: content?.timestamp ?? null }));
+}
+
+export function storageConfirmationShapeMatches(data) {
+  return hasKeys(data?.transaction, ['content', 'signature', 'hash', 'status', 'blockNumber'])
+    && Object.keys(data).every((k) => ['valid', 'reference_block', 'message', 'gas_operation', 'transaction', 'custom_charges'].includes(k))
+    && data.custom_charges == null
+    && (data.gas_operation == null || (hasKeys(data.gas_operation, ['fees'])
+      && hasKeys(data.gas_operation.fees, ['network_fee', 'rpc_fee', 'additional_fee'])));
+}
 
 function ok(data) {
   return { success: true, data, error: null };

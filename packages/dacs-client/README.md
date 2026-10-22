@@ -19,13 +19,18 @@ Both public entry points require Node ^22.13.0 or >=23.4.0. The root does not lo
 
 ```js
 import {
+  PURCHASE_STATE_SCHEMA,
+  createCoordinateStore,
   createSqlitePurchaseStore,
   createPurchaseService,
   createProtocolPurchases,
   createDeliveryDeadlineWatch,
 } from '@kynesyslabs/dacs-client';
 
-// db is a node:sqlite DatabaseSync connection with the application's schema.
+// On a new node:sqlite DatabaseSync connection, initialize the buyer tables.
+// Existing databases need a host-owned migration preserving these constraints.
+db.exec(PURCHASE_STATE_SCHEMA);
+const coordinates = createCoordinateStore({ db });
 const store = createSqlitePurchaseStore();
 const purposes = { APPROVE_PURCHASE: 'purchase-approval' };
 const protocol = createProtocolPurchases({
@@ -39,13 +44,39 @@ const purchases = createPurchaseService({
 const watch = createDeliveryDeadlineWatch({ db, ops, coordinates, store });
 ```
 
-The package supplies the concrete SQLite transaction function. Factories refuse arbitrary host wrappers, including `(db, fn) => fn()`, queued callbacks and wrappers returning promises. Transactions use `BEGIN IMMEDIATE`; nested calls on the same connection join the outer transaction, errors and thenable results roll back before returning, and original errors propagate. SQLite is loaded lazily when a transaction runs. The `db` handle must be a `node:sqlite` `DatabaseSync`; its type is checked at the first transaction, rather than at factory construction. A compatible-looking handle from another SQLite library is refused with `NotWiredError('purchase-store-not-wired')` before the transaction callback runs. Use synchronous bodies and the same connection for every operation and coordinate write. The application owns the schema, operations/coordinate stores, durable database configuration and backups. The adapter does not initialize or migrate that schema. For file-backed production state, configure WAL, `synchronous=FULL`, foreign keys and a bounded busy timeout. Tests exercise this adapter's pointer races, rollback, second-connection lock and SIGKILL/reopen immediately before and after the settlement and delivery-overdue commits, including repeated requests after restart. Retained native agreement-payment operations also exercise the successful resolution-marker and pending-event commits; a repeated source failure preserves its reason without duplicating events.
+The package supplies the concrete SQLite transaction function. Factories refuse arbitrary host wrappers, including `(db, fn) => fn()`, queued callbacks and wrappers returning promises. Transactions use `BEGIN IMMEDIATE`; nested calls on the same connection use savepoints within the outer transaction. Each failed call rolls back its own writes before returning, including when an outer body catches the error or a thenable refusal; successful nested writes commit only with the outer transaction. Original errors propagate. SQLite is loaded lazily when a transaction runs. The `db` handle must be a `node:sqlite` `DatabaseSync`; its type is checked at the first transaction, rather than at factory construction. A compatible-looking handle from another SQLite library is refused with `NotWiredError('purchase-store-not-wired')` before the transaction callback runs. Use synchronous bodies and the same connection for every operation and coordinate write. `PURCHASE_STATE_SCHEMA` supplies the required buyer tables and indexes. The application owns schema initialization and migrations, the operations store, durable database configuration and backups. The transaction adapter does not initialize or migrate the schema. For file-backed production state, configure WAL, `synchronous=FULL`, foreign keys and a bounded busy timeout. Tests exercise this adapter's pointer races, rollback, second-connection lock and SIGKILL/reopen immediately before and after the settlement and delivery-overdue commits, including repeated requests after restart. Retained native agreement-payment operations also exercise the successful resolution-marker and pending-event commits; a repeated source failure preserves its reason without duplicating events.
 
 `store.isUniqueViolation(error)` must return exactly a synchronous boolean and identify only unique-constraint errors. An application may specialize this classifier while retaining the package's transaction function; its receiver and original errors are preserved. Async/generator classifiers and non-boolean results throw `NotWiredError`.
 
-The purchase factory requires a nonempty `purposes.APPROVE_PURCHASE`. The store and purpose are validated at construction. Challenge service methods are used only after action admission. A resolved buyer capability supplies synchronous `assertWallet(address)`, returning exactly `undefined` on success; its refusals propagate unchanged. Pass it to `createProtocolPurchases` at the top level; the old `dacsProtocol.buyerAccess` location throws a migration error.
+The purchase factory requires a nonempty `purposes.APPROVE_PURCHASE`. The store and purpose are validated at construction. Challenge service methods are used only after action admission. A resolved buyer capability supplies synchronous `assertWallet(address)`, returning exactly `undefined` on success; its refusals propagate unchanged. To permit readback of an already reported hash after wallet access closes, throw an error with `code: 'buyer_access_closed'`; a plain `Error` propagates and does not select that readback-only path. Pass it to `createProtocolPurchases` at the top level; the old `dacsProtocol.buyerAccess` location throws a migration error.
 
 Preparation, approval challenges, approvals, agreement actions, completion signatures and payment handoffs refuse with `profile_not_admitted`, including legacy and previously approved operations. Refusal precedes Listing/chain resolution and state writes. The public Listing verifier also refuses before Directory or chain resolution/comparison. CORE §11.1.2 requires trusted session and participant profile admission, which this candidate does not implement. Host seams and caller-supplied profile objects cannot lift the hold; `actionsAdmitted` remains false. Readback of existing operations remains available and uses fresh chain observations. No current-profile Listing verification or archival verification is offered by the public verifier.
+
+`PURCHASE_STATE_SCHEMA` defines the complete columns and constraints for these host integration tables:
+
+| Tables | Consumer |
+| --- | --- |
+| `accounts`, `challenges` | Host account/challenge services; referenced by buyer state |
+| `operations`, `operation_events` | Host operation store and delivery deadline watch |
+| `approvals` | Purchase service; one approval per operation and per challenge |
+| `write_coordinates`, `wallet_nonce_consumptions` | Coordinate store; one verified owner per transaction hash |
+
+Apply the exported DDL to a new database before constructing factories. It does not qualify or migrate an existing host schema. Retain the approval UNIQUE constraints and the partial UNIQUE index on verified transaction hashes in any host migration. Unverified hash pointers may be shared. Host-specific authentication tables are outside this DDL.
+
+The `deliveryDeadlineWatch` option on `createProtocolPurchases` is currently inert. A host using `createDeliveryDeadlineWatch` must invoke its `observe` method itself; `checkDelivery` remains held.
+
+### Injected chain reader
+
+Pass a `chain` object to `createPurchaseService`. Readback uses the following contract; all returned observations must be JSON serializable:
+
+- Metadata: `network` (network name), `pinnedIdentity` (configured chain hash), `rpcOrigin` (RPC origin), `evidenceMode` (observation mode), and optional `observer` (the host reader's name/version). Stored observations copy `observer`; an omitted name is labelled as an undeclared host reader, never attributed to core.
+- `networkIdentity()` returns `{ identity, mode }`, where `identity` is the observed chain hash and `mode` matches the operation's bound domain (`public-chain-read` for retained testnet operations).
+- `observeTransfer(txHash)` returns `{ status: 'included', txHash, payer, payee, amountOs, blockNumber }` for a readable transfer. `payer` and `payee` are Demos address strings, `txHash` identifies the requested hash, `amountOs` is canonical nonnegative decimal integer **text** in OS units (1 DEM = 10^9 OS; use the exported `OS_INTEGER` bound), and `blockNumber` is a nonnegative safe integer Number. A Number or bigint amount is malformed input, not evidence of a different payment. Optional `observePurchaseTransfer(txHash)` has the same contract and is used for retained native agreement-payment operations. When `sourceDisposition` is present on an included observation, it must also be `included` to establish a consumed slot.
+- Other observation statuses are `pending`, `not-found`, `failed`, and `unavailable`, with an optional string `reason`. Malformed results return non-final `invalid_observation`; correcting the reader allows the same hash to be checked again.
+- `getTransaction(txHash)` returns the fresh canonical body `{ hash, status, blockNumber?, content: { from, from_ed25519_address?, nonce } }`. Settlement requires `status: 'confirmed'`, the requested hash, a matching observed block when projected, and the saved buyer nonce. `nonce` accepts a nonnegative safe integer Number or canonical decimal text of that integer. Address projections must be readable Demos addresses; the existing alternate signing-key path is supported.
+- `getAddressNonce(wallet)` returns the wallet's current safe integer nonce when a retained handoff has no reported hash.
+
+These are host observation shapes, not a new DACS evidence format. Readback remains a single RPC view with tuple-only attribution and no established finality. Public hosts cannot construct the private native source capability: native journal reconciliation reports `nativeReadback: 'unavailable'` and directs the operator to the original qualified host, without asking for an endless `verify_deal` retry.
 
 The chain-reader factory is outside the public surface until a clean immutable node build is qualified for its readback shapes. The internal historical reader and its fixtures do not establish support for a moving or dirty node build. Held bridge constructors and private transport-brand predicates are also outside the public surface. `DEVNET_NATIVE_RPC_PATH` and `DEVNET_NATIVE_BINDING_PATH` identify experimental host portal routes, rather than general SDK endpoints.
 

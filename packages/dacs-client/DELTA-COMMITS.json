@@ -747,5 +747,37 @@
       "packages/dacs-client/test/helpers/readback-review-loader.mjs",
       "packages/dacs-client/test/readback-review-decisions.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 complete buyer state and readback contracts",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/README.md",
+      "packages/dacs-client/package.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/chain.mjs",
+      "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+      "packages/dacs-client/src/index.mjs",
+      "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "packages/dacs-client/src/purchase-state-schema.mjs",
+      "packages/dacs-client/src/purchases.mjs",
+      "packages/dacs-client/src/seams/purchase-store-not-wired.mjs",
+      "packages/dacs-client/src/wallet/durable-journal.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+      "packages/dacs-client/test/durable-journal.test.mjs",
+      "packages/dacs-client/test/helpers/purchase-integrity-database.mjs",
+      "packages/dacs-client/test/host-observations.test.mjs",
+      "packages/dacs-client/test/package-contents.test.mjs",
+      "packages/dacs-client/test/public-api.test.mjs",
+      "packages/dacs-client/test/purchase-executed-only.test.mjs",
+      "packages/dacs-client/test/store-atomicity.test.mjs",
+      "packages/dacs-client/test/sweep-contracts.test.mjs"
+    ]
   }
 ]

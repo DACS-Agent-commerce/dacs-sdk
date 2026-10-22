@@ -51,6 +51,24 @@ test('concrete adapter commits nested writes and rolls back the original thrown 
   assert.equal(store.transaction(db, () => { write('TEST-first'); return store.transaction(db, () => { write('TEST-second'); return 'TEST-result'; }); }), 'TEST-result');
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
 });
+for (const kind of ['throw', 'resolved-promise', 'rejected-promise']) {
+  test(`caught nested ${kind} rolls back only that call and leaves the outer transaction usable`, async t => {
+    const { db } = database(t), store = createSqlitePurchaseStore(), cause = new Error('TEST-inner');
+    const write = id => db.prepare('INSERT INTO records VALUES (?)').run(id);
+    store.transaction(db, () => {
+      write('TEST-outer');
+      assert.throws(() => store.transaction(db, () => {
+        write('TEST-refused');
+        store.transaction(db, () => write('TEST-refused-child'));
+        if (kind === 'throw') throw cause;
+        return kind === 'resolved-promise' ? Promise.resolve() : Promise.reject(cause);
+      }), error => kind === 'throw' ? error === cause : error.code === 'client_not_wired');
+      store.transaction(db, () => write('TEST-after'));
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(db.prepare('SELECT id FROM records ORDER BY id').all().map(row => row.id), ['TEST-after', 'TEST-outer']);
+  });
+}
 for (const rejected of [false, true]) {
   test(`callback-then-thenable rolls back before rejecting, rejected=${rejected}`, async t => {
     const { db } = database(t), store = createSqlitePurchaseStore();
