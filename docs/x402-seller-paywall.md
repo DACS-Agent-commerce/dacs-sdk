@@ -12,7 +12,8 @@ Applications provide the framework adapter and host the route themselves.
 Live x402 actions are unavailable at the SDK's Standard pin
 `d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`. Its PROFILE still marks JID-1 as an
 unreleased corrective candidate. The production buyer constructors, settlement
-bridge, buyer preparation, retained paid-request transport, seller factory and seller core throw
+bridge, buyer preparation, retained paid-request transport, seller paywall and spine factories, spine recovery,
+x402 payment intake and seller core throw
 `UnsupportedCapabilityError` before protocol work. Caller profile objects,
 labels and configuration cannot enable them. Recovery of retained buyer and
 seller x402 state is refused the same way, and a retained intent or record whose

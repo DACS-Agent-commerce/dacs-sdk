@@ -15,6 +15,7 @@ import type {
 } from "../agent/runFulfilmentCore.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
 import { x402PaywallSettlementKey } from "../rails/x402Paywall.js";
 import type {
   X402PaywallAuthorizationContext,
@@ -914,6 +915,7 @@ function validRenderedResponse<T>(value: unknown): value is X402SellerRenderedRe
 export function createX402SellerSpine<T = unknown>(
   options: X402SellerSpineOptions<T>,
 ): X402SellerSpine<T> {
+  requireJid1LiveProfile();
   // Capture every executable authority before returning handlers. Later caller
   // mutation cannot swap one side of the payment/fulfilment boundary.
   const receiptStore = captureReceiptStore(options.receiptStore);
@@ -1069,7 +1071,9 @@ export function createX402SellerSpine<T = unknown>(
   };
 
   const recoverPaymentAuthorization: X402SellerSpine<T>["recoverPaymentAuthorization"] =
-    async ({ jobId, phaseIndex }) => {
+    async (input) => {
+      requireJid1LiveProfile();
+      const { jobId, phaseIndex } = input;
       // JID-3: the recovery scope keys a settlement-store lookup, so the jobId
       // must pass JID-1 before the key is derived.
       if (!isCanonicalJobId(jobId) || !isSafeUint(phaseIndex)) {

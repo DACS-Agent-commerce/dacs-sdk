@@ -88,6 +88,25 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
     expect(await discoverListings([], read, TRUST)).toEqual([]);
   });
 
+  test("a total read outage stays indeterminate, and recovery discovers listings", async () => {
+    const failure = new SubstrateError("RPC unavailable");
+    await expect(discoverListings(["ref:1", "ref:3"], async () => {
+      throw failure;
+    }, TRUST)).rejects.toMatchObject({
+      name: "SubstrateError", cause: failure,
+      message: "Listing discovery is indeterminate: every anchor read was unanswered",
+    });
+    expect((await discoverListings(["ref:1", "ref:3"], read, TRUST)).map((f) => f.ref))
+      .toEqual(["ref:1", "ref:3"]);
+  });
+
+  test("an authoritative absence still answers a batch containing an unanswered ref", async () => {
+    await expect(discoverListings(["missing", "unanswered"], async (ref) => {
+      if (ref === "unanswered") throw new SubstrateError("RPC unavailable");
+      return null;
+    }, TRUST)).resolves.toEqual([]);
+  });
+
   test("requires an explicit gate — neither dep rejects (no fail-open)", async () => {
     await expect(discoverListings(["ref:1"], read)).rejects.toThrow(/verify|trustListings/);
   });

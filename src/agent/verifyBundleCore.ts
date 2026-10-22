@@ -129,6 +129,8 @@ export interface RefCheck {
   kind: string;
   id: string;
   verdict: RefVerdict;
+  /** Read-resolution diagnostic when the artifact could not be observed. */
+  reason?: string;
   /** Present once shape and content-hash validation reaches authentication. */
   signature?: RefSignatureCheck;
 }
@@ -1528,7 +1530,20 @@ export async function verifyBundleCore(
       value: Record<string, unknown>,
     ) => Promise<RefSignatureCheck>,
   ): Promise<{ check: RefCheck; value: Record<string, unknown> | null }> => {
-    const resolved = await resolveReadableRef(ref);
+    let resolved: Awaited<ReturnType<typeof resolveReadableRef>>;
+    try {
+      resolved = await resolveReadableRef(ref);
+    } catch {
+      return {
+        check: {
+          kind: artifactKind,
+          id: refLocator(ref),
+          verdict: "unresolved",
+          reason: "artifact-read-unanswered",
+        },
+        value: null,
+      };
+    }
     if (!resolved.supported) {
       return {
         check: {

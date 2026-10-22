@@ -7,11 +7,63 @@ import { createDacsX402BuyerEvmChallengeClient } from "../../src/rails/x402Buyer
 import { createX402BuyerPaidRequestTransport, prepareX402BuyerSettlement } from "../../src/rails/x402BuyerTransport.js";
 
 import { advanceX402BuyerSettlement } from "../../src/rails/x402BuyerSettlement.js";
+import { createX402SellerSpine } from "../../src/seller/x402Spine.js";
+import { verifySellerPaymentIntake } from "../../src/seller/paymentIntake.js";
+import * as liveProfile from "../../src/negotiate/liveProfile.js";
 
 const JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const MESSAGE = "Live JID-1 actions are unavailable: the pinned Standard has no coordinated corrective release";
 
 describe("unreleased JID-1 live admission", () => {
+  it("refuses the seller spine before capturing any caller authority", () => {
+    const read = vi.fn(() => { throw new Error("seller authority was consumed"); });
+    expect(() => createX402SellerSpine(new Proxy({}, { get: read }) as never))
+      .toThrow(UnsupportedCapabilityError);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("rechecks admission before recovery reads input or retained seller state", async () => {
+    const effect = vi.fn();
+    const stub = (): any => new Proxy(effect, {
+      get: (_target, key) => key === "bind" ? Function.prototype.bind : stub(),
+    });
+    const construction = vi.spyOn(liveProfile, "requireJid1LiveProfile")
+      .mockImplementationOnce(() => undefined);
+    let spine;
+    try {
+      spine = createX402SellerSpine(stub());
+    } finally {
+      construction.mockRestore();
+    }
+    effect.mockClear();
+    const read = vi.fn(() => { throw new Error("recovery scope was consumed"); });
+    await expect(spine.recoverPaymentAuthorization(new Proxy({}, { get: read }) as never))
+      .rejects.toThrow(MESSAGE);
+    expect(effect).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("refuses x402 intake before resolvers while allowing pay-dem intake to resolve", async () => {
+    const resolve = vi.fn(async () => ({ disposition: "indeterminate", reason: "fixture-unavailable" }));
+    const deps = {
+      resolveCommittedAgreement: resolve,
+      resolveListingAtCommit: vi.fn(), resolveRail: vi.fn(),
+      resolveIdentityBundle: vi.fn(), resolvePayerAddress: vi.fn(),
+      resolvePayeeDestination: vi.fn(), observeDemosTransfer: vi.fn(),
+      observeX402Transfer: vi.fn(), verifyX402ReceiptExtensions: vi.fn(),
+      classifyX402SettlementChain: vi.fn(), receiptStore: { claim: vi.fn() },
+    };
+    const scope = { jobId: JOB_ID, phaseIndex: 0, railId: "test", payerPayingKey: "payer" };
+    await expect(verifySellerPaymentIntake({ ...scope, receipt: {
+      kind: "pay-x402", protocolVersion: "2", httpResource: "https://seller.example/pay",
+      paymentReceiptHash: "a".repeat(64), responseHeader: { name: "PAYMENT-RESPONSE", value: "receipt" },
+    } }, deps as never)).rejects.toThrow(MESSAGE);
+    expect(resolve).not.toHaveBeenCalled();
+    await expect(verifySellerPaymentIntake({ ...scope, receipt: {
+      kind: "pay-dem", txHash: "b".repeat(64),
+    } }, deps as never)).resolves.toMatchObject({ disposition: "indeterminate", reason: "agreement-fixture-unavailable" });
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
   it("refuses production constructors before reading caller pins, loading signers or initializing a facilitator", async () => {
     const read = vi.fn(() => { throw new Error("caller context was consumed"); });
     const caller = new Proxy({

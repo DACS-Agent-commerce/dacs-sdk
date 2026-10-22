@@ -1531,8 +1531,10 @@ export class DemosAdapter implements SubstrateAdapter {
     if (owner === undefined) {
       throw new SubstrateError("Demos receipt native owner is invalid");
     }
-    const snapshot = async (): Promise<string> => {
-      const height = demosNonNegativeInteger(await this.#demos.getLastBlockNumber());
+    const snapshot = async (pinnedHeight?: number): Promise<string> => {
+      const height = pinnedHeight ?? demosNonNegativeInteger(
+        await this.#demos.getLastBlockNumber(),
+      );
       if (height === undefined) {
         throw new SubstrateError("Demos receipt history snapshot is unavailable");
       }
@@ -1684,8 +1686,10 @@ export class DemosAdapter implements SubstrateAdapter {
         !sameOptionalJsonObject(fresh.metadata ?? undefined, observedMetadata)) {
       throw new SubstrateError("Demos receipt native value changed during verification");
     }
+    // New blocks may advance the tip while this unchanged program is read.
+    // Recheck the pinned block itself so a reorg still invalidates the scan.
     if (canonicalize(await scan()) !== scannedHistory ||
-        await snapshot() !== initialSnapshot) {
+        await snapshot(snapshotHeight) !== initialSnapshot) {
       throw new SubstrateError("Demos receipt history changed during verification");
     }
     const creates = mutations.filter((mutation) =>

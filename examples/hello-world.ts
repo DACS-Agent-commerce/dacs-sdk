@@ -1,12 +1,16 @@
 /**
  * DACS SDK — hello-world (T5)
  *
+ * UNAVAILABLE at the current Standard pin: this x402 reference requires a
+ * coordinated JID-1 release. Use the generated pay-dem service for live work.
+ * createX402Rail currently throws UnsupportedCapabilityError.
+ *
  * The whole fixed-price + x402 lifecycle through the public API only:
  *   seller publishes a listing  →  buyer resolves/authenticates its logical address
  *   → buyer runs a session
  *   (negotiate → settle on x402 → verify)  →  anyone verifies the bundle.
  *
- * Run against a Demos node with two funded agents. Env:
+ * Once the profile is released, this reference requires two funded agents. Env:
  *   DEMOS_RPC          Demos node RPC URL (e.g. https://node2.demos.sh)
  *   SELLER_WALLET      seller agent mnemonic / private key
  *   BUYER_WALLET       buyer agent mnemonic / private key

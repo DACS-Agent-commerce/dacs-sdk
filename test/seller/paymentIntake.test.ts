@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
+// Offline protocol simulations. The real boundary is pinned by
+// test/rails/jid1LiveAdmission.test.ts, including the allowed pay-dem arm.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));
+
 import type { IdentityBundle, Listing, PaymentRailRef } from "../../src/artifacts/index.js";
 import { isListing } from "../../src/artifacts/validators.js";
 import { canonicalize, contentHash, sha256Hex } from "../../src/canonical/index.js";

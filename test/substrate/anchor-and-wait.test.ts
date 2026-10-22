@@ -1881,7 +1881,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       content: { ...txUpdate.content, from: `0x${"cd".repeat(32)}`, nonce: 0 },
     });
     return {
-      ...fixture, txCreate, txUpdate, verdicts, expectIndeterminate, withPayload, delegatedWrite,
+      ...fixture, lookup, txCreate, txUpdate, verifiers, verdicts, expectIndeterminate, withPayload, delegatedWrite,
     };
   }
 
@@ -2060,7 +2060,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     }
   });
 
-  it.each(["height", "hash", "unavailable"])("refuses a changing or unavailable canonical snapshot (%s)", async (change) => {
+  it.each(["hash", "unavailable"])("refuses a changing or unavailable canonical snapshot (%s)", async (change) => {
     const { adapter, raw, created, updated, receipt } =
       await createThenIdenticalUpdate("proof-history-snapshot");
     const read = raw.storagePrograms.read.getMockImplementation();
@@ -2078,13 +2078,27 @@ describe("DemosAdapter.anchorAndWait", () => {
       raw.storagePrograms.read = vi.fn(async (address: string) => {
         const { createdByTx: _c, lastModifiedByTx: _l, interactionTxs: _i, ...rest } = await read(address);
         if (++reads === 2) {
-          if (change === "height") raw.getLastBlockNumber.mockResolvedValue(43);
           if (change === "hash") raw.getBlockByNumber.mockImplementation(async (height: number) =>
             ({ ...await block(height), hash: "changed-canonical-block" }));
         }
         return rest;
       });
       await expect(verify()).rejects.toBeInstanceOf(SubstrateError);
+    }
+  });
+
+  it("verifies unchanged native history while the chain tip advances", async () => {
+    const { raw, adapter, lookup, txCreate, txUpdate, verifiers } =
+      await provenanceFreeHistory("proof-history-moving-tip");
+    serveStorageHistory(raw, [txUpdate, txCreate]);
+    // Only the first call may choose a tip. Re-reading the tip would observe
+    // height 43, while the pinned canonical block 42 remains unchanged.
+    for (const verify of [...verifiers, () => adapter.resolveDemosAnchorReceipt(lookup)]) {
+      raw.getLastBlockNumber.mockClear().mockResolvedValueOnce(42).mockResolvedValue(43);
+      const result = await verify();
+      if (typeof result === "boolean") expect(result).toBe(true);
+      else expect(result).toMatchObject({ state: "finalized" });
+      expect(raw.getLastBlockNumber).toHaveBeenCalledTimes(1);
     }
   });
 

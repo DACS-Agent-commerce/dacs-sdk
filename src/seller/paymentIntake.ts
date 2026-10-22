@@ -19,6 +19,7 @@ import {
 } from "../canonical/index.js";
 import { finalityCommitmentAddress } from "../negotiate/commitment.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
 import {
   demosAddressFromClaim,
   normalizeDemosNativeAddress,
@@ -2338,6 +2339,7 @@ export async function verifySellerPaymentIntake(
   if (!request) {
     return verifierError("invalid-intake-input");
   }
+  if (request.receipt.kind === "pay-x402") requireJid1LiveProfile();
 
   // Capture each callback once before the first await. Runtime JavaScript can
   // otherwise swap a method on the dependency object between security gates.
