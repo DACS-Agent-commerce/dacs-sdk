@@ -1,6 +1,7 @@
 // Run-time port of http-mcp/src/util/http.mjs at DACS-Agent-commerce/frontend 15fdf23: the whole
 // file.
-// The source lines below are unchanged (RUNTIME-PORTS.json).
+// The source lines below are unchanged except exact-byte JSON admission (RUNTIME-PORTS.json).
+import { admitRawJson } from '@kynesyslabs/dacs';
 // Bounded outbound JSON requests: fixed origin, no redirects, hard timeout,
 // post-decompression byte cap, no ambient credentials. Failures are typed so
 // callers can distinguish "unavailable" from "invalid".
@@ -18,11 +19,11 @@ async function readCapped(response, maxBytes) {
     await response.body?.cancel().catch(() => {});
     throw new OutboundError('invalid', 'response exceeds byte limit');
   }
-  if (!response.body) return '';
+  if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
-  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const chunks = [];
   let total = 0;
-  let text = '';
+
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -32,9 +33,12 @@ async function readCapped(response, maxBytes) {
         await reader.cancel().catch(() => {});
         throw new OutboundError('invalid', 'response exceeds byte limit');
       }
-      text += decoder.decode(value, { stream: true });
+      chunks.push(value);
     }
-    return text + decoder.decode();
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return bytes;
   } catch (error) {
     if (error instanceof OutboundError) throw error;
     throw new OutboundError('invalid', 'response body is not valid UTF-8');
@@ -77,7 +81,7 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
   }
   const text = await readCapped(response, maxBytes);
   try {
-    return JSON.parse(text);
+    return admitRawJson(text, { maxBytes });
   } catch {
     throw new OutboundError('invalid', 'upstream returned malformed JSON');
   }

@@ -13,7 +13,8 @@
 // block height. An ordinary unknown/not-found is not proof. Only an
 // address with no live signed CREATE is `unsigned`, and only then is it signed
 // anew. A read that fails, times out or answers anything else keeps the same
-// bytes alive.
+// bytes alive. An included-but-failed CREATE is `absent` (not executed),
+// never `applied`; only successful execution is `applied`.
 //
 // createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
 //   readAccountNonce, readTransactionState, now, readTimeoutMs }):

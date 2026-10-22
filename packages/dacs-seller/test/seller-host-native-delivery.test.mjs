@@ -9,6 +9,7 @@
 // Commitment, payment evidence and the Deliverable are signed storage CREATEs
 // on that node, each read back through the package's SR-2 adapter.
 import test from 'node:test';
+import http from 'node:http';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -23,6 +24,7 @@ import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '..
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE_CHAIN_IDENTITY } from '../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
+import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 
 const RPC = 'http://127.0.0.1:9/';
@@ -128,7 +130,7 @@ function demosNode() {
     nonces.set(owner, nonce);
     const storageAddress = deriveStorageAddress(owner, programName, nonce, '');
     const { content } = buildStorageProgramCreatePayload({ from: owner, storageAddress, programName, logicalAddress, signedListing: clone(artifact), nonce, timestamp: Date.now() });
-    const metadata = { logicalAddress, contentHash: core.contentHash(artifact), envelopeHash: core.sha256Hex(core.canonicalize(artifact)), artifactKind, ...(deliveryBinding ? { deliveryBinding: clone(deliveryBinding) } : {}) };
+    const metadata = { logicalAddress, contentHash: (artifactKind === 'Deliverable' ? core.sha256Hex(core.canonicalize(artifact)) : core.contentHash(artifact)), envelopeHash: core.sha256Hex(core.canonicalize(artifact)), artifactKind, ...(deliveryBinding ? { deliveryBinding: clone(deliveryBinding) } : {}) };
     content.data[1].metadata = metadata;
     content.from_ed25519_address = owner;
     const hash = core.sha256Hex(JSON.stringify(content)), signed = { hash, content, signature: { type: 'ed25519', data: writer.signWallet(hash) } };
@@ -177,7 +179,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast.
-async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {} } = {}) {
+async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000 } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -355,7 +357,8 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const hosts = [];
   t.after(async () => { for (const host of hosts) await host.close(); });
   const capabilities = () => ({ signer: sellerSigner, listing,
-    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer,
+    buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }), agreementAnchor, deliverableProducer: producer, maxJobs,
+    deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); },
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: rails.authority,
     sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}) });
@@ -421,15 +424,15 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   // A buyer-signed payment claim as the transport authenticates it.
   const signedClaim = async (p, txHash) => {
     const body = { jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }, text = JSON.stringify(body);
-    const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim,
+    const { payload, header } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim,
       resolveJob: () => ({ listingPin: pin, agreementHash: p.agreementHash }), now: clock }).request('/dacs/v1/payments', body, text);
-    return { request: payload, body, rawBody: Buffer.from(text) };
+    return { request: payload, header, body, rawBody: Buffer.from(text) };
   };
   const createsAt = (logicalAddress) => node.creates.filter((entry) => entry.logicalAddress === logicalAddress).length;
   const signedCreate = (logicalAddress) => clone(signedCreates.get(logicalAddress));
   const writtenAt = (logicalAddress) => clone(written.get(logicalAddress));
   return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
-    createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim };
+    host: () => host, capabilities, dataDirectory, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
@@ -1217,4 +1220,91 @@ test('a paid order resumes once after restart with a rotated steward and trusted
   const session = await w.retainedSession(next.jobId);
   assert.equal(session.railPin.rail.signature.signer, w.rails.authority.stewardClaim);
   assert.notEqual(session.railPin.rail.signature.signer, previous.stewardClaim);
+});
+
+test('complete payload digest includes a top-level signature and survives restart', async (t) => {
+  const w = await world(t, { deliverableProducer: report({ signature: { application: 'opaque report data' } }) });
+  const p = await w.purchase(), tx = p.pay();
+  const first = await p.claim(tx);
+  assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
+  const payload = w.writtenAt(`dacs4:deliverable:${p.jobId}`), digest = core.sha256Hex(core.canonicalize(payload));
+  assert.notEqual(digest, core.contentHash(payload));
+  assert.equal(first.delivery.contentHash, digest);
+  assert.equal(first.delivery.deliveryBinding.payloadHash, digest);
+  await w.restart();
+  assert.equal((await p.claim(tx)).delivery?.contentHash, digest);
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('a Promise producer gives a clear deterministic synchronous contract error', async (t) => {
+  const w = await world(t, { deliverableProducer: async input => report()(input) });
+  const p = await w.purchase(), answer = await p.claim(p.pay());
+  assert.equal(answer.delivery?.status, 'held', shown(answer));
+  assert.match(answer.delivery.reason, /must synchronously return deterministic JSON/);
+  assert.deepEqual(w.effects.deliverySubmit, []);
+});
+
+test('declared delivery schema is enforced before publication; conforming payload is delivered', async (t) => {
+  const schemaUrl = 'urn:TEST:report-with-mustHave';
+  const deliverySchemaVerifier = { schemaUrl, verify: ({ cleartextPayload }) => ({ disposition: typeof cleartextPayload.mustHave === 'string' ? 'valid' : 'invalid' }) };
+  for (const valid of [false, true]) {
+    const w = await world(t, { deliverableExtension: { schemaUrl }, deliverySchemaVerifier, deliverableProducer: report(valid ? { mustHave: 'present' } : {}) });
+    const p = await w.purchase(), answer = await p.claim(p.pay());
+    assert.equal(answer.delivery?.status, valid ? 'delivery-ready' : 'held', shown(answer));
+    assert.equal(w.effects.deliverySubmit.length, valid ? 1 : 0);
+  }
+  const w = await world(t);
+  const agent = await w.agentFor(); agent.close();
+  await assert.rejects(w.startShipped({ deliverySchemaVerifier: null }), /unsupported delivery schema/);
+  await assert.rejects(w.startShipped({ deliverySchemaVerifier: { ...deliverySchemaVerifier, schemaUrl: 'urn:wrong' } }), /unsupported delivery schema/);
+});
+
+test('foreign same-name binary programs do not obstruct authentic seller evidence or delivery', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  const address = 'stor-' + 'fa'.repeat(20);
+  w.node.programs.set(address, { success: true, storageAddress: address, owner: w.buyerKey.address, programName: core.logicalToStorageProgramName(paymentAddress(p)), data: 'binary program', metadata: null });
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('configured job capacity refuses a new job definitely before consuming its challenge', async (t) => {
+  const w = await world(t, { maxJobs: 1 });
+  await w.purchase();
+  await assert.rejects(w.purchase(), { code: 'peer_job_capacity' });
+  const db = new DatabaseSync(join(w.dataDirectory, 'seller', 'seller-state.sqlite'), { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM seller_jobs').get().n, 1);
+    const challenges = db.prepare("SELECT value FROM seller_effects WHERE id LIKE 'session-challenge:%'").all().map(row => JSON.parse(row.value).payload.body);
+    assert.equal(challenges.length, 2);
+    assert.equal(challenges.filter(c => c.attempt === null).length, 1, 'the refused job retains its unused challenge');
+  } finally { db.close(); }
+});
+
+test('host close retains its directory lock until a disconnected signing handler finishes', { timeout: 20000 }, async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  w.node.faults.beforeSearch = async () => { entered(); await gate; };
+  const signed = await w.signedClaim(p, tx);
+  const request = http.request(new URL('/dacs/v1/payments', w.host().url), { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header } });
+  request.on('error', () => {});
+  request.end(signed.rawBody);
+  t.after(() => release());
+  await waiting;
+  const disconnected = new Promise(resolve => request.once('close', resolve));
+  request.destroy();
+  await disconnected;
+  let closed = false;
+  const closing = w.host().close().then(() => { closed = true; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(closed, false);
+    await assert.rejects(async () => {
+      const replacement = await w.startShipped({});
+      await replacement.close();
+    }, { code: 'seller_state_locked' });
+  } finally { release(); await closing; }
+  assert.equal(closed, true);
 });

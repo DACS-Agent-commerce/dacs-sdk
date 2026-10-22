@@ -12,7 +12,7 @@
 //
 // Only the simulated fixture profile (explicit `simulatedFixture: true`) uses
 // the unsigned in-code DEM_RAIL_DEFINITION of purchase-protocol.mjs.
-import { canonicalize, evaluateRailAvailabilitySelection, validateListingArtifact } from '@kynesyslabs/dacs';
+import { isCanonicalBase64Url, isCanonicalClaimReference, canonicalize, evaluateRailAvailabilitySelection, validateListingArtifact } from '@kynesyslabs/dacs';
 import { DEM_RAIL, verifyComponent } from './listing.mjs';
 
 const AUTHORITY_KEYS = Object.freeze(['production', 'rail', 'railRegistryVersion', 'stewardClaim', 'stewardPublicKey']);
@@ -41,7 +41,7 @@ export function railAuthorityConfig(value) {
   for (const entry of history) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
         canonicalize(Object.keys(entry).sort()) !== canonicalize(['stewardClaim', 'stewardPublicKey']) ||
-        typeof entry.stewardClaim !== 'string' || !entry.stewardClaim || typeof entry.stewardPublicKey !== 'string' || !entry.stewardPublicKey ||
+        !isCanonicalClaimReference(entry.stewardClaim) || !isCanonicalBase64Url(entry.stewardPublicKey) || Buffer.from(entry.stewardPublicKey, 'base64url').length !== 32 ||
         trustedStewards.get(entry.stewardClaim)?.includes(entry.stewardPublicKey)) throw new TypeError('railAuthority.historicalStewards must contain distinct { stewardClaim, stewardPublicKey } identities');
     const keys = trustedStewards.get(entry.stewardClaim) ?? [];
     keys.push(entry.stewardPublicKey);

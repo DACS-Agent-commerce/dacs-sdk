@@ -52,7 +52,7 @@ import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
-import { createSellerDurableState } from './seller-durable-state.mjs';
+import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
@@ -162,7 +162,8 @@ export function buildReport({ agreement, listing, settlementId }) {
 // `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
+export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), receiptStore: suppliedReceiptStore, durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
+  if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
   if (typeof simulatedFixture !== 'boolean') throw new TypeError('simulatedFixture must be true or false');
   if (signatureBuyer !== null && !/^did:demos:agent:[0-9a-f]{64}$/.test(signatureBuyer)) throw new TypeError('signatureBuyer must be an admitted buyer claim or null');
@@ -246,9 +247,15 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const verdict = rail.evaluate(railPin, sessionState);
     if (verdict.decision !== 'pass') throw new SellerAgentError('rail_unavailable', `the ${sessionState === 'new' ? 'selected' : 'pinned'} ${DEM_RAIL.railId} rail is not usable: ${verdict.decision} (${verdict.reason})`, 503);
   };
+  const schemaUrl = listing.offering.deliverable.schemaUrl;
+  const verifySchema = deliverySchemaVerifier?.verify?.bind(deliverySchemaVerifier);
+  if (nativeProfile && schemaUrl !== undefined &&
+      (deliverySchemaVerifier?.schemaUrl !== schemaUrl || typeof verifySchema !== 'function')) {
+    throw new TypeError('unsupported delivery schema: supply deliverySchemaVerifier { schemaUrl, verify } for the Listing before accepting agreements');
+  }
   const pin = listingPin(listing);
   if (durableDirectory && suppliedReceiptStore) throw new Error('durable seller recovery owns the pinned filesystem receipt store');
-  const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin }) : null;
+  const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin, maxJobs }) : null;
   const sign = (bytes) => new Uint8Array(durable ? durable.signOnce(`signature:${sha256Hex(bytes)}`, Buffer.from(bytes)) : signer.sign(Buffer.from(bytes)));
   const rawReceiptStore = durable?.receiptStore ?? suppliedReceiptStore ?? createInMemorySellerReceiptStore();
   const retainedAdmission = durable?.context();
@@ -286,7 +293,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (prior.attempt === null) prior.attempt = structuredClone(attempt);
       return before;
     },
-    admitChallenge: (nonce, bundleHash) => { const prior = memoryChallenges.get(nonce); if (prior?.attempt?.bundleHash === bundleHash) prior.attempt.admitted = true; },
+    admitChallenge: (nonce, presentationHash) => { const prior = memoryChallenges.get(nonce); if (prior?.attempt?.presentationHash === presentationHash) prior.attempt.admitted = true; },
   };
   const signatures = new Map(); // planHash -> seller signature
   const contributions = new Map(); // proposalHash -> contribution
@@ -324,6 +331,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   };
   const deliveryReport=(session,settlementId)=>{
     const report=deliverableProducer ? deliverableProducer({agreement:structuredClone(session.agreement),listing:structuredClone(listing),settlementId}) : buildReport({agreement:session.agreement,listing,settlementId});
+    if (report && typeof report.then === 'function') {
+      Promise.resolve(report).catch(() => {});
+      throw new SellerAgentError('deliverable_producer_async', 'deliverableProducer must synchronously return deterministic JSON for this Agreement and settlement', 503);
+    }
     if(report?.jobId!==session.jobId || report.agreementHash!==contentHash(session.agreement) || report.settlementId!==settlementId) throw new SellerAgentError('deliverable_producer_invalid','the application deliverable is not bound to this Agreement and settlement',503);
     return report;
   };
@@ -368,6 +379,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     sessions.delete(jobId);
     restore(session);
     return fn(input);
+  }).catch((error) => {
+    if (error.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
+    throw error;
   }) : fn;
 
   const sessionFor = (jobId) => {
@@ -414,8 +428,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     assertVetContext();
     assertSessionAdmission();
-    assertBuyer(buyerIdentityBundle?.presentedBy,jobId,{proposal:true});
-    if (!isIdentityBundle(buyerIdentityBundle)) throw new SellerAgentError('buyer_bundle_invalid', 'buyer IdentityBundle is not normative');
     const existing = sessions.get(jobId);
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
     // signed definition pinned before the Agreement is signed. The pin is in
@@ -445,11 +457,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // included), a refused attempt too; only that exact presentation, once
     // admitted, continues. A session in flight continues without one.
     const newSession = nativeProfile && !inFlight;
-    const nonce = buyerIdentityBundle.sessionNonce, bundleHash = identityBundleHash(buyerIdentityBundle);
+    const nonce = buyerIdentityBundle?.sessionNonce;
+    let presentationHash = null;
+    try { presentationHash = sha256Hex(canonicalize(buyerIdentityBundle)); } catch { /* a malformed attempt still consumes its challenge */ }
     // DACS-1 §6.3.2: a presentation for a new session that carries no session
     // nonce is refused. It names no challenge, so it consumes none.
     if (newSession && (typeof nonce !== 'string' || nonce === '')) throw new SellerAgentError('session_not_admitted', 'the presentation carries no session nonce (DACS-1 §6.3.2)', 409);
-    const issued = newSession ? challenges.attemptChallenge(nonce, { jobId, bundleHash, attemptedAt: now(), admitted: false }) : null;
+    const issued = newSession ? challenges.attemptChallenge(nonce, { jobId, presentationHash, attemptedAt: now(), admitted: false }) : null;
+    if (!isIdentityBundle(buyerIdentityBundle)) throw new SellerAgentError('buyer_bundle_invalid', 'buyer IdentityBundle is not normative');
+    assertBuyer(buyerIdentityBundle.presentedBy,jobId,{proposal:true});
+    const bundleHash = identityBundleHash(buyerIdentityBundle);
+    if (nativeProfile && existing && canonicalize(existing.buyerBundle) !== canonicalize(buyerIdentityBundle)) throw new SellerAgentError('session_not_admitted', 'the presentation differs from the retained accepted presentation', 409);
     authenticateBuyerBundle(buyerIdentityBundle);
     if (transportIdentity.buyer !== buyerIdentityBundle.presentedBy) throw new SellerAgentError('buyer_mismatch', 'proposal buyer is not the presented identity');
     if (existing && existing.buyerBundleHash !== bundleHash) throw new SellerAgentError('job_taken', 'this job is bound to another buyer', 409);
@@ -459,7 +477,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       // seller issued for this job and buyer (issueSessionChallenge), not expired.
       const challengeProblem = !issued ? 'the presentation nonce is not a challenge this seller issued'
         : issued.jobId !== jobId || issued.buyer !== buyerIdentityBundle.presentedBy ? 'the presentation nonce is a challenge issued for another job or buyer'
-          : issued.attempt !== null && !(issued.attempt.bundleHash === bundleHash && issued.attempt.admitted === true) ? 'the presentation challenge was consumed by an earlier presentation attempt'
+          : issued.attempt !== null && !(issued.attempt.presentationHash === presentationHash && issued.attempt.admitted === true) ? 'the presentation challenge was consumed by an earlier presentation attempt'
             : !(now() < issued.expiresAt) ? 'the presentation challenge expired' : null;
       if (challengeProblem) throw new SellerAgentError('session_not_admitted', challengeProblem, 409);
       // DACS-1 RB-4..RB-6, LR-3: the seller decides revocation itself (core
@@ -473,7 +491,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       catch (error) { throw new SellerAgentError('session_admission_unavailable', `the seller's session admission is unavailable: ${String(error?.message ?? error).slice(0, 180)}`, 503); }
       const problem = sessionAdmissionProblem(answer, query);
       if (problem) throw new SellerAgentError('session_not_admitted', problem, 409);
-      challenges.admitChallenge(nonce, bundleHash);
+      challenges.admitChallenge(nonce, presentationHash);
     }
     if (!existing) sessions.set(jobId, { jobId, buyerBundle: structuredClone(buyerIdentityBundle), buyerBundleHash: identityBundleHash(buyerIdentityBundle), proposal: null, stage: 'proposed', ...(railPin ? { railPin } : {}) });
     else if (railPin && !inFlight) existing.railPin = railPin;
@@ -920,7 +938,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return { version:'1',profile:'dacs-native-delivery-publication/v1',jobId:session.jobId,
       phase:'deliver-storage-program',phaseIndex:protocolSupport(listing).phases.delivery,listing:structuredClone(pin),
       agreementHash:contentHash(session.agreement),fulfilmentId,purchaseAmount:{amount:terms.price.amount,currency:terms.price.currency},
-      payloadHash:contentHash(deliveryReport(session,work.intake.settlementId)) };
+      payloadHash:sha256Hex(canonicalize(deliveryReport(session,work.intake.settlementId))) };
   }
 
   function sameNativeDeliveryReceipt(left, right) {
@@ -971,7 +989,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let read;
     try {
       read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: deliverableAddress(session.jobId), report,
-        receiptContentHash: contentHash(report), deliveryBinding: binding });
+        receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: binding });
     } catch (error) {
       return { status: 'held', reason: `native delivery reconciliation readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` };
     }
@@ -1014,7 +1032,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (nativeDelivery) {
         if (!fulfilmentId) return null;
         const report=deliveryReport(session,work.intake.settlementId);
-        const result=await readNativeDemDelivery(nativeDelivery,{jobId:session.jobId,logicalAddress,report,receiptContentHash:contentHash(report),deliveryBinding:deliveryBinding(fulfilmentId)});
+        const result=await readNativeDemDelivery(nativeDelivery,{jobId:session.jobId,logicalAddress,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:deliveryBinding(fulfilmentId)});
         if(result.status==='present')return{status:'present',artifact:result.artifact,receipt:result.receipt,signedProjection:result.signedProjection,demosEvidence:result.demosEvidence};
         if(result.status==='rejected')throw new SellerAgentError('delivery_readback_invalid',result.reason,503);
         return null;
@@ -1050,7 +1068,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           // Kept before the capability is asked: from here on only a readback
           // (or the reader's proven absence) tells whether this CREATE exists.
           session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];persist(session);
-          const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:contentHash(report),deliveryBinding:binding});
+          const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding});
           if(answer.status!=='accepted')return answer;
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,reconciliationId:answer.reconciliationId,substrate:'source-native-delivery'};
           persist(session);return answer;
@@ -1064,7 +1082,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         if(nativeDelivery){
           const report=deliveryReport(session,work.intake.settlementId);
           return reconcileNativeDemDelivery(nativeDelivery,{...input,jobId:session.jobId,logicalAddress:deliverableAddress(session.jobId),report,
-            receiptContentHash:contentHash(report),deliveryBinding:deliveryBinding(input.fulfilmentId)});
+            receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:deliveryBinding(input.fulfilmentId)});
         }
         const record = await readDelivery(deliverableAddress(session.jobId),input.fulfilmentId);
         if (!record) return { status: 'absent', reason: 'canonical delivery address is empty' };
@@ -1092,8 +1110,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           verifyFixtureReceipt({ receipt, logicalAddress: ref.anchor.locator, hash: ref.contentHash, expectedWriter: claim }) === 'valid';
         return { disposition: valid ? 'valid' : 'invalid', ...(valid ? {} : { reason: 'fixture receipt authentication failed' }) };
       },
-      verifyDeliverySchema: ({ schemaUrl, cleartextPayload }) => {
-        const matches = schemaUrl === listing.offering.deliverable.schemaUrl && reportMatches(cleartextPayload, session, work.intake.settlementId);
+      verifyDeliverySchema: async ({ schemaUrl, cleartextPayload }) => {
+        const verdict = verifySchema ? await verifySchema({ schemaUrl, cleartextPayload: structuredClone(cleartextPayload) }) : { disposition: 'invalid' };
+        const matches = verdict?.disposition === 'valid' && schemaUrl === listing.offering.deliverable.schemaUrl && reportMatches(cleartextPayload, session, work.intake.settlementId);
         return { disposition: matches ? 'valid' : 'invalid', ...(matches ? {} : { reason: 'report schema/bindings differ' }) };
       },
       evidenceSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) },
@@ -1130,7 +1149,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!(session.deliverySubmitted ?? []).includes(input.fulfilmentId)) return { status: 'absent', reason: 'this seller never submitted the Deliverable for this fulfilment' };
           const report = deliveryReport(session, work.intake.settlementId);
           let read;
-          try { read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: input.logicalAddress, report, receiptContentHash: contentHash(report), deliveryBinding: deliveryBinding(input.fulfilmentId) }); }
+          try { read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: input.logicalAddress, report, receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: deliveryBinding(input.fulfilmentId) }); }
           catch (error) { return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` }; }
           if (isProvenUnsignedAbsence(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved the Deliverable CREATE was never signed' };
           if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
@@ -1331,7 +1350,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       }
       return nativeEvidenceResponse(work, { status: 'held', reason: delivery.reason });
     }
-    const result = delivery.ready.result, deliveredHash = contentHash(result.artifact.anchoredValue);
+    const result = delivery.ready.result, deliveredHash = sha256Hex(canonicalize(result.artifact.anchoredValue));
     session.deliveryReady = { fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress, contentHash: deliveredHash,
       anchorReceipt: structuredClone(result.anchorReceipt), evidenceHash: result.evidenceHash, ...(deliveryEvidenceEnabled?{evidence:structuredClone(result.evidence)}:{}), paymentPermitId: work.intake.permitId,
       finalisation: structuredClone(delivery.ready.finalisation), auditSource: structuredClone(delivery.auditSource),
@@ -1358,7 +1377,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       persist(session);
       return nativeEvidenceResponse(work, { status: 'held', reason: delivery.reason });
     }
-    const result = delivery.ready.result, deliveredHash = contentHash(result.artifact.anchoredValue);
+    const result = delivery.ready.result, deliveredHash = sha256Hex(canonicalize(result.artifact.anchoredValue));
     const binding = nativeDeliveryBinding(session, work, result.fulfilmentId);
     session.deliveryReady = { fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress, contentHash: deliveredHash,
       anchorReceipt: structuredClone(result.anchorReceipt), evidenceHash: result.evidenceHash, ...(deliveryEvidenceEnabled?{evidence:structuredClone(result.evidence)}:{}), paymentPermitId: work.intake.permitId,
@@ -1375,8 +1394,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const ready = session.deliveryReady, report = deliveryReport(session, work.intake.settlementId);
     const binding = nativeDeliveryBinding(session, work, ready.fulfilmentId);
     const reread = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: ready.logicalAddress, report,
-      receiptContentHash: contentHash(report), deliveryBinding: binding });
-    const valid = reread.status === 'present' && ready.paymentPermitId === work.intake.permitId && ready.contentHash === contentHash(report) &&
+      receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: binding });
+    const valid = reread.status === 'present' && ready.paymentPermitId === work.intake.permitId && ready.contentHash === sha256Hex(canonicalize(report)) &&
       canonicalize(ready.deliveryBinding) === canonicalize(binding) && sameNativeDeliveryReceipt(reread.receipt, ready.anchorReceipt);
     if (!valid) return nativeEvidenceResponse(work, { status: 'held', reason: reread.reason ?? 'persisted SDK delivery-ready result did not authenticate on fresh native read' });
     return finishDeliveryEvidence(session, work, { status: 'delivery-ready', fulfilmentId: ready.fulfilmentId, logicalAddress: ready.logicalAddress,

@@ -1,6 +1,6 @@
 // Run-time port of http-mcp/src/dacs/demos-sr2-adapter.mjs at DACS-Agent-commerce/frontend
 // 15fdf23: the whole file.
-// The source lines below are unchanged except import paths (RUNTIME-PORTS.json).
+// The source lines below are unchanged except import paths and foreign-owner filtering before DACS payload validation (RUNTIME-PORTS.json).
 // OFFLINE integration adapter, not a live Demos writer. Only marked literal
 // loopback reads are permitted. The adapter has no key and never broadcasts.
 // It plans immutable CREATEs, authenticates the exact wallet authorization,
@@ -200,8 +200,8 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   async function nativeRead(address) {
     if (!NATIVE_ADDRESS.test(address)) reject('invalid', 'malformed native address');
     const value = await call(`/storage-program/${address}`);
-    if (!object(value) || value.success !== true || value.storageAddress !== address || !object(value.data)
-      || typeof value.owner !== 'string' || typeof value.programName !== 'string' || !object(value.metadata)) reject('indeterminate', 'native readback lacks an exact address, owner, data or metadata');
+    if (!object(value) || value.success !== true || value.storageAddress !== address
+      || typeof value.owner !== 'string' || typeof value.programName !== 'string') reject('indeterminate', 'native readback lacks an exact address, owner, data or metadata');
     return value;
   }
 
@@ -230,6 +230,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       const native = await nativeRead(address);
       if (native.programName !== programName) reject('invalid', 'name index and native program name differ');
       if (native.owner !== owner) continue;
+      if (!object(native.data) || !object(native.metadata)) reject('invalid', 'owned native record lacks DACS payload or metadata');
       if (native.metadata.logicalAddress !== logicalAddress) reject('invalid', 'native metadata names another logical address');
       owned.push(native);
     }

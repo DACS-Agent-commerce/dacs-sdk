@@ -184,7 +184,9 @@ export class SellerRecoveryError extends Error {
   constructor(code) { super(code); this.code = code; this.status = 503; }
 }
 
-export async function createSellerDurableState({ dir, signer, listingPin, maxJobs = 1000 }) {
+export const DEFAULT_SELLER_MAX_JOBS = 10000;
+
+export async function createSellerDurableState({ dir, signer, listingPin, maxJobs = DEFAULT_SELLER_MAX_JOBS }) {
   if (typeof dir !== 'string' || !isAbsolute(dir) || !/^did:demos:agent:[0-9a-f]{64}$/.test(signer?.claim) || typeof signer.sign !== 'function' || !Number.isSafeInteger(maxJobs) || maxJobs < 1) fail('seller_state_configuration_invalid');
   // A worker shares the process's leases but not its realm: keep seller state on the main thread.
   if (!isMainThread) fail('seller_state_main_thread_required');
@@ -352,6 +354,11 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
             fail('seller_state_busy');
           }
           if (lock) run('DELETE FROM seller_locks WHERE job=? AND owner=?', jobId, lock.owner);
+          // Reserve capacity atomically with the job lock, before admission.
+          // Concurrent new jobs count as reservations until their lock releases.
+          if (!load(jobId) && get(`SELECT
+            (SELECT COUNT(*) FROM seller_jobs) +
+            (SELECT COUNT(*) FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)) AS n`).n >= maxJobs) fail('seller_state_capacity');
           run('INSERT INTO seller_locks VALUES (?,?,?)', jobId, owner, process.pid);
           return { reclaimed: Boolean(lock), revision: load(jobId)?.revision ?? 0 };
         });
@@ -447,10 +454,10 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           return prior;
         });
       },
-      admitChallenge(nonce, bundleHash) {
+      admitChallenge(nonce, presentationHash) {
         transaction(() => {
           const prior = effect(`session-challenge:${nonce}`);
-          if (prior?.kind !== 'session-challenge' || prior.attempt?.bundleHash !== bundleHash) fail('seller_state_corrupt');
+          if (prior?.kind !== 'session-challenge' || prior.attempt?.presentationHash !== presentationHash) fail('seller_state_corrupt');
           putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true } });
         });
       },

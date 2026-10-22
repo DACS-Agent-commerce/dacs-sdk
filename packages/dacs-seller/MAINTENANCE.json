@@ -4,7 +4,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "b662cdb570e4c1346455bbccc44e6256ce9b704acc60de2f45c55bb6f20a10cc",
+      "sha256": "3aee8aa8b67ad3e52b47283dcb60cc7f9bbc60be1c1138965fab80231c3d7c6a",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -16,13 +16,13 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-durable-state.mjs",
       "originalSha256": "9e6c0523c8bdbbd57c2df54836a6787414cc8991235cb259b35f2716bde870fe",
-      "sha256": "fffc4f1eec7be986307b92a225a15d910854fb9a4a4c923e3543d527295e3375",
+      "sha256": "34d5bac8ad1a87033fe1f22c73bb5adf9a254732052b7fba38b4e80529a7409e",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-http.mjs",
       "originalSha256": "5b306bb8da34a8d2ace2d179d3e51daf64ca7a24072970eb3044e1456b91ead9",
-      "sha256": "e2c0f829274a9a93aafb96388a24e50344d3913a8a06ef2fc001865649975fb5",
+      "sha256": "2970231bbebdebcb93fb085f003f0cac7600c405568fe937e6d73b1e9c46c657",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -154,7 +154,7 @@
     {
       "path": "packages/dacs-seller/test/seller-raw-json.test.mjs",
       "originalSha256": null,
-      "sha256": "096b0cdd2492e3664f489b8e4468de62cca8fa912793376cc788a77899b5de99",
+      "sha256": "413d98e9ba0a935a939d2780569906d220c7f98b4e88f8a253f137b2874177b9",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
@@ -233,7 +233,7 @@
       "path": "packages/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs",
       "originalSha256": null,
       "sha256": "31a2072b8f6d975fea2d564232d21021e227d58962469731b8a861a26c3c6ec0",
-      "reason": "Seller run time: port from the plugin seller kit, changed only for the counterparty Vet verifier (DACS-2 \u00a77.7.2; RUNTIME-PORTS.json)."
+      "reason": "Seller run time: port from the plugin seller kit, changed only for the counterparty Vet verifier (DACS-2 §7.7.2; RUNTIME-PORTS.json)."
     },
     {
       "path": "packages/dacs-seller/src/dacs/demos-claims.mjs",
@@ -244,7 +244,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/demos-sr2-adapter.mjs",
       "originalSha256": null,
-      "sha256": "b69e5f80c6cf83869721202ffea292a7553c7a10bc9094f28ba39d4d43f956e6",
+      "sha256": "80b00050c6d09b2c9e2071d83b7138a6bc4a96fe2f9d830b8c14c4ecd30274c4",
       "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
     },
     {
@@ -304,7 +304,7 @@
     {
       "path": "packages/dacs-seller/src/host.mjs",
       "originalSha256": null,
-      "sha256": "88ad30a34e5b9a0076e2bc98dd7e1db6348bf4b9fb82c54220c20ec8567dd913",
+      "sha256": "4477b133454344f327de923c0cee5ba0b9eff829b4cddd35b2c221675eb6505a",
       "reason": "Seller run time: standalone host and public entry (README.md)."
     },
     {
@@ -334,7 +334,7 @@
     {
       "path": "packages/dacs-seller/src/util/http.mjs",
       "originalSha256": null,
-      "sha256": "0a1f5395db754e034f3b012dccba693deae1c0d8c8c9aa64587c6f5a007c3784",
+      "sha256": "f687b3aff74af84c72a0714a7c1a1f5d27bf10f955929aab6dd5f3b804b3344b",
       "reason": "Seller run time: verbatim port from the plugin seller kit (RUNTIME-PORTS.json)."
     },
     {
@@ -358,7 +358,7 @@
     {
       "path": "packages/dacs-seller/test/helpers/installed-seller-host.mjs",
       "originalSha256": null,
-      "sha256": "ce1042085dd5c12476efd3cd0543dad50443d651ab65c49b4c785e5bde554180",
+      "sha256": "2b977b6b0e750f33899ee579374be8175f43616deab30dc96e3c912fc0717b4a",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -376,13 +376,13 @@
     {
       "path": "packages/dacs-seller/test/seller-substrate-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "2e3645a6615089eebe66a9b7f73c0b2879a45db132dcfbe5e808f72175053f71",
+      "sha256": "ccb26776e7208819abca0d436d639f8c24cd34d37da27574d89896ac945e578a",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
       "path": "packages/dacs-seller/test/seller-settlement-profile.test.mjs",
       "originalSha256": null,
-      "sha256": "3b7e547a217a021f1394e113d5decdce50c86b806608dbdf02d7a49f58f1bdf8",
+      "sha256": "8369e8849c7ba7e24c4f0fa3d8ee05c0dfde5bec752719e31a4d45a010aa3723",
       "reason": "Hook-free seller package coverage: installed package, transport round trip, substrate gate and claim contract."
     },
     {
@@ -400,7 +400,7 @@
     {
       "path": "packages/dacs-seller/src/dacs/rail-authority.mjs",
       "originalSha256": null,
-      "sha256": "4746bae86fa3c7d7a68637b4c592a12526278bd231dc0ce3806fe35c8374b48f",
+      "sha256": "598401d09407be023033308ebe00059236997743ee3ac1417e87ccd07cddb23b",
       "reason": "Seller rail authority: steward-signed demos-native:DEM definition pinned per session (DACS-4 RAV-R1..R5, DACS-1 LRR-6)."
     },
     {
@@ -430,13 +430,13 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "d857a8c290249025a217590325a25191924cd3cd0adabcfcb0e245561a0a1e44",
+      "sha256": "9a0f0648caed1b5cbd970f7c036d57314777c8f024b9af248af199e2322f8c4d",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {
       "path": "packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs",
       "originalSha256": null,
-      "sha256": "8298253a2324beaa40de67877e0c0207af9ef44a695fca0dd1ee350ae592e4bc",
+      "sha256": "4c8b1893c78f296e67742f49fbde92c06abe42b31c38221e1904289266b3d2cb",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
     },
     {

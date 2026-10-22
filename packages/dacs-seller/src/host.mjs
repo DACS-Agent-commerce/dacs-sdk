@@ -25,13 +25,14 @@ import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer', 'observeDemosTransfer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']);
-const OPTIONAL = Object.freeze(['deliveryEvidenceEnabled', 'host', 'port', 'now']);
+const OPTIONAL = Object.freeze(['deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
 const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });
@@ -53,7 +54,7 @@ export async function startSellerHost(options) {
   const missing = REQUIRED.filter((key) => options[key] == null);
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
-    nativePaymentEvidence, reconcilePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, deliveryEvidenceEnabled = false,
+    nativePaymentEvidence, reconcilePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS,
     host = '127.0.0.1', port = 0, now = () => Date.now() } = options;
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
@@ -61,7 +62,7 @@ export async function startSellerHost(options) {
   privateDirectory(dataDirectory);
   if (typeof observeDemosTransfer !== 'function' || typeof now !== 'function') throw new TypeError('observeDemosTransfer and now must be functions');
   // DACS-4 PC-7(b): the answers that let the agent sign the same evidence
-  // again (`unsigned`, `refused`) come only from the package's wallet journal,
+  // again (`unsigned`) come only from the package's wallet journal,
   // which keeps every signed CREATE and reads its fate from the chain.
   if (!isPaymentEvidenceWalletJournalPair(nativePaymentEvidence?.anchorEvidence, reconcilePaymentEvidence)) {
     throw new TypeError('the seller host takes the payment-evidence anchor and reconcilePaymentEvidence only from one createPaymentEvidenceWalletJournal: nativePaymentEvidence must anchor with its anchorEvidence');
@@ -73,14 +74,22 @@ export async function startSellerHost(options) {
   const release = () => { for (const close of opened.splice(0).reverse()) { try { close(); } catch { /* keep releasing */ } } };
   try {
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
-      agreementAnchor, nativeArtifactAnchor: artifactAnchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, deliveryEvidenceEnabled });
+      agreementAnchor, nativeArtifactAnchor: artifactAnchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
     opened.push(() => agent.close());
     const transport = join(dataDirectory, 'transport');
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     const store = createSellerTransportStore({ path: join(transport, 'transport.sqlite'), now });
     opened.push(() => store.close());
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
-    const server = createServer({ maxHeaderSize: TIMEOUTS.maxHeaderSize }, createSellerHttpHandler(agent, { authentication }));
+    const handler = createSellerHttpHandler(agent, { authentication });
+    const active = new Set();
+    let stopping = false;
+    const server = createServer({ maxHeaderSize: TIMEOUTS.maxHeaderSize }, (req, res) => {
+      if (stopping) { res.writeHead(503); res.end(); return; }
+      const work = Promise.resolve().then(() => handler(req, res));
+      active.add(work);
+      work.catch(() => res.destroy()).finally(() => active.delete(work));
+    });
     Object.assign(server, { headersTimeout: TIMEOUTS.headersTimeout, requestTimeout: TIMEOUTS.requestTimeout, keepAliveTimeout: TIMEOUTS.keepAliveTimeout });
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -89,10 +98,14 @@ export async function startSellerHost(options) {
     let closing = null;
     // Stops accepting, lets requests in progress finish, then closes the
     // journal and the agent state they write to and releases the state lock.
-    const close = () => closing ??= new Promise((resolve) => {
-      server.close(() => { release(); resolve(); });
+    const close = () => closing ??= (async () => {
+      stopping = true;
+      const socketsClosed = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
-    });
+      await Promise.allSettled([...active]);
+      await socketsClosed;
+      release();
+    })();
     return Object.freeze({
       url: `http://${host === '::1' ? '[::1]' : host}:${server.address().port}`,
       listingPin: structuredClone(agent.listingPin),

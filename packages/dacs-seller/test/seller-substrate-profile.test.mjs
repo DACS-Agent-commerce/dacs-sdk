@@ -23,7 +23,7 @@ function sellerWorld() {
   const listing = seller.attachListingSignature(draft, wallet(seller.listingSigningMessage(draft)));
   const unreachable = async () => { throw new Error('not reached at construction'); };
   return {
-    base: { signer: { claim: party.claim, sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey) }, listing, observeDemosTransfer: unreachable },
+    base: { signer: { claim: party.claim, sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey) }, listing, deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: unreachable }, observeDemosTransfer: unreachable },
     agreementAnchor: { source: 'profile/agreement-readback', readAgreement: unreachable },
     artifacts: { nativeArtifactAnchor: { writer: party.claim, publish: unreachable, readRetained: unreachable, verifyReceipt: unreachable }, deliverableProducer: () => null },
     anchors: { read: unreachable, write: unreachable },

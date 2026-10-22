@@ -7,7 +7,7 @@
 // call and refuses, so a refused step is shown to have reached nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,7 +25,7 @@ import { createSessionAdmissionFixture } from './helpers/session-admission-fixtu
 
 function key() {
   const pair = generateKeyPairSync('ed25519'), raw = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
-  return { address: `0x${raw.toString('hex')}`, claim: `did:demos:agent:${raw.toString('hex')}`,
+  return { privateKey: pair.privateKey, address: `0x${raw.toString('hex')}`, claim: `did:demos:agent:${raw.toString('hex')}`,
     sign: (bytes) => sign(null, Buffer.from(bytes), pair.privateKey),
     signWallet: (message) => `0x${sign(null, Buffer.from(message, 'utf8'), pair.privateKey).toString('hex')}` };
 }
@@ -76,6 +76,7 @@ async function world(t, { listingChanges = () => {} } = {}) {
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true }),
     agreementAnchor: { source: 'settlement-profile/agreement-readback', readAgreement: refuse('readAgreement') },
     nativeArtifactAnchor: { writer: sellerKey.claim, publish: refuse('publish'), readRetained: refuse('readRetained'), verifyReceipt: refuse('verifyReceipt') },
+    deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: refuse('verifyDeliverySchema') },
     deliverableProducer: () => { reached.push('deliverableProducer'); throw new Error('not reached'); },
     observeDemosTransfer: refuse('observeDemosTransfer'),
     railAuthority: steward.railAuthority(),
@@ -1164,4 +1165,96 @@ test('a not-yet-valid Listing refuses a fresh session after restart and admits i
   assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 });
   at = w.listing.validity.notBefore;
   assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'notBefore itself is inclusive');
+});
+
+test('malformed attempts consume recognized challenges before shape validation, including across restart', async (t) => {
+  const w = await world(t), durableDirectory = w.dir();
+  const open = () => seller.createSellerAgent(complete(w, { durableDirectory }));
+  let agent = await open();
+  t.after(() => agent.close());
+  w.admission.issue(agent, w.jobId, w.buyerBundle);
+  const request = await w.proposalFor(w.vetted);
+  const malformed = structuredClone(w.buyerBundle);
+  delete malformed.presentation;
+  assert.deepEqual(await refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: malformed })), { code: 'buyer_bundle_invalid', status: 422 });
+  agent.close(); agent = await open();
+  assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 });
+  assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 0);
+  // A fresh challenge still permits a valid presentation.
+  const nonce = agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }).sessionNonce;
+  const bundle = presentWith(w.buyerKey, w.now, nonce);
+  // The changed bundle needs matching Vet context; this test uses the existing
+  // valid request instead to check that the fresh attempt reaches admission.
+  await agent.receiveProposal({ ...request, buyerIdentityBundle: bundle });
+  assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 1);
+});
+
+test('accepted presentations retain complete proof bytes across restart; an exact retry continues', async (t) => {
+  const w = await world(t), durableDirectory = w.dir();
+  const open = () => seller.createSellerAgent(complete(w, { durableDirectory }));
+  let agent = await open();
+  t.after(() => agent.close());
+  w.admission.issue(agent, w.jobId, w.buyerBundle);
+  const request = await w.proposalFor(w.vetted);
+  const accepted = await agent.receiveProposal(request);
+  assert.equal(accepted.disposition, 'complete');
+  const changed = structuredClone(w.buyerBundle);
+  // Ed25519 permits a different signing nonce for the same message. Produce
+  // another valid signature so identityBundleHash alone cannot distinguish it.
+  const { ed25519 } = await import('@noble/curves/ed25519');
+  const order = 2n ** 252n + 27742317777372353535851937790883648493n;
+  const little = bytes => BigInt('0x' + Buffer.from(bytes).reverse().toString('hex'));
+  const scalarBytes = n => Buffer.from(n.toString(16).padStart(64, '0'), 'hex').reverse();
+  const seed = Buffer.from(w.buyerKey.privateKey.export({ format: 'jwk' }).d, 'base64url');
+  const expanded = createHash('sha512').update(seed).digest().subarray(0, 32);
+  expanded[0] &= 248; expanded[31] &= 63; expanded[31] |= 64;
+  const publicKey = Buffer.from(w.buyerKey.claim.slice(16), 'hex');
+  const message = Buffer.from(`dacs-bundle-presentation:v1:${core.identityBundleHash(changed)}`);
+  const nonce = 7n, point = Buffer.from(ed25519.ExtendedPoint.BASE.multiply(nonce).toRawBytes());
+  const challenge = little(createHash('sha512').update(point).update(publicKey).update(message).digest()) % order;
+  const signature = Buffer.concat([point, scalarBytes((nonce + challenge * little(expanded)) % order)]);
+  assert.equal(verify(null, message, w.buyerKey.privateKey, signature), true);
+  changed.presentation.signatures[0].signature = signature.toString('base64url');
+  assert.notEqual(changed.presentation.signatures[0].signature, w.buyerBundle.presentation.signatures[0].signature);
+  assert.equal(core.identityBundleHash(changed), core.identityBundleHash(w.buyerBundle), 'identity hash excludes presentation proofs');
+  for (const restart of [false, true]) {
+    if (restart) { agent.close(); agent = await open(); }
+    assert.deepEqual(await refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: changed })), { code: 'session_not_admitted', status: 409 });
+    assert.deepEqual((await agent.receiveProposal(request)).contribution, accepted.contribution);
+  }
+});
+
+test('steward history rejects malformed identities at configuration and retains valid old keys', () => {
+  const previous = railSteward(), current = railSteward();
+  const entry = { stewardClaim: previous.stewardClaim, stewardPublicKey: previous.stewardPublicKey };
+  for (const changed of [{ stewardPublicKey: entry.stewardPublicKey + '=' }, { stewardClaim: 'not a claim' }, { stewardPublicKey: Buffer.alloc(31).toString('base64url') }]) {
+    assert.throws(() => railAuthorityConfig({ ...current.railAuthority(), historicalStewards: [{ ...entry, ...changed }, entry] }), /historicalStewards/);
+  }
+  const retained = railAuthorityConfig(previous.railAuthority()).pin();
+  delete retained.stewardClaim; delete retained.stewardPublicKey;
+  assert.equal(railAuthorityConfig({ ...current.railAuthority(), historicalStewards: [entry] }).evaluate(retained, 'in-flight').decision, 'pass');
+});
+
+test('the default store admits job 1001 and atomically reserves the last configured slot', async (t) => {
+  const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
+  const w = await world(t);
+  const store = await createSellerDurableState({ dir: w.dir(), signer: w.signer, listingPin: seller.listingPin(w.listing) });
+  try {
+    for (let i = 0; i < 1001; i++) {
+      const jobId = core.generateCanonicalJobId();
+      await store.withJob(jobId, () => store.saveSession({ jobId }));
+    }
+    assert.equal(store.sessions().length, 1001);
+  } finally { store.close(); }
+  const limited = await createSellerDurableState({ dir: w.dir(), signer: w.signer, listingPin: seller.listingPin(w.listing), maxJobs: 1 });
+  try {
+    let release, entered;
+    const gate = new Promise(resolve => { release = resolve; });
+    const pending = new Promise(resolve => { entered = resolve; });
+    const first = limited.withJob(core.generateCanonicalJobId(), async () => { entered(); await gate; });
+    await pending;
+    await assert.rejects(limited.withJob(core.generateCanonicalJobId(), () => assert.fail('capacity must refuse before admission')), { code: 'seller_state_capacity' });
+    release(); await first;
+    await limited.withJob(core.generateCanonicalJobId(), () => {});
+  } finally { limited.close(); }
 });

@@ -14,7 +14,7 @@
           "from './demos-claims.mjs'"
         ],
         [
-          "  source: 'vendored support-branch build dacs-sdk@6658691cefed76e2bb576ae959d1ad3bc7eeafec (sha256 79934553\u2026a69a3); not SDK main',",
+          "  source: 'vendored support-branch build dacs-sdk@6658691cefed76e2bb576ae959d1ad3bc7eeafec (sha256 79934553…a69a3); not SDK main',",
           "  source: 'the @kynesyslabs/dacs peer dependency at this package\\'s own version, built from the same repository',",
           "the SDK provenance source (this package's core peer)"
         ],
@@ -82,18 +82,34 @@
         [
           "from '../wallet/devnet-native-transport.mjs'",
           "from './devnet-source.mjs'"
+        ],
+        [
+          "  async function nativeRead(address) {\n    if (!NATIVE_ADDRESS.test(address)) reject('invalid', 'malformed native address');\n    const value = await call(`/storage-program/${address}`);\n    if (!object(value) || value.success !== true || value.storageAddress !== address || !object(value.data)\n      || typeof value.owner !== 'string' || typeof value.programName !== 'string' || !object(value.metadata)) reject('indeterminate', 'native readback lacks an exact address, owner, data or metadata');\n    return value;\n  }\n\n",
+          "  async function nativeRead(address) {\n    if (!NATIVE_ADDRESS.test(address)) reject('invalid', 'malformed native address');\n    const value = await call(`/storage-program/${address}`);\n    if (!object(value) || value.success !== true || value.storageAddress !== address\n      || typeof value.owner !== 'string' || typeof value.programName !== 'string') reject('indeterminate', 'native readback lacks an exact address, owner, data or metadata');\n    return value;\n  }\n\n",
+          "foreign-owner filtering before DACS payload validation"
+        ],
+        [
+          "      if (native.owner !== owner) continue;",
+          "      if (native.owner !== owner) continue;\n      if (!object(native.data) || !object(native.metadata)) reject('invalid', 'owned native record lacks DACS payload or metadata');",
+          "foreign-owner filtering before DACS payload validation"
         ]
       ],
       "sourceSha256": "1312e104fa21986fe20a8eb5bf774b41c5b6fd17f6730d00f0bc3dd0459f73ac",
-      "sha256": "b69e5f80c6cf83869721202ffea292a7553c7a10bc9094f28ba39d4d43f956e6"
+      "sha256": "80b00050c6d09b2c9e2071d83b7138a6bc4a96fe2f9d830b8c14c4ecd30274c4"
     },
     {
       "target": "src/util/http.mjs",
       "source": "src/util/http.mjs",
       "lines": "all",
-      "replace": [],
+      "replace": [
+        [
+          "// Bounded outbound JSON requests: fixed origin, no redirects, hard timeout,\n// post-decompression byte cap, no ambient credentials. Failures are typed so\n// callers can distinguish \"unavailable\" from \"invalid\".\nexport class OutboundError extends Error {\n  constructor(kind, message, { status } = {}) {\n    super(message);\n    this.kind = kind; // 'unavailable' | 'invalid' | 'not-found'\n    this.status = status;\n  }\n}\n\nasync function readCapped(response, maxBytes) {\n  const declared = response.headers.get('content-length');\n  if (declared !== null && Number(declared) > maxBytes) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('invalid', 'response exceeds byte limit');\n  }\n  if (!response.body) return '';\n  const reader = response.body.getReader();\n  const decoder = new TextDecoder('utf-8', { fatal: true });\n  let total = 0;\n  let text = '';\n  try {\n    for (;;) {\n      const { done, value } = await reader.read();\n      if (done) break;\n      total += value.byteLength;\n      if (total > maxBytes) {\n        await reader.cancel().catch(() => {});\n        throw new OutboundError('invalid', 'response exceeds byte limit');\n      }\n      text += decoder.decode(value, { stream: true });\n    }\n    return text + decoder.decode();\n  } catch (error) {\n    if (error instanceof OutboundError) throw error;\n    throw new OutboundError('invalid', 'response body is not valid UTF-8');\n  }\n}\n\nexport async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, method = 'GET', body, timeoutMs, maxBytes, expectedOrigin, headers = {} }) {\n  const target = new URL(url);\n  if (expectedOrigin && target.origin !== expectedOrigin) throw new OutboundError('invalid', 'request left the configured origin');\n  let response;\n  try {\n    response = await fetchImpl(target, {\n      method,\n      headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },\n      body: body !== undefined ? JSON.stringify(body) : undefined,\n      redirect: 'manual',\n      credentials: 'omit',\n      cache: 'no-store',\n      signal: AbortSignal.timeout(timeoutMs),\n    });\n  } catch (error) {\n    throw new OutboundError('unavailable', error?.name === 'TimeoutError' ? 'request timed out' : 'request failed');\n  }\n  if (response.status >= 300 && response.status < 400) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('invalid', 'unexpected redirect', { status: response.status });\n  }\n  if (response.status === 404) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('not-found', 'not found', { status: 404 });\n  }\n  if (!response.ok) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('unavailable', `upstream returned HTTP ${response.status}`, { status: response.status });\n  }\n  const type = response.headers.get('content-type') ?? '';\n  if (!/^application\\/(?:[\\w.+-]+\\+)?json\\b/i.test(type)) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('invalid', 'upstream did not return JSON');\n  }\n  const text = await readCapped(response, maxBytes);\n  try {\n    return JSON.parse(text);\n  } catch {\n    throw new OutboundError('invalid', 'upstream returned malformed JSON');\n  }\n}\n",
+          "import { admitRawJson } from '@kynesyslabs/dacs';\n// Bounded outbound JSON requests: fixed origin, no redirects, hard timeout,\n// post-decompression byte cap, no ambient credentials. Failures are typed so\n// callers can distinguish \"unavailable\" from \"invalid\".\nexport class OutboundError extends Error {\n  constructor(kind, message, { status } = {}) {\n    super(message);\n    this.kind = kind; // 'unavailable' | 'invalid' | 'not-found'\n    this.status = status;\n  }\n}\n\nasync function readCapped(response, maxBytes) {\n  const declared = response.headers.get('content-length');\n  if (declared !== null && Number(declared) > maxBytes) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('invalid', 'response exceeds byte limit');\n  }\n  if (!response.body) return new Uint8Array();\n  const reader = response.body.getReader();\n  const chunks = [];\n  let total = 0;\n\n  try {\n    for (;;) {\n      const { done, value } = await reader.read();\n      if (done) break;\n      total += value.byteLength;\n      if (total > maxBytes) {\n        await reader.cancel().catch(() => {});\n        throw new OutboundError('invalid', 'response exceeds byte limit');\n      }\n      chunks.push(value);\n    }\n    const bytes = new Uint8Array(total);\n    let offset = 0;\n    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }\n    return bytes;\n  } catch (error) {\n    if (error instanceof OutboundError) throw error;\n    throw new OutboundError('invalid', 'response body is not valid UTF-8');\n  }\n}\n\nexport async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, method = 'GET', body, timeoutMs, maxBytes, expectedOrigin, headers = {} }) {\n  const target = new URL(url);\n  if (expectedOrigin && target.origin !== expectedOrigin) throw new OutboundError('invalid', 'request left the configured origin');\n  let response;\n  try {\n    response = await fetchImpl(target, {\n      method,\n      headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },\n      body: body !== undefined ? JSON.stringify(body) : undefined,\n      redirect: 'manual',\n      credentials: 'omit',\n      cache: 'no-store',\n      signal: AbortSignal.timeout(timeoutMs),\n    });\n  } catch (error) {\n    throw new OutboundError('unavailable', error?.name === 'TimeoutError' ? 'request timed out' : 'request failed');\n  }\n  if (response.status >= 300 && response.status < 400) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('invalid', 'unexpected redirect', { status: response.status });\n  }\n  if (response.status === 404) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('not-found', 'not found', { status: 404 });\n  }\n  if (!response.ok) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('unavailable', `upstream returned HTTP ${response.status}`, { status: response.status });\n  }\n  const type = response.headers.get('content-type') ?? '';\n  if (!/^application\\/(?:[\\w.+-]+\\+)?json\\b/i.test(type)) {\n    await response.body?.cancel().catch(() => {});\n    throw new OutboundError('invalid', 'upstream did not return JSON');\n  }\n  const text = await readCapped(response, maxBytes);\n  try {\n    return admitRawJson(text, { maxBytes });\n  } catch {\n    throw new OutboundError('invalid', 'upstream returned malformed JSON');\n  }\n}\n",
+          "exact-byte JSON admission"
+        ]
+      ],
       "sourceSha256": "71a4685402234a53c30c111297d4b825bdc63a649f8867b1ff8af196ad88eb9d",
-      "sha256": "0a1f5395db754e034f3b012dccba693deae1c0d8c8c9aa64587c6f5a007c3784"
+      "sha256": "f687b3aff74af84c72a0714a7c1a1f5d27bf10f955929aab6dd5f3b804b3344b"
     },
     {
       "target": "src/util/text.mjs",
@@ -285,7 +301,7 @@
       "replace": [
         [
           "// and every Vet reference must name a seller/orchestrator-produced composite\n// at the canonical DACS-2 address.",
-          "// and every Vet reference must name a composite signed by its counterparty\n// verifier (DACS-2 \u00a77.7.2: the buyer's by the seller, the seller's by the\n// buyer) at the canonical DACS-2 address.",
+          "// and every Vet reference must name a composite signed by its counterparty\n// verifier (DACS-2 §7.7.2: the buyer's by the seller, the seller's by the\n// buyer) at the canonical DACS-2 address.",
           "the counterparty Vet verifier"
         ],
         [
@@ -320,7 +336,7 @@
         ],
         [
           "payee: input.payoutBindings?.[0]?.payeeAddress, generatedAt,",
-          "// DACS-4 \u00a79.5.1 PB-2 tier 1: pay-dem has an intrinsic destination.\n    payee: addressForClaim(listing.seller.identity.presentedBy), generatedAt,",
+          "// DACS-4 §9.5.1 PB-2 tier 1: pay-dem has an intrinsic destination.\n    payee: addressForClaim(listing.seller.identity.presentedBy), generatedAt,",
           "the intrinsic DEM payout destination (DACS-4 PB-2 tier 1)"
         ]
       ],

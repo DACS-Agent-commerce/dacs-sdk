@@ -11,7 +11,7 @@ repository). It is a **fixture-only kit**: its native capabilities accept
 only `TEST-` authorities and a loopback fixture node, so it cannot start
 against, or read from, a real Demos node (see "What the host does and does
 not do"). It is not qualified for mainnet. The standalone host retains
-all jobs and refuses new jobs after its lifetime cap of 10,000; terminal
+all jobs and refuses new jobs before admission after `maxJobs` (default 10,000); terminal
 DACS-5 bundle completion and transport-row reclamation are not wired.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
@@ -29,8 +29,11 @@ const host = await startSellerHost({
   buyerAccess: createOperatorBuyerAccess({ openBuyerAccess: true }),
   agreementAnchor,      // { source, readAgreement(input) }: native Agreement readback
   artifactAnchor,       // { writer, publish, readRetained, verifyReceipt }: native artifact publication
-  deliverableProducer,  // (input) -> the deliverable bound to the Agreement and settlement
-  observeDemosTransfer, // (txHash) -> pay-dem transfer observation, e.g. the core seller observer
+  deliverableProducer,  // synchronous, deterministic (input) -> JSON bound to the Agreement and settlement
+  deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
+                          // required when the Listing names a schema; implements that exact schema
+  maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
+  observeDemosTransfer, // compatibility option; native intake uses nativePaymentEvidence's observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
                          // agent reads the signed CREATE's projection from the same journal
@@ -65,6 +68,19 @@ exports are the parts the host composes, for operators who compose their own:
 `createSellerTransportServerAuth` and the buyer side `createSellerAgentClient`
 and `createSellerTransportClientAuth`. The kit's other modules are reachable
 by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
+
+`deliverableProducer` is called repeatedly during preparation, verification and
+recovery. It must synchronously return identical JSON for the same Agreement,
+Listing and settlement, including after restart. Persist application-generated
+content before returning it. A Promise is refused as `deliverable_producer_async`.
+The operator supplies `deliverySchemaVerifier` for the exact signed schema URL;
+unknown schemas refuse construction before any Agreement can be signed. Its
+`verify` may be async and must return `{ disposition: 'valid' | 'invalid' |
+'indeterminate', reason? }` after checking the actual payload against that schema.
+
+The HTTP limiter is global (120 requests/minute, eight concurrent requests)
+and includes unauthenticated traffic. Put the host behind a front end with a
+per-client limiter so one client cannot exhaust the shared request budget.
 
 ## What the host does and does not do
 
@@ -199,7 +215,8 @@ by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
-  `applied` (executed), `pending`, or `absent`; an ordinary unknown/not-found
+  `applied` (successfully executed), `pending`, or `absent` (not executed,
+  including an included-but-failed CREATE); an ordinary unknown/not-found
   answer never proves absence. Supersession requires an advanced nonce snapshot
   and `{ state: 'absent', checkedThroughBlock }` from a qualified reader's
   complete authenticated transaction index, including failed transactions,

@@ -34,3 +34,12 @@ test('decoded authentication envelope rejects duplicate names and lossy numeric 
 
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('RPC responses admit exact bytes before discarding duplicate members or numeric identity', async () => {
+  const { fetchBoundedJson } = await import('../src/util/http.mjs');
+  const get = raw => fetchBoundedJson('http://127.0.0.1/', { fetchImpl: async () => new Response(raw, { headers: { 'content-type': 'application/json' } }), timeoutMs: 1000, maxBytes: 4096 });
+  for (const raw of ['{"response":{"jobId":"other","jobId":"paid"}}', '{"a":1,"\\u0061":2}', '{"n":9007199254740991.1}', '\ufeff{}', new Uint8Array([0x22, 0xc0, 0xaf, 0x22])]) {
+    await assert.rejects(get(raw), { kind: 'invalid' });
+  }
+  assert.deepEqual(await get('{"response":{"jobId":"paid","n":1e0}}'), { response: { jobId: 'paid', n: 1 } });
+});
