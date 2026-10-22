@@ -77,6 +77,33 @@ The operator supplies `deliverySchemaVerifier` for the exact signed schema URL;
 unknown schemas refuse construction before any Agreement can be signed. Its
 `verify` may be async and must return `{ disposition: 'valid' | 'invalid' |
 'indeterminate', reason? }` after checking the actual payload against that schema.
+An `indeterminate` verdict retains its reason and holds preparation for retry,
+including after restart, without consuming the delivery permit. An `invalid`
+verdict remains a preparation failure. This kit prepares inline public storage
+payloads only: Listings declaring `expectedSizeBytes` above 131072 are refused
+before any Agreement is signed (DACS-4 §9.6.1 requires an extended pointer above
+128 KiB). Producers must stay within that inline limit even when size is undeclared.
+
+`artifactAnchor` publishes native artifacts for the seller named by `writer`.
+Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
+`authorize()` immediately before retaining a CREATE intent and must durably keep
+the signed transaction before sending it. `readRetained({ logicalAddress,
+artifactKind })` must authenticate the exact retained artifact, receipt, native
+transaction reference and signed projection when returning `status: 'present'`;
+`verifyReceipt` independently checks those bindings. Retain one logical record
+per address; an uncertain send is reconciled from its original transaction.
+The agent durably records `commitmentPublishAsked` before calling `publish`.
+After that, a plain `absent` or `indeterminate` read holds the commitment. Only
+the actual object returned by `provenUnsignedAbsence(reason)` (from
+`src/dacs/native-dem-delivery-consumer.mjs`) authorizes another call to publish:
+the operator must first prove from its complete durable publication and wallet
+journals that no signed CREATE for this address can land. A missing name-index
+entry, an RPC failure, or a copied/serialized proof is insufficient. A retained
+attempt from an older version without this marker is conservatively treated as
+already asked. Read-only recovery never initiates publication, even with proof.
+Keep both journals across restart; losing or rolling them back invalidates the
+proof. Without a valid proof after a failure before signing, the commitment
+remains held until the operator can reconcile it.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -97,8 +124,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - Every request must carry a buyer transport signature over its method, path
   and body, for this seller and Listing; unsigned or mismatched requests are
   refused before the agent runs. Effects are journaled before they run, so a
-  restarted host answers a completed request again and never repeats an
-  uncertain one. A payment answer that is not final is not cached as final:
+  restarted host answers a completed request again and reconciles uncertain
+  work through the agent's retained state. A commitment retry first reads back
+  the original CREATE and publishes again only with proof that nothing was signed.
+  A payment answer that is not final is not cached as final:
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not

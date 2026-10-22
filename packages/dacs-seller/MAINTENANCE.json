@@ -4,8 +4,8 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-agent.mjs",
       "originalSha256": "beb1dfdafeffb2b8f17245a990100df0536711396cdee5328f230f7f9a186443",
-      "sha256": "3c227c0250fccf54a30111fae17f26473adc22e6dd16e4358f348feafd5a3388",
-      "reason": "Retain retries for unfinished native publication and journaled commitments; reverify admitted presentations after challenge expiry."
+      "sha256": "3dd4daf036c0fc060aa620f632c4b83bb324f27e5f7c8a59e6ed2de101bd46b8",
+      "reason": "Preserve retryable schema verification, refuse unsupported declared delivery sizes before agreements, and retain commitment publication intent across retries."
     },
     {
       "path": "packages/dacs-seller/src/dacs/seller-context-route.mjs",
@@ -28,8 +28,8 @@
     {
       "path": "packages/dacs-seller/src/dacs/seller-transport-auth.mjs",
       "originalSha256": "82c5b7dbdd866cad0d601325d05680db2503ce87d7ff1346d6e06eb9683b645f",
-      "sha256": "9713eae51688e821e9959e6e50c4043ead0d11cd4b99b179b5b1cb66119cee9e",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+      "sha256": "95db24b7bae08a54faa9dab7a7e697b4cbc359d86257db611c672526705f1429",
+      "reason": "Keep host job capacity independent of the transport nonce capacity."
     },
     {
       "path": "packages/dacs-seller/src/devnet-demo/agreement-context.mjs",
@@ -70,8 +70,8 @@
     {
       "path": "packages/dacs-seller/test/d5-limits-before-effects.test.mjs",
       "originalSha256": "7f3d8c7c6f62cb90fae6fb2dad6ca8d99b380be8bb0466d23a6b9927dd8415f7",
-      "sha256": "96cf3e457cdfba098bf05d593a51c8a279655c9a73f453720ba83ff931ace473",
-      "reason": "Cover canonical accepted and noncanonical refused presentation signatures before Vet writes."
+      "sha256": "c4fea5d661cc81481af9f1f5d82d1b53cf77c72051bebde8968f05a1c54ac351",
+      "reason": "Cover delivery recovery, inline size boundaries, independent job limits and commitment publication reconciliation."
     },
     {
       "path": "packages/dacs-seller/test/d5-recovery.test.mjs",
@@ -142,8 +142,8 @@
     {
       "path": "packages/dacs-seller/test/provenance-checkout.test.mjs",
       "originalSha256": null,
-      "sha256": "e68927884df3d0284d166c53d9cec9622a07bb16b5e427540d5db38c08aaff64",
-      "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+      "sha256": "38694e55fc51e616d1aa0659926f3cb690f4754e9380f779793a0eb0a2b0988a",
+      "reason": "Require every executable seller test in both supported runners and preserve portable provenance checks."
     },
     {
       "path": "packages/dacs-seller/test/seller-lifecycle-gates.test.mjs",
@@ -233,7 +233,7 @@
       "path": "packages/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs",
       "originalSha256": null,
       "sha256": "31a2072b8f6d975fea2d564232d21021e227d58962469731b8a861a26c3c6ec0",
-      "reason": "Seller run time: port from the plugin seller kit, changed only for the counterparty Vet verifier (DACS-2 \u00a77.7.2; RUNTIME-PORTS.json)."
+      "reason": "Seller run time: port from the plugin seller kit, changed only for the counterparty Vet verifier (DACS-2 §7.7.2; RUNTIME-PORTS.json)."
     },
     {
       "path": "packages/dacs-seller/src/dacs/demos-claims.mjs",
@@ -304,8 +304,8 @@
     {
       "path": "packages/dacs-seller/src/host.mjs",
       "originalSha256": null,
-      "sha256": "54674f6bd6bd86b5dc5bced870a57ecaf7ac61e48a0d1f4da2ebcf9d42c170a1",
-      "reason": "Allow the native host to omit the unused compatibility transfer observer."
+      "sha256": "4ce6276d3adabe7782bc08d980ebc37f5a05cd37075548d213e6c87af7e063af",
+      "reason": "Keep host job capacity independent of the transport nonce capacity."
     },
     {
       "path": "packages/dacs-seller/src/index.mjs",
@@ -388,8 +388,8 @@
     {
       "path": "packages/dacs-seller/test/dacs-seller-transport.test.mjs",
       "originalSha256": "15d4a25b5d572b3fdb342c415c35743936f5a74bd11036276fbd585df20987e3",
-      "sha256": "c61e795a16042e09cc364405fc19d74b261550575144b3799954197a3cdb58f3",
-      "reason": "Secret-scan marker on the refused-credentials URL test vector; the vector itself is unchanged."
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
     },
     {
       "path": "packages/dacs-seller/test/party-vet-store.test.mjs",
@@ -430,8 +430,8 @@
     {
       "path": "packages/dacs-seller/test/seller-host-native-delivery.test.mjs",
       "originalSha256": null,
-      "sha256": "378d5b7ee8bd1882d0f0f5599fd0a4d398be2dd30389e7a337b86ed4ba72081c",
-      "reason": "Pin publication and commitment recovery, read-only and uncertain-send fences, paid signer retry status and optional observer composition."
+      "sha256": "f2ac4fdb48c72a3adeaf35f112d1f6ad9541ece77922d8ac0d764f29c1dfcff5",
+      "reason": "Cover delivery recovery, inline size boundaries, independent job limits and commitment publication reconciliation."
     },
     {
       "path": "packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs",
@@ -462,6 +462,846 @@
       "originalSha256": null,
       "sha256": "a1d9334d50cc342dbf1e1fe6bd847473692aa3bf2fd73caa8e1429bd6337e7f5",
       "reason": "Maintain standalone seller protocol gates and isolated regression coverage."
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-context-durable-vet.test.mjs",
+      "originalSha256": "3c70e8c1a6ee781576e408737f2c13ce7fbfa2e5e4711a0cf3f0e688370e3345",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-context-legacy-ops-health.test.mjs",
+      "originalSha256": "1823849197e04c253ccf35e193d9e8e85c0730a8f5c7950a0a26b6191efc661a",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-context-replay-resend.test.mjs",
+      "originalSha256": "38680be88fc6f9ce9c9365a7fbf583921abf2b6dab7cd08fa1671413b74c933c",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-context-write-effect.test.mjs",
+      "originalSha256": "bc4a0433ecfccf16710ceed3f22528a9b978a7c7e9444594ebc27d61e9dcbaf7",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/agreement-plan-speed-composition.test.mjs",
+      "originalSha256": "4d1f19b3be592e599ab9c3989b2fe3fa0653e25f11773c8e3323acd3d78dc136",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/buyer-chain-readback-commit-on-signature.test.mjs",
+      "originalSha256": "eb1b6954fd9e964dba94f84550b4848c70bdc1407e27725df1b1426b2bcd1a2f",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/buyer-chain-readback-unit.test.mjs",
+      "originalSha256": "2ca5de8df574a0f0d1848cd839a4afb0303c08dffab1d7cdef20592556766562",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-boundaries.test.mjs",
+      "originalSha256": "b4b21c80a28d8696c8cbd18a96331b07ba5e3f7b6a5d298e844cd48b497aa2e3",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-driver-resend.test.mjs",
+      "originalSha256": "0092e0124ad5456524a81a8e9b3fb58d59a23eda4a1476a45a45f012c5c0640e",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-guard-unit.test.mjs",
+      "originalSha256": "b7112a58396460f31c67a8d9ebb3c5245c50c756e36781353d9b98f3a76a0c54",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-paid-recovery.test.mjs",
+      "originalSha256": "b1ccfdb4660013b26ae3c315f9700150c076a81ff8e6690d937d2afd879e14ff",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-readback.test.mjs",
+      "originalSha256": "0a85a3a2eb280ac6055146b965716aff63d9ce088b55f89eb8ef9dff34817650",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-receipt-verify.test.mjs",
+      "originalSha256": "255e135a2370b3684143f7ae184a73b9607e50f5f58b23e3f7bdca5dd0b9b6b5",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-resend-notice.test.mjs",
+      "originalSha256": "a37c3d693d869f27573fa72be590a365874b2b7b19784e66b986e42bde65ee1d",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-retained-resend.test.mjs",
+      "originalSha256": "6f9f617972ac92e61f33bc3b5cb413d6491b794f8ef72502d5d988c0296a0394",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-rpc-auth.test.mjs",
+      "originalSha256": "8b960283d6265c694be33c41083a978f3c73f634e308ae795b22c57bac82cc47",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/closed-access-seller-relay.test.mjs",
+      "originalSha256": "e8bc08f8808b7b3231b2ef460f8bd9f5f8f5c986bee0ac1b018bfd1c0404deb8",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/commit-on-signature-authorization.test.mjs",
+      "originalSha256": "2f92dd9b5fbeee0228baf9300141386ba6d8cbb094ee3c1f236243f9ed793ea5",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/commit-on-signature-native.test.mjs",
+      "originalSha256": "d98c2a65361bb05c919e656ca57f096aab3f8365cb90633f5cb6dae64b955581",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/commit-on-signature-recovery.test.mjs",
+      "originalSha256": "bc4bc484999a82d3c4f6d327298ede96d1f83d848b53bf118343f73d5d39e4a6",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/commit-on-signature.test.mjs",
+      "originalSha256": "6e5e124f6936f513ccd41481a9f5fb48e2c9698845e52673ca6d22d71bae518a",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/dacs-loopback-fixture.test.mjs",
+      "originalSha256": "30271c5c2548d8b24f3dc5138b0cdd30219266d0bd211d2475ce349d5966e6e8",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/dacs-purchase.test.mjs",
+      "originalSha256": "8722f657e94642f2361ff4f05dc8f19ddb913dfa541ace282d66b4b3a6a08b26",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/dacs-seller-recovery.test.mjs",
+      "originalSha256": "697aa39282ad5130746c6f49a1c43272d913ed46444cf149ed7b54355f442e2d",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-buyer-access-prefixed.test.mjs",
+      "originalSha256": "3ffe2e2fb04822ab2bccaec5a63b5c9990591dbb1f2ef24a3e50414c25f2b0ce",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-demo-anchor-recovery.test.mjs",
+      "originalSha256": "c44c45c1fd68db49d1944e430d8a5766bc7d56b3915c2608e9b87097e1aeb420",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-live-composition-app.test.mjs",
+      "originalSha256": "14a7adddca84ed3621d068b22b971d40790bb38e5789ff6082482ace207f0c76",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-live-composition-artifacts.test.mjs",
+      "originalSha256": "8efc7be4c3052b3778a2835347987c47e0afcdaf4c0b76f9f25b2874dd2616b3",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-live-composition-builder.test.mjs",
+      "originalSha256": "0e3d7c141df9e75e447d33b23f8ebd686b9f741cd96f1254d8712ee91f16f77d",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-construction-cleanup.test.mjs",
+      "originalSha256": "8f4db7c56644f5935dab2781d152c8e601ff1e5db38fce99c5870daa1300c2c5",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-external-origin.test.mjs",
+      "originalSha256": "36b74a3311fcb837e0b5ddbb23f180d75019b9b072960a34128ef5c4b5b5a6fd",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-prefixed-controls.test.mjs",
+      "originalSha256": "10617b6696b3ddaaa0f4b9485fe52eac8571fd41d4da4705b7738a0e0b1d38e6",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-prefixed-startup.test.mjs",
+      "originalSha256": "6bc5ef8c87f9860279449aed6507b76adf89d14e7c1e3e68d97ae8c78d13f191",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/devnet-operator-seller-tls.test.mjs",
+      "originalSha256": "da72bf378a593e084b065bb3ee0b47cb6a0e7be4c21de42ab5bd2fa0bcb86367",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/fee-approval-recovery-offline.test.mjs",
+      "originalSha256": "1bb8d22e1428c84266534fdd4823f94dd62ac9af99dee5b08c5e12f94cd0a2ce",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/mcp-seller-diagnostics.test.mjs",
+      "originalSha256": "53efc4d123ab006c03abfc4e4abaade4dfddf33e4a3049b41edbeec3908d074d",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/operator-approval-closing.test.mjs",
+      "originalSha256": "3145ef4d06466867af153048a78450cddbdcfd3e02b92e7be62128392f084702",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/ops-health.test.mjs",
+      "originalSha256": "42eb3a19c5e90020dd511f0c5d1535bc761e22b9019c9037d2cc69e9ba2590fc",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/portal-seller-session-delegation.test.mjs",
+      "originalSha256": "4efc11b290ab4ee80b8776ca1d674aec3fe45abf38bf1367e6763762371b368e",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/pr58-fee-approval-recovery-offline.test.mjs",
+      "originalSha256": "9e2def0098251db72e19eaf1b2c4f8bd228e54606f715a136d6366366569eaa0",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/public-sr2-projection.test.mjs",
+      "originalSha256": "81e636c8eca607edb883fdeca2296e422c9a3273bb53a5d2fc691983f579d7a7",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/public-text-report-storage.test.mjs",
+      "originalSha256": "fd2136c2a6270ca1f8264c2910898a68512ab01da0082ef46666867ae6b223bd",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/purchase-model-view.test.mjs",
+      "originalSha256": "96646528ef5360787c279821997cc7e5eab8e7c41eb669f693f224f1a0aca405",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/purchased-report.test.mjs",
+      "originalSha256": "221f87078022fe01cf1ed2b2a06ff192781074d30ccb5375df18ad2fb33b53b7",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/scenario-cli-recovery-coverage-operator-buyer.test.mjs",
+      "originalSha256": "541772ea9556392517c0a0a29ae223b602bfbd6c26d633f7dfbca8cb41d5d01e",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/scenario-cli-recovery-coverage-seller-commitment.test.mjs",
+      "originalSha256": "961cd837b2ad057f15883794bc160754d5c02aeb2b938e9bd0ef6535ae2e7883",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/scenario-commit-phase-coverage-adoption.test.mjs",
+      "originalSha256": "e46bdc318e04185f15df9c4d8bef5e54ceda6b281cd63d96dd97fdc18d18215d",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/scenario-commit-retry-coverage-interactions.test.mjs",
+      "originalSha256": "33aa9525d02013cc3328f2a007c88c71edcc5a66ff55cee5b1e9270e866b4af7",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-context-route-shutdown-resume.test.mjs",
+      "originalSha256": "b014982cdedd742b266bac7c9aec63cb9be800bd330a4a70ee0c9cfe659e9ea7",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-context-route-unit.test.mjs",
+      "originalSha256": "a590b34a3b356afc0a1c3c124bc79c846400c84bd9accf6a1a437696c678ea92",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-context-route.test.mjs",
+      "originalSha256": "53d285e8f105c4970aa2888703f073eb737ccd569516914950d17861c721543c",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-durable-state-locks.test.mjs",
+      "originalSha256": "fa842f652bf2d678fcf961768baf3cbcb6a0c36d40f013e8be421686efe34953",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-http-failure-cause.test.mjs",
+      "originalSha256": "ed83d4ce81fe60b3f9743d85578d5594b1070b022a018bdd52a45e03937766b8",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-commit-on-signature.test.mjs",
+      "originalSha256": "6bf074a169d76efa0051ae06757f6cd2b0b02ef0b24f598c686ed1399ac128c4",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-delivery-evidence.test.mjs",
+      "originalSha256": "090a38b1db54cd685030c4344fa361c8df3e31e0a75c2011bd31666a1cc52a41",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-journal-freshness.test.mjs",
+      "originalSha256": "ffdcf01fbac62b12a829a1c4698797175dad4f41edbf0ed6bcf89eddbcc9b61d",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-journal-identity.test.mjs",
+      "originalSha256": "7e070e5f789309cd204279289b32c979b89305b4c81514ffd6be9052f1167a15",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-purchase-source-node2.test.mjs",
+      "originalSha256": "6cd7f1232af94f969abe3b1f3fd5969de9237e2902732e201ba7a232f230a918",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-purchase-source.test.mjs",
+      "originalSha256": "87d2616798a0cbcb3af1e67ea2513705defc444a3227be5761dccc322d08cb21",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-reservation-restart.test.mjs",
+      "originalSha256": "eaa1e842664912249db7036c9d07055e14415865300a3f93e1c329930f9a8eac",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-policy-state-lock.test.mjs",
+      "originalSha256": "bde7f9f373ea55c3df3225117ee46b933dce279475f07121ee09e7002edb37ff",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-session-keys.test.mjs",
+      "originalSha256": "12c32e942f3ee4556d9d38535ed2ae6c43a2db1cf663624e689be402e21707fb",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-session-open-access.test.mjs",
+      "originalSha256": "e55ff3674cbca24c1e070b7242c91bfd39b840280e2a2c6498a6fbb0af518db3",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/seller-write-batch.test.mjs",
+      "originalSha256": "44235c1fa23eb3e3ca4b7fc5377ffc6998c8417a24a178713ea081d01c5b6186",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/server-hosting.test.mjs",
+      "originalSha256": "ad8f1029aed1e09ec3c89c5e1e92ffc6850b0599f848f0d6173b97f1843c9922",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/service-request-binding-doc.test.mjs",
+      "originalSha256": "2fce5d72f2a804ccb532727b8dda7e283483ed0e040179af326ed8e6dc9a7e15",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/showcase-live-operator.test.mjs",
+      "originalSha256": "647e20b778a6ee9b1f2a6edeccb12ff4d006aaf941e68c4cd55696d72e4b6219",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/showcase-report-commit-on-signature.test.mjs",
+      "originalSha256": "e8e68270c54e066b95873d7982f0d1473dac43b7c44562312d032a881126ffdf",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/test/start-intent-wallet.test.mjs",
+      "originalSha256": "0c94fdf97b83f4285326c82c76fcc87c951306015aeb4dcaf8a9b5fe8e21c50a",
+      "sha256": null,
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/README.md",
+      "originalSha256": null,
+      "sha256": "a75c59e624400821138799e6a4c9751bdbf79255d7058b455e8cb4f0d58869b4",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/agreement-context-durable-vet.test.mjs",
+      "originalSha256": null,
+      "sha256": "3c70e8c1a6ee781576e408737f2c13ce7fbfa2e5e4711a0cf3f0e688370e3345",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/agreement-context-legacy-ops-health.test.mjs",
+      "originalSha256": null,
+      "sha256": "1823849197e04c253ccf35e193d9e8e85c0730a8f5c7950a0a26b6191efc661a",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/agreement-context-replay-resend.test.mjs",
+      "originalSha256": null,
+      "sha256": "38680be88fc6f9ce9c9365a7fbf583921abf2b6dab7cd08fa1671413b74c933c",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/agreement-context-write-effect.test.mjs",
+      "originalSha256": null,
+      "sha256": "bc4a0433ecfccf16710ceed3f22528a9b978a7c7e9444594ebc27d61e9dcbaf7",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/agreement-plan-speed-composition.test.mjs",
+      "originalSha256": null,
+      "sha256": "4d1f19b3be592e599ab9c3989b2fe3fa0653e25f11773c8e3323acd3d78dc136",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/buyer-chain-readback-commit-on-signature.test.mjs",
+      "originalSha256": null,
+      "sha256": "eb1b6954fd9e964dba94f84550b4848c70bdc1407e27725df1b1426b2bcd1a2f",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/buyer-chain-readback-unit.test.mjs",
+      "originalSha256": null,
+      "sha256": "2ca5de8df574a0f0d1848cd839a4afb0303c08dffab1d7cdef20592556766562",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-boundaries.test.mjs",
+      "originalSha256": null,
+      "sha256": "b4b21c80a28d8696c8cbd18a96331b07ba5e3f7b6a5d298e844cd48b497aa2e3",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-driver-resend.test.mjs",
+      "originalSha256": null,
+      "sha256": "0092e0124ad5456524a81a8e9b3fb58d59a23eda4a1476a45a45f012c5c0640e",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-guard-unit.test.mjs",
+      "originalSha256": null,
+      "sha256": "b7112a58396460f31c67a8d9ebb3c5245c50c756e36781353d9b98f3a76a0c54",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-paid-recovery.test.mjs",
+      "originalSha256": null,
+      "sha256": "b1ccfdb4660013b26ae3c315f9700150c076a81ff8e6690d937d2afd879e14ff",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-readback.test.mjs",
+      "originalSha256": null,
+      "sha256": "0a85a3a2eb280ac6055146b965716aff63d9ce088b55f89eb8ef9dff34817650",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-receipt-verify.test.mjs",
+      "originalSha256": null,
+      "sha256": "255e135a2370b3684143f7ae184a73b9607e50f5f58b23e3f7bdca5dd0b9b6b5",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-resend-notice.test.mjs",
+      "originalSha256": null,
+      "sha256": "a37c3d693d869f27573fa72be590a365874b2b7b19784e66b986e42bde65ee1d",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-retained-resend.test.mjs",
+      "originalSha256": null,
+      "sha256": "6f9f617972ac92e61f33bc3b5cb413d6491b794f8ef72502d5d988c0296a0394",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-rpc-auth.test.mjs",
+      "originalSha256": null,
+      "sha256": "8b960283d6265c694be33c41083a978f3c73f634e308ae795b22c57bac82cc47",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/closed-access-seller-relay.test.mjs",
+      "originalSha256": null,
+      "sha256": "e8bc08f8808b7b3231b2ef460f8bd9f5f8f5c986bee0ac1b018bfd1c0404deb8",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/commit-on-signature-authorization.test.mjs",
+      "originalSha256": null,
+      "sha256": "2f92dd9b5fbeee0228baf9300141386ba6d8cbb094ee3c1f236243f9ed793ea5",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/commit-on-signature-native.test.mjs",
+      "originalSha256": null,
+      "sha256": "d98c2a65361bb05c919e656ca57f096aab3f8365cb90633f5cb6dae64b955581",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/commit-on-signature-recovery.test.mjs",
+      "originalSha256": null,
+      "sha256": "bc4bc484999a82d3c4f6d327298ede96d1f83d848b53bf118343f73d5d39e4a6",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/commit-on-signature.test.mjs",
+      "originalSha256": null,
+      "sha256": "6e5e124f6936f513ccd41481a9f5fb48e2c9698845e52673ca6d22d71bae518a",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/dacs-loopback-fixture.test.mjs",
+      "originalSha256": null,
+      "sha256": "30271c5c2548d8b24f3dc5138b0cdd30219266d0bd211d2475ce349d5966e6e8",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/dacs-purchase.test.mjs",
+      "originalSha256": null,
+      "sha256": "8722f657e94642f2361ff4f05dc8f19ddb913dfa541ace282d66b4b3a6a08b26",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/dacs-seller-recovery.test.mjs",
+      "originalSha256": null,
+      "sha256": "697aa39282ad5130746c6f49a1c43272d913ed46444cf149ed7b54355f442e2d",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/dacs-seller-transport.test.mjs",
+      "originalSha256": null,
+      "sha256": "c61e795a16042e09cc364405fc19d74b261550575144b3799954197a3cdb58f3",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-buyer-access-prefixed.test.mjs",
+      "originalSha256": null,
+      "sha256": "3ffe2e2fb04822ab2bccaec5a63b5c9990591dbb1f2ef24a3e50414c25f2b0ce",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-demo-anchor-recovery.test.mjs",
+      "originalSha256": null,
+      "sha256": "c44c45c1fd68db49d1944e430d8a5766bc7d56b3915c2608e9b87097e1aeb420",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-live-composition-app.test.mjs",
+      "originalSha256": null,
+      "sha256": "14a7adddca84ed3621d068b22b971d40790bb38e5789ff6082482ace207f0c76",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-live-composition-artifacts.test.mjs",
+      "originalSha256": null,
+      "sha256": "8efc7be4c3052b3778a2835347987c47e0afcdaf4c0b76f9f25b2874dd2616b3",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-live-composition-builder.test.mjs",
+      "originalSha256": null,
+      "sha256": "0e3d7c141df9e75e447d33b23f8ebd686b9f741cd96f1254d8712ee91f16f77d",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-operator-construction-cleanup.test.mjs",
+      "originalSha256": null,
+      "sha256": "8f4db7c56644f5935dab2781d152c8e601ff1e5db38fce99c5870daa1300c2c5",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-operator-external-origin.test.mjs",
+      "originalSha256": null,
+      "sha256": "36b74a3311fcb837e0b5ddbb23f180d75019b9b072960a34128ef5c4b5b5a6fd",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-operator-prefixed-controls.test.mjs",
+      "originalSha256": null,
+      "sha256": "10617b6696b3ddaaa0f4b9485fe52eac8571fd41d4da4705b7738a0e0b1d38e6",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-operator-prefixed-startup.test.mjs",
+      "originalSha256": null,
+      "sha256": "6bc5ef8c87f9860279449aed6507b76adf89d14e7c1e3e68d97ae8c78d13f191",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/devnet-operator-seller-tls.test.mjs",
+      "originalSha256": null,
+      "sha256": "da72bf378a593e084b065bb3ee0b47cb6a0e7be4c21de42ab5bd2fa0bcb86367",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/fee-approval-recovery-offline.test.mjs",
+      "originalSha256": null,
+      "sha256": "1bb8d22e1428c84266534fdd4823f94dd62ac9af99dee5b08c5e12f94cd0a2ce",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/mcp-seller-diagnostics.test.mjs",
+      "originalSha256": null,
+      "sha256": "53efc4d123ab006c03abfc4e4abaade4dfddf33e4a3049b41edbeec3908d074d",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/operator-approval-closing.test.mjs",
+      "originalSha256": null,
+      "sha256": "3145ef4d06466867af153048a78450cddbdcfd3e02b92e7be62128392f084702",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/ops-health.test.mjs",
+      "originalSha256": null,
+      "sha256": "42eb3a19c5e90020dd511f0c5d1535bc761e22b9019c9037d2cc69e9ba2590fc",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/portal-seller-session-delegation.test.mjs",
+      "originalSha256": null,
+      "sha256": "4efc11b290ab4ee80b8776ca1d674aec3fe45abf38bf1367e6763762371b368e",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/pr58-fee-approval-recovery-offline.test.mjs",
+      "originalSha256": null,
+      "sha256": "9e2def0098251db72e19eaf1b2c4f8bd228e54606f715a136d6366366569eaa0",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/public-sr2-projection.test.mjs",
+      "originalSha256": null,
+      "sha256": "81e636c8eca607edb883fdeca2296e422c9a3273bb53a5d2fc691983f579d7a7",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/public-text-report-storage.test.mjs",
+      "originalSha256": null,
+      "sha256": "fd2136c2a6270ca1f8264c2910898a68512ab01da0082ef46666867ae6b223bd",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/purchase-model-view.test.mjs",
+      "originalSha256": null,
+      "sha256": "96646528ef5360787c279821997cc7e5eab8e7c41eb669f693f224f1a0aca405",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/purchased-report.test.mjs",
+      "originalSha256": null,
+      "sha256": "221f87078022fe01cf1ed2b2a06ff192781074d30ccb5375df18ad2fb33b53b7",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/scenario-cli-recovery-coverage-operator-buyer.test.mjs",
+      "originalSha256": null,
+      "sha256": "541772ea9556392517c0a0a29ae223b602bfbd6c26d633f7dfbca8cb41d5d01e",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/scenario-cli-recovery-coverage-seller-commitment.test.mjs",
+      "originalSha256": null,
+      "sha256": "961cd837b2ad057f15883794bc160754d5c02aeb2b938e9bd0ef6535ae2e7883",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/scenario-commit-phase-coverage-adoption.test.mjs",
+      "originalSha256": null,
+      "sha256": "e46bdc318e04185f15df9c4d8bef5e54ceda6b281cd63d96dd97fdc18d18215d",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/scenario-commit-retry-coverage-interactions.test.mjs",
+      "originalSha256": null,
+      "sha256": "33aa9525d02013cc3328f2a007c88c71edcc5a66ff55cee5b1e9270e866b4af7",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-context-route-shutdown-resume.test.mjs",
+      "originalSha256": null,
+      "sha256": "b014982cdedd742b266bac7c9aec63cb9be800bd330a4a70ee0c9cfe659e9ea7",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-context-route-unit.test.mjs",
+      "originalSha256": null,
+      "sha256": "a590b34a3b356afc0a1c3c124bc79c846400c84bd9accf6a1a437696c678ea92",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-context-route.test.mjs",
+      "originalSha256": null,
+      "sha256": "53d285e8f105c4970aa2888703f073eb737ccd569516914950d17861c721543c",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-durable-state-locks.test.mjs",
+      "originalSha256": null,
+      "sha256": "fa842f652bf2d678fcf961768baf3cbcb6a0c36d40f013e8be421686efe34953",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-http-failure-cause.test.mjs",
+      "originalSha256": null,
+      "sha256": "ed83d4ce81fe60b3f9743d85578d5594b1070b022a018bdd52a45e03937766b8",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-policy-commit-on-signature.test.mjs",
+      "originalSha256": null,
+      "sha256": "6bf074a169d76efa0051ae06757f6cd2b0b02ef0b24f598c686ed1399ac128c4",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-policy-delivery-evidence.test.mjs",
+      "originalSha256": null,
+      "sha256": "090a38b1db54cd685030c4344fa361c8df3e31e0a75c2011bd31666a1cc52a41",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-policy-journal-freshness.test.mjs",
+      "originalSha256": null,
+      "sha256": "ffdcf01fbac62b12a829a1c4698797175dad4f41edbf0ed6bcf89eddbcc9b61d",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-policy-journal-identity.test.mjs",
+      "originalSha256": null,
+      "sha256": "7e070e5f789309cd204279289b32c979b89305b4c81514ffd6be9052f1167a15",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-policy-purchase-source-node2.test.mjs",
+      "originalSha256": null,
+      "sha256": "6cd7f1232af94f969abe3b1f3fd5969de9237e2902732e201ba7a232f230a918",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-policy-purchase-source.test.mjs",
+      "originalSha256": null,
+      "sha256": "87d2616798a0cbcb3af1e67ea2513705defc444a3227be5761dccc322d08cb21",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-policy-reservation-restart.test.mjs",
+      "originalSha256": null,
+      "sha256": "eaa1e842664912249db7036c9d07055e14415865300a3f93e1c329930f9a8eac",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-policy-state-lock.test.mjs",
+      "originalSha256": null,
+      "sha256": "bde7f9f373ea55c3df3225117ee46b933dce279475f07121ee09e7002edb37ff",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-session-keys.test.mjs",
+      "originalSha256": null,
+      "sha256": "12c32e942f3ee4556d9d38535ed2ae6c43a2db1cf663624e689be402e21707fb",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-session-open-access.test.mjs",
+      "originalSha256": null,
+      "sha256": "e55ff3674cbca24c1e070b7242c91bfd39b840280e2a2c6498a6fbb0af518db3",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/seller-write-batch.test.mjs",
+      "originalSha256": null,
+      "sha256": "44235c1fa23eb3e3ca4b7fc5377ffc6998c8417a24a178713ea081d01c5b6186",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/server-hosting.test.mjs",
+      "originalSha256": null,
+      "sha256": "ad8f1029aed1e09ec3c89c5e1e92ffc6850b0599f848f0d6173b97f1843c9922",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/service-request-binding-doc.test.mjs",
+      "originalSha256": null,
+      "sha256": "2fce5d72f2a804ccb532727b8dda7e283483ed0e040179af326ed8e6dc9a7e15",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/showcase-live-operator.test.mjs",
+      "originalSha256": null,
+      "sha256": "647e20b778a6ee9b1f2a6edeccb12ff4d006aaf941e68c4cd55696d72e4b6219",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/showcase-report-commit-on-signature.test.mjs",
+      "originalSha256": null,
+      "sha256": "e8e68270c54e066b95873d7982f0d1473dac43b7c44562312d032a881126ffdf",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
+    },
+    {
+      "path": "packages/dacs-seller/port-sources/unadapted-tests/start-intent-wallet.test.mjs",
+      "originalSha256": null,
+      "sha256": "0c94fdf97b83f4285326c82c76fcc87c951306015aeb4dcaf8a9b5fe8e21c50a",
+      "reason": "Archive historical application test sources outside the executable seller suite; retain original provenance."
     }
   ]
 }

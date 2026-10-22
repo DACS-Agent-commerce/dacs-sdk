@@ -179,7 +179,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast.
-async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true } = {}) {
+async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true } = {}) {
   const sellerKey = key(), buyerKey = key(), now = Date.now(), steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -258,6 +258,16 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   };
   const artifactAnchor = { writer: sellerKey.claim, source: 'TEST-host-native-delivery/artifacts',
     publish: async ({ logicalAddress, artifact, artifactKind, authorize }) => {
+      // A plain wallet creates a new program on every call. Exercise that
+      // operator contract too, so the seller must prevent a duplicate call.
+      if (!idempotentArtifacts) {
+        if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
+        effects.published.push(artifactKind);
+        signedCreates.set(logicalAddress, node.create(sellerKey, { logicalAddress, artifact, artifactKind }));
+        written.set(logicalAddress, clone(artifact));
+        if (faults.artifactPublish.shift() === artifactKind + ':land-throw') throw new Error('TEST publication response lost after CREATE');
+        return readBack(logicalAddress, artifactKind);
+      }
       if (faults.artifactPublish[0] === artifactKind + ':land-throw') { faults.artifactPublish.shift(); effects.published.push(artifactKind); writeOnce(logicalAddress, artifact, artifactKind); throw new Error('TEST publication response lost after CREATE'); }
       if (faults.artifactPublish[0] === artifactKind) { faults.artifactPublish.shift(); throw new Error('TEST publisher unavailable before intent'); }
       if (!signedCreates.has(logicalAddress)) {
@@ -267,7 +277,14 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       }
       return readBack(logicalAddress, artifactKind);
     },
-    readRetained: async ({ logicalAddress, artifactKind }) => faults.artifactRead.shift() === 'unknown' ? { status: 'indeterminate', reason: 'TEST uncertain retained CREATE' } : readBack(logicalAddress, artifactKind),
+    readRetained: async ({ logicalAddress, artifactKind }) => {
+      const fault = faults.artifactRead.shift();
+      if (fault === 'unknown') return { status: 'indeterminate', reason: 'TEST uncertain retained CREATE' };
+      if (fault === 'absent') return { status: 'absent', reason: 'TEST lagging name index' };
+      if (fault === 'unbranded') return { ...provenUnsignedAbsence('TEST serialized proof is not authoritative') };
+      const read = await readBack(logicalAddress, artifactKind);
+      return read.status === 'absent' && !signedCreates.has(logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
+    },
     verifyReceipt: async ({ logicalAddress, artifact, artifactKind, receipt, signedProjection }) =>
       node.reader.verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter: sellerKey.claim, artifactKind, signedProjection }),
   };
@@ -1272,6 +1289,62 @@ test('foreign same-name binary programs do not obstruct authentic seller evidenc
   assert.equal(w.effects.deliverySubmit.length, 1);
 });
 
+test('an unavailable schema verifier preserves the permit and recovers on retry, including after restart', async (t) => {
+  for (const restart of [false, true]) {
+    let available = false;
+    const schemaUrl = 'urn:TEST:temporarily-unavailable-schema';
+    const w = await world(t, { deliverableExtension: { schemaUrl }, deliverySchemaVerifier: {
+      schemaUrl, verify: () => available ? { disposition: 'valid' } : { disposition: 'indeterminate', reason: 'TEST schema authority unavailable' },
+    } });
+    const p = await w.purchase(), tx = p.pay();
+    const held = await p.claim(tx);
+    assert.equal(held.delivery?.status, 'held', shown(held));
+    assert.match(held.delivery.reason, /TEST schema authority unavailable/);
+    assert.equal(w.effects.deliverySubmit.length, 0);
+    if (restart) await w.restart();
+    available = true;
+    const done = await p.claim(tx);
+    assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+    assert.equal(w.effects.deliverySubmit.length, 1);
+    assert.equal(w.createsAt(paymentAddress(p)), 1, 'recovery uses the original payment');
+  }
+});
+
+test('inline delivery refuses oversized Listings before signing and delivers the exact 128 KiB boundary', async (t) => {
+  await assert.rejects(world(t, { deliverableExtension: { expectedSizeBytes: 132283 } }), /unsupported Listing: inline storage delivery/);
+  await assert.rejects(world(t, { deliverableExtension: { expectedSizeBytes: 131073 } }), /unsupported Listing: inline storage delivery/);
+  const size = 128 * 1024;
+  const producer = (input) => {
+    const payload = report({ body: [''] })(input);
+    payload.body[0] = 'a'.repeat(size - Buffer.byteLength(core.canonicalize(payload)));
+    return payload;
+  };
+  const w = await world(t, { deliverableExtension: { expectedSizeBytes: size }, deliverableProducer: producer });
+  const p = await w.purchase(), answer = await p.claim(p.pay());
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(Buffer.byteLength(core.canonicalize(w.writtenAt(`dacs4:deliverable:${p.jobId}`))), size);
+});
+
+test('host maxJobs above the default transport cap admits job 10001 with the ordinary nonce budget', async (t) => {
+  const w = await world(t, { maxJobs: 20000 });
+  const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'));
+  try {
+    db.exec('BEGIN');
+    const job = db.prepare('INSERT INTO peer_jobs VALUES (?, ?)');
+    const effect = db.prepare('INSERT INTO peer_effects VALUES (?, ?, ?, ?, ?)');
+    const mapping = db.prepare('INSERT INTO peer_effect_jobs VALUES (?, ?)');
+    for (let i = 0; i < 10000; i++) {
+      const id = core.generateCanonicalJobId();
+      job.run(id, '{}');
+      effect.run(id, 'TEST-completed', 'complete', 200, '{}');
+      mapping.run(id, id);
+    }
+    db.exec('COMMIT');
+  } finally { db.close(); }
+  const p = await w.purchase();
+  assert.equal((await p.claim(p.pay())).delivery?.status, 'delivery-ready');
+});
+
 test('configured job capacity refuses a new job definitely before consuming its challenge', async (t) => {
   const w = await world(t, { maxJobs: 1 });
   await w.purchase();
@@ -1365,6 +1438,26 @@ test('an uncertain commitment CREATE only reads back after restart and is never 
  assert.equal(w.effects.published.length, 1, 'uncertainty authorizes no new publication');
  assert.equal((await p.client().commit(p.jobId)).status, 'committed');
  assert.equal(w.effects.published.length, 1);
+});
+
+test('a non-idempotent commitment publisher is called once despite a lagging index and restart', async (t) => {
+  const w = await world(t, { idempotentArtifacts: false }), p = await w.purchase({ commit: false });
+  const address = core.finalityCommitmentAddress(p.jobId);
+  w.faults.artifactPublish.push('FinalityCommitmentRecord:land-throw');
+  await assert.rejects(p.client().commit(p.jobId));
+  w.faults.artifactRead.push('absent');
+  await assert.rejects(p.client().commit(p.jobId));
+  await w.restart();
+  w.faults.artifactRead.push('unbranded');
+  await assert.rejects(p.client().commit(p.jobId));
+  const agent = await w.agentFor();
+  try {
+    w.faults.artifactRead.push('absent');
+    await assert.rejects(agent.resume({ jobId: p.jobId }), { code: 'commitment_failed' });
+    assert.equal((await agent.resume({ jobId: p.jobId })).status, 'committed');
+  } finally { agent.close(); }
+  assert.equal(w.effects.published.filter(kind => kind === 'FinalityCommitmentRecord').length, 1);
+  assert.equal(w.createsAt(address), 1);
 });
 
 test('read-only commitment reconciliation cannot start provably unsent work', async t => {

@@ -13,6 +13,27 @@ const {createSellerContextRoute,SELLER_CONTEXT_LIMITS}=await import('../src/dacs
 const {createSellerTransportStore,createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
 import {JOBS,T,key,bundleFor,exchange,world} from './helpers/d5-http-fixture.mjs';
 
+test('transport job capacity is independent of live nonce capacity, with completed jobs retained', async t => {
+ const dir=await mkdtemp(join(tmpdir(),'seller-job-capacity-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ let time=T;
+ const path=join(dir,'transport.sqlite');
+ for(const maxJobs of [0,-1,1.5,Number.MAX_SAFE_INTEGER+1]) assert.throws(()=>createSellerTransportStore({path,maxJobs}),/positive job capacity/);
+ const store=createSellerTransportStore({path,maxRecords:1,maxJobs:2,now:()=>time});t.after(()=>store.close());
+ const buyer=key(),seller=key();
+ const payload=jobId=>({version:'1',kind:'request',method:'POST',path:'/dacs/v1/agreements/proposals',bodyHash:'a'.repeat(64),jobId,
+  buyer:buyer.claim,seller:seller.claim,listingPin:{listingId:'capacity',version:1,contentHash:'b'.repeat(64)},agreementHash:'c'.repeat(64),
+  nonce:randomBytes(16).toString('base64url'),expiresAt:time+30000});
+ for(const jobId of JOBS.slice(0,2)) {
+  const reservation=store.reserve(payload(jobId),{});assert.equal(reservation.disposition,'perform');
+  store.finish(reservation,200,'{}',{});time+=61000;
+ }
+ assert.throws(()=>store.reserve(payload(JOBS[2]),{}),{code:'peer_job_capacity'});
+ // A small job limit must not shrink the simultaneous request budget either.
+ const other=createSellerTransportStore({path:join(dir,'other.sqlite'),maxRecords:2,maxJobs:1,now:()=>time});t.after(()=>other.close());
+ const first=payload(JOBS[0]),reservation=other.reserve(first,{});other.finish(reservation,200,'{}',{});
+ assert.equal(other.reserve({...payload(JOBS[0]),path:'/dacs/v1/commitments'},{}).disposition,'perform');
+});
+
 test('B1 per-buyer unpaid-start limit refuses before any policy hold, log, journal insert, or provider write',async t=>{
  const w=await world(t);assert.equal((await exchange(w.handler,await w.wire())).status,200);const before=w.effects();
  const refused=await exchange(w.handler,await w.wire({jobId:JOBS[1]}));assert.equal(refused.status,409);assert.equal(JSON.parse(refused.text).error,'buyer_unpaid_start_limit');assert.deepEqual(w.effects(),before);

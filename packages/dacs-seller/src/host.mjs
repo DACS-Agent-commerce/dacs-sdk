@@ -78,7 +78,7 @@ export async function startSellerHost(options) {
     opened.push(() => agent.close());
     const transport = join(dataDirectory, 'transport');
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    const store = createSellerTransportStore({ path: join(transport, 'transport.sqlite'), now });
+    const store = createSellerTransportStore({ path: join(transport, 'transport.sqlite'), maxJobs, now });
     opened.push(() => store.close());
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
     const handler = createSellerHttpHandler(agent, { authentication });

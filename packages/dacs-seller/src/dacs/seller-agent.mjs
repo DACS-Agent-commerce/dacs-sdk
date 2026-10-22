@@ -172,6 +172,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (agreementAnchor !== null && (typeof agreementAnchor?.readAgreement !== 'function' || typeof agreementAnchor.source !== 'string')) throw new Error('agreementAnchor must expose source and readAgreement');
   if (listing?.seller?.identity?.presentedBy !== signer.claim) throw new Error('the seller signer does not control this Listing');
   if ((listing?.offering?.deliverable?.accessModel ?? 'public') !== 'public') throw new Error('unsupported Listing: seller delivery requires public access');
+  // DACS-4 §9.6.1: larger payloads require an extended pointer. This
+  // profile prepares inline storage only, so refuse before any Agreement.
+  if (listing?.offering?.deliverable?.expectedSizeBytes > 128 * 1024) throw new Error('unsupported Listing: inline storage delivery supports at most 131072 bytes; larger payloads require an extended pointer');
   if (contextRequest !== null && typeof contextRequest !== 'function') throw new Error('contextRequest must be a function');
   const admittedContextRequest = (input) => { try { return contextRequest?.(input) === true; } catch { return false; } };
   const support = protocolSupport(listing);
@@ -705,6 +708,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       catch { throw new SellerAgentError('signature_connection_unavailable', 'early commitment connection reservation is unavailable', 503); }
     }
     if (!nativeArtifactAnchor && durable?.hasAnchor(finalityCommitmentAddress(jobId))) await durable.reconcileAnchor(`anchor:${finalityCommitmentAddress(jobId)}`, anchors);
+    // Older retained attempts have no publication marker. Their CREATE may
+    // already have been asked for, so require the same proof as a new send.
+    if (nativeArtifactAnchor) session.commitmentPublishAsked ??= session.commitCreatedAt !== undefined;
     session.commitCreatedAt ??= now();
     if (attempt) {
       if (!session.signatureCommitmentAttempt) {
@@ -723,6 +729,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     persist(session);
     let finalized;
     let nativeCommitmentProjection;
+    let commitmentProvenUnsigned = false;
     try {
       finalized = await commitFixedPriceAgreement(
         {
@@ -735,7 +742,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         nativeArtifactAnchor ? {
           resolve: async (logicalAddress) => {
             const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord'});
-            if(read.status==='absent') return {disposition:'absent'};
+            if(read.status==='absent') {
+              commitmentProvenUnsigned = isProvenUnsignedAbsence(read);
+              if (session.commitmentPublishAsked && !commitmentProvenUnsigned) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
+              return {disposition:'absent'};
+            }
             if(read.status!=='present') return {disposition:read.status==='rejected'?'rejected':'indeterminate',reason:read.reason};
             nativeCommitmentProjection=read.signedProjection;
             return {disposition:'present',anchored:{record:read.artifact,nativeAddress:read.receipt.nativeAddress,anchorTxRef:read.txRef,anchorReceipt:read.receipt}};
@@ -743,6 +754,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           verifyAnchorReceipt: async (anchored) => nativeArtifactAnchor.verifyReceipt({logicalAddress:anchored.anchorReceipt.logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:nativeCommitmentProjection}),
           submit: async (logicalAddress, commitmentRecord) => {
             if(readbackOnly || retainedNativeCommitment) readbackRequired();
+            if (session.commitmentPublishAsked && !commitmentProvenUnsigned) readbackRequired();
+            heldFor(jobId)?.();
+            session.commitmentPublishAsked = true;
+            persist(session);
             const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId)});
             if(out.status!=='present') throw new Error(out.reason ?? 'native commitment publication is indeterminate');
             nativeCommitmentProjection=out.signedProjection;
@@ -1112,9 +1127,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         return { disposition: valid ? 'valid' : 'invalid', ...(valid ? {} : { reason: 'fixture receipt authentication failed' }) };
       },
       verifyDeliverySchema: async ({ schemaUrl, cleartextPayload }) => {
+        if (schemaUrl !== listing.offering.deliverable.schemaUrl || !reportMatches(cleartextPayload, session, work.intake.settlementId)) {
+          return { disposition: 'invalid', reason: 'report schema/bindings differ' };
+        }
         const verdict = verifySchema ? await verifySchema({ schemaUrl, cleartextPayload: structuredClone(cleartextPayload) }) : { disposition: 'invalid' };
-        const matches = verdict?.disposition === 'valid' && schemaUrl === listing.offering.deliverable.schemaUrl && reportMatches(cleartextPayload, session, work.intake.settlementId);
-        return { disposition: matches ? 'valid' : 'invalid', ...(matches ? {} : { reason: 'report schema/bindings differ' }) };
+        // Preserve unavailable/malformed verifier answers for the core's
+        // retryable classification; only an explicit invalid verdict fails.
+        return verdict;
       },
       evidenceSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) },
       auditSourceCommitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) },
