@@ -779,5 +779,18 @@
       "packages/dacs-client/test/store-atomicity.test.mjs",
       "packages/dacs-client/test/sweep-contracts.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "test(client): prevent scratch Git maintenance teardown races",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/check-hold.test.mjs",
+      "packages/dacs-client/scripts/check-provenance.test.mjs",
+      "packages/dacs-client/scripts/delta-provenance.test.mjs"
+    ]
   }
 ]

@@ -1209,6 +1209,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 complete buyer state and readback contracts | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
 | delta(client): D11 complete buyer state and readback contracts | `packages/dacs-client/test/store-atomicity.test.mjs:1` |
 | delta(client): D11 complete buyer state and readback contracts | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| test(client): prevent scratch Git maintenance teardown races | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| test(client): prevent scratch Git maintenance teardown races | `packages/dacs-client/DELTA-MAP.md:1` |
+| test(client): prevent scratch Git maintenance teardown races | `packages/dacs-client/HOLD.json:1` |
+| test(client): prevent scratch Git maintenance teardown races | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| test(client): prevent scratch Git maintenance teardown races | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
+| test(client): prevent scratch Git maintenance teardown races | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
+| test(client): prevent scratch Git maintenance teardown races | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
