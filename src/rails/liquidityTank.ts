@@ -6,7 +6,9 @@ import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
+import type { RailDefinition } from "../registry/types.js";
 import { DacsError } from "../errors.js";
+import { isProductionTankStore, isSourceFinalityVerifier } from "./liquidityTankCapabilities.js";
 
 // Captured once at module load, so reading the authority, deriving its
 // settlement key and intent, binding methods and reading store and adapter
@@ -245,10 +247,10 @@ export interface LiquidityTankAdapter {
 /**
  * A verifier hook's answer: `true` accepts, `"unavailable"` says the hook
  * could not decide now (its key, attestation service or decoder is down or
- * timed out), and anything else, `false` included, refuses. A throw counts as
- * `"unavailable"`.
+ * timed out); `"pending-finality"` is a normal finality wait. Anything else,
+ * `false` included, refuses. A throw counts as `"unavailable"`.
  */
-export type LiquidityTankVerifierAnswer = boolean | "unavailable";
+export type LiquidityTankVerifierAnswer = boolean | "unavailable" | "pending-finality";
 
 /**
  * Host checks the core cannot make itself. Both are required: when one is
@@ -271,8 +273,8 @@ export interface LiquidityTankVerifier {
    * own authenticated record (for example a pinned bridge key or attestation).
    * It must not accept an observation that carries `lockTxHash` before that
    * source lock has reached finality under the rail's finality model (ST-8):
-   * answer `"unavailable"` until it has. The core enters `settle-asymmetric`
-   * on any accepted locked observation and cannot tell finality itself.
+   * answer `"pending-finality"` while it is waiting. Production requires
+   * createLiquidityTankEvmFinalityVerifier, which enforces this rule.
    */
   authenticateObservation(input: Readonly<{
     intent: Readonly<LiquidityTankIntent>;
@@ -334,7 +336,7 @@ export type LiquidityTankRecoveryCheckpoint = Readonly<
  * operation live: one without a lock, or with another lock observed at or
  * before that lock's own deadline. A release final exactly at
  * `recoveryDeadline` is timely.
- * A terminal failure need not refresh its transition timestamp.
+ * A failure snapshot must be authenticated strictly after the deadline too.
  * `observedAt` is the bridge's authenticated time of the status snapshot.
  */
 export type LiquidityTankRecoveryEvidence =
@@ -383,6 +385,8 @@ export type LiquidityTankStoreClaim =
       status: "settled";
       intent: Readonly<LiquidityTankIntent>;
       settlement: Readonly<LiquidityTankSettlement>;
+      submission?: Readonly<LiquidityTankPreparedSubmission>;
+      submissionRecordedAt?: number;
     }
   | {
       status: "recovery-expired";
@@ -399,21 +403,12 @@ export type LiquidityTankStoreWrite =
   | { status: "stale" | "conflict" | "corrupt"; reason: string };
 
 /**
- * What a store declares about surviving a restart. The core refuses, before
- * any claim, a store that declares neither value. The declaration is the
- * host's: the core checks only that it is one of these two strings, not that
- * the store is durable or passed conformance, so a volatile store declaring
- * `"conformance-tested"` runs end to end. Review it with the store.
- * - `"conformance-tested"`: durable and atomic, and passes every
- *   `runLiquidityTankStoreConformance` case against its real backend. The
- *   SDK's `createFsLiquidityTankStore` declares it; a host store declares it
- *   once it passes.
- * - `"volatile-acknowledged"`: loses every row on restart, and its caller has
- *   said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })`
- *   declares it. For tests and development only, never production: the core
- *   runs end to end on it, and a restart then signs a second bridge operation.
- *   With `NODE_ENV=production` the core refuses it before any claim, as
- *   `liquidity-tank-store-volatile-in-production`.
+ * Store contract declaration. Outside explicit NODE_ENV=development/test,
+ * the core also requires the exact immutable store returned by
+ * createFsLiquidityTankStore; a declaration or copied handle cannot grant
+ * production execution. Custom stores remain available for conformance tests.
+ * A volatile store requires acknowledgeVolatile and explicit development/test
+ * mode; an absent or unknown environment refuses it before any claim.
  */
 export type LiquidityTankStoreRestartSafety = "conformance-tested" | "volatile-acknowledged";
 
@@ -430,8 +425,8 @@ export interface LiquidityTankStore {
   /**
    * Required by the core at run time, as a data property: without one of the
    * two values it returns `indeterminate`
-   * `liquidity-tank-store-restart-safety-undeclared` before any claim. It is
-   * the host's declaration; the core cannot check it.
+   * `liquidity-tank-store-restart-safety-undeclared` before any claim.
+   * Production also requires the SDK-created filesystem store capability.
    */
   readonly restartSafety?: LiquidityTankStoreRestartSafety;
   /**
@@ -506,9 +501,10 @@ export interface LiquidityTankStore {
    * if one existed. `now` must be after `recoveryDeadline`. Pending snapshots
    * also need `observedAt > recoveryDeadline`; completions need
    * `finalityObservedAt > recoveryDeadline` (one final at the deadline is
-   * timely). Terminal failure evidence must equal the one retained by
-   * `recordRecoveryFailure` and bind its authenticated lock hash/deadline to
-   * the exact durable checkpoint. A contradiction needs the exact durable
+   * timely). Terminal failure evidence must describe a post-deadline bridge
+   * snapshot and bind its authenticated lock hash/deadline to the exact durable
+   * checkpoint. Beside a retained failure, a refreshed authenticated snapshot
+   * may postdate that failure without replacing the retained original. A contradiction needs the exact durable
    * checkpoint and no retained failure, must be observed after the
    * checkpoint and after `recoveryDeadline`, and must not be a `pending`
    * that leaves the operation live.
@@ -523,6 +519,13 @@ export interface LiquidityTankStore {
       Exclude<LiquidityTankObservation, { status: "indeterminate" }>
     >;
     observation: LiquidityTankRecoveryEvidence;
+  }): Promise<LiquidityTankStoreWrite>;
+  /** Atomically corrects this exact expiry with a timely completion of its same lock. Never submits bytes. */
+  reconcileRecoveryExpired?(input: {
+    settlementKey: string;
+    bindingHash: string;
+    expectedEvidence: LiquidityTankRecoveryEvidence;
+    completion: Readonly<Extract<LiquidityTankObservation, { status: "completed" }>>;
   }): Promise<LiquidityTankStoreWrite>;
   recordSettlement(input: {
     settlementKey: string;
@@ -539,9 +542,9 @@ export type LiquidityTankProgress =
       status: "waiting" | "indeterminate";
       reason: string;
       /**
-       * Set exactly with `waiting` `liquidity-tank-pending`, a bridge operation
-       * pending without a source lock: Unix milliseconds by which the bridge
-       * should have locked, the submission's receipt (`submissionRecordedAt`)
+       * Set with waiting `liquidity-tank-pending` or
+       * `liquidity-tank-source-finality-pending`: Unix milliseconds by which
+       * the bridge should have locked, the submission's receipt (`submissionRecordedAt`)
        * plus `pendingLockDeadlineMs`.
        */
       pendingDeadline?: number;
@@ -608,8 +611,8 @@ export type LiquidityTankProgress =
       pastDeadline: boolean;
       /**
        * Set when this call's authenticated bridge status could not move the
-       * lock: `failed` is retained terminal evidence, expiring when the host
-       * clock passes `recoveryDeadline`; `conflicting` contradicts the
+       * lock: `failed` is retained evidence, expiring only with a bridge
+       * snapshot and host clock strictly past `recoveryDeadline`; `conflicting` contradicts the
        * checkpoint. Once the host clock passes the deadline, a contradiction
        * observed after the checkpoint and after the deadline expires the
        * lock as `tank-lock-contradicted-recovery-expired`, unless it is a
@@ -714,6 +717,17 @@ export interface AdvanceLiquidityTankInput {
   store: LiquidityTankStore;
   adapter: LiquidityTankAdapter;
   verifier: LiquidityTankVerifier;
+  /**
+   * Trusted, independent resolution of the pinned descriptor, agreement and
+   * SR-5 binding. Return the complete authorized authority, after verifying
+   * those artifacts, the route's exact tank pair, amount/currency and the
+   * agreement's destination semantics (including PB-1/PB-2 when applicable).
+   * Required outside explicit development/test mode; never echo unverified input.
+   */
+  resolveAuthority?: (intent: Readonly<LiquidityTankIntent>) => Promise<Readonly<{
+    authority: Readonly<LiquidityTankAuthority>;
+    rail: Pick<RailDefinition, "railId" | "railType" | "phaseHandler" | "asset" | "network">;
+  }> | "unavailable">;
   now?: () => number;
   leaseDurationMs?: number;
   /**
@@ -802,7 +816,7 @@ function ownFields(
       if (!isWellFormedString(value)) {
         throw new DacsError(`pay-cross-chain-liquidity-tank: ${label} must be stable data`);
       }
-      fields[key] = normalizeNfc(value);
+      fields[key] = key === "jobId" ? value : normalizeNfc(value);
     } else if (typeof value === "number") {
       // Canonical JSON has no negative zero.
       if (value === 0 && 1 / value < 0) {
@@ -1234,7 +1248,8 @@ export function createLiquidityTankIntent(
  * dispatches through live prototypes (`String.prototype.normalize`). The
  * settlement key and every intent field are derived from the authority's own
  * data properties, read and NFC-normalized through the intrinsics captured at
- * load before the shared snapshot runs. A polluted `Object.prototype` cannot
+ * load before the shared snapshot runs, except jobId, whose raw ASCII bytes
+ * must pass JID-1 without normalization. A polluted `Object.prototype` cannot
  * supply a missing field: it reads as `undefined` and is refused by its check.
  */
 function captureLiquidityTankAuthority(authority: unknown): Readonly<LiquidityTankAuthority> {
@@ -1254,6 +1269,7 @@ function captureLiquidityTankAuthority(authority: unknown): Readonly<LiquidityTa
 function intentFromCapturedAuthority(
   authority: Readonly<LiquidityTankAuthority>,
 ): Readonly<LiquidityTankIntent> {
+  requireJobId(authority.jobId);
   if (authority.assetKind !== "stablecoin-cross-chain" ||
       authority.networkKind !== "cross-chain" || authority.mechanism !== "liquidity-tank") {
     throw new DacsError("pay-cross-chain-liquidity-tank: selected rail mechanism mismatch");
@@ -1630,7 +1646,7 @@ function recoveryEvidenceDeadline(evidence: LiquidityTankRecoveryEvidence): numb
 /**
  * Pending snapshots must describe the bridge after the deadline, and a
  * completion must have finalized after it; a terminal non-completion bound to
- * the exact lock remains valid evidence. So does a contradiction of the lock
+ * the exact lock must also describe a post-deadline bridge snapshot. So does a contradiction of the lock
  * observed strictly after the checkpoint and, like a pending snapshot, after
  * the deadline, except a `pending` that leaves the operation live. The core's
  * finalize, the store CAS and the claim replay all decide here; the host-clock
@@ -1640,7 +1656,8 @@ function provesRecoveryExpiry(evidence: LiquidityTankRecoveryEvidence): boolean 
   if (evidence.status === "completed") {
     return pastRecoveryDeadline(evidence.finalityObservedAt, evidence.recoveryDeadline);
   }
-  if (evidence.status === "failed") return lockBearingFailure(evidence) !== undefined;
+  if (evidence.status === "failed") return lockBearingFailure(evidence) !== undefined &&
+    pastRecoveryDeadline(evidence.observedAt, evidence.recoveryDeadline!);
   if (evidence.status === "contradicted-after-lock") {
     return contradictsCheckpoint(evidence.contradiction, evidence.checkpoint) &&
       postdatesCheckpoint(evidence.contradiction, evidence.checkpoint) &&
@@ -1649,7 +1666,8 @@ function provesRecoveryExpiry(evidence: LiquidityTankRecoveryEvidence): boolean 
   }
   return evidence.status === "pending"
     ? pastRecoveryDeadline(evidence.observedAt, evidence.recoveryDeadline)
-    : failedAfterLock(evidence.failure, evidence.checkpoint);
+    : failedAfterLock(evidence.failure, evidence.checkpoint) &&
+      pastRecoveryDeadline(evidence.failure.observedAt, evidence.checkpoint.recoveryDeadline);
 }
 
 /** Structural validation only; callers decide timeliness with `provesRecoveryExpiry`. */
@@ -1956,9 +1974,9 @@ export async function advanceLiquidityTankSettlement(
   }
   // A store that loses a row after a broadcast makes the next owner sign and
   // broadcast a second operation, and the core cannot tell a lost row from a
-  // fresh phase. So it runs only on a store that declares how it survives a
-  // restart: the SDK's durable store, a host store that passed conformance,
-  // or the in-memory store whose caller acknowledged it is volatile.
+  // fresh phase. Production therefore requires the SDK-created durable
+  // store capability in addition to the contract declaration. Explicit
+  // development/test mode permits injected and acknowledged volatile stores.
   let restartSafety: unknown;
   try {
     restartSafety = stableDataProperty(store, "restartSafety", "store.restartSafety");
@@ -1972,6 +1990,9 @@ export async function advanceLiquidityTankSettlement(
   // an absent, unknown or unreadable environment cannot authorize its use.
   if (restartSafety === "volatile-acknowledged" && !allowsVolatileStore()) {
     return { status: "indeterminate", reason: "liquidity-tank-store-volatile-in-production" };
+  }
+  if (!allowsVolatileStore() && !isProductionTankStore(store)) {
+    return { status: "indeterminate", reason: "liquidity-tank-store-untrusted" };
   }
   // Without the host's checks the core cannot tell a forged observation or a
   // submission signing another amount from a genuine one, so it refuses
@@ -2002,22 +2023,79 @@ export async function advanceLiquidityTankSettlement(
   } catch {
     return { status: "indeterminate", reason: "liquidity-tank-submission-verifier-unavailable" };
   }
+  if (!allowsVolatileStore() && !isSourceFinalityVerifier(verifier)) {
+    return { status: "indeterminate", reason: "liquidity-tank-source-finality-required" };
+  }
+  let resolveAuthority: AdvanceLiquidityTankInput["resolveAuthority"];
+  try {
+    const resolver = stableDataProperty(input, "resolveAuthority", "resolveAuthority");
+    if (resolver !== undefined) {
+      resolveAuthority = stableBoundMethod<NonNullable<AdvanceLiquidityTankInput["resolveAuthority"]>>(
+        input, "resolveAuthority", "resolveAuthority",
+      );
+    }
+  } catch {
+    return { status: "indeterminate", reason: "liquidity-tank-authority-resolver-unavailable" };
+  }
+  if (!resolveAuthority && !allowsVolatileStore()) {
+    return { status: "indeterminate", reason: "liquidity-tank-authority-resolver-unavailable" };
+  }
+  if (resolveAuthority) {
+    try {
+      const resolved = await resolveAuthority(intent);
+      if (resolved === "unavailable") return { status: "indeterminate", reason: "liquidity-tank-authority-resolver-unavailable" };
+      // Capture raw jobId before the JSON snapshot can NFC-normalize strings.
+      const resolvedIntent = intentFromCapturedAuthority(captureLiquidityTankAuthority(
+        stableDataProperty(resolved, "authority", "resolved authority"),
+      ));
+      const snapshot = snapshotCanonicalJsonRead(resolved, "resolved liquidity-tank authority");
+      const rail = snapshot.rail;
+      const authorizedRoute = rail.asset.kind === "stablecoin-cross-chain" && rail.asset.routes.some((candidate) =>
+        (candidate.sourceChainId === intent.sourceChainId || candidate.sourceChainId === String(intent.sourceChainId)) &&
+        (candidate.destChainId === intent.destinationChainId || candidate.destChainId === String(intent.destinationChainId)) &&
+        candidate.liquidityTankIds?.includes(intent.sourceLiquidityTankId) &&
+        candidate.liquidityTankIds.includes(intent.destinationLiquidityTankId));
+      if (canonicalize(resolvedIntent) !== canonicalize(intent) ||
+          rail.railId !== intent.railId || rail.railType !== "cross-chain-liquidity-tank" ||
+          rail.phaseHandler !== "pay-cross-chain-liquidity-tank" ||
+          rail.asset.kind !== "stablecoin-cross-chain" || rail.asset.canonicalSymbol !== intent.currency ||
+          rail.network.kind !== "cross-chain" || rail.network.mechanism !== "liquidity-tank" ||
+          !authorizedRoute) {
+        return { status: "indeterminate", reason: "liquidity-tank-resolved-authority-mismatch" };
+      }
+    } catch {
+      return { status: "indeterminate", reason: "liquidity-tank-authority-resolver-unavailable" };
+    }
+  }
   // Only a literal `true` accepts. `"unavailable"` or a throw is an outage: a
   // hook that timed out or lost its key cannot be told from one whose own
   // dependency threw, and an outage acts on nothing the core could not check,
   // so it is never a reason to escalate a forged value. Anything else refuses.
-  const verdict = (answer: unknown): Verdict =>
-    answer === true ? "accepted" : answer === "unavailable" ? "unavailable" : "refused";
+  let pendingSourceFinality = false;
+  const verdict = (answer: unknown): Verdict => {
+    if (answer === "pending-finality") { pendingSourceFinality = true; return "unavailable"; }
+    return answer === true ? "accepted" : answer === "unavailable" ? "unavailable" : "refused";
+  };
+  let knownReceipt = 0;
+  const verifierUnavailable = (): LiquidityTankProgress => pendingSourceFinality ? {
+    status: "waiting", reason: "liquidity-tank-source-finality-pending",
+    pendingDeadline: Math.min(knownReceipt + pendingLockDeadlineMs, Number.MAX_SAFE_INTEGER),
+    pastDeadline: latestNow >= Math.min(knownReceipt + pendingLockDeadlineMs, Number.MAX_SAFE_INTEGER),
+  } : { status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" };
+  const authenticationResults = new Map<string, Verdict>();
   const authenticated = async (
     submissionValue: Readonly<LiquidityTankPreparedSubmission>,
     observationValue: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>,
   ): Promise<Verdict> => {
     try {
-      return verdict(await authenticateObservation(freeze({
-        intent,
-        submission: submissionValue,
-        observation: observationValue,
+      const key = canonicalize({ submission: submissionValue, observation: observationValue });
+      const prior = authenticationResults.get(key);
+      if (prior !== undefined) return prior;
+      const answer = verdict(await authenticateObservation(freeze({
+        intent, submission: submissionValue, observation: observationValue,
       })));
+      authenticationResults.set(key, answer);
+      return answer;
     } catch {
       return "unavailable";
     }
@@ -2059,6 +2137,7 @@ export async function advanceLiquidityTankSettlement(
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
   }
   const claimed = claimSnapshot.value;
+  knownReceipt = typeof claimSnapshot.submissionRecordedAt === "number" ? claimSnapshot.submissionRecordedAt : claimNow;
   const claimStatus: unknown = hasOwn(claimed, "status") ? claimed.status : undefined;
   if (typeof claimStatus !== "string") {
     return { status: "indeterminate", reason: "liquidity-tank-settlement-store-claim-invalid" };
@@ -2082,7 +2161,27 @@ export async function advanceLiquidityTankSettlement(
   if (claimStatus === "settled") {
     const settledClaim = claimed as Extract<LiquidityTankStoreClaim, { status: "settled" }>;
     try {
-      return { status: "settled", settlement: captureSettlement(settledClaim.settlement, intent) };
+      const settlement = captureSettlement(settledClaim.settlement, intent);
+      if (!allowsVolatileStore()) {
+        const savedSubmission = validateRetainedSubmission(settledClaim.submission!, intent);
+        const receiptRefusal = retainedReceiptRefusal(settledClaim.submissionRecordedAt, savedSubmission);
+        if (receiptRefusal) return { status: "indeterminate", reason: receiptRefusal };
+        const signedAnswer = await verified(savedSubmission);
+        if (signedAnswer !== "accepted") return signedAnswer === "unavailable" ? verifierUnavailable()
+          : { status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" };
+        const observed = validateObservation(await observeSettlement(intent, savedSubmission, freeze({
+          owner, settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+          generation: 0, assertCurrent: async () => {},
+        })), intent, savedSubmission);
+        if (observed.status !== "completed") return { status: "indeterminate", reason: "liquidity-tank-settlement-reconciliation-unavailable" };
+        const answer = await authenticated(savedSubmission, observed);
+        if (answer !== "accepted") return answer === "unavailable" ? verifierUnavailable()
+          : { status: "indeterminate", reason: "liquidity-tank-observation-unauthenticated" };
+        if (canonicalize(settlementFromCompletedObservation(intent, observed)) !== canonicalize(settlement)) {
+          return { status: "indeterminate", reason: "liquidity-tank-stored-settlement-mismatch" };
+        }
+      }
+      return { status: "settled", settlement };
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-stored-settlement-mismatch" };
     }
@@ -2106,6 +2205,9 @@ export async function advanceLiquidityTankSettlement(
     if (expiredReceiptRefusal !== null) {
       return { status: "indeterminate", reason: expiredReceiptRefusal };
     }
+    const expiredSignedAnswer = await verified(expiredSubmission);
+    if (expiredSignedAnswer !== "accepted") return expiredSignedAnswer === "unavailable" ? verifierUnavailable()
+      : { status: "indeterminate", reason: "liquidity-tank-signed-submission-unverified" };
     try {
       evidence = validateRecoveryEvidence(
         expiredClaim.observation,
@@ -2138,13 +2240,44 @@ export async function advanceLiquidityTankSettlement(
       if (answer === "unavailable") expiryUnchecked = true;
     }
     if (expiryUnchecked) return verifierUnavailable();
-    // A terminal failure carries no time of its own, and a contradiction's
-    // time is checked above: this host's clock must also have passed the
-    // deadline before the expiry is reported.
+    // Bridge evidence was checked above; the host clock must also have
+    // passed the deadline before replaying an expiry.
     if ((evidence.status === "failed-after-lock" || evidence.status === "failed" ||
         evidence.status === "contradicted-after-lock") &&
         !pastRecoveryDeadline(claimNow, recoveryEvidenceDeadline(evidence))) {
       return { status: "indeterminate", reason: "liquidity-tank-recovery-expiry-not-due" };
+    }
+    if (evidence.status === "completed") return recoveryExpiredProgress(intent, evidence);
+    // Expiry never authorizes another submission. Reconcile read-only on
+    // every replay so a delayed authenticated timely release can correct it.
+    let latest: Readonly<LiquidityTankObservation>;
+    try {
+      latest = validateObservation(await observeSettlement(intent, expiredSubmission, freeze({
+        owner, settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+        generation: 0, assertCurrent: async () => {},
+      })), intent, expiredSubmission);
+    } catch {
+      return recoveryExpiredProgress(intent, evidence);
+    }
+    if (latest.status === "indeterminate") return recoveryExpiredProgress(intent, evidence);
+    const latestAnswer = await authenticated(expiredSubmission, latest);
+    if (latestAnswer !== "accepted") return latestAnswer === "unavailable" ? verifierUnavailable()
+      : { status: "indeterminate", reason: "liquidity-tank-observation-unauthenticated" };
+    const expiredLock = evidence.status === "failed-after-lock" || evidence.status === "contradicted-after-lock"
+      ? evidence.checkpoint : evidence;
+    if (latest.status === "completed" && latest.lockTxHash === expiredLock.lockTxHash &&
+        latest.recoveryDeadline === expiredLock.recoveryDeadline &&
+        !pastRecoveryDeadline(latest.finalityObservedAt, latest.recoveryDeadline)) {
+      try {
+        const reconcile = stableBoundMethod<NonNullable<LiquidityTankStore["reconcileRecoveryExpired"]>>(
+          store, "reconcileRecoveryExpired", "store.reconcileRecoveryExpired",
+        );
+        if (successfulStoreWrite(await reconcile({ settlementKey: intent.settlementKey,
+          bindingHash: intent.bindingHash, expectedEvidence: evidence, completion: latest }))) {
+          return { status: "settled", settlement: settlementFromCompletedObservation(intent, latest) };
+        }
+      } catch { /* uncertain correction must not report failure */ }
+      return { status: "indeterminate", reason: "liquidity-tank-expiry-correction-persistence-uncertain" };
     }
     return recoveryExpiredProgress(intent, evidence);
   }
@@ -2302,6 +2435,7 @@ export async function advanceLiquidityTankSettlement(
       return { status: "indeterminate", reason: "liquidity-tank-submission-persistence-uncertain" };
     }
     submissionReceipt = recordedAt;
+    knownReceipt = recordedAt;
     if (freshAnswer === "unavailable") return verifierUnavailable();
   }
 
@@ -2391,8 +2525,8 @@ export async function advanceLiquidityTankSettlement(
     } catch {
       return { status: "indeterminate", reason: "liquidity-tank-clock-invalid" };
     }
-    // Snapshot freshness is required for pending, but a terminal failure
-    // remains evidence without a refreshed timestamp. The host must pass D.
+    // Every non-completion must describe a post-deadline bridge snapshot;
+    // a host clock alone never proves the resolving leg missed its window.
     if (!pastRecoveryDeadline(recoveryNow, recoveryEvidenceDeadline(observation)) ||
         !provesRecoveryExpiry(observation)) {
       if (observation.status === "completed") {
@@ -2510,6 +2644,7 @@ export async function advanceLiquidityTankSettlement(
       }
       // Read like an unavailable bridge: durable progress, or a retry.
       if (answer === "unavailable") {
+        if (pendingSourceFinality) observationRefusal = verifierUnavailable();
         return { status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" };
       }
     }
@@ -2574,6 +2709,11 @@ export async function advanceLiquidityTankSettlement(
             return { status: "indeterminate", reason: "liquidity-tank-failure-persistence-uncertain" };
           }
         }
+        if (provesRecoveryExpiry({ status: "failed-after-lock", checkpoint, failure: observation })) {
+          // The expiry CAS compares the durable failure separately; an old
+          // failure is never refreshed without an authenticated bridge read.
+          return await persistRecoveryExpired({ status: "failed-after-lock", checkpoint, failure: observation }, durableObservation);
+        }
         return await persistRecoveryExpired(durableFailure, durableObservation);
       }
       // Once this host's clock passes the deadline, a contradiction the
@@ -2602,9 +2742,16 @@ export async function advanceLiquidityTankSettlement(
         reason: "liquidity-tank-recovery-checkpoint-conflict",
       };
     }
-    // A durable failure that carries its lock is that lock's terminal
-    // evidence: only a completion of the same lock can still move it.
+    // A durable failure still needs a fresh post-deadline snapshot, or a
+    // completion of that same lock, before it can resolve the lock.
     const durableLockFailure = lockBearingFailure(durableObservation);
+    if (durableLockFailure && observation.status === "failed" &&
+        observation.lockTxHash === durableLockFailure.lockTxHash &&
+        observation.recoveryDeadline === durableLockFailure.recoveryDeadline &&
+        observation.observedAt > durableLockFailure.observedAt && provesRecoveryExpiry(observation as LiquidityTankRecoveryEvidence)) {
+      if (!await persistObservation(observation)) return { status: "indeterminate", reason: "liquidity-tank-observation-persistence-uncertain" };
+      return await persistRecoveryExpired(observation as LiquidityTankRecoveryEvidence, observation);
+    }
     if (durableLockFailure && !(observation.status === "completed" &&
         observation.lockTxHash === durableLockFailure.lockTxHash &&
         observation.recoveryDeadline === durableLockFailure.recoveryDeadline)) {
@@ -2731,7 +2878,9 @@ function claimTransition(
       return { result: { status: "conflict", reason: "liquidity-tank-settlement-binding-conflict" } };
     }
     if (existing.settlement) {
-      return { result: { status: "settled", intent: existing.intent, settlement: existing.settlement } };
+      return { result: { status: "settled", intent: existing.intent, settlement: existing.settlement,
+        ...(existing.submission === undefined ? {} : { submission: existing.submission, submissionRecordedAt: existing.submissionRecordedAt }),
+      } };
     }
     if (existing.recoveryExpired) {
       if (!existing.submission || existing.submissionRecordedAt === undefined) {
@@ -2865,7 +3014,10 @@ function recordObservationTransition(
   const completesFailedLock = priorLockFailure !== undefined && observation.status === "completed" &&
     observation.lockTxHash === priorLockFailure.lockTxHash &&
     observation.recoveryDeadline === priorLockFailure.recoveryDeadline;
-  if (prior && !completesFailedLock) {
+  const refreshesFailedLock = priorLockFailure !== undefined && observation.status === "failed" &&
+    observation.lockTxHash === priorLockFailure.lockTxHash &&
+    observation.recoveryDeadline === priorLockFailure.recoveryDeadline && observation.observedAt > priorLockFailure.observedAt;
+  if (prior && !completesFailedLock && !refreshesFailedLock) {
     if (canonicalize(prior) === canonicalize(observation)) return { result: { status: "existing" } };
     if (!preservesRecoveryCheckpoint(prior, observation) ||
         observationRank(observation.status) < observationRank(prior.status)) {
@@ -2989,10 +3141,39 @@ function recordRecoveryExpiredTransition(
     }
   } else if (!priorCheckpoint ||
       canonicalize(priorCheckpoint) !== canonicalize(evidence.checkpoint) ||
-      !record.recoveryFailure || canonicalize(record.recoveryFailure) !== canonicalize(evidence)) {
+      !record.recoveryFailure ||
+      evidence.failure.observedAt < record.recoveryFailure.failure.observedAt) {
     return { result: { status: "conflict", reason: "liquidity-tank-recovery-checkpoint-cas-failed" } };
   }
   return { result: { status: "recorded" }, next: { ...record, recoveryExpired: evidence } };
+}
+
+function reconcileRecoveryExpiredTransition(
+  record: LiquidityTankRecord | undefined,
+  input: Parameters<NonNullable<LiquidityTankStore["reconcileRecoveryExpired"]>>[0],
+): LiquidityTankRecordTransition<LiquidityTankStoreWrite> {
+  if (!record || record.intent.bindingHash !== input.bindingHash || !record.submission) {
+    return { result: { status: "conflict", reason: "liquidity-tank-expiry-correction-conflict" } };
+  }
+  let completed: Readonly<Exclude<LiquidityTankObservation, { status: "indeterminate" }>>;
+  try { completed = validateRetainedObservation(input.completion, record.intent, record.submission); }
+  catch { return { result: { status: "conflict", reason: "liquidity-tank-expiry-correction-invalid" } }; }
+  if (completed.status !== "completed" || pastRecoveryDeadline(completed.finalityObservedAt, completed.recoveryDeadline)) {
+    return { result: { status: "conflict", reason: "liquidity-tank-expiry-correction-invalid" } };
+  }
+  const settlement = settlementFromCompletedObservation(record.intent, completed);
+  if (record.settlement) return { result: canonicalize(record.settlement) === canonicalize(settlement)
+    ? { status: "existing" } : { status: "conflict", reason: "liquidity-tank-settlement-conflict" } };
+  if (!record.recoveryExpired || canonicalize(record.recoveryExpired) !== canonicalize(input.expectedEvidence)) {
+    return { result: { status: "conflict", reason: "liquidity-tank-expiry-correction-conflict" } };
+  }
+  const evidence = record.recoveryExpired;
+  const lock = evidence.status === "failed-after-lock" || evidence.status === "contradicted-after-lock" ? evidence.checkpoint : evidence;
+  if (completed.lockTxHash !== lock.lockTxHash || completed.recoveryDeadline !== lock.recoveryDeadline) {
+    return { result: { status: "conflict", reason: "liquidity-tank-expiry-correction-conflict" } };
+  }
+  const { recoveryExpired: _expired, recoveryFailure: _failure, ...rest } = record;
+  return { result: { status: "recorded" }, next: { ...rest, observation: completed, settlement } };
 }
 
 function recordSettlementTransition(
@@ -3040,6 +3221,7 @@ export const liquidityTankRecordTransitions = Object.freeze({
   recordRecoveryFailure: recordRecoveryFailureTransition,
   recordRecoveryExpired: recordRecoveryExpiredTransition,
   recordSettlement: recordSettlementTransition,
+  reconcileRecoveryExpired: reconcileRecoveryExpiredTransition,
 });
 
 /**
@@ -3171,6 +3353,9 @@ export function createInMemoryLiquidityTankStore(
         input.settlementKey,
         recordRecoveryExpiredTransition(records.get(input.settlementKey), input),
       );
+    },
+    async reconcileRecoveryExpired(input) {
+      return commit(input.settlementKey, reconcileRecoveryExpiredTransition(records.get(input.settlementKey), input));
     },
     async recordSettlement(input) {
       return commit(input.settlementKey, recordSettlementTransition(records.get(input.settlementKey), input));

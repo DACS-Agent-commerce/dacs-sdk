@@ -32,6 +32,7 @@ import {
   type LiquidityTankStore,
   type LiquidityTankVerifier,
 } from "../../src/rails/liquidityTank.js";
+import { createLiquidityTankEvmFinalityVerifier } from "../../src/rails/liquidityTankEvmFinality.js";
 import { createFsLiquidityTankStore } from "../../src/rails/liquidityTankFs.js";
 import { runLiquidityTankStoreConformance } from "../../src/rails/liquidityTankStoreConformance.js";
 import { CRASH_BRIDGE_ID, CRASH_T0, crashAuthority, crashSubmission } from "../fixtures/liquidityTankFsCrash.js";
@@ -104,6 +105,18 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
   };
 });
+
+function resolvedAuthority(a = authority()) {
+  return { authority: a, rail: {
+    railId: a.railId, railType: "cross-chain-liquidity-tank" as const,
+    phaseHandler: "pay-cross-chain-liquidity-tank" as const,
+    asset: { kind: "stablecoin-cross-chain" as const, canonicalSymbol: "USDC", routes: [{
+      sourceChainId: a.sourceChainId, destChainId: a.destinationChainId,
+      liquidityTankIds: [a.sourceLiquidityTankId, a.destinationLiquidityTankId],
+    }] },
+    network: { kind: "cross-chain" as const, mechanism: "liquidity-tank" as const },
+  } };
+}
 
 const roots: string[] = [];
 
@@ -281,23 +294,33 @@ describe("createFsLiquidityTankStore", () => {
       return unsigned;
     });
     const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async () => {
-      observation = lockedPending(now);
+      observation = { ...lockedPending(now), lockTxHash: `0x${"1".repeat(64)}` };
     });
     const adapter: LiquidityTankAdapter = {
       prepareSubmission,
       broadcastRetained,
       observe: async () => observation,
     };
-    const verifier: LiquidityTankVerifier = {
-      authenticateObservation: async () => true,
-      verifySignedSubmission: async () => true,
-    };
+    const verifier = createLiquidityTankEvmFinalityVerifier({
+      verifier: { authenticateObservation: async () => true, verifySignedSubmission: async () => true },
+      sourceRpcUrl: "https://sepolia.example/",
+      fetch: async (_url, init) => {
+        const { id, method, params } = JSON.parse(init?.body as string);
+        const lockHash = `0x${"1".repeat(64)}`;
+        const blockHash = `0x${"2".repeat(64)}`;
+        const result = method === "eth_chainId" ? "0xaa36a7" : method === "eth_getTransactionReceipt"
+          ? { transactionHash: lockHash, blockHash, blockNumber: "0x10", status: "0x1" }
+          : { hash: blockHash, number: "0x10", transactions: [lockHash] };
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }));
+      },
+    });
     const run = async (owner: string) => advanceLiquidityTankSettlement({
       authority: authority(),
       owner,
       store: await createFsLiquidityTankStore({ dir }),
       adapter,
       verifier,
+      resolveAuthority: async () => resolvedAuthority(),
       now: () => now,
       leaseDurationMs: 1_000,
     });
@@ -1422,3 +1445,155 @@ describe("createFsLiquidityTankStore lock liveness and stale recovery", () => {
     expect(reclaimed).not.toHaveProperty("submission");
   });
 });
+
+describe("production execution capabilities", () => {
+  const bridgeVerifier: LiquidityTankVerifier = {
+    authenticateObservation: async () => true,
+    verifySignedSubmission: async () => true,
+  };
+  test("a plain bridge authenticator cannot authorize production source finality", async () => {
+    const store = await createFsLiquidityTankStore({ dir: await freshDir() });
+    const prepareSubmission = vi.fn();
+    vi.stubEnv("NODE_ENV", "production");
+    const input = {
+      authority: authority(), owner: "production", store,
+      adapter: { prepareSubmission, broadcastRetained: vi.fn(), observe: vi.fn() },
+      verifier: bridgeVerifier, resolveAuthority: async () => resolvedAuthority(), now: () => T0,
+    };
+    await expect(advanceLiquidityTankSettlement(input)).resolves.toMatchObject({
+      status: "indeterminate", reason: "liquidity-tank-source-finality-required",
+    });
+    expect(prepareSubmission).not.toHaveBeenCalled();
+  });
+
+  test("a resolved agreement's tank pair must match before any preparation", async () => {
+    const store = await createFsLiquidityTankStore({ dir: await freshDir() });
+    const prepareSubmission = vi.fn();
+    vi.stubEnv("NODE_ENV", "production");
+    const input = {
+      authority: authority(), owner: "production", store,
+      adapter: { prepareSubmission, broadcastRetained: vi.fn(), observe: vi.fn() },
+      verifier: createLiquidityTankEvmFinalityVerifier({ verifier: bridgeVerifier, sourceRpcUrl: "https://sepolia.example/" }),
+      resolveAuthority: async () => resolvedAuthority({ ...authority(), sourceLiquidityTankId: "wrong-resolved-tank" }), now: () => T0,
+    };
+    await expect(advanceLiquidityTankSettlement(input)).resolves.toMatchObject({
+      status: "indeterminate", reason: "liquidity-tank-resolved-authority-mismatch",
+    });
+    expect(prepareSubmission).not.toHaveBeenCalled();
+  });
+});
+
+test.each([
+  ["agreement hash", (r: ReturnType<typeof resolvedAuthority>) => { r.authority.agreementHash = "e".repeat(64); }],
+  ["SR-5 binding hash", (r: ReturnType<typeof resolvedAuthority>) => { r.authority.sr5BindingHash = "e".repeat(64); }],
+  ["descriptor hash", (r: ReturnType<typeof resolvedAuthority>) => { r.authority.railDescriptorHash = "e".repeat(64); }],
+  ["destination", (r: ReturnType<typeof resolvedAuthority>) => { r.authority.destinationAddress = "another-destination"; }],
+  ["resolved tank IDs", (r: ReturnType<typeof resolvedAuthority>) => { r.rail.asset.routes[0]!.liquidityTankIds = ["unapproved-source", "unapproved-destination"]; }],
+  ["resolved route", (r: ReturnType<typeof resolvedAuthority>) => { r.rail.asset.routes[0]!.destChainId = 1; }],
+  ["resolved currency", (r: ReturnType<typeof resolvedAuthority>) => { r.rail.asset.canonicalSymbol = "USDT"; }],
+] as const)("production rejects a mismatched %s before claiming or preparing", async (_label, rewrite) => {
+  const resolved = resolvedAuthority();
+  rewrite(resolved);
+  const store = await createFsLiquidityTankStore({ dir: await freshDir() });
+  const prepareSubmission = vi.fn();
+  vi.stubEnv("NODE_ENV", "production");
+  await expect(advanceLiquidityTankSettlement({ authority: authority(), owner: "production", store,
+    adapter: { prepareSubmission, broadcastRetained: vi.fn(), observe: vi.fn() },
+    verifier: createLiquidityTankEvmFinalityVerifier({
+      verifier: { authenticateObservation: () => true, verifySignedSubmission: () => true }, sourceRpcUrl: "https://sepolia.example/",
+    }), resolveAuthority: async () => resolved, now: () => T0,
+  })).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-resolved-authority-mismatch" });
+  expect(prepareSubmission).not.toHaveBeenCalled();
+  await expect(store.claim({ intent, owner: "inspect", now: T0, leaseDurationMs: 1_000 })).resolves.toMatchObject({ status: "acquired", lease: { generation: 1 } });
+});
+
+test("production accepts an authorized tank pair, reopens it, and rechecks saved success against the source", async () => {
+  const dir = await freshDir();
+  let sourceAvailable = true;
+  const lockHash = `0x${"1".repeat(64)}`;
+  const blockHash = `0x${"2".repeat(64)}`;
+  const verifier = createLiquidityTankEvmFinalityVerifier({
+    verifier: { authenticateObservation: () => true, verifySignedSubmission: () => true },
+    sourceRpcUrl: "https://sepolia.example/",
+    fetch: async (_url, init) => {
+      const { id, method } = JSON.parse(init?.body as string);
+      const result = method === "eth_chainId" ? "0xaa36a7" : method === "eth_getTransactionReceipt"
+        ? sourceAvailable ? { transactionHash: lockHash, blockHash, blockNumber: "0x10", status: "0x1" } : null
+        : { hash: blockHash, number: "0x10", transactions: [lockHash] };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }));
+    },
+  });
+  let observed: LiquidityTankObservation = { status: "empty", bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+    history: ["empty"], observedAt: T0, authenticationHash: "a".repeat(64) };
+  const prepareSubmission = vi.fn<LiquidityTankAdapter["prepareSubmission"]>(async () => {
+    const { submissionHash: _hash, ...unsigned } = submission();
+    return unsigned;
+  });
+  const broadcastRetained = vi.fn<LiquidityTankAdapter["broadcastRetained"]>(async () => {
+    observed = { status: "completed", bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+      history: ["empty", "pending", "completed"], observedAt: T0 + 10, finalityObservedAt: T0 + 10,
+      lockTxHash: lockHash, releaseTxHash: "fs-release-tx", recoveryDeadline: DEADLINE, authenticationHash: "a".repeat(64) };
+  });
+  const resolved = resolvedAuthority();
+  // The Standard allows string chain IDs and multiple authorized tank IDs.
+  const route = resolved.rail.asset.routes[0]!;
+  const allowed = { ...resolved, rail: { ...resolved.rail, asset: { ...resolved.rail.asset, routes: [{
+    ...route, sourceChainId: String(route.sourceChainId), destChainId: String(route.destChainId),
+    liquidityTankIds: ["another-authorized-tank", ...route.liquidityTankIds],
+  }] } } };
+  vi.stubEnv("NODE_ENV", "production");
+  const run = async (owner: string) => advanceLiquidityTankSettlement({ authority: authority(), owner,
+    store: await createFsLiquidityTankStore({ dir }), verifier, resolveAuthority: async () => allowed,
+    adapter: { prepareSubmission, broadcastRetained, observe: async () => observed }, now: () => T0 + 100, leaseDurationMs: 1_000,
+  });
+  await expect(run("first")).resolves.toMatchObject({ status: "settled" });
+  await expect(run("reopened")).resolves.toMatchObject({ status: "settled" });
+  sourceAvailable = false;
+  await expect(run("source-outage")).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+  sourceAvailable = true;
+  await expect(run("restored")).resolves.toMatchObject({ status: "settled" });
+  expect(prepareSubmission).toHaveBeenCalledTimes(1);
+  expect(broadcastRetained).toHaveBeenCalledTimes(1);
+}, 30_000);
+
+test("a Unicode job ID in resolved authority cannot be repaired by its snapshot", async () => {
+  const a = { ...authority(), jobId: "01JZ0000000000000000000K01" };
+  const resolved = resolvedAuthority({ ...a, jobId: a.jobId.replace("K", "\u212a") });
+  const store = await createFsLiquidityTankStore({ dir: await freshDir() });
+  const prepareSubmission = vi.fn();
+  vi.stubEnv("NODE_ENV", "production");
+  await expect(advanceLiquidityTankSettlement({ authority: a, owner: "production", store,
+    adapter: { prepareSubmission, broadcastRetained: vi.fn(), observe: vi.fn() },
+    verifier: createLiquidityTankEvmFinalityVerifier({
+      verifier: { authenticateObservation: () => true, verifySignedSubmission: () => true }, sourceRpcUrl: "https://sepolia.example/",
+    }), resolveAuthority: async () => resolved, now: () => T0,
+  })).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-authority-resolver-unavailable" });
+  expect(prepareSubmission).not.toHaveBeenCalled();
+});
+
+test("a corrected expiry survives a filesystem reopen without another submission", async () => {
+  const dir = await freshDir();
+  const original = await createFsLiquidityTankStore({ dir });
+  const first = await acquire(original, "first", T0);
+  await original.recordSubmission({ ...first.write, submission: submission() });
+  const takeover = await acquire(original, "after-deadline", DEADLINE + 1);
+  const checkpoint = lockedPending(DEADLINE + 1);
+  await expect(original.recordObservation({ ...takeover.write, observation: checkpoint })).resolves.toEqual({ status: "recorded" });
+  await expect(original.recordRecoveryExpired({ ...takeover.write, expectedObservation: checkpoint, observation: checkpoint as never })).resolves.toEqual({ status: "recorded" });
+  const prepareSubmission = vi.fn();
+  const broadcastRetained = vi.fn();
+  const completion: LiquidityTankObservation = { status: "completed", bridgeId: BRIDGE_ID, operationHash: intent.operationHash,
+    history: ["empty", "pending", "completed"], observedAt: T0 + 20, finalityObservedAt: T0 + 20,
+    lockTxHash: checkpoint.lockTxHash!, releaseTxHash: "fs-release-tx", recoveryDeadline: DEADLINE, authenticationHash: "a".repeat(64) };
+  await expect(advanceLiquidityTankSettlement({ authority: authority(), owner: "reconcile",
+    store: await createFsLiquidityTankStore({ dir }), now: () => DEADLINE + 100,
+    verifier: { authenticateObservation: () => true, verifySignedSubmission: () => true },
+    adapter: { prepareSubmission, broadcastRetained, observe: async () => completion },
+  })).resolves.toMatchObject({ status: "settled" });
+  const reopened = await createFsLiquidityTankStore({ dir });
+  await expect(reopened.claim({ intent, owner: "inspect", now: DEADLINE + 101, leaseDurationMs: 100 })).resolves.toMatchObject({
+    status: "settled", settlement: { txRef: { releaseTxHash: "fs-release-tx" } },
+  });
+  expect(prepareSubmission).not.toHaveBeenCalled();
+  expect(broadcastRetained).not.toHaveBeenCalled();
+}, 30_000);

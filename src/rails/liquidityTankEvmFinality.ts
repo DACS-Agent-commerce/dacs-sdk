@@ -1,3 +1,4 @@
+import { registerSourceFinalityVerifier } from "./liquidityTankCapabilities.js";
 import type { LiquidityTankVerifier } from "./liquidityTank.js";
 
 /**
@@ -69,7 +70,7 @@ export function createLiquidityTankEvmFinalityVerifier(
   const authenticate = options.verifier.authenticateObservation.bind(options.verifier);
   const verifySubmission = options.verifier.verifySignedSubmission.bind(options.verifier);
 
-  return Object.freeze({
+  return registerSourceFinalityVerifier(Object.freeze({
     verifySignedSubmission: verifySubmission,
     async authenticateObservation(input: Parameters<LiquidityTankVerifier["authenticateObservation"]>[0]) {
       try {
@@ -77,21 +78,25 @@ export function createLiquidityTankEvmFinalityVerifier(
         if (answer !== true) return answer;
         if (!("lockTxHash" in input.observation) || input.observation.lockTxHash === undefined) return true;
         if (input.intent.sourceChainId !== SEPOLIA || input.intent.sourceChainType !== "EVM") return false;
+        // Bad bridge data is a refusal, not a retryable RPC outage.
+        if (typeof input.observation.lockTxHash !== "string" ||
+            input.observation.lockTxHash.length !== 66 || !HASH.test(input.observation.lockTxHash)) return false;
         const lockHash = hash(input.observation.lockTxHash);
         const signal = AbortSignal.timeout(timeoutMs);
         let nextId = 0;
         const rpc = async (method: string, params: readonly unknown[]): Promise<unknown> => {
           const id = ++nextId;
-          const response = await fetchRpc(endpoint, {
+          signal.throwIfAborted();
+          const response = await withinDeadline(fetchRpc(endpoint, {
             method: "POST",
             headers: { "content-type": "application/json" },
             redirect: "error",
             credentials: "omit",
             signal,
             body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-          });
+          }), signal);
           if (!response.ok) throw new Error("Ethereum RPC unavailable");
-          const body: unknown = await response.json();
+          const body = await readBoundedRpcJson(response, signal);
           if (!record(body) || body.jsonrpc !== "2.0" || body.id !== id ||
               "error" in body || !("result" in body)) {
             throw new Error("Invalid Ethereum RPC response");
@@ -105,12 +110,13 @@ export function createLiquidityTankEvmFinalityVerifier(
         const height = quantity(receipt.blockNumber);
         const blockHash = hash(receipt.blockHash);
         const finalized = await rpc("eth_getBlockByNumber", ["finalized", false]);
-        if (!record(finalized) || quantity(finalized.number) < height) return "unavailable";
+        if (!record(finalized)) return "unavailable";
+        if (quantity(finalized.number) < height) return "pending-finality";
         const finalizedHash = hash(finalized.hash);
         if (quantity(finalized.number) === height && finalizedHash !== blockHash) return "unavailable";
         const canonical = await rpc("eth_getBlockByNumber", [receipt.blockNumber, false]);
         if (!record(canonical) || quantity(canonical.number) !== height || hash(canonical.hash) !== blockHash ||
-            !Array.isArray(canonical.transactions) || !canonical.transactions.some((tx: unknown) => hash(tx) === lockHash)) {
+            !Array.isArray(canonical.transactions) || canonical.transactions.length > 20_000 || !canonical.transactions.some((tx: unknown) => hash(tx) === lockHash)) {
           return "unavailable";
         }
         return true;
@@ -120,5 +126,49 @@ export function createLiquidityTankEvmFinalityVerifier(
         return "unavailable";
       }
     },
+  }));
+}
+
+/** Hard byte and time bounds before JSON decoding, including injected streams. */
+async function readBoundedRpcJson(response: Response, signal: AbortSignal): Promise<unknown> {
+  const limit = 2 * 1024 * 1024;
+  const length = response.headers.get("content-length");
+  if (length !== null && (!/^[0-9]+$/.test(length) || length.length > 10 || Number(length) > limit)) {
+    void response.body?.cancel().catch(() => {});
+    throw new Error("Ethereum RPC response exceeds byte limit");
+  }
+  if (!response.body) throw new Error("Ethereum RPC empty response");
+  const reader = response.body.getReader();
+  const cancel = () => { void reader.cancel(signal.reason).catch(() => {}); };
+  signal.addEventListener("abort", cancel, { once: true });
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let bytes = 0;
+  let body = "";
+  try {
+    signal.throwIfAborted();
+    while (true) {
+      const item = await withinDeadline(reader.read(), signal);
+      signal.throwIfAborted();
+      if (item.done) break;
+      bytes += item.value.byteLength;
+      if (bytes > limit) throw new Error("Ethereum RPC response exceeds byte limit");
+      body += decoder.decode(item.value, { stream: true });
+    }
+    return JSON.parse(body + decoder.decode()) as unknown;
+  } catch (cause) {
+    void reader.cancel(cause).catch(() => {});
+    throw cause;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    reader.releaseLock();
+  }
+}
+
+function withinDeadline<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    if (signal.aborted) { void operation.catch(() => {}); reject(signal.reason); return; }
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 }

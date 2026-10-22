@@ -1,3 +1,4 @@
+import { registerProductionTankStore } from "./liquidityTankCapabilities.js";
 import { randomUUID } from "node:crypto";
 import { constants, readFileSync, readlinkSync } from "node:fs";
 import {
@@ -738,7 +739,7 @@ export async function createFsLiquidityTankStore(
     });
   }
 
-  return {
+  const store: LiquidityTankStore = {
     restartSafety: "conformance-tested",
     claim(input) {
       return transact(input.intent.settlementKey, (record) => transitions.claim(record, input), corrupt);
@@ -796,8 +797,12 @@ export async function createFsLiquidityTankStore(
     recordRecoveryExpired(input) {
       return transact(input.settlementKey, (record) => transitions.recordRecoveryExpired(record, input), corrupt);
     },
+    reconcileRecoveryExpired(input) {
+      return transact(input.settlementKey, (record) => transitions.reconcileRecoveryExpired(record, input), corrupt);
+    },
     recordSettlement(input) {
       return transact(input.settlementKey, (record) => transitions.recordSettlement(record, input), corrupt);
     },
   };
+  return registerProductionTankStore(Object.freeze(store));
 }

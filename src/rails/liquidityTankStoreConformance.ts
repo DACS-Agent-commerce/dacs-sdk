@@ -720,8 +720,12 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     await record("expiry from the retained failure with the host clock at the deadline", store.recordRecoveryExpired({
       ...write, now: DEADLINE, expectedObservation: checkpoint, observation: evidence,
     }), false);
-    await record("expiry from the retained failure", store.recordRecoveryExpired({
+    await record("stale pre-deadline failure cannot expire", store.recordRecoveryExpired({
       ...write, now: DUE, expectedObservation: checkpoint, observation: evidence,
+    }), false);
+    await record("expiry from the reconciled failure", store.recordRecoveryExpired({
+      ...write, now: DUE, expectedObservation: checkpoint,
+      observation: { ...evidence, failure: fixture.failedAfterLock(DUE) },
     }), true);
   }],
 
@@ -774,19 +778,19 @@ const CASES: readonly (readonly [string, ConformanceCase])[] = [
     const durable = new Fixture(tag, 0);
     const write = await acquire(store, durable.intent, "owner-a", DEADLINE - 10);
     await record("first submission", store.recordSubmission({ ...write, submission: durable.submission }), true);
-    const failure = durable.failedAfterLock(DEADLINE - 200);
+    const failure = durable.failedAfterLock(DUE);
     await record("failure carrying its lock", store.recordObservation({ ...write, observation: failure }), true);
     const expire = (observation: LiquidityTankRecoveryEvidence, now = DUE) =>
       store.recordRecoveryExpired({ ...write, now, expectedObservation: failure, observation });
     await record("expiry from the durable failure with the host clock at the deadline",
       expire(failure, DEADLINE), false);
-    await record("expiry from a failure that is not the durable one", expire(durable.failedAfterLock(DEADLINE - 199)), false);
+    await record("expiry from a failure that is not the durable one", expire(durable.failedAfterLock(DUE + 1)), false);
     await record("expiry from the durable failure", expire(failure), true);
     await record("exact expiry replay", expire(failure), true);
 
     const beside = new Fixture(tag, 1);
     const locked = await lockWith(store, beside, "owner-a", DEADLINE - 200, 500, DEADLINE - 300);
-    const retainedFailure = beside.failedAfterLock(DEADLINE - 200);
+    const retainedFailure = beside.failedAfterLock(DUE);
     const evidence: FailedAfterLock = { status: "failed-after-lock", checkpoint: locked.checkpoint, failure: retainedFailure };
     const kept = await store.recordRecoveryFailure({ ...locked.write, recoveryFailure: evidence });
     check(succeeded(kept), `failure retention answered ${kept.status}`);

@@ -63,8 +63,7 @@ The core:
   host clock, needs a time strictly after `recoveryDeadline`. Expiry needs
   authenticated evidence; see below.
 
-**Restart safety comes from the store, and the core runs only on a store that
-declares it.** Every no-double-send and completion-versus-expiry guarantee
+**Production restart safety requires the bundled durable store.** Every no-double-send and completion-versus-expiry guarantee
 holds only with a store that keeps every row across process restarts, commits
 each write atomically and passes `runLiquidityTankStoreConformance` (see
 [Store conformance](#store-conformance)). The core cannot tell a lost row from
@@ -78,9 +77,13 @@ store loses everything on restart, refuses to construct without
 `{ acknowledgeVolatile: true }`, and declares itself `"volatile-acknowledged"`.
 It is for tests and development only: the core permits it only with an explicit
 `NODE_ENV=development` or `NODE_ENV=test`. An unset, empty, unknown or unreadable
-environment is refused before any claim. The declaration is the host's, and the core does
-not check it: it checks only that the value is one of the two strings, so a
-non-durable store that declares `"conformance-tested"` also runs end to end.
+environment is refused before any claim. Outside explicit development/test mode,
+the core additionally requires the exact frozen handle created by
+`createFsLiquidityTankStore`. A custom store, copied handle or self-declared
+`"conformance-tested"` string cannot grant production execution. The same modes
+require the exact `createLiquidityTankEvmFinalityVerifier` wrapper and a trusted
+`resolveAuthority` callback before any claim or preparation. Test/development
+mode permits injected stores and verifiers for contract tests.
 
 **A shared tank's balance comes from the bridge, not the core.** The core
 checks one operation at a time. That the bridge never locks more than a tank's
@@ -100,9 +103,13 @@ const result = await advanceLiquidityTankSettlement({
   authority,
   owner: workerId,
   adapter: nativeBridgeAdapter satisfies LiquidityTankAdapter,
-  // Durable and atomic, passes runLiquidityTankStoreConformance, and
-  // declares restartSafety: "conformance-tested".
+  // The exact handle returned by createFsLiquidityTankStore({ dir }).
   store: durableStore satisfies LiquidityTankStore,
+  // Independently resolve/authenticate the pinned artifacts; never echo input.
+  resolveAuthority: async (intent) => ({
+    authority: await resolveAuthorizedPayment(intent),
+    rail: await resolveAuthenticatedRail(intent.railDescriptorHash),
+  }),
   verifier: createLiquidityTankEvmFinalityVerifier({
     verifier: hostVerifier satisfies LiquidityTankVerifier,
     sourceRpcUrl: trustedSepoliaRpcUrl,
@@ -163,7 +170,8 @@ Recovery expiry needs authenticated evidence bound to the exact checkpoint:
 - a terminal `failed` with either `empty -> pending -> failed` or
   `empty -> failed` history, whose authenticated `lockTxHash` and
   `recoveryDeadline` match the durable lock, or which carries them itself
-  when no checkpoint was stored;
+  when no checkpoint was stored, and whose snapshot has
+  `observedAt > recoveryDeadline`;
 - a read that contradicts the durable checkpoint, observed strictly after it
   (its `observedAt` later than the checkpoint's) and after the deadline
   (its `observedAt > recoveryDeadline`): an `empty`, a
@@ -173,7 +181,7 @@ Recovery expiry needs authenticated evidence bound to the exact checkpoint:
   [Contradicted locks](#contradicted-locks)); or
 - a completion with `finalityObservedAt > recoveryDeadline`.
 
-For pending snapshots and contradictions alike, `observedAt` is the time the
+For pending snapshots, failures and contradictions alike, `observedAt` is the time the
 bridge snapshot describes, not the time the adapter served it. A cached
 pre-deadline snapshot is insufficient, even when requested after the deadline.
 There is no clock-skew allowance: both the snapshot and the host clock must
@@ -182,17 +190,15 @@ expires a lock early on either. A contradiction's `observedAt` must also be
 later than the checkpoint's, so a cached read from before the lock never
 counts (see [Contradicted locks](#contradicted-locks)).
 
-A terminal failure is different: its transition timestamp need not refresh.
 The core retains the first authenticated failure immediately as
 `failed-after-lock` evidence, including the exact checkpoint, bridge ID,
-operation hash, lock hash, deadline and history. The failure observation must
-carry the authenticated lock hash and deadline; the core does not invent these
-fields from the checkpoint. Before the deadline it reports
-`bridgeStatus: "failed"`. Once the host clock passes the deadline, a progress
-call or restarted worker can commit reputation-neutral `failed-substrate`
-from that retained evidence, including when the next bridge read is unavailable
-or contradictory. A timely completion observed before the expiry commit still
-wins; a failed completion write never triggers expiry in that call.
+operation hash, lock hash, deadline and history. Before the deadline it reports
+`bridgeStatus: "failed"`. Expiry additionally needs a failure snapshot that the
+bridge authenticated strictly after the deadline and a host clock past it.
+Retained pre-deadline failure evidence, an outage or a fast host clock alone
+keeps the lock open. A fresh post-deadline failure may reconcile the same lock
+without overwriting the first retained failure. A timely completion wins; a
+failed completion write never triggers expiry in that call.
 
 **A failure that carries its lock is never `permanent`.** If no checkpoint was
 stored, for example because the worker stopped or its checkpoint write failed
@@ -200,8 +206,8 @@ after the bridge reported the lock, a `failed` observation that itself carries
 `lockTxHash` and `recoveryDeadline` is handled the same way: it is stored as
 the durable observation, reports the lock's `settle-asymmetric` progress with
 `bridgeStatus: "failed"` (also through a bridge-read or verifier outage), and
-expires to reputation-neutral `failed-substrate` once the host clock passes
-the deadline. A timely completion of the same lock still settles before then,
+expires to reputation-neutral `failed-substrate` only when both a bridge
+snapshot and the host clock pass the deadline. A timely completion of the same lock settles,
 and a late one commits the late release. So crash timing no longer changes
 the class of a post-lock failure. Only a failure without a lock (`empty ->
 failed`, or `empty -> pending -> failed` without `lockTxHash`) is `permanent`.
@@ -227,11 +233,13 @@ the reason `tank-released-after-recovery-deadline` instead of
 `finalityObservedAt` from the authenticated completion, and every later claim
 on the committed expiry returns the same. The release reached the payee, so
 the buyer has paid: do not authorize another payment for the phase, and
-reconcile from that evidence. Once an expiry has committed from other
-evidence (a stale pending snapshot, a terminal failure or a contradiction),
-the core no longer reads the bridge for the phase, so a release that lands
-afterwards is not reported; read the bridge's record for the retained
-`bridgeId` before paying again.
+reconcile from that evidence. Expiries committed from other evidence are
+reconciled with a read-only bridge observation on replay. A subsequently proven
+timely completion of the exact same lock corrects the exact retained expiry
+atomically through `reconcileRecoveryExpired`; it never prepares or broadcasts
+another submission. A failed correction returns indeterminate. Existing expiry
+is preserved if no correcting completion is proven. Never pay the phase again
+on an expiry result without reconciling its bridge record.
 
 **A pending operation without a lock is bounded too.** An authenticated
 `pending` with no `lockTxHash` returns `waiting` `liquidity-tank-pending` with
@@ -337,9 +345,8 @@ returns (or resolves to) a `LiquidityTankVerifierAnswer`:
   expires, records anything or broadcasts. **It is also the ST-8 finality
   gate:** the core enters `settle-asymmetric` on any accepted observation
   that carries `lockTxHash`, and cannot tell whether that source lock is
-  final. So the hook must answer `"unavailable"` for such an observation until
-  the lock has reached finality under the rail's finality model, and `true`
-  only after. ST-8 forbids entering the asymmetric state before then.
+  final. The production entry point requires the SDK finality wrapper;
+  the underlying hook remains responsible for bridge authentication. ST-8 forbids entering the asymmetric state before then.
 - **`verifySignedSubmission({ intent, submission })`** decodes
   `signedSubmissionBase64` and confirms it signs exactly the intent: the source
   amount in base units, origin and destination addresses, asset, tank pair and
@@ -382,14 +389,21 @@ that trust dependency along with the bridge's trust model.
 The wrapper first calls the supplied bridge authenticator, which still must
 bind the exact operation, source lock, amount, asset and tank pair. It then
 checks source finality for **every lock-bearing observation**, including
-failures, completions and retained recovery evidence. A pre-final receipt,
-unsupported finality tag, wrong network, missing or inconsistent block data,
-RPC error or network outage returns `"unavailable"`. A reverted transaction
-or receipt for another transaction refuses the bridge claim. No observation,
+failures, completions and retained recovery evidence. A receipt above the
+finalized head returns `"pending-finality"`: core progress is `waiting`, reason
+`liquidity-tank-source-finality-pending`, with the submission's existing
+`pendingDeadline` and `pastDeadline`. Unsupported finality tags, wrong networks,
+missing or inconsistent block data, RPC errors and outages return `"unavailable"`. A reverted transaction
+or receipt for another transaction refuses the bridge claim. A malformed
+bridge lock hash is also refused before any RPC request. No observation,
 expiry or settlement write is authorized by unavailable proof. A retained
 lock continues to be reported during an outage without authorizing effects.
 The four read requests share a `timeoutMs` deadline (default 10 seconds;
-allowed 1–30,000 ms). Signed-submission decoding is delegated unchanged to the
+allowed 1–30,000 ms), including header and body reads when a transport ignores
+abort. Responses are limited to 2 MiB before JSON decoding, and canonical block
+transaction lists to 20,000 entries. The exported finality version is
+informational metadata; it does not alter the intent or settlement hash.
+Signed-submission decoding is delegated unchanged to the
 supplied verifier. The RPC receives no signed bytes and submits no transaction.
 
 This adapter supplies source finality independently of the Demos bridge DTO.
@@ -397,13 +411,14 @@ It does **not** supply the bridge's authenticated status record, local signing,
 release finality or funded integration. Those live-adapter requirements below
 still apply; an authenticator that simply returns `true` cannot establish them.
 
-**A settled row is trusted as the store wrote it.** When a claim returns
-`settled`, the core checks the stored settlement's shape, its amount and route
-against the intent, and that it finalized before its deadline, then returns
-it without calling either hook. The core writes a settlement only after
-authenticating the completion behind it, so a forged or corrupted settled row
-is a failure of the store's own integrity, which the verifier does not catch.
-Every other retained row listed above is checked again before use.
+**Production success replay is rechecked.** A settled claim carries the
+retained submission and its original receipt. The core validates their exact
+bytes and binding, reads the current authenticated bridge completion and checks
+source finality through the mandatory wrapper before returning stored success.
+The fresh completion must reproduce the saved settlement. An outage or mismatch
+returns indeterminate and never prepares or broadcasts a replacement. Explicit
+test/development mode checks stored settlement shape and bindings without a
+network read, so deterministic store tests can inject their own evidence.
 
 **Each hook needs its own bounded deadline.** The core sets no timeout on a
 verifier or adapter call, so a hook that never settles hangs that
@@ -521,8 +536,8 @@ bridge, in a read stamped after the deadline and after the checkpoint,
 reports a status that contradicts that release: a bridge fault, a reorg of
 the lock transaction, or an adapter that stamps the time it served a cached
 snapshot instead of the time the snapshot describes. A host clock running
-ahead of the bridge's cannot cause it. The core stops reading the bridge once
-the expiry commits, so only the bridge's record shows such a release.
+ahead of the bridge's cannot cause it. Replay reads the bridge again and a
+proven timely completion of the original lock can correct the expiry atomically.
 
 **What still deviates from DACS-4.** §9.5.5 bounds the `settle-asymmetric`
 state by `recoveryDeadline`; SR-5 (§9.8) requires both legs to succeed
@@ -580,16 +595,27 @@ reviewing the host phase handler:
   calls the core again, which never signs a second submission. Before
   recording an expiry, make sure the interim record is anchored, from the
   expiry's `lockTxRef` when no earlier `settle-asymmetric` result anchored it.
-- **Pinned rail** (§9.5.5 step 2, §9.13): resolve the rail descriptor behind
-  `railDescriptorHash`, check `sourceLiquidityTankId` and
-  `destinationLiquidityTankId` against its `liquidityTankIds` for the route,
-  and check `agreementHash` and `sr5BindingHash` against the agreement. The
-  core checks only their shape.
-- **`railId` grammar** (§9.4.1): lowercase ASCII, at most 64 characters. The
-  core requires only a non-empty string.
-- **Source-lock finality** (ST-8): the verifier's `authenticateObservation`
-  answers `"unavailable"` for an observation that carries `lockTxHash` until
-  that lock is final (see [Host verifier](#host-verifier)).
+- **Authenticated authority resolution** (§9.5.5 steps 1–2, §9.13): supply
+  `resolveAuthority(intent)`, which independently resolves and authenticates the
+  pinned descriptor, agreement and SR-5 binding, returning `{ authority, rail }`
+  or `"unavailable"`. The core compares the complete authorized intent, including
+  hashes, amount and destination; it checks the descriptor's rail ID/type,
+  handler, asset/network/mechanism, canonical currency and fixed route, and
+  requires both distinct selected tank IDs in that route's authorized IDs.
+  Numeric and decimal-string chain IDs are supported; additional authorized
+  tank IDs are allowed. Return authenticated resolved data, never an echo of
+  unverified input. This callback is mandatory outside development/test mode
+  and must honor the same bounded-deadline contract as host adapter/verifier hooks.
+- **Destination semantics** (PB-1/PB-2): for a payee-bound agreement, the
+  resolver must select the exact `(railId, phaseIndex)` payout binding and
+  verify its destination identity using the strongest applicable tier. Legacy
+  and identity-bound agreements retain their Standard-defined destination
+  semantics; do not impose payee-bound requirements on them.
+- **`railId` grammar** (§9.4.1): reconcile the lowercase-ASCII prose with the
+  pinned registry's `cross-chain-liquidity-tank:USDC` ID. The core retains the
+  authenticated ID exactly apart from its existing NFC handling.
+- **Source-lock finality** (ST-8): production requires the exact immutable
+  `createLiquidityTankEvmFinalityVerifier` wrapper and a trusted Sepolia RPC.
 - **Trust model** (§9.5.5): evaluate recipes that use this rail against the
   substrate's security profile.
 
@@ -635,9 +661,11 @@ as retained-state corruption.
 
 `recordRecoveryExpired` must CAS against the exact observation established by
 the acquired claim or confirmed write, with a current lease and host `now`
-after the deadline. For `failed-after-lock`, the evidence must equal the
-retained failure and its checkpoint must equal the durable one; no new failure
-timestamp is required. A `failed` that carries its own lock and deadline is
+after the deadline. For `failed-after-lock`, the checkpoint must equal the
+durable one and failure evidence must bind the same lock and operation, with
+`observedAt > recoveryDeadline`. It can be a fresh authenticated snapshot
+postdating the first retained failure; the original retained failure stays
+unchanged. A `failed` that carries its own lock and deadline is
 evidence only when it is exactly the durable observation and no failure is
 retained beside a checkpoint. `contradicted-after-lock` evidence
 (`{ checkpoint, contradiction }`) needs its checkpoint to equal the durable
@@ -755,8 +783,8 @@ methods. Unless it is exactly one of these two strings, the core returns
 claim, preparation, signature, observation or broadcast:
 
 - **`"conformance-tested"`**: the store is durable and atomic and passes every
-  `runLiquidityTankStoreConformance` case against its real backend. A host
-  store sets it once it does.
+  `runLiquidityTankStoreConformance` case against its real backend. The SDK
+  filesystem store declares this; custom declarations only run in development/test.
 - **`"volatile-acknowledged"`**: the store loses every row on restart, and its
   caller has said so. `createInMemoryLiquidityTankStore({ acknowledgeVolatile:
   true })` sets it. For tests and development only, never production: the
@@ -767,12 +795,13 @@ claim, preparation, signature, observation or broadcast:
   backstop for a mis-wired production process, not a check of the store: the
   core cannot tell production from development any other way.
 
-The field is optional in the TypeScript type so that a store under
-development can run the suite, but the core refuses a store without it. It is
-the host's declaration, not a proof: the core checks only that it is one of
-the two strings, not that the store is durable, and a host that declares
-`"conformance-tested"` for a store that never passed the suite has removed the
-only runtime gate. Review it with the store.
+The field is optional in the TypeScript type so a store under development
+can run conformance, but the core refuses a store without it. Outside explicit
+`development`/`test` mode, only the exact immutable SDK-created filesystem store
+is registered for production use. Other handles return
+`liquidity-tank-store-untrusted` before any claim. Running conformance does not
+register an arbitrary host store for production; database registration requires
+a separate reviewed integration.
 
 ### Durable filesystem store
 
@@ -922,12 +951,17 @@ Host configuration is refused the same way, before any claim or effect:
 - **A store that declares `"volatile-acknowledged"`, without explicit
   `NODE_ENV=development` or `NODE_ENV=test`**, returns
   `liquidity-tank-store-volatile-in-production` on every call.
+- **A custom/copied store in production** returns `liquidity-tank-store-untrusted`.
+- **A plain production bridge verifier** returns `liquidity-tank-source-finality-required`.
+- **Missing or unavailable production authority resolution** returns
+  `liquidity-tank-authority-resolver-unavailable`; a resolved mismatch returns
+  `liquidity-tank-resolved-authority-mismatch`.
 - **Any other refused owner, lease, clock, store or adapter**, including a
   whole store wrapped in a `Proxy`, returns its refusal message as the reason,
   for example `pay-cross-chain-liquidity-tank: store.claim must be stable
   data`.
 
-Both need an operator: the core has not read the store, so it cannot tell
+These configuration refusals need an operator: the core has not read the store, so it cannot tell
 whether a lock is durable or the phase already settled.
 
 ## Reasons that need an operator
@@ -1101,8 +1135,8 @@ read-only on 2026-10-14 against these revisions, none of which the SDK pins:
   minutes) passes; and the payer's EVM deposit happens first, with the Demos
   transaction carrying its hash.
 - `kynesyslabs/node` `61b8e75a`, which `node2.demos.sh` reported running (as a
-  dirty build, `dirty: true`, on 2026-10-15, so the deployed code may differ
-  from that commit): the native-bridge handlers are stubs, and no
+  historical observation on 2026-10-15, reported with `dirty: true`; this is
+  not a statement of the currently deployed revision): the native-bridge handlers are stubs, and no
   bridge-status call exists.
 
 `createInMemoryLiquidityTankStore({ acknowledgeVolatile: true })` is for tests
@@ -1172,3 +1206,17 @@ atomically, and pass `runLiquidityTankStoreConformance`.
   stored checkpoint, resolves through D to `failed-substrate`, and only a
   failure without a lock is `permanent`. The clarification goes through
   [DACS-Standard#422](https://github.com/DACS-Agent-commerce/DACS-Standard/issues/422).
+
+
+### Correcting an expiry
+
+`reconcileRecoveryExpired({ settlementKey, bindingHash, expectedEvidence,
+completion })` is an atomic comparison against the exact saved expiry. The
+completion must carry the same bridge operation, lock and recovery deadline,
+and have `finalityObservedAt <= recoveryDeadline`. It replaces expiry and
+retained failure with the authenticated completion and its settlement in one
+write. A repeated identical completion returns `existing`; a different lock,
+late completion, changed binding or stale evidence is refused. Both bundled
+stores implement it; the filesystem store commits it under the phase lock.
+It is optional for development-only custom stores; without it a proven timely
+release returns indeterminate until it can be persisted, never the old failure.

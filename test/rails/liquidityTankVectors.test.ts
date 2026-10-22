@@ -8,6 +8,7 @@ import {
   createInMemoryLiquidityTankStore,
   createLiquidityTankIntent,
   liquidityTankPhaseOutcome,
+  liquidityTankSettlementKey,
   type AdvanceLiquidityTankInput,
   type LiquidityTankAdapter,
   type LiquidityTankAuthority,
@@ -277,6 +278,8 @@ describe("a stored settlement is checked field by field before it is reported", 
   test.each([
     // A number would match the ID grammar once coerced to a string.
     ["a numeric bridge ID", at("txRef", { bridgeId: 308 })],
+    ["an empty release hash", at("txRef", { releaseTxHash: "" })],
+    ["no release hash", (s: Settlement) => { const copy = structuredClone(s); delete (copy.txRef as Record<string, unknown>).releaseTxHash; return copy; }],
     ["another txRef kind", at("txRef", { kind: "htlc-lock" })],
     ["another source chain", at("txRef", { sourceChainId: 1 })],
     ["another destination chain", at("txRef", { destChainId: 1 })],
@@ -347,6 +350,7 @@ describe("a replayed expiry re-authenticates its evidence of every kind", () => 
       p.seeAfterBroadcast(lockBearingFailure());
       await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric", bridgeStatus: "failed" });
       p.at(D + 100);
+      p.see(lockBearingFailure(D + 1));
       await expect(p.run()).resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate" });
     }
     refuse = true;
@@ -922,7 +926,7 @@ describe("an expiry is the first result a host sees", () => {
 
   test.each([
     ["a locked pending stamped past the deadline", locked(D + 50)],
-    ["a lock-bearing failure", lockBearingFailure(D - 20_000)],
+    ["a lock-bearing failure stamped past the deadline", lockBearingFailure(D + 1)],
   ])("the first read after broadcast is %s, and the host clock is past the deadline", async (_label, first) => {
     const p = phase();
     p.at(D + 100);
@@ -1099,7 +1103,7 @@ describe("ST-8 executable Ethereum source-lock finality", () => {
     const expiryWrite = vi.spyOn(p.store, "recordRecoveryExpired");
     const settlementWrite = vi.spyOn(p.store, "recordSettlement");
     if (height === "0xf") {
-      await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+      await expect(p.run()).resolves.toMatchObject({ status: "waiting", reason: "liquidity-tank-source-finality-pending", pendingDeadline: PREPARED_AT + 500 + 600_000 });
       expect(observationWrite).not.toHaveBeenCalled();
     } else {
       await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric", txRef: { lockTxHash: LOCK } });
@@ -1177,7 +1181,7 @@ describe("ST-8 executable Ethereum source-lock finality", () => {
     const proof = rpc({ finalized: { hash: HEAD, number: "0xf" } });
     const p = phase({ verifier: proof.verifier });
     p.see(sourceLock());
-    await expect(p.run()).resolves.toMatchObject({ status: "indeterminate" });
+    await expect(p.run()).resolves.toMatchObject({ status: "waiting", reason: "liquidity-tank-source-finality-pending" });
     proof.transport.mockImplementation(rpc().transport);
     p.tick();
     await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric" });
@@ -1238,7 +1242,7 @@ describe("ST-8 executable Ethereum source-lock finality", () => {
       ? failed(PREPARED_AT + 1_000, { lockTxHash: LOCK, recoveryDeadline: D })
       : completed(PREPARED_AT + 1_000, { lockTxHash: LOCK }));
     const settlement = vi.spyOn(p.store, "recordSettlement");
-    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+    await expect(p.run()).resolves.toMatchObject({ status: "waiting", reason: "liquidity-tank-source-finality-pending" });
     expect(settlement).not.toHaveBeenCalled();
   });
 
@@ -1256,6 +1260,40 @@ describe("ST-8 executable Ethereum source-lock finality", () => {
       ? { status: "settle-asymmetric", bridgeStatus: "failed", txRef: { lockTxHash: LOCK } }
       : { status: "failed", errorClass: "permanent" });
     expect(proof.transport).toHaveBeenCalledTimes(hasLock ? 4 : 0);
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test.each(["lock-abc", `0x${"1".repeat(63)}`, "1".repeat(64)])("malformed bridge lock %s is refused before RPC", async (lockTxHash) => {
+    const proof = rpc();
+    const p = phase({ verifier: proof.verifier });
+    p.see({ ...sourceLock(), lockTxHash } as LiquidityTankObservation);
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-observation-unauthenticated" });
+    expect(proof.transport).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["oversized declaration", () => new Response("{}", { headers: { "content-length": "2097153" } })],
+    ["oversized streamed bytes", () => new Response(" ".repeat(2097153))],
+  ] as const)("%s is bounded before JSON decode", async (_label, response) => {
+    const p = phase({ verifier: createLiquidityTankEvmFinalityVerifier({ verifier: APPROVE, sourceRpcUrl: RPC_URL, fetch: async () => response() }) });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+    expect(p.broadcastRetained).not.toHaveBeenCalled();
+  });
+
+  test("the canonical block transaction list is bounded after decoding", async () => {
+    const proof = rpc({ canonical: { ...canonical, transactions: [LOCK, ...Array(20_000).fill(HEAD)] } });
+    const p = phase({ verifier: proof.verifier });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
+  });
+
+  test.each(["headers", "body"] as const)("a transport ignoring abort while reading %s still times out", async (stalled) => {
+    const fetchRpc = (async () => stalled === "headers" ? new Promise<Response>(() => {})
+      : new Response(new ReadableStream({ start() {} }))) as typeof fetch;
+    const p = phase({ verifier: createLiquidityTankEvmFinalityVerifier({ verifier: APPROVE, sourceRpcUrl: RPC_URL, fetch: fetchRpc, timeoutMs: 10 }) });
+    p.see(sourceLock());
+    await expect(p.run()).resolves.toEqual({ status: "indeterminate", reason: "liquidity-tank-verifier-unavailable" });
     expect(p.broadcastRetained).not.toHaveBeenCalled();
   });
 
@@ -1283,4 +1321,108 @@ describe("ST-8 executable Ethereum source-lock finality", () => {
       expect(barrel.LIQUIDITY_TANK_EVM_FINALITY_VERSION).toBe(LIQUIDITY_TANK_EVM_FINALITY_VERSION);
     }
   });
+});
+
+// Current authenticated bridge evidence and production execution boundaries.
+describe("current authoritative evidence at execution boundaries", () => {
+  test("a stale pre-deadline failure cannot expire a lock on a fast host clock", async () => {
+    const p = phase();
+    await lockDurably(p);
+    p.at(D - 100);
+    p.see(lockBearingFailure(D - 100));
+    await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric" });
+    p.at(D + 100);
+    await expect(p.run()).resolves.toMatchObject({ status: "settle-asymmetric", pastDeadline: true });
+    p.see(completed(D - 1));
+    p.tick();
+    await expect(p.run()).resolves.toMatchObject({ status: "settled" });
+    expect(p.prepareSubmission).toHaveBeenCalledTimes(1);
+    expect(p.broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+
+  test("a timely release discovered after expiry corrects it without another broadcast", async () => {
+    const p = phase();
+    await lockDurably(p);
+    p.at(D + 100);
+    p.see(locked(D + 1));
+    await expect(p.run()).resolves.toMatchObject({ status: "failed", errorClass: "failed-substrate" });
+    p.see(completed(D - 1));
+    p.tick();
+    await expect(p.run()).resolves.toMatchObject({ status: "settled" });
+    p.tick();
+    await expect(p.run()).resolves.toMatchObject({ status: "settled" });
+    expect(p.prepareSubmission).toHaveBeenCalledTimes(1);
+    expect(p.broadcastRetained).toHaveBeenCalledTimes(1);
+  });
+
+  test("a self-declared durable memory store cannot execute in production", async () => {
+    const store = { ...createInMemoryLiquidityTankStore(VOLATILE), restartSafety: "conformance-tested" as const };
+    const p = phase({ store });
+    p.seeAfterBroadcast(completed(PREPARED_AT + 2_000));
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      await expect(p.run()).resolves.toMatchObject({ status: "indeterminate", reason: "liquidity-tank-store-untrusted" });
+      expect(p.prepareSubmission).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+});
+
+
+describe("raw identifier admission", () => {
+  test("JID-1/JID-3 refuse a Unicode job ID before either derivation or effects", async () => {
+    const canonical = "01JZ0000000000000000000K01";
+    const invalid = canonical.replace("K", "\u212a");
+    const a = authority({ jobId: invalid });
+    expect(() => liquidityTankSettlementKey(a)).toThrow("jobId must be a canonical uppercase ULID");
+    expect(() => createLiquidityTankIntent(a)).toThrow("jobId must be a canonical uppercase ULID");
+    const p = phase({ auth: a });
+    const claim = vi.spyOn(p.store, "claim");
+    await expect(p.run()).resolves.toMatchObject({ status: "indeterminate" });
+    expect(claim).not.toHaveBeenCalled();
+    expect(p.prepareSubmission).not.toHaveBeenCalled();
+    expect(createLiquidityTankIntent(authority({ jobId: canonical })).jobId).toBe(canonical);
+  });
+
+  test("the pinned registry's colon-containing rail ID is retained exactly", () => {
+    const railId = "cross-chain-liquidity-tank:USDC";
+    const a = authority({ railId });
+    const intent = createLiquidityTankIntent(a);
+    expect(intent.railId).toBe(railId);
+    expect(intent.settlementKey).toBe(liquidityTankSettlementKey(a));
+  });
+});
+
+test("expiry correction is an atomic CAS and rejects the wrong lock and late release", async () => {
+  const p = phase();
+  await lockDurably(p);
+  p.at(D + 100);
+  p.see(locked(D + 1));
+  await expect(p.run()).resolves.toMatchObject({ status: "failed" });
+  const intent = createLiquidityTankIntent(authority());
+  const claim = await p.store.claim({ intent, owner: "inspect", now: D + 101, leaseDurationMs: 10 });
+  if (claim.status !== "recovery-expired") throw new Error("expected expiry");
+  const input = { settlementKey: intent.settlementKey, bindingHash: intent.bindingHash,
+    expectedEvidence: claim.observation, completion: completed(D - 1) as Extract<LiquidityTankObservation, { status: "completed" }> };
+  const reconcile = p.store.reconcileRecoveryExpired!.bind(p.store);
+  await expect(reconcile({ ...input, completion: { ...input.completion, lockTxHash: "wrong-lock" } })).resolves.toMatchObject({ status: "conflict" });
+  await expect(reconcile({ ...input, completion: { ...input.completion, finalityObservedAt: D + 1 } })).resolves.toMatchObject({ status: "conflict" });
+  await expect(reconcile({ ...input, expectedEvidence: locked(D + 2) as never })).resolves.toMatchObject({ status: "conflict" });
+  await expect(reconcile(input)).resolves.toEqual({ status: "recorded" });
+  await expect(reconcile(input)).resolves.toEqual({ status: "existing" });
+  p.tick();
+  await expect(p.run()).resolves.toMatchObject({ status: "settled" });
+});
+
+test("one call authenticates an identical retained failure checkpoint once", async () => {
+  const authenticateObservation = vi.fn<LiquidityTankVerifier["authenticateObservation"]>(() => true);
+  const p = phase({ verifier: { ...APPROVE, authenticateObservation } });
+  await lockDurably(p);
+  p.tick();
+  p.see(lockBearingFailure());
+  await p.run();
+  p.tick();
+  authenticateObservation.mockClear();
+  await p.run();
+  expect(authenticateObservation.mock.calls.filter(([input]) => input.observation.status === "pending")).toHaveLength(1);
+  expect(authenticateObservation.mock.calls.filter(([input]) => input.observation.status === "failed")).toHaveLength(1);
 });
