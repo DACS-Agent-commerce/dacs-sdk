@@ -338,11 +338,10 @@ describe("pay-dem never binds a fresh result the attempt record refused", () => 
   });
 });
 
-// The store saves whatever a key-only restart reconciliation found, so that
-// outcome is the reconciler's answer, not this key's own submit, and it never
-// lets a later audit count the hash.
+// A key-only restart answer cannot authenticate its own job binding. Refuse
+// before persistence, and keep a later retained audit from counting the hash.
 describe("pay-dem never binds a hash through an outcome a key-only reconciliation wrote", () => {
-  test("an audit of job B refuses job A's hash that B's restart reconciliation saved", async () => {
+  test("job B refuses job A's hash before B's restart reconciliation saves it", async () => {
     const run = processes();
     // Job B's first process claimed the intent and died before signing anything.
     dieBeforeSigning();
@@ -353,15 +352,14 @@ describe("pay-dem never binds a hash through an outcome a key-only reconciliatio
     run.restart();
     // A careless reconciler finds job A's transfer of the same parties and amount.
     const restart = await auditingProcess(run.store("B"), vi.fn(async () => executed(hashA)));
-    await expect(restart.settle(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
-    await expect(run.log.readOutcome!("pay-dem:job-b:0")).resolves.toMatchObject({ result: { txHash: hashA } });
+    await expect(restart.settle(request("job-b"))).rejects.toThrow(/no SDK record binds.*this payment/);
+    await expect(run.log.readOutcome!("pay-dem:job-b:0")).resolves.toBeNull();
 
     run.restart();
     const audit = await auditingProcess(run.store("C"), vi.fn(async () => executed(hashA)));
-    await expect(audit.settle(request("job-b", hashA, true))).rejects.toThrow(
-      /no SDK record binds the retained transaction to this payment/,
-    );
-    // The store's `once` returned the saved outcome; nothing ran or was recorded.
+    await expect(audit.settle(request("job-b"))).rejects.toThrow(/no SDK record binds.*this payment/);
+    await expect(run.log.readOutcome!("pay-dem:job-b:0")).resolves.toBeNull();
+    // Another restart still cannot persist the unbound reconciliation.
     await expect(run.log.readAttempt!("pay-dem:job-b:0")).resolves.toBeNull();
     expect(audit.submit).not.toHaveBeenCalled();
   });

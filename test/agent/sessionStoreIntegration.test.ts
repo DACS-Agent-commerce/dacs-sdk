@@ -1048,8 +1048,10 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     const second = await makeDeps(store, { kv, newJobId: () => "job-b", settle: adapter });
     const anchor = vi.spyOn(second.deps, "anchor");
+    // No attempt record of job B's key names job A's transaction, so the
+    // adapter refuses it before the session's own transaction binding runs.
     await expect(runSessionCore(second.listingRef, demTerms, second.deps))
-      .rejects.toThrow(/already bound to session job-a.*transaction replay/);
+      .rejects.toThrow(/no SDK record binds.*this payment/);
     expect(anchor.mock.calls.some(([name]) =>
       name === sessionAnchorName.evidence("job-b") || name === sessionAnchorName.bundle("job-b"),
     )).toBe(false);
@@ -1062,6 +1064,31 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     }
     expect(demosNode.transfers).toBe(1);
     expect(demosNode.broadcasts).toBe(1);
+  });
+
+  // A rail without SDK attempt records leaves the refusal to the session's own
+  // transaction binding.
+  test("refuses another job's transaction from a rail without attempt records before evidence or session completion", async () => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>();
+    const first = await makeDeps(store, { kv, newJobId: () => "job-a" });
+    await expect(runSessionCore(first.listingRef, terms, first.deps))
+      .resolves.toMatchObject({ outcome: "completed" });
+    // The default rail reports the same transaction for every job.
+    const second = await makeDeps(store, { kv, newJobId: () => "job-b" });
+    const anchor = vi.spyOn(second.deps, "anchor");
+    await expect(runSessionCore(second.listingRef, terms, second.deps))
+      .rejects.toThrow(/already bound to session job-a.*transaction replay/);
+    expect(anchor.mock.calls.some(([name]) =>
+      name === sessionAnchorName.evidence("job-b") || name === sessionAnchorName.bundle("job-b"),
+    )).toBe(false);
+    const saved = await store.load("job-b");
+    expect(saved.status).toBe("ok");
+    if (saved.status === "ok") {
+      expect(saved.record.phase).not.toBe("completed");
+      expect(saved.record.checkpoints.some((cp) => cp.key === "settle:0" && cp.stage === "outcome"))
+        .toBe(false);
+    }
   });
 
   test.each(["fresh", "recovered"].flatMap((mode) =>

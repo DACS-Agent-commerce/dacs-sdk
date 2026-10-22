@@ -104,6 +104,18 @@ async function lostResponse(log: SettlementLog, req: SettleRequest) {
   submit.mockClear();
 }
 
+// A transfer the SDK rail signed, recorded and broadcast, but whose inclusion
+// it never saw: the attempt record names the hash and no outcome is saved.
+// Owner "a"'s lease has expired by the time owner "b" looks the key up.
+async function unseenBroadcast(log: SettlementLog, req: SettleRequest) {
+  demosNode.recordsBroadcasts = false;
+  await expect(payDemSettle(await sdkPayDemRail(undefined, { inclusionTimeoutMs: 1 }), {}, {
+    store: createIdempotencyStore(log, { owner: "a", now: () => 1, leaseDurationMs: 1 }),
+  })(req)).resolves.toMatchObject({ ok: false });
+  demosNode.recordsBroadcasts = true;
+  submit.mockClear();
+}
+
 describe("same-adapter cached outcomes require a fresh node record", () => {
   const cases = [true, false].flatMap((ok) => [true, false].flatMap((history) =>
     ["matching", "opposite", "missing", "pending", "block", ok ? "fee" : "nonce"].map((observation) =>
@@ -343,26 +355,47 @@ describe("a recovered pay-dem verdict reads node2's recorded record, numeric fee
   };
 
   test.each([
-    ...(["retained-hash audit", "restart re-check", "lookup by key"] as const)
+    ...(["retained-hash audit", "restart re-check", "lookup by recorded attempt"] as const)
       .flatMap((path) => [true, false].map((echoFee) => ({ path, echoFee }))),
   ])("completes the $path with the record's fee (reconciler echoes it: $echoFee)", async ({ path, echoFee }) => {
     const reconcile = claim(echoFee);
     const log = createInMemorySettlementLog();
-    if (path === "lookup by key") {
-      await lostResponse(log, ask());
+    if (path === "lookup by recorded attempt") {
+      await unseenBroadcast(log, ask());
     } else {
       await expect(payDemSettle(rail, {}, { store: createIdempotencyStore(log) })(ask()))
         .resolves.toMatchObject({ ok: true, txHash: hash, networkFeeOs: feeOs });
     }
     submit.mockClear();
     servesNode2();
-    const settle = payDemSettle(rail, {}, { reconcile, store: path === "lookup by key"
+    const settle = payDemSettle(rail, {}, { reconcile, store: path === "lookup by recorded attempt"
       ? createIdempotencyStore(log, { owner: "b", now: () => 3, leaseDurationMs: 1 })
       : createIdempotencyStore(log) });
     await expect(settle(path === "retained-hash audit" ? ask([{ txHash: hash, chainId: "demos", ok: true }]) : ask()))
       .resolves.toMatchObject({ ok: true, txHash: hash, blockNumber: 498447, networkFeeOs: feeOs });
+    // The by-key lookup asks for the hash the attempt record names.
+    if (path === "lookup by recorded attempt") {
+      expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ txHash: hash }));
+    }
     expect(demosNode.reads).toContain(hash);
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  // Nothing was signed for this key, so the record the node serves can only be
+  // another payment of the same parties and amount: the SDK reads it, and the
+  // missing attempt record refuses it (DACS-4 §9.5.1 PC-7).
+  test.each([true, false])("refuses the lookup by key without an attempt record (reconciler echoes the fee: %s)", async (echoFee) => {
+    const reconcile = claim(echoFee);
+    const log = createInMemorySettlementLog();
+    await lostResponse(log, ask());
+    servesNode2();
+    const settle = payDemSettle(rail, {}, { reconcile,
+      store: createIdempotencyStore(log, { owner: "b", now: () => 3, leaseDurationMs: 1 }) });
+    await expect(settle(ask())).rejects.toThrow(/no SDK record binds.*this payment/);
+    await expect(log.readOutcome!("pay-dem:node2-native:0")).resolves.toBeNull();
+    expect(demosNode.reads).toContain(hash);
+    expect(submit).not.toHaveBeenCalled();
+    expect(demosNode.broadcasts).toBe(0);
   });
 });
 
@@ -383,14 +416,16 @@ describe("a payment signed before the denomination fork is read in DEM after it 
     nodeRecord({ txHash, payer, payee, amountOs: "1000000000", feeOs, denomination: "dem", ...overrides });
 
   test.each([
-    ...(["retained-hash audit", "restart re-check", "lookup by key"] as const)
+    ...(["retained-hash audit", "restart re-check", "lookup by recorded attempt", "lookup by key"] as const)
       .flatMap((path) => [true, false].map((echoFee) => ({ path, echoFee }))),
-  ])("completes the $path from the pre-fork record, without paying again (fee echoed: $echoFee)", async ({ path, echoFee }) => {
+  ])("recovers the $path from the pre-fork record, without paying again (fee echoed: $echoFee)", async ({ path, echoFee }) => {
     const { priorAttempts: _history, ...fresh } = request();
     const log = createInMemorySettlementLog();
     Object.assign(demosNode, { postFork: false, feeOs });
     if (path === "lookup by key") {
       await lostResponse(log, fresh);
+    } else if (path === "lookup by recorded attempt") {
+      await unseenBroadcast(log, fresh);
     } else {
       await expect(payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log) })(fresh))
         .resolves.toMatchObject({ ok: true, txHash, networkFeeOs: feeOs });
@@ -405,11 +440,19 @@ describe("a payment signed before the denomination fork is read in DEM after it 
       demosNode.records.set(txHash, preForkRecord());
       return answer;
     });
-    const settle = payDemSettle(await sdkPayDemRail(), {}, { reconcile, store: path === "lookup by key"
+    const byKey = path === "lookup by key" || path === "lookup by recorded attempt";
+    const settle = payDemSettle(await sdkPayDemRail(), {}, { reconcile, store: byKey
       ? createIdempotencyStore(log, { owner: "b", now: () => 3, leaseDurationMs: 1 })
       : createIdempotencyStore(log) });
-    await expect(settle(path === "retained-hash audit" ? request() : fresh))
-      .resolves.toMatchObject({ ok: true, txHash, blockNumber: 42, networkFeeOs: feeOs });
+    // Nothing was signed for this key on the lookup by key, so the record the
+    // node serves cannot be shown to be this payment's, and it is refused.
+    await (path === "lookup by key"
+      ? expect(settle(fresh)).rejects.toThrow(/no SDK record binds.*this payment/)
+      : expect(settle(path === "retained-hash audit" ? request() : fresh))
+        .resolves.toMatchObject({ ok: true, txHash, blockNumber: 42, networkFeeOs: feeOs }));
+    if (path === "lookup by recorded attempt") {
+      expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ txHash }));
+    }
     expect(demosNode.reads).toContain(txHash);
     expect(submit).not.toHaveBeenCalled();
     expect(demosNode.broadcasts).toBe(path === "lookup by key" ? 0 : 1);

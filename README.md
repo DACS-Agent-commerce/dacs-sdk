@@ -680,9 +680,9 @@ never does; a refusal there fails closed and leaves the hash unbound). A payment
 a log that predates attempt records, leaves a retained hash no record names.
 A resumed audit of a retained hash that no attempt record names finishes it
 only through the store's own `once`: while the key's generation is held it
-refuses; once that generation expires the store reconciles the key exactly as
-a restart without history would (the reconciler is asked for this key's
-payment, without the hash), and only an answer naming the retained hash is
+refuses; once that generation expires the store reconciles the key under its
+own generation (the reconciler is asked for this key's payment, without the
+hash), and only an answer naming the retained hash is
 accepted. That generation then records the hash as the key's attempt and saves
 the outcome, so later audits and restarts bind it through the record. A key the
 store holds nothing for starts nothing (the submit refuses and the intent is
@@ -691,8 +691,8 @@ store's `once` or fence never finishes it. Over a log without `readOutcome`
 the same path also accepts the outcome the store already holds for these exact
 terms, returned by that same store's own `once` (not a wrapper's, nor another
 store's), when it names the retained hash and the reconciliation of that hash
-agrees with it on block and result. This path trusts the reconciler as
-the restart without history does (below). This is the one place an audit
+agrees with it on block and result. This compatibility path trusts the
+reconciler to identify the exact payment. This is the one place an audit
 changes the log: the store's `once` claims a fresh intent for a key it holds
 nothing for and releases it at once, or acquires an expired generation, records
 the hash and saves the outcome. It never submits.
@@ -763,11 +763,13 @@ nonce.
 A restart without history (the lease expired and the session holds no hash)
 reconciles in the store. When the key has an attempt record, the reconciler
 receives its hash as `txHash` and any other transaction is refused. Without
-one, the SDK still reads the reconciler's answer for the key and saves a
-confirmed success; a reconciled failure stays held. Thus
-that path trusts the reconciler to look up this exact payment. On a log that
-keeps attempts that saved outcome never binds a later audit. A supplied entry is checked on this path
-too and never persisted. A payment that the bridge, its rail log or the
+one, a success is refused unless this same bridge already submitted and bound
+that hash to the key, and a reconciled failure stays held. A key-only
+reconciliation or saved outcome cannot bind another job's same-party,
+same-amount transaction to this payment, even when the SDK's own read of the
+node record confirms that transaction. The check runs before saving a
+reconciled success and before returning a cached success. A
+supplied entry is checked on this path too and never persisted. A payment that the bridge, its rail log or the
 session already recorded as successful is never reported unpaid: a reconciliation that
 contradicts it is refused rather than returned as a permanent failure (DACS-4
 §9.5.1 PC-7). The SDK's own record is only as trustworthy as the host's

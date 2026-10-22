@@ -174,11 +174,17 @@ describe("pay-dem execution docs match the code (#338)", () => {
     expect(readme).not.toContain("A native success or permanent failure is final only when the SDK read");
   });
 
-  it("says the store keeps a reconciled failure held and a by-key success relies on the reconciler", () => {
+  it("says the store keeps a reconciled failure held and refuses an unbound by-key success", () => {
     const doc = read("docs/pay-dem-execution.md").replace(/\s+/g, " ");
+    const readme = read("README.md").replace(/\s+/g, " ");
     expect(doc).toContain("The store records no reconciled failure as the definitive outcome");
     expect(doc).not.toContain("a failure the SDK read for that hash is final");
-    expect(doc).toContain("a success found that way relies on the reconciler to look up this exact payment");
+    expect(doc).toContain("a success is refused unless this same bridge already submitted and bound the hash to the key");
+    expect(readme).toContain("a success is refused unless this same bridge already submitted and bound that hash to the key");
+    for (const text of [doc, readme]) {
+      expect(text).not.toContain("relies on the reconciler to look up this exact payment");
+      expect(text).not.toContain("trusts the reconciler to look up this exact payment");
+    }
   });
 
   it("says the fork state that bounds a recovered read is read afresh", () => {

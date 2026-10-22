@@ -130,7 +130,7 @@ below).
   record, or a result this bridge submitted and the attempt record accepted.
   Otherwise, when no attempt record names any hash for the key, the audit is
   finished only through the store's own `once`: a held generation refuses,
-  and an expired one is reconciled as a restart without history would (the
+  and an expired one is reconciled under the key's own generation (the
   reconciler is asked for the key's payment, without the hash); only an
   answer naming the retained hash is accepted, recorded as the key's attempt
   and saved. Over a log without `readOutcome` the same path also accepts the
@@ -243,12 +243,14 @@ below).
   outcome, so a failure the SDK read there leaves the intent held
   (`reconciliation was not definitive`) and nothing is resubmitted. A failure
   is final only on the retained-hash audit or the restart re-check of the
-  rail's own durable failure. Without an attempt record, the reconciler's
-  answer for the key is still read by the SDK, but that read cannot tell this
-  payment from another job's transfer of the same payer, payee and amount:
-  a success found that way relies on the reconciler to look up this exact
-  payment, and a failure found that way is held. On a log that keeps
-  attempts the saved outcome never binds a later audit.
+  rail's own durable failure. Without an attempt record, the SDK's read of
+  the reconciler's answer for the key cannot tell this payment from another
+  job's transfer of the same payer, payee and amount, so a success is refused
+  unless this same bridge already submitted and bound the hash to the key,
+  and a failure found that way is held. The same check runs before saving a
+  reconciled success and before returning a cached success: another job's
+  same-party, same-amount payment cannot complete this job through a key-only
+  reconciliation or saved outcome.
 - A native DEM session (`runSession` with a `pay-dem` price in DEM) calls
   only this `payDemSettle` adapter (directly, from `settleFromRail`, or
   through `Agent.runSession`), as `settle` and as `resumeSettlement`,

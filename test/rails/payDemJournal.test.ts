@@ -352,7 +352,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     serveNodeRecord(hashA, { payer, payee, nonce: 7 });
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => executed(hashA));
     const settle = payDemSettle(rail, {}, { store, reconcile });
-    await expect(settle(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    await expect(settle(request("job-b"))).rejects.toThrow(/no SDK record binds.*this payment/);
     await expect(settle(request("job-b", 0, hashA)))
       .rejects.toThrow(/no SDK record binds the retained transaction/);
     // Nor does a reconciliation that also returns an entry naming the key.
@@ -360,7 +360,7 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
     bound.mockImplementationOnce(async () => ({ ...executed(hashA),
       preparedTransfer: entry({ recovery: { ...recovery, jobId: "job-b", settlementKey: "pay-dem:job-b:0" } }) as PayDemPreparedTransfer }));
     const journaled = payDemSettle(rail, {}, { store, reconcile: bound });
-    await expect(journaled(request("job-b"))).resolves.toMatchObject({ ok: true, txHash: hashA });
+    await expect(journaled(request("job-b"))).rejects.toThrow(/no SDK record binds.*this payment/);
     await expect(journaled(request("job-b", 0, hashA)))
       .rejects.toThrow(/no SDK record binds the retained transaction/);
     expect(bound).toHaveBeenCalledTimes(2);
@@ -390,13 +390,15 @@ describe("pay-dem audits count a retained hash only through the SDK's record and
       const settle = payDemSettle(rail, {}, { store, reconcile });
       await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: false, txHash: hashA });
       setNodeRecordStatus("confirmed");
-      await expect(settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: found });
+      await (audited
+        ? expect(settle(request("job-a"))).resolves.toMatchObject({ ok: true, txHash: found })
+        : expect(settle(request("job-a"))).rejects.toThrow(/no SDK record binds.*this payment/));
       // Another hash found for the key is only the reconciler's answer.
       const audit = settle(request("job-a", 0, found));
       await (audited
         ? expect(audit).resolves.toMatchObject({ ok: true, txHash: hashA })
         : expect(audit).rejects.toThrow(
-          /no SDK record binds the retained transaction|finished only through the settlement store's own expired generation/,
+          /no SDK record binds the retained transaction|finished only through the settlement store's own expired generation|conflicts with the rail outcome/,
         ));
       expect(sdkTransfers()).toBe(1);
     }

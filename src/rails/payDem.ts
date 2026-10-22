@@ -2830,9 +2830,9 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * store, or a result this bridge
  * submitted and that record accepted, names that hash. When no attempt record
  * names any hash for the key, it finishes the hash only through that store's
- * own `once`: a held generation refuses, and an expired one is reconciled as a
- * restart without history would, accepting only an answer that names the
- * retained hash, which that generation records and saves. `createPayDemRail`
+ * own `once`: a held generation refuses, and an expired one is reconciled under
+ * that key's generation, accepting only an answer that names the retained
+ * hash, which that generation records and saves. `createPayDemRail`
  * writes the record through the fence's `recordAttempt` before its
  * broadcast. It always reads the record, which
  * refuses another hash whatever this bridge holds. A new transfer runs only
@@ -3326,8 +3326,7 @@ export function payDemSettle(
         if (!isHeldPayDemResult(captured)) assertPayDemSuccessKept(historySucceeded, captured);
         // On a log that keeps no attempt records, its own outcome for these
         // exact terms names the hash when the reconciliation agrees on the
-        // block and outcome, as a cached outcome must on a restart without
-        // history. A log that keeps them never counts an outcome.
+        // block and outcome. A log that keeps attempts never counts an outcome.
         const outcomeNames = (existing: SettleResult | null) => outcomeOnlyLog &&
           existing !== null && existing.txHash === retainedTxHash &&
           existing.blockNumber === captured.blockNumber && sameSettledOutcome(existing, captured);
@@ -3338,8 +3337,8 @@ export function payDemSettle(
         }
         // No attempt record names any hash for this key: a log can predate
         // them, or a payment have been in flight across an upgrade.
-        // Finish it only as the key's own restart without history would: the
-        // `createIdempotencyStore` store's `once` reconciles a generation it
+        // This compatibility path finishes only through the key's own
+        // `createIdempotencyStore` store's `once`, which reconciles a generation it
         // acquired after it expired under these exact terms, and the
         // reconciler is asked for this key's payment, not for the retained
         // hash, so its answer must name that hash on its own. That generation
@@ -3485,6 +3484,17 @@ export function payDemSettle(
         const prior = authenticatedResults.get(key);
         return prior?.boundToKey === true && prior.result.txHash === reconciled.txHash;
       };
+      // DACS-4 §9.5.1 PC-7 requires the original job/phase binding and
+      // transaction references on recovery. Matching parties and amount (or
+      // an outcome saved by a key-only reconciliation) cannot establish which
+      // job paid. Check before persistence as well as before public completion.
+      const requireSuccessBinding = async (result: SettleResult): Promise<void> => {
+        if (result.ok && !boundAfterReconciliation(result, await recordedAttempt())) {
+          throw new DacsError(
+            "pay-dem: no SDK record binds the reconciled or cached transaction to this payment; refusing reuse or rebroadcast",
+          );
+        }
+      };
       // A restart reconciliation asks for the exact recorded hash when this key
       // has one, and refuses any other transaction.
       const reconcileRecorded = async (recorded: string | null) => {
@@ -3515,6 +3525,7 @@ export function payDemSettle(
             // success this bridge already authenticated for the key.
             assertPayDemSuccessKept(authenticatedResults.get(key)?.result.ok === true, captured);
             if (isHeldPayDemResult(captured)) return captured;
+            await requireSuccessBinding(captured);
             authenticatedResults.set(key, {
               context, result: captured, boundToKey: boundAfterReconciliation(captured, recorded),
             });
@@ -3581,6 +3592,8 @@ export function payDemSettle(
         // Another writer's cached failure may not demote a success this bridge
         // already authenticated, even when the reconciliation agrees with it.
         assertPayDemSuccessKept(known?.result.ok === true, reconciled);
+        // A cached success must be this job's before its record is read.
+        await requireSuccessBinding(reconciled);
         // The cached outcome is reused only after the SDK reads its record
         // again; a failure only when this key's SDK rail log recorded it: its
         // attempt record or, on a log that keeps none, its own outcome, which
@@ -3603,6 +3616,7 @@ export function payDemSettle(
         // again even when this exact adapter originally submitted it.
         captured = await readRecovered(captured, true);
       }
+      await requireSuccessBinding(captured);
       // The low-level native rail reports the exact on-chain address. The public
       // settlement seam must return the request-bound identifier verbatim so the
       // orchestrator can check it without applying rail-specific normalization.

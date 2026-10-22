@@ -651,15 +651,24 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     expect(settle).not.toHaveBeenCalled();
   });
 
-  // A payment a custom rail made before the upgrade must still reconcile:
-  // the bridge is built for any rail, and recovery never calls its settle.
-  // Its verdict is the SDK rail's own read of the node record, so over the
-  // custom rail the reconciler's claim stays held, and a bridge over the SDK
-  // rail completes it.
-  test("reconciles a custom rail's retained attempt without calling the rail", async () => {
-    const log = createInMemorySettlementLog();
+  // Recovery never calls a custom rail. Its verdict is the SDK rail's own read
+  // of the node record, so over the custom rail the reconciler's claim stays
+  // held, and a bridge over the SDK rail completes it. It still needs this
+  // job's recorded transaction identity before a reconciled success can
+  // complete the job.
+  test.each([false, true])("a custom rail restart requires a recorded attempt (recorded=%s)", async (recorded) => {
     const request = req({ jobId: "job-retained-custom" });
-    await seedExpiredIntent(log, request);
+    const key = settlementKey("pay-dem", "job-retained-custom", 0);
+    const seeded = async () => {
+      const seededLog = createInMemorySettlementLog();
+      const claim = await seedExpiredIntent(seededLog, request);
+      if (claim.status !== "acquired") throw new Error("expected a fresh test intent");
+      if (recorded) {
+        await seededLog.putAttempt!({ key, bindingHash: claim.bindingHash, lease: claim.lease, txHash: TX_HASH, now: 0 });
+      }
+      return seededLog;
+    };
+    const log = await seeded();
     const settle = vi.fn<PayDemRail["settle"]>();
     const rail: PayDemRail = { address: PAYER, settle };
     const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => ({
@@ -674,10 +683,8 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       amountOs: context.amountOs,
       execution: "executed" as const,
     }));
-    const heldLog = createInMemorySettlementLog();
-    await seedExpiredIntent(heldLog, request);
     await expect(payDemSettle(rail, { network: "demos" }, {
-      store: createIdempotencyStore(heldLog),
+      store: createIdempotencyStore(await seeded()),
       reconcile,
     })(request)).rejects.toThrow(/reconciliation was not definitive/);
 
@@ -693,20 +700,24 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       store: createIdempotencyStore(log),
       reconcile,
     });
-    await expect((await bridge())(request)).resolves.toMatchObject({
-      ok: true,
-      txHash: TX_HASH,
-      blockNumber: 4242,
-      payee: SELLER_HEX,
-    });
-    // After another restart the recorded outcome is re-authenticated, again
-    // without calling either rail.
-    await expect((await bridge())(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
-    expect(reconcile).toHaveBeenCalledTimes(3);
+    if (recorded) {
+      await expect((await bridge())(request)).resolves.toMatchObject({
+        ok: true, txHash: TX_HASH, blockNumber: 4242, payee: SELLER_HEX,
+      });
+      // After another restart the recorded outcome is re-authenticated, again
+      // without calling either rail.
+      await expect((await bridge())(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH });
+      // Once for the held custom-rail restart, then once per SDK-rail restart.
+      expect(reconcile).toHaveBeenCalledTimes(3);
+      await expect(log.readOutcome!(key)).resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
+    } else {
+      // The node confirms the transaction, but nothing binds it to this job.
+      await expect((await bridge())(request)).rejects.toThrow(/no SDK record binds.*this payment/);
+      await expect(log.readOutcome!(key)).resolves.toBeNull();
+      expect(reconcile).toHaveBeenCalledTimes(2);
+    }
     expect(settle).not.toHaveBeenCalled();
     expect(sdkTransfers()).toBe(0);
-    await expect(log.readOutcome!(settlementKey("pay-dem", "job-retained-custom", 0)))
-      .resolves.toMatchObject({ result: { ok: true, txHash: TX_HASH } });
   });
 
   test("calls only the SDK's own rail and a caller's object carrying its settle", async () => {
