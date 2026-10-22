@@ -455,6 +455,22 @@ function depsFor(
   };
 }
 
+test("an unanswered artifact remains unresolved without dropping the other bundle checks", async () => {
+  const fx = await buildFixture(buyerDid, signBuyer);
+  const deps = depsFor(fx);
+  const resolve = deps.resolveAttestationRef!;
+  deps.resolveAttestationRef = async (...args) => {
+    if (args[0].anchor.locator === "settlement-j1") throw new Error("RPC unavailable");
+    return resolve(...args);
+  };
+  const result = await verifyBundleCore("ref", deps);
+  expect(result.ok).toBe(false);
+  expect(result.refs.find((ref) => ref.kind === "dacs-4-evidence")).toMatchObject({
+    verdict: "unresolved", reason: "artifact-read-unanswered",
+  });
+  expect(result.refs.find((ref) => ref.kind === "dacs-3-agreement")).toMatchObject({ verdict: "ok" });
+});
+
 describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
   test("happy path: signature verifies and every ref resolves + hash-matches", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);

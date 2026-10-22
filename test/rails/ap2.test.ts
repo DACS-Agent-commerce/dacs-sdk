@@ -34,9 +34,20 @@ describe("DACS-4 v0.6 AP2 30-case safety corpus", () => {
     ["ap2-key-base", JOB_ID, 3, "326c806fa163e7ec2c97f512d479a846a67291c8c4092d55395068e35356eb97"],
     ["ap2-key-phase-separation", JOB_ID, 4, "7b80ba1a15d989611ed25599fb25d7e7071b52c30a01c54fed23138371f058a4"],
     ["ap2-key-job-separation", OTHER_JOB_ID, 3, "e255e8c5eacfbeadbefbeee884bad22bf2164894a890bb9a7ceb934d99062f3b"],
-    ["ap2-key-nfc-normalization", "cafe\u0301-job", 0, "2128576ea9daf4765462705820c909c9f40cad744fa7b46298e495579c4eb184"],
   ])("%s", (_name, jobId, phaseIndex, expected) => {
     expect(deriveAp2IdempotencyKey(jobId, phaseIndex)).toBe(expected);
+  });
+
+  // The 662be1d4 corpus also had "ap2-key-nfc-normalization" (a decomposed
+  // "cafe\u0301-job" hashed after NFC). The pinned d45c0a2 corpus replaces it:
+  // AP2-6 now validates JID-1 before hashing and MUST NOT repair a spelling.
+  test.each([
+    ["ap2-key-noncanonical-unicode-error", "cafe\u0301-job"],
+    // The vector's "81ARZ3NDEKTSV4RRFFQ69G5FAV": JOB_ID with a leading 8.
+    ["ap2-key-overflow-job-error", `8${JOB_ID.slice(1)}`],
+    ["lower-case alias", JOB_ID.toLowerCase()],
+  ])("%s (DACS-Standard@d45c0a2)", (_name, jobId) => {
+    expect(() => deriveAp2IdempotencyKey(jobId, 0)).toThrow(/canonical uppercase ULID/);
   });
 
   test("ap2-key-negative-phase-error", () => {
@@ -235,6 +246,25 @@ function input(
 }
 
 describe("advanceAp2Settlement", () => {
+  test("AP2-6: refuses a non-JID-1 jobId before mandate, store or provider work", async () => {
+    const store = createInMemoryAp2BindingStore();
+    const claim = vi.spyOn(store, "claim");
+    const verifyCheckoutMandate = vi.fn(verifier().verifyCheckoutMandate);
+    const submit = vi.fn(provider().submit);
+    const readAttestedStatus = vi.fn(provider().readAttestedStatus);
+    const result = await advanceAp2Settlement(input({
+      jobId: JOB_ID.toLowerCase(),
+      store,
+      verifier: { ...verifier(), verifyCheckoutMandate },
+      provider: provider({ submit, readAttestedStatus }),
+    }));
+    expect(result).toMatchObject({ status: "failed", reason: expect.stringMatching(/pay-ap2 jobId/) });
+    expect(verifyCheckoutMandate).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    expect(readAttestedStatus).not.toHaveBeenCalled();
+  });
+
   test("persists one binding and returns only attested, term-bound captured status", async () => {
     const submit = vi.fn(provider().submit);
     const readAttestedStatus = vi.fn(provider().readAttestedStatus);

@@ -1,7 +1,9 @@
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
 import { CounterpartyError } from "../errors.js";
+import { isCanonicalJobId, requireCanonicalJobId } from "../negotiate/jobId.js";
 import type {
   PaymentPayloadResult,
   PaymentRequirements,
@@ -95,7 +97,10 @@ export interface X402SettleParams {
    * resolved token, not the Price.asset symbol.
    */
   asset: string;
-  /** DACS session identifier bound into the EIP-3009 authorization nonce. */
+  /**
+   * DACS session identifier bound into the EIP-3009 authorization nonce. It
+   * must be a canonical CORE JID-1 ULID.
+   */
   jobId?: string;
   /** Zero-based index of the pay-x402 phase in the signed pipeline. */
   phaseIndex?: number;
@@ -316,6 +321,7 @@ export async function x402SettleCore(
   deps: X402SettleCoreDeps,
   effectFence?: Readonly<X402PaidEffectFence>,
 ): Promise<SettleResult> {
+  requireJid1LiveProfile();
   // Snapshot caller-owned policy and transport scalars before the first
   // callback. A callback may retain the original params object; it must not be
   // able to change the amount, endpoint, token or confirmation depth after the
@@ -625,21 +631,22 @@ export interface X402Rail {
   ): Promise<SettleResult>;
 }
 
-/** Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase. */
+/**
+ * Derive the deterministic EIP-3009 nonce binding a payment to one DACS phase.
+ * CORE JID-3 / DACS-4 SB-3: the jobId must pass JID-1 before it is hashed, so a
+ * malformed jobId can never reach a signature.
+ */
 export async function dacsX402AuthorizationNonce(input: {
   jobId: string;
   phaseIndex: number;
 }): Promise<`0x${string}`> {
+  requireCanonicalJobId(input.jobId, "x402 DACS binding jobId");
   if (
-    typeof input.jobId !== "string" ||
-    input.jobId.length === 0 ||
     !Number.isSafeInteger(input.phaseIndex) ||
     input.phaseIndex < 0 ||
     Object.is(input.phaseIndex, -0)
   ) {
-    throw new Error(
-      "x402 DACS binding requires a jobId and a non-negative phaseIndex",
-    );
+    throw new Error("x402 DACS binding requires a non-negative phaseIndex");
   }
   const { sha256, stringToHex } = await import("viem");
   const preimage = `dacs-sb3:v1:${input.jobId.normalize("NFC")}:${input.phaseIndex}`;
@@ -655,11 +662,14 @@ export type DacsX402BindingVerdict =
  * Recompute and classify the normative textual EIP-3009 nonce form. A
  * well-formed mismatch is a hard SB-3 rejection; malformed input is an error,
  * not the absent/unverifiable fallback used when no binding can be recovered.
+ * A jobId that fails JID-1 is malformed input and is classified before any
+ * preimage is hashed.
  */
 export async function verifyDacsX402AuthorizationNonce(
   input: { jobId: string; phaseIndex: number },
   presentedNonce: string,
 ): Promise<DacsX402BindingVerdict> {
+  if (!isCanonicalJobId(input.jobId)) return "malformed";
   if (!/^0x[0-9a-f]{64}$/.test(presentedNonce)) return "malformed";
   return presentedNonce === await dacsX402AuthorizationNonce(input)
     ? "present-and-matches"
@@ -671,6 +681,7 @@ export async function verifyDacsX402AuthorizationNonce(
  * SDK core stays importable without the rail's chain deps installed.
  */
 export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> {
+  requireJid1LiveProfile();
   const evmPrivateKey = config.evmPrivateKey;
   const configuredFetchImpl = config.fetchImpl;
   const configuredTransportPolicy = snapshotX402OutboundTransportPolicyV1(
@@ -762,6 +773,7 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
     address: account.address,
     finalityBlocks,
     settle: async (params, effectFence) => {
+      requireJid1LiveProfile();
       const paywallUrl = params.paywallUrl;
       const network = params.network;
       const recipientEvm = params.recipientEvm;
@@ -773,6 +785,9 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
       if (requireSessionBinding && (jobId === undefined || phaseIndex === undefined)) {
         throw new Error("pay-x402 requires the DACS jobId/phaseIndex authorization binding");
       }
+      // JID-3: refuse a malformed jobId before the challenge request, the SB-3
+      // nonce derivation or the authorization signature.
+      if (jobId !== undefined) requireCanonicalJobId(jobId, "pay-x402 jobId");
 
       let scheme: SchemeNetworkClient = new ExactEvmScheme(account);
       if (jobId !== undefined && phaseIndex !== undefined) {
@@ -914,7 +929,11 @@ export function x402Settle(
     throw new CounterpartyError("x402 rail must expose its positive finality policy");
   }
   return (req) => {
+    requireJid1LiveProfile();
     const { amount, asset: agreementAsset, expectedPayee, jobId, phase, rail: railId } = req;
+    // JID-3: the jobId keys the SB-3 effect identity and the idempotency record,
+    // so it must pass JID-1 before either is derived.
+    requireCanonicalJobId(jobId, "pay-x402 jobId");
     if (expectedPayee !== recipientEvm) {
       throw new CounterpartyError(
         `x402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipientEvm}`,

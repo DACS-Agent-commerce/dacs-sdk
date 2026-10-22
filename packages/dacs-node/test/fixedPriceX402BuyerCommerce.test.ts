@@ -34,6 +34,7 @@ vi.mock("../src/fixedPriceX402Profile.js", () => ({
 
 import { createDacsFixedPriceX402BuyerCommerceV1 } from
   "../src/fixedPriceX402BuyerCommerce.js";
+import { resolveDacsX402FinalityBlocksV1 } from "../src/x402SellerEvm.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
 const BUYER = `did:demos:agent:${"1".repeat(64)}`;
@@ -222,7 +223,12 @@ function x402EvidenceInput(extra: Record<string, unknown> = {}) {
   };
 }
 
-function paymentEvidenceFixture() {
+function paymentEvidenceFixture(
+  railOverrides: Readonly<{
+    parameters?: Readonly<Record<string, unknown>>;
+    chainId?: number;
+  }> = {},
+) {
   dependencies.verifySettlementEvidence.mockReset();
   dependencies.verifySettlementEvidence.mockImplementation(
     dependencies.realVerifySettlementEvidence,
@@ -276,8 +282,10 @@ function paymentEvidenceFixture() {
       railId: X402_RAIL_ID,
       railType: "x402",
       phaseHandler: "pay-x402",
-      asset: { kind: "erc20", symbol: "USDC", chainId: 84_532, decimals: 6 },
-      parameters: { authorization: "eip-3009", finalityBlocks: 2 },
+      asset: { kind: "erc20", symbol: "USDC", chainId: railOverrides.chainId ?? 84_532,
+        decimals: 6 },
+      parameters: railOverrides.parameters ??
+        { authorization: "eip-3009", finalityBlocks: 2 },
     } as never,
   });
   const verify = async (request: Readonly<Record<string, unknown>> = {}) =>
@@ -510,11 +518,85 @@ describe("fixed-price x402 buyer payment-evidence verification", () => {
 });
 
 describe("fixed-price x402 buyer authenticated finality policy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it.each([
-    {},
     { finalityBlocks: 0 },
     { finalityBlocks: 1.5 },
-  ])("rejects an unavailable or invalid authenticated finality depth", (parameters) => {
+    { finalityBlocks: "2" },
+  ])("rejects an invalid explicit finality depth %j", (parameters) => {
     expect(() => receivedFixture(parameters)).toThrow(TypeError);
+  });
+
+  // DACS-4 phase card: rail.parameters.finalityBlocks is optional for
+  // pay-x402. The default the seller's intake applies is the depth an echo
+  // must match: 1 on the rail's own L2 chain.
+  it("admits a rail without finalityBlocks and verifies at the L2 default depth", async () => {
+    expect(() => receivedFixture({ authorization: "eip-3009" })).not.toThrow();
+    const railOverrides = { parameters: { authorization: "eip-3009" } };
+    for (const finalityBlocks of [undefined, 1]) {
+      const f = paymentEvidenceFixture(railOverrides);
+      const evidence = signEvidence(x402EvidenceInput({
+        settlementFinality: {
+          model: "block-depth",
+          ...(finalityBlocks === undefined ? {} : { finalityBlocks }),
+          finalityObservedAt: OBSERVED_AT,
+        },
+      }), EVIDENCE_SELLER);
+      await expect(f.verify({ evidence, evidenceHash: contentHash(evidence) }))
+        .resolves.toEqual({ disposition: "valid" });
+    }
+    const f = paymentEvidenceFixture(railOverrides);
+    const echoed = signEvidence(x402EvidenceInput(), EVIDENCE_SELLER);
+    await expect(f.verify({ evidence: echoed, evidenceHash: contentHash(echoed) }))
+      .resolves.toEqual({
+        disposition: "invalid",
+        reason: "payment evidence settlement binding invalid",
+      });
+  });
+
+  it.each([137, 43_114, 56].flatMap((chainId) =>
+    [undefined, 1].map((echo) => ({ chainId, echo }))))(
+    "refuses non-L2 evidence without an explicit rail depth: %j",
+    async ({ chainId, echo }) => {
+      const f = paymentEvidenceFixture({ chainId,
+        parameters: { authorization: "eip-3009" } });
+      const event = { ...CAPTURED_EVENT, chainId };
+      f.state.settlement.outcome.settlement.signedEvent = event;
+      const evidence = signEvidence(x402EvidenceInput({
+        paymentTxRefs: [event],
+        settlementFinality: { model: "block-depth",
+          ...(echo === undefined ? {} : { finalityBlocks: echo }),
+          finalityObservedAt: OBSERVED_AT },
+      }), EVIDENCE_SELLER);
+      await expect(f.verify({ evidence, evidenceHash: contentHash(evidence) }))
+        .resolves.toEqual({ disposition: "invalid",
+          reason: "payment evidence finality policy invalid" });
+      expect(dependencies.verifySettlementEvidence).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["an explicit depth", 84_532, { finalityBlocks: 5 }, { disposition: "resolved", finalityBlocks: 5 }],
+    ["the rail's own L2", 84_532, {}, { disposition: "resolved", finalityBlocks: 1 }],
+    ["Ethereum mainnet", 1, {}, { disposition: "resolved", finalityBlocks: 12 }],
+    ["an invalid explicit depth", 84_532, { finalityBlocks: 0 },
+      { disposition: "rejected", reason: "x402-finality-policy-invalid" }],
+  ] as const)("resolves the buyer's x402 depth for %s like seller intake", async (
+    _label,
+    chainId,
+    parameters,
+    expected,
+  ) => {
+    await expect(resolveDacsX402FinalityBlocksV1({
+      railId: X402_RAIL_ID,
+      railType: "x402",
+      phaseHandler: "pay-x402",
+      asset: { kind: "erc20", symbol: "USDC", chainId, decimals: 6,
+        contract: `0x${"33".repeat(20)}` },
+      parameters: { authorization: "eip-3009", ...parameters },
+    } as never)).resolves.toEqual(expected);
   });
 });

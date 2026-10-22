@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, test, vi } from "vitest";
 import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
+import { isCanonicalJobId } from "../../src/negotiate/jobId.js";
+import { x402Eip3009Nonce } from "../../src/seller/paymentIntake.js";
 import {
   createX402Rail,
   dacsX402AuthorizationNonce,
@@ -24,22 +28,83 @@ const TOKEN = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 const TX_HASH = `0x${"a".repeat(64)}`;
 const TEST_EVM_KEY = keccak256(stringToHex("dacs-sdk:test:x402-rail"));
 
+// The Standard's full-input SB-3 vector: a schema-valid ULID at phase 3.
+const ULID_JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const ULID_PHASE_3_NONCE =
+  "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2";
+const SETTLE_JOB_ID = "01JA9X402RA11B1ND1NG000000";
+
 describe("DACS EIP-3009 session binding", () => {
-  test("reproduces the normative SB-3 live, phase, job and ULID vectors", async () => {
-    const vectors = [
-      ["practice-dacs-0001", 3, "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff"],
-      ["practice-dacs-0001", 4, "0x80fa47321a52f728f5ecbde7a5ceb44dd6086c9902dd8b95980b05909e5ea969"],
-      ["practice-dacs-0002", 3, "0x69256a3bf1c9bd6a5ba1ffc93705d44c5322e03de8f1e3ad6b6d709f4254ce29"],
-      ["01ARZ3NDEKTSV4RRFFQ69G5FAV", 3, "0xaeed3b79a6eedc2c19ce773a286dc5a897271cd92ed41a7f7ae5847fe3c9e9e2"],
-    ] as const;
-    for (const [jobId, phaseIndex, expected] of vectors) {
-      expect(await dacsX402AuthorizationNonce({ jobId, phaseIndex })).toBe(expected);
+  test("replays the Standard SB-3 vectors: full-input cases bind, derivation-only jobIds are refused", async () => {
+    const set = JSON.parse(readFileSync(new URL(
+      "../../vendor/DACS-Standard/conformance/vectors/security/sb3-eip3009-nonce-v0.1.json",
+      import.meta.url,
+    ), "utf8")) as {
+      vectors: Array<{
+        name: string;
+        jobId: string;
+        phaseIndex: number;
+        presentedNonce?: string;
+        expectedNonce?: string;
+        validationScope: "derivation-only" | "full-input";
+        want: { binding?: string };
+      }>;
+    };
+    let fullInput = 0;
+    let refused = 0;
+    for (const vector of set.vectors) {
+      if (vector.validationScope === "full-input") {
+        fullInput += 1;
+        expect(await dacsX402AuthorizationNonce(vector), vector.name)
+          .toBe(vector.expectedNonce);
+        expect(await verifyDacsX402AuthorizationNonce(
+          vector,
+          vector.presentedNonce!,
+        ), vector.name).toBe(vector.want.binding);
+        continue;
+      }
+      // CORE JID-3: a derivation-only fixture's jobId is not JID-1, so the
+      // buyer must classify it before hashing rather than reproduce the nonce.
+      expect(isCanonicalJobId(vector.jobId), vector.name).toBe(false);
+      refused += 1;
+      await expect(dacsX402AuthorizationNonce(vector), vector.name)
+        .rejects.toThrow("x402 DACS binding jobId must be a canonical uppercase ULID");
+      if (vector.presentedNonce !== undefined) {
+        expect(await verifyDacsX402AuthorizationNonce(
+          vector,
+          vector.presentedNonce,
+        ), vector.name).toBe("malformed");
+      }
     }
+    expect(fullInput).toBe(1);
+    expect(refused).toBe(set.vectors.length - 1);
+  });
+
+  test.each([
+    ULID_JOB_ID.toLowerCase(),
+    `${ULID_JOB_ID.slice(0, -1)}I`,
+    `${ULID_JOB_ID.slice(0, -1)}L`,
+    `${ULID_JOB_ID.slice(0, -1)}O`,
+    `${ULID_JOB_ID.slice(0, -1)}U`,
+    ` ${ULID_JOB_ID}`,
+    `${ULID_JOB_ID}\n`,
+    ULID_JOB_ID.slice(0, -1),
+    `${ULID_JOB_ID}0`,
+    `8${ULID_JOB_ID.slice(1)}`,
+    `${ULID_JOB_ID.slice(0, -2)}%56`,
+  ])("refuses non-JID-1 jobId %j before deriving or verifying the nonce", async (jobId) => {
+    await expect(dacsX402AuthorizationNonce({ jobId, phaseIndex: 3 }))
+      .rejects.toThrow("x402 DACS binding jobId must be a canonical uppercase ULID");
+    // Even the nonce recomputed from the same malformed bytes is not accepted.
+    expect(await verifyDacsX402AuthorizationNonce(
+      { jobId, phaseIndex: 3 },
+      x402Eip3009Nonce(jobId, 3),
+    )).toBe("malformed");
   });
 
   test("classifies matching, mismatching and malformed presented nonces", async () => {
-    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
-    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
+    const input = { jobId: ULID_JOB_ID, phaseIndex: 3 };
+    const expected = ULID_PHASE_3_NONCE;
     expect(await verifyDacsX402AuthorizationNonce(
       input,
       expected,
@@ -60,32 +125,71 @@ describe("DACS EIP-3009 session binding", () => {
     expect(await verifyDacsX402AuthorizationNonce(input, `0x${"A".repeat(64)}`)).toBe("malformed");
   });
 
-  test("the three normative retry cases retain the same derived nonce", async () => {
-    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
-    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
-    // used+same-transfer resumes, used+different-transfer refuses, and cancelled
-    // refuses at the reconcile layer; none may mint a replacement nonce.
-    for (const _state of ["used-same", "used-different", "cancelled"]) {
-      expect(await dacsX402AuthorizationNonce(input)).toBe(expected);
-    }
+  // The SB-3 retry dispositions (used by this transfer resumes, used by another
+  // refuses, cancelled refuses) are reconciled against chain evidence in
+  // test/rails/x402BuyerEvmAuthorization.test.ts ("settled-same",
+  // "used-different", "cancelled"). Here only the derivation is pinned: it is
+  // a pure function of (jobId, phaseIndex), so a retry can never mint a
+  // replacement nonce.
+  test("derives the same nonce on every retry of the same job phase", async () => {
+    const input = { jobId: ULID_JOB_ID, phaseIndex: 3 };
+    const first = await dacsX402AuthorizationNonce(input);
+    expect(first).toBe(ULID_PHASE_3_NONCE);
+    expect(await dacsX402AuthorizationNonce({ ...input })).toBe(first);
+    expect(await dacsX402AuthorizationNonce({ ...input, phaseIndex: 4 })).not.toBe(first);
+  });
+
+  // F18: JID-1 is a string grammar; a value that merely stringifies to a
+  // canonical ULID is not one.
+  test.each([
+    [[ULID_JOB_ID]],
+    [Object(ULID_JOB_ID)],
+    [{ toString: () => ULID_JOB_ID }],
+  ])("refuses a non-string jobId that coerces to a canonical ULID", async (jobId) => {
+    expect(isCanonicalJobId(jobId)).toBe(false);
+    await expect(dacsX402AuthorizationNonce({ jobId: jobId as never, phaseIndex: 3 }))
+      .rejects.toThrow("x402 DACS binding jobId must be a canonical uppercase ULID");
   });
 
   test("rejects malformed derivation inputs", async () => {
+    // A decomposed name is never NFC-repaired into a binding (JID-1/JID-3).
     await expect(dacsX402AuthorizationNonce({
       jobId: "cafe\u0301-job",
       phaseIndex: 0,
-    })).resolves.toBe(
-      "0xc4d6eb3c8774ff6078765567559c1ce1953badb01ba1ea8a5252561712294397",
-    );
+    })).rejects.toThrow("x402 DACS binding jobId must be a canonical uppercase ULID");
     await expect(dacsX402AuthorizationNonce({
-      jobId: "practice-dacs-0001",
+      jobId: ULID_JOB_ID,
       phaseIndex: -1,
     })).rejects.toThrow(/non-negative phaseIndex/);
     await expect(dacsX402AuthorizationNonce({
-      jobId: "practice-dacs-0001",
+      jobId: ULID_JOB_ID,
       // @ts-expect-error — exercising the canonical integer runtime guard
       phaseIndex: "03",
     })).rejects.toThrow(/non-negative phaseIndex/);
+  });
+
+  test("a production rail refuses a non-JID-1 jobId before any request or signature", async () => {
+    const fetchImpl = vi.fn(fakeFetch());
+    const rail = await createX402Rail({
+      evmPrivateKey: TEST_EVM_KEY,
+      requireSessionBinding: true,
+      fetchImpl: fetchImpl as typeof fetch,
+      transportPolicy: { mode: "insecure-test" },
+      rpcUrl: "https://rpc.example",
+      finalityBlocks: 2,
+    });
+    for (const jobId of [ULID_JOB_ID.toLowerCase(), "practice-dacs-0001"]) {
+      await expect(rail.settle({
+        paywallUrl: "https://seller.example/deliver",
+        network: NETWORK,
+        recipientEvm: RECIPIENT,
+        amount: "1000000",
+        asset: TOKEN,
+        jobId,
+        phaseIndex: 3,
+      })).rejects.toThrow("pay-x402 jobId must be a canonical uppercase ULID");
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("fails closed when a production rail is asked to settle without a session binding", async () => {
@@ -683,11 +787,51 @@ describe("x402SettleCore (buyer 402-dance)", () => {
     const client = fakeClient([
       { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
     ]);
+    const authenticateTransfer = vi.fn(async () => {
+      throw new Error("must not authenticate without a complete response");
+    });
     await expect(x402SettleCore(
       params,
-      coreDeps(client, fakeFetch({ omitReceipt: true })),
-    )).rejects.toThrow(/PAYMENT-RESPONSE/);
+      coreDeps(client, fakeFetch({ omitReceipt: true }), authenticateTransfer),
+    )).rejects.toThrow("x402: paid response returned HTTP 200 without PAYMENT-RESPONSE");
+    expect(authenticateTransfer).not.toHaveBeenCalled();
   });
+
+  // DACS-4 X402-4: without the complete successful response there is no
+  // success, even when a conforming settlement header rides on an error.
+  test.each([402, 409, 500])(
+    "refuses a paid HTTP %i that carries a conforming PAYMENT-RESPONSE",
+    async (status) => {
+      const client = fakeClient([
+        { network: NETWORK, payTo: RECIPIENT, amount: "1000000", asset: TOKEN },
+      ]);
+      const authenticateTransfer = vi.fn(async () => {
+        throw new Error("must not authenticate a failed paid response");
+      });
+      let call = 0;
+      const fetchImpl = (async () => {
+        call += 1;
+        if (call === 1) {
+          return new Response(JSON.stringify({ x402Version: 2 }), { status: 402 });
+        }
+        return new Response(JSON.stringify({ error: "settlement failed" }), {
+          status,
+          headers: {
+            "PAYMENT-RESPONSE": encodedReceipt({
+              success: true,
+              transaction: TX_HASH,
+              network: NETWORK,
+              payer: PAYER,
+              amount: "1000000",
+            }),
+          },
+        });
+      }) as unknown as typeof fetch;
+      await expect(x402SettleCore(params, coreDeps(client, fetchImpl, authenticateTransfer)))
+        .rejects.toThrow(`x402: paid response returned HTTP ${status} with PAYMENT-RESPONSE`);
+      expect(authenticateTransfer).not.toHaveBeenCalled();
+    },
+  );
 
   test("rejects malformed raw receipt and independent finality failure", async () => {
     const client = fakeClient([
@@ -759,10 +903,50 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
         asset: "USDC",
         payee: "did:example:seller",
         expectedPayee: "0xwrong",
-        jobId: "destination-mismatch",
+        jobId: SETTLE_JOB_ID,
       }),
     ).toThrow(/destination mismatch/);
     expect(calls).toBe(0);
+  });
+
+  test("refuses a non-JID-1 jobId before the effect identity, idempotency store or rail", async () => {
+    const railSettle = vi.fn(async () => {
+      throw new Error("must not submit");
+    });
+    const store = {
+      once: vi.fn(async () => {
+        throw new Error("must not key an idempotency record");
+      }),
+    };
+    const settle = x402Settle(
+      { address: PAYER, finalityBlocks: 12, settle: railSettle },
+      {
+        url: "https://seller.example/deliver",
+        network: NETWORK,
+        recipientEvm: RECIPIENT,
+        asset: TOKEN,
+      },
+      { store: store as never },
+    );
+    for (const jobId of [
+      SETTLE_JOB_ID.toLowerCase(),
+      `${SETTLE_JOB_ID.slice(0, -1)}O`,
+      `${SETTLE_JOB_ID} `,
+      "j1",
+    ]) {
+      expect(() => settle({
+        rail: "pay-x402",
+        phase: "pay-x402",
+        amount: "1000000",
+        asset: "USDC",
+        payee: RECIPIENT,
+        expectedPayee: RECIPIENT,
+        jobId,
+        phaseIndex: 1,
+      })).toThrow("pay-x402 jobId must be a canonical uppercase ULID");
+    }
+    expect(store.once).not.toHaveBeenCalled();
+    expect(railSettle).not.toHaveBeenCalled();
   });
 
   test("hands the rail the configured token id as the guard's asset", async () => {
@@ -799,12 +983,12 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "USDC",
       payee: RECIPIENT,
       expectedPayee: RECIPIENT,
-      jobId: "j1",
+      jobId: SETTLE_JOB_ID,
     });
 
     expect(captured?.asset).toBe("0x036CbD53842c5426634e7929541eC2318f3dCF7e");
     expect(captured?.amount).toBe("1000000");
-    expect(captured?.jobId).toBe("j1");
+    expect(captured?.jobId).toBe(SETTLE_JOB_ID);
     expect(captured?.phaseIndex).toBe(3);
   });
 
@@ -845,7 +1029,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "USDC",
       payee: RECIPIENT,
       expectedPayee: RECIPIENT,
-      jobId: "j1",
+      jobId: SETTLE_JOB_ID,
       phaseIndex: 2,
     });
 
@@ -876,8 +1060,12 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     });
 
-    await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "j1" });
+    await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: SETTLE_JOB_ID });
 
     expect(captured?.phaseIndex).toBe(0);
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

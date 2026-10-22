@@ -11,13 +11,13 @@ import {
   type X402BuyerEffectFence,
 } from "../../src/rails/index.js";
 
-const JOB_ID = "job-durable-buyer-http";
+const JOB_ID = "01JA9X402DVRAB1EBVYERHTTP0";
 const PHASE_INDEX = 2;
 const NETWORK = "eip155:84532" as const;
 const PAYER = `0x${"11".repeat(20)}`;
 const PAYEE = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
-const RESOURCE = "https://seller.example/deliver/job-durable-buyer-http";
+const RESOURCE = `https://seller.example/deliver/${JOB_ID}`;
 const NONCE = `0x${sha256Hex(`dacs-sb3:v1:${JOB_ID}:${PHASE_INDEX}`)}`;
 
 function authority(): PrepareX402BuyerSettlementInput["authority"] {
@@ -154,6 +154,33 @@ describe("prepareX402BuyerSettlement", () => {
         resource: { url: RESOURCE },
         accepts: [requirements({ extra: { name: "USD Coin" } })],
       },
+      // The agreement's network is checked before signing: a client
+      // registered for every eip155 network would sign this challenge.
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ network: "eip155:8453" })],
+      },
+      {
+        x402Version: 1,
+        resource: { url: RESOURCE },
+        accepts: [requirements()],
+      },
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ scheme: "upto" })],
+      },
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ asset: `0x${"99".repeat(20)}` })],
+      },
+      {
+        x402Version: 2,
+        resource: { url: RESOURCE },
+        accepts: [requirements({ amount: "999" })],
+      },
     ];
     for (const challenge of challenges) {
       const result = await prepareX402BuyerSettlement(
@@ -164,11 +191,37 @@ describe("prepareX402BuyerSettlement", () => {
           fetchImpl: async () => new Response(JSON.stringify(challenge), { status: 402 }),
         },
       );
-      expect(result).toEqual({
+      expect(result, JSON.stringify(challenge)).toEqual({
         disposition: "rejected",
         reason: "x402-payment-requirements-mismatch",
       });
     }
+    expect(counters.signs).toBe(0);
+  });
+
+  test.each([
+    JOB_ID.toLowerCase(),
+    `${JOB_ID.slice(0, -1)}O`,
+    `${JOB_ID.slice(0, -1)}U`,
+    `${JOB_ID} `,
+    JOB_ID.slice(0, -1),
+    `${JOB_ID}0`,
+    "job-durable-buyer-http",
+  ])("rejects non-JID-1 jobId %j before the challenge request or signer", async (jobId) => {
+    const counters = { signs: 0 };
+    const fetchImpl = vi.fn(async () => new Response("must not run", { status: 402 }));
+    await expect(prepareX402BuyerSettlement(
+      { authority: { ...authority(), jobId } },
+      {
+        client: client(counters),
+        transportPolicy: { mode: "insecure-test" },
+        fetchImpl: fetchImpl as typeof fetch,
+      },
+    )).resolves.toEqual({
+      disposition: "rejected",
+      reason: "x402-settlement-authority-invalid",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
     expect(counters.signs).toBe(0);
   });
 
@@ -674,3 +727,7 @@ describe("createX402BuyerRetainedDisclosureRecovery", () => {
     })).resolves.toBeUndefined();
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

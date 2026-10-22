@@ -89,7 +89,11 @@ import {
   loadDacsPayDemBuyerSessionAgreementFactsForOrderV1,
 } from
   "./sessionBootstrapAgreementRuntime.js";
-import { createDacsX402SellerEvmObserverV1 } from "./x402SellerEvm.js";
+import {
+  createDacsX402SellerEvmObserverV1,
+  hasInvalidDacsX402FinalityParameterV1,
+  resolveDacsX402FinalityBlocksV1,
+} from "./x402SellerEvm.js";
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -206,16 +210,6 @@ function timing(value: unknown): number {
     throw new TypeError("fixed-price buyer audit timing is invalid");
   }
   return Number(captured);
-}
-
-function requiredFinalityBlocks(rail: Readonly<AuthenticatedRailDefinition>): number {
-  const value = rail.parameters.finalityBlocks;
-  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
-    throw new TypeError(
-      "fixed-price buyer audit requires a positive x402 finalityBlocks parameter",
-    );
-  }
-  return Number(value);
 }
 
 function publicKey(claim: string): Uint8Array | null {
@@ -433,9 +427,21 @@ export function createDacsFixedPriceBuyerAuditV1(
       ? "fixed-price buyer audit requires native DEM"
       : "fixed-price buyer audit requires x402 ERC-20");
   }
-  const authenticatedFinalityBlocks = payDem
-    ? undefined
-    : requiredFinalityBlocks(rail);
+  if (!payDem && hasInvalidDacsX402FinalityParameterV1(rail)) {
+    throw new TypeError(
+      "fixed-price buyer audit requires a positive x402 finalityBlocks parameter when one is set",
+    );
+  }
+  // The pay-x402 depth from the authenticated rail policy; the rail parameter
+  // is optional, with the DACS-4 §9.5.2 step 6 defaults applied by analogy, as
+  // it is for the seller's intake.
+  const x402FinalityBlocks = async (): Promise<number> => {
+    const finality = await resolveDacsX402FinalityBlocksV1(rail);
+    if (finality.disposition !== "resolved") {
+      throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-finality-invalid");
+    }
+    return finality.finalityBlocks;
+  };
   const observer = options.paymentProfile === "x402"
     ? createDacsX402SellerEvmObserverV1({
         rail,
@@ -455,6 +461,7 @@ export function createDacsFixedPriceBuyerAuditV1(
     if (payDem !== isPayDemOrder(order)) {
       throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-profile-invalid");
     }
+    const authenticatedFinalityBlocks = payDem ? undefined : await x402FinalityBlocks();
     const signedScope = scope(request);
     const application = captureDacsFixedPriceX402ApplicationV1(retained.application);
     const session = isPayDemOrder(order)
@@ -595,9 +602,11 @@ export function createDacsFixedPriceBuyerAuditV1(
         (payDem
           ? paymentAnchor.artifact.settlementFinality?.model !== "bft-final"
           : paymentAnchor.artifact.settlementFinality?.model !== "block-depth" ||
-            paymentAnchor.artifact.settlementFinality.finalityBlocks === undefined ||
-            paymentAnchor.artifact.settlementFinality.finalityBlocks !==
-                authenticatedFinalityBlocks) ||
+            // DACS-4 §9.7: the depth echo is optional; a present one must
+            // equal the authenticated policy.
+            (paymentAnchor.artifact.settlementFinality.finalityBlocks !== undefined &&
+              paymentAnchor.artifact.settlementFinality.finalityBlocks !==
+                authenticatedFinalityBlocks)) ||
         !verifySignature(ARTIFACT_SEPARATORS.SettlementEvidence,
           paymentAnchor.artifact, paymentAnchor.artifact.signature, order.seller) ||
         !verifySignature(ARTIFACT_SEPARATORS.SettlementEvidence,
@@ -889,6 +898,14 @@ export function createDacsFixedPriceBuyerAuditV1(
         finalityBlocks: authenticatedFinalityBlocks,
         finalityObservedAt: capturedPaymentFinality.finalityObservedAt,
       };
+      // The signed evidence is reproduced exactly, with or without its
+      // optional depth echo (already checked against the authenticated depth).
+      const evidenceFinality = {
+        model: "block-depth" as const,
+        ...(capturedPaymentFinality.finalityBlocks === undefined
+          ? {} : { finalityBlocks: capturedPaymentFinality.finalityBlocks }),
+        finalityObservedAt: capturedPaymentFinality.finalityObservedAt,
+      };
       const event = settlementEvent(paymentEvidence);
       const expectedAmountBaseUnits = baseUnits(
         agreement.terms.price.amount,
@@ -942,7 +959,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           outcome: "success",
           paymentTxRefs: [copy(event)],
           paymentAmount: copy(paymentEvidence.paymentAmount),
-          settlementFinality: copy(paymentFinality),
+          settlementFinality: evidenceFinality,
           observedAt: paymentEvidence.observedAt,
         },
       };
@@ -1022,6 +1039,8 @@ export function createDacsFixedPriceBuyerAuditV1(
             observationVersion: "1" as const,
             kind: "authenticated-x402-event",
             observedAt: fresh.finalityObservedAt,
+            // The depth applied above, the authenticated rail pin, echo or not:
+            // the settlement verifier holds this observation to the pin.
             finality: copy(paymentFinality),
             sessionBinding: {
               disposition: "established" as const,

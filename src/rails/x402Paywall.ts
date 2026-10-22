@@ -1,7 +1,9 @@
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
 import { isDeepStrictEqual } from "node:util";
 
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { CounterpartyError } from "../errors.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import {
   deriveX402ReceiptCommitment,
   verifyX402ReceiptClaim,
@@ -443,15 +445,20 @@ function validAmount(amount: string): boolean {
   }
 }
 
-/** Stable transport replay key; it is not #120's authorization-bound fulfilment id. */
+/**
+ * Stable transport replay key; it is not #120's authorization-bound fulfilment
+ * id. CORE JID-3: the jobId must pass JID-1 before it is hashed into the key.
+ */
 export function x402PaywallFulfilmentKey(input: {
   jobId: string;
   phaseIndex: number;
 }): string {
-  if (typeof input.jobId !== "string" || input.jobId.length === 0 ||
+  if (!isCanonicalJobId(input.jobId) ||
       !Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0 ||
       Object.is(input.phaseIndex, -0)) {
-    throw new TypeError("x402 paywall fulfilment key requires jobId and phaseIndex");
+    throw new TypeError(
+      "x402 paywall fulfilment key requires a canonical jobId and phaseIndex",
+    );
   }
   const digest = sha256Hex(
     `${FULFILMENT_KEY_SEPARATOR}${input.jobId.normalize("NFC")}:${input.phaseIndex}`,
@@ -459,15 +466,20 @@ export function x402PaywallFulfilmentKey(input: {
   return `dacs:x402-fulfil:${digest}`;
 }
 
-/** Stable key for the one durable x402 settlement intent for a DACS phase. */
+/**
+ * Stable key for the one durable x402 settlement intent for a DACS phase. The
+ * jobId must pass CORE JID-1 before it is hashed into the key.
+ */
 export function x402PaywallSettlementKey(input: {
   jobId: string;
   phaseIndex: number;
 }): string {
-  if (typeof input.jobId !== "string" || input.jobId.length === 0 ||
+  if (!isCanonicalJobId(input.jobId) ||
       !Number.isSafeInteger(input.phaseIndex) || input.phaseIndex < 0 ||
       Object.is(input.phaseIndex, -0)) {
-    throw new TypeError("x402 paywall settlement key requires jobId and phaseIndex");
+    throw new TypeError(
+      "x402 paywall settlement key requires a canonical jobId and phaseIndex",
+    );
   }
   const digest = sha256Hex(
     `${SETTLEMENT_KEY_SEPARATOR}${input.jobId.normalize("NFC")}:${input.phaseIndex}`,
@@ -657,7 +669,9 @@ function snapshotCoreInputUnsafe(
   const jobId = input?.jobId;
   const phaseIndex = input?.phaseIndex;
   const source = input?.request;
-  if (typeof jobId !== "string" || jobId.length === 0) {
+  // DACS-4 SB-3: JID-1 validation precedes the nonce binding branch, and a
+  // malformed jobId must reach neither the facilitator nor settlement.
+  if (!isCanonicalJobId(jobId)) {
     return { reason: "invalid-jobId" };
   }
   if (!Number.isSafeInteger(phaseIndex) || phaseIndex < 0 ||
@@ -1131,6 +1145,7 @@ export async function x402PaywallCore<TAuthorization = unknown, T = unknown>(
   input: X402PaywallHandleInput,
   deps: X402PaywallCoreDeps<TAuthorization, T>,
 ): Promise<X402PaywallResult<T>> {
+  requireJid1LiveProfile();
   let captured: X402PaywallCoreDeps<TAuthorization, T>;
   try {
     const server = deps?.server;
@@ -2184,6 +2199,7 @@ export async function createX402Paywall<TAuthorization = unknown, T = unknown>(
   config: X402PaywallConfig,
   handlers: X402PaywallHandlers<TAuthorization, T>,
 ): Promise<X402Paywall<T>> {
+  requireJid1LiveProfile();
   const configSnapshot = captureConfig(config);
   const expected = validateConfig(configSnapshot);
   const capturedConfig = snapshotConfig(configSnapshot, expected);

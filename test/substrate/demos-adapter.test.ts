@@ -717,7 +717,8 @@ describe("DemosAdapter", () => {
 
     await expect(
       adapter.anchorWriteOnce(name, value, {
-        timeoutMs: 20,
+        // Readback succeeds on the first poll; a short deadline only races the host.
+        timeoutMs: 5_000,
         pollMs: 0,
         metadata: { logicalAddress: "dacs1:seller:svc:v1" },
         onProgress: (receipt) => progress.push({

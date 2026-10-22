@@ -26,7 +26,7 @@ const PAYER = `0x${"11".repeat(20)}`;
 const PAY_TO = `0x${"22".repeat(20)}`;
 const ASSET = `0x${"33".repeat(20)}`;
 const TX_HASH = `0x${"ab".repeat(32)}`;
-const JOB_ID = "seller-paywall-adversarial-job";
+const JOB_ID = "01JA9X402SE11ERADVERSAR1A0";
 const PHASE_INDEX = 7;
 const AMOUNT = "250000";
 
@@ -1153,18 +1153,31 @@ describe("createX402Paywall adversarial capture", () => {
 });
 
 describe("buyer/seller SB-3 nonce agreement", () => {
-  it("keeps the buyer async and seller sync derivations byte-identical for Unicode and phase boundaries", async () => {
+  it("keeps the buyer async and seller sync derivations byte-identical for every JID-1 input and phase boundary", async () => {
     const vectors = [
-      { jobId: "plain-job", phaseIndex: 0 },
-      { jobId: "cafe\u0301-job", phaseIndex: 3 },
-      { jobId: "caf\u00e9-job", phaseIndex: 3 },
-      { jobId: "\ud83e\udd16-\u4f9b\u7d66-\ud83d\ude80", phaseIndex: 42 },
-      { jobId: "max-safe-phase", phaseIndex: Number.MAX_SAFE_INTEGER },
+      { jobId: JOB_ID, phaseIndex: 0 },
+      { jobId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", phaseIndex: 3 },
+      { jobId: "7ZZZZZZZZZZZZZZZZZZZZZZZZZ", phaseIndex: 42 },
+      { jobId: "00000000000000000000000000", phaseIndex: Number.MAX_SAFE_INTEGER },
     ];
     for (const vector of vectors) {
       expect(await dacsX402AuthorizationNonce(vector)).toBe(
         x402Eip3009Nonce(vector.jobId, vector.phaseIndex),
       );
+    }
+  });
+
+  it("refuses non-JID-1 jobIds on the buyer while the seller unit still reproduces derivation-only fixtures", async () => {
+    // DACS-4 SB-3 keeps NFC in the published preimage only so historical
+    // derivation-only fixtures stay reproducible; it never admits such a jobId.
+    for (const jobId of [
+      "plain-job",
+      "cafe\u0301-job",
+      "caf\u00e9-job",
+      "\ud83e\udd16-\u4f9b\u7d66-\ud83d\ude80",
+    ]) {
+      await expect(dacsX402AuthorizationNonce({ jobId, phaseIndex: 3 }))
+        .rejects.toThrow("x402 DACS binding jobId must be a canonical uppercase ULID");
     }
     expect(x402Eip3009Nonce("cafe\u0301-job", 3)).toBe(
       x402Eip3009Nonce("caf\u00e9-job", 3),
@@ -1199,3 +1212,7 @@ describe("buyer/seller SB-3 nonce agreement", () => {
     expect(() => x402Eip3009Nonce("", PHASE_INDEX)).toThrow("jobId");
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

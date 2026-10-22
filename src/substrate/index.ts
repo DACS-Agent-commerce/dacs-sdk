@@ -43,6 +43,7 @@ export {
   type FsDemosWriteJournalOptions,
 } from "./demosWriteJournalFs.js";
 export {
+  DEMOS_BFT_FINALITY_PROFILE,
   assertDemosWriteEvidence,
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,

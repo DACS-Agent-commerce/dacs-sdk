@@ -2,11 +2,41 @@
 
 Historical normative source audit: DACS Standard `next` at
 `662be1d4899a2cadf327fe2d5523e93a80334e5f` (DACS-4 v0.6), the historical
-revision pinned by the fixed-price coordinator.
+revision pinned by the fixed-price coordinator. That revision's CORE §B.1 only
+calls `jobId` "a ULID"; it has no JID rules.
 
 `createX402Paywall` is the thin HTTP-protocol adapter for the transport-
 independent seller lifecycle. It does not start a server or select a framework.
 Applications provide the framework adapter and host the route themselves.
+
+Live x402 actions are unavailable at the SDK's Standard pin
+`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`. Its PROFILE still marks JID-1 as an
+unreleased corrective candidate. The production buyer constructors, settlement
+bridge, buyer preparation, retained paid-request transport, seller paywall and spine factories, spine recovery,
+x402 payment intake and seller core throw
+`UnsupportedCapabilityError` before protocol work. Caller profile objects,
+labels and configuration cannot enable them. Recovery of retained buyer and
+seller x402 state is refused the same way, and a retained intent or record whose
+jobId is not a canonical ULID is refused as malformed: finish or reconcile every
+x402 session before upgrading.
+
+A future release must record the Standard's coordinated tag or immutable merge
+commit and authenticate that exact release and the complete document tuple for
+every participant, using verifier- or orchestrator-owned authority bound to the
+exact session and participant identity. Until then the protocol helpers and
+mocked offline tests are development evidence only. The sequence below describes
+the implementation exercised beneath that boundary. It still requires canonical
+CORE JID-1 identifiers before deriving DACS-4 SB-3 nonces.
+
+The host's x402 finality policy uses an explicit positive
+`rail.parameters.finalityBlocks` when supplied. Without that parameter it uses
+12 on Ethereum mainnet and 1 only on the versioned local L2 registry: Base
+(8453), Base Sepolia (84532), OP Mainnet (10), OP Sepolia (11155420), Arbitrum One
+(42161) and Arbitrum Sepolia (421614), reviewed against viem 2.55.19's chain
+definitions. Other chains, including Polygon, Avalanche and BSC, require an
+explicit authenticated depth. Buyer audit, payment evidence, seller intake and
+the EVM observer share this policy; a `latest` head or an omitted evidence depth
+echo cannot supply a missing chain policy.
 
 The callback sequence is deliberately:
 

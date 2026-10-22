@@ -38,7 +38,7 @@ function receipt(): ProtocolAnchorReceipt {
   return {
     receiptVersion: "1",
     substrate: "demos",
-    finalityProfile: "demos-bft-confirmed-native-read",
+    finalityProfile: "demos-bft-final",
     logicalAddress: LOGICAL_ADDRESS,
     nativeAddress: "stor-test-payment-evidence",
     contentHash: CONTENT_HASH,

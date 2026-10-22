@@ -8,6 +8,28 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 > package commands in this repository build and verify release candidates; use a
 > source checkout until the first release is published.
 
+### Live JID-1 availability
+
+The pinned Standard has not released its JID-1 corrective profile. Production
+x402 buyer preparation/signing/submission and seller paywall actions therefore fail with
+`UnsupportedCapabilityError`. There is no configuration override. Offline
+protocol helpers remain available for development; see
+[the profile boundary](docs/x402-seller-paywall.md).
+
+Multi-rail buyer and seller services, including the generator's default `both`
+configuration, retain pay-dem service while exposing x402 as unavailable. An
+x402 order remains refused; it is never rerouted to pay-dem. The x402 API
+examples below are reference code and cannot run at this Standard pin.
+
+Finish or reconcile every x402 session before upgrading to this version. The
+gate also refuses recovery of retained x402 buyer and seller state, and a
+retained intent or record whose jobId is not a canonical ULID is refused as
+malformed, so a session paid but not yet delivered cannot be finished through
+the SDK afterwards. Before upgrading, also reconcile retained evm-erc20,
+pay-dem, Solana SPL and AP2 records with non-canonical jobIds using the version
+that created them. Current reconciliation on those rails requires canonical
+JID-1 jobIds too; do not rewrite a retained record's identifier.
+
 ## What this is
 
 `agent-commerce-demo` is an *app* that runs one end-to-end DACS flow on Demos. `dacs-sdk` is the *library* extracted from it — so, once the packages are published, developers can install them and build their own DACS buyer/seller agents instead of wiring the protocol by hand.
@@ -28,7 +50,7 @@ agent-commerce-demo  the worked example (consumes dacs-sdk)
 
 ## MVP scope (v0.1)
 
-Self-declared identity (+ one verified claim) · fixed-price negotiation · **x402**, **direct ERC-20**, provider-injected **AP2 safety-core**, and provider-injected **Solana SPL safety-core** settlement · one delivery type · attestation bundle + reputation. AP2 also has an optional provider-test reference integration that is never enabled implicitly. Cross-chain settlement, bundled live Solana wallet/RPC integration, and dispute execution (DACS-X) remain deferred. A complete live RFQ/L2PS phase handler remains deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
+Self-declared identity (+ one verified claim) · fixed-price negotiation · **pay-dem**, **direct ERC-20**, **x402 protocol helpers (live actions unavailable)**, provider-injected **AP2 safety-core**, and provider-injected **Solana SPL safety-core** settlement · one delivery type · attestation bundle + reputation. AP2 also has an optional provider-test reference integration that is never enabled implicitly. Cross-chain settlement, bundled live Solana wallet/RPC integration, and dispute execution (DACS-X) remain deferred. A complete live RFQ/L2PS phase handler remains deferred. Transport-neutral sealed-envelope and RFQ policy cores are available separately.
 
 ## What's implemented
 
@@ -48,7 +70,7 @@ and readers must use `ComponentSignedArtifact`,
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
+| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected ERC-20 and pay-DEM buyer rails; x402 live actions unavailable at the current Standard pin; optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Agreement readers can call `validateFixedPriceAgreementBinding()` with the
@@ -201,6 +223,11 @@ tests that genuinely need the low-level adapter must opt into the clearly named
 application callback, plugin, or HTTP handler. In-process narrowing prevents
 accidental capability leakage; OS-level buyer/seller signer isolation remains a
 deployment responsibility of the generated role services.
+
+> **Unavailable x402 reference example:** the following code requires a future
+> coordinated JID-1 release. `createX402Rail` currently throws
+> `UnsupportedCapabilityError`. For the available generated service, select
+> `--rails pay-dem`; a `both` service keeps only pay-dem operational.
 
 ```ts
 import {
@@ -726,7 +753,7 @@ it returns no Listings or diagnostics, and the caller retries its unchanged
 `retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
 `historyPageSize`, when supplied, must be an integer from 1 through 100.
 
-See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
+The **[x402 reference example](./examples/hello-world.ts)** is unavailable at the current Standard pin. Use the generated pay-dem service for live sessions.
 
 ### AP2 reference integration (optional)
 
@@ -975,8 +1002,8 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
 | `@kynesyslabs/dacs/identity` | no | CCI parsing + canonical Demos agent ClaimReference helpers |
 
-The commerce coordinator is an explicit production x402 profile, not a generic
-`pay-*` dispatcher. It binds the supported Standard revision plus the verified
+The x402 commerce coordinator is implemented but unavailable for live actions
+at the current Standard pin. It binds the supported Standard revision plus the verified
 registry/rail/network and seller-orchestrator topology, separates buyer and
 seller operations, and uses durable cursor/claim/ack outboxes. See
 [the fixed-price x402 coordinator guide](./docs/fixed-price-x402-coordinator.md)

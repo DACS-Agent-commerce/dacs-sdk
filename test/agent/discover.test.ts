@@ -11,6 +11,8 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../../src/crypto/index.js";
+import { SubstrateError } from "../../src/errors.js";
+import { DemosAdapter } from "../../src/substrate/DemosAdapter.js";
 
 const LISTING = {
   agentId: "did:demos:alice",
@@ -52,8 +54,57 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
     expect(await discoverListings(["missing", "also-missing"], read, TRUST)).toEqual([]);
   });
 
+  test("a THROWING read drops only that ref, not the whole batch", async () => {
+    const reads: string[] = [];
+    const found = await discoverListings(["ref:1", "unanswered", "ref:3"], async (ref) => {
+      reads.push(ref);
+      if (ref === "unanswered") throw new Error("read failed");
+      return read(ref);
+    }, TRUST);
+    expect(found.map((f) => f.ref)).toEqual(["ref:1", "ref:3"]);
+    expect(reads).toEqual(["ref:1", "unanswered", "ref:3"]);
+  });
+
+  // DemosAdapter.readAnchor keeps a 404 indeterminate (it throws); discovery
+  // still returns the refs the node did serve.
+  test("a Demos 404 on one ref leaves the other refs discoverable", async () => {
+    const adapter = new DemosAdapter({ rpc: "https://node.invalid", chainIdentity: "test-chain" });
+    (adapter.raw as any).storagePrograms.read = async (address: string) => {
+      if (address === "stor-missing") {
+        throw Object.assign(new Error("Request failed with status code 404"), {
+          response: { status: 404, data: { success: false, errorCode: "NOT_FOUND" } },
+        });
+      }
+      return { success: true, storageAddress: address, data: LISTING };
+    };
+    await expect(adapter.readAnchor("stor-missing")).rejects.toBeInstanceOf(SubstrateError);
+    const found = await discoverListings(
+      ["stor-missing", "stor-good"], (ref) => adapter.readAnchor(ref), TRUST,
+    );
+    expect(found.map((f) => f.ref)).toEqual(["stor-good"]);
+  });
+
   test("empty input yields empty result", async () => {
     expect(await discoverListings([], read, TRUST)).toEqual([]);
+  });
+
+  test("a total read outage stays indeterminate, and recovery discovers listings", async () => {
+    const failure = new SubstrateError("RPC unavailable");
+    await expect(discoverListings(["ref:1", "ref:3"], async () => {
+      throw failure;
+    }, TRUST)).rejects.toMatchObject({
+      name: "SubstrateError", cause: failure,
+      message: "Listing discovery is indeterminate: every anchor read was unanswered",
+    });
+    expect((await discoverListings(["ref:1", "ref:3"], read, TRUST)).map((f) => f.ref))
+      .toEqual(["ref:1", "ref:3"]);
+  });
+
+  test("an authoritative absence still answers a batch containing an unanswered ref", async () => {
+    await expect(discoverListings(["missing", "unanswered"], async (ref) => {
+      if (ref === "unanswered") throw new SubstrateError("RPC unavailable");
+      return null;
+    }, TRUST)).resolves.toEqual([]);
   });
 
   test("requires an explicit gate — neither dep rejects (no fail-open)", async () => {

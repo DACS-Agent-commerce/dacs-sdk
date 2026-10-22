@@ -55,7 +55,7 @@ import type {
 } from "../../src/seller/bundleFinalization.js";
 
 const NOW = 1_786_100_000_000;
-const JOB_ID = "buyer-finalization-81";
+const JOB_ID = "01JA9BF0000000000000000001";
 const BUYER = "did:demos:buyer";
 const SELLER = "did:demos:seller";
 const BUYER_HASH = "1".repeat(64);

@@ -3,6 +3,8 @@ import { types as nodeTypes } from "node:util";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { MAX_NESTING_DEPTH } from "../canonical/jcs.js";
 import { DacsError } from "../errors.js";
+import { requireJid1LiveProfile } from "../negotiate/liveProfile.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
 
 /** Durable wire/schema version for the normative buyer x402 boundary. */
@@ -504,26 +506,6 @@ function nfcString(value: unknown, label: string): string {
   return value;
 }
 
-function exactSessionString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length === 0 ||
-      /[\u0000-\u001f\u007f]/.test(value)) {
-    throw new DacsError(`${label} must be a non-empty string without controls`);
-  }
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new DacsError(`${label} must contain only Unicode scalar values`);
-      }
-      index += 1;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new DacsError(`${label} must contain only Unicode scalar values`);
-    }
-  }
-  return value;
-}
-
 function asciiString(value: unknown, label: string): string {
   const captured = nfcString(value, label);
   if (!PRINTABLE_ASCII_RE.test(captured)) {
@@ -600,14 +582,17 @@ function expectedNonce(jobId: string, phaseIndex: number): `0x${string}` {
   return `0x${sha256Hex(`dacs-sb3:v1:${jobId.normalize("NFC")}:${phaseIndex}`)}`;
 }
 
-/** Stable exact-byte key encoding of (railId, jobId, phaseIndex). */
+/**
+ * Stable exact-byte key encoding of (railId, jobId, phaseIndex). The jobId must
+ * pass CORE JID-1 before it is hashed into the key.
+ */
 export function x402BuyerSettlementKey(input: {
   railId: string;
   jobId: string;
   phaseIndex: number;
 }): string {
   const railId = asciiString(input?.railId, "x402 buyer railId");
-  const jobId = exactSessionString(input?.jobId, "x402 buyer jobId");
+  const jobId = requireCanonicalJobId(input?.jobId, "x402 buyer jobId");
   const phaseIndex = uint(input?.phaseIndex, "x402 buyer phaseIndex");
   const keyPreimage =
     `dacs-x402-buyer-key:v1:${Buffer.byteLength(railId, "utf8")}:${railId}:` +
@@ -893,7 +878,7 @@ export function createX402BuyerSettlementIntent(
     "paymentHeader",
     "authorizationNonce",
   ]);
-  const jobId = exactSessionString(record.jobId, "x402 buyer jobId");
+  const jobId = requireCanonicalJobId(record.jobId, "x402 buyer jobId");
   const phaseIndex = uint(record.phaseIndex, "x402 buyer phaseIndex");
   const railId = asciiString(record.railId, "x402 buyer railId");
   const railVersion = asciiString(record.railVersion, "x402 buyer railVersion");
@@ -1851,6 +1836,7 @@ function captureReconciliation(
 export async function advanceX402BuyerSettlement<TObservation = unknown>(
   input: AdvanceX402BuyerSettlementInput<TObservation>,
 ): Promise<X402BuyerSettlementProgress> {
+  requireJid1LiveProfile();
   const intent = captureIntent(input?.intent);
   const owner = asciiString(input?.owner, "x402 buyer owner");
   const now = typeof input?.now === "function" ? input.now : Date.now;

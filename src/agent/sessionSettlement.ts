@@ -22,6 +22,7 @@ import {
   verifySettlementEvidence,
   type EvidenceDeps,
 } from "./verifySettlementEvidence.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
 
 /** Four-valued trust-boundary decision used by settlement providers. */
@@ -199,6 +200,11 @@ export interface SessionSettlementVerificationProvider {
    * projection) so an ambiguous transaction never becomes a successful
    * binding. Current event/instruction refs are also checked locally against
    * the returned `settlementId` before this verifier grants authority.
+   * The verifier never counts confirmations itself. The adapter MUST enforce
+   * `context.rail.finality` on the native truth it re-observes, and its
+   * `nativeObservation.finality` MUST report the depth or commitment level it
+   * applied (`finalityBlocks` / `finalityCommitmentLevel`), echo or not. The
+   * verifier refuses an observation that does not report exactly the pin.
    */
   revalidateSettlement: (input: {
     mode: "initial" | "recovery";
@@ -478,7 +484,7 @@ function isContext(value: unknown): value is SessionSettlementContext {
     "payee",
     "paymentAmount",
     "rail",
-  ]) && value.contextVersion === "1" && isNonEmpty(value.jobId) &&
+  ]) && value.contextVersion === "1" && isCanonicalJobId(value.jobId) &&
     isAttestationRef(value.agreementRef) && isHash(value.agreementHash) &&
     value.agreementRef.contentHash === value.agreementHash &&
     isUint(value.paymentPhaseIndex) && isNonEmpty(value.orchestrator) &&
@@ -495,7 +501,7 @@ function isIdentityBinding(
     "railId",
     "phaseIndex",
     "settlementId",
-  ]) && isNonEmpty(value.jobId) && isNonEmpty(value.railId) &&
+  ]) && isCanonicalJobId(value.jobId) && isNonEmpty(value.railId) &&
     isUint(value.phaseIndex) && isCanonicalSettlementIdentity(value.settlementId);
 }
 
@@ -600,14 +606,42 @@ function finalityMatchesPolicy(
 ): boolean {
   if (finality.model !== policy.model) return false;
   if (policy.model === "block-depth") {
+    // DACS-4 §9.7: the echo is optional; when present it must be the
+    // authenticated rail pin. When absent the pin still applies: the native
+    // observation must report it (`pinnedFinality`).
     return finality.model === "block-depth" &&
-      finality.finalityBlocks === policy.finalityBlocks;
+      (finality.finalityBlocks === undefined ||
+        finality.finalityBlocks === policy.finalityBlocks);
   }
   if (policy.model === "commitment-level") {
     return finality.model === "commitment-level" &&
-      finality.finalityCommitmentLevel === policy.finalityCommitmentLevel;
+      (finality.finalityCommitmentLevel === undefined ||
+        finality.finalityCommitmentLevel === policy.finalityCommitmentLevel);
   }
   return true;
+}
+
+/**
+ * The finality a live native observation must report for this evidence: the
+ * signed finality with the authenticated rail pin filled in. The signed depth
+ * or level echo is optional (DACS-4 §9.7), but the native observation never
+ * is, so evidence without an echo cannot verify against an observation that
+ * merely copies its echo-less shape.
+ */
+function pinnedFinality(
+  finality: SettlementFinality,
+  policy: SessionSettlementFinalityPolicy,
+): SettlementFinality {
+  if (policy.model === "block-depth" && finality.model === "block-depth") {
+    return { ...finality, finalityBlocks: policy.finalityBlocks };
+  }
+  if (policy.model === "commitment-level" && finality.model === "commitment-level") {
+    return {
+      ...finality,
+      finalityCommitmentLevel: policy.finalityCommitmentLevel,
+    };
+  }
+  return finality;
 }
 
 function contextMatchesEvidence(
@@ -857,10 +891,13 @@ export async function verifyFinalizedSessionSettlement(
   const context = ownedJson(contextInput);
   const settlement = ownedJson(settlementInput);
   const provider = captureProvider(providerInput);
+  // CORE JID-1/JID-3: both job ids are canonical before any callback, address
+  // derivation or hash.
   if (!context || !isContext(context)) {
     return rejected("error", "settlement context is not exact canonical data");
   }
-  if (!settlement || !isFinalizedSettlement(settlement)) {
+  if (!settlement || !isFinalizedSettlement(settlement) ||
+      !isCanonicalJobId(settlement.evidence.jobId)) {
     return rejected("error", "finalized settlement is not exact canonical data");
   }
   if (!provider) {
@@ -1031,7 +1068,7 @@ export async function verifyFinalizedSessionSettlement(
     let sameFinality = false;
     try {
       sameFinality = canonicalize(nativeDisposition.nativeObservation.finality) ===
-        canonicalize(signedFinality);
+        canonicalize(pinnedFinality(signedFinality, context.rail.finality));
     } catch {
       return rejected("error", "native settlement finality cannot be canonicalized safely");
     }

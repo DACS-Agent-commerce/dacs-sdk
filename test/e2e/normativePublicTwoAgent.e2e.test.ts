@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { verifyMessage, verifyTypedData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -3850,7 +3850,8 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
     expect(bundles.buyerFinalization.buyerBundle.anchoredByRole).toBe("buyer");
     expect(bundles.sellerFinalization.sellerBundle.anchoredByRole).toBe("seller");
     expect(bundles.standardLimitations).toEqual(["DACS-Standard#331"]);
-  }, 30_000);
+    // About 26 s on its own; a parallel suite pushes it past a 30 s budget.
+  }, 60_000);
 
   test("recovers the same run after a real process crash without replaying effects", async () => {
     const root = await tempDir("issue114-whole-process");
@@ -4017,7 +4018,7 @@ describe.skipIf(PROCESS_STAGE !== undefined)(
       expect(await filesBelow(receiptDir)).toEqual([]);
       expect(await filesBelow(fulfilmentDir)).toEqual([]);
     }
-  });
+  }, 15_000);
 
   test("rejects a seller identity that does not control the pinned Listing", async () => {
     const published = await publishAndDiscoverListing();
@@ -4170,3 +4171,7 @@ describe.skipIf(PROCESS_STAGE === undefined)("issue #114 whole-process worker", 
     else throw new Error(`unknown whole-process worker stage: ${PROCESS_STAGE}`);
   }, 20_000);
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

@@ -228,7 +228,8 @@ function mappedChainId(
 ): number | null {
   if (typeof network !== "string") return null;
   if (protocolVersion === "2") {
-    const match = /^eip155:(0|[1-9][0-9]*)$/.exec(network);
+    // DACS-4 SB-1: an EVM settlement chain id is a positive integer.
+    const match = /^eip155:([1-9][0-9]*)$/.exec(network);
     if (!match) return null;
     const chainId = Number(match[1]);
     return Number.isSafeInteger(chainId) ? chainId : null;
@@ -394,7 +395,7 @@ export function verifyX402ReceiptClaim(input: {
     };
   }
   if (evidence.chainId !== undefined) {
-    if (!Number.isSafeInteger(evidence.chainId) || evidence.chainId < 0) {
+    if (!Number.isSafeInteger(evidence.chainId) || evidence.chainId <= 0) {
       return { disposition: "error", reason: "invalid-chainId", ...common };
     }
     const chainId = mappedChainId(
