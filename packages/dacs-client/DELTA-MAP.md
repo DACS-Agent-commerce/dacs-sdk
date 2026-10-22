@@ -569,6 +569,8 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 4d6a27d69f6d53dbd1f64f85c0f223826ff48e33 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 0bb22ecb3c4906984740d7507195b1436857ece7 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | dac6e6aae63aac269c0a84197ce2b77d3211eb35 |
+| D11 | delta(client): D11 pin diagnostic readback recovery cases | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/host-observations.test.mjs:1` | 91b95b00fd131578299078bbe36febc22c29344c |
 
 ## Complete commit and file inventory
 
@@ -1247,6 +1249,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D11 constrain public readback to diagnostics and align observer contracts | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | delta(client): D11 constrain public readback to diagnostics and align observer contracts | `packages/dacs-client/test/public-api.test.mjs:1` |
 | delta(client): D11 constrain public readback to diagnostics and align observer contracts | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| delta(client): D11 pin diagnostic readback recovery cases | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D11 pin diagnostic readback recovery cases | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D11 pin diagnostic readback recovery cases | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D11 pin diagnostic readback recovery cases | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D11 pin diagnostic readback recovery cases | `packages/dacs-client/README.md:1` |
+| delta(client): D11 pin diagnostic readback recovery cases | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D11 pin diagnostic readback recovery cases | `packages/dacs-client/test/host-observations.test.mjs:1` |
 
 ## Original moved files
 

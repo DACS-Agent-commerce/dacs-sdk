@@ -112,8 +112,9 @@ for (const closed of [false, true]) {
 }
 
 
-test('public host readers remain diagnostic and cannot settle or consume a nonce', async t => {
-  const w = world(t, INCLUDED, { publicApi: true });
+for (const native of [false, true]) {
+test(`public host readers remain diagnostic and cannot settle or consume a nonce (native=${native})`, async t => {
+  const w = world(t, INCLUDED, { publicApi: true, native });
   const before = w.coordinates.get(w.op.id), history = w.ops.history(w.op.id);
   const result = await w.verify();
   assert.equal(result.verification.outcome, 'readback_only');
@@ -123,10 +124,18 @@ test('public host readers remain diagnostic and cannot settle or consume a nonce
   assert.deepEqual(w.coordinates.get(w.op.id), before);
   assert.deepEqual(w.ops.history(w.op.id), history);
   assert.equal(w.consumed(), 0);
+  for (const attachOnly of [false, true]) {
+    const diagnostic = await w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id,
+      txHash: '2'.repeat(64), attachOnly });
+    assert.equal(diagnostic.verification.outcome, 'readback_only');
+    assert.deepEqual(w.coordinates.get(w.op.id), before, 'optional hashes are never attached');
+    assert.deepEqual(w.ops.history(w.op.id), history);
+  }
   for (const method of ['cancel', 'reportWalletResult', 'protocolRecheck']) {
     await assert.rejects(w.purchases[method]({ accountId: w.op.accountId, operationId: w.op.id }), { code: 'profile_not_admitted' });
   }
 });
+}
 
 test('public diagnostic reads validate malformed observations without saving them', async t => {
   const w = world(t, { ...INCLUDED, amountOs: 1n }, { publicApi: true });

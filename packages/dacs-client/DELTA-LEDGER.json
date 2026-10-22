@@ -1651,6 +1651,17 @@
           "after": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 pin diagnostic readback recovery cases",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "0ece7589c9028ac6d578fdda441cf2a49464dcc8",
+          "after": "91b95b00fd131578299078bbe36febc22c29344c"
+        }
+      ]
     }
   ]
 }
