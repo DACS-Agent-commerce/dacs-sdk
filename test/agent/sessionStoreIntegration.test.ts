@@ -2292,6 +2292,56 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     expect(resumed.settleCalls.n).toBe(0);
   });
 
+  test.each([
+    { rail: "pay-x402", asset: "DEM" },
+    { rail: "pay-dem", asset: "USDC" },
+  ])("rejects a non-native durable terminal proof before recovery: $rail/$asset", async ({ rail, asset }) => {
+    const store = createInMemorySessionStore();
+    const kv = new Map<string, Record<string, unknown>>([["stor:listing",
+      await buildSignedArtifact({ ...listing, supportedPaymentRails: [rail] },
+        ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>]]);
+    const selectedTerms = { ...terms, price: { amount: "1", asset, decimals: 9, rail } };
+    const payer = "ab".repeat(32);
+    const txHash = "cd".repeat(32);
+    const settle = vi.fn(async (): Promise<SettleResult> => ({
+      ok: false, txHash: "", chainId: "demos", payer, payee: sellerDid,
+    }));
+    const first = await makeDeps(store, { kv, settle, anchor: async (name, value) => {
+      if (name === sessionAnchorName.evidence("job-1")) throw new Error("terminal proof fixture boundary");
+      kv.set(`stor:${name}`, value as Record<string, unknown>);
+      return `stor:${name}`;
+    } });
+    await expect(runSessionCore(first.listingRef, selectedTerms, first.deps))
+      .rejects.toThrow("terminal proof fixture boundary");
+    const loaded = await store.load("job-1");
+    if (loaded.status !== "ok") throw new Error("missing fixture session");
+    const storedBefore = structuredClone(loaded);
+    const data = loaded.record.checkpoints.find((cp) => cp.stage === "outcome")!.data!;
+    // Keep the request binding and amount consistent with the Agreement. Only
+    // the native-only proof is invalid here; its own failure facts all agree.
+    const proof = { kind: "demos-failed-record", txHash, payer,
+      payee: sellerDid.split(":").at(-1)!, nonce: 9, blockNumber: 42, amountOs: "1000000000" };
+    Object.assign(data, { txHash, blockNumber: 42, txRefKind: "demos",
+      errorClass: "permanent", failureProofJson: JSON.stringify(proof) });
+    const changed: typeof store = { ...store, load: async (jobId) =>
+      jobId === "job-1" ? structuredClone(loaded) : store.load(jobId) };
+    const before = await changed.load("job-1");
+    const anchors = structuredClone([...kv]);
+    const bindHash = vi.spyOn(changed, "bindHash");
+    const resume = vi.fn(async (): Promise<SettleResult> => { throw new Error("must not recover a non-native proof"); });
+    settle.mockClear();
+    const resumed = await makeDeps(changed, { kv, settle, resumeSettlement: resume });
+    const error = await runSessionCore(resumed.listingRef, selectedTerms, resumed.deps, "job-1")
+      .catch((cause: unknown) => cause);
+    expect(resume).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+    expect(error).toMatchObject({ message: expect.stringContaining("invalid durable terminal-failure proof") });
+    expect(bindHash.mock.calls.filter(([input]) => input.kind === "transaction")).toEqual([]);
+    expect(await changed.load("job-1")).toEqual(before);
+    expect(await store.load("job-1")).toEqual(storedBefore);
+    expect([...kv]).toEqual(anchors);
+  });
+
   test("sweep non-native signed payer extension stays inert through evidence migration and repeat", async () => {
     const first = await makeDeps(undefined);
     first.deps.anchor = async (name, value) => {
@@ -2424,6 +2474,82 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         return { status: "ok", record };
       } };
     }
+
+    test.each(["txHash", "chainId", "amount"] as const)(
+      "refuses a single conflicting evidence checkpoint before audit or transaction binding: %s", async (field) => {
+        const f = await sweepNative(true, true, false);
+        const store = createInMemorySessionStore();
+        const migrate = await makeDeps(store, { kv: f.kv, settle: f.adapter() });
+        await expect(runSessionCore(migrate.listingRef, demTerms, migrate.deps, "job-1"))
+          .resolves.toMatchObject({ outcome: "completed" });
+        const changed = sweepCheckpoints(store, (checkpoints) => {
+          const outcomes = checkpoints.filter((cp) => cp.key === "settle:0" && cp.stage === "outcome");
+          expect(outcomes).toHaveLength(1);
+          expect(outcomes[0]!.data).toMatchObject({ outcomeSource: "authenticated-evidence", payer, networkFeeOs: "12" });
+          outcomes[0]!.data![field] = field === "txHash" ? "ef".repeat(32) : field === "chainId" ? "demos:other" : "2";
+        });
+        const before = await changed.load("job-1");
+        const storedBefore = await store.load("job-1");
+        const anchors = structuredClone([...f.kv]);
+        const bindHash = vi.spyOn(changed, "bindHash");
+        f.reconcile.mockClear();
+        demosNode.reads = [];
+        const resumed = await makeDeps(changed, { kv: f.kv, settle: f.adapter() });
+        const error = await runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1")
+          .catch((cause: unknown) => cause);
+        expect(f.reconcile).not.toHaveBeenCalled();
+        expect(demosNode.reads).toEqual([]);
+        expect(bindHash.mock.calls.filter(([input]) => input.kind === "transaction")).toEqual([]);
+        expect(error).toMatchObject({ message: "saved native success evidence conflicts with the durable outcome" });
+        expect(await changed.load("job-1")).toEqual(before);
+        expect(await store.load("job-1")).toEqual(storedBefore);
+        expect([...f.kv]).toEqual(anchors);
+        expect(demosNode.transfers).toBe(1);
+        expect(demosNode.broadcasts).toBe(1);
+      },
+    );
+
+    test("rechecks native authority after a store reports a held intent as a fresh claim", async () => {
+      const store = createInMemorySessionStore();
+      const kv = await demKv();
+      const adapter = payDemSettle(await sdkPayDemRail(), {}, {
+        store: createIdempotencyStore(), reconcile: async () => null,
+      });
+      // Interrupt a real configured adapter before it signs or broadcasts.
+      demosNode.onTransfer = () => { throw new Error("interrupted native payment"); };
+      const first = await makeDeps(store, { kv, settle: adapter });
+      await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+        .rejects.toThrow("interrupted native payment");
+      const before = await store.load("job-1");
+      if (before.status !== "ok") throw new Error("missing fixture session");
+      expect(before.record.checkpoints.filter((cp) => cp.key === "settle:0"))
+        .toEqual([expect.objectContaining({ stage: "intent" })]);
+      demosNode.onTransfer = undefined;
+      demosNode.transfers = 0;
+      demosNode.reads = [];
+      const anchors = structuredClone([...kv]);
+      const claimCheckpoint = vi.fn<typeof store.claimCheckpoint>(async (input) => {
+        const held = await store.claimCheckpoint(input);
+        expect(held).toMatchObject({ ok: false, reason: "held" });
+        if (!held.record) throw new Error("missing held intent");
+        // Structurally valid, matching intent, but the custom store reports it
+        // freshly claimed. That response must not authorize a different seam.
+        return { ok: true, record: held.record };
+      });
+      const changed = { ...store, claimCheckpoint };
+      const settle = vi.fn(async (): Promise<SettleResult> => executedClaim(txHash));
+      const resumed = await makeDeps(changed, { kv, settle });
+      const error = await runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1")
+        .catch((cause: unknown) => cause);
+      expect(claimCheckpoint).toHaveBeenCalledOnce();
+      expect(settle).not.toHaveBeenCalled();
+      expect(error).toMatchObject({ message: expect.stringContaining("requires the SDK's own record read (fresh native settlement); settle is not the payDemSettle adapter") });
+      expect(demosNode.transfers).toBe(0);
+      expect(demosNode.broadcasts).toBe(0);
+      expect(demosNode.reads).toEqual([]);
+      expect(await store.load("job-1")).toEqual(before);
+      expect([...kv]).toEqual(anchors);
+    });
 
     test("sweep current native checkpoint without a fee survives later record fee metadata unchanged", async () => {
       const f = await sweepNative(true, false, true, false);

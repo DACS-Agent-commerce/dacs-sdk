@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
+import { DacsError } from "../../src/errors.js";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
@@ -274,6 +275,88 @@ describe("a recovered pay-dem verdict is the SDK rail's own read of the node rec
     expect(demosNode.reads).toContain(txHash);
     expect(submit).not.toHaveBeenCalled();
   });
+
+  const malformedRecords: {
+    name: string;
+    reason: string;
+    change: (record: Record<string, unknown>) => void;
+  }[] = [
+    { name: "wrong hash", reason: "transaction record is missing or malformed", change: (record) => { record.hash = "ef".repeat(32); } },
+    ...["invalid", "null", "missing"].map((kind) => ({
+      name: `${kind} nonce`, reason: "transaction record is missing or malformed",
+      change: (record: Record<string, unknown>) => {
+        const content = record.content as Record<string, unknown>;
+        if (kind === "missing") delete content.nonce;
+        else content.nonce = kind === "null" ? null : "invalid";
+      },
+    })),
+    ...["null", "missing"].map((kind) => ({
+      name: `${kind} content`, reason: "transaction record is missing or malformed",
+      change: (record: Record<string, unknown>) => {
+        if (kind === "missing") delete record.content;
+        else record.content = null;
+      },
+    })),
+    ...["null", "missing"].map((kind) => ({
+      name: `${kind} data`, reason: "transaction record does not match the payment",
+      change: (record: Record<string, unknown>) => {
+        const content = record.content as Record<string, unknown>;
+        if (kind === "missing") delete content.data;
+        else content.data = null;
+      },
+    })),
+    { name: "null data[1]", reason: "transaction record does not match the payment", change: (record) => {
+      ((record.content as Record<string, unknown>).data as unknown[])[1] = null;
+    } },
+    ...["null", "missing"].map((kind) => ({
+      name: `${kind} args`, reason: "transaction record does not match the payment",
+      change: (record: Record<string, unknown>) => {
+        const payload = ((record.content as Record<string, unknown>).data as Record<string, unknown>[])[1]!;
+        if (kind === "missing") delete payload.args;
+        else payload.args = null;
+      },
+    })),
+  ];
+  test.each(malformedRecords.flatMap((record) =>
+    (["retained-hash audit", "restart re-check"] as const).map((path) => ({ ...record, path }))))(
+    "malformed recovery record ($name) gives a controlled indeterminate error on $path", async ({ change, reason, path }) => {
+      const log = await settledLog("executed");
+      const saved = await log.readOutcome!("pay-dem:retained-native:0");
+      expect(saved?.result).toMatchObject({ ok: true, txHash });
+      const claimIntent = vi.spyOn(log, "claimIntent");
+      const writes = ["grantRecovery", "putOutcome", "releaseIntent", "putAttempt"] as const;
+      const writeSpies = writes.map((method) => vi.spyOn(log, method));
+      const reconcile = vi.fn<PayDemSettlementReconcile>(async () => {
+        const claim = executed();
+        const record = demosNode.records.get(txHash) as Record<string, unknown>;
+        change(record);
+        return claim;
+      });
+      // Reopen the current SDK's saved outcome with a new bridge and SDK rail.
+      const settle = payDemSettle(await sdkPayDemRail(), {}, { store: createIdempotencyStore(log), reconcile });
+      demosNode.reads = [];
+      const transfers = demosNode.transfers;
+      const broadcasts = demosNode.broadcasts;
+      const { priorAttempts: _history, ...fresh } = request();
+      const error = await settle(path === "retained-hash audit" ? request() : fresh)
+        .catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(DacsError);
+      expect(error).toMatchObject({ message: expect.stringContaining(`could not establish the node record for ${txHash}: ${reason};`) });
+      expect(reconcile).toHaveBeenCalledOnce();
+      expect(demosNode.reads).toEqual([txHash]);
+      expect(submit).not.toHaveBeenCalled();
+      expect(demosNode.transfers).toBe(transfers);
+      expect(demosNode.broadcasts).toBe(broadcasts);
+      for (const spy of writeSpies) expect(spy).not.toHaveBeenCalled();
+      // The ordinary restart lookup calls claimIntent to read the already
+      // completed outcome; it must not acquire a generation or write a log.
+      expect(claimIntent).toHaveBeenCalledTimes(path === "restart re-check" ? 1 : 0);
+      if (path === "restart re-check") {
+        await expect(claimIntent.mock.results[0]!.value).resolves.toEqual({ status: "outcome", outcome: saved });
+      }
+      expect(await log.readOutcome!("pay-dem:retained-native:0")).toEqual(saved);
+    },
+  );
 
   // The SDK rail's reader reads its own wallet's transfers only: a bridge that
   // names another payer over that rail's settle gets no verdict for it.
